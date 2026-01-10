@@ -4,10 +4,10 @@
  * Starts the WebSocket server and manages Claude Code PTY sessions.
  */
 
-import { PTYManager } from './pty/index.ts';
+import { PTYManager, PTYSession } from './pty/index.ts';
 import { WebSocketServer } from './server/index.ts';
 import { OutputProcessor } from './parser/index.ts';
-import type { PTYSession } from './pty/index.ts';
+import { generateId, now } from '@remi/shared';
 
 const PORT = process.env.REMI_PORT ? Number.parseInt(process.env.REMI_PORT) : 8765;
 
@@ -35,14 +35,56 @@ const server = new WebSocketServer(
       console.log('🎯 Auto-spawning Claude Code session for client...');
 
       try {
-        const ptySession = ptyManager.createSession({
-          command: 'claude',
-          args: [],
-          cwd: process.cwd(),
-        });
+        // Create variables that will be set
+        let ptySession: PTYSession;
+        let processor: OutputProcessor;
+
+        // Create PTYSession directly with custom event handlers
+        ptySession = new PTYSession(
+          {
+            command: 'claude',
+            args: [],
+            cwd: process.cwd(),
+          },
+          {
+            onData: (output: string) => {
+              // Process output for questions, status, etc.
+              if (processor) {
+                processor.process(output);
+              }
+
+              // Log locally for debugging
+              process.stdout.write(output);
+
+              // Send output to client as agent_output message
+              connection.send({
+                type: 'agent_output',
+                id: generateId(),
+                timestamp: now(),
+                message: {
+                  id: generateId(),
+                  sessionId: ptySession.id,
+                  sender: 'agent' as const,
+                  content: output,
+                  createdAt: now(),
+                  state: 'sent' as const,
+                  stateChangedAt: now(),
+                  isEditing: false,
+                },
+              });
+            },
+            onExit: (code: number | null) => {
+              console.log(`👋 Session ${ptySession.id} exited with code ${code}`);
+              activeSessions.delete(connection.id);
+            },
+            onError: (error: Error) => {
+              console.error(`❌ Session ${ptySession.id} error:`, error);
+            },
+          }
+        );
 
         // Create output processor for this session
-        const processor = new OutputProcessor(
+        processor = new OutputProcessor(
           { sessionId: ptySession.id },
           {
             onQuestion: (question) => {
@@ -60,19 +102,8 @@ const server = new WebSocketServer(
           }
         );
 
-        // Forward PTY output to client (as raw text for now)
-        ptySession.on('data', (output: string) => {
-          // Process output for questions, status, etc.
-          processor.process(output);
-
-          // For now, just log it - we'll add proper protocol messages later
-          process.stdout.write(output);
-        });
-
-        ptySession.on('exit', (code: number) => {
-          console.log(`👋 Session ${ptySession.id} exited with code ${code}`);
-          activeSessions.delete(connection.id);
-        });
+        // Start the session
+        await ptySession.start();
 
         // Store session for this connection
         activeSessions.set(connection.id, { session: ptySession, processor });
@@ -83,13 +114,13 @@ const server = new WebSocketServer(
       }
     },
 
-    onClientDisconnect: (connectionId) => {
+    onClientDisconnect: async (connectionId) => {
       console.log(`❌ Client disconnected: ${connectionId}`);
 
       // Clean up session
       const sessionData = activeSessions.get(connectionId);
       if (sessionData) {
-        sessionData.session.kill();
+        await sessionData.session.close();
         activeSessions.delete(connectionId);
       }
     },
@@ -115,16 +146,24 @@ console.log(`✨ Remi daemon ready on ws://localhost:${PORT}`);
 console.log(`🔗 Connect your client to ws://localhost:${PORT}/ws`);
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down gracefully...');
-  server.stop();
-  ptyManager.cleanup();
+  await server.stop();
+
+  // Close all active PTY sessions
+  const closePromises = Array.from(activeSessions.values()).map(({ session }) => session.close());
+  await Promise.all(closePromises);
+
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('\n🛑 Shutting down gracefully...');
-  server.stop();
-  ptyManager.cleanup();
+  await server.stop();
+
+  // Close all active PTY sessions
+  const closePromises = Array.from(activeSessions.values()).map(({ session }) => session.close());
+  await Promise.all(closePromises);
+
   process.exit(0);
 });

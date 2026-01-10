@@ -4,7 +4,7 @@
  * Main application component with demo state for development.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { AppLayout } from '@/components/layout';
 import { SessionList, ConnectModal } from '@/components/session';
 import { ChatView } from '@/components/chat';
@@ -86,10 +86,54 @@ const DEMO_QUESTION: UIQuestion = {
 };
 
 function App() {
+  // State
+  const [sessions, setSessions] = useState<UISession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
+  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [question] = useState<UIQuestion | null>(null);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+
   // WebSocket connection
   const handleMessage = useCallback((message: ProtocolMessage) => {
-    console.log('Received message:', message);
-    // TODO: Handle different message types (output, question, status, etc.)
+    console.log('Received message type:', message.type, message);
+
+    switch (message.type) {
+      case 'hello_ack':
+        // Create a session for this connection
+        const newSession: UISession = {
+          id: message.sessionId,
+          name: 'Claude Code Session',
+          createdAt: new Date().toISOString(),
+          lastActiveAt: new Date().toISOString(),
+          status: 'idle',
+          connectionStatus: 'connected',
+          unreadCount: 0,
+          cwd: '~/Documents/git/yooz/remi',
+          preview: 'Connected to daemon',
+        };
+        setSessions([newSession]);
+        setActiveSessionId(message.sessionId);
+        setMessages([]); // Clear demo messages
+        break;
+
+      case 'agent_output':
+        // Add agent message to the list
+        const uiMessage: UIMessage = {
+          id: message.message.id,
+          sessionId: message.message.sessionId,
+          sender: message.message.sender,
+          content: message.message.content,
+          timestamp: message.message.createdAt,
+          state: message.message.state,
+          isEditing: message.message.isEditing,
+        };
+        setMessages((prev) => [...prev, uiMessage]);
+        break;
+
+      case 'error':
+        console.error('Daemon error:', message);
+        break;
+    }
   }, []);
 
   const {
@@ -101,15 +145,14 @@ function App() {
     sessionId: wsSessionId,
   } = useWebSocket({ onMessage: handleMessage });
 
-  // State
-  const [sessions] = useState<UISession[]>(DEMO_SESSIONS);
-  const [activeSessionId, setActiveSessionId] = useState<UUID | null>(
-    DEMO_SESSIONS[0]?.id ?? null,
-  );
-  const [messages, setMessages] = useState<UIMessage[]>(DEMO_MESSAGES);
-  const [question] = useState<UIQuestion | null>(DEMO_QUESTION);
-  const [showConnectModal, setShowConnectModal] = useState(false);
   const error = wsError?.message ?? null;
+
+  // Close modal when connected
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      setShowConnectModal(false);
+    }
+  }, [connectionStatus]);
 
   // Get active session
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -144,16 +187,25 @@ function App() {
 
       setMessages((prev) => [...prev, newMessage]);
 
-      // Simulate message delivery
-      setTimeout(() => {
+      // Send via WebSocket
+      const success = sendInput(activeSessionId, content);
+      if (success) {
+        // Update state to sent
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === newMessage.id ? { ...m, state: 'delivered' } : m,
+            m.id === newMessage.id ? { ...m, state: 'sent' } : m,
           ),
         );
-      }, 500);
+      } else {
+        // Failed to send
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === newMessage.id ? { ...m, state: 'sending' } : m,
+          ),
+        );
+      }
     },
-    [activeSessionId],
+    [activeSessionId, sendInput],
   );
 
   const handleConnectDirect = useCallback(
