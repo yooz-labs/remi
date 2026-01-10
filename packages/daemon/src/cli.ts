@@ -29,6 +29,8 @@ const server = new WebSocketServer(
   {
     onClientConnect: async (connection) => {
       console.log(`✅ Client connected: ${connection.id}`);
+      console.log(`   Connection state: ${connection.connectionState}`);
+      console.log(`   Session ID: ${connection.connectionSessionId}`);
 
       // Auto-spawn a Claude Code session for this client
       // TODO: In the future, client should request session spawn via protocol
@@ -114,8 +116,9 @@ const server = new WebSocketServer(
       }
     },
 
-    onClientDisconnect: async (connectionId) => {
+    onClientDisconnect: async (connectionId, reason) => {
       console.log(`❌ Client disconnected: ${connectionId}`);
+      console.log(`   Reason: ${reason}`);
 
       // Clean up session
       const sessionData = activeSessions.get(connectionId);
@@ -135,6 +138,10 @@ const server = new WebSocketServer(
       } else {
         console.warn(`⚠️  No session found for connection ${connectionId}`);
       }
+    },
+
+    onError: (error) => {
+      console.error(`💥 Server error:`, error);
     },
   }
 );
