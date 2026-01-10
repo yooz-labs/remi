@@ -1,0 +1,186 @@
+/**
+ * Core types for Remi messaging protocol.
+ *
+ * Design principles:
+ * - Every message has a unique ID for deduplication
+ * - Every message has delivery states (like WhatsApp)
+ * - Messages can be edited (agent updates progressively)
+ * - All timestamps are ISO 8601 strings for serialization
+ */
+
+/** Unique identifier for messages, sessions, etc. */
+export type UUID = string;
+
+/** ISO 8601 timestamp string */
+export type Timestamp = string;
+
+/** Message delivery states (like WhatsApp checkmarks) */
+export type MessageState = 'sending' | 'sent' | 'delivered' | 'read';
+
+/** Who sent the message */
+export type MessageSender = 'agent' | 'user' | 'system';
+
+/** Agent status while working */
+export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting';
+
+/**
+ * Core message type.
+ * Immutable after creation except for state transitions and edits.
+ */
+export interface Message {
+  /** Unique message ID (UUID v4) */
+  readonly id: UUID;
+
+  /** Session this message belongs to */
+  readonly sessionId: UUID;
+
+  /** Who sent this message */
+  readonly sender: MessageSender;
+
+  /** Message content (may be updated via edits) */
+  content: string;
+
+  /** When the message was created */
+  readonly createdAt: Timestamp;
+
+  /** Current delivery state */
+  state: MessageState;
+
+  /** When state last changed */
+  stateChangedAt: Timestamp;
+
+  /** If edited, when was the last edit */
+  editedAt?: Timestamp | undefined;
+
+  /** Is the agent still working on this message */
+  isEditing: boolean;
+
+  /** Tool being used (e.g., "Reading file.txt") */
+  tool?: string | undefined;
+}
+
+/**
+ * Acknowledgment sent when message is received/read.
+ */
+export interface Acknowledgment {
+  /** ID of the message being acknowledged */
+  readonly messageId: UUID;
+
+  /** New state being acknowledged */
+  readonly state: 'delivered' | 'read';
+
+  /** When this ack was created */
+  readonly timestamp: Timestamp;
+}
+
+/**
+ * Question detected in agent output.
+ * Parsed from Claude Code's output patterns.
+ */
+export interface Question {
+  /** Unique ID for this question */
+  readonly id: UUID;
+
+  /** The question text */
+  readonly text: string;
+
+  /** Available options (if any) */
+  readonly options: readonly QuestionOption[];
+
+  /** Can user type free-form response */
+  readonly allowsFreeText: boolean;
+
+  /** Has this question been answered */
+  isAnswered: boolean;
+
+  /** The answer that was given (if answered) */
+  answer?: string | undefined;
+}
+
+/**
+ * Option for a question (e.g., Yes/No, numbered choices).
+ */
+export interface QuestionOption {
+  /** Display label */
+  readonly label: string;
+
+  /** Value to send to agent */
+  readonly value: string;
+
+  /** Is this the recommended option */
+  readonly isRecommended: boolean;
+
+  /** Is this a "yes" type answer */
+  readonly isYes: boolean;
+
+  /** Is this a "no" type answer */
+  readonly isNo: boolean;
+}
+
+/**
+ * Claude Code session being monitored.
+ */
+export interface Session {
+  /** Unique session ID */
+  readonly id: UUID;
+
+  /** Session name (derived from command or project) */
+  name: string;
+
+  /** When session started */
+  readonly startedAt: Timestamp;
+
+  /** When session ended (if ended) */
+  endedAt?: Timestamp | undefined;
+
+  /** Current agent status */
+  status: AgentStatus;
+
+  /** Current pending question (if any) */
+  pendingQuestion?: Question | undefined;
+
+  /** Is session still active */
+  isActive: boolean;
+}
+
+/**
+ * Connection info for establishing peer connection.
+ */
+export interface ConnectionInfo {
+  /** Connection code (e.g., "AXBY-1234") */
+  readonly code: string;
+
+  /** Direct addresses if available */
+  readonly directAddresses: readonly string[];
+
+  /** When this connection info expires */
+  readonly expiresAt: Timestamp;
+}
+
+/**
+ * Result type for operations that can fail.
+ * Prefer this over throwing exceptions for expected failures.
+ */
+export type Result<T, E = Error> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: E };
+
+/** Create a successful result */
+export function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+/** Create a failed result */
+export function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+/** Check if result is successful */
+export function isOk<T, E>(result: Result<T, E>): result is { ok: true; value: T } {
+  return result.ok;
+}
+
+/** Check if result is failed */
+export function isErr<T, E>(result: Result<T, E>): result is { ok: false; error: E } {
+  return !result.ok;
+}

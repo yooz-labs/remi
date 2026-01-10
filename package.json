@@ -1,0 +1,24 @@
+{
+  "name": "remi",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "bun test --coverage",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "daemon": "bun run packages/daemon/src/index.ts",
+    "daemon:dev": "bun --watch run packages/daemon/src/index.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.7.0"
+  }
+}
