@@ -90,7 +90,9 @@ export function InputArea({
     // Send on Enter (without Shift)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      e.stopPropagation();
       handleSend();
+      return false;
     }
   };
 
