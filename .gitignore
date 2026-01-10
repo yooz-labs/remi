@@ -1,0 +1,76 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.output/
+*.tsbuildinfo
+
+# Bun
+bun.lockb
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude specific files (per user instructions)
+CLAUDE.md
+.rules/
+.context/
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Capacitor
+android/
+ios/
+*.keystore
+
+# Native builds
+*.app
+*.ipa
+*.apk
+*.aab
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Logs
+logs/
+*.log
+
+# Cache
+.cache/
+.parcel-cache/
+.turbo/
+
+# TypeScript
+*.tsbuildinfo
+
+# SQLite databases (session storage)
+*.db
+*.sqlite
+*.sqlite3
