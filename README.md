@@ -6,30 +6,54 @@ Remi lets you monitor and respond to Claude Code CLI sessions from your phone, t
 
 ## Features
 
-- **Zero friction** - No VPN or external apps required; just install and connect
+- **Zero friction** - Direct connection or signaling-based; your choice
 - **Encrypted P2P** - WebRTC with DTLS encryption (automatic)
 - **Reliable delivery** - Message states like WhatsApp (✓ sent, ✓✓ delivered, read)
 - **Live updates** - Agent messages update in real-time as work progresses
 - **Cross-platform** - iOS, Android, Web, macOS, Windows, Linux
 - **Notifications** - Get alerted when Claude needs your input
 
-## How It Works
+## Connection Methods
+
+Remi tries the most direct path first:
+
+### 1. Direct Connection (Best)
+If you have SSH, Tailscale, VPN, or local network access:
+
+```bash
+# SSH tunnel (creates local path)
+ssh -L 8765:localhost:8765 user@server
+remi connect localhost
+
+# Tailscale
+remi connect 100.x.x.x
+
+# Local network
+remi connect 192.168.1.100
+```
+
+### 2. Signaling + WebRTC (Zero Config)
+No direct path? Use a connection code:
 
 ```
-┌─────────────────────┐                      ┌─────────────────────┐
-│   Your Phone        │   WebRTC + DTLS      │   Your Server       │
-│   (Remi App)        │◄────────────────────►│   (Remi Daemon)     │
-└─────────────────────┘   (encrypted P2P)    └──────────┬──────────┘
-                                                        │ PTY
-                                             ┌──────────▼──────────┐
-                                             │   Claude Code CLI   │
-                                             └─────────────────────┘
+Daemon                              Phone
+   │                                  │
+   ├── Register ──► Cloudflare ◄── Connect with code
+   │                    │                │
+   │◄─────── Exchange SDP/ICE ──────────►│
+   │                                      │
+   │◄════ P2P (or TURN relay) ══════════►│
+            encrypted data
 ```
 
-1. Daemon runs on your server, spawning Claude in a PTY
-2. Phone connects via WebRTC (NAT traversal handled automatically)
-3. Messages stream with delivery acknowledgments
-4. You respond; daemon sends to Claude
+```bash
+# On server
+$ remi daemon
+Connection code: AXBY-1234
+[QR CODE]
+
+# On phone: enter code or scan QR
+```
 
 ## Message Delivery
 
@@ -55,37 +79,44 @@ Agent messages can be edited as work progresses:
 # Install Remi
 bun install -g remi
 
-# Start daemon
+# Start daemon (shows connection options)
 remi daemon
-
-# Or wrap Claude directly
-remi claude "build a feature"
 ```
 
 ### On Your Phone
 
 1. Install Remi app (iOS/Android) or open web app
-2. Scan QR code or enter connection code
+2. Enter connection code, scan QR, or enter direct address
 3. Start monitoring
+
+## Architecture
+
+```
+┌─────────────────────┐                      ┌─────────────────────┐
+│   Your Phone        │                      │   Your Server       │
+│   (Remi App)        │◄════════════════════►│   (Remi Daemon)     │
+└─────────────────────┘  Direct/WebRTC/TURN  └──────────┬──────────┘
+                         (DTLS encrypted)               │ PTY
+                                             ┌──────────▼──────────┐
+                                             │   Claude Code CLI   │
+                                             └─────────────────────┘
+```
+
+## Infrastructure
+
+| Component | Provider | Cost |
+|-----------|----------|------|
+| Signaling | Cloudflare Workers | Free |
+| STUN | Google/Twilio | Free |
+| TURN | Self-hosted coturn | ~$5/mo |
 
 ## Tech Stack
 
 - **Backend:** Bun with native PTY support
 - **Frontend:** React + Capacitor
-- **Transport:** WebRTC DataChannel (DTLS encrypted)
-- **NAT Traversal:** STUN/TURN (automatic)
+- **Transport:** WebRTC DataChannel or WebSocket (DTLS/TLS)
+- **Signaling:** Cloudflare Workers
 - **Protocol:** Custom messaging with ACKs and editing
-
-## Why Remi?
-
-| Feature | Remi | Happy Coder |
-|---------|------|-------------|
-| External App Required | No | No |
-| Transport | WebRTC (P2P) | Custom relay |
-| Encryption | DTLS (automatic) | Custom crypto |
-| Message Delivery | ACKs (WhatsApp-style) | ? |
-| Message Editing | Yes | ? |
-| Server to Maintain | None (P2P) | happy-server |
 
 ## Status
 
