@@ -8,6 +8,7 @@ import { useState, useCallback } from 'react';
 import { AppLayout } from '@/components/layout';
 import { SessionList, ConnectModal } from '@/components/session';
 import { ChatView } from '@/components/chat';
+import { useWebSocket } from '@/hooks';
 import type {
   UISession,
   UIMessage,
@@ -15,6 +16,7 @@ import type {
   ConnectionStatus,
 } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
+import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 
 // Demo data for development
 const DEMO_SESSIONS: UISession[] = [
@@ -84,6 +86,21 @@ const DEMO_QUESTION: UIQuestion = {
 };
 
 function App() {
+  // WebSocket connection
+  const handleMessage = useCallback((message: ProtocolMessage) => {
+    console.log('Received message:', message);
+    // TODO: Handle different message types (output, question, status, etc.)
+  }, []);
+
+  const {
+    status: connectionStatus,
+    error: wsError,
+    connect,
+    disconnect,
+    sendInput,
+    sessionId: wsSessionId,
+  } = useWebSocket({ onMessage: handleMessage });
+
   // State
   const [sessions] = useState<UISession[]>(DEMO_SESSIONS);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(
@@ -92,9 +109,7 @@ function App() {
   const [messages, setMessages] = useState<UIMessage[]>(DEMO_MESSAGES);
   const [question] = useState<UIQuestion | null>(DEMO_QUESTION);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>('connected');
-  const [error] = useState<string | null>(null);
+  const error = wsError?.message ?? null;
 
   // Get active session
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -141,22 +156,18 @@ function App() {
     [activeSessionId],
   );
 
-  const handleConnectDirect = useCallback((url: string) => {
-    setConnectionStatus('connecting');
-    // TODO: Implement actual connection
-    console.log('Connecting to:', url);
-    setTimeout(() => {
-      setConnectionStatus('connected');
-    }, 1500);
-  }, []);
+  const handleConnectDirect = useCallback(
+    (url: string) => {
+      console.log('Connecting to:', url);
+      connect(url);
+    },
+    [connect],
+  );
 
   const handleConnectCode = useCallback((code: string) => {
-    setConnectionStatus('connecting');
-    // TODO: Implement WebRTC connection
+    // TODO: Implement WebRTC signaling connection
     console.log('Connecting with code:', code);
-    setTimeout(() => {
-      setConnectionStatus('connected');
-    }, 2000);
+    console.warn('WebRTC connection not yet implemented');
   }, []);
 
   // Sidebar content
