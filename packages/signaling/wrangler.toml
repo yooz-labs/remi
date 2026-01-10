@@ -1,0 +1,26 @@
+# Remi Signaling Worker
+# Handles WebRTC signaling for NAT traversal
+
+name = "remi-signaling"
+main = "src/index.ts"
+compatibility_date = "2025-01-10"
+
+# Use Durable Objects for connection state
+[[durable_objects.bindings]]
+name = "CONNECTIONS"
+class_name = "ConnectionRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ConnectionRoom"]
+
+# Development settings
+[dev]
+port = 8787
+local_protocol = "http"
+
+# Environment variables
+[vars]
+MAX_CONNECTIONS_PER_ROOM = "100"
+CONNECTION_TIMEOUT_MS = "300000"  # 5 minutes
+CODE_LENGTH = "8"
