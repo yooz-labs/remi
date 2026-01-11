@@ -210,8 +210,9 @@ export class Connection {
       this.connectionTimer = null;
     }
 
-    // Generate session ID
-    this.sessionId = generateId();
+    // Use connection ID as session ID for consistency
+    // This ensures the same ID is used everywhere
+    this.sessionId = this.id;
     this.state = 'connected';
 
     // Send hello ack

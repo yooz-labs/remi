@@ -8,8 +8,9 @@ import { PTYManager, PTYSession } from './pty/index.ts';
 import { WebSocketServer } from './server/index.ts';
 import { OutputProcessor } from './parser/index.ts';
 import { generateId, now } from '@remi/shared';
+import type { AgentStatus } from '@remi/shared';
 
-const PORT = process.env.REMI_PORT ? Number.parseInt(process.env.REMI_PORT) : 8765;
+const PORT = process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 8765;
 
 console.log('🚀 Starting Remi daemon...');
 console.log(`📡 WebSocket server will listen on ws://localhost:${PORT}`);
@@ -41,6 +42,9 @@ const server = new WebSocketServer(
         let ptySession: PTYSession;
         let processor: OutputProcessor;
 
+        // Track current message state for aggregation
+        let currentMessageId: string | null = null;
+
         // Create PTYSession directly with custom event handlers
         ptySession = new PTYSession(
           {
@@ -50,33 +54,20 @@ const server = new WebSocketServer(
           },
           {
             onData: (output: string) => {
-              // Process output for questions, status, etc.
+              // Process output through the processor (handles ANSI stripping and aggregation)
               if (processor) {
                 processor.process(output);
               }
 
-              // Log locally for debugging
+              // Log raw output locally for debugging
               process.stdout.write(output);
-
-              // Send output to client as agent_output message
-              connection.send({
-                type: 'agent_output',
-                id: generateId(),
-                timestamp: now(),
-                message: {
-                  id: generateId(),
-                  sessionId: ptySession.id,
-                  sender: 'agent' as const,
-                  content: output,
-                  createdAt: now(),
-                  state: 'sent' as const,
-                  stateChangedAt: now(),
-                  isEditing: false,
-                },
-              });
             },
             onExit: (code: number | null) => {
               console.log(`👋 Session ${ptySession.id} exited with code ${code}`);
+              // Flush any pending output
+              if (processor) {
+                processor.flush();
+              }
               activeSessions.delete(connection.id);
             },
             onError: (error: Error) => {
@@ -86,20 +77,78 @@ const server = new WebSocketServer(
         );
 
         // Create output processor for this session
+        // The processor handles ANSI stripping and message aggregation
+        // Use connection.id as sessionId for consistency with hello_ack
         processor = new OutputProcessor(
-          { sessionId: ptySession.id },
           {
+            sessionId: connection.id,
+            updateThrottleMs: 100, // Throttle updates to reduce message frequency
+          },
+          {
+            onMessage: (message) => {
+              // New message from Claude - send to client
+              currentMessageId = message.id;
+              console.log(`💬 New message: ${message.content.substring(0, 50)}...`);
+
+              connection.send({
+                type: 'agent_output',
+                id: generateId(),
+                timestamp: now(),
+                message: {
+                  id: message.id,
+                  sessionId: message.sessionId,
+                  sender: message.sender,
+                  content: message.content,
+                  createdAt: message.createdAt,
+                  state: message.state,
+                  stateChangedAt: message.stateChangedAt,
+                  isEditing: message.isEditing,
+                  tool: message.tool,
+                },
+              });
+            },
+            onMessageUpdate: (messageId, content, tool) => {
+              // Update existing message - send update to client
+              console.log(`📝 Update message: ${content.substring(0, 50)}...`);
+
+              connection.send({
+                type: 'agent_output',
+                id: generateId(),
+                timestamp: now(),
+                message: {
+                  id: messageId,
+                  sessionId: connection.id,  // Use connection.id for consistency
+                  sender: 'agent' as const,
+                  content: content,
+                  createdAt: now(),
+                  state: 'sent' as const,
+                  stateChangedAt: now(),
+                  isEditing: true,
+                  tool: tool,
+                },
+              });
+            },
             onQuestion: (question) => {
               console.log(`❓ Question detected: ${question.type}`);
-              // TODO: Send question to client via protocol
+              // Send question to client
+              connection.send({
+                type: 'question',
+                id: generateId(),
+                timestamp: now(),
+                question: question,
+              });
             },
-            onStatus: (status) => {
-              console.log(`📊 Status: ${status.status}`);
-              // TODO: Send status to client via protocol
-            },
-            onMessage: (message) => {
-              console.log(`💬 Message: ${message.content.substring(0, 50)}...`);
-              // TODO: Send message to client via protocol
+            onStatusChange: (status: AgentStatus, context?: string) => {
+              console.log(`📊 Status: ${status}${context ? ` (${context})` : ''}`);
+              // Send status update to client
+              connection.send({
+                type: 'status_update',
+                id: generateId(),
+                timestamp: now(),
+                sessionId: connection.id,  // Use connection.id for consistency
+                status: status,
+                context: context,
+              });
             },
           }
         );

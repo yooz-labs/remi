@@ -118,26 +118,62 @@ function App() {
         break;
 
       case 'agent_output':
-        // Add agent message to the list
-        const uiMessage: UIMessage = {
-          id: message.message.id,
-          sessionId: message.message.sessionId,
-          sender: message.message.sender,
-          content: message.message.content,
-          timestamp: message.message.createdAt,
-          state: message.message.state,
-          isEditing: message.message.isEditing,
-        };
-        setMessages((prev) => [...prev, uiMessage]);
+        // Check if this is an update to an existing message or a new message
+        const msgContent = message.message;
+        setMessages((prev) => {
+          const existingIndex = prev.findIndex((m) => m.id === msgContent.id);
+          if (existingIndex >= 0) {
+            // Update existing message
+            return prev.map((m, i) =>
+              i === existingIndex
+                ? {
+                    ...m,
+                    content: msgContent.content,
+                    isEditing: msgContent.isEditing,
+                    tool: msgContent.tool,
+                  }
+                : m
+            );
+          } else {
+            // Add new message
+            const uiMessage: UIMessage = {
+              id: msgContent.id,
+              sessionId: msgContent.sessionId,
+              sender: msgContent.sender,
+              content: msgContent.content,
+              timestamp: msgContent.createdAt,
+              state: msgContent.state,
+              isEditing: msgContent.isEditing,
+              tool: msgContent.tool,
+            };
+            return [...prev, uiMessage];
+          }
+        });
 
         // Update session last active time
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === message.message.sessionId
+            s.id === msgContent.sessionId
               ? { ...s, lastActiveAt: new Date().toISOString() }
               : s
           )
         );
+        break;
+
+      case 'status_update':
+        // Update session status
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === message.sessionId
+              ? { ...s, status: message.status }
+              : s
+          )
+        );
+        break;
+
+      case 'question':
+        // Handle question (TODO: implement question UI)
+        console.log('Question received:', message.question);
         break;
 
       case 'error':

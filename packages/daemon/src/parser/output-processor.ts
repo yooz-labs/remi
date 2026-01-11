@@ -7,7 +7,7 @@
 
 import { generateId, now } from '@remi/shared';
 import type { Message, Question, AgentStatus, UUID } from '@remi/shared';
-import { cleanForParsing, splitLines } from './ansi.ts';
+import { cleanForParsing, cleanAndFilterOutput, splitLines, detectMessageBoundary, cleanMessageLine } from './ansi.ts';
 import { parseQuestion, hasQuestionIndicator } from './question-parser.ts';
 import { parseStatus } from './status-parser.ts';
 
@@ -60,6 +60,7 @@ export class OutputProcessor {
   private currentStatus: AgentStatus = 'idle';
   private lastUpdateTime: number = 0;
   private pendingQuestion: Question | null = null;
+  private seenContent: Set<string> = new Set(); // Track unique content chunks
 
   constructor(config: ProcessorConfig, events: Partial<OutputEvents> = {}) {
     this.config = {
@@ -109,6 +110,7 @@ export class OutputProcessor {
     this.currentStatus = 'idle';
     this.lastUpdateTime = 0;
     this.pendingQuestion = null;
+    this.seenContent.clear();
   }
 
   /** Get current accumulated content */
@@ -150,14 +152,11 @@ export class OutputProcessor {
     const content = this.buffer;
     this.buffer = '';
 
-    // Clean for parsing
+    // First, strip ANSI codes
     const cleaned = cleanForParsing(content);
-    const lines = splitLines(cleaned);
+    const rawLines = splitLines(cleaned);
 
-    // Update current message content
-    this.currentMessageContent += cleaned;
-
-    // Detect status changes
+    // Detect status changes from raw content
     const statusResult = parseStatus(content);
     if (statusResult.status !== this.currentStatus) {
       this.currentStatus = statusResult.status;
@@ -173,10 +172,67 @@ export class OutputProcessor {
       }
     }
 
-    // Emit message or update
-    this.emitMessageUpdate(lines);
+    // Process lines and detect message boundaries
+    for (const rawLine of rawLines) {
+      const boundary = detectMessageBoundary(rawLine);
+
+      if (boundary === 'agent' || boundary === 'user') {
+        // New message boundary detected - finalize current message first
+        if (this.currentMessageContent.trim().length > 0) {
+          this.finalizeMessage();
+        }
+
+        // Start new message
+        this.currentMessageId = generateId();
+        const cleanedLine = cleanMessageLine(rawLine);
+
+        // Filter and deduplicate the content
+        const filteredLine = cleanAndFilterOutput(cleanedLine);
+        if (filteredLine.trim().length > 0) {
+          const newContent = this.deduplicateContent(filteredLine);
+          if (newContent.length > 0) {
+            this.currentMessageContent = newContent;
+
+            // Emit as new message with correct sender
+            const message: Message = {
+              id: this.currentMessageId,
+              sessionId: this.config.sessionId,
+              sender: boundary === 'user' ? 'user' : 'agent',
+              content: this.currentMessageContent,
+              createdAt: now(),
+              state: 'sent',
+              stateChangedAt: now(),
+              isEditing: true,
+              tool: boundary === 'agent' ? this.extractToolName(cleanedLine) : undefined,
+            };
+            this.events.onMessage?.(message);
+          }
+        }
+      } else if (boundary === 'thinking') {
+        // Thinking indicator - skip or could emit as status
+        continue;
+      } else {
+        // Continuation of current message
+        const filteredLine = cleanAndFilterOutput(rawLine);
+        if (filteredLine.trim().length > 0 && this.currentMessageId !== null) {
+          const newContent = this.deduplicateContent(filteredLine);
+          if (newContent.length > 0) {
+            this.currentMessageContent += '\n' + newContent;
+            this.emitMessageUpdate([]);
+          }
+        }
+      }
+    }
 
     this.lastUpdateTime = Date.now();
+  }
+
+  /**
+   * Extract tool name from a line like "Bash(date)" or "Read(file.ts)"
+   */
+  private extractToolName(line: string): string | undefined {
+    const match = line.match(/^(\w+)\(/);
+    return match ? match[1] : undefined;
   }
 
   private emitMessageUpdate(lines: readonly string[]): void {
@@ -224,6 +280,34 @@ export class OutputProcessor {
     this.currentMessageId = null;
     this.currentMessageContent = '';
   }
+
+  /**
+   * Deduplicate content by tracking seen chunks.
+   * Returns only the truly new content that hasn't been seen before.
+   */
+  private deduplicateContent(content: string): string {
+    const lines = content.split('\n');
+    const newLines: string[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+
+      // Create a normalized key for comparison (ignore whitespace variations)
+      const key = trimmed.toLowerCase().replace(/\s+/g, ' ');
+
+      // Skip if we've seen this content before
+      if (this.seenContent.has(key)) {
+        continue;
+      }
+
+      // Mark as seen and add to output
+      this.seenContent.add(key);
+      newLines.push(line);
+    }
+
+    return newLines.join('\n');
+  }
 }
 
 /**
@@ -234,7 +318,7 @@ export function processOutput(
   sessionId: UUID,
   output: string,
 ): { message: Message; question?: Question | undefined; status: AgentStatus } {
-  const cleaned = cleanForParsing(output);
+  const cleaned = cleanAndFilterOutput(output);
 
   // Parse question
   const parseResult = parseQuestion(output);

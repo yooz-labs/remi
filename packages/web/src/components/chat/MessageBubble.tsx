@@ -64,15 +64,18 @@ export function MessageBubble({
         className={clsx(
           'max-w-[85%] rounded-2xl px-4 py-2.5',
           'transition-all duration-200',
+          'shadow-sm border',
           // Bubble colors
-          isUser && 'bg-[--color-bubble-user] text-white',
-          !isUser && !isSystem && 'bg-[--color-bubble-assistant]',
-          isSystem && 'bg-[--color-bubble-system] text-[--color-text-secondary]',
+          isUser && 'bg-[--color-bubble-user] text-white border-[--color-bubble-user]',
+          !isUser && !isSystem && 'bg-[--color-bubble-assistant] border-[--color-border]',
+          isSystem && 'bg-[--color-bubble-system] text-[--color-text-secondary] border-[--color-border]',
           // Bubble shape variations
           isUser && 'rounded-br-md',
           !isUser && 'rounded-bl-md',
           // Streaming indicator
           message.isStreaming && 'animate-pulse',
+          // Editing indicator
+          message.isEditing && 'border-[--color-primary] border-dashed',
         )}
       >
         {/* Tool indicator */}
