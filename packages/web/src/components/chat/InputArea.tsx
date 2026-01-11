@@ -85,16 +85,26 @@ export function InputArea({
     setValue(e.target.value);
   };
 
-  // Handle key press
+  // Handle key press - must prevent default BEFORE any state updates
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Send on Enter (without Shift)
+    if (e.key === 'Enter' && !e.shiftKey) {
+      // Prevent default FIRST
+      e.preventDefault();
+      e.stopPropagation();
+
+      return false;
+    }
+  };
+
+  // Handle key up for sending (after prevention)
+  const handleKeyUp = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
 
       const trimmed = value.trim();
       if (!trimmed || disabled) {
-        return;
+        return false;
       }
 
       // Send immediately
@@ -107,6 +117,8 @@ export function InputArea({
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
+
+      return false;
     }
   };
 
@@ -220,6 +232,7 @@ export function InputArea({
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
+            onKeyUp={handleKeyUp}
             placeholder={placeholder}
             disabled={disabled}
             rows={1}
