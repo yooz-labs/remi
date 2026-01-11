@@ -123,9 +123,16 @@ export function filterTerminalUI(text: string): string {
     // Thinking/status indicators
     /Honking\.\.\./i,
     /Misting\.\.\./i,
+    /Discombobulating/i,
     /\(esc to interrupt/i,
     /thought for \d+s/i,
     /Running\.\.\./i,
+    // Accept edits UI (full and partial)
+    /⏵⏵\s*accept/i,
+    /⏵⏵\s*acce/i,
+    /^[\s]*⏵⏵/,
+    // Token count indicators
+    /↓\s*[\d.]+k?\s*tokens/i,
     // Lines that are just symbols with Bash/tool names
     /^[+*✱✲✳✴✵✶✷✸✹✺]?\s*(Honking|Misting|Running)/i,
     // Tool output tree characters with status (filter status lines, keep content)
@@ -172,6 +179,10 @@ export function filterTerminalUI(text: string): string {
     /^[\s]*⏺[\s]*(Read|Write|Bash|Edit|Glob|Grep|Task)\(/i,
     // Lines with just emoji indicators
     /^[\s]*🚀/,
+    // Single letter followed by space at start (ANSI fragment like "m ")
+    /^[a-z]\s*$/i,
+    // Search pattern indicators
+    /^Search\(pattern:/i,
   ];
 
   for (const line of lines) {
