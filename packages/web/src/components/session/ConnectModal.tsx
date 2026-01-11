@@ -78,14 +78,14 @@ export function ConnectModal({
   error,
 }: ConnectModalProps) {
   const [mode, setMode] = useState<ConnectionMode>('direct');
-  const [directUrl, setDirectUrl] = useState('ws://localhost:3847/ws');
+  const [directUrl, setDirectUrl] = useState('ws://localhost:8765/ws');
   const [code, setCode] = useState('');
 
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
       setCode('');
-      setDirectUrl('ws://localhost:3847/ws');
+      setDirectUrl('ws://localhost:8765/ws');
     }
   }, [isOpen]);
 

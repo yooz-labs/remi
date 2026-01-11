@@ -2,24 +2,24 @@
 
 /* Konsta UI theme variables */
 @theme {
-  /* Colors - Dark mode first (80% of users prefer it) */
+  /* Colors - Dark mode with improved contrast */
   --color-primary: #6366f1;
   --color-primary-dark: #4f46e5;
-  --color-surface: #1a1a2e;
-  --color-surface-light: #252542;
-  --color-surface-elevated: #2a2a4a;
-  --color-text: #f8fafc;
-  --color-text-secondary: #94a3b8;
-  --color-text-muted: #64748b;
-  --color-border: #334155;
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
+  --color-surface: #0f1419;
+  --color-surface-light: #1a1f2e;
+  --color-surface-elevated: #242938;
+  --color-text: #ffffff;
+  --color-text-secondary: #a0aec0;
+  --color-text-muted: #718096;
+  --color-border: #2d3748;
+  --color-success: #48bb78;
+  --color-warning: #ed8936;
+  --color-error: #f56565;
 
-  /* Message bubble colors */
-  --color-bubble-user: #4f46e5;
-  --color-bubble-assistant: #252542;
-  --color-bubble-system: #1e3a5f;
+  /* Message bubble colors with better contrast */
+  --color-bubble-user: #5865f2;
+  --color-bubble-assistant: #2d3748;
+  --color-bubble-system: #2c5282;
 
   /* Status colors */
   --color-status-sending: #94a3b8;
