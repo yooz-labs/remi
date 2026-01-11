@@ -13,9 +13,32 @@
 
 import type { Acknowledgment, Message, Question, Session, UUID, Timestamp } from './types.ts';
 
-/** Generate a UUID v4 */
+/** Generate a UUID v4 (browser and Node compatible) */
 export function generateId(): UUID {
-  return crypto.randomUUID();
+  // Use native crypto.randomUUID if available (Node 16+, modern browsers)
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID() as UUID;
+  }
+
+  // Fallback for older browsers using crypto.getRandomValues
+  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    // Last resort: Math.random (not cryptographically secure, but works)
+    for (let i = 0; i < 16; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  // Set version (4) and variant bits
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10
+
+  // Convert to hex string with hyphens
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}` as UUID;
 }
 
 /** Get current timestamp as ISO string */
