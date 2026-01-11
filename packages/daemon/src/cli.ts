@@ -133,8 +133,8 @@ const server = new WebSocketServer(
 
       const sessionData = activeSessions.get(connectionId);
       if (sessionData) {
-        // Send input to PTY (with newline)
-        sessionData.session.write(content + '\n');
+        // Send input to PTY with carriage return to submit (not newline which is Shift+Enter)
+        sessionData.session.write(content + '\r');
       } else {
         console.warn(`⚠️  No session found for connection ${connectionId}`);
       }
