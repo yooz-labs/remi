@@ -176,8 +176,8 @@ export class OutputProcessor {
     for (const rawLine of rawLines) {
       const boundary = detectMessageBoundary(rawLine);
 
-      if (boundary === 'agent' || boundary === 'user') {
-        // New message boundary detected - finalize current message first
+      if (boundary === 'agent') {
+        // New agent message boundary - finalize current message first
         if (this.currentMessageContent.trim().length > 0) {
           this.finalizeMessage();
         }
@@ -193,23 +193,23 @@ export class OutputProcessor {
           if (newContent.length > 0) {
             this.currentMessageContent = newContent;
 
-            // Emit as new message with correct sender
+            // Emit as new message
             const message: Message = {
               id: this.currentMessageId,
               sessionId: this.config.sessionId,
-              sender: boundary === 'user' ? 'user' : 'agent',
+              sender: 'agent',
               content: this.currentMessageContent,
               createdAt: now(),
               state: 'sent',
               stateChangedAt: now(),
               isEditing: true,
-              tool: boundary === 'agent' ? this.extractToolName(cleanedLine) : undefined,
+              tool: this.extractToolName(cleanedLine),
             };
             this.events.onMessage?.(message);
           }
         }
-      } else if (boundary === 'thinking') {
-        // Thinking indicator - skip or could emit as status
+      } else if (boundary === 'user' || boundary === 'thinking' || boundary === 'tool_output') {
+        // Skip user echo (we log user messages ourselves), thinking indicators, and tool output metadata
         continue;
       } else {
         // Continuation of current message

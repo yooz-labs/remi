@@ -151,6 +151,27 @@ export function filterTerminalUI(text: string): string {
     /cycle\)\s*$/i,
     // Lines that are just whitespace and special chars
     /^[\s\[\]●⏺⏵]+$/,
+    // ANSI color code fragments (like 39m, 37m, 35m, 90m)
+    /^\d{1,3}m\s*$/,
+    /^\s*\d{1,3}m$/,
+    // Partial parentheses fragments from UI (like e), cle), ycle), le))
+    /^[a-z]{0,5}\)$/i,
+    // Tool output metadata lines (⎿ followed by status text)
+    /^[\s]*⎿[\s]*(Read|Wrote|Created|Deleted|Modified|total|packages|Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i,
+    /^[\s]*⎿[\s]*\d+\s*(lines?|files?|bytes?)/i,
+    /^[\s]*⎿[\s]*[a-f0-9]{6,}/i,  // Git hashes
+    /^[\s]*⎿[\s]*\{/,  // JSON opening
+    /^[\s]*⎿[\s]*bun\s/i,  // bun commands
+    // Lines that are just a bracket or bracket with spaces
+    /^[\s]*[\[\]{}]+[\s]*$/,
+    // Short lines that are likely fragments (under 5 chars, not alphanumeric)
+    /^[^\w]{1,4}$/,
+    // Lines ending with just escape artifacts
+    /[0-9]+[a-z]$/i,
+    // Tool execution indicators
+    /^[\s]*⏺[\s]*(Read|Write|Bash|Edit|Glob|Grep|Task)\(/i,
+    // Lines with just emoji indicators
+    /^[\s]*🚀/,
   ];
 
   for (const line of lines) {
@@ -202,7 +223,7 @@ export const MESSAGE_MARKERS = {
  * Detect if a line starts a new message block.
  * Returns the type of message or null if continuation.
  */
-export function detectMessageBoundary(line: string): 'agent' | 'user' | 'thinking' | null {
+export function detectMessageBoundary(line: string): 'agent' | 'user' | 'thinking' | 'tool_output' | null {
   if (MESSAGE_MARKERS.AGENT_START.test(line)) {
     return 'agent';
   }
@@ -211,6 +232,9 @@ export function detectMessageBoundary(line: string): 'agent' | 'user' | 'thinkin
   }
   if (MESSAGE_MARKERS.THINKING.test(line)) {
     return 'thinking';
+  }
+  if (MESSAGE_MARKERS.TOOL_OUTPUT.test(line)) {
+    return 'tool_output';
   }
   return null;
 }
