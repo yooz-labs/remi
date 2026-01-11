@@ -46,7 +46,7 @@ export interface UseWebSocketOptions {
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
   const {
-    autoReconnect = true,
+    autoReconnect = false, // Disable auto-reconnect to avoid loops during debugging
     clientId = 'remi-web',
     clientVersion = '0.0.1',
     onMessage,
@@ -88,10 +88,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
       const client = new WebSocketClient(config, {
         onStatusChange: (newStatus) => {
+          console.log('[WebSocket] Status changed:', newStatus);
           setStatus(newStatus);
           if (newStatus === 'connected') {
             // Send hello message
-            client.send(createHello(clientId, clientVersion));
+            console.log('[WebSocket] Sending hello message...');
+            const sent = client.send(createHello(clientId, clientVersion));
+            console.log('[WebSocket] Hello message sent:', sent);
           }
           if (newStatus === 'disconnected') {
             setSessionId(null);
@@ -99,6 +102,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         },
         onMessage: handleMessage,
         onError: (err) => {
+          console.error('[WebSocket] Error:', err);
           setError(err);
         },
       });
