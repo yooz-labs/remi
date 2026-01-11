@@ -65,6 +65,7 @@ export function InputArea({
 }: InputAreaProps) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const sendingRef = useRef(false);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -80,37 +81,32 @@ export function InputArea({
     adjustHeight();
   }, [value, adjustHeight]);
 
-  // Handle input change
+  // Handle input change - ignore if we're in the process of sending
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    if (sendingRef.current) {
+      return;
+    }
     setValue(e.target.value);
   };
 
-  // Handle key press - must prevent default BEFORE any state updates
+  // Handle key press - send on Enter, allow Shift+Enter for newlines
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      // Prevent default FIRST
-      e.preventDefault();
-      e.stopPropagation();
-
-      return false;
-    }
-  };
-
-  // Handle key up for sending (after prevention)
-  const handleKeyUp = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
 
       const trimmed = value.trim();
       if (!trimmed || disabled) {
-        return false;
+        return;
       }
 
-      // Send immediately
+      // Set flag to block onChange during send
+      sendingRef.current = true;
+
+      // Send message
       onSend(trimmed);
 
-      // Clear the input
+      // Clear input
       setValue('');
 
       // Reset textarea height
@@ -118,7 +114,10 @@ export function InputArea({
         textareaRef.current.style.height = 'auto';
       }
 
-      return false;
+      // Reset flag after a brief delay
+      setTimeout(() => {
+        sendingRef.current = false;
+      }, 50);
     }
   };
 
@@ -232,7 +231,6 @@ export function InputArea({
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            onKeyUp={handleKeyUp}
             placeholder={placeholder}
             disabled={disabled}
             rows={1}
