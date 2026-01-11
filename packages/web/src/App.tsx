@@ -17,6 +17,7 @@ import type {
 } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import { generateId } from '@remi/shared/protocol.ts';
 
 // Demo data for development
 const DEMO_SESSIONS: UISession[] = [
@@ -185,7 +186,7 @@ function App() {
       if (!activeSessionId) return;
 
       const newMessage: UIMessage = {
-        id: crypto.randomUUID() as UUID,
+        id: generateId(),
         sessionId: activeSessionId,
         sender: 'user',
         content,
