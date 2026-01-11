@@ -87,8 +87,10 @@ export function InputArea({
 
   // Handle key press
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    console.log('[InputArea] Key pressed:', e.key, 'Shift:', e.shiftKey, 'Disabled:', disabled);
     // Send on Enter (without Shift)
     if (e.key === 'Enter' && !e.shiftKey) {
+      console.log('[InputArea] Attempting to send...');
       e.preventDefault();
       e.stopPropagation();
       handleSend();
@@ -99,8 +101,13 @@ export function InputArea({
   // Handle send
   const handleSend = () => {
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
+    console.log('[InputArea] handleSend called. Value:', value, 'Trimmed:', trimmed, 'Disabled:', disabled);
+    if (!trimmed || disabled) {
+      console.log('[InputArea] Not sending - empty or disabled');
+      return;
+    }
 
+    console.log('[InputArea] Sending message:', trimmed);
     onSend(trimmed);
     setValue('');
 

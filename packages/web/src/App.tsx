@@ -128,6 +128,15 @@ function App() {
           isEditing: message.message.isEditing,
         };
         setMessages((prev) => [...prev, uiMessage]);
+
+        // Update session last active time
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === message.message.sessionId
+              ? { ...s, lastActiveAt: new Date().toISOString() }
+              : s
+          )
+        );
         break;
 
       case 'error':
