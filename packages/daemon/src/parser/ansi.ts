@@ -120,13 +120,12 @@ export function filterTerminalUI(text: string): string {
     /\uFFFD/,
     // Lines that are mostly non-alphanumeric (UI decorations)
     /^[^\w\s]{3,}$/,
-    // Thinking/status indicators
-    /Honking\.\.\./i,
-    /Misting\.\.\./i,
-    /Discombobulating/i,
+    // Thinking/status indicators (Claude uses funny verbs ending in "ing...")
+    // Generic pattern: any word ending in "ing" followed by "..." or "…"
+    /\w+ing\.{2,}/i,
+    /\w+ing…/i,
     /\(esc to interrupt/i,
     /thought for \d+s/i,
-    /Running\.\.\./i,
     // Accept edits UI (full and partial)
     /⏵⏵\s*accept/i,
     /⏵⏵\s*acce/i,

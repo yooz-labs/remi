@@ -49,6 +49,11 @@ const THINKING_PATTERNS: readonly RegExp[] = [
   /^processing/i,
   /^examining/i,
   /^reviewing/i,
+  // Claude Code uses funny verb animations: Honking..., Misting..., Discombobulating...
+  // Generic pattern: spinner + word ending in "ing" + "..." or "…"
+  /[✳✢·✶✻\*]\s*\w+ing\.{2,}/i,
+  /[✳✢·✶✻\*]\s*\w+ing…/i,
+  /\w+ing\.\.\.\s*\(esc to interrupt/i,
 ];
 
 /** Waiting indicators (question or input prompt) */
