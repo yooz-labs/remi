@@ -11,7 +11,7 @@
  * - Duplicates are detected and ignored (but still acked)
  */
 
-import type { Acknowledgment, Message, Question, Session, UUID, Timestamp } from './types.ts';
+import type { Acknowledgment, AgentStatus, Message, Question, Session, UUID, Timestamp } from './types.ts';
 
 /** Generate a UUID v4 (browser and Node compatible) */
 export function generateId(): UUID {
@@ -347,6 +347,42 @@ export function createError(
     code,
     message,
     details,
+  };
+}
+
+/**
+ * Create a question message.
+ */
+export function createQuestion(question: Question): QuestionMessage {
+  return {
+    type: 'question',
+    id: generateId(),
+    timestamp: now(),
+    question,
+  };
+}
+
+/**
+ * Create a session update message.
+ */
+export function createSessionUpdate(
+  sessionId: UUID,
+  status: AgentStatus,
+  statusContext?: string,
+): SessionUpdateMessage {
+  // Create minimal session object for status update
+  const session: Session = {
+    id: sessionId,
+    name: '',
+    startedAt: now(),
+    status,
+    isActive: status !== 'idle',
+  };
+  return {
+    type: 'session_update',
+    id: generateId(),
+    timestamp: now(),
+    session,
   };
 }
 

@@ -1,0 +1,185 @@
+/**
+ * WebSocket Adapter - Wraps WebSocketServer to implement ConnectionAdapter.
+ *
+ * This adapter provides backward compatibility with the existing WebSocket
+ * implementation while conforming to the adapter interface.
+ */
+
+import type { UUID, ProtocolMessage, Message, Question, AgentStatus } from '@remi/shared';
+import { createAgentOutput, createQuestion, createSessionUpdate } from '@remi/shared';
+import { WebSocketServer, type ServerConfig, type ServerEvents } from '../server/websocket-server.ts';
+import type {
+  ConnectionAdapter,
+  AdapterConfig,
+  AdapterEvents,
+  AdapterMetadata,
+} from './connection-adapter.ts';
+
+/** WebSocket adapter configuration */
+export interface WebSocketAdapterConfig extends AdapterConfig {
+  /** Port to listen on */
+  readonly port: number;
+
+  /** Host to bind to */
+  readonly host?: string;
+
+  /** Path for WebSocket connections */
+  readonly path?: string;
+
+  /** Maximum concurrent connections */
+  readonly maxConnections?: number;
+}
+
+const DEFAULT_PORT = 8765;
+
+/**
+ * WebSocket adapter implementation.
+ *
+ * Wraps the existing WebSocketServer to implement ConnectionAdapter.
+ */
+export class WebSocketAdapter implements ConnectionAdapter {
+  readonly type = 'websocket';
+
+  private readonly config: WebSocketAdapterConfig;
+  private readonly events: Partial<AdapterEvents>;
+  private server: WebSocketServer | null = null;
+  private running = false;
+
+  constructor(config: Partial<WebSocketAdapterConfig> = {}, events: Partial<AdapterEvents> = {}) {
+    this.config = {
+      enabled: config.enabled ?? true,
+      port: config.port ?? DEFAULT_PORT,
+      host: config.host,
+      path: config.path,
+      maxConnections: config.maxConnections,
+    };
+    this.events = events;
+  }
+
+  get connectionCount(): number {
+    return this.server?.connectionCount ?? 0;
+  }
+
+  get isRunning(): boolean {
+    return this.running;
+  }
+
+  async start(): Promise<void> {
+    if (this.running) {
+      throw new Error('WebSocket adapter already running');
+    }
+
+    if (!this.config.enabled) {
+      console.log('WebSocket adapter disabled');
+      return;
+    }
+
+    const serverEvents: Partial<ServerEvents> = {
+      onStart: (port) => {
+        console.log(`WebSocket adapter listening on port ${port}`);
+      },
+
+      onStop: () => {
+        console.log('WebSocket adapter stopped');
+      },
+
+      onClientConnect: (connection) => {
+        const metadata: AdapterMetadata = {
+          adapterType: this.type,
+          displayName: `ws-${connection.id.slice(0, 8)}`,
+        };
+        this.events.onConnect?.(connection.id, metadata);
+      },
+
+      onClientDisconnect: (connectionId, reason) => {
+        this.events.onDisconnect?.(connectionId, reason);
+      },
+
+      onUserInput: (connectionId, sessionId, content) => {
+        this.events.onUserInput?.(connectionId, sessionId, content);
+      },
+
+      onAnswer: (connectionId, questionId, answer) => {
+        this.events.onAnswer?.(connectionId, questionId, answer);
+      },
+
+      onError: (error) => {
+        // For server-level errors, use a dummy connection ID
+        this.events.onError?.('server' as UUID, error);
+      },
+    };
+
+    const serverConfig: Partial<ServerConfig> = {
+      port: this.config.port,
+      host: this.config.host,
+      path: this.config.path,
+      maxConnections: this.config.maxConnections,
+    };
+
+    this.server = new WebSocketServer(serverConfig, serverEvents);
+    await this.server.start();
+    this.running = true;
+  }
+
+  async stop(): Promise<void> {
+    if (!this.running || !this.server) {
+      return;
+    }
+
+    await this.server.stop();
+    this.server = null;
+    this.running = false;
+  }
+
+  sendMessage(connectionId: UUID, message: Message): boolean {
+    if (!this.server) {
+      return false;
+    }
+
+    const protocolMessage = createAgentOutput(message);
+    return this.server.sendTo(connectionId, protocolMessage);
+  }
+
+  sendQuestion(connectionId: UUID, question: Question): boolean {
+    if (!this.server) {
+      return false;
+    }
+
+    const protocolMessage = createQuestion(question);
+    return this.server.sendTo(connectionId, protocolMessage);
+  }
+
+  sendStatus(connectionId: UUID, status: AgentStatus, context?: string): boolean {
+    if (!this.server) {
+      return false;
+    }
+
+    // Get session ID from connection
+    const connection = this.server.getConnection(connectionId);
+    if (!connection?.connectionSessionId) {
+      return false;
+    }
+
+    const protocolMessage = createSessionUpdate(
+      connection.connectionSessionId,
+      status,
+      context,
+    );
+    return this.server.sendTo(connectionId, protocolMessage);
+  }
+
+  sendRaw(connectionId: UUID, message: ProtocolMessage): boolean {
+    if (!this.server) {
+      return false;
+    }
+    return this.server.sendTo(connectionId, message);
+  }
+
+  broadcast(message: ProtocolMessage): void {
+    this.server?.broadcast(message);
+  }
+
+  hasConnection(connectionId: UUID): boolean {
+    return this.server?.getConnection(connectionId) !== undefined;
+  }
+}

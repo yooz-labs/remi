@@ -58,5 +58,7 @@ export {
   createPing,
   createPong,
   createError,
+  createQuestion,
+  createSessionUpdate,
   MessageIdTracker,
 } from './protocol.ts';
