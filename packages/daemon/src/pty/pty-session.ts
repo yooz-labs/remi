@@ -166,12 +166,97 @@ export class PTYSession {
    * Write data to the terminal.
    * Throws if session is not running.
    */
-  write(data: string): void {
+  write(data: string | Uint8Array): void {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
 
-    this.process.terminal.write(data);
+    if (typeof data === 'string') {
+      this.process.terminal.write(data);
+    } else {
+      this.process.terminal.write(data);
+    }
+  }
+
+  /**
+   * Write text and submit with Enter key.
+   * IMPORTANT: Writes text first, then CR separately after a small delay.
+   * This matches how real keyboard input works and is required for Claude Code.
+   */
+  async submitInput(text: string): Promise<void> {
+    if (this.state !== 'running' || !this.process?.terminal) {
+      throw new Error(`Cannot write to session in state: ${this.state}`);
+    }
+
+    // Write the text first
+    this.process.terminal.write(text);
+
+    // Small delay to let Claude Code process the text
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Send CR (Enter key) separately
+    this.process.terminal.write('\r');
+  }
+
+  /**
+   * Write text with Enter key (CR) to submit input.
+   * This sends the text followed by a carriage return as raw bytes.
+   * @deprecated Use submitInput() instead - it works better with Claude Code
+   */
+  writeLineAsBytes(text: string): void {
+    if (this.state !== 'running' || !this.process?.terminal) {
+      throw new Error(`Cannot write to session in state: ${this.state}`);
+    }
+
+    // Convert text to bytes and append CR (0x0D)
+    const encoder = new TextEncoder();
+    const textBytes = encoder.encode(text);
+    const crByte = new Uint8Array([0x0D]); // CR - Enter key
+
+    // Concatenate text + CR
+    const combined = new Uint8Array(textBytes.length + 1);
+    combined.set(textBytes, 0);
+    combined.set(crByte, textBytes.length);
+
+    this.process.terminal.write(combined);
+  }
+
+  /**
+   * Write text with LF (newline) - matches Muxer's approach.
+   */
+  writeLineWithLF(text: string): void {
+    if (this.state !== 'running' || !this.process?.terminal) {
+      throw new Error(`Cannot write to session in state: ${this.state}`);
+    }
+
+    const encoder = new TextEncoder();
+    const textBytes = encoder.encode(text);
+    const lfByte = new Uint8Array([0x0A]); // LF - newline
+
+    const combined = new Uint8Array(textBytes.length + 1);
+    combined.set(textBytes, 0);
+    combined.set(lfByte, textBytes.length);
+
+    this.process.terminal.write(combined);
+  }
+
+  /**
+   * Write text with CRLF (Windows-style line ending).
+   */
+  writeLineWithCRLF(text: string): void {
+    if (this.state !== 'running' || !this.process?.terminal) {
+      throw new Error(`Cannot write to session in state: ${this.state}`);
+    }
+
+    const encoder = new TextEncoder();
+    const textBytes = encoder.encode(text);
+    const crlfBytes = new Uint8Array([0x0D, 0x0A]); // CR + LF
+
+    const combined = new Uint8Array(textBytes.length + 2);
+    combined.set(textBytes, 0);
+    combined.set(crlfBytes, textBytes.length);
+
+    this.process.terminal.write(combined);
   }
 
   /**

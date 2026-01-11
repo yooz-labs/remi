@@ -128,13 +128,14 @@ const server = new WebSocketServer(
       }
     },
 
-    onUserInput: (connectionId, sessionId, content) => {
+    onUserInput: async (connectionId, sessionId, content) => {
       console.log(`📨 User input: ${content}`);
 
       const sessionData = activeSessions.get(connectionId);
       if (sessionData) {
-        // Send input to PTY with carriage return to submit (not newline which is Shift+Enter)
-        sessionData.session.write(content + '\r');
+        // Submit input with proper text + Enter separation
+        // This is required for Claude Code to properly process the input
+        await sessionData.session.submitInput(content);
       } else {
         console.warn(`⚠️  No session found for connection ${connectionId}`);
       }
