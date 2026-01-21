@@ -9,24 +9,25 @@
  */
 
 import {
+  MessageIdTracker,
+  createAck,
+  createError,
+  createHelloAck,
+  createPong,
+  deserialize,
   generateId,
   now,
   serialize,
-  deserialize,
-  createHelloAck,
-  createAck,
-  createPong,
-  createError,
-  MessageIdTracker,
 } from '@remi/shared';
 import type {
-  UUID,
-  ProtocolMessage,
-  HelloMessage,
-  UserInputMessage,
-  AnswerMessage,
-  PingMessage,
   Acknowledgment,
+  AnswerMessage,
+  BulletExpandRequestMessage,
+  HelloMessage,
+  PingMessage,
+  ProtocolMessage,
+  UUID,
+  UserInputMessage,
 } from '@remi/shared';
 
 /** Connection state */
@@ -46,6 +47,9 @@ export interface ConnectionEvents {
   /** Answer to question received */
   onAnswer: (questionId: UUID, answer: string) => void;
 
+  /** Bullet expand request received */
+  onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -60,6 +64,9 @@ export interface ConnectionConfig {
 
   /** Connection timeout in ms */
   readonly connectionTimeout?: number;
+
+  /** Skip sending HelloAck from Connection (let daemon handle it) */
+  readonly skipHelloAck?: boolean;
 }
 
 const DEFAULT_PING_INTERVAL = 30000;
@@ -73,9 +80,11 @@ export class Connection {
   readonly id: UUID;
   private state: ConnectionState = 'connecting';
   private sessionId: UUID | null = null;
+  private directory: string | null = null;
+  private resumeSessionId: UUID | null = null;
 
   private readonly ws: WebSocket;
-  private readonly config: Required<ConnectionConfig>;
+  private readonly config: Required<ConnectionConfig> & { skipHelloAck: boolean };
   private readonly events: Partial<ConnectionEvents>;
   private readonly messageTracker: MessageIdTracker;
 
@@ -97,6 +106,7 @@ export class Connection {
       serverVersion: config.serverVersion ?? SERVER_VERSION,
       pingInterval: config.pingInterval ?? DEFAULT_PING_INTERVAL,
       connectionTimeout: config.connectionTimeout ?? DEFAULT_CONNECTION_TIMEOUT,
+      skipHelloAck: config.skipHelloAck ?? false,
     };
 
     // Set connection timeout
@@ -115,6 +125,16 @@ export class Connection {
   /** Get session ID (null if not yet connected) */
   get connectionSessionId(): UUID | null {
     return this.sessionId;
+  }
+
+  /** Get working directory (null if not specified) */
+  get connectionDirectory(): string | null {
+    return this.directory;
+  }
+
+  /** Get resume session ID (null if not resuming) */
+  get connectionResumeSessionId(): UUID | null {
+    return this.resumeSessionId;
   }
 
   /** Check if connection is active */
@@ -150,6 +170,9 @@ export class Connection {
         break;
       case 'answer':
         this.handleAnswer(message);
+        break;
+      case 'bullet_expand_request':
+        this.handleBulletExpandRequest(message);
         break;
       case 'ping':
         this.handlePing(message);
@@ -190,7 +213,7 @@ export class Connection {
   /**
    * Close the connection.
    */
-  close(reason: string = 'Server closing connection'): void {
+  close(reason = 'Server closing connection'): void {
     if (this.state !== 'disconnected') {
       this.sendError('CLOSING', reason);
       this.ws.close();
@@ -213,10 +236,14 @@ export class Connection {
     // Use connection ID as session ID for consistency
     // This ensures the same ID is used everywhere
     this.sessionId = this.id;
+    this.directory = message.directory ?? null;
+    this.resumeSessionId = message.resumeSessionId ?? null;
     this.state = 'connected';
 
-    // Send hello ack
-    this.send(createHelloAck(this.config.serverVersion, this.sessionId));
+    // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
+    if (!this.config.skipHelloAck) {
+      this.send(createHelloAck(this.config.serverVersion, this.sessionId));
+    }
 
     // Acknowledge the hello
     this.sendAck(message.id, 'delivered');
@@ -252,6 +279,19 @@ export class Connection {
 
     // Notify
     this.events.onAnswer?.(message.questionId, message.answer);
+  }
+
+  private handleBulletExpandRequest(message: BulletExpandRequestMessage): void {
+    if (this.state !== 'connected') {
+      this.sendError('NOT_CONNECTED', 'Connection not established');
+      return;
+    }
+
+    // Acknowledge receipt
+    this.sendAck(message.id, 'delivered');
+
+    // Notify - the CLI will handle sending the response
+    this.events.onBulletExpandRequest?.(message.sessionId, message.bulletId, message.id);
   }
 
   private handlePing(message: PingMessage): void {

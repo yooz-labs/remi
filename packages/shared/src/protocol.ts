@@ -11,7 +11,16 @@
  * - Duplicates are detected and ignored (but still acked)
  */
 
-import type { Acknowledgment, AgentStatus, Message, Question, Session, UUID, Timestamp } from './types.ts';
+import type {
+  Acknowledgment,
+  AgentStatus,
+  Message,
+  Question,
+  Session,
+  StructuredMessage,
+  Timestamp,
+  UUID,
+} from './types.ts';
 
 /** Generate a UUID v4 (browser and Node compatible) */
 export function generateId(): UUID {
@@ -33,8 +42,8 @@ export function generateId(): UUID {
   }
 
   // Set version (4) and variant bits
-  bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
-  bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // Version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // Variant 10
 
   // Convert to hex string with hyphens
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -54,6 +63,7 @@ export type ProtocolMessage =
   | HelloMessage
   | HelloAckMessage
   | AgentOutputMessage
+  | StructuredAgentOutputMessage
   | UserInputMessage
   | AckMessage
   | EditMessage
@@ -62,7 +72,10 @@ export type ProtocolMessage =
   | SessionUpdateMessage
   | PingMessage
   | PongMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | ReplayBatchMessage
+  | BulletExpandRequestMessage
+  | BulletExpandResponseMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -71,6 +84,12 @@ export interface HelloMessage {
   readonly timestamp: Timestamp;
   readonly clientVersion: string;
   readonly clientId: UUID;
+  /** Working directory for the Claude Code session (optional) */
+  readonly directory?: string;
+  /** Session ID to resume (optional, for reconnecting to existing session) */
+  readonly resumeSessionId?: UUID | undefined;
+  /** Index of last received message (for efficient replay) */
+  readonly lastReceivedIndex?: number | undefined;
 }
 
 /** Server hello ack - confirms connection */
@@ -80,6 +99,12 @@ export interface HelloAckMessage {
   readonly timestamp: Timestamp;
   readonly serverVersion: string;
   readonly sessionId: UUID;
+  /** Whether this is a resumed session */
+  readonly isResume?: boolean | undefined;
+  /** Number of messages to be replayed (if resume) */
+  readonly replayCount?: number | undefined;
+  /** Next bullet ID for continuation (if resume) */
+  readonly nextBulletId?: number | undefined;
 }
 
 /** Agent output - message from Claude */
@@ -88,6 +113,18 @@ export interface AgentOutputMessage {
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly message: Message;
+}
+
+/** Agent output with structured bullet information */
+export interface StructuredAgentOutputMessage {
+  readonly type: 'structured_agent_output';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly message: StructuredMessage;
+  /** Which bullet IDs changed (for updates) */
+  readonly changedBulletIds?: readonly number[] | undefined;
+  /** Whether this is an update to an existing message */
+  readonly isUpdate: boolean;
 }
 
 /** User input - message from user */
@@ -168,6 +205,41 @@ export interface ErrorMessage {
   readonly details?: Record<string, unknown> | undefined;
 }
 
+/** Batch of messages to replay on session resume */
+export interface ReplayBatchMessage {
+  readonly type: 'replay_batch';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
+  /** Messages to replay */
+  readonly messages: readonly ProtocolMessage[];
+  /** Whether this is the last batch (all messages replayed) */
+  readonly isComplete: boolean;
+}
+
+/** Request to expand a truncated bullet */
+export interface BulletExpandRequestMessage {
+  readonly type: 'bullet_expand_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
+  /** The bullet ID to expand */
+  readonly bulletId: number;
+}
+
+/** Response with full bullet content */
+export interface BulletExpandResponseMessage {
+  readonly type: 'bullet_expand_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** The bullet ID this responds to */
+  readonly bulletId: number;
+  /** Full untruncated content of the bullet */
+  readonly fullContent: string;
+  /** ID of the request message this responds to */
+  readonly requestId: UUID;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -212,6 +284,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'hello',
     'hello_ack',
     'agent_output',
+    'structured_agent_output',
     'user_input',
     'ack',
     'edit',
@@ -221,6 +294,9 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'ping',
     'pong',
     'error',
+    'replay_batch',
+    'bullet_expand_request',
+    'bullet_expand_response',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -229,26 +305,44 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
 /**
  * Create a hello message.
  */
-export function createHello(clientId: UUID, clientVersion: string): HelloMessage {
+export function createHello(
+  clientId: UUID,
+  clientVersion: string,
+  directory?: string,
+  resumeSessionId?: UUID,
+  lastReceivedIndex?: number,
+): HelloMessage {
   return {
     type: 'hello',
     id: generateId(),
     timestamp: now(),
     clientVersion,
     clientId,
+    ...(directory && { directory }),
+    ...(resumeSessionId && { resumeSessionId }),
+    ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
   };
 }
 
 /**
  * Create a hello ack message.
  */
-export function createHelloAck(serverVersion: string, sessionId: UUID): HelloAckMessage {
+export function createHelloAck(
+  serverVersion: string,
+  sessionId: UUID,
+  resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
+): HelloAckMessage {
   return {
     type: 'hello_ack',
     id: generateId(),
     timestamp: now(),
     serverVersion,
     sessionId,
+    ...(resumeInfo && {
+      isResume: resumeInfo.isResume,
+      replayCount: resumeInfo.replayCount,
+      nextBulletId: resumeInfo.nextBulletId,
+    }),
   };
 }
 
@@ -261,6 +355,24 @@ export function createAgentOutput(message: Message): AgentOutputMessage {
     id: generateId(),
     timestamp: now(),
     message,
+  };
+}
+
+/**
+ * Create a structured agent output message with bullet information.
+ */
+export function createStructuredAgentOutput(
+  message: StructuredMessage,
+  isUpdate: boolean,
+  changedBulletIds?: readonly number[],
+): StructuredAgentOutputMessage {
+  return {
+    type: 'structured_agent_output',
+    id: generateId(),
+    timestamp: now(),
+    message,
+    isUpdate,
+    changedBulletIds,
   };
 }
 
@@ -296,7 +408,7 @@ export function createEdit(
   messageId: UUID,
   newContent: string,
   isEditing: boolean,
-  tool?: string
+  tool?: string,
 ): EditMessage {
   return {
     type: 'edit',
@@ -338,7 +450,7 @@ export function createPong(pingId: UUID): PongMessage {
 export function createError(
   code: string,
   message: string,
-  details?: Record<string, unknown>
+  details?: Record<string, unknown>,
 ): ErrorMessage {
   return {
     type: 'error',
@@ -387,6 +499,58 @@ export function createSessionUpdate(
 }
 
 /**
+ * Create a replay batch message for session resume.
+ */
+export function createReplayBatch(
+  sessionId: UUID,
+  messages: readonly ProtocolMessage[],
+  isComplete: boolean,
+): ReplayBatchMessage {
+  return {
+    type: 'replay_batch',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    messages,
+    isComplete,
+  };
+}
+
+/**
+ * Create a bullet expand request message.
+ */
+export function createBulletExpandRequest(
+  sessionId: UUID,
+  bulletId: number,
+): BulletExpandRequestMessage {
+  return {
+    type: 'bullet_expand_request',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    bulletId,
+  };
+}
+
+/**
+ * Create a bullet expand response message.
+ */
+export function createBulletExpandResponse(
+  bulletId: number,
+  fullContent: string,
+  requestId: UUID,
+): BulletExpandResponseMessage {
+  return {
+    type: 'bullet_expand_response',
+    id: generateId(),
+    timestamp: now(),
+    bulletId,
+    fullContent,
+    requestId,
+  };
+}
+
+/**
  * Message ID tracker for deduplication.
  * Uses an LRU-style approach with max capacity.
  */
@@ -395,7 +559,7 @@ export class MessageIdTracker {
   private readonly order: UUID[] = [];
   private readonly maxSize: number;
 
-  constructor(maxSize: number = 1000) {
+  constructor(maxSize = 1000) {
     this.maxSize = maxSize;
   }
 

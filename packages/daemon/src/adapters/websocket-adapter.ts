@@ -5,14 +5,18 @@
  * implementation while conforming to the adapter interface.
  */
 
-import type { UUID, ProtocolMessage, Message, Question, AgentStatus } from '@remi/shared';
+import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
 import { createAgentOutput, createQuestion, createSessionUpdate } from '@remi/shared';
-import { WebSocketServer, type ServerConfig, type ServerEvents } from '../server/websocket-server.ts';
+import {
+  type ServerConfig,
+  type ServerEvents,
+  WebSocketServer,
+} from '../server/websocket-server.ts';
 import type {
-  ConnectionAdapter,
   AdapterConfig,
   AdapterEvents,
   AdapterMetadata,
+  ConnectionAdapter,
 } from './connection-adapter.ts';
 
 /** WebSocket adapter configuration */
@@ -49,10 +53,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
     this.config = {
       enabled: config.enabled ?? true,
       port: config.port ?? DEFAULT_PORT,
-      host: config.host,
-      path: config.path,
-      maxConnections: config.maxConnections,
-    };
+      ...(config.host && { host: config.host }),
+      ...(config.path && { path: config.path }),
+      ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
+    } as WebSocketAdapterConfig;
     this.events = events;
   }
 
@@ -87,6 +91,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         const metadata: AdapterMetadata = {
           adapterType: this.type,
           displayName: `ws-${connection.id.slice(0, 8)}`,
+          platformData: {
+            directory: connection.connectionDirectory,
+            resumeSessionId: connection.connectionResumeSessionId,
+          },
         };
         this.events.onConnect?.(connection.id, metadata);
       },
@@ -103,6 +111,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onAnswer?.(connectionId, questionId, answer);
       },
 
+      onBulletExpandRequest: (connectionId, sessionId, bulletId, requestId) => {
+        this.events.onBulletExpandRequest?.(connectionId, sessionId, bulletId, requestId);
+      },
+
       onError: (error) => {
         // For server-level errors, use a dummy connection ID
         this.events.onError?.('server' as UUID, error);
@@ -111,9 +123,15 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
     const serverConfig: Partial<ServerConfig> = {
       port: this.config.port,
-      host: this.config.host,
-      path: this.config.path,
-      maxConnections: this.config.maxConnections,
+      ...((this.config as any).host && { host: (this.config as any).host }),
+      ...((this.config as any).path && { path: (this.config as any).path }),
+      ...((this.config as any).maxConnections !== undefined && {
+        maxConnections: (this.config as any).maxConnections,
+      }),
+      // Let daemon handle HelloAck to include resume info
+      connection: {
+        skipHelloAck: true,
+      },
     };
 
     this.server = new WebSocketServer(serverConfig, serverEvents);
@@ -160,11 +178,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       return false;
     }
 
-    const protocolMessage = createSessionUpdate(
-      connection.connectionSessionId,
-      status,
-      context,
-    );
+    const protocolMessage = createSessionUpdate(connection.connectionSessionId, status, context);
     return this.server.sendTo(connectionId, protocolMessage);
   }
 

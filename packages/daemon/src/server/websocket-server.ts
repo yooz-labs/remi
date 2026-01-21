@@ -6,8 +6,8 @@
  */
 
 import { generateId } from '@remi/shared';
-import type { UUID, ProtocolMessage } from '@remi/shared';
-import { Connection, type ConnectionEvents, type ConnectionConfig } from './connection.ts';
+import type { ProtocolMessage, UUID } from '@remi/shared';
+import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
 
 /** Server configuration */
 export interface ServerConfig {
@@ -47,6 +47,14 @@ export interface ServerEvents {
   /** Answer from client */
   onAnswer: (connectionId: UUID, questionId: UUID, answer: string) => void;
 
+  /** Bullet expand request from client */
+  onBulletExpandRequest: (
+    connectionId: UUID,
+    sessionId: UUID,
+    bulletId: number,
+    requestId: UUID,
+  ) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -83,7 +91,7 @@ export class WebSocketServer {
   private readonly connections: Map<UUID, Connection> = new Map();
 
   private server: ReturnType<typeof Bun.serve> | null = null;
-  private isRunning: boolean = false;
+  private isRunning = false;
 
   constructor(config: Partial<ServerConfig> = {}, events: Partial<ServerEvents> = {}) {
     this.config = {
@@ -264,6 +272,10 @@ export class WebSocketServer {
 
       onAnswer: (questionId, answer) => {
         this.events.onAnswer?.(ws.data.connectionId, questionId, answer);
+      },
+
+      onBulletExpandRequest: (sessionId, bulletId, requestId) => {
+        this.events.onBulletExpandRequest?.(ws.data.connectionId, sessionId, bulletId, requestId);
       },
 
       onError: (error) => {

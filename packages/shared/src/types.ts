@@ -59,6 +59,57 @@ export interface Message {
   tool?: string | undefined;
 }
 
+/** Bullet point type detected in message content */
+export type BulletType = 'dash' | 'asterisk' | 'bullet' | 'numbered';
+
+/**
+ * A bullet point extracted from message content.
+ * Used for tracking and deduplication across edits.
+ */
+export interface Bullet {
+  /** Session-scoped sequential ID (starts at 1) */
+  readonly bulletId: number;
+
+  /** Text content of the bullet (without the marker) */
+  readonly content: string;
+
+  /** Type of bullet marker used */
+  readonly type: BulletType;
+
+  /** For numbered bullets, the original number (e.g., "1", "2") */
+  readonly originalNumber?: string | undefined;
+
+  /** Start line index within the message content (0-based) */
+  readonly startLine: number;
+
+  /** End line index inclusive (for multi-line bullets with code blocks) */
+  readonly endLine: number;
+
+  /** Whether this bullet contains a code block */
+  readonly hasCodeBlock: boolean;
+
+  /** Whether content was truncated (full content available via expand request) */
+  readonly isTruncated?: boolean | undefined;
+
+  /** Full content length in bytes (present only if truncated) */
+  readonly fullLength?: number | undefined;
+}
+
+/**
+ * A message with structured bullet information.
+ * Extends Message with parsed bullet data for tracking edits.
+ */
+export interface StructuredMessage extends Message {
+  /** Extracted bullets from content */
+  readonly bullets: readonly Bullet[];
+
+  /** First bullet ID in this message (for quick reference) */
+  readonly firstBulletId?: number | undefined;
+
+  /** Last bullet ID in this message */
+  readonly lastBulletId?: number | undefined;
+}
+
 /**
  * Acknowledgment sent when message is received/read.
  */

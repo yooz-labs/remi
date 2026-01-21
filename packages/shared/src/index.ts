@@ -17,6 +17,9 @@ export type {
   MessageSender,
   AgentStatus,
   Message,
+  BulletType,
+  Bullet,
+  StructuredMessage,
   Acknowledgment,
   Question,
   QuestionOption,
@@ -33,6 +36,7 @@ export type {
   HelloMessage,
   HelloAckMessage,
   AgentOutputMessage,
+  StructuredAgentOutputMessage,
   UserInputMessage,
   AckMessage,
   EditMessage,
@@ -42,6 +46,9 @@ export type {
   PingMessage,
   PongMessage,
   ErrorMessage,
+  ReplayBatchMessage,
+  BulletExpandRequestMessage,
+  BulletExpandResponseMessage,
 } from './protocol.ts';
 
 export {
@@ -52,6 +59,7 @@ export {
   createHello,
   createHelloAck,
   createAgentOutput,
+  createStructuredAgentOutput,
   createUserInput,
   createAck,
   createEdit,
@@ -60,5 +68,8 @@ export {
   createError,
   createQuestion,
   createSessionUpdate,
+  createReplayBatch,
+  createBulletExpandRequest,
+  createBulletExpandResponse,
   MessageIdTracker,
 } from './protocol.ts';

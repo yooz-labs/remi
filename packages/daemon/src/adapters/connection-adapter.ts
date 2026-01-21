@@ -5,7 +5,7 @@
  * without coupling to a specific transport.
  */
 
-import type { UUID, ProtocolMessage, Message, Question, AgentStatus } from '@remi/shared';
+import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
 
 /** Metadata about a connection */
 export interface AdapterMetadata {
@@ -32,6 +32,14 @@ export interface AdapterEvents {
 
   /** Answer to question received */
   onAnswer: (connectionId: UUID, questionId: UUID, answer: string) => void;
+
+  /** Bullet expand request received */
+  onBulletExpandRequest: (
+    connectionId: UUID,
+    sessionId: UUID,
+    bulletId: number,
+    requestId: UUID,
+  ) => void;
 
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
