@@ -75,7 +75,9 @@ const IDLE_PATTERNS: readonly RegExp[] = [
   /^ready\.?$/i,
   /task completed/i,
   /successfully/i,
-  /^\>\s*$/,  // Empty prompt
+  /^\>\s*$/, // Empty prompt
+  /^❯\s*$/, // Claude Code prompt (empty)
+  /❯\s*$/, // Claude Code prompt at end of line
 ];
 
 /**
@@ -118,9 +120,10 @@ export function parseStatus(rawOutput: string): StatusResult {
     return idleResult;
   }
 
-  // Default: assume thinking if there's output
+  // Default: assume idle if no specific pattern matched
+  // This is more conservative - only show "thinking" when we're confident
   return {
-    status: 'thinking',
+    status: 'idle',
     confidence: 0.3,
   };
 }

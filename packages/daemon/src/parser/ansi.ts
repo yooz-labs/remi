@@ -14,25 +14,36 @@
  * - Screen control: ESC[...J/K
  * - Other CSI sequences: ESC[...
  * - OSC sequences: ESC]...ST
+ *
+ * Special handling:
+ * - Cursor right (ESC[nC) is replaced with spaces to preserve word spacing
  */
 export function stripAnsi(text: string): string {
-  // Comprehensive ANSI escape sequence patterns
+  // First, replace cursor-right movements with spaces (preserves word spacing)
+  // ESC[nC moves cursor right n columns - replace with n spaces
   // eslint-disable-next-line no-control-regex
-  const ansiPattern =
-    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+  const cursorRightPattern = /\u001b\[(\d*)C/g;
+  let result = text.replace(cursorRightPattern, (_match, count) => {
+    const spaces = Number.parseInt(count || '1', 10);
+    return ' '.repeat(spaces);
+  });
 
   // OSC sequences (ESC ] ... ST or ESC ] ... BEL)
   // eslint-disable-next-line no-control-regex
   const oscPattern = /\u001b\](?:[^\u0007\u001b]|\u001b[^\\])*(?:\u0007|\u001b\\)/g;
+  result = result.replace(oscPattern, '');
 
   // Private mode sequences
   // eslint-disable-next-line no-control-regex
   const privatePattern = /\u001b\[\?[0-9;]*[hlsr]/g;
+  result = result.replace(privatePattern, '');
 
-  return text
-    .replace(oscPattern, '')
-    .replace(privatePattern, '')
-    .replace(ansiPattern, '');
+  // Comprehensive ANSI escape sequence patterns (colors, other cursor moves, etc.)
+  // eslint-disable-next-line no-control-regex
+  const ansiPattern = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+  result = result.replace(ansiPattern, '');
+
+  return result;
 }
 
 /**
@@ -165,9 +176,9 @@ export function filterTerminalUI(text: string): string {
     // Tool output metadata lines (⎿ followed by status text)
     /^[\s]*⎿[\s]*(Read|Wrote|Created|Deleted|Modified|total|packages|Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i,
     /^[\s]*⎿[\s]*\d+\s*(lines?|files?|bytes?)/i,
-    /^[\s]*⎿[\s]*[a-f0-9]{6,}/i,  // Git hashes
-    /^[\s]*⎿[\s]*\{/,  // JSON opening
-    /^[\s]*⎿[\s]*bun\s/i,  // bun commands
+    /^[\s]*⎿[\s]*[a-f0-9]{6,}/i, // Git hashes
+    /^[\s]*⎿[\s]*\{/, // JSON opening
+    /^[\s]*⎿[\s]*bun\s/i, // bun commands
     // Lines that are just a bracket or bracket with spaces
     /^[\s]*[\[\]{}]+[\s]*$/,
     // Short lines that are likely fragments (under 5 chars, not alphanumeric)
@@ -233,7 +244,9 @@ export const MESSAGE_MARKERS = {
  * Detect if a line starts a new message block.
  * Returns the type of message or null if continuation.
  */
-export function detectMessageBoundary(line: string): 'agent' | 'user' | 'thinking' | 'tool_output' | null {
+export function detectMessageBoundary(
+  line: string,
+): 'agent' | 'user' | 'thinking' | 'tool_output' | null {
   if (MESSAGE_MARKERS.AGENT_START.test(line)) {
     return 'agent';
   }
@@ -254,7 +267,5 @@ export function detectMessageBoundary(line: string): 'agent' | 'user' | 'thinkin
  */
 export function cleanMessageLine(line: string): string {
   // Remove leading markers but keep the content
-  return line
-    .replace(/^[\s]*[⏺●✻✱✲✳❯⎿]\s*/, '')
-    .trim();
+  return line.replace(/^[\s]*[⏺●✻✱✲✳❯⎿]\s*/, '').trim();
 }

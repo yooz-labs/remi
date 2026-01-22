@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { parseStatus, getToolFromStatus, isActive } from '../src/parser/status-parser.ts';
+import { getToolFromStatus, isActive, parseStatus } from '../src/parser/status-parser.ts';
 
 describe('parseStatus()', () => {
   describe('Executing state', () => {
@@ -209,9 +209,11 @@ describe('parseStatus()', () => {
   });
 
   describe('Default behavior', () => {
-    test('defaults to thinking for unrecognized output', () => {
+    test('defaults to idle for unrecognized output', () => {
+      // Changed from thinking to idle - more conservative default
+      // Only show "thinking" when we're confident (matched a thinking pattern)
       const result = parseStatus('Some random output text here');
-      expect(result.status).toBe('thinking');
+      expect(result.status).toBe('idle');
       expect(result.confidence).toBe(0.3);
     });
 
