@@ -6,9 +6,15 @@
  */
 
 import { generateId, now } from '@remi/shared';
-import type { Message, Question, AgentStatus, UUID } from '@remi/shared';
-import { cleanForParsing, cleanAndFilterOutput, splitLines, detectMessageBoundary, cleanMessageLine } from './ansi.ts';
-import { parseQuestion, hasQuestionIndicator } from './question-parser.ts';
+import type { AgentStatus, Message, Question, UUID } from '@remi/shared';
+import {
+  cleanAndFilterOutput,
+  cleanForParsing,
+  cleanMessageLine,
+  detectMessageBoundary,
+  splitLines,
+} from './ansi.ts';
+import { hasQuestionIndicator, parseQuestion } from './question-parser.ts';
 import { parseStatus } from './status-parser.ts';
 
 /** Event types emitted by the processor */
@@ -54,13 +60,14 @@ export class OutputProcessor {
   private readonly config: Required<ProcessorConfig>;
   private readonly events: Partial<OutputEvents>;
 
-  private buffer: string = '';
+  private buffer = '';
   private currentMessageId: UUID | null = null;
-  private currentMessageContent: string = '';
+  private currentMessageContent = '';
   private currentStatus: AgentStatus = 'idle';
-  private lastUpdateTime: number = 0;
+  private lastUpdateTime = 0;
   private pendingQuestion: Question | null = null;
   private seenContent: Set<string> = new Set(); // Track unique content chunks
+  private hasEmittedCurrentMessage = false; // Track if onMessage was called for currentMessageId
 
   constructor(config: ProcessorConfig, events: Partial<OutputEvents> = {}) {
     this.config = {
@@ -111,6 +118,7 @@ export class OutputProcessor {
     this.lastUpdateTime = 0;
     this.pendingQuestion = null;
     this.seenContent.clear();
+    this.hasEmittedCurrentMessage = false;
   }
 
   /** Get current accumulated content */
@@ -182,9 +190,13 @@ export class OutputProcessor {
           this.finalizeMessage();
         }
 
-        // Start new message
+        // Start new message - ALWAYS set the ID so subsequent lines can be appended
         this.currentMessageId = generateId();
+        this.hasEmittedCurrentMessage = false;
         const cleanedLine = cleanMessageLine(rawLine);
+
+        // Extract tool name before filtering (for tool execution lines like "Bash(date)")
+        const tool = this.extractToolName(cleanedLine);
 
         // Filter and deduplicate the content
         const filteredLine = cleanAndFilterOutput(cleanedLine);
@@ -203,11 +215,14 @@ export class OutputProcessor {
               state: 'sent',
               stateChangedAt: now(),
               isEditing: true,
-              tool: this.extractToolName(cleanedLine),
+              tool,
             };
             this.events.onMessage?.(message);
+            this.hasEmittedCurrentMessage = true;
           }
         }
+        // Note: Even if filteredLine is empty (tool execution line filtered out),
+        // currentMessageId is now set, so subsequent content lines will be appended.
       } else if (boundary === 'user' || boundary === 'thinking' || boundary === 'tool_output') {
         // Skip user echo (we log user messages ourselves), thinking indicators, and tool output metadata
         continue;
@@ -240,9 +255,12 @@ export class OutputProcessor {
     const statusResult = parseStatus(this.currentMessageContent);
     const tool = statusResult.status === 'executing' ? statusResult.context : undefined;
 
-    // Create new message if none exists
-    if (this.currentMessageId === null) {
-      this.currentMessageId = generateId();
+    // Create new message if we haven't emitted one yet for current ID
+    if (!this.hasEmittedCurrentMessage) {
+      // Ensure we have a message ID
+      if (this.currentMessageId === null) {
+        this.currentMessageId = generateId();
+      }
 
       const message: Message = {
         id: this.currentMessageId,
@@ -257,28 +275,22 @@ export class OutputProcessor {
       };
 
       this.events.onMessage?.(message);
+      this.hasEmittedCurrentMessage = true;
     } else {
       // Update existing message
-      this.events.onMessageUpdate?.(
-        this.currentMessageId,
-        this.currentMessageContent,
-        tool,
-      );
+      this.events.onMessageUpdate?.(this.currentMessageId!, this.currentMessageContent, tool);
     }
   }
 
   private finalizeMessage(): void {
     if (this.currentMessageId !== null) {
       // Final update with isEditing = false
-      this.events.onMessageUpdate?.(
-        this.currentMessageId,
-        this.currentMessageContent,
-        undefined,
-      );
+      this.events.onMessageUpdate?.(this.currentMessageId, this.currentMessageContent, undefined);
     }
 
     this.currentMessageId = null;
     this.currentMessageContent = '';
+    this.hasEmittedCurrentMessage = false;
   }
 
   /**
