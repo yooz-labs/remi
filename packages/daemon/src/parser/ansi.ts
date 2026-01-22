@@ -193,6 +193,9 @@ export function filterTerminalUI(text: string): string {
     /^[a-z]\s*$/i,
     // Search pattern indicators
     /^Search\(pattern:/i,
+    // Claude Code suggested command hints (end with ↵ send)
+    /↵\s*send\s*$/i,
+    /⏎\s*send\s*$/i,
   ];
 
   for (const line of lines) {
