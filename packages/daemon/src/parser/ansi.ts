@@ -196,6 +196,15 @@ export function filterTerminalUI(text: string): string {
     // Claude Code suggested command hints (end with ↵ send)
     /↵\s*send\s*$/i,
     /⏎\s*send\s*$/i,
+    // Thinking animation fragments (character-by-character rendering artifacts)
+    // Patterns like "* z n", "+ g", "* z i" from incremental animation display
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[a-z](\s+[a-z])*\s*$/i,
+    // Lines that are just a symbol followed by whitespace and 1-3 letters
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[a-z]{1,3}\s*$/i,
+    // Partial word fragments with thinking symbols (like "* Dr", "* Dri", "* Driz")
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[A-Z]?[a-z]{1,6}\s*$/i,
+    // Lines with only thinking symbols and spaces
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻\s]+$/,
   ];
 
   for (const line of lines) {
