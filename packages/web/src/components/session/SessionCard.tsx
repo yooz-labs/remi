@@ -4,9 +4,9 @@
  * Displays a session preview in the session list.
  */
 
-import { clsx } from 'clsx';
 // Status icons are rendered via StatusDot, not used directly
-import type { UISession, ConnectionStatus, AgentStatus } from '@/types';
+import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
+import { clsx } from 'clsx';
 
 interface SessionCardProps {
   readonly session: UISession;
@@ -44,37 +44,25 @@ function StatusDot({
 }) {
   // Connection status takes priority
   if (connectionStatus === 'error') {
-    return (
-      <span className="size-2.5 rounded-full bg-[--color-error]" />
-    );
+    return <span className="size-2.5 rounded-full bg-[--color-error]" />;
   }
   if (connectionStatus === 'disconnected') {
-    return (
-      <span className="size-2.5 rounded-full bg-[--color-text-muted]" />
-    );
+    return <span className="size-2.5 rounded-full bg-[--color-text-muted]" />;
   }
   if (connectionStatus === 'connecting' || connectionStatus === 'reconnecting') {
-    return (
-      <span className="size-2.5 animate-pulse rounded-full bg-[--color-warning]" />
-    );
+    return <span className="size-2.5 animate-pulse rounded-full bg-[--color-warning]" />;
   }
 
   // Agent status when connected
   switch (agentStatus) {
     case 'thinking':
     case 'executing':
-      return (
-        <span className="size-2.5 animate-pulse rounded-full bg-[--color-primary]" />
-      );
+      return <span className="size-2.5 animate-pulse rounded-full bg-[--color-primary]" />;
     case 'waiting':
-      return (
-        <span className="size-2.5 rounded-full bg-[--color-success]" />
-      );
+      return <span className="size-2.5 rounded-full bg-[--color-success]" />;
     case 'idle':
     default:
-      return (
-        <span className="size-2.5 rounded-full bg-[--color-text-muted]" />
-      );
+      return <span className="size-2.5 rounded-full bg-[--color-text-muted]" />;
   }
 }
 
@@ -91,10 +79,7 @@ export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
       <div className="flex items-start gap-3">
         {/* Status indicator */}
         <div className="mt-1.5">
-          <StatusDot
-            connectionStatus={session.connectionStatus}
-            agentStatus={session.status}
-          />
+          <StatusDot connectionStatus={session.connectionStatus} agentStatus={session.status} />
         </div>
 
         {/* Session info */}
@@ -115,9 +100,7 @@ export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
 
           {/* CWD if available */}
           {session.cwd && (
-            <p className="mt-1 truncate text-xs text-[--color-text-muted]">
-              {session.cwd}
-            </p>
+            <p className="mt-1 truncate text-xs text-[--color-text-muted]">{session.cwd}</p>
           )}
         </div>
 

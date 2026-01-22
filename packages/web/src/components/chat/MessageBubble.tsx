@@ -4,21 +4,24 @@
  * Displays a single message with WhatsApp-style delivery status.
  */
 
+import type { UIBullet, UIMessage } from '@/types';
+import type { MessageState } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
 import {
+  AlertCircle,
   Check,
   CheckCheck,
+  ChevronDown,
   Clock,
-  AlertCircle,
+  Loader2,
   Pencil,
   Terminal,
 } from 'lucide-react';
-import type { UIMessage } from '@/types';
-import type { MessageState } from '@remi/shared/types.ts';
 
 interface MessageBubbleProps {
   readonly message: UIMessage;
   readonly showTimestamp?: boolean;
+  readonly onBulletExpand?: (bulletId: number) => void;
 }
 
 /** Status icon based on message delivery state */
@@ -46,19 +49,70 @@ function formatTime(timestamp: string): string {
   });
 }
 
+/** Single bullet item with optional truncation indicator */
+function BulletItem({
+  bullet,
+  onExpand,
+}: {
+  readonly bullet: UIBullet;
+  readonly onExpand?: (bulletId: number) => void;
+}) {
+  const handleExpand = () => {
+    if (bullet.isTruncated && !bullet.fullContent && onExpand) {
+      onExpand(bullet.bulletId);
+    }
+  };
+
+  // Use fullContent if available, otherwise use (possibly truncated) content
+  const displayContent = bullet.fullContent || bullet.content;
+
+  return (
+    <div className="group relative">
+      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{displayContent}</div>
+
+      {/* Truncation indicator */}
+      {bullet.isTruncated && !bullet.fullContent && (
+        <button
+          onClick={handleExpand}
+          disabled={bullet.isExpanding}
+          className={clsx(
+            'mt-1 flex items-center gap-1 text-xs',
+            'text-[--color-primary] hover:text-[--color-primary-hover]',
+            'transition-colors duration-150',
+            bullet.isExpanding && 'opacity-50 cursor-wait',
+          )}
+        >
+          {bullet.isExpanding ? (
+            <>
+              <Loader2 className="size-3 animate-spin" />
+              <span>Loading...</span>
+            </>
+          ) : (
+            <>
+              <ChevronDown className="size-3" />
+              <span>Show more ({bullet.fullLength} chars)</span>
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function MessageBubble({
   message,
   showTimestamp = true,
+  onBulletExpand,
 }: MessageBubbleProps) {
   const isUser = message.sender === 'user';
   const isSystem = message.sender === 'system';
 
+  // Use bullets if available, otherwise fall back to raw content
+  const hasBullets = message.bullets && message.bullets.length > 0;
+
   return (
     <div
-      className={clsx(
-        'flex w-full animate-[slide-up]',
-        isUser ? 'justify-end' : 'justify-start',
-      )}
+      className={clsx('flex w-full animate-[slide-up]', isUser ? 'justify-end' : 'justify-start')}
     >
       <div
         className={clsx(
@@ -68,7 +122,8 @@ export function MessageBubble({
           // Bubble colors
           isUser && 'bg-[--color-bubble-user] text-white border-[--color-bubble-user]',
           !isUser && !isSystem && 'bg-[--color-bubble-assistant] border-[--color-border]',
-          isSystem && 'bg-[--color-bubble-system] text-[--color-text-secondary] border-[--color-border]',
+          isSystem &&
+            'bg-[--color-bubble-system] text-[--color-text-secondary] border-[--color-border]',
           // Bubble shape variations
           isUser && 'rounded-br-md',
           !isUser && 'rounded-bl-md',
@@ -86,16 +141,23 @@ export function MessageBubble({
           </div>
         )}
 
-        {/* Message content */}
-        <div
-          className={clsx(
-            'whitespace-pre-wrap break-words text-sm leading-relaxed',
-            isUser ? 'text-white' : 'text-[--color-text]',
-          )}
-        >
-          {message.isStreaming ? message.streamedContent : message.content}
-          {message.isStreaming && (
-            <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
+        {/* Message content - render bullets if available */}
+        <div className={clsx(isUser ? 'text-white' : 'text-[--color-text]')}>
+          {message.isStreaming ? (
+            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+              {message.streamedContent}
+              <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
+            </div>
+          ) : hasBullets ? (
+            <div className="space-y-2">
+              {message.bullets!.map((bullet) => (
+                <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
+              ))}
+            </div>
+          ) : (
+            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+              {message.content}
+            </div>
           )}
         </div>
 

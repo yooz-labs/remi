@@ -10,8 +10,8 @@
  * - GET /health: Health check
  */
 
+import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
-import { normalizeCode, isValidCode } from './code-generator.ts';
 
 // Cloudflare-specific types
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -32,10 +32,9 @@ export default {
 
     // Health check
     if (url.pathname === '/health') {
-      return new Response(
-        JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }),
-        { headers: { 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // CORS preflight
@@ -44,7 +43,8 @@ export default {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version',
+          'Access-Control-Allow-Headers':
+            'Content-Type, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version',
         },
       });
     }
@@ -95,7 +95,7 @@ export default {
       const id = env.CONNECTIONS.idFromName(code);
 
       // Return the code to the caller
-      const timeoutMs = parseInt(env.CONNECTION_TIMEOUT_MS) || 300000;
+      const timeoutMs = Number.parseInt(env.CONNECTION_TIMEOUT_MS) || 300000;
       const expiresAt = new Date(Date.now() + timeoutMs).toISOString();
 
       return new Response(

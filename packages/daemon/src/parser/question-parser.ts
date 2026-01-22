@@ -113,10 +113,14 @@ function tryParseYesNo(lines: readonly string[]): ParseResult | null {
         detected: true,
         type: 'yes_no',
         confidence: 0.9,
-        question: createQuestion(questionText, [
-          createOption('Yes', 'y', true, true, false),
-          createOption('No', 'n', false, false, true),
-        ], false),
+        question: createQuestion(
+          questionText,
+          [
+            createOption('Yes', 'y', true, true, false),
+            createOption('No', 'n', false, false, true),
+          ],
+          false,
+        ),
       };
     }
   }
@@ -136,10 +140,14 @@ function tryParsePermission(lines: readonly string[]): ParseResult | null {
         detected: true,
         type: 'permission',
         confidence: 0.85,
-        question: createQuestion(questionText, [
-          createOption('Allow', 'yes', true, true, false),
-          createOption('Deny', 'no', false, false, true),
-        ], false),
+        question: createQuestion(
+          questionText,
+          [
+            createOption('Allow', 'yes', true, true, false),
+            createOption('Deny', 'no', false, false, true),
+          ],
+          false,
+        ),
       };
     }
   }
@@ -166,13 +174,15 @@ function tryParseNumbered(lines: readonly string[]): ParseResult | null {
       const num = match[1]!;
       const label = match[2]!.trim();
 
-      options.push(createOption(
-        label,
-        num,
-        options.length === 0, // First option is recommended
-        false,
-        false,
-      ));
+      options.push(
+        createOption(
+          label,
+          num,
+          options.length === 0, // First option is recommended
+          false,
+          false,
+        ),
+      );
     }
   }
 

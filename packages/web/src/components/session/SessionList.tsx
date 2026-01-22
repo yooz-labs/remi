@@ -4,11 +4,11 @@
  * Displays a list of active sessions.
  */
 
-import { clsx } from 'clsx';
-import { Plus, Link2, Settings } from 'lucide-react';
-import { SessionCard } from './SessionCard';
 import type { UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
+import { clsx } from 'clsx';
+import { Link2, Plus, Settings } from 'lucide-react';
+import { SessionCard } from './SessionCard';
 
 interface SessionListProps {
   readonly sessions: readonly UISession[];
@@ -30,12 +30,7 @@ export function SessionList({
   className,
 }: SessionListProps) {
   return (
-    <div
-      className={clsx(
-        'flex h-full flex-col bg-[--color-surface]',
-        className,
-      )}
-    >
+    <div className={clsx('flex h-full flex-col bg-[--color-surface]', className)}>
       {/* Header */}
       <header className="flex items-center justify-between border-b border-[--color-border] px-4 py-3 safe-area-top">
         <h1 className="text-lg font-semibold text-[--color-text]">Sessions</h1>
@@ -68,9 +63,7 @@ export function SessionList({
             <div className="mb-4 rounded-full bg-[--color-surface-light] p-4">
               <Link2 className="size-8 text-[--color-text-muted]" />
             </div>
-            <h2 className="mb-1 font-medium text-[--color-text]">
-              No Sessions
-            </h2>
+            <h2 className="mb-1 font-medium text-[--color-text]">No Sessions</h2>
             <p className="mb-4 text-sm text-[--color-text-secondary]">
               Connect to a Claude daemon to start monitoring
             </p>

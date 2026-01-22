@@ -5,6 +5,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "bin": {
+    "remi-daemon": "./src/cli.ts"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./pty": "./src/pty/index.ts",
@@ -12,13 +15,14 @@
     "./server": "./src/server/index.ts"
   },
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/cli.ts",
+    "dev": "bun run --watch src/cli.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@remi/shared": "workspace:*"
+    "@remi/shared": "workspace:*",
+    "grammy": "^1.39.2"
   }
 }

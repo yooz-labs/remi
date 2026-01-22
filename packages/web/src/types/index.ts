@@ -4,11 +4,7 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
-import type {
-  UUID,
-  Timestamp,
-  MessageState,
-} from '@remi/shared/types.ts';
+import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';
@@ -27,6 +23,25 @@ export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting';
 /** Message sender type */
 export type MessageSender = 'user' | 'agent' | 'system';
 
+/** UI bullet representation */
+export interface UIBullet {
+  readonly bulletId: number;
+  readonly type: 'dash' | 'asterisk' | 'numbered' | 'bullet';
+  readonly content: string;
+  readonly originalNumber?: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly hasCodeBlock?: boolean;
+  /** Whether content was truncated */
+  readonly isTruncated?: boolean;
+  /** Full content length if truncated */
+  readonly fullLength?: number;
+  /** Full content after expansion (populated on demand) */
+  readonly fullContent?: string;
+  /** Whether expansion is in progress */
+  readonly isExpanding?: boolean;
+}
+
 /** UI message representation */
 export interface UIMessage {
   readonly id: UUID;
@@ -42,6 +57,12 @@ export interface UIMessage {
   readonly isStreaming?: boolean;
   /** Partial content during streaming */
   readonly streamedContent?: string;
+  /** Structured bullets (if available) */
+  readonly bullets?: readonly UIBullet[];
+  /** First bullet ID in this message */
+  readonly firstBulletId?: number;
+  /** Last bullet ID in this message */
+  readonly lastBulletId?: number;
 }
 
 /** Session information for the UI */

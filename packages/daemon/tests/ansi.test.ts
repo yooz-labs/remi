@@ -4,11 +4,11 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
-  stripAnsi,
+  cleanForParsing,
   hasAnsi,
   normalizeLineEndings,
-  cleanForParsing,
   splitLines,
+  stripAnsi,
 } from '../src/parser/ansi.ts';
 
 describe('stripAnsi()', () => {

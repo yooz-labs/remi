@@ -2,36 +2,25 @@
  * Tests for messaging protocol.
  */
 
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import {
+  MessageIdTracker,
+  createAck,
+  createAgentOutput,
+  createEdit,
+  createError,
+  createHello,
+  createHelloAck,
+  createPing,
+  createPong,
+  createUserInput,
+  deserialize,
   generateId,
   now,
   serialize,
-  deserialize,
-  createHello,
-  createHelloAck,
-  createAgentOutput,
-  createUserInput,
-  createAck,
-  createEdit,
-  createPing,
-  createPong,
-  createError,
-  MessageIdTracker,
 } from '../src/protocol.ts';
-import type {
-  ProtocolMessage,
-  HelloMessage,
-  HelloAckMessage,
-  AgentOutputMessage,
-  UserInputMessage,
-  AckMessage,
-  EditMessage,
-  PingMessage,
-  PongMessage,
-  ErrorMessage,
-} from '../src/protocol.ts';
-import type { Message, Acknowledgment } from '../src/types.ts';
+import type { AgentOutputMessage, HelloMessage } from '../src/protocol.ts';
+import type { Acknowledgment, Message } from '../src/types.ts';
 
 describe('generateId()', () => {
   test('generates valid UUID v4 format', () => {
@@ -230,12 +219,16 @@ describe('deserialize()', () => {
   });
 
   test('returns null for invalid type', () => {
-    const result = deserialize('{"type": "invalid_type", "id": "123", "timestamp": "2026-01-10T00:00:00.000Z"}');
+    const result = deserialize(
+      '{"type": "invalid_type", "id": "123", "timestamp": "2026-01-10T00:00:00.000Z"}',
+    );
     expect(result).toBeNull();
   });
 
   test('returns null for non-string type', () => {
-    const result = deserialize('{"type": 123, "id": "123", "timestamp": "2026-01-10T00:00:00.000Z"}');
+    const result = deserialize(
+      '{"type": 123, "id": "123", "timestamp": "2026-01-10T00:00:00.000Z"}',
+    );
     expect(result).toBeNull();
   });
 

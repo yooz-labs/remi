@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { parseQuestion, hasQuestionIndicator } from '../src/parser/question-parser.ts';
+import { hasQuestionIndicator, parseQuestion } from '../src/parser/question-parser.ts';
 
 describe('parseQuestion()', () => {
   describe('Yes/No questions', () => {

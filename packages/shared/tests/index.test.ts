@@ -7,59 +7,45 @@ import { describe, expect, test } from 'bun:test';
 
 // Test that all exports are accessible
 import {
+  MessageIdTracker,
+  createAck,
+  createAgentOutput,
+  createEdit,
+  createError,
+  createHello,
+  createHelloAck,
+  createPing,
+  createPong,
+  createUserInput,
+  deserialize,
+  err,
+  // Protocol utilities
+  generateId,
+  isErr,
+  isOk,
+  now,
   // Types - these are type-only exports, can't test at runtime
   // but TypeScript will fail to compile if they're missing
 
   // Result utilities
   ok,
-  err,
-  isOk,
-  isErr,
-
-  // Protocol utilities
-  generateId,
-  now,
   serialize,
-  deserialize,
-  createHello,
-  createHelloAck,
-  createAgentOutput,
-  createUserInput,
-  createAck,
-  createEdit,
-  createPing,
-  createPong,
-  createError,
-  MessageIdTracker,
 } from '../src/index.ts';
 
 // Type-only imports to verify they compile
 import type {
-  UUID,
-  Timestamp,
-  MessageState,
-  MessageSender,
-  AgentStatus,
-  Message,
   Acknowledgment,
+  AgentStatus,
+  ConnectionInfo,
+  Message,
+  MessageSender,
+  MessageState,
   Question,
   QuestionOption,
-  Session,
-  ConnectionInfo,
   Result,
-  ProtocolMessage,
-  HelloMessage,
-  HelloAckMessage,
-  AgentOutputMessage,
-  UserInputMessage,
-  AckMessage,
-  EditMessage,
-  QuestionMessage,
-  AnswerMessage,
-  SessionUpdateMessage,
-  PingMessage,
-  PongMessage,
-  ErrorMessage,
+  Session,
+  Timestamp,
+  UUID,
 } from '../src/index.ts';
 
 describe('Package exports', () => {

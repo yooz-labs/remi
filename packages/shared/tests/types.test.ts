@@ -3,8 +3,15 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { ok, err, isOk, isErr } from '../src/types.ts';
-import type { Result, Message, MessageState, Acknowledgment, Question, Session } from '../src/types.ts';
+import { err, isErr, isOk, ok } from '../src/types.ts';
+import type {
+  Acknowledgment,
+  Message,
+  MessageState,
+  Question,
+  Result,
+  Session,
+} from '../src/types.ts';
 
 describe('Result utilities', () => {
   describe('ok()', () => {

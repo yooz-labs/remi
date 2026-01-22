@@ -4,11 +4,11 @@
  * Main chat interface combining header, messages, and input.
  */
 
+import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
 import { ChatHeader } from './ChatHeader';
-import { MessageList } from './MessageList';
 import { InputArea } from './InputArea';
-import type { UISession, UIMessage, UIQuestion } from '@/types';
+import { MessageList } from './MessageList';
 
 interface ChatViewProps {
   readonly session: UISession;
@@ -20,6 +20,7 @@ interface ChatViewProps {
   readonly onRetry?: () => void;
   readonly onBack?: () => void;
   readonly onMore?: () => void;
+  readonly onBulletExpand?: (bulletId: number) => void;
   readonly className?: string;
 }
 
@@ -33,29 +34,21 @@ export function ChatView({
   onRetry,
   onBack,
   onMore,
+  onBulletExpand,
   className,
 }: ChatViewProps) {
-  const isAgentBusy =
-    session.status === 'thinking' || session.status === 'executing';
+  const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
 
   return (
-    <div
-      className={clsx(
-        'flex h-full flex-col bg-[--color-surface]',
-        className,
-      )}
-    >
-      <ChatHeader
-        session={session}
-        onBack={onBack}
-        onMore={onMore}
-      />
+    <div className={clsx('flex h-full flex-col bg-[--color-surface]', className)}>
+      <ChatHeader session={session} onBack={onBack} onMore={onMore} />
 
       <MessageList
         messages={messages}
         agentStatus={session.status}
         error={error}
         onRetry={onRetry}
+        onBulletExpand={onBulletExpand}
       />
 
       <InputArea

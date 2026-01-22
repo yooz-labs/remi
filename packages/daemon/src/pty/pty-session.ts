@@ -6,7 +6,7 @@
  */
 
 import { generateId, now } from '@remi/shared';
-import type { UUID, Timestamp, AgentStatus } from '@remi/shared';
+import type { AgentStatus, Timestamp, UUID } from '@remi/shared';
 
 /** Terminal dimensions */
 export interface TerminalSize {
@@ -211,7 +211,7 @@ export class PTYSession {
     // Convert text to bytes and append CR (0x0D)
     const encoder = new TextEncoder();
     const textBytes = encoder.encode(text);
-    const crByte = new Uint8Array([0x0D]); // CR - Enter key
+    const crByte = new Uint8Array([0x0d]); // CR - Enter key
 
     // Concatenate text + CR
     const combined = new Uint8Array(textBytes.length + 1);
@@ -231,7 +231,7 @@ export class PTYSession {
 
     const encoder = new TextEncoder();
     const textBytes = encoder.encode(text);
-    const lfByte = new Uint8Array([0x0A]); // LF - newline
+    const lfByte = new Uint8Array([0x0a]); // LF - newline
 
     const combined = new Uint8Array(textBytes.length + 1);
     combined.set(textBytes, 0);
@@ -250,7 +250,7 @@ export class PTYSession {
 
     const encoder = new TextEncoder();
     const textBytes = encoder.encode(text);
-    const crlfBytes = new Uint8Array([0x0D, 0x0A]); // CR + LF
+    const crlfBytes = new Uint8Array([0x0d, 0x0a]); // CR + LF
 
     const combined = new Uint8Array(textBytes.length + 2);
     combined.set(textBytes, 0);
@@ -287,7 +287,7 @@ export class PTYSession {
    * Close the session gracefully.
    * Sends SIGTERM, waits for exit, then SIGKILL if needed.
    */
-  async close(timeoutMs: number = 5000): Promise<void> {
+  async close(timeoutMs = 5000): Promise<void> {
     if (this.state !== 'running' || !this.process) {
       return; // Already closed or never started
     }
@@ -297,7 +297,9 @@ export class PTYSession {
 
     // Wait for exit with timeout
     const exitPromise = this.process.exited;
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs));
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), timeoutMs),
+    );
 
     const result = await Promise.race([exitPromise, timeoutPromise]);
 

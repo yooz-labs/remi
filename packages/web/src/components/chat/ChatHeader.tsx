@@ -4,19 +4,19 @@
  * Displays session info, status, and actions.
  */
 
+import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 import { clsx } from 'clsx';
 import {
-  ArrowLeft,
-  MoreVertical,
-  Wifi,
-  WifiOff,
-  Loader2,
   AlertCircle,
-  Terminal,
+  ArrowLeft,
   Brain,
   Clock,
+  Loader2,
+  MoreVertical,
+  Terminal,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
-import type { UISession, ConnectionStatus, AgentStatus } from '@/types';
 
 interface ChatHeaderProps {
   readonly session: UISession;
@@ -36,9 +36,7 @@ function ConnectionIndicator({
       return <Wifi className="size-4 text-[--color-success]" />;
     case 'connecting':
     case 'reconnecting':
-      return (
-        <Loader2 className="size-4 animate-spin text-[--color-warning]" />
-      );
+      return <Loader2 className="size-4 animate-spin text-[--color-warning]" />;
     case 'error':
       return <AlertCircle className="size-4 text-[--color-error]" />;
     case 'disconnected':
@@ -88,12 +86,7 @@ function AgentStatusIndicator({ status }: { readonly status: AgentStatus }) {
   );
 }
 
-export function ChatHeader({
-  session,
-  onBack,
-  onMore,
-  className,
-}: ChatHeaderProps) {
+export function ChatHeader({ session, onBack, onMore, className }: ChatHeaderProps) {
   return (
     <header
       className={clsx(
@@ -126,9 +119,7 @@ export function ChatHeader({
           {session.cwd && (
             <>
               <span className="text-[--color-text-muted]">|</span>
-              <span className="truncate text-xs text-[--color-text-muted]">
-                {session.cwd}
-              </span>
+              <span className="truncate text-xs text-[--color-text-muted]">{session.cwd}</span>
             </>
           )}
         </div>

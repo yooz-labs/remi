@@ -4,20 +4,15 @@
  * Main application component with demo state for development.
  */
 
-import { useState, useCallback, useEffect } from 'react';
-import { AppLayout } from '@/components/layout';
-import { SessionList, ConnectModal } from '@/components/session';
 import { ChatView } from '@/components/chat';
+import { AppLayout } from '@/components/layout';
+import { ConnectModal, SessionList } from '@/components/session';
 import { useWebSocket } from '@/hooks';
-import type {
-  UISession,
-  UIMessage,
-  UIQuestion,
-  ConnectionStatus,
-} from '@/types';
-import type { UUID } from '@remi/shared/types.ts';
+import type { UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { generateId } from '@remi/shared/protocol.ts';
+import type { Bullet, UUID } from '@remi/shared/types.ts';
+import { useCallback, useEffect, useState } from 'react';
 
 // Demo data for development
 const DEMO_SESSIONS: UISession[] = [
@@ -117,34 +112,54 @@ function App() {
         setMessages([]); // Clear demo messages
         break;
 
-      case 'agent_output':
-        // Check if this is an update to an existing message or a new message
-        const msgContent = message.message;
+      case 'structured_agent_output': {
+        // Handle structured message with bullets
+        const structuredMsg = message.message;
+
+        // Convert Bullet[] to UIBullet[]
+        const uiBullets: UIBullet[] = structuredMsg.bullets.map((b: Bullet) => ({
+          bulletId: b.bulletId,
+          type: b.type,
+          content: b.content,
+          originalNumber: b.originalNumber,
+          startLine: b.startLine,
+          endLine: b.endLine,
+          hasCodeBlock: b.hasCodeBlock,
+          isTruncated: b.isTruncated,
+          fullLength: b.fullLength,
+        }));
+
         setMessages((prev) => {
-          const existingIndex = prev.findIndex((m) => m.id === msgContent.id);
+          const existingIndex = prev.findIndex((m) => m.id === structuredMsg.id);
           if (existingIndex >= 0) {
             // Update existing message
             return prev.map((m, i) =>
               i === existingIndex
                 ? {
                     ...m,
-                    content: msgContent.content,
-                    isEditing: msgContent.isEditing,
-                    tool: msgContent.tool,
+                    content: structuredMsg.content,
+                    isEditing: structuredMsg.isEditing,
+                    tool: structuredMsg.tool,
+                    bullets: uiBullets,
+                    firstBulletId: structuredMsg.firstBulletId,
+                    lastBulletId: structuredMsg.lastBulletId,
                   }
-                : m
+                : m,
             );
           } else {
             // Add new message
             const uiMessage: UIMessage = {
-              id: msgContent.id,
-              sessionId: msgContent.sessionId,
-              sender: msgContent.sender,
-              content: msgContent.content,
-              timestamp: msgContent.createdAt,
-              state: msgContent.state,
-              isEditing: msgContent.isEditing,
-              tool: msgContent.tool,
+              id: structuredMsg.id,
+              sessionId: structuredMsg.sessionId,
+              sender: structuredMsg.sender,
+              content: structuredMsg.content,
+              timestamp: structuredMsg.createdAt,
+              state: structuredMsg.state,
+              isEditing: structuredMsg.isEditing,
+              tool: structuredMsg.tool,
+              bullets: uiBullets,
+              firstBulletId: structuredMsg.firstBulletId,
+              lastBulletId: structuredMsg.lastBulletId,
             };
             return [...prev, uiMessage];
           }
@@ -153,28 +168,48 @@ function App() {
         // Update session last active time
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === msgContent.sessionId
+            s.id === structuredMsg.sessionId
               ? { ...s, lastActiveAt: new Date().toISOString() }
-              : s
-          )
+              : s,
+          ),
         );
         break;
+      }
 
-      case 'status_update':
-        // Update session status
+      case 'session_update': {
+        // Update session status (status is nested in session object)
+        const sessionData = message.session;
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === message.sessionId
-              ? { ...s, status: message.status }
-              : s
-          )
+          prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
         break;
+      }
 
       case 'question':
         // Handle question (TODO: implement question UI)
         console.log('Question received:', message.question);
         break;
+
+      case 'bullet_expand_response': {
+        // Update the bullet with full content
+        const { bulletId, fullContent } = message;
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (!msg.bullets) return msg;
+            const bulletIndex = msg.bullets.findIndex((b) => b.bulletId === bulletId);
+            if (bulletIndex < 0) return msg;
+
+            // Update the bullet with full content
+            const updatedBullets = msg.bullets.map((b) =>
+              b.bulletId === bulletId
+                ? { ...b, fullContent, content: fullContent, isExpanding: false }
+                : b,
+            );
+            return { ...msg, bullets: updatedBullets };
+          }),
+        );
+        break;
+      }
 
       case 'error':
         console.error('Daemon error:', message);
@@ -188,6 +223,7 @@ function App() {
     connect,
     disconnect,
     sendInput,
+    requestBulletExpand,
     sessionId: wsSessionId,
   } = useWebSocket({ onMessage: handleMessage });
 
@@ -202,11 +238,8 @@ function App() {
 
   // Get active session
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const sessionMessages = messages.filter(
-    (m) => m.sessionId === activeSessionId,
-  );
-  const sessionQuestion =
-    question?.sessionId === activeSessionId ? question : null;
+  const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
+  const sessionQuestion = question?.sessionId === activeSessionId ? question : null;
 
   // Handlers
   const handleSelectSession = useCallback((id: UUID) => {
@@ -238,16 +271,12 @@ function App() {
       if (success) {
         // Update state to sent
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === newMessage.id ? { ...m, state: 'sent' } : m,
-          ),
+          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
         );
       } else {
         // Failed to send
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === newMessage.id ? { ...m, state: 'sending' } : m,
-          ),
+          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sending' } : m)),
         );
       }
     },
@@ -255,9 +284,9 @@ function App() {
   );
 
   const handleConnectDirect = useCallback(
-    (url: string) => {
-      console.log('Connecting to:', url);
-      connect(url);
+    (url: string, directory?: string) => {
+      console.log('Connecting to:', url, 'directory:', directory);
+      connect(url, directory);
     },
     [connect],
   );
@@ -267,6 +296,30 @@ function App() {
     console.log('Connecting with code:', code);
     console.warn('WebRTC connection not yet implemented');
   }, []);
+
+  const handleBulletExpand = useCallback(
+    (bulletId: number) => {
+      if (!activeSessionId) return;
+
+      // Mark bullet as expanding
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (!msg.bullets) return msg;
+          const bulletIndex = msg.bullets.findIndex((b) => b.bulletId === bulletId);
+          if (bulletIndex < 0) return msg;
+
+          const updatedBullets = msg.bullets.map((b) =>
+            b.bulletId === bulletId ? { ...b, isExpanding: true } : b,
+          );
+          return { ...msg, bullets: updatedBullets };
+        }),
+      );
+
+      // Request expansion from daemon
+      requestBulletExpand(activeSessionId, bulletId);
+    },
+    [activeSessionId, requestBulletExpand],
+  );
 
   // Sidebar content
   const sidebar = (
@@ -289,6 +342,7 @@ function App() {
       onSend={handleSend}
       onBack={handleBack}
       onMore={() => console.log('More options')}
+      onBulletExpand={handleBulletExpand}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[--color-text-muted]">
@@ -298,11 +352,7 @@ function App() {
 
   return (
     <>
-      <AppLayout
-        sidebar={sidebar}
-        main={main}
-        showSidebar={!activeSessionId}
-      />
+      <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
 
       <ConnectModal
         isOpen={showConnectModal}

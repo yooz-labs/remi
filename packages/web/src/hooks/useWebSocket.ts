@@ -4,12 +4,17 @@
  * Provides reactive connection state and message handling.
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
-import { createHello, createUserInput, createPing } from '@remi/shared/protocol.ts';
 import type { ConnectionStatus } from '@/types';
+import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import {
+  createBulletExpandRequest,
+  createHello,
+  createPing,
+  createUserInput,
+} from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /** Hook return value */
 export interface UseWebSocketReturn {
@@ -18,13 +23,15 @@ export interface UseWebSocketReturn {
   /** Last error */
   error: Error | null;
   /** Connect to daemon */
-  connect: (url: string) => void;
+  connect: (url: string, directory?: string) => void;
   /** Disconnect from daemon */
   disconnect: () => void;
   /** Send user input */
   sendInput: (sessionId: UUID, content: string) => boolean;
   /** Send raw message */
   sendMessage: (message: ProtocolMessage) => boolean;
+  /** Request full content for a truncated bullet */
+  requestBulletExpand: (sessionId: UUID, bulletId: number) => boolean;
   /** Current session ID (after hello_ack) */
   sessionId: UUID | null;
 }
@@ -77,7 +84,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   // Connect to daemon
   const connect = useCallback(
-    (url: string) => {
+    (url: string, directory?: string) => {
       // Clean up existing connection
       clientRef.current?.disconnect();
 
@@ -91,10 +98,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           console.log('[WebSocket] Status changed:', newStatus);
           setStatus(newStatus);
           if (newStatus === 'connected') {
-            // Send hello message
+            // Send hello message with directory
             console.log('[WebSocket] Sending hello message...');
-            const sent = client.send(createHello(clientId, clientVersion));
-            console.log('[WebSocket] Hello message sent:', sent);
+            const sent = client.send(createHello(clientId, clientVersion, directory));
+            console.log('[WebSocket] Hello message sent:', sent, 'directory:', directory);
           }
           if (newStatus === 'disconnected') {
             setSessionId(null);
@@ -120,19 +127,25 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   }, []);
 
   // Send user input
-  const sendInput = useCallback(
-    (targetSessionId: UUID, content: string): boolean => {
-      if (!clientRef.current) return false;
-      return clientRef.current.send(createUserInput(targetSessionId, content));
-    },
-    [],
-  );
+  const sendInput = useCallback((targetSessionId: UUID, content: string): boolean => {
+    if (!clientRef.current) return false;
+    return clientRef.current.send(createUserInput(targetSessionId, content));
+  }, []);
 
   // Send raw message
   const sendMessage = useCallback((message: ProtocolMessage): boolean => {
     if (!clientRef.current) return false;
     return clientRef.current.send(message);
   }, []);
+
+  // Request bullet expansion
+  const requestBulletExpand = useCallback(
+    (targetSessionId: UUID, bulletId: number): boolean => {
+      if (!clientRef.current) return false;
+      return clientRef.current.send(createBulletExpandRequest(targetSessionId, bulletId));
+    },
+    [],
+  );
 
   // Clean up on unmount
   useEffect(() => {
@@ -159,6 +172,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     disconnect,
     sendInput,
     sendMessage,
+    requestBulletExpand,
     sessionId,
   };
 }

@@ -4,8 +4,8 @@
  * Allows the daemon to run WebSocket, Telegram, etc. simultaneously.
  */
 
-import type { UUID, ProtocolMessage, Message, Question, AgentStatus } from '@remi/shared';
-import type { ConnectionAdapter, AdapterEvents } from './connection-adapter.ts';
+import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { AdapterEvents, ConnectionAdapter } from './connection-adapter.ts';
 
 /** Events emitted by the registry */
 export interface RegistryEvents extends AdapterEvents {
@@ -84,17 +84,15 @@ export class AdapterRegistry {
    * Start all registered adapters.
    */
   async startAll(): Promise<void> {
-    const startPromises = Array.from(this.adapters.entries()).map(
-      async ([type, adapter]) => {
-        try {
-          await adapter.start();
-          this.events.onAdapterStart?.(type);
-        } catch (error) {
-          console.error(`Failed to start adapter '${type}':`, error);
-          throw error;
-        }
-      },
-    );
+    const startPromises = Array.from(this.adapters.entries()).map(async ([type, adapter]) => {
+      try {
+        await adapter.start();
+        this.events.onAdapterStart?.(type);
+      } catch (error) {
+        console.error(`Failed to start adapter '${type}':`, error);
+        throw error;
+      }
+    });
 
     await Promise.all(startPromises);
   }
@@ -103,16 +101,14 @@ export class AdapterRegistry {
    * Stop all registered adapters.
    */
   async stopAll(): Promise<void> {
-    const stopPromises = Array.from(this.adapters.entries()).map(
-      async ([type, adapter]) => {
-        try {
-          await adapter.stop();
-          this.events.onAdapterStop?.(type);
-        } catch (error) {
-          console.error(`Failed to stop adapter '${type}':`, error);
-        }
-      },
-    );
+    const stopPromises = Array.from(this.adapters.entries()).map(async ([type, adapter]) => {
+      try {
+        await adapter.stop();
+        this.events.onAdapterStop?.(type);
+      } catch (error) {
+        console.error(`Failed to stop adapter '${type}':`, error);
+      }
+    });
 
     await Promise.all(stopPromises);
     this.connectionToAdapter.clear();

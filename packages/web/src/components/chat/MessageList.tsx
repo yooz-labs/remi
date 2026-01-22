@@ -4,16 +4,17 @@
  * Displays a scrollable list of messages with auto-scroll.
  */
 
-import { useRef, useEffect, useCallback } from 'react';
+import type { AgentStatus, UIMessage } from '@/types';
 import { clsx } from 'clsx';
-import { MessageBubble, TypingIndicator, ErrorBubble } from './MessageBubble';
-import type { UIMessage, AgentStatus } from '@/types';
+import { useCallback, useEffect, useRef } from 'react';
+import { ErrorBubble, MessageBubble, TypingIndicator } from './MessageBubble';
 
 interface MessageListProps {
   readonly messages: readonly UIMessage[];
   readonly agentStatus: AgentStatus;
   readonly error?: string | null;
   readonly onRetry?: () => void;
+  readonly onBulletExpand?: (bulletId: number) => void;
   readonly className?: string;
 }
 
@@ -60,6 +61,7 @@ export function MessageList({
   agentStatus,
   error,
   onRetry,
+  onBulletExpand,
   className,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,18 +92,13 @@ export function MessageList({
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className={clsx(
-        'flex-1 overflow-y-auto px-4 py-2',
-        'scroll-smooth',
-        className,
-      )}
+      className={clsx('flex-1 overflow-y-auto px-4 py-2', 'scroll-smooth', className)}
     >
       {/* Empty state */}
       {messages.length === 0 && !error && (
         <div className="flex h-full flex-col items-center justify-center text-[--color-text-muted]">
           <div className="mb-2 text-4xl">
-            <span role="img" aria-label="wave">
-            </span>
+            <span role="img" aria-label="wave"></span>
           </div>
           <p className="text-sm">Start a conversation with Claude</p>
         </div>
@@ -112,15 +109,12 @@ export function MessageList({
         {messages.map((message, index) => {
           const prevMessage = messages[index - 1];
           const showDateSeparator =
-            index === 0 ||
-            (prevMessage !== undefined && isDifferentDay(prevMessage, message));
+            index === 0 || (prevMessage !== undefined && isDifferentDay(prevMessage, message));
 
           return (
             <div key={message.id}>
-              {showDateSeparator && (
-                <DateSeparator date={formatDate(message.timestamp)} />
-              )}
-              <MessageBubble message={message} />
+              {showDateSeparator && <DateSeparator date={formatDate(message.timestamp)} />}
+              <MessageBubble message={message} onBulletExpand={onBulletExpand} />
             </div>
           );
         })}

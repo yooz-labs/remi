@@ -3,11 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import {
-  parseMessage,
-  serializeMessage,
-  type SignalingMessage,
-} from '../src/types.ts';
+import { type SignalingMessage, parseMessage, serializeMessage } from '../src/types.ts';
 
 describe('parseMessage()', () => {
   test('parses register message', () => {
@@ -17,7 +13,9 @@ describe('parseMessage()', () => {
   });
 
   test('parses registered message', () => {
-    const msg = parseMessage('{"type":"registered","code":"ABCD-1234","expiresAt":"2026-01-10T00:00:00.000Z"}');
+    const msg = parseMessage(
+      '{"type":"registered","code":"ABCD-1234","expiresAt":"2026-01-10T00:00:00.000Z"}',
+    );
     expect(msg).not.toBeNull();
     expect(msg!.type).toBe('registered');
     if (msg?.type === 'registered') {
@@ -48,7 +46,9 @@ describe('parseMessage()', () => {
   });
 
   test('parses ice-candidate message', () => {
-    const msg = parseMessage('{"type":"ice-candidate","candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}');
+    const msg = parseMessage(
+      '{"type":"ice-candidate","candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}',
+    );
     expect(msg).not.toBeNull();
     expect(msg!.type).toBe('ice-candidate');
     if (msg?.type === 'ice-candidate') {

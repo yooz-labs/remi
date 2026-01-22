@@ -4,23 +4,15 @@
  * Modal for connecting to a daemon via direct URL or connection code.
  */
 
-import { useState, useRef, useEffect, type ChangeEvent } from 'react';
-import { clsx } from 'clsx';
-import {
-  X,
-  Wifi,
-  Globe,
-  Link2,
-  Loader2,
-  CheckCircle2,
-  AlertCircle,
-} from 'lucide-react';
 import type { ConnectionStatus } from '@/types';
+import { clsx } from 'clsx';
+import { AlertCircle, CheckCircle2, Globe, Link2, Loader2, Wifi, X } from 'lucide-react';
+import { type ChangeEvent, useEffect, useRef, useState } from 'react';
 
 interface ConnectModalProps {
   readonly isOpen: boolean;
   readonly onClose: () => void;
-  readonly onConnectDirect: (url: string) => void;
+  readonly onConnectDirect: (url: string, directory?: string) => void;
   readonly onConnectCode: (code: string) => void;
   readonly connectionStatus: ConnectionStatus;
   readonly error?: string | null;
@@ -43,8 +35,7 @@ function CodeInput({
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     // Format: ABCD-1234
     const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const formatted =
-      raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4, 8)}` : raw;
+    const formatted = raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4, 8)}` : raw;
     onChange(formatted);
   };
 
@@ -79,6 +70,7 @@ export function ConnectModal({
 }: ConnectModalProps) {
   const [mode, setMode] = useState<ConnectionMode>('direct');
   const [directUrl, setDirectUrl] = useState('ws://localhost:8765/ws');
+  const [directory, setDirectory] = useState('');
   const [code, setCode] = useState('');
 
   // Reset on close
@@ -86,18 +78,18 @@ export function ConnectModal({
     if (!isOpen) {
       setCode('');
       setDirectUrl('ws://localhost:8765/ws');
+      setDirectory('');
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const isConnecting =
-    connectionStatus === 'connecting' || connectionStatus === 'reconnecting';
+  const isConnecting = connectionStatus === 'connecting' || connectionStatus === 'reconnecting';
   const isConnected = connectionStatus === 'connected';
 
   const handleConnect = () => {
     if (mode === 'direct') {
-      onConnectDirect(directUrl);
+      onConnectDirect(directUrl, directory || undefined);
     } else {
       onConnectCode(code);
     }
@@ -110,9 +102,7 @@ export function ConnectModal({
       <div className="w-full max-w-md rounded-2xl bg-[--color-surface] shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[--color-border] p-4">
-          <h2 className="text-lg font-semibold text-[--color-text]">
-            Connect to Daemon
-          </h2>
+          <h2 className="text-lg font-semibold text-[--color-text]">Connect to Daemon</h2>
           <button
             onClick={onClose}
             className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
@@ -174,6 +164,25 @@ export function ConnectModal({
                   )}
                 />
               </label>
+              <label className="block">
+                <span className="mb-1 block text-sm text-[--color-text-secondary]">
+                  Working Directory (optional)
+                </span>
+                <input
+                  type="text"
+                  value={directory}
+                  onChange={(e) => setDirectory(e.target.value)}
+                  disabled={isConnecting}
+                  placeholder="~/Documents/git/myproject"
+                  className={clsx(
+                    'w-full rounded-xl bg-[--color-surface-light] px-4 py-3',
+                    'text-sm text-[--color-text] placeholder:text-[--color-text-muted]',
+                    'outline-none transition-colors',
+                    'focus:ring-2 focus:ring-[--color-primary]/50',
+                    isConnecting && 'cursor-not-allowed opacity-50',
+                  )}
+                />
+              </label>
               <p className="text-xs text-[--color-text-muted]">
                 Connect directly when on the same network as the daemon.
               </p>
@@ -187,15 +196,10 @@ export function ConnectModal({
                 <span className="mb-1 block text-sm text-[--color-text-secondary]">
                   Connection Code
                 </span>
-                <CodeInput
-                  value={code}
-                  onChange={setCode}
-                  disabled={isConnecting}
-                />
+                <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
               </label>
               <p className="text-xs text-[--color-text-muted]">
-                Enter the code displayed by the daemon for remote access via
-                WebRTC.
+                Enter the code displayed by the daemon for remote access via WebRTC.
               </p>
             </div>
           )}

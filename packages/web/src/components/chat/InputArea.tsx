@@ -4,17 +4,17 @@
  * Chat input with expanding textarea, send button, and quick actions.
  */
 
+import type { UIQuestion } from '@/types';
+import { clsx } from 'clsx';
+import { Mic, Paperclip, Send, StopCircle } from 'lucide-react';
 import {
-  useState,
-  useRef,
+  type ChangeEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
-  type KeyboardEvent,
-  type ChangeEvent,
+  useRef,
+  useState,
 } from 'react';
-import { clsx } from 'clsx';
-import { Send, Mic, Paperclip, StopCircle } from 'lucide-react';
-import type { UIQuestion } from '@/types';
 
 interface InputAreaProps {
   readonly onSend: (message: string) => void;
@@ -43,8 +43,7 @@ function QuickResponse({
         'rounded-full px-4 py-2 text-sm font-medium transition-colors',
         variant === 'default' &&
           'bg-[--color-surface-elevated] text-[--color-text] hover:bg-[--color-surface-light]',
-        variant === 'primary' &&
-          'bg-[--color-primary] text-white hover:bg-[--color-primary-dark]',
+        variant === 'primary' && 'bg-[--color-primary] text-white hover:bg-[--color-primary-dark]',
         variant === 'danger' &&
           'bg-[--color-error]/10 text-[--color-error] hover:bg-[--color-error]/20',
       )}
@@ -156,9 +155,7 @@ export function InputArea({
       {/* Quick responses for questions */}
       {showQuickResponses && (
         <div className="border-b border-[--color-border] px-4 py-3">
-          <p className="mb-2 text-sm text-[--color-text-secondary]">
-            {question.prompt}
-          </p>
+          <p className="mb-2 text-sm text-[--color-text-secondary]">{question.prompt}</p>
           <div className="flex flex-wrap gap-2">
             {question.type === 'yes_no' && (
               <>

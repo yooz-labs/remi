@@ -3,12 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import {
-  generateCode,
-  isValidCode,
-  normalizeCode,
-  codeEntropy,
-} from '../src/code-generator.ts';
+import { codeEntropy, generateCode, isValidCode, normalizeCode } from '../src/code-generator.ts';
 
 describe('generateCode()', () => {
   test('generates code with correct format', () => {

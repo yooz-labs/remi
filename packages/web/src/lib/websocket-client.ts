@@ -4,9 +4,9 @@
  * Handles connection, reconnection, and protocol message serialization.
  */
 
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
-import { serialize, deserialize } from '@remi/shared/protocol.ts';
 import type { ConnectionStatus } from '@/types';
+import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import { deserialize, serialize } from '@remi/shared/protocol.ts';
 
 /** WebSocket client configuration */
 export interface WebSocketClientConfig {
@@ -93,9 +93,7 @@ export class WebSocketClient {
       this.ws.onerror = this.handleWsError.bind(this);
       this.ws.onmessage = this.handleMessage.bind(this);
     } catch (error) {
-      this.handleError(
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      this.handleError(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -122,9 +120,7 @@ export class WebSocketClient {
       this.ws.send(serialize(message));
       return true;
     } catch (error) {
-      this.handleError(
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      this.handleError(error instanceof Error ? error : new Error(String(error)));
       return false;
     }
   }
@@ -141,10 +137,7 @@ export class WebSocketClient {
     this.ws = null;
     this.clearConnectionTimer();
 
-    if (
-      this.config.autoReconnect &&
-      this.reconnectAttempts < this.config.maxReconnectAttempts
-    ) {
+    if (this.config.autoReconnect && this.reconnectAttempts < this.config.maxReconnectAttempts) {
       this.scheduleReconnect();
     } else {
       this.setStatus('disconnected');
@@ -167,9 +160,7 @@ export class WebSocketClient {
         this.events.onMessage(message);
       }
     } catch (error) {
-      this.handleError(
-        error instanceof Error ? error : new Error('Failed to parse message'),
-      );
+      this.handleError(error instanceof Error ? error : new Error('Failed to parse message'));
     }
   }
 

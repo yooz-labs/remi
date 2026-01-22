@@ -8,14 +8,14 @@
  * Type assertions are used where necessary for compatibility.
  */
 
+import { generateCode } from './code-generator.ts';
 import {
+  type ConnectionCode,
+  type PeerRole,
+  type SignalingMessage,
   parseMessage,
   serializeMessage,
-  type SignalingMessage,
-  type PeerRole,
-  type ConnectionCode,
 } from './types.ts';
-import { generateCode } from './code-generator.ts';
 
 // Cloudflare-specific types (available at runtime in Workers)
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -45,7 +45,7 @@ export class ConnectionRoom {
   private code: ConnectionCode | null = null;
   private host: PeerSession | null = null;
   private client: PeerSession | null = null;
-  private expiresAt: number = 0;
+  private expiresAt = 0;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -64,7 +64,8 @@ export class ConnectionRoom {
 
     // Create WebSocket pair (Cloudflare-specific API)
     // WebSocketPair is a Cloudflare Workers global, not available in Bun/Node
-    const WebSocketPair = (globalThis as unknown as { WebSocketPair: new () => CFWebSocket[] }).WebSocketPair;
+    const WebSocketPair = (globalThis as unknown as { WebSocketPair: new () => CFWebSocket[] })
+      .WebSocketPair;
     const pair = new WebSocketPair();
     const [clientWs, serverWs] = pair;
 
@@ -162,7 +163,7 @@ export class ConnectionRoom {
     this.code = generateCode();
 
     // Set expiration
-    const timeoutMs = parseInt(this.env.CONNECTION_TIMEOUT_MS) || 300000;
+    const timeoutMs = Number.parseInt(this.env.CONNECTION_TIMEOUT_MS) || 300000;
     this.expiresAt = Date.now() + timeoutMs;
 
     // Register as host

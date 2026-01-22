@@ -2,9 +2,9 @@
  * Tests for WebSocket server.
  */
 
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { createHello, createPing, createUserInput, serialize } from '@remi/shared';
 import { WebSocketServer } from '../src/server/websocket-server.ts';
-import { serialize, createHello, createUserInput, createPing } from '@remi/shared';
 
 describe('WebSocketServer', () => {
   let server: WebSocketServer;
@@ -51,7 +51,11 @@ describe('WebSocketServer', () => {
       let startPort = 0;
       const serverWithEvents = new WebSocketServer(
         { port: testPort + 1 },
-        { onStart: (port) => { startPort = port; } },
+        {
+          onStart: (port) => {
+            startPort = port;
+          },
+        },
       );
 
       await serverWithEvents.start();
@@ -63,7 +67,11 @@ describe('WebSocketServer', () => {
       let stopped = false;
       const serverWithEvents = new WebSocketServer(
         { port: testPort + 2 },
-        { onStop: () => { stopped = true; } },
+        {
+          onStop: () => {
+            stopped = true;
+          },
+        },
       );
 
       await serverWithEvents.start();
@@ -103,7 +111,11 @@ describe('WebSocketServer', () => {
       let clientConnected = false;
       const serverWithEvents = new WebSocketServer(
         { port: testPort + 3 },
-        { onClientConnect: () => { clientConnected = true; } },
+        {
+          onClientConnect: () => {
+            clientConnected = true;
+          },
+        },
       );
 
       await serverWithEvents.start();
@@ -142,7 +154,11 @@ describe('WebSocketServer', () => {
       let disconnectReason = '';
       const serverWithEvents = new WebSocketServer(
         { port: testPort + 4 },
-        { onClientDisconnect: (id, reason) => { disconnectReason = reason; } },
+        {
+          onClientDisconnect: (id, reason) => {
+            disconnectReason = reason;
+          },
+        },
       );
 
       await serverWithEvents.start();
@@ -298,8 +314,8 @@ describe('WebSocketServer', () => {
       // Second connection should fail with 503
       const response = await fetch(`http://localhost:${testPort + 7}/ws`, {
         headers: {
-          'Upgrade': 'websocket',
-          'Connection': 'Upgrade',
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
           'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
           'Sec-WebSocket-Version': '13',
         },

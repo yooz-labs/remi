@@ -4,8 +4,8 @@
  * Responsive layout with sidebar for desktop and slide navigation for mobile.
  */
 
-import { useState, useEffect, type ReactNode } from 'react';
 import { clsx } from 'clsx';
+import { type ReactNode, useEffect, useState } from 'react';
 
 interface AppLayoutProps {
   readonly sidebar: ReactNode;
@@ -31,11 +31,7 @@ function useIsMobile(breakpoint = 768): boolean {
   return isMobile;
 }
 
-export function AppLayout({
-  sidebar,
-  main,
-  showSidebar = true,
-}: AppLayoutProps) {
+export function AppLayout({ sidebar, main, showSidebar = true }: AppLayoutProps) {
   const isMobile = useIsMobile();
 
   // Mobile: slide navigation

@@ -2,9 +2,7 @@
   "name": "remi",
   "version": "0.1.0",
   "private": true,
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun test --coverage",
     "test:watch": "bun test --watch",
@@ -14,7 +12,8 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "daemon": "bun run packages/daemon/src/cli.ts",
-    "daemon:dev": "bun --watch run packages/daemon/src/cli.ts"
+    "daemon:dev": "bun --watch run packages/daemon/src/cli.ts",
+    "remi": "bun run packages/daemon/src/cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

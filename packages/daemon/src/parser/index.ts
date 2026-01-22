@@ -16,3 +16,6 @@ export type { StatusResult } from './status-parser.ts';
 // Output processor
 export { OutputProcessor, processOutput } from './output-processor.ts';
 export type { OutputEvents, ProcessorConfig } from './output-processor.ts';
+
+// Bullet engine
+export { BulletEngine } from './bullet-engine.ts';
