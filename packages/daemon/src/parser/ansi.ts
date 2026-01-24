@@ -19,13 +19,20 @@
  * - Cursor right (ESC[nC) is replaced with spaces to preserve word spacing
  */
 export function stripAnsi(text: string): string {
-  // First, replace cursor-right movements with spaces (preserves word spacing)
+  // First, replace cursor-up/down with newlines (they indicate line changes in screen-based UI)
+  // ESC[nA moves cursor up n lines, ESC[nB moves cursor down n lines
+  // eslint-disable-next-line no-control-regex
+  const cursorVerticalPattern = /\u001b\[(\d*)[AB]/g;
+  let result = text.replace(cursorVerticalPattern, '\n');
+
+  // Replace cursor-right movements with spaces (preserves word spacing)
   // ESC[nC moves cursor right n columns - replace with n spaces
+  // But only for n > 1; for n=1 between word chars, it's likely a screen refresh
   // eslint-disable-next-line no-control-regex
   const cursorRightPattern = /\u001b\[(\d*)C/g;
-  let result = text.replace(cursorRightPattern, (_match, count) => {
+  result = result.replace(cursorRightPattern, (_match, count) => {
     const spaces = Number.parseInt(count || '1', 10);
-    return ' '.repeat(spaces);
+    return spaces > 1 ? ' '.repeat(spaces) : ' ';
   });
 
   // OSC sequences (ESC ] ... ST or ESC ] ... BEL)
@@ -193,16 +200,42 @@ export function filterTerminalUI(text: string): string {
     /^[a-z]\s*$/i,
     // Search pattern indicators
     /^Search\(pattern:/i,
+    // Claude Code wizard/question UI elements
+    // Lines containing checkboxes (☒ or ☐)
+    /[☒☐]/,
+    // Lines with wizard navigation arrows (← →) with submit/steps
+    /[←→]\s*(☒|☐|✔|Submit)/,
+    // "Enter to select" instruction text
+    /Enter to select/i,
+    // "Tab/Arrow keys" instruction text
+    /Tab\/Arrow keys/i,
+    // "Review your answers" wizard step
+    /Review your answers/i,
+    // "ctrl-g to edit" hints
+    /ctrl-g to edit/i,
+    // Lines starting with ❯ followed by numbered option
+    /^[\s]*❯\s*\d+\./,
+    // "Ready to submit" or garbled version
+    /Ready\s+\w*ubmi/i,
+    // Numbered options from wizard (indented number + period + text)
+    /^\s+\d+\.\s+(Submit|Cancel|Yes|Type)/i,
     // Claude Code suggested command hints (end with ↵ send)
     /↵\s*send\s*$/i,
     /⏎\s*send\s*$/i,
     // Thinking animation fragments (character-by-character rendering artifacts)
-    // Patterns like "* z n", "+ g", "* z i" from incremental animation display
+    // Short lines starting with thinking symbols that aren't real content
+    // Symbol + spaced single characters: "* z n", "+ g", "* z i"
     /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[a-z](\s+[a-z])*\s*$/i,
-    // Lines that are just a symbol followed by whitespace and 1-3 letters
-    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[a-z]{1,3}\s*$/i,
-    // Partial word fragments with thinking symbols (like "* Dr", "* Dri", "* Driz")
-    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[A-Z]?[a-z]{1,6}\s*$/i,
+    // Symbol + numbers (cursor escape remnants): "* 5", "+ 8", "* 4 0"
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+\d[\d\s]*$/,
+    // Symbol + dots: "+ ..."
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+\.{2,}\s*$/,
+    // Symbol + arrow + partial word: "* ↓ inking)"
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+[↓↑←→↵⏎]\s+\S{0,15}\s*$/,
+    // Symbol + short text with dots/ellipsis: "* i ..."
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+\S{1,3}\s+\.{2,}\s*$/,
+    // Symbol + very short content (< 10 chars after symbol) that's not a list item
+    /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+.{1,8}\s*$/,
     // Lines with only thinking symbols and spaces
     /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻\s]+$/,
   ];

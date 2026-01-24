@@ -31,9 +31,9 @@ describe('stripAnsi()', () => {
     expect(stripAnsi('\x1b[38;2;255;0;0mcolor\x1b[0m')).toBe('color');
   });
 
-  test('removes cursor movement codes', () => {
-    expect(stripAnsi('\x1b[2Aup two')).toBe('up two');
-    expect(stripAnsi('\x1b[3Bdown three')).toBe('down three');
+  test('converts cursor up/down to newlines and removes other cursor moves', () => {
+    expect(stripAnsi('\x1b[2Aup two')).toBe('\nup two');
+    expect(stripAnsi('\x1b[3Bdown three')).toBe('\ndown three');
     expect(stripAnsi('\x1b[Hmove home')).toBe('move home');
   });
 
