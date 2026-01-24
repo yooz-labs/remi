@@ -248,7 +248,7 @@ export interface SessionListRequestMessage {
   readonly type: 'session_list_request';
   readonly id: UUID;
   readonly timestamp: Timestamp;
-  /** Whether to include completed/external sessions from transcript files */
+  /** Whether to include external sessions from transcript files. When omitted or false, only daemon-managed sessions are returned. */
   readonly includeExternal?: boolean | undefined;
 }
 
@@ -576,11 +576,10 @@ export function createBulletExpandResponse(
 }
 
 /**
- * Create a session list request message.
+ * Create a session list request. When includeExternal is true, the response
+ * will include sessions discovered from transcript files in addition to daemon-managed sessions.
  */
-export function createSessionListRequest(
-  includeExternal?: boolean,
-): SessionListRequestMessage {
+export function createSessionListRequest(includeExternal?: boolean): SessionListRequestMessage {
   return {
     type: 'session_list_request',
     id: generateId(),
@@ -590,7 +589,7 @@ export function createSessionListRequest(
 }
 
 /**
- * Create a session list response message.
+ * Create a session list response containing discovered sessions for a given request.
  */
 export function createSessionListResponse(
   sessions: readonly DiscoverableSession[],

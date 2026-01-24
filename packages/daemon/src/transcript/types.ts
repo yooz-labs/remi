@@ -8,9 +8,6 @@
  * into Remi's own in-memory store.
  */
 
-/** Content block types within a message */
-export type ContentBlockType = 'text' | 'thinking' | 'tool_use' | 'tool_result';
-
 /** A text content block */
 export interface TextBlock {
   readonly type: 'text';

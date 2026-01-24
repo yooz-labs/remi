@@ -323,11 +323,12 @@ async function createNewSession(
 
   // Start transcript watcher after a delay (Claude Code needs time to create its file)
   setTimeout(() => {
+    if (!sessionRegistry.hasSession(sessionId)) return; // Session already cleaned up
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (!transcriptPath) {
       console.log(`No transcript file found for ${workingDirectory}, will retry...`);
-      // Retry once more after another delay
       setTimeout(() => {
+        if (!sessionRegistry.hasSession(sessionId)) return;
         const retryPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
         if (retryPath) {
           startTranscriptWatcher(sessionId, retryPath);
@@ -366,9 +367,7 @@ function startTranscriptWatcher(sessionId: UUID, transcriptPath: string): void {
       },
       onUserMessage: (entry) => {
         const content =
-          typeof entry.message.content === 'string'
-            ? entry.message.content
-            : '[complex content]';
+          typeof entry.message.content === 'string' ? entry.message.content : '[complex content]';
         console.log(`[Transcript] User message: ${content.slice(0, 80)}`);
       },
       onError: (error) => {
@@ -378,7 +377,9 @@ function startTranscriptWatcher(sessionId: UUID, transcriptPath: string): void {
   );
 
   transcriptWatchers.set(sessionId, watcher);
-  watcher.start();
+  watcher.start().catch((error) => {
+    console.error(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
+  });
 }
 
 /**

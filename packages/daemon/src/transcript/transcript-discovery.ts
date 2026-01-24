@@ -11,7 +11,18 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DiscoverableSession } from '@remi/shared';
-import type { AssistantEntry, TranscriptEntry, UserEntry } from './types.ts';
+import type {
+  AssistantEntry,
+  ContentBlock,
+  TextBlock,
+  TranscriptEntry,
+  UserEntry,
+} from './types.ts';
+
+/** Type predicate for TextBlock content blocks */
+function isTextBlock(block: ContentBlock): block is TextBlock {
+  return block.type === 'text';
+}
 
 /** Default Claude Code projects directory */
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -21,7 +32,7 @@ export interface TranscriptDiscoveryConfig {
   /** Directory to scan for transcript files (default: ~/.claude/projects/) */
   readonly projectsDir?: string;
 
-  /** Maximum age in ms for a session to be considered active (default: 1 hour) */
+  /** Maximum age in ms before a session is marked 'completed' (default: 1 hour). Sessions modified within 5 minutes are 'active'; between 5 minutes and this threshold are 'idle'. */
   readonly activeThresholdMs?: number;
 
   /** Maximum number of sessions to return (default: 50) */
@@ -41,7 +52,8 @@ interface TranscriptFileInfo {
  * Discover Claude Code sessions from transcript files on disk.
  *
  * Scans the Claude Code projects directory for .jsonl files and
- * extracts session metadata without loading full file contents.
+ * extracts session metadata by reading only the tail of each file (last 8KB),
+ * avoiding full file loads.
  */
 export class TranscriptDiscovery {
   private readonly config: Required<TranscriptDiscoveryConfig>;
@@ -81,11 +93,14 @@ export class TranscriptDiscovery {
   }
 
   /**
-   * Get the transcript file path for a given project directory.
-   * Returns the path to the Claude Code projects directory for that project.
+   * Get the transcript directory path for a given project.
+   * Encodes the project's absolute path into the Claude Code projects directory structure.
+   *
+   * NOTE: Claude Code's encoding (replacing `/` with `-`) is lossy. Paths containing
+   * dashes cannot be reliably decoded back (e.g., `/Users/my-project` and `/Users/my/project`
+   * produce the same encoded form). The `projectPath` on discovered sessions may be inaccurate.
    */
   getProjectTranscriptDir(projectPath: string): string {
-    // Claude Code uses the absolute path with slashes replaced by dashes
     const encodedPath = projectPath.replace(/\//g, '-');
     return path.join(this.config.projectsDir, encodedPath);
   }
@@ -108,7 +123,7 @@ export class TranscriptDiscovery {
 
     // Sort by modification time, most recent first
     files.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
-    return files[0]!.filePath;
+    return files[0]?.filePath ?? null;
   }
 
   /**
@@ -132,7 +147,7 @@ export class TranscriptDiscovery {
           const stat = fs.statSync(dirPath);
           if (!stat.isDirectory()) continue;
         } catch {
-          continue;
+          continue; // Skip inaccessible directories
         }
 
         const files = this.listJsonlFiles(dirPath);
@@ -180,7 +195,7 @@ export class TranscriptDiscovery {
             fileSize: stat.size,
           });
         } catch {
-          continue;
+          // Skip files that can't be stat'd
         }
       }
     } catch {
@@ -192,7 +207,7 @@ export class TranscriptDiscovery {
 
   /**
    * Convert a transcript file info to a DiscoverableSession.
-   * Reads the last few lines to get the latest message info.
+   * Reads the tail of the file (last 8KB) to extract metadata.
    */
   private fileToDiscoverableSession(file: TranscriptFileInfo): DiscoverableSession | null {
     const now = Date.now();
@@ -211,6 +226,9 @@ export class TranscriptDiscovery {
 
     // Try to get the last message and message count from the file tail
     const tailInfo = this.readFileTail(file.filePath);
+    if (!tailInfo) {
+      return null; // Could not read file
+    }
 
     return {
       sessionId: file.sessionId,
@@ -227,24 +245,27 @@ export class TranscriptDiscovery {
 
   /**
    * Read the tail of a transcript file to extract metadata.
-   * Only reads the last few KB to avoid loading large files.
+   * Only reads the last 8KB to avoid loading large files.
+   * Returns null if the file cannot be read.
    */
   private readFileTail(filePath: string): {
     messageCount: number;
     model?: string;
     lastMessage?: string;
-  } {
-    const MAX_TAIL_BYTES = 8192; // Read last 8KB
+  } | null {
+    const MAX_TAIL_BYTES = 8192;
+    let fd: number | null = null;
 
     try {
       const stat = fs.statSync(filePath);
       const readOffset = Math.max(0, stat.size - MAX_TAIL_BYTES);
       const readSize = Math.min(stat.size, MAX_TAIL_BYTES);
 
-      const fd = fs.openSync(filePath, 'r');
       const buffer = Buffer.alloc(readSize);
+      fd = fs.openSync(filePath, 'r');
       fs.readSync(fd, buffer, 0, readSize, readOffset);
       fs.closeSync(fd);
+      fd = null;
 
       const content = buffer.toString('utf-8');
       const lines = content.split('\n').filter((l) => l.trim());
@@ -257,8 +278,10 @@ export class TranscriptDiscovery {
       let lastMessage: string | undefined;
 
       for (let i = startIdx; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
         try {
-          const entry = JSON.parse(lines[i]!) as TranscriptEntry;
+          const entry = JSON.parse(line) as TranscriptEntry;
 
           if (entry.type === 'user' || entry.type === 'assistant') {
             messageCount++;
@@ -268,31 +291,28 @@ export class TranscriptDiscovery {
             const assistantEntry = entry as AssistantEntry;
             model = assistantEntry.message.model ?? model;
 
-            // Get text content as preview
-            const textBlocks = assistantEntry.message.content.filter((b) => b.type === 'text');
-            if (textBlocks.length > 0) {
-              const text = (textBlocks[0] as { text: string }).text;
-              lastMessage = text.length > 100 ? `${text.slice(0, 97)}...` : text;
+            const textBlocks = assistantEntry.message.content.filter(isTextBlock);
+            const firstText = textBlocks[0]?.text;
+            if (firstText) {
+              lastMessage = firstText.length > 100 ? `${firstText.slice(0, 97)}...` : firstText;
             }
           }
 
           if (entry.type === 'user') {
             const userEntry = entry as UserEntry;
-            const content =
+            const msgContent =
               typeof userEntry.message.content === 'string'
                 ? userEntry.message.content
                 : '[complex content]';
-            lastMessage =
-              content.length > 100 ? `${content.slice(0, 97)}...` : content;
+            lastMessage = msgContent.length > 100 ? `${msgContent.slice(0, 97)}...` : msgContent;
           }
         } catch {
-          // Skip unparseable lines
+          // Skip unparseable lines in tail
         }
       }
 
       // If we only read the tail, the message count is approximate
       if (readOffset > 0) {
-        // Estimate total messages from file size ratio
         const ratio = stat.size / readSize;
         messageCount = Math.round(messageCount * ratio);
       }
@@ -304,7 +324,15 @@ export class TranscriptDiscovery {
       if (lastMessage) result.lastMessage = lastMessage;
       return result;
     } catch {
-      return { messageCount: 0 };
+      return null;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* already closed or invalid */
+        }
+      }
     }
   }
 }

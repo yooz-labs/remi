@@ -239,7 +239,7 @@ export function isErr<T, E>(result: Result<T, E>): result is { ok: false; error:
 /** How a session was discovered */
 export type SessionSource = 'daemon' | 'transcript';
 
-/** Session status for discovery */
+/** Session status for discovery. Daemon sessions use 'active'/'idle'/'orphaned'; transcript sessions use 'active'/'idle'/'completed'. */
 export type DiscoverableSessionStatus = 'active' | 'idle' | 'orphaned' | 'completed';
 
 /**
@@ -250,13 +250,13 @@ export interface DiscoverableSession {
   /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
   readonly sessionId: string;
 
-  /** Project path this session is working in */
+  /** Project path this session is working in. For transcript sessions, this is decoded from Claude Code's lossy path encoding and may be inaccurate for paths containing dashes. */
   readonly projectPath: string;
 
   /** Current session status */
   readonly status: DiscoverableSessionStatus;
 
-  /** When the session was last active */
+  /** When the session was last active. For daemon sessions: last disconnection time (or creation time if still connected). For transcript sessions: file modification time. */
   readonly lastActivity: Timestamp;
 
   /** Number of messages in the session */

@@ -162,6 +162,13 @@ export class SessionRegistry {
   }
 
   /**
+   * Check if a session exists (has not been cleaned up).
+   */
+  hasSession(sessionId: UUID): boolean {
+    return this.sessions.has(sessionId);
+  }
+
+  /**
    * Get the session for a given connection.
    */
   getSessionForConnection(connectionId: UUID): ManagedSession | undefined {
@@ -397,9 +404,7 @@ export class SessionRegistry {
   /**
    * Determine discoverable status from managed session state.
    */
-  private getDiscoverableStatus(
-    session: ManagedSession,
-  ): 'active' | 'idle' | 'orphaned' {
+  private getDiscoverableStatus(session: ManagedSession): 'active' | 'idle' | 'orphaned' {
     if (session.activeConnectionId === null) {
       return 'orphaned';
     }
