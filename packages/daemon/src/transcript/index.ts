@@ -7,7 +7,12 @@
 
 export { TranscriptWatcher } from './transcript-watcher.ts';
 export { TranscriptDiscovery } from './transcript-discovery.ts';
+export { TranscriptMessageBridge } from './transcript-message-bridge.ts';
 export type { TranscriptDiscoveryConfig } from './transcript-discovery.ts';
+export type {
+  TranscriptMessageBridgeConfig,
+  TranscriptMessageBridgeEvents,
+} from './transcript-message-bridge.ts';
 export type {
   AssistantEntry,
   ContentBlock,

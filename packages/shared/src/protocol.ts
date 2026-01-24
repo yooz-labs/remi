@@ -78,7 +78,8 @@ export type ProtocolMessage =
   | BulletExpandRequestMessage
   | BulletExpandResponseMessage
   | SessionListRequestMessage
-  | SessionListResponseMessage;
+  | SessionListResponseMessage
+  | TranscriptContentMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -263,6 +264,38 @@ export interface SessionListResponseMessage {
   readonly requestId: UUID;
 }
 
+/** Token usage information from a transcript entry */
+export interface TranscriptUsage {
+  readonly input_tokens?: number | undefined;
+  readonly output_tokens?: number | undefined;
+}
+
+/** Transcript-sourced content message (Phase 2 of two-phase delivery) */
+export interface TranscriptContentMessage {
+  readonly type: 'transcript_content';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
+  /** Unique transcript entry UUID from Claude Code */
+  readonly entryUuid: string;
+  /** Message role */
+  readonly role: 'user' | 'assistant';
+  /** Clean text content (text blocks only, no thinking/tool_use) */
+  readonly content: string;
+  /** Tool names invoked in this turn */
+  readonly tools?: readonly string[] | undefined;
+  /** Model used (assistant entries only) */
+  readonly model?: string | undefined;
+  /** Whether thinking blocks were present */
+  readonly hadThinking?: boolean | undefined;
+  /** Token usage (if available) */
+  readonly usage?: TranscriptUsage | undefined;
+  /** Structured message with bullets */
+  readonly message: StructuredMessage;
+  /** Whether this updates a previously sent entry */
+  readonly isUpdate: boolean;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -322,6 +355,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'bullet_expand_response',
     'session_list_request',
     'session_list_response',
+    'transcript_content',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -601,6 +635,40 @@ export function createSessionListResponse(
     timestamp: now(),
     sessions,
     requestId,
+  };
+}
+
+/**
+ * Create a transcript content message (Phase 2 content delivery).
+ */
+export function createTranscriptContent(
+  sessionId: UUID,
+  entryUuid: string,
+  role: 'user' | 'assistant',
+  content: string,
+  message: StructuredMessage,
+  isUpdate: boolean,
+  options?: {
+    tools?: readonly string[];
+    model?: string;
+    hadThinking?: boolean;
+    usage?: TranscriptUsage;
+  },
+): TranscriptContentMessage {
+  return {
+    type: 'transcript_content',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    entryUuid,
+    role,
+    content,
+    message,
+    isUpdate,
+    ...(options?.tools && { tools: options.tools }),
+    ...(options?.model && { model: options.model }),
+    ...(options?.hadThinking && { hadThinking: options.hadThinking }),
+    ...(options?.usage && { usage: options.usage }),
   };
 }
 

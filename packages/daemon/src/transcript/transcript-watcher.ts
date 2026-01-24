@@ -111,6 +111,17 @@ export class TranscriptWatcher {
   }
 
   /**
+   * Force an immediate read of new entries.
+   * Useful when an external signal (e.g., PTY idle) indicates
+   * new transcript data is available without waiting for the poll cycle.
+   */
+  async forceRead(): Promise<void> {
+    if (this.running) {
+      await this.readNewEntries();
+    }
+  }
+
+  /**
    * Start watching the transcript file.
    * If readExisting is true, reads all existing entries first.
    */

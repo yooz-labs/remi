@@ -42,6 +42,10 @@ export interface ProcessorConfig {
 
   /** Buffer size before forcing message creation */
   readonly bufferSize?: number;
+
+  /** If true, only emit status and question events (no message content).
+   * Used in two-phase delivery mode where transcript provides clean content. */
+  readonly streamStatusOnly?: boolean;
 }
 
 const DEFAULT_UPDATE_THROTTLE_MS = 50;
@@ -74,6 +78,7 @@ export class OutputProcessor {
       sessionId: config.sessionId,
       updateThrottleMs: config.updateThrottleMs ?? DEFAULT_UPDATE_THROTTLE_MS,
       bufferSize: config.bufferSize ?? DEFAULT_BUFFER_SIZE,
+      streamStatusOnly: config.streamStatusOnly ?? false,
     };
     this.events = events;
   }
@@ -217,7 +222,9 @@ export class OutputProcessor {
               isEditing: true,
               tool,
             };
-            this.events.onMessage?.(message);
+            if (!this.config.streamStatusOnly) {
+              this.events.onMessage?.(message);
+            }
             this.hasEmittedCurrentMessage = true;
           }
         }
@@ -274,18 +281,24 @@ export class OutputProcessor {
         tool,
       };
 
-      this.events.onMessage?.(message);
+      if (!this.config.streamStatusOnly) {
+        this.events.onMessage?.(message);
+      }
       this.hasEmittedCurrentMessage = true;
     } else {
       // Update existing message
-      this.events.onMessageUpdate?.(this.currentMessageId!, this.currentMessageContent, tool);
+      if (!this.config.streamStatusOnly) {
+        this.events.onMessageUpdate?.(this.currentMessageId!, this.currentMessageContent, tool);
+      }
     }
   }
 
   private finalizeMessage(): void {
     if (this.currentMessageId !== null) {
       // Final update with isEditing = false
-      this.events.onMessageUpdate?.(this.currentMessageId, this.currentMessageContent, undefined);
+      if (!this.config.streamStatusOnly) {
+        this.events.onMessageUpdate?.(this.currentMessageId, this.currentMessageContent, undefined);
+      }
     }
 
     this.currentMessageId = null;

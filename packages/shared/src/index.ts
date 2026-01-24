@@ -54,6 +54,8 @@ export type {
   BulletExpandResponseMessage,
   SessionListRequestMessage,
   SessionListResponseMessage,
+  TranscriptContentMessage,
+  TranscriptUsage,
 } from './protocol.ts';
 
 export {
@@ -78,5 +80,6 @@ export {
   createBulletExpandResponse,
   createSessionListRequest,
   createSessionListResponse,
+  createTranscriptContent,
   MessageIdTracker,
 } from './protocol.ts';
