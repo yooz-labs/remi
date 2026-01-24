@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { BulletContentRegistry } from '../src/api/bullet-content-registry.ts';
 
 describe('BulletContentRegistry', () => {

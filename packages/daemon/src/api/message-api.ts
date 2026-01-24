@@ -132,7 +132,11 @@ export class MessageAPI {
     const oldBulletContent = new Map(existing.bullets.map((b) => [b.bulletId, b.content]));
 
     // Update the structured message
-    const updated = this.bulletEngine.updateStructuredMessage(existing, content, this.contentRegistry);
+    const updated = this.bulletEngine.updateStructuredMessage(
+      existing,
+      content,
+      this.contentRegistry,
+    );
     const finalMessage: StructuredMessage = {
       ...updated,
       isEditing: true,

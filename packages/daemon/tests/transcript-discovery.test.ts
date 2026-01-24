@@ -5,10 +5,10 @@
  * ~/.claude/projects/ directory (read-only).
  */
 
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { TranscriptDiscovery } from '../src/transcript/index.ts';
 
 const TEMP_DIR = path.join(os.tmpdir(), 'remi-test-discovery');
@@ -22,7 +22,7 @@ function makeProjectDir(projectPath: string): string {
 
 function writeTranscript(dir: string, sessionId: string, entries: object[]): string {
   const filePath = path.join(dir, `${sessionId}.jsonl`);
-  const content = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  const content = `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
   fs.writeFileSync(filePath, content);
   return filePath;
 }
@@ -64,18 +64,15 @@ afterEach(() => {
 describe('TranscriptDiscovery', () => {
   test('discovers sessions from transcript files', () => {
     const projectDir = makeProjectDir('/Users/test/project');
-    writeTranscript(projectDir, 'session-1', [
-      makeUserEntry('hello'),
-      makeAssistantEntry('hi'),
-    ]);
+    writeTranscript(projectDir, 'session-1', [makeUserEntry('hello'), makeAssistantEntry('hi')]);
 
     const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
     const sessions = discovery.discoverSessions();
 
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]!.sessionId).toBe('session-1');
-    expect(sessions[0]!.source).toBe('transcript');
-    expect(sessions[0]!.canAttach).toBe(false);
+    expect(sessions[0]?.sessionId).toBe('session-1');
+    expect(sessions[0]?.source).toBe('transcript');
+    expect(sessions[0]?.canAttach).toBe(false);
   });
 
   test('discovers multiple sessions across projects', () => {
@@ -101,7 +98,7 @@ describe('TranscriptDiscovery', () => {
     const sessions = discovery.discoverSessions(new Set(['exclude-me']));
 
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]!.sessionId).toBe('keep-me');
+    expect(sessions[0]?.sessionId).toBe('keep-me');
   });
 
   test('sorts by most recently modified first', async () => {
@@ -115,8 +112,8 @@ describe('TranscriptDiscovery', () => {
     const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
     const sessions = discovery.discoverSessions();
 
-    expect(sessions[0]!.sessionId).toBe('new-session');
-    expect(sessions[1]!.sessionId).toBe('old-session');
+    expect(sessions[0]?.sessionId).toBe('new-session');
+    expect(sessions[1]?.sessionId).toBe('old-session');
   });
 
   test('extracts model info from transcript', () => {
@@ -129,7 +126,7 @@ describe('TranscriptDiscovery', () => {
     const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
     const sessions = discovery.discoverSessions();
 
-    expect(sessions[0]!.model).toBe('claude-sonnet-4-20250514');
+    expect(sessions[0]?.model).toBe('claude-sonnet-4-20250514');
   });
 
   test('extracts last message preview', () => {
@@ -142,7 +139,7 @@ describe('TranscriptDiscovery', () => {
     const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
     const sessions = discovery.discoverSessions();
 
-    expect(sessions[0]!.lastMessage).toBe('the assistant responds');
+    expect(sessions[0]?.lastMessage).toBe('the assistant responds');
   });
 
   test('truncates long last message preview', () => {
@@ -153,8 +150,8 @@ describe('TranscriptDiscovery', () => {
     const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
     const sessions = discovery.discoverSessions();
 
-    expect(sessions[0]!.lastMessage!.length).toBeLessThanOrEqual(100);
-    expect(sessions[0]!.lastMessage!.endsWith('...')).toBe(true);
+    expect(sessions[0]?.lastMessage?.length).toBeLessThanOrEqual(100);
+    expect(sessions[0]?.lastMessage?.endsWith('...')).toBe(true);
   });
 
   test('respects maxResults limit', () => {
@@ -177,14 +174,14 @@ describe('TranscriptDiscovery', () => {
     const sessions = discovery.discoverSessions();
 
     // Just written, should be active
-    expect(sessions[0]!.status).toBe('active');
+    expect(sessions[0]?.status).toBe('active');
 
     // Modify the file's mtime to be old
     const oldTime = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2 hours ago
     fs.utimesSync(filePath, oldTime, oldTime);
 
     const sessions2 = discovery.discoverSessions();
-    expect(sessions2[0]!.status).toBe('completed');
+    expect(sessions2[0]?.status).toBe('completed');
   });
 
   test('findLatestTranscript returns most recent file', async () => {

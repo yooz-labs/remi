@@ -173,7 +173,7 @@ export class TranscriptWatcher {
 
     // Watch the directory for the file to appear
     try {
-      const dirWatcher = fs.watch(dir, (eventType, filename) => {
+      const dirWatcher = fs.watch(dir, (_eventType, filename) => {
         if (filename && this.config.filePath.endsWith(filename)) {
           dirWatcher.close();
           if (this.running) {

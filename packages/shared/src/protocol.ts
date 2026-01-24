@@ -43,7 +43,9 @@ export function generateId(): UUID {
   }
 
   // Set version (4) and variant bits
+  // biome-ignore lint/style/noNonNullAssertion: array is guaranteed 16 elements
   bytes[6] = (bytes[6]! & 0x0f) | 0x40; // Version 4
+  // biome-ignore lint/style/noNonNullAssertion: array is guaranteed 16 elements
   bytes[8] = (bytes[8]! & 0x3f) | 0x80; // Variant 10
 
   // Convert to hex string with hyphens
@@ -539,7 +541,7 @@ export function createQuestion(question: Question): QuestionMessage {
 export function createSessionUpdate(
   sessionId: UUID,
   status: AgentStatus,
-  statusContext?: string,
+  _statusContext?: string,
 ): SessionUpdateMessage {
   // Create minimal session object for status update
   const session: Session = {

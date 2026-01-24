@@ -4,10 +4,10 @@
  * Uses real filesystem operations (no mocks).
  */
 
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { TranscriptWatcher } from '../src/transcript/index.ts';
 import type { AssistantEntry, UserEntry } from '../src/transcript/index.ts';
 
@@ -119,7 +119,7 @@ describe('TranscriptWatcher', () => {
 
     expect(receivedUsers).toHaveLength(1);
     expect(receivedAssistants).toHaveLength(1);
-    expect(receivedUsers[0]!.message.content).toBe('new message');
+    expect(receivedUsers[0]?.message.content).toBe('new message');
 
     watcher.stop();
   });
@@ -135,7 +135,7 @@ describe('TranscriptWatcher', () => {
     await watcher.start();
 
     expect(watcher.entryCount).toBe(1);
-    expect(watcher.getUserMessages()[0]!.message.content).toBe('first');
+    expect(watcher.getUserMessages()[0]?.message.content).toBe('first');
 
     watcher.stop();
   });
@@ -150,8 +150,8 @@ describe('TranscriptWatcher', () => {
 
     expect(watcher.entryCount).toBe(2);
     const entries = watcher.getEntries();
-    expect(entries[0]!.type).toBe('summary');
-    expect(entries[1]!.type).toBe('user');
+    expect(entries[0]?.type).toBe('summary');
+    expect(entries[1]?.type).toBe('user');
 
     watcher.stop();
   });
@@ -197,6 +197,7 @@ describe('TranscriptWatcher', () => {
     await watcher.start();
 
     const assistants = watcher.getAssistantMessages();
+    // biome-ignore lint/style/noNonNullAssertion: test file with known data
     const text = watcher.getAssistantText(assistants[0]!);
     expect(text).toBe('visible response\nmore text');
 
@@ -211,6 +212,7 @@ describe('TranscriptWatcher', () => {
     await watcher.start();
 
     const assistants = watcher.getAssistantMessages();
+    // biome-ignore lint/style/noNonNullAssertion: test file with known data
     expect(watcher.getModel(assistants[0]!)).toBe('claude-sonnet-4-20250514');
 
     watcher.stop();
@@ -220,9 +222,7 @@ describe('TranscriptWatcher', () => {
     const filePath = createTempFile('malformed.jsonl');
     fs.writeFileSync(
       filePath,
-      `${JSON.stringify(makeUserEntry('good'))}\n` +
-        'not valid json\n' +
-        `${JSON.stringify(makeAssistantEntry('also good'))}\n`,
+      `${JSON.stringify(makeUserEntry('good'))}\nnot valid json\n${JSON.stringify(makeAssistantEntry('also good'))}\n`,
     );
 
     const errors: Error[] = [];
@@ -234,7 +234,7 @@ describe('TranscriptWatcher', () => {
 
     expect(watcher.entryCount).toBe(2);
     expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain('Failed to parse');
+    expect(errors[0]?.message).toContain('Failed to parse');
 
     watcher.stop();
   });
