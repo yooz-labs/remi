@@ -46,10 +46,10 @@ if (fs.existsSync(envPath)) {
 }
 import {
   createBulletExpandResponse,
+  createError,
   createHelloAck,
   createReplayBatch,
   createSessionListResponse,
-  createStructuredAgentOutput,
   generateId,
   now,
 } from '@remi/shared';
@@ -64,7 +64,11 @@ import { MessageAPI } from './api/index.ts';
 import { OutputProcessor } from './parser/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry } from './session/index.ts';
-import { TranscriptDiscovery, TranscriptWatcher } from './transcript/index.ts';
+import {
+  TranscriptDiscovery,
+  TranscriptMessageBridge,
+  TranscriptWatcher,
+} from './transcript/index.ts';
 import type { AssistantEntry } from './transcript/index.ts';
 
 /**
@@ -211,7 +215,7 @@ async function createNewSession(
     sessionRegistry.recordOutgoingMessage(sessionId, message);
   };
 
-  // Create MessageAPI with event handlers for adapters
+  // Create MessageAPI for bullet structuring (content delivery via transcript bridge)
   const messageApi = new MessageAPI(
     {
       sessionId: sessionId,
@@ -219,17 +223,6 @@ async function createNewSession(
       maxBulletLength: MAX_BULLET_LENGTH,
     },
     {
-      onStructuredMessage: (message) => {
-        const bulletCount = message.bullets.length;
-        console.log(
-          `New message with ${bulletCount} bullets (IDs: ${message.firstBulletId}-${message.lastBulletId})`,
-        );
-        sendAndRecord(createStructuredAgentOutput(message, false));
-      },
-      onStructuredMessageUpdate: (msgId, message, changedBulletIds) => {
-        console.log(`Update message ${msgId}: ${changedBulletIds.length} bullets changed`);
-        sendAndRecord(createStructuredAgentOutput(message, true, changedBulletIds));
-      },
       onMessageFinalized: (msgId) => {
         console.log(`Message ${msgId} finalized`);
       },
@@ -260,6 +253,14 @@ async function createNewSession(
         };
         sendAndRecord(msg);
         sessionRegistry.updateStatus(sessionId, status);
+
+        // Trigger transcript read on status transitions (new content likely available)
+        const watcher = transcriptWatchers.get(sessionId);
+        if (watcher) {
+          watcher.forceRead().catch((err) => {
+            console.error(`[Transcript] forceRead failed for session ${sessionId}:`, err);
+          });
+        }
       },
     },
   );
@@ -293,11 +294,12 @@ async function createNewSession(
     },
   );
 
-  // Create output processor that feeds into MessageAPI
+  // Create output processor (streamStatusOnly: transcript bridge handles content)
   const processor = new OutputProcessor(
     {
       sessionId: sessionId,
       updateThrottleMs: 100,
+      streamStatusOnly: true,
     },
     {
       onMessage: (message) => {
@@ -331,23 +333,42 @@ async function createNewSession(
         if (!sessionRegistry.hasSession(sessionId)) return;
         const retryPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
         if (retryPath) {
-          startTranscriptWatcher(sessionId, retryPath);
+          startTranscriptWatcher(sessionId, retryPath, messageApi, sendAndRecord);
         } else {
           console.warn(`Could not find transcript file for session ${sessionId}`);
         }
       }, 5000);
       return;
     }
-    startTranscriptWatcher(sessionId, transcriptPath);
+    startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
   }, 2000);
 }
 
 /**
  * Start watching a transcript file for a session.
- * Emits clean message content from Claude Code's transcript.
+ * Uses TranscriptMessageBridge for clean content delivery via protocol messages.
  */
-function startTranscriptWatcher(sessionId: UUID, transcriptPath: string): void {
+function startTranscriptWatcher(
+  sessionId: UUID,
+  transcriptPath: string,
+  messageApi: MessageAPI,
+  sendAndRecord: (message: ProtocolMessage) => void,
+): void {
   console.log(`Watching transcript: ${transcriptPath}`);
+
+  const bridge = new TranscriptMessageBridge(
+    { sessionId },
+    messageApi,
+    {
+      onTranscriptContent: (message) => {
+        console.log(
+          `[Transcript] ${message.role} content (${message.content.length} chars)` +
+            `${message.model ? ` [${message.model}]` : ''}`,
+        );
+        sendAndRecord(message);
+      },
+    },
+  );
 
   const watcher = new TranscriptWatcher(
     {
@@ -357,18 +378,10 @@ function startTranscriptWatcher(sessionId: UUID, transcriptPath: string): void {
     },
     {
       onAssistantMessage: (entry: AssistantEntry) => {
-        const textContent = extractAssistantText(entry);
-        if (textContent) {
-          console.log(
-            `[Transcript] Assistant message: ${textContent.slice(0, 80)}...` +
-              `${entry.message.model ? ` (${entry.message.model})` : ''}`,
-          );
-        }
+        bridge.handleAssistantEntry(entry);
       },
       onUserMessage: (entry) => {
-        const content =
-          typeof entry.message.content === 'string' ? entry.message.content : '[complex content]';
-        console.log(`[Transcript] User message: ${content.slice(0, 80)}`);
+        bridge.handleUserEntry(entry);
       },
       onError: (error) => {
         console.error(`[Transcript] Error for session ${sessionId}:`, error.message);
@@ -380,14 +393,6 @@ function startTranscriptWatcher(sessionId: UUID, transcriptPath: string): void {
   watcher.start().catch((error) => {
     console.error(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
   });
-}
-
-/**
- * Extract clean text from an assistant entry (no thinking, no tool_use).
- */
-function extractAssistantText(entry: AssistantEntry): string {
-  const textBlocks = entry.message.content.filter((b) => b.type === 'text');
-  return textBlocks.map((b) => (b as { text: string }).text).join('\n');
 }
 
 // Create adapter registry with shared event handlers
@@ -456,7 +461,7 @@ const sharedEvents = {
 
     if ('error' in dirResult) {
       console.error(`Directory error: ${dirResult.error}`);
-      // TODO: Send error message to client
+      sendToConnection(connectionId, createError('INVALID_DIRECTORY', dirResult.error));
       return;
     }
 
@@ -541,12 +546,17 @@ const sharedEvents = {
     const session = sessionRegistry.getSession(sessionId);
     if (!session) {
       console.warn(`Bullet expand: session ${sessionId} not found`);
+      sendToConnection(connectionId, createError('NOT_FOUND', `Session ${sessionId} not found`));
       return;
     }
 
     const fullContent = session.messageApi.getFullBulletContent(bulletId);
     if (fullContent === null) {
       console.warn(`Bullet expand: content for bullet ${bulletId} not found or expired`);
+      sendToConnection(
+        connectionId,
+        createError('CONTENT_EXPIRED', `Content for bullet ${bulletId} not found or expired`),
+      );
       return;
     }
 

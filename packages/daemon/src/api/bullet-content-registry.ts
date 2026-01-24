@@ -31,6 +31,8 @@ export class BulletContentRegistry {
   private readonly content: Map<number, ContentEntry> = new Map();
   private readonly maxBullets: number;
   private readonly maxAgeMs: number;
+  private getCallCount = 0;
+  private static readonly PRUNE_EVERY_N_GETS = 100;
 
   constructor(config?: BulletContentRegistryConfig) {
     this.maxBullets = config?.maxBullets ?? DEFAULT_MAX_BULLETS;
@@ -45,7 +47,7 @@ export class BulletContentRegistry {
     // Prune old entries before storing
     this.prune();
 
-    // If at capacity, remove oldest entries
+    // If at capacity, remove oldest entries to make room
     if (this.content.size >= this.maxBullets) {
       this.removeOldest(Math.ceil(this.maxBullets * 0.1)); // Remove 10%
     }
@@ -61,6 +63,13 @@ export class BulletContentRegistry {
    * Returns null if not found or expired.
    */
   get(bulletId: number): string | null {
+    // Periodically prune expired entries on reads
+    this.getCallCount++;
+    if (this.getCallCount >= BulletContentRegistry.PRUNE_EVERY_N_GETS) {
+      this.getCallCount = 0;
+      this.prune();
+    }
+
     const entry = this.content.get(bulletId);
     if (!entry) {
       return null;
