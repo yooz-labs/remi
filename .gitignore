@@ -28,10 +28,6 @@ bun.lockb
 .DS_Store
 Thumbs.db
 
-# Claude specific files (per user instructions)
-CLAUDE.md
-.rules/
-.context/
 
 # Debug
 npm-debug.log*
