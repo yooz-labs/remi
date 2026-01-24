@@ -26,6 +26,7 @@ import type {
   HelloMessage,
   PingMessage,
   ProtocolMessage,
+  SessionListRequestMessage,
   UUID,
   UserInputMessage,
 } from '@remi/shared';
@@ -49,6 +50,9 @@ export interface ConnectionEvents {
 
   /** Bullet expand request received */
   onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
+
+  /** Session list request received */
+  onSessionListRequest: (requestId: UUID, includeExternal: boolean) => void;
 
   /** Error occurred */
   onError: (error: Error) => void;
@@ -174,6 +178,9 @@ export class Connection {
       case 'bullet_expand_request':
         this.handleBulletExpandRequest(message);
         break;
+      case 'session_list_request':
+        this.handleSessionListRequest(message);
+        break;
       case 'ping':
         this.handlePing(message);
         break;
@@ -292,6 +299,12 @@ export class Connection {
 
     // Notify - the CLI will handle sending the response
     this.events.onBulletExpandRequest?.(message.sessionId, message.bulletId, message.id);
+  }
+
+  private handleSessionListRequest(message: SessionListRequestMessage): void {
+    // Session list can be requested before full connection (no state check)
+    this.sendAck(message.id, 'delivered');
+    this.events.onSessionListRequest?.(message.id, message.includeExternal ?? false);
   }
 
   private handlePing(message: PingMessage): void {

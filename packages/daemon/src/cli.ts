@@ -48,6 +48,7 @@ import {
   createBulletExpandResponse,
   createHelloAck,
   createReplayBatch,
+  createSessionListResponse,
   createStructuredAgentOutput,
   generateId,
   now,
@@ -63,6 +64,8 @@ import { MessageAPI } from './api/index.ts';
 import { OutputProcessor } from './parser/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry } from './session/index.ts';
+import { TranscriptDiscovery, TranscriptWatcher } from './transcript/index.ts';
+import type { AssistantEntry } from './transcript/index.ts';
 
 /**
  * Resolve a directory path, expanding ~ and validating it exists.
@@ -159,6 +162,12 @@ console.log('Starting Remi daemon...');
 // Create PTY manager (may be used for multi-session management later)
 const _ptyManager = new PTYManager();
 
+// Transcript discovery for finding external Claude Code sessions
+const transcriptDiscovery = new TranscriptDiscovery();
+
+// Transcript watchers per session (keyed by Remi session ID)
+const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
+
 // Session registry for managing session lifecycle independently of connections
 const sessionRegistry = new SessionRegistry(
   {
@@ -171,6 +180,12 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason) => {
       console.log(`Session closed: ${sessionId} (reason: ${reason})`);
+      // Clean up transcript watcher
+      const watcher = transcriptWatchers.get(sessionId);
+      if (watcher) {
+        watcher.stop();
+        transcriptWatchers.delete(sessionId);
+      }
     },
     onSessionOrphaned: (sessionId) => {
       console.log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
@@ -305,6 +320,74 @@ async function createNewSession(
 
   // Start the session
   await ptySession.start();
+
+  // Start transcript watcher after a delay (Claude Code needs time to create its file)
+  setTimeout(() => {
+    if (!sessionRegistry.hasSession(sessionId)) return; // Session already cleaned up
+    const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
+    if (!transcriptPath) {
+      console.log(`No transcript file found for ${workingDirectory}, will retry...`);
+      setTimeout(() => {
+        if (!sessionRegistry.hasSession(sessionId)) return;
+        const retryPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
+        if (retryPath) {
+          startTranscriptWatcher(sessionId, retryPath);
+        } else {
+          console.warn(`Could not find transcript file for session ${sessionId}`);
+        }
+      }, 5000);
+      return;
+    }
+    startTranscriptWatcher(sessionId, transcriptPath);
+  }, 2000);
+}
+
+/**
+ * Start watching a transcript file for a session.
+ * Emits clean message content from Claude Code's transcript.
+ */
+function startTranscriptWatcher(sessionId: UUID, transcriptPath: string): void {
+  console.log(`Watching transcript: ${transcriptPath}`);
+
+  const watcher = new TranscriptWatcher(
+    {
+      filePath: transcriptPath,
+      readExisting: true,
+      pollIntervalMs: 1000,
+    },
+    {
+      onAssistantMessage: (entry: AssistantEntry) => {
+        const textContent = extractAssistantText(entry);
+        if (textContent) {
+          console.log(
+            `[Transcript] Assistant message: ${textContent.slice(0, 80)}...` +
+              `${entry.message.model ? ` (${entry.message.model})` : ''}`,
+          );
+        }
+      },
+      onUserMessage: (entry) => {
+        const content =
+          typeof entry.message.content === 'string' ? entry.message.content : '[complex content]';
+        console.log(`[Transcript] User message: ${content.slice(0, 80)}`);
+      },
+      onError: (error) => {
+        console.error(`[Transcript] Error for session ${sessionId}:`, error.message);
+      },
+    },
+  );
+
+  transcriptWatchers.set(sessionId, watcher);
+  watcher.start().catch((error) => {
+    console.error(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
+  });
+}
+
+/**
+ * Extract clean text from an assistant entry (no thinking, no tool_use).
+ */
+function extractAssistantText(entry: AssistantEntry): string {
+  const textBlocks = entry.message.content.filter((b) => b.type === 'text');
+  return textBlocks.map((b) => (b as { text: string }).text).join('\n');
 }
 
 // Create adapter registry with shared event handlers
@@ -471,6 +554,25 @@ const sharedEvents = {
     sendToConnection(connectionId, createBulletExpandResponse(bulletId, fullContent, requestId));
   },
 
+  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => {
+    const daemonSessions = sessionRegistry.listSessions();
+
+    let allSessions = [...daemonSessions];
+
+    if (includeExternal) {
+      // Discover external sessions, excluding ones already managed by daemon
+      const managedIds = new Set(sessionRegistry.getActiveSessionIds());
+      const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
+      allSessions = [...daemonSessions, ...externalSessions];
+    }
+
+    console.log(
+      `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
+        `(${daemonSessions.length} daemon, ${allSessions.length - daemonSessions.length} external)`,
+    );
+    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId));
+  },
+
   onError: (connectionId: UUID, error: Error) => {
     console.error(`Error from ${connectionId}:`, error);
   },
@@ -522,6 +624,12 @@ console.log('');
 // Graceful shutdown
 async function shutdown() {
   console.log('\nShutting down gracefully...');
+
+  // Stop all transcript watchers
+  for (const watcher of transcriptWatchers.values()) {
+    watcher.stop();
+  }
+  transcriptWatchers.clear();
 
   // Stop all adapters
   await registry.stopAll();

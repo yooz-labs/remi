@@ -56,3 +56,18 @@ export type {
   ServerConfig,
   ServerEvents,
 } from './server/index.ts';
+
+// Transcript module
+export {
+  TranscriptWatcher,
+  TranscriptDiscovery,
+} from './transcript/index.ts';
+export type {
+  TranscriptWatcherConfig,
+  TranscriptWatcherEvents,
+  TranscriptDiscoveryConfig,
+  TranscriptEntry,
+  UserEntry,
+  AssistantEntry,
+  ContentBlock,
+} from './transcript/index.ts';

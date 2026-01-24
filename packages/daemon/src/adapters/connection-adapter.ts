@@ -41,6 +41,9 @@ export interface AdapterEvents {
     requestId: UUID,
   ) => void;
 
+  /** Session list request received */
+  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

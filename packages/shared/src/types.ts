@@ -235,3 +235,42 @@ export function isOk<T, E>(result: Result<T, E>): result is { ok: true; value: T
 export function isErr<T, E>(result: Result<T, E>): result is { ok: false; error: E } {
   return !result.ok;
 }
+
+/** How a session was discovered */
+export type SessionSource = 'daemon' | 'transcript';
+
+/** Session status for discovery. Daemon sessions use 'active'/'idle'/'orphaned'; transcript sessions use 'active'/'idle'/'completed'. */
+export type DiscoverableSessionStatus = 'active' | 'idle' | 'orphaned' | 'completed';
+
+/**
+ * A session visible through the discovery mechanism.
+ * Combines daemon-managed sessions and externally-discovered transcript files.
+ */
+export interface DiscoverableSession {
+  /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
+  readonly sessionId: string;
+
+  /** Project path this session is working in. For transcript sessions, this is decoded from Claude Code's lossy path encoding and may be inaccurate for paths containing dashes. */
+  readonly projectPath: string;
+
+  /** Current session status */
+  readonly status: DiscoverableSessionStatus;
+
+  /** When the session was last active. For daemon sessions: last disconnection time (or creation time if still connected). For transcript sessions: file modification time. */
+  readonly lastActivity: Timestamp;
+
+  /** Number of messages in the session */
+  readonly messageCount: number;
+
+  /** Model being used (if known) */
+  readonly model?: string | undefined;
+
+  /** Preview of the last message (truncated) */
+  readonly lastMessage?: string | undefined;
+
+  /** How this session was discovered */
+  readonly source: SessionSource;
+
+  /** Whether this session can be attached to (daemon-managed only) */
+  readonly canAttach: boolean;
+}

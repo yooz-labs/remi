@@ -14,6 +14,7 @@
 import type {
   Acknowledgment,
   AgentStatus,
+  DiscoverableSession,
   Message,
   Question,
   Session,
@@ -75,7 +76,9 @@ export type ProtocolMessage =
   | ErrorMessage
   | ReplayBatchMessage
   | BulletExpandRequestMessage
-  | BulletExpandResponseMessage;
+  | BulletExpandResponseMessage
+  | SessionListRequestMessage
+  | SessionListResponseMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -240,6 +243,26 @@ export interface BulletExpandResponseMessage {
   readonly requestId: UUID;
 }
 
+/** Request list of discoverable sessions */
+export interface SessionListRequestMessage {
+  readonly type: 'session_list_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Whether to include external sessions from transcript files. When omitted or false, only daemon-managed sessions are returned. */
+  readonly includeExternal?: boolean | undefined;
+}
+
+/** Response with list of discoverable sessions */
+export interface SessionListResponseMessage {
+  readonly type: 'session_list_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Discovered sessions */
+  readonly sessions: readonly DiscoverableSession[];
+  /** ID of the request this responds to */
+  readonly requestId: UUID;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -297,6 +320,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'replay_batch',
     'bullet_expand_request',
     'bullet_expand_response',
+    'session_list_request',
+    'session_list_response',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -546,6 +571,35 @@ export function createBulletExpandResponse(
     timestamp: now(),
     bulletId,
     fullContent,
+    requestId,
+  };
+}
+
+/**
+ * Create a session list request. When includeExternal is true, the response
+ * will include sessions discovered from transcript files in addition to daemon-managed sessions.
+ */
+export function createSessionListRequest(includeExternal?: boolean): SessionListRequestMessage {
+  return {
+    type: 'session_list_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(includeExternal !== undefined && { includeExternal }),
+  };
+}
+
+/**
+ * Create a session list response containing discovered sessions for a given request.
+ */
+export function createSessionListResponse(
+  sessions: readonly DiscoverableSession[],
+  requestId: UUID,
+): SessionListResponseMessage {
+  return {
+    type: 'session_list_response',
+    id: generateId(),
+    timestamp: now(),
+    sessions,
     requestId,
   };
 }
