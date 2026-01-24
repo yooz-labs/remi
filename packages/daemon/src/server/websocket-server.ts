@@ -55,6 +55,9 @@ export interface ServerEvents {
     requestId: UUID,
   ) => void;
 
+  /** Session list request from client */
+  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -276,6 +279,10 @@ export class WebSocketServer {
 
       onBulletExpandRequest: (sessionId, bulletId, requestId) => {
         this.events.onBulletExpandRequest?.(ws.data.connectionId, sessionId, bulletId, requestId);
+      },
+
+      onSessionListRequest: (requestId, includeExternal) => {
+        this.events.onSessionListRequest?.(ws.data.connectionId, requestId, includeExternal);
       },
 
       onError: (error) => {

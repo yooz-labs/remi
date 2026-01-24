@@ -8,7 +8,14 @@
  * - Message history is tracked for replay on reconnect
  */
 
-import type { AgentStatus, ProtocolMessage, Question, Timestamp, UUID } from '@remi/shared';
+import type {
+  AgentStatus,
+  DiscoverableSession,
+  ProtocolMessage,
+  Question,
+  Timestamp,
+  UUID,
+} from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { OutputProcessor } from '../parser/output-processor.ts';
@@ -359,6 +366,78 @@ export class SessionRegistry {
    */
   getActiveSessionIds(): UUID[] {
     return Array.from(this.sessions.keys());
+  }
+
+  /**
+   * List all sessions with metadata for discovery.
+   * Returns daemon-managed sessions as DiscoverableSession objects.
+   */
+  listSessions(): DiscoverableSession[] {
+    const result: DiscoverableSession[] = [];
+
+    for (const session of this.sessions.values()) {
+      const status = this.getDiscoverableStatus(session);
+      const lastMessage = this.getLastMessagePreview(session);
+
+      result.push({
+        sessionId: session.sessionId,
+        projectPath: session.workingDirectory,
+        status,
+        lastActivity: session.lastDisconnectedAt ?? session.createdAt,
+        messageCount: session.messageHistory.length,
+        lastMessage,
+        source: 'daemon',
+        canAttach: session.activeConnectionId === null,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Determine discoverable status from managed session state.
+   */
+  private getDiscoverableStatus(
+    session: ManagedSession,
+  ): 'active' | 'idle' | 'orphaned' {
+    if (session.activeConnectionId === null) {
+      return 'orphaned';
+    }
+    if (session.currentStatus === 'idle') {
+      return 'idle';
+    }
+    return 'active';
+  }
+
+  /**
+   * Get a truncated preview of the last message content.
+   */
+  private getLastMessagePreview(session: ManagedSession): string | undefined {
+    if (session.messageHistory.length === 0) {
+      return undefined;
+    }
+
+    const lastMsg = session.messageHistory[session.messageHistory.length - 1];
+    if (!lastMsg) {
+      return undefined;
+    }
+
+    // Extract content from different message types
+    let content: string | undefined;
+    if (lastMsg.type === 'agent_output') {
+      content = lastMsg.message.content;
+    } else if (lastMsg.type === 'structured_agent_output') {
+      content = lastMsg.message.content;
+    } else if (lastMsg.type === 'user_input') {
+      content = lastMsg.content;
+    }
+
+    if (!content) {
+      return undefined;
+    }
+
+    // Truncate to 100 chars
+    return content.length > 100 ? `${content.slice(0, 97)}...` : content;
   }
 
   /**

@@ -26,6 +26,9 @@ export type {
   Session,
   ConnectionInfo,
   Result,
+  SessionSource,
+  DiscoverableSessionStatus,
+  DiscoverableSession,
 } from './types.ts';
 
 export { ok, err, isOk, isErr } from './types.ts';
@@ -49,6 +52,8 @@ export type {
   ReplayBatchMessage,
   BulletExpandRequestMessage,
   BulletExpandResponseMessage,
+  SessionListRequestMessage,
+  SessionListResponseMessage,
 } from './protocol.ts';
 
 export {
@@ -71,5 +76,7 @@ export {
   createReplayBatch,
   createBulletExpandRequest,
   createBulletExpandResponse,
+  createSessionListRequest,
+  createSessionListResponse,
   MessageIdTracker,
 } from './protocol.ts';
