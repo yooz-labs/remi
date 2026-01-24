@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint (Biome)
+        run: bunx biome check .
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Test with coverage
+        run: bun test --coverage --coverage-reporter=text --coverage-reporter=lcov
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(bun test --coverage 2>&1 | grep "All files" | awk '{print $NF}' | tr -d '%')
+          echo "Line coverage: ${COVERAGE}%"
+          if [ "$(echo "$COVERAGE < 60" | bc -l)" -eq 1 ]; then
+            echo "Coverage ${COVERAGE}% is below 60% threshold"
+            exit 1
+          fi
