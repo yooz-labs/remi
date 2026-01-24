@@ -65,11 +65,16 @@ export class TranscriptMessageBridge {
     if (this.processedEntryUuids.has(entry.uuid)) {
       return; // Already processed
     }
-    this.processedEntryUuids.add(entry.uuid);
 
     const textContent = this.extractTextContent(entry.message.content);
     const tools = this.extractToolNames(entry.message.content);
     const hadThinking = this.hasThinkingBlocks(entry.message.content);
+
+    // Skip entries with no meaningful content (pure tool invocations with no text)
+    if (!textContent && tools.length === 0) {
+      this.processedEntryUuids.add(entry.uuid);
+      return;
+    }
 
     // Create a Message for the MessageAPI to structure with bullets
     const message: Message = {
@@ -87,6 +92,9 @@ export class TranscriptMessageBridge {
     this.messageApi.handleMessage(message);
     const structured = this.messageApi.getMessage(message.id);
     if (!structured) return;
+
+    // Only mark as processed after successful structuring
+    this.processedEntryUuids.add(entry.uuid);
 
     // Emit the transcript content message
     const transcriptMessage = createTranscriptContent(
@@ -115,7 +123,6 @@ export class TranscriptMessageBridge {
     if (this.processedEntryUuids.has(entry.uuid)) {
       return; // Already processed
     }
-    this.processedEntryUuids.add(entry.uuid);
 
     const content =
       typeof entry.message.content === 'string'
@@ -137,6 +144,9 @@ export class TranscriptMessageBridge {
     this.messageApi.handleMessage(message);
     const structured = this.messageApi.getMessage(message.id);
     if (!structured) return;
+
+    // Only mark as processed after successful structuring
+    this.processedEntryUuids.add(entry.uuid);
 
     const transcriptMessage = createTranscriptContent(
       this.sessionId,

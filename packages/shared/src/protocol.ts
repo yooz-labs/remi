@@ -665,10 +665,10 @@ export function createTranscriptContent(
     content,
     message,
     isUpdate,
-    ...(options?.tools && { tools: options.tools }),
-    ...(options?.model && { model: options.model }),
-    ...(options?.hadThinking && { hadThinking: options.hadThinking }),
-    ...(options?.usage && { usage: options.usage }),
+    ...(options?.tools != null && options.tools.length > 0 && { tools: options.tools }),
+    ...(options?.model != null && options.model !== '' && { model: options.model }),
+    ...(options?.hadThinking != null && { hadThinking: options.hadThinking }),
+    ...(options?.usage != null && { usage: options.usage }),
   };
 }
 

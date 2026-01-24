@@ -257,7 +257,9 @@ async function createNewSession(
         // Trigger transcript read on status transitions (new content likely available)
         const watcher = transcriptWatchers.get(sessionId);
         if (watcher) {
-          watcher.forceRead();
+          watcher.forceRead().catch((err) => {
+            console.error(`[Transcript] forceRead failed for session ${sessionId}:`, err);
+          });
         }
       },
     },
@@ -459,7 +461,7 @@ const sharedEvents = {
 
     if ('error' in dirResult) {
       console.error(`Directory error: ${dirResult.error}`);
-      // TODO: Send error message to client
+      sendToConnection(connectionId, createError('INVALID_DIRECTORY', dirResult.error));
       return;
     }
 
