@@ -294,11 +294,16 @@ export class Connection {
       return;
     }
 
+    if (!this.events.onBulletExpandRequest) {
+      this.sendError('UNSUPPORTED', 'Bullet expansion not available');
+      return;
+    }
+
     // Acknowledge receipt
     this.sendAck(message.id, 'delivered');
 
     // Notify - the CLI will handle sending the response
-    this.events.onBulletExpandRequest?.(message.sessionId, message.bulletId, message.id);
+    this.events.onBulletExpandRequest(message.sessionId, message.bulletId, message.id);
   }
 
   private handleSessionListRequest(message: SessionListRequestMessage): void {

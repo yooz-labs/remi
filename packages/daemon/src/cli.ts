@@ -46,6 +46,7 @@ if (fs.existsSync(envPath)) {
 }
 import {
   createBulletExpandResponse,
+  createError,
   createHelloAck,
   createReplayBatch,
   createSessionListResponse,
@@ -543,12 +544,17 @@ const sharedEvents = {
     const session = sessionRegistry.getSession(sessionId);
     if (!session) {
       console.warn(`Bullet expand: session ${sessionId} not found`);
+      sendToConnection(connectionId, createError('NOT_FOUND', `Session ${sessionId} not found`));
       return;
     }
 
     const fullContent = session.messageApi.getFullBulletContent(bulletId);
     if (fullContent === null) {
       console.warn(`Bullet expand: content for bullet ${bulletId} not found or expired`);
+      sendToConnection(
+        connectionId,
+        createError('CONTENT_EXPIRED', `Content for bullet ${bulletId} not found or expired`),
+      );
       return;
     }
 
