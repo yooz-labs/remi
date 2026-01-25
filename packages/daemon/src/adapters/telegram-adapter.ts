@@ -17,9 +17,12 @@ import type {
   Question,
   QuestionMessage,
   SessionUpdateMessage,
+  TranscriptContentMessage,
   UUID,
 } from '@remi/shared';
 import { Bot, type Context } from 'grammy';
+import type { SessionRegistry } from '../session/session-registry.ts';
+import type { TranscriptDiscovery } from '../transcript/transcript-discovery.ts';
 import type {
   AdapterConfig,
   AdapterEvents,
@@ -30,6 +33,8 @@ import {
   formatHelpMessage,
   formatMessageForTelegram,
   formatQuestionKeyboard,
+  formatSessionListForTelegram,
+  formatTranscriptContentForTelegram,
   isValidContent,
   stripTerminalCodes,
 } from './telegram-ui.ts';
@@ -72,6 +77,15 @@ export interface TelegramAdapterConfig extends AdapterConfig {
 
   /** Default working directory for new sessions */
   readonly defaultDirectory?: string;
+}
+
+/** Optional dependencies for session discovery features */
+export interface TelegramAdapterDependencies {
+  /** Session registry for listing daemon-managed sessions */
+  readonly sessionRegistry?: SessionRegistry;
+
+  /** Transcript discovery for listing external sessions */
+  readonly transcriptDiscovery?: TranscriptDiscovery;
 }
 
 /** Session binding - maps Telegram topic to Claude session */
@@ -124,6 +138,7 @@ export class TelegramAdapter implements ConnectionAdapter {
 
   private readonly config: TelegramAdapterConfig;
   private readonly events: Partial<AdapterEvents>;
+  private readonly deps: TelegramAdapterDependencies;
 
   private bot: Bot | null = null;
   private running = false;
@@ -137,13 +152,18 @@ export class TelegramAdapter implements ConnectionAdapter {
   /** Session counters per directory */
   private readonly sessionCounters: Map<string, number> = new Map();
 
-  constructor(config: TelegramAdapterConfig, events: Partial<AdapterEvents> = {}) {
+  constructor(
+    config: TelegramAdapterConfig,
+    events: Partial<AdapterEvents> = {},
+    deps: TelegramAdapterDependencies = {},
+  ) {
     this.config = {
       enabled: config.enabled ?? true,
       token: config.token,
       defaultDirectory: config.defaultDirectory ?? process.cwd(),
     };
     this.events = events;
+    this.deps = deps;
   }
 
   get connectionCount(): number {
@@ -284,7 +304,31 @@ export class TelegramAdapter implements ConnectionAdapter {
     if (message.type === 'session_update') {
       return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);
     }
+    if (message.type === 'transcript_content') {
+      return this.sendTranscriptContent(connectionId, message as TranscriptContentMessage);
+    }
     return false;
+  }
+
+  /**
+   * Send transcript content to Telegram.
+   * Formats the structured content for Telegram display.
+   */
+  private sendTranscriptContent(connectionId: UUID, message: TranscriptContentMessage): boolean {
+    const sessionKey = this.connectionToSession.get(connectionId);
+    if (!sessionKey) return false;
+
+    const session = this.sessions.get(sessionKey);
+    if (!session || !this.bot || session.paused) return false;
+
+    const formatted = formatTranscriptContentForTelegram(message);
+    if (!formatted || !isValidContent(formatted)) return true;
+
+    this.streamMessage(session, formatted).catch((err) => {
+      console.error('Failed to send transcript content:', err);
+    });
+
+    return true;
   }
 
   broadcast(message: ProtocolMessage): void {
@@ -348,6 +392,21 @@ export class TelegramAdapter implements ConnectionAdapter {
     // Handle /help command
     this.bot.command('help', async (ctx) => {
       await this.handleHelp(ctx);
+    });
+
+    // Handle /sessions command - list discoverable sessions
+    this.bot.command('sessions', async (ctx) => {
+      await this.handleSessions(ctx);
+    });
+
+    // Handle /attach command - attach to existing session
+    this.bot.command('attach', async (ctx) => {
+      await this.handleAttach(ctx);
+    });
+
+    // Handle /detach command - detach without killing session
+    this.bot.command('detach', async (ctx) => {
+      await this.handleDetach(ctx);
     });
 
     // Handle callback queries (button presses)
@@ -547,6 +606,161 @@ export class TelegramAdapter implements ConnectionAdapter {
 
   private async handleHelp(ctx: Context): Promise<void> {
     await ctx.reply(formatHelpMessage());
+  }
+
+  /**
+   * Handle /sessions command - list all discoverable sessions.
+   * Works without requiring an active session in the current topic.
+   */
+  private async handleSessions(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (!chatId) {
+      await ctx.reply('Unable to determine chat context.');
+      return;
+    }
+
+    if (!this.deps.sessionRegistry) {
+      await ctx.reply('Session discovery not available.');
+      return;
+    }
+
+    try {
+      // Get daemon-managed sessions
+      const daemonSessions = this.deps.sessionRegistry.listSessions();
+
+      // Get transcript sessions (exclude daemon-managed ones)
+      let allSessions = [...daemonSessions];
+      if (this.deps.transcriptDiscovery) {
+        const managedIds = new Set(this.deps.sessionRegistry.getActiveSessionIds());
+        const transcriptSessions = this.deps.transcriptDiscovery.discoverSessions(managedIds);
+        allSessions = [...daemonSessions, ...transcriptSessions];
+      }
+
+      // Format and send
+      const formatted = formatSessionListForTelegram(allSessions);
+      await ctx.reply(formatted);
+    } catch (error) {
+      console.error('Failed to list sessions:', error);
+      await ctx.reply('Failed to fetch sessions. Please try again.');
+    }
+  }
+
+  /**
+   * Handle /attach command - attach to an existing daemon session.
+   * Creates a new topic and binds it to the target session.
+   */
+  private async handleAttach(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (!chatId) {
+      await ctx.reply('Unable to determine chat context.');
+      return;
+    }
+
+    const sessionIdArg = ctx.match?.toString().trim();
+    if (!sessionIdArg) {
+      await ctx.reply('Usage: /attach <session-id>\nUse /sessions to see available sessions.');
+      return;
+    }
+
+    // Validate UUID format (at least starts like one)
+    const uuidPattern = /^[0-9a-f]{8}-?/i;
+    if (!uuidPattern.test(sessionIdArg)) {
+      await ctx.reply('Invalid session ID format. Use /sessions to see available sessions.');
+      return;
+    }
+
+    if (!this.deps.sessionRegistry) {
+      await ctx.reply('Session attachment not available.');
+      return;
+    }
+
+    // Check if session can be resumed
+    if (!this.deps.sessionRegistry.canResume(sessionIdArg as UUID)) {
+      await ctx.reply(
+        'Session not found or cannot be attached.\n' +
+          'Only orphaned daemon sessions can be attached.\n' +
+          'Use /sessions to see available sessions.',
+      );
+      return;
+    }
+
+    try {
+      // Check forum mode
+      const chat = await ctx.api.getChat(chatId);
+      if (chat.type !== 'supergroup' || !('is_forum' in chat) || !chat.is_forum) {
+        await ctx.reply('Forum mode required. Enable Topics in group settings.');
+        return;
+      }
+
+      // Create new topic for attached session
+      const topicName = `attached-${sessionIdArg.slice(0, 8)}`;
+      const topic = await ctx.api.createForumTopic(chatId, topicName);
+      const topicId = topic.message_thread_id;
+
+      // Create session binding
+      const connectionId = generateId();
+      const sessionKey = `${chatId}:${topicId}`;
+
+      const session: SessionBinding = {
+        connectionId,
+        sessionId: sessionIdArg as UUID,
+        chatId,
+        topicId,
+        workingDirectory: '', // Will be filled from session info
+        machineName: os.hostname().replace(/\./g, '-').toLowerCase(),
+        topicName,
+        sessionNumber: 0,
+        startedAt: now(),
+        currentMessageId: undefined,
+        streamBuffer: '',
+        lastSentContent: '',
+        paused: false,
+      };
+
+      this.sessions.set(sessionKey, session);
+      this.connectionToSession.set(connectionId, sessionKey);
+
+      // Notify daemon - will attempt resume
+      const metadata: AdapterMetadata = {
+        adapterType: this.type,
+        displayName: topicName,
+        platformData: {
+          chatId,
+          topicId,
+          resumeSessionId: sessionIdArg,
+        },
+      };
+      this.events.onConnect?.(connectionId, metadata);
+
+      await ctx.reply(`Attaching to session in new topic "${topicName}"`);
+    } catch (error) {
+      console.error('Failed to attach to session:', error);
+      await ctx.reply('Failed to attach to session. Check bot permissions.');
+    }
+  }
+
+  /**
+   * Handle /detach command - detach from session without killing it.
+   * Session stays orphaned and can be reattached within 5 minutes.
+   */
+  private async handleDetach(ctx: Context): Promise<void> {
+    const session = this.getSessionFromContext(ctx);
+    if (!session) {
+      await ctx.reply('No active session in this topic.');
+      return;
+    }
+
+    // Remove from adapter maps
+    const sessionKey = `${session.chatId}:${session.topicId}`;
+    this.sessions.delete(sessionKey);
+    this.connectionToSession.delete(session.connectionId);
+
+    // Notify daemon (session stays orphaned for 5 minutes)
+    this.events.onDisconnect?.(session.connectionId, 'User detached from session');
+
+    await ctx.reply(
+      `Detached from session. Session remains active for 5 minutes.\nUse /attach ${session.sessionId} to reconnect.`,
+    );
   }
 
   private async handleAnswerCallback(ctx: Context): Promise<void> {

@@ -603,6 +603,10 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
       defaultDirectory: process.cwd(),
     },
     sharedEvents,
+    {
+      sessionRegistry,
+      transcriptDiscovery,
+    },
   );
   registry.register(telegramAdapter);
   console.log('Telegram adapter configured');

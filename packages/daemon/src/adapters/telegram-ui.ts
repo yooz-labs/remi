@@ -5,7 +5,14 @@
  * Uses Telegram's MarkdownV2 formatting where appropriate.
  */
 
-import type { AgentStatus, Message, Question, QuestionOption } from '@remi/shared';
+import type {
+  AgentStatus,
+  DiscoverableSession,
+  Message,
+  Question,
+  QuestionOption,
+  TranscriptContentMessage,
+} from '@remi/shared';
 import { InlineKeyboard } from 'grammy';
 
 /**
@@ -219,8 +226,14 @@ export function formatHelpMessage(): string {
   return [
     '📖 Available Commands:',
     '',
+    '📂 Session Management:',
     '/start [directory] - Start new session',
     '/stop - End current session',
+    '/sessions - List all discoverable sessions',
+    '/attach <id> - Attach to existing session',
+    '/detach - Detach without ending session',
+    '',
+    '⚙️ Session Control:',
     '/interrupt - Send Esc to Claude (cancel current action)',
     '/pause - Pause the session',
     '/resume - Resume paused session',
@@ -233,6 +246,7 @@ export function formatHelpMessage(): string {
     '- Use /interrupt if Claude is stuck',
     '- Each topic = one Claude session',
     '- Paths can use ~ for home directory (e.g., ~/Projects/myapp)',
+    '- Use /detach to keep session alive when switching devices',
   ].join('\n');
 }
 
@@ -241,4 +255,127 @@ export function formatHelpMessage(): string {
  */
 export function formatErrorMessage(error: string): string {
   return `⚠️ Error: ${error}`;
+}
+
+/**
+ * Format a list of discoverable sessions for Telegram display.
+ */
+export function formatSessionListForTelegram(sessions: readonly DiscoverableSession[]): string {
+  if (sessions.length === 0) {
+    return ['📭 No sessions found.', '', 'Use /start [directory] to create a new session.'].join(
+      '\n',
+    );
+  }
+
+  const parts: string[] = ['📋 Available Sessions:', ''];
+
+  // Show up to 10 sessions for readability
+  const displayCount = Math.min(sessions.length, 10);
+  for (let i = 0; i < displayCount; i++) {
+    const session = sessions[i];
+    if (session) {
+      parts.push(formatDiscoverableSessionForTelegram(session, i + 1));
+      parts.push(''); // Empty line between sessions
+    }
+  }
+
+  if (sessions.length > 10) {
+    parts.push(`... and ${sessions.length - 10} more sessions`);
+    parts.push('');
+  }
+
+  parts.push('Use /attach <session-id> to connect to a session.');
+
+  return parts.join('\n');
+}
+
+/**
+ * Format a single discoverable session for Telegram display.
+ */
+export function formatDiscoverableSessionForTelegram(
+  session: DiscoverableSession,
+  index: number,
+): string {
+  const statusEmoji: Record<string, string> = {
+    active: '🟢',
+    idle: '🟡',
+    orphaned: '🟠',
+    completed: '⚫',
+  };
+
+  const emoji = statusEmoji[session.status] ?? '⚪';
+  const sourceLabel = session.source === 'daemon' ? 'daemon' : 'transcript';
+  const attachLabel = session.canAttach ? '' : ' [view-only]';
+
+  // Truncate path for display, keeping the end (most relevant part)
+  let pathDisplay = session.projectPath;
+  if (pathDisplay.length > 35) {
+    pathDisplay = `...${pathDisplay.slice(-32)}`;
+  }
+
+  const lines = [
+    `${index}. ${emoji} ${pathDisplay}`,
+    `   ID: ${session.sessionId.slice(0, 8)}... (${sourceLabel})${attachLabel}`,
+  ];
+
+  // Add last message preview if available
+  if (session.lastMessage) {
+    let preview = session.lastMessage.slice(0, 40);
+    if (session.lastMessage.length > 40) {
+      preview += '...';
+    }
+    lines.push(`   Last: ${preview}`);
+  }
+
+  // Add message count if available
+  if (session.messageCount !== undefined && session.messageCount > 0) {
+    lines.push(`   Messages: ${session.messageCount}`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format TranscriptContentMessage for Telegram display.
+ * Handles structured content with proper truncation.
+ */
+export function formatTranscriptContentForTelegram(message: TranscriptContentMessage): string {
+  const parts: string[] = [];
+
+  // Header with metadata for assistant messages
+  if (message.role === 'assistant') {
+    const headerParts: string[] = [];
+    if (message.model) {
+      // Extract short model name (e.g., "opus-4-5" from "claude-opus-4-5-20251101")
+      const modelShort = message.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      headerParts.push(`Model: ${modelShort}`);
+    }
+    if (message.tools && message.tools.length > 0) {
+      headerParts.push(`Tools: ${message.tools.join(', ')}`);
+    }
+    if (headerParts.length > 0) {
+      parts.push(`[${headerParts.join(' | ')}]`);
+    }
+  } else {
+    parts.push('[User]');
+  }
+
+  // Add content
+  let content = message.content;
+
+  // Strip any terminal codes that might have made it through
+  content = stripTerminalCodes(content);
+
+  // Calculate available space for content (4000 limit minus header and footer buffer)
+  const headerLength = parts.join('\n').length;
+  const footerBuffer = 50; // Space for truncation notice
+  const availableChars = 4000 - headerLength - footerBuffer;
+
+  if (content.length > availableChars) {
+    content = `${content.slice(0, availableChars - 25)}\n\n[... content truncated]`;
+  }
+
+  parts.push(content);
+
+  return parts.join('\n');
 }
