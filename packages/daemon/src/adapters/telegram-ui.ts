@@ -49,7 +49,7 @@ export function isValidContent(text: string): boolean {
  * Escape special characters for Telegram MarkdownV2.
  * These characters must be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
  */
-function escapeMarkdown(text: string): string {
+function _escapeMarkdown(text: string): string {
   return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
 }
 
@@ -70,7 +70,7 @@ export function formatMessageForTelegram(message: Message): string {
 
   // Truncate very long messages (Telegram limit is 4096 chars)
   if (content.length > 4000) {
-    content = content.slice(0, 3997) + '...';
+    content = `${content.slice(0, 3997)}...`;
   }
 
   // Add tool indicator if present
@@ -121,7 +121,7 @@ function formatOptionLabel(option: QuestionOption): string {
 
   // Truncate long labels (Telegram button text limit)
   if (label.length > 32) {
-    label = label.slice(0, 29) + '...';
+    label = `${label.slice(0, 29)}...`;
   }
 
   return label;
@@ -203,7 +203,7 @@ function formatTimestamp(isoString: string): string {
  */
 export function formatWelcomeMessage(directory: string): string {
   return [
-    `🚀 Session started`,
+    '🚀 Session started',
     `📂 ${directory}`,
     '',
     'Send a message to talk to Claude.',

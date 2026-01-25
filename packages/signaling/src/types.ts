@@ -100,7 +100,7 @@ export function parseMessage(data: string): SignalingMessage | null {
     }
 
     const obj = parsed as Record<string, unknown>;
-    if (typeof obj['type'] !== 'string') {
+    if (typeof obj.type !== 'string') {
       return null;
     }
 
@@ -117,7 +117,7 @@ export function parseMessage(data: string): SignalingMessage | null {
       'peer-disconnected',
     ];
 
-    if (!validTypes.includes(obj['type'])) {
+    if (!validTypes.includes(obj.type)) {
       return null;
     }
 

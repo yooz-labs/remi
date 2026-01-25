@@ -312,7 +312,8 @@ const b = 2;
     test('truncates bullets exceeding maxBulletLength', () => {
       const truncatingEngine = new BulletEngine('test-session', 1, { maxBulletLength: 50 });
 
-      const content = `- This is a very long bullet point that should be truncated because it exceeds the maximum length`;
+      const content =
+        '- This is a very long bullet point that should be truncated because it exceeds the maximum length';
 
       const bullets = truncatingEngine.extractBullets(content);
 
@@ -326,7 +327,7 @@ const b = 2;
     test('does not truncate bullets under maxBulletLength', () => {
       const truncatingEngine = new BulletEngine('test-session', 1, { maxBulletLength: 500 });
 
-      const content = `- Short bullet`;
+      const content = '- Short bullet';
 
       const bullets = truncatingEngine.extractBullets(content);
 
@@ -339,7 +340,8 @@ const b = 2;
     test('does not truncate when maxBulletLength is 0 (disabled)', () => {
       const noTruncEngine = new BulletEngine('test-session', 1, { maxBulletLength: 0 });
 
-      const content = `- This is a very long bullet point that would normally be truncated but truncation is disabled`;
+      const content =
+        '- This is a very long bullet point that would normally be truncated but truncation is disabled';
 
       const bullets = noTruncEngine.extractBullets(content);
 
@@ -368,7 +370,7 @@ Third line to push us over`;
       const truncatingEngine = new BulletEngine('test-session', 1, { maxBulletLength: 50 });
 
       // Single line without newlines
-      const content = `- This is one long line without any newlines at all that exceeds limit`;
+      const content = '- This is one long line without any newlines at all that exceeds limit';
 
       const bullets = truncatingEngine.extractBullets(content);
 
@@ -383,7 +385,8 @@ Third line to push us over`;
       const registry = new BulletContentRegistry();
       const truncatingEngine = new BulletEngine('test-session', 1, { maxBulletLength: 50 });
 
-      const content = `- This is a very long bullet that will be truncated and stored in the registry`;
+      const content =
+        '- This is a very long bullet that will be truncated and stored in the registry';
 
       const bullets = truncatingEngine.extractBullets(content, registry);
 
@@ -400,7 +403,7 @@ Third line to push us over`;
       const registry = new BulletContentRegistry();
       const truncatingEngine = new BulletEngine('test-session', 1, { maxBulletLength: 500 });
 
-      const content = `- Short content`;
+      const content = '- Short content';
 
       const bullets = truncatingEngine.extractBullets(content, registry);
 

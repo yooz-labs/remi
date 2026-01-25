@@ -127,10 +127,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
     const serverConfig: Partial<ServerConfig> = {
       port: this.config.port,
-      ...((this.config as any).host && { host: (this.config as any).host }),
-      ...((this.config as any).path && { path: (this.config as any).path }),
-      ...((this.config as any).maxConnections !== undefined && {
-        maxConnections: (this.config as any).maxConnections,
+      ...(this.config.host && { host: this.config.host }),
+      ...(this.config.path && { path: this.config.path }),
+      ...(this.config.maxConnections !== undefined && {
+        maxConnections: this.config.maxConnections,
       }),
       // Let daemon handle HelloAck to include resume info
       connection: {

@@ -37,12 +37,14 @@ export function generateCode(
 
   // Generate alpha part
   for (let i = 0; i < alphaLength; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: index bounded by array length
     const idx = bytes[i]! % ALPHA_CHARS.length;
     alpha += ALPHA_CHARS[idx];
   }
 
   // Generate numeric part
   for (let i = 0; i < numericLength; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: index bounded by array length
     const idx = bytes[alphaLength + i]! % NUMERIC_CHARS.length;
     numeric += NUMERIC_CHARS[idx];
   }

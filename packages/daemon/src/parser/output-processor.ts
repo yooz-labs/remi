@@ -231,15 +231,13 @@ export class OutputProcessor {
         // Note: Even if filteredLine is empty (tool execution line filtered out),
         // currentMessageId is now set, so subsequent content lines will be appended.
       } else if (boundary === 'user' || boundary === 'thinking' || boundary === 'tool_output') {
-        // Skip user echo (we log user messages ourselves), thinking indicators, and tool output metadata
-        continue;
       } else {
         // Continuation of current message
         const filteredLine = cleanAndFilterOutput(rawLine);
         if (filteredLine.trim().length > 0 && this.currentMessageId !== null) {
           const newContent = this.deduplicateContent(filteredLine);
           if (newContent.length > 0) {
-            this.currentMessageContent += '\n' + newContent;
+            this.currentMessageContent += `\n${newContent}`;
             this.emitMessageUpdate([]);
           }
         }
@@ -257,7 +255,7 @@ export class OutputProcessor {
     return match ? match[1] : undefined;
   }
 
-  private emitMessageUpdate(lines: readonly string[]): void {
+  private emitMessageUpdate(_lines: readonly string[]): void {
     // Determine tool from status
     const statusResult = parseStatus(this.currentMessageContent);
     const tool = statusResult.status === 'executing' ? statusResult.context : undefined;
@@ -288,7 +286,9 @@ export class OutputProcessor {
     } else {
       // Update existing message
       if (!this.config.streamStatusOnly) {
-        this.events.onMessageUpdate?.(this.currentMessageId!, this.currentMessageContent, tool);
+        if (this.currentMessageId) {
+          this.events.onMessageUpdate?.(this.currentMessageId, this.currentMessageContent, tool);
+        }
       }
     }
   }

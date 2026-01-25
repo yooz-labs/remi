@@ -9,7 +9,7 @@ describe('parseMessage()', () => {
   test('parses register message', () => {
     const msg = parseMessage('{"type":"register"}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('register');
+    expect(msg?.type).toBe('register');
   });
 
   test('parses registered message', () => {
@@ -17,7 +17,7 @@ describe('parseMessage()', () => {
       '{"type":"registered","code":"ABCD-1234","expiresAt":"2026-01-10T00:00:00.000Z"}',
     );
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('registered');
+    expect(msg?.type).toBe('registered');
     if (msg?.type === 'registered') {
       expect(msg.code).toBe('ABCD-1234');
       expect(msg.expiresAt).toBe('2026-01-10T00:00:00.000Z');
@@ -27,7 +27,7 @@ describe('parseMessage()', () => {
   test('parses join message', () => {
     const msg = parseMessage('{"type":"join","code":"ABCD-1234"}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('join');
+    expect(msg?.type).toBe('join');
     if (msg?.type === 'join') {
       expect(msg.code).toBe('ABCD-1234');
     }
@@ -36,13 +36,13 @@ describe('parseMessage()', () => {
   test('parses offer message', () => {
     const msg = parseMessage('{"type":"offer","sdp":"v=0\\r\\n..."}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('offer');
+    expect(msg?.type).toBe('offer');
   });
 
   test('parses answer message', () => {
     const msg = parseMessage('{"type":"answer","sdp":"v=0\\r\\n..."}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('answer');
+    expect(msg?.type).toBe('answer');
   });
 
   test('parses ice-candidate message', () => {
@@ -50,7 +50,7 @@ describe('parseMessage()', () => {
       '{"type":"ice-candidate","candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}',
     );
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('ice-candidate');
+    expect(msg?.type).toBe('ice-candidate');
     if (msg?.type === 'ice-candidate') {
       expect(msg.sdpMid).toBe('0');
       expect(msg.sdpMLineIndex).toBe(0);
@@ -60,7 +60,7 @@ describe('parseMessage()', () => {
   test('parses error message', () => {
     const msg = parseMessage('{"type":"error","code":"INVALID","message":"Something went wrong"}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('error');
+    expect(msg?.type).toBe('error');
     if (msg?.type === 'error') {
       expect(msg.code).toBe('INVALID');
       expect(msg.message).toBe('Something went wrong');
@@ -70,7 +70,7 @@ describe('parseMessage()', () => {
   test('parses peer-connected message', () => {
     const msg = parseMessage('{"type":"peer-connected","role":"client"}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('peer-connected');
+    expect(msg?.type).toBe('peer-connected');
     if (msg?.type === 'peer-connected') {
       expect(msg.role).toBe('client');
     }
@@ -79,7 +79,7 @@ describe('parseMessage()', () => {
   test('parses peer-disconnected message', () => {
     const msg = parseMessage('{"type":"peer-disconnected","role":"host"}');
     expect(msg).not.toBeNull();
-    expect(msg!.type).toBe('peer-disconnected');
+    expect(msg?.type).toBe('peer-disconnected');
     if (msg?.type === 'peer-disconnected') {
       expect(msg.role).toBe('host');
     }

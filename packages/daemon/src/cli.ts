@@ -15,9 +15,9 @@
  * Loads .env from current directory automatically.
  */
 
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 // Load .env file if present
 const envPath = path.join(process.cwd(), '.env');
@@ -356,19 +356,15 @@ function startTranscriptWatcher(
 ): void {
   console.log(`Watching transcript: ${transcriptPath}`);
 
-  const bridge = new TranscriptMessageBridge(
-    { sessionId },
-    messageApi,
-    {
-      onTranscriptContent: (message) => {
-        console.log(
-          `[Transcript] ${message.role} content (${message.content.length} chars)` +
-            `${message.model ? ` [${message.model}]` : ''}`,
-        );
-        sendAndRecord(message);
-      },
+  const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
+    onTranscriptContent: (message) => {
+      console.log(
+        `[Transcript] ${message.role} content (${message.content.length} chars)` +
+          `${message.model ? ` [${message.model}]` : ''}`,
+      );
+      sendAndRecord(message);
     },
-  );
+  });
 
   const watcher = new TranscriptWatcher(
     {
@@ -407,7 +403,7 @@ const registry = new AdapterRegistry({
 
 // Helper to send message to connection
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): void => {
-  registry.sendRaw(connectionId, message as any);
+  registry.sendRaw(connectionId, message);
 };
 
 // Shared event handlers for all adapters

@@ -5,11 +5,20 @@
  * Each Claude Code session = one topic thread.
  */
 
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { generateId, now } from '@remi/shared';
-import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type {
+  AgentOutputMessage,
+  AgentStatus,
+  Message,
+  ProtocolMessage,
+  Question,
+  QuestionMessage,
+  SessionUpdateMessage,
+  UUID,
+} from '@remi/shared';
 import { Bot, type Context } from 'grammy';
 import type {
   AdapterConfig,
@@ -95,7 +104,7 @@ export interface SessionBinding {
   startedAt: string;
 
   /** Current message being streamed (for editing) */
-  currentMessageId?: number;
+  currentMessageId: number | undefined;
 
   /** Accumulated content for streaming */
   streamBuffer: string;
@@ -105,12 +114,6 @@ export interface SessionBinding {
 
   /** Is session paused */
   paused: boolean;
-}
-
-/** Directory session counter */
-interface SessionCounter {
-  directory: string;
-  count: number;
 }
 
 /**
@@ -243,7 +246,7 @@ export class TelegramAdapter implements ConnectionAdapter {
     return true;
   }
 
-  sendStatus(connectionId: UUID, status: AgentStatus, context?: string): boolean {
+  sendStatus(connectionId: UUID, status: AgentStatus, _context?: string): boolean {
     const sessionKey = this.connectionToSession.get(connectionId);
     if (!sessionKey) {
       return false;
@@ -273,13 +276,13 @@ export class TelegramAdapter implements ConnectionAdapter {
     // Telegram doesn't use raw protocol messages
     // Convert to appropriate Telegram message type
     if (message.type === 'agent_output') {
-      return this.sendMessage(connectionId, (message as any).message);
+      return this.sendMessage(connectionId, (message as AgentOutputMessage).message);
     }
     if (message.type === 'question') {
-      return this.sendQuestion(connectionId, (message as any).question);
+      return this.sendQuestion(connectionId, (message as QuestionMessage).question);
     }
     if (message.type === 'session_update') {
-      return this.sendStatus(connectionId, (message as any).session.status);
+      return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);
     }
     return false;
   }
@@ -363,7 +366,8 @@ export class TelegramAdapter implements ConnectionAdapter {
     if (!chatId) return;
 
     // Get directory from command arguments and resolve it
-    const rawDirectory = ctx.match?.toString().trim() || this.config.defaultDirectory!;
+    const rawDirectory =
+      (ctx.match?.toString().trim() || this.config.defaultDirectory) ?? process.cwd();
     const directoryResult = resolveDirectory(rawDirectory);
 
     if ('error' in directoryResult) {
@@ -413,6 +417,7 @@ export class TelegramAdapter implements ConnectionAdapter {
         topicName,
         sessionNumber,
         startedAt: now(),
+        currentMessageId: undefined,
         streamBuffer: '',
         lastSentContent: '',
         paused: false,
@@ -629,7 +634,7 @@ export class TelegramAdapter implements ConnectionAdapter {
         return;
       } catch {
         // Message might be too old to edit, create new one
-        delete (session as any).currentMessageId;
+        session.currentMessageId = undefined;
       }
     }
 
@@ -652,7 +657,7 @@ export class TelegramAdapter implements ConnectionAdapter {
     const session = this.sessions.get(sessionKey);
     if (!session) return;
 
-    delete (session as any).currentMessageId;
+    session.currentMessageId = undefined;
     session.streamBuffer = '';
     session.lastSentContent = '';
   }

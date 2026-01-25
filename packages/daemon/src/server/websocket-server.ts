@@ -256,7 +256,7 @@ export class WebSocketServer {
 
   private handleOpen(ws: { data: WSData }): void {
     const connectionEvents: Partial<ConnectionEvents> = {
-      onConnect: (sessionId) => {
+      onConnect: (_sessionId) => {
         const connection = this.connections.get(ws.data.connectionId);
         if (connection) {
           this.events.onClientConnect?.(connection);

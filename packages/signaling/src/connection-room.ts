@@ -18,10 +18,10 @@ import {
 } from './types.ts';
 
 // Cloudflare-specific types (available at runtime in Workers)
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// biome-ignore lint/suspicious/noExplicitAny: Cloudflare Worker runtime type
 type DurableObjectState = any;
+// biome-ignore lint/suspicious/noExplicitAny: Cloudflare Worker runtime type
 type CFWebSocket = any;
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Session data for each connected peer */
 interface PeerSession {
@@ -113,7 +113,7 @@ export class ConnectionRoom {
   async webSocketClose(ws: CFWebSocket): Promise<void> {
     // Clean up the peer
     if (this.host?.ws === ws) {
-      const wasHost = this.host;
+      const _wasHost = this.host;
       this.host = null;
 
       // Notify client if connected
@@ -144,7 +144,7 @@ export class ConnectionRoom {
   /**
    * Handle WebSocket error.
    */
-  async webSocketError(ws: CFWebSocket, error: Error): Promise<void> {
+  async webSocketError(ws: CFWebSocket, _error: Error): Promise<void> {
     // Just close the connection on error
     await this.webSocketClose(ws);
   }

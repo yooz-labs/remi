@@ -3,35 +3,34 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
-import type { ManagedSession, SessionRegistryEvents } from '../src/session/session-registry.ts';
+import type { MessageAPI } from '../src/api/message-api.ts';
+import type { OutputProcessor } from '../src/parser/output-processor.ts';
+import type { PTYSession } from '../src/pty/pty-session.ts';
 import { SessionRegistry } from '../src/session/session-registry.ts';
 
-// Mock PTYSession
-function createMockPTY() {
+function createMockPTY(): PTYSession {
   return {
     id: generateId(),
     close: mock(() => Promise.resolve()),
-  } as any;
+  } as unknown as PTYSession;
 }
 
-// Mock OutputProcessor
-function createMockProcessor() {
+function createMockProcessor(): OutputProcessor {
   return {
     process: mock(() => {}),
     flush: mock(() => {}),
-  } as any;
+  } as unknown as OutputProcessor;
 }
 
-// Mock MessageAPI
-function createMockMessageAPI(bulletCount = 0) {
+function createMockMessageAPI(bulletCount = 0): MessageAPI {
   return {
     bulletCount,
     handleMessage: mock(() => {}),
     handleMessageUpdate: mock(() => {}),
     reset: mock(() => {}),
-  } as any;
+  } as unknown as MessageAPI;
 }
 
 describe('SessionRegistry', () => {
@@ -195,7 +194,13 @@ describe('SessionRegistry', () => {
       const sessionId = generateId();
       const connectionId = generateId();
       const pty = createMockPTY();
-      registry.registerSession(sessionId, '/test/dir', pty, createMockProcessor(), createMockMessageAPI());
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        pty,
+        createMockProcessor(),
+        createMockMessageAPI(),
+      );
       registry.attachConnection(sessionId, connectionId);
       registry.detachConnection(connectionId);
 
@@ -251,7 +256,13 @@ describe('SessionRegistry', () => {
       const connectionId2 = generateId();
       const pty = createMockPTY();
 
-      registry.registerSession(sessionId, '/test/dir', pty, createMockProcessor(), createMockMessageAPI());
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        pty,
+        createMockProcessor(),
+        createMockMessageAPI(),
+      );
       registry.attachConnection(sessionId, connectionId1);
       registry.detachConnection(connectionId1);
 
@@ -374,7 +385,13 @@ describe('SessionRegistry', () => {
     test('closes session and emits event', () => {
       const sessionId = generateId();
       const pty = createMockPTY();
-      registry.registerSession(sessionId, '/test/dir', pty, createMockProcessor(), createMockMessageAPI());
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        pty,
+        createMockProcessor(),
+        createMockMessageAPI(),
+      );
 
       registry.closeSession(sessionId, 'forced');
 
@@ -386,7 +403,13 @@ describe('SessionRegistry', () => {
     test('handlePTYExit closes session with pty_exit reason', () => {
       const sessionId = generateId();
       const pty = createMockPTY();
-      registry.registerSession(sessionId, '/test/dir', pty, createMockProcessor(), createMockMessageAPI());
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        pty,
+        createMockProcessor(),
+        createMockMessageAPI(),
+      );
 
       registry.handlePTYExit(sessionId);
 
@@ -427,8 +450,20 @@ describe('SessionRegistry', () => {
     test('closes all sessions', async () => {
       const pty1 = createMockPTY();
       const pty2 = createMockPTY();
-      registry.registerSession(generateId(), '/test', pty1, createMockProcessor(), createMockMessageAPI());
-      registry.registerSession(generateId(), '/test', pty2, createMockProcessor(), createMockMessageAPI());
+      registry.registerSession(
+        generateId(),
+        '/test',
+        pty1,
+        createMockProcessor(),
+        createMockMessageAPI(),
+      );
+      registry.registerSession(
+        generateId(),
+        '/test',
+        pty2,
+        createMockProcessor(),
+        createMockMessageAPI(),
+      );
 
       await registry.shutdown();
 

@@ -163,7 +163,7 @@ function tryParseNumbered(lines: readonly string[]): ParseResult | null {
 
   // Find numbered options
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.trim();
+    const line = lines[i]?.trim() ?? '';
     const match = PATTERNS.numberedOption.exec(line);
 
     if (match) {
@@ -171,8 +171,9 @@ function tryParseNumbered(lines: readonly string[]): ParseResult | null {
         firstOptionIndex = i;
       }
 
+      // biome-ignore lint/style/noNonNullAssertion: regex capture group guaranteed by match
       const num = match[1]!;
-      const label = match[2]!.trim();
+      const label = match[2]?.trim() ?? '';
 
       options.push(
         createOption(

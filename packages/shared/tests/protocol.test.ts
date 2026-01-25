@@ -7,12 +7,21 @@ import {
   MessageIdTracker,
   createAck,
   createAgentOutput,
+  createBulletExpandRequest,
+  createBulletExpandResponse,
   createEdit,
   createError,
   createHello,
   createHelloAck,
   createPing,
   createPong,
+  createQuestion,
+  createReplayBatch,
+  createSessionListRequest,
+  createSessionListResponse,
+  createSessionUpdate,
+  createStructuredAgentOutput,
+  createTranscriptContent,
   createUserInput,
   deserialize,
   generateId,
@@ -20,7 +29,7 @@ import {
   serialize,
 } from '../src/protocol.ts';
 import type { AgentOutputMessage, HelloMessage } from '../src/protocol.ts';
-import type { Acknowledgment, Message } from '../src/types.ts';
+import type { Acknowledgment, Message, Question, StructuredMessage } from '../src/types.ts';
 
 describe('generateId()', () => {
   test('generates valid UUID v4 format', () => {
@@ -78,7 +87,9 @@ describe('now()', () => {
     }
 
     for (let i = 1; i < timestamps.length; i++) {
+      // biome-ignore lint/style/noNonNullAssertion: index bounded by loop condition
       const prev = timestamps[i - 1]!;
+      // biome-ignore lint/style/noNonNullAssertion: index bounded by loop condition
       const curr = timestamps[i]!;
       expect(prev <= curr).toBe(true);
     }
@@ -170,7 +181,7 @@ describe('deserialize()', () => {
     const parsed = deserialize(json);
 
     expect(parsed).not.toBeNull();
-    expect(parsed!.type).toBe('hello');
+    expect(parsed?.type).toBe('hello');
     expect((parsed as HelloMessage).clientId).toBe('client-123');
   });
 
@@ -180,7 +191,7 @@ describe('deserialize()', () => {
     const parsed = deserialize(json);
 
     expect(parsed).not.toBeNull();
-    expect(parsed!.type).toBe('ping');
+    expect(parsed?.type).toBe('ping');
   });
 
   test('returns null for invalid JSON', () => {
@@ -237,6 +248,7 @@ describe('deserialize()', () => {
       'hello',
       'hello_ack',
       'agent_output',
+      'structured_agent_output',
       'user_input',
       'ack',
       'edit',
@@ -246,6 +258,12 @@ describe('deserialize()', () => {
       'ping',
       'pong',
       'error',
+      'replay_batch',
+      'bullet_expand_request',
+      'bullet_expand_response',
+      'session_list_request',
+      'session_list_response',
+      'transcript_content',
     ] as const;
 
     for (const type of validTypes) {
@@ -256,7 +274,7 @@ describe('deserialize()', () => {
       });
       const result = deserialize(json);
       expect(result).not.toBeNull();
-      expect(result!.type).toBe(type);
+      expect(result?.type).toBe(type);
     }
   });
 
@@ -421,6 +439,475 @@ describe('Message factory functions', () => {
       });
     });
   });
+
+  describe('createStructuredAgentOutput()', () => {
+    test('creates structured output with message and update flag', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-1',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'Hello world',
+        createdAt: now(),
+        state: 'sent',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'Hello world',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createStructuredAgentOutput(structured, false);
+      expect(msg.type).toBe('structured_agent_output');
+      expect(msg.message).toBe(structured);
+      expect(msg.isUpdate).toBe(false);
+      expect(msg.changedBulletIds).toBeUndefined();
+    });
+
+    test('includes changed bullet IDs for updates', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-1',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'Updated',
+        createdAt: now(),
+        state: 'sent',
+        stateChangedAt: now(),
+        isEditing: true,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'First',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+          {
+            bulletId: 2,
+            content: 'Second',
+            type: 'dash',
+            startLine: 1,
+            endLine: 1,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createStructuredAgentOutput(structured, true, [2]);
+      expect(msg.isUpdate).toBe(true);
+      expect(msg.changedBulletIds).toEqual([2]);
+    });
+  });
+
+  describe('createQuestion()', () => {
+    test('creates question message', () => {
+      const question: Question = {
+        id: generateId(),
+        text: 'Do you want to continue?',
+        allowsFreeText: false,
+        isAnswered: false,
+        options: [
+          { label: 'Yes', value: 'y', isRecommended: true, isYes: true, isNo: false },
+          { label: 'No', value: 'n', isRecommended: false, isYes: false, isNo: true },
+        ],
+      };
+
+      const msg = createQuestion(question);
+      expect(msg.type).toBe('question');
+      expect(msg.question).toBe(question);
+      expect(msg.question.text).toBe('Do you want to continue?');
+      expect(msg.question.options.length).toBe(2);
+    });
+  });
+
+  describe('createSessionUpdate()', () => {
+    test('creates session update with thinking status', () => {
+      const msg = createSessionUpdate('session-1', 'thinking');
+      expect(msg.type).toBe('session_update');
+      expect(msg.session.id).toBe('session-1');
+      expect(msg.session.status).toBe('thinking');
+      expect(msg.session.isActive).toBe(true);
+    });
+
+    test('creates session update with idle status (inactive)', () => {
+      const msg = createSessionUpdate('session-1', 'idle');
+      expect(msg.session.status).toBe('idle');
+      expect(msg.session.isActive).toBe(false);
+    });
+
+    test('creates session update with executing status', () => {
+      const msg = createSessionUpdate('session-1', 'executing', 'Bash');
+      expect(msg.session.status).toBe('executing');
+      expect(msg.session.isActive).toBe(true);
+    });
+  });
+
+  describe('createReplayBatch()', () => {
+    test('creates replay batch with messages', () => {
+      const messages = [createPing(), createPong(generateId())];
+      const msg = createReplayBatch('session-1', messages, true);
+
+      expect(msg.type).toBe('replay_batch');
+      expect(msg.sessionId).toBe('session-1');
+      expect(msg.messages.length).toBe(2);
+      expect(msg.isComplete).toBe(true);
+    });
+
+    test('creates incomplete replay batch', () => {
+      const msg = createReplayBatch('session-1', [createPing()], false);
+      expect(msg.isComplete).toBe(false);
+    });
+
+    test('creates empty replay batch', () => {
+      const msg = createReplayBatch('session-1', [], true);
+      expect(msg.messages.length).toBe(0);
+      expect(msg.isComplete).toBe(true);
+    });
+  });
+
+  describe('createBulletExpandRequest()', () => {
+    test('creates bullet expand request', () => {
+      const msg = createBulletExpandRequest('session-1', 42);
+      expect(msg.type).toBe('bullet_expand_request');
+      expect(msg.sessionId).toBe('session-1');
+      expect(msg.bulletId).toBe(42);
+    });
+  });
+
+  describe('createBulletExpandResponse()', () => {
+    test('creates bullet expand response', () => {
+      const requestId = generateId();
+      const msg = createBulletExpandResponse(42, 'Full bullet content here', requestId);
+
+      expect(msg.type).toBe('bullet_expand_response');
+      expect(msg.bulletId).toBe(42);
+      expect(msg.fullContent).toBe('Full bullet content here');
+      expect(msg.requestId).toBe(requestId);
+    });
+  });
+
+  describe('createSessionListRequest()', () => {
+    test('creates session list request without includeExternal', () => {
+      const msg = createSessionListRequest();
+      expect(msg.type).toBe('session_list_request');
+      expect(msg.includeExternal).toBeUndefined();
+    });
+
+    test('creates session list request with includeExternal true', () => {
+      const msg = createSessionListRequest(true);
+      expect(msg.includeExternal).toBe(true);
+    });
+
+    test('creates session list request with includeExternal false', () => {
+      const msg = createSessionListRequest(false);
+      expect(msg.includeExternal).toBe(false);
+    });
+  });
+
+  describe('createSessionListResponse()', () => {
+    test('creates session list response with sessions', () => {
+      const requestId = generateId();
+      const sessions = [
+        {
+          sessionId: 'session-1',
+          projectPath: '/home/user/project',
+          status: 'active' as const,
+          lastActivity: now(),
+          messageCount: 5,
+          canAttach: true,
+          source: 'daemon' as const,
+        },
+      ];
+
+      const msg = createSessionListResponse(sessions, requestId);
+      expect(msg.type).toBe('session_list_response');
+      expect(msg.sessions.length).toBe(1);
+      expect(msg.sessions[0]?.sessionId).toBe('session-1');
+      expect(msg.requestId).toBe(requestId);
+    });
+
+    test('creates session list response with empty sessions', () => {
+      const requestId = generateId();
+      const msg = createSessionListResponse([], requestId);
+      expect(msg.sessions.length).toBe(0);
+    });
+  });
+
+  describe('createTranscriptContent()', () => {
+    test('creates transcript content for assistant', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-1',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'Hello',
+        createdAt: now(),
+        state: 'delivered',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'Hello',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createTranscriptContent(
+        'session-1',
+        'entry-uuid-123',
+        'assistant',
+        'Hello',
+        structured,
+        false,
+        { tools: ['Bash', 'Read'], model: 'claude-opus-4-5-20251101', hadThinking: true },
+      );
+
+      expect(msg.type).toBe('transcript_content');
+      expect(msg.sessionId).toBe('session-1');
+      expect(msg.entryUuid).toBe('entry-uuid-123');
+      expect(msg.role).toBe('assistant');
+      expect(msg.content).toBe('Hello');
+      expect(msg.isUpdate).toBe(false);
+      expect(msg.tools).toEqual(['Bash', 'Read']);
+      expect(msg.model).toBe('claude-opus-4-5-20251101');
+      expect(msg.hadThinking).toBe(true);
+    });
+
+    test('creates transcript content for user', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-2',
+        sessionId: 'session-1',
+        sender: 'user',
+        content: 'User input',
+        createdAt: now(),
+        state: 'delivered',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'User input',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createTranscriptContent(
+        'session-1',
+        'entry-uuid-456',
+        'user',
+        'User input',
+        structured,
+        false,
+      );
+
+      expect(msg.type).toBe('transcript_content');
+      expect(msg.role).toBe('user');
+      expect(msg.tools).toBeUndefined();
+      expect(msg.model).toBeUndefined();
+      expect(msg.hadThinking).toBeUndefined();
+    });
+
+    test('omits empty tools array', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-3',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'No tools',
+        createdAt: now(),
+        state: 'delivered',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'No tools',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createTranscriptContent(
+        'session-1',
+        'entry-uuid-789',
+        'assistant',
+        'No tools',
+        structured,
+        false,
+        { tools: [] },
+      );
+
+      expect(msg.tools).toBeUndefined();
+    });
+
+    test('omits empty model string', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-4',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'test',
+        createdAt: now(),
+        state: 'delivered',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'test',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createTranscriptContent(
+        'session-1',
+        'entry-uuid',
+        'assistant',
+        'test',
+        structured,
+        false,
+        { model: '' },
+      );
+
+      expect(msg.model).toBeUndefined();
+    });
+
+    test('includes usage information', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-5',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'with usage',
+        createdAt: now(),
+        state: 'delivered',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'with usage',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createTranscriptContent(
+        'session-1',
+        'entry-uuid',
+        'assistant',
+        'with usage',
+        structured,
+        false,
+        { usage: { input_tokens: 100, output_tokens: 50 } },
+      );
+
+      expect(msg.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+    });
+
+    test('marks as update when isUpdate is true', () => {
+      const structured: StructuredMessage = {
+        id: 'msg-6',
+        sessionId: 'session-1',
+        sender: 'agent',
+        content: 'updated',
+        createdAt: now(),
+        state: 'delivered',
+        stateChangedAt: now(),
+        isEditing: false,
+        bullets: [
+          {
+            bulletId: 1,
+            content: 'updated',
+            type: 'dash',
+            startLine: 0,
+            endLine: 0,
+            hasCodeBlock: false,
+          },
+        ],
+      };
+
+      const msg = createTranscriptContent(
+        'session-1',
+        'entry-uuid',
+        'assistant',
+        'updated',
+        structured,
+        true,
+      );
+
+      expect(msg.isUpdate).toBe(true);
+    });
+  });
+
+  describe('createHello() with optional params', () => {
+    test('includes directory when provided', () => {
+      const msg = createHello('client-1', '1.0.0', '/home/user/project');
+      expect(msg.directory).toBe('/home/user/project');
+    });
+
+    test('includes resumeSessionId when provided', () => {
+      const sessionId = generateId();
+      const msg = createHello('client-1', '1.0.0', undefined, sessionId);
+      expect(msg.resumeSessionId).toBe(sessionId);
+    });
+
+    test('includes lastReceivedIndex when provided', () => {
+      const msg = createHello('client-1', '1.0.0', undefined, undefined, 42);
+      expect(msg.lastReceivedIndex).toBe(42);
+    });
+
+    test('includes all optional params together', () => {
+      const sessionId = generateId();
+      const msg = createHello('client-1', '1.0.0', '/path', sessionId, 10);
+      expect(msg.directory).toBe('/path');
+      expect(msg.resumeSessionId).toBe(sessionId);
+      expect(msg.lastReceivedIndex).toBe(10);
+    });
+  });
+
+  describe('createHelloAck() with resume info', () => {
+    test('includes resume info when provided', () => {
+      const msg = createHelloAck('1.0.0', 'session-1', {
+        isResume: true,
+        replayCount: 5,
+        nextBulletId: 10,
+      });
+
+      expect(msg.isResume).toBe(true);
+      expect(msg.replayCount).toBe(5);
+      expect(msg.nextBulletId).toBe(10);
+    });
+
+    test('omits resume info when not provided', () => {
+      const msg = createHelloAck('1.0.0', 'session-1');
+      expect(msg.isResume).toBeUndefined();
+      expect(msg.replayCount).toBeUndefined();
+      expect(msg.nextBulletId).toBeUndefined();
+    });
+  });
 });
 
 describe('MessageIdTracker', () => {
@@ -517,6 +1004,7 @@ describe('MessageIdTracker', () => {
 
       // Oldest (ids[0]) should be evicted (no longer recognized as duplicate)
       // Note: checkAndMark will re-add it, so we can only check once
+      // biome-ignore lint/style/noNonNullAssertion: ids array has known elements
       expect(smallTracker.checkAndMark(ids[0]!)).toBe(false);
 
       // After re-adding ids[0], ids[1] should now be evicted

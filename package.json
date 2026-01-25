@@ -2,6 +2,7 @@
   "name": "remi",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun test --coverage",

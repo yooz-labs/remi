@@ -14,9 +14,8 @@ import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
 
 // Cloudflare-specific types
-/* eslint-disable @typescript-eslint/no-explicit-any */
+// biome-ignore lint/suspicious/noExplicitAny: Cloudflare Worker runtime type
 type DurableObjectNamespace = any;
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Environment bindings */
 interface Env {
@@ -92,7 +91,7 @@ export default {
       const code = generateCode();
 
       // Create Durable Object with code as ID
-      const id = env.CONNECTIONS.idFromName(code);
+      const _id = env.CONNECTIONS.idFromName(code);
 
       // Return the code to the caller
       const timeoutMs = Number.parseInt(env.CONNECTION_TIMEOUT_MS) || 300000;

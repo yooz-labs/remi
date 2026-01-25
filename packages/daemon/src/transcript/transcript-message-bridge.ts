@@ -9,12 +9,7 @@
  * - Phase 2 (Transcript): Clean content delivery via this bridge
  */
 
-import type {
-  Message,
-  StructuredMessage,
-  TranscriptContentMessage,
-  UUID,
-} from '@remi/shared';
+import type { Message, TranscriptContentMessage, UUID } from '@remi/shared';
 import { createTranscriptContent, generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { AssistantEntry, ContentBlock, UserEntry } from './types.ts';

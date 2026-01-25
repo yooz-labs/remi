@@ -136,7 +136,7 @@ describe('WebSocketServer', () => {
           }
         };
 
-        ws.onerror = (err) => {
+        ws.onerror = (_err) => {
           reject(new Error('WebSocket error'));
         };
 
@@ -155,7 +155,7 @@ describe('WebSocketServer', () => {
       const serverWithEvents = new WebSocketServer(
         { port: testPort + 4 },
         {
-          onClientDisconnect: (id, reason) => {
+          onClientDisconnect: (_id, reason) => {
             disconnectReason = reason;
           },
         },
@@ -197,7 +197,7 @@ describe('WebSocketServer', () => {
         server = new WebSocketServer(
           { port: testPort + 5 },
           {
-            onUserInput: (connId, sessionId, content) => {
+            onUserInput: (_connId, _sessionId, content) => {
               resolve(content);
             },
           },
