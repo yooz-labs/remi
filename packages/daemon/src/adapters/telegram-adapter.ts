@@ -5,7 +5,6 @@
  * Each Claude Code session = one topic thread.
  */
 
-import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { generateId, now } from '@remi/shared';
@@ -23,6 +22,7 @@ import type {
 import { Bot, type Context } from 'grammy';
 import type { SessionRegistry } from '../session/session-registry.ts';
 import type { TranscriptDiscovery } from '../transcript/transcript-discovery.ts';
+import { resolveDirectory } from '../utils/path-resolver.ts';
 import type {
   AdapterConfig,
   AdapterEvents,
@@ -38,37 +38,6 @@ import {
   isValidContent,
   stripTerminalCodes,
 } from './telegram-ui.ts';
-
-/**
- * Resolve a directory path, expanding ~ and validating it exists.
- * Returns null with error message if invalid.
- */
-function resolveDirectory(inputPath: string): { resolved: string } | { error: string } {
-  let resolved = inputPath;
-
-  // Expand ~ to home directory
-  if (resolved.startsWith('~/')) {
-    resolved = path.join(os.homedir(), resolved.slice(2));
-  } else if (resolved === '~') {
-    resolved = os.homedir();
-  }
-
-  // Resolve to absolute path
-  resolved = path.resolve(resolved);
-
-  // Check if directory exists
-  if (!fs.existsSync(resolved)) {
-    return { error: `Directory not found: ${resolved}` };
-  }
-
-  // Check if it's actually a directory
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) {
-    return { error: `Not a directory: ${resolved}` };
-  }
-
-  return { resolved };
-}
 
 /** Telegram adapter configuration */
 export interface TelegramAdapterConfig extends AdapterConfig {
@@ -641,12 +610,20 @@ export class TelegramAdapter implements ConnectionAdapter {
       await ctx.reply(formatted);
     } catch (error) {
       console.error('Failed to list sessions:', error);
-      await ctx.reply('Failed to fetch sessions. Please try again.');
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('ENOENT') || message.includes('no such file')) {
+        await ctx.reply('Session directory not found. No sessions available.');
+      } else if (message.includes('EACCES') || message.includes('permission')) {
+        await ctx.reply('Permission denied accessing session data.');
+      } else {
+        await ctx.reply('Failed to fetch sessions. Check daemon logs for details.');
+      }
     }
   }
 
   /**
-   * Handle /attach command - attach to an existing daemon session.
+   * Handle /attach command - attach to an orphaned daemon session.
+   * Only sessions without an active connection can be attached.
    * Creates a new topic and binds it to the target session.
    */
   private async handleAttach(ctx: Context): Promise<void> {
@@ -662,10 +639,12 @@ export class TelegramAdapter implements ConnectionAdapter {
       return;
     }
 
-    // Validate UUID format (at least starts like one)
-    const uuidPattern = /^[0-9a-f]{8}-?/i;
+    // Validate full UUID v4 format
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidPattern.test(sessionIdArg)) {
-      await ctx.reply('Invalid session ID format. Use /sessions to see available sessions.');
+      await ctx.reply(
+        'Invalid session ID format. Expected full UUID (e.g., 12345678-1234-1234-1234-123456789abc).\nUse /sessions to see available sessions.',
+      );
       return;
     }
 
@@ -684,14 +663,20 @@ export class TelegramAdapter implements ConnectionAdapter {
       return;
     }
 
+    // Check forum mode first (separate try-catch for clearer error handling)
     try {
-      // Check forum mode
       const chat = await ctx.api.getChat(chatId);
       if (chat.type !== 'supergroup' || !('is_forum' in chat) || !chat.is_forum) {
         await ctx.reply('Forum mode required. Enable Topics in group settings.');
         return;
       }
+    } catch (error) {
+      console.error('Failed to check chat settings:', error);
+      await ctx.reply('Failed to check chat settings. Please try again.');
+      return;
+    }
 
+    try {
       // Create new topic for attached session
       const topicName = `attached-${sessionIdArg.slice(0, 8)}`;
       const topic = await ctx.api.createForumTopic(chatId, topicName);
@@ -706,7 +691,7 @@ export class TelegramAdapter implements ConnectionAdapter {
         sessionId: sessionIdArg as UUID,
         chatId,
         topicId,
-        workingDirectory: '', // Will be filled from session info
+        workingDirectory: '', // Filled by daemon on resume via session registry
         machineName: os.hostname().replace(/\./g, '-').toLowerCase(),
         topicName,
         sessionNumber: 0,
@@ -730,18 +715,35 @@ export class TelegramAdapter implements ConnectionAdapter {
           resumeSessionId: sessionIdArg,
         },
       };
-      this.events.onConnect?.(connectionId, metadata);
+
+      try {
+        this.events.onConnect?.(connectionId, metadata);
+      } catch (callbackError) {
+        console.error('onConnect callback failed:', callbackError);
+        // Clean up on failure
+        this.sessions.delete(sessionKey);
+        this.connectionToSession.delete(connectionId);
+        await ctx.reply('Failed to attach: daemon rejected connection.');
+        return;
+      }
 
       await ctx.reply(`Attaching to session in new topic "${topicName}"`);
     } catch (error) {
       console.error('Failed to attach to session:', error);
-      await ctx.reply('Failed to attach to session. Check bot permissions.');
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('not enough rights') || message.includes('CHAT_ADMIN_REQUIRED')) {
+        await ctx.reply('Bot lacks permission to create topics. Grant admin rights.');
+      } else if (message.includes('TOPIC')) {
+        await ctx.reply(`Topic error: ${message.slice(0, 100)}`);
+      } else {
+        await ctx.reply('Failed to create topic for session. Check bot permissions.');
+      }
     }
   }
 
   /**
    * Handle /detach command - detach from session without killing it.
-   * Session stays orphaned and can be reattached within 5 minutes.
+   * Session stays orphaned and can be reattached within the configured timeout.
    */
   private async handleDetach(ctx: Context): Promise<void> {
     const session = this.getSessionFromContext(ctx);
@@ -755,11 +757,20 @@ export class TelegramAdapter implements ConnectionAdapter {
     this.sessions.delete(sessionKey);
     this.connectionToSession.delete(session.connectionId);
 
-    // Notify daemon (session stays orphaned for 5 minutes)
-    this.events.onDisconnect?.(session.connectionId, 'User detached from session');
+    // Notify daemon (session stays orphaned for configured timeout, default 5 minutes)
+    try {
+      this.events.onDisconnect?.(session.connectionId, 'User detached from session');
+    } catch (error) {
+      console.error('onDisconnect callback failed:', error);
+      // Session is already removed from adapter maps, warn user
+      await ctx.reply(
+        'Warning: Detach may not have registered with daemon. Session state may be inconsistent.',
+      );
+      return;
+    }
 
     await ctx.reply(
-      `Detached from session. Session remains active for 5 minutes.\nUse /attach ${session.sessionId} to reconnect.`,
+      `Detached from session. Session remains active for reconnection.\nUse /attach ${session.sessionId} to reconnect.`,
     );
   }
 
