@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check spelling (typos)
+        uses: crate-ci/typos@v1.28.4
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest

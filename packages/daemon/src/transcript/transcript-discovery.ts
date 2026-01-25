@@ -307,7 +307,7 @@ export class TranscriptDiscovery {
             lastMessage = msgContent.length > 100 ? `${msgContent.slice(0, 97)}...` : msgContent;
           }
         } catch {
-          // Skip unparseable lines in tail
+          // Skip unparsable lines in tail
         }
       }
 
