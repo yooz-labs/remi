@@ -69,7 +69,7 @@ export function ConnectModal({
   error,
 }: ConnectModalProps) {
   const [mode, setMode] = useState<ConnectionMode>('direct');
-  const [directUrl, setDirectUrl] = useState('ws://localhost:8765/ws');
+  const [directUrl, setDirectUrl] = useState('ws://localhost:18765/ws');
   const [directory, setDirectory] = useState('');
   const [code, setCode] = useState('');
 
@@ -77,7 +77,7 @@ export function ConnectModal({
   useEffect(() => {
     if (!isOpen) {
       setCode('');
-      setDirectUrl('ws://localhost:8765/ws');
+      setDirectUrl(localStorage.getItem('remi-last-url') || 'ws://localhost:18765/ws');
       setDirectory('');
     }
   }, [isOpen]);

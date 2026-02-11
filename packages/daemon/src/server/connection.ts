@@ -27,6 +27,7 @@ import type {
   PingMessage,
   ProtocolMessage,
   SessionListRequestMessage,
+  TranscriptLoadRequestMessage,
   UUID,
   UserInputMessage,
 } from '@remi/shared';
@@ -53,6 +54,9 @@ export interface ConnectionEvents {
 
   /** Session list request received */
   onSessionListRequest: (requestId: UUID, includeExternal: boolean) => void;
+
+  /** Transcript load request received */
+  onTranscriptLoadRequest: (sessionId: string, requestId: UUID) => void;
 
   /** Error occurred */
   onError: (error: Error) => void;
@@ -180,6 +184,9 @@ export class Connection {
         break;
       case 'session_list_request':
         this.handleSessionListRequest(message);
+        break;
+      case 'transcript_load_request':
+        this.handleTranscriptLoadRequest(message);
         break;
       case 'ping':
         this.handlePing(message);
@@ -310,6 +317,11 @@ export class Connection {
     // Session list can be requested before full connection (no state check)
     this.sendAck(message.id, 'delivered');
     this.events.onSessionListRequest?.(message.id, message.includeExternal ?? false);
+  }
+
+  private handleTranscriptLoadRequest(message: TranscriptLoadRequestMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onTranscriptLoadRequest?.(message.sessionId, message.id);
   }
 
   private handlePing(message: PingMessage): void {

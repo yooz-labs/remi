@@ -127,6 +127,16 @@ export class TranscriptDiscovery {
   }
 
   /**
+   * Find a transcript file path by its session ID (the UUID filename without .jsonl).
+   * Returns the file path if found, null otherwise.
+   */
+  findTranscriptBySessionId(sessionId: string): string | null {
+    const files = this.findTranscriptFiles();
+    const match = files.find((f) => f.sessionId === sessionId);
+    return match?.filePath ?? null;
+  }
+
+  /**
    * Find all .jsonl transcript files across all projects.
    * Sorted by last modification time (most recent first).
    */

@@ -55,6 +55,8 @@ export type {
   SessionListRequestMessage,
   SessionListResponseMessage,
   TranscriptContentMessage,
+  TranscriptLoadRequestMessage,
+  TranscriptLoadCompleteMessage,
   TranscriptUsage,
 } from './protocol.ts';
 
@@ -81,5 +83,7 @@ export {
   createSessionListRequest,
   createSessionListResponse,
   createTranscriptContent,
+  createTranscriptLoadRequest,
+  createTranscriptLoadComplete,
   MessageIdTracker,
 } from './protocol.ts';

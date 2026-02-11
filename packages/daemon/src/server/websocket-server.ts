@@ -58,6 +58,9 @@ export interface ServerEvents {
   /** Session list request from client */
   onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
 
+  /** Transcript load request from client */
+  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -283,6 +286,10 @@ export class WebSocketServer {
 
       onSessionListRequest: (requestId, includeExternal) => {
         this.events.onSessionListRequest?.(ws.data.connectionId, requestId, includeExternal);
+      },
+
+      onTranscriptLoadRequest: (sessionId, requestId) => {
+        this.events.onTranscriptLoadRequest?.(ws.data.connectionId, sessionId, requestId);
       },
 
       onError: (error) => {

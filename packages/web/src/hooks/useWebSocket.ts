@@ -11,7 +11,11 @@ import {
   createBulletExpandRequest,
   createHello,
   createPing,
+  createSessionListRequest,
+  createTranscriptLoadRequest,
   createUserInput,
+  generateId,
+  now,
 } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -28,10 +32,16 @@ export interface UseWebSocketReturn {
   disconnect: () => void;
   /** Send user input */
   sendInput: (sessionId: UUID, content: string) => boolean;
+  /** Send an answer to a question */
+  sendAnswer: (questionId: UUID, answer: string) => boolean;
   /** Send raw message */
   sendMessage: (message: ProtocolMessage) => boolean;
   /** Request full content for a truncated bullet */
   requestBulletExpand: (sessionId: UUID, bulletId: number) => boolean;
+  /** Request list of sessions from daemon */
+  requestSessionList: (includeExternal?: boolean) => boolean;
+  /** Request transcript history for an external session */
+  requestTranscriptLoad: (sessionId: string) => boolean;
   /** Current session ID (after hello_ack) */
   sessionId: UUID | null;
 }
@@ -53,7 +63,7 @@ export interface UseWebSocketOptions {
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
   const {
-    autoReconnect = false, // Disable auto-reconnect to avoid loops during debugging
+    autoReconnect = false,
     clientId = 'remi-web',
     clientVersion = '0.0.1',
     onMessage,
@@ -132,6 +142,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     return clientRef.current.send(createUserInput(targetSessionId, content));
   }, []);
 
+  // Send answer to a question
+  const sendAnswer = useCallback((questionId: UUID, answer: string): boolean => {
+    if (!clientRef.current) return false;
+    const msg: ProtocolMessage = {
+      type: 'answer',
+      id: generateId(),
+      timestamp: now(),
+      questionId,
+      answer,
+    };
+    return clientRef.current.send(msg);
+  }, []);
+
   // Send raw message
   const sendMessage = useCallback((message: ProtocolMessage): boolean => {
     if (!clientRef.current) return false;
@@ -146,6 +169,18 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     },
     [],
   );
+
+  // Request session list
+  const requestSessionList = useCallback((includeExternal?: boolean): boolean => {
+    if (!clientRef.current) return false;
+    return clientRef.current.send(createSessionListRequest(includeExternal));
+  }, []);
+
+  // Request transcript load for external session
+  const requestTranscriptLoad = useCallback((targetSessionId: string): boolean => {
+    if (!clientRef.current) return false;
+    return clientRef.current.send(createTranscriptLoadRequest(targetSessionId));
+  }, []);
 
   // Clean up on unmount
   useEffect(() => {
@@ -171,8 +206,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     connect,
     disconnect,
     sendInput,
+    sendAnswer,
     sendMessage,
     requestBulletExpand,
+    requestSessionList,
+    requestTranscriptLoad,
     sessionId,
   };
 }

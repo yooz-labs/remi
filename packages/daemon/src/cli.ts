@@ -1,18 +1,15 @@
 #!/usr/bin/env bun
 /**
- * Remi Daemon CLI
- * Starts connection adapters and manages Claude Code PTY sessions.
+ * Remi CLI - Transparent wrapper around Claude Code.
  *
  * Usage:
- *   bun run remi-daemon [--port PORT] [--no-telegram]
- *   remi-daemon [--port PORT] [--no-telegram]
+ *   remi [claude-args...]          Start Claude with remote monitoring
+ *   remi --resume [session-id]     Resume a previous session
+ *   remi --sessions                List stored sessions
+ *   remi --daemon                  Legacy daemon mode (no local PTY)
  *
- * Environment variables:
- * - REMI_PORT: WebSocket port (default: 18765)
- * - TELEGRAM_BOT_TOKEN: Telegram bot token (optional)
- * - TELEGRAM_ENABLED: Enable Telegram adapter (default: true if token provided)
- *
- * Loads .env from current directory automatically.
+ * The wrapper spawns Claude immediately, passes through stdin/stdout,
+ * and runs a WebSocket server silently for remote phone/browser monitoring.
  */
 
 import * as fs from 'node:fs';
@@ -30,7 +27,6 @@ if (fs.existsSync(envPath)) {
     if (eqIndex > 0) {
       const key = trimmed.slice(0, eqIndex).trim();
       let value = trimmed.slice(eqIndex + 1).trim();
-      // Remove quotes if present
       if (
         (value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'"))
@@ -42,14 +38,15 @@ if (fs.existsSync(envPath)) {
       }
     }
   }
-  console.log(`Loaded environment from ${envPath}`);
 }
+
 import {
   createBulletExpandResponse,
   createError,
   createHelloAck,
   createReplayBatch,
   createSessionListResponse,
+  createTranscriptLoadComplete,
   generateId,
   now,
 } from '@remi/shared';
@@ -63,7 +60,7 @@ import {
 import { MessageAPI } from './api/index.ts';
 import { OutputProcessor } from './parser/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
-import { SessionRegistry } from './session/index.ts';
+import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
 import {
   TranscriptDiscovery,
   TranscriptMessageBridge,
@@ -71,10 +68,30 @@ import {
 } from './transcript/index.ts';
 import type { AssistantEntry } from './transcript/index.ts';
 
-/**
- * Resolve a directory path, expanding ~ and validating it exists.
- * Returns resolved path or null with error message.
- */
+// ---------------------------------------------------------------------------
+// Logging: In wrapper mode, all daemon logs go to stderr so stdout is clean
+// ---------------------------------------------------------------------------
+let wrapperMode = true; // Default to wrapper mode
+
+function log(...args: unknown[]): void {
+  if (wrapperMode) {
+    process.stderr.write(`${args.map(String).join(' ')}\n`);
+  } else {
+    console.log(...args);
+  }
+}
+
+function logError(...args: unknown[]): void {
+  if (wrapperMode) {
+    process.stderr.write(`[remi] ${args.map(String).join(' ')}\n`);
+  } else {
+    console.error(...args);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve directory helper
+// ---------------------------------------------------------------------------
 function resolveDirectory(
   inputPath: string | null | undefined,
 ): { resolved: string } | { error: string } {
@@ -83,41 +100,51 @@ function resolveDirectory(
   }
 
   let resolved = inputPath;
-
-  // Expand ~ to home directory
   if (resolved.startsWith('~/')) {
     resolved = path.join(os.homedir(), resolved.slice(2));
   } else if (resolved === '~') {
     resolved = os.homedir();
   }
-
-  // Resolve to absolute path
   resolved = path.resolve(resolved);
-
-  // Check if directory exists
   if (!fs.existsSync(resolved)) {
     return { error: `Directory not found: ${resolved}` };
   }
-
-  // Check if it's actually a directory
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) {
     return { error: `Not a directory: ${resolved}` };
   }
-
   return { resolved };
 }
 
+// ---------------------------------------------------------------------------
 // Parse CLI arguments
+// ---------------------------------------------------------------------------
 const args = process.argv.slice(2);
 let cliPort: number | undefined;
 let cliNoTelegram = false;
 let cliMaxBulletLength: number | undefined;
+let cliDaemonMode = false;
+let cliResume: string | true | undefined; // true = resume most recent, string = session ID
+let cliShowSessions = false;
+const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   const nextArg = args[i + 1];
-  if (arg === '--port' && nextArg) {
+
+  if (arg === '--daemon') {
+    cliDaemonMode = true;
+    wrapperMode = false;
+  } else if (arg === '--resume') {
+    if (nextArg && !nextArg.startsWith('-')) {
+      cliResume = nextArg;
+      i++;
+    } else {
+      cliResume = true;
+    }
+  } else if (arg === '--sessions') {
+    cliShowSessions = true;
+  } else if (arg === '--port' && nextArg) {
     cliPort = Number.parseInt(nextArg);
     i++;
   } else if (arg === '--max-bullet-length' && nextArg) {
@@ -125,11 +152,15 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--no-telegram') {
     cliNoTelegram = true;
-  } else if (args[i] === '--help' || args[i] === '-h') {
+  } else if (arg === '--help' || arg === '-h') {
     console.log(`
-Remi Daemon - Claude Code session monitor
+Remi - Claude Code with remote monitoring
 
-Usage: remi-daemon [options]
+Usage:
+  remi [claude-args...]          Start Claude with WebSocket monitoring
+  remi --resume [session-id]     Resume a previous session
+  remi --sessions                List stored sessions
+  remi --daemon                  Legacy daemon mode (headless server)
 
 Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
@@ -143,13 +174,86 @@ Environment:
   TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
   TELEGRAM_ENABLED         Set to 'false' to disable Telegram
 
-The daemon loads .env from current directory automatically.
+Any other arguments are passed through to Claude Code.
 `);
     process.exit(0);
+  } else {
+    // Pass through to Claude
+    if (arg) claudeArgs.push(arg);
   }
 }
 
-// Obscure default port (18765) - less likely to conflict
+// Handle --sessions quickly
+if (cliShowSessions) {
+  const store = new SessionStore();
+  const sessions = store.list();
+  if (sessions.length === 0) {
+    console.log('No stored sessions.');
+  } else {
+    console.log('Stored sessions:');
+    for (const s of sessions) {
+      const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
+      const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
+      console.log(
+        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
+      );
+    }
+  }
+  process.exit(0);
+}
+
+// Handle --resume: look up session and inject claude --resume args
+if (cliResume !== undefined) {
+  const store = new SessionStore();
+  let session: StoredSession | null = null;
+
+  if (cliResume === true) {
+    session = store.getMostRecent();
+    if (!session) {
+      console.error('No sessions to resume. Run `remi --sessions` to see stored sessions.');
+      process.exit(1);
+    }
+  } else {
+    // Try exact match first, then prefix match
+    session = store.findByRemiSessionId(cliResume as UUID);
+    if (!session) {
+      const all = store.list();
+      session = all.find((s) => s.remiSessionId.startsWith(cliResume as string)) ?? null;
+    }
+    if (!session) {
+      session = store.findByClaudeSessionId(cliResume as string);
+    }
+    if (!session) {
+      console.error(`Session not found: ${cliResume}`);
+      console.error('Run `remi --sessions` to see stored sessions.');
+      process.exit(1);
+    }
+  }
+
+  if (!session.claudeSessionId) {
+    console.error(
+      `Session ${session.remiSessionId.slice(0, 8)} has no Claude session ID (was it too short-lived?).`,
+    );
+    process.exit(1);
+  }
+
+  // Inject --resume into Claude args
+  claudeArgs.unshift('--resume', session.claudeSessionId);
+  log(
+    `Resuming session ${session.remiSessionId.slice(0, 8)} (claude: ${session.claudeSessionId.slice(0, 8)}) in ${session.projectPath}`,
+  );
+
+  // Change to stored project path
+  try {
+    process.chdir(session.projectPath);
+  } catch {
+    logError(`Cannot change to stored project path: ${session.projectPath}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
 const PORT =
   cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
 const MAX_BULLET_LENGTH =
@@ -161,30 +265,25 @@ const TELEGRAM_TOKEN = process.env['TELEGRAM_BOT_TOKEN'];
 const TELEGRAM_ENABLED =
   !cliNoTelegram && process.env['TELEGRAM_ENABLED'] !== 'false' && !!TELEGRAM_TOKEN;
 
-console.log('Starting Remi daemon...');
-
-// Create PTY manager (may be used for multi-session management later)
+// ---------------------------------------------------------------------------
+// Core components
+// ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
-
-// Transcript discovery for finding external Claude Code sessions
 const transcriptDiscovery = new TranscriptDiscovery();
-
-// Transcript watchers per session (keyed by Remi session ID)
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
+const sessionStore = new SessionStore();
 
-// Session registry for managing session lifecycle independently of connections
 const sessionRegistry = new SessionRegistry(
   {
-    orphanTimeoutMs: 5 * 60 * 1000, // 5 minutes
+    orphanTimeoutMs: 5 * 60 * 1000,
     maxReplayHistory: 1000,
   },
   {
     onSessionCreated: (sessionId) => {
-      console.log(`Session created: ${sessionId}`);
+      log(`Session created: ${sessionId}`);
     },
     onSessionClosed: (sessionId, reason) => {
-      console.log(`Session closed: ${sessionId} (reason: ${reason})`);
-      // Clean up transcript watcher
+      log(`Session closed: ${sessionId} (reason: ${reason})`);
       const watcher = transcriptWatchers.get(sessionId);
       if (watcher) {
         watcher.stop();
@@ -192,30 +291,32 @@ const sessionRegistry = new SessionRegistry(
       }
     },
     onSessionOrphaned: (sessionId) => {
-      console.log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+      log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
     },
     onSessionResumed: (sessionId, connectionId) => {
-      console.log(`Session resumed: ${sessionId} by connection ${connectionId}`);
+      log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
   },
 );
 
-/**
- * Create a new PTY session and register it.
- * Returns the session ID.
- */
+// The primary session ID (in wrapper mode, this is the one running in the terminal)
+let primarySessionId: UUID | null = null;
+
+// ---------------------------------------------------------------------------
+// Create session helper (shared between wrapper and daemon modes)
+// ---------------------------------------------------------------------------
 async function createNewSession(
   sessionId: UUID,
   workingDirectory: string,
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void,
-): Promise<void> {
-  // Helper to send and record messages
+  extraArgs: string[] = [],
+  passThrough = false,
+): Promise<PTYSession> {
   const sendAndRecord = (message: ProtocolMessage) => {
     sendMessage(sessionId, message);
     sessionRegistry.recordOutgoingMessage(sessionId, message);
   };
 
-  // Create MessageAPI for bullet structuring (content delivery via transcript bridge)
   const messageApi = new MessageAPI(
     {
       sessionId: sessionId,
@@ -224,10 +325,10 @@ async function createNewSession(
     },
     {
       onMessageFinalized: (msgId) => {
-        console.log(`Message ${msgId} finalized`);
+        log(`Message ${msgId} finalized`);
       },
       onQuestion: (question) => {
-        console.log(`Question detected: ${question.text.substring(0, 50)}...`);
+        log(`Question detected: ${question.text.substring(0, 50)}...`);
         const msg: ProtocolMessage = {
           type: 'question',
           id: generateId(),
@@ -238,7 +339,7 @@ async function createNewSession(
         sessionRegistry.updateQuestion(sessionId, question);
       },
       onStatusChange: (status: AgentStatus, context?: string) => {
-        console.log(`Status: ${status}${context ? ` (${context})` : ''}`);
+        log(`Status: ${status}${context ? ` (${context})` : ''}`);
         const msg: ProtocolMessage = {
           type: 'session_update',
           id: generateId(),
@@ -254,47 +355,62 @@ async function createNewSession(
         sendAndRecord(msg);
         sessionRegistry.updateStatus(sessionId, status);
 
-        // Trigger transcript read on status transitions (new content likely available)
         const watcher = transcriptWatchers.get(sessionId);
         if (watcher) {
           watcher.forceRead().catch((err) => {
-            console.error(`[Transcript] forceRead failed for session ${sessionId}:`, err);
+            logError(`[Transcript] forceRead failed for session ${sessionId}:`, err);
           });
         }
       },
     },
   );
 
-  // Create PTYSession with custom event handlers
+  // Determine terminal size
+  const termSize = passThrough
+    ? {
+        cols: process.stdout.columns || 120,
+        rows: process.stdout.rows || 40,
+      }
+    : { cols: 120, rows: 40 };
+
   const ptySession = new PTYSession(
     {
       command: 'claude',
-      args: [],
+      args: extraArgs,
       cwd: workingDirectory,
+      size: termSize,
     },
     {
       onData: (output: string) => {
-        // Process output through the processor
         if (processor) {
           processor.process(output);
         }
-        // Log raw output locally for debugging
-        process.stdout.write(output);
+        if (passThrough) {
+          // Write directly to stdout for transparent terminal experience
+          process.stdout.write(output);
+        }
       },
       onExit: (code: number | null) => {
-        console.log(`PTY ${ptySession.id} exited with code ${code}`);
+        log(`PTY ${ptySession.id} exited with code ${code}`);
         if (processor) {
           processor.flush();
         }
         sessionRegistry.handlePTYExit(sessionId);
+        sessionStore.markExited(sessionId, code);
+
+        if (passThrough) {
+          // In wrapper mode, exit with the same code as Claude
+          cleanup().then(() => {
+            process.exit(code ?? 0);
+          });
+        }
       },
       onError: (error: Error) => {
-        console.error(`PTY ${ptySession.id} error:`, error);
+        logError(`PTY ${ptySession.id} error:`, error);
       },
     },
   );
 
-  // Create output processor (streamStatusOnly: transcript bridge handles content)
   const processor = new OutputProcessor(
     {
       sessionId: sessionId,
@@ -317,48 +433,73 @@ async function createNewSession(
     },
   );
 
-  // Register the session before starting PTY
   sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, processor, messageApi);
-
-  // Start the session
   await ptySession.start();
 
-  // Start transcript watcher after a delay (Claude Code needs time to create its file)
+  // Save session to persistent store
+  sessionStore.save({
+    remiSessionId: sessionId,
+    claudeSessionId: null,
+    projectPath: workingDirectory,
+    port: PORT,
+    startedAt: new Date().toISOString(),
+    exitedAt: null,
+    exitCode: null,
+  });
+
+  // Start transcript watcher after delay
   setTimeout(() => {
-    if (!sessionRegistry.hasSession(sessionId)) return; // Session already cleaned up
+    if (!sessionRegistry.hasSession(sessionId)) return;
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (!transcriptPath) {
-      console.log(`No transcript file found for ${workingDirectory}, will retry...`);
+      log(`No transcript file found for ${workingDirectory}, will retry...`);
       setTimeout(() => {
         if (!sessionRegistry.hasSession(sessionId)) return;
         const retryPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
         if (retryPath) {
           startTranscriptWatcher(sessionId, retryPath, messageApi, sendAndRecord);
+          extractClaudeSessionId(retryPath, sessionId);
         } else {
-          console.warn(`Could not find transcript file for session ${sessionId}`);
+          log(`Could not find transcript file for session ${sessionId}`);
         }
       }, 5000);
       return;
     }
     startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+    extractClaudeSessionId(transcriptPath, sessionId);
   }, 2000);
+
+  return ptySession;
 }
 
-/**
- * Start watching a transcript file for a session.
- * Uses TranscriptMessageBridge for clean content delivery via protocol messages.
- */
+/** Extract Claude session ID from transcript filename and persist it. */
+function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
+  // Transcript filenames look like: <encoded-path>_<timestamp>_<claude-session-id>.jsonl
+  const basename = path.basename(transcriptPath, '.jsonl');
+  const parts = basename.split('_');
+  // The Claude session ID is typically the last segment
+  if (parts.length >= 2) {
+    const candidateId = parts[parts.length - 1];
+    // Claude session IDs are UUIDs or similar identifiers
+    if (candidateId && candidateId.length >= 8) {
+      sessionStore.updateClaudeSessionId(sessionId, candidateId);
+      log(`Claude session ID: ${candidateId}`);
+    }
+  }
+}
+
+/** Start watching a transcript file for a session. */
 function startTranscriptWatcher(
   sessionId: UUID,
   transcriptPath: string,
   messageApi: MessageAPI,
   sendAndRecord: (message: ProtocolMessage) => void,
 ): void {
-  console.log(`Watching transcript: ${transcriptPath}`);
+  log(`Watching transcript: ${transcriptPath}`);
 
   const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
     onTranscriptContent: (message) => {
-      console.log(
+      log(
         `[Transcript] ${message.role} content (${message.content.length} chars)` +
           `${message.model ? ` [${message.model}]` : ''}`,
       );
@@ -380,51 +521,72 @@ function startTranscriptWatcher(
         bridge.handleUserEntry(entry);
       },
       onError: (error) => {
-        console.error(`[Transcript] Error for session ${sessionId}:`, error.message);
+        logError(`[Transcript] Error for session ${sessionId}:`, error.message);
       },
     },
   );
 
   transcriptWatchers.set(sessionId, watcher);
   watcher.start().catch((error) => {
-    console.error(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
+    logError(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
   });
 }
 
-// Create adapter registry with shared event handlers
+// ---------------------------------------------------------------------------
+// Adapter registry and shared event handlers
+// ---------------------------------------------------------------------------
 const registry = new AdapterRegistry({
   onAdapterStart: (type) => {
-    console.log(`Adapter '${type}' started`);
+    log(`Adapter '${type}' started`);
   },
   onAdapterStop: (type) => {
-    console.log(`Adapter '${type}' stopped`);
+    log(`Adapter '${type}' stopped`);
   },
 });
 
-// Helper to send message to connection
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): void => {
   registry.sendRaw(connectionId, message);
 };
 
-// Shared event handlers for all adapters
 const sharedEvents = {
   onConnect: async (connectionId: UUID, metadata: AdapterMetadata) => {
-    console.log(`Client connected: ${connectionId} (${metadata.adapterType})`);
-    console.log(`   Display name: ${metadata.displayName}`);
+    log(`Client connected: ${connectionId} (${metadata.adapterType})`);
 
-    // Track connection in adapter registry
     registry.trackConnection(connectionId, metadata.adapterType);
 
-    // Check if this is a resume request
     const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
 
+    // In wrapper mode, try to attach to the primary session first
+    if (wrapperMode && primarySessionId && !resumeSessionId) {
+      const session = sessionRegistry.getSession(primarySessionId);
+      if (session) {
+        const result = sessionRegistry.attachConnection(primarySessionId, connectionId);
+        if (result.success) {
+          sendToConnection(
+            connectionId,
+            createHelloAck('1.0.0', primarySessionId, {
+              isResume: result.replayMessages.length > 0,
+              replayCount: result.replayMessages.length,
+              nextBulletId: result.nextBulletId,
+            }),
+          );
+          if (result.replayMessages.length > 0) {
+            sendToConnection(
+              connectionId,
+              createReplayBatch(primarySessionId, result.replayMessages, true),
+            );
+          }
+          log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
+          return;
+        }
+      }
+    }
+
     if (resumeSessionId && sessionRegistry.canResume(resumeSessionId)) {
-      // Resume existing session
-      console.log(`Resuming session ${resumeSessionId}...`);
+      log(`Resuming session ${resumeSessionId}...`);
       const result = sessionRegistry.attachConnection(resumeSessionId, connectionId);
 
       if (result.success) {
-        // Send HelloAck with resume info
         sendToConnection(
           connectionId,
           createHelloAck('1.0.0', resumeSessionId, {
@@ -434,7 +596,6 @@ const sharedEvents = {
           }),
         );
 
-        // Send replay batch if there are messages to replay
         if (result.replayMessages.length > 0) {
           sendToConnection(
             connectionId,
@@ -442,94 +603,94 @@ const sharedEvents = {
           );
         }
 
-        console.log(
+        log(
           `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
         );
         return;
       }
 
-      console.log(`Resume failed: ${result.error}, creating new session`);
+      log(`Resume failed: ${result.error}, creating new session`);
     }
 
-    // Create new session
-    const requestedDir = metadata.platformData?.['directory'] as string | undefined;
-    const dirResult = resolveDirectory(requestedDir);
+    // In daemon mode, create new session on connect
+    if (!wrapperMode) {
+      const requestedDir = metadata.platformData?.['directory'] as string | undefined;
+      const dirResult = resolveDirectory(requestedDir);
 
-    if ('error' in dirResult) {
-      console.error(`Directory error: ${dirResult.error}`);
-      sendToConnection(connectionId, createError('INVALID_DIRECTORY', dirResult.error));
-      return;
-    }
-
-    const workingDirectory = dirResult.resolved;
-    const sessionId = sessionRegistry.createSessionId();
-
-    console.log(`Creating new session ${sessionId} in ${workingDirectory}...`);
-
-    try {
-      // Create the session (registers with sessionRegistry)
-      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-        const session = sessionRegistry.getSession(sid);
-        if (session?.activeConnectionId) {
-          sendToConnection(session.activeConnectionId, msg);
-        }
-      });
-
-      // Attach connection to session
-      const result = sessionRegistry.attachConnection(sessionId, connectionId);
-
-      if (result.success) {
-        // Send HelloAck with new session info
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', sessionId, {
-            isResume: false,
-            replayCount: 0,
-            nextBulletId: 1,
-          }),
-        );
-        console.log(`Session ${sessionId} created and attached to connection ${connectionId}`);
-      } else {
-        console.error(`Failed to attach connection: ${result.error}`);
+      if ('error' in dirResult) {
+        logError(`Directory error: ${dirResult.error}`);
+        sendToConnection(connectionId, createError('INVALID_DIRECTORY', dirResult.error));
+        return;
       }
-    } catch (error) {
-      console.error('Failed to create session:', error);
+
+      const workingDirectory = dirResult.resolved;
+      const sessionId = sessionRegistry.createSessionId();
+
+      log(`Creating new session ${sessionId} in ${workingDirectory}...`);
+
+      try {
+        await createNewSession(sessionId, workingDirectory, (sid, msg) => {
+          const session = sessionRegistry.getSession(sid);
+          if (session?.activeConnectionId) {
+            sendToConnection(session.activeConnectionId, msg);
+          }
+        });
+
+        const result = sessionRegistry.attachConnection(sessionId, connectionId);
+
+        if (result.success) {
+          sendToConnection(
+            connectionId,
+            createHelloAck('1.0.0', sessionId, {
+              isResume: false,
+              replayCount: 0,
+              nextBulletId: 1,
+            }),
+          );
+          log(`Session ${sessionId} created and attached to connection ${connectionId}`);
+        } else {
+          logError(`Failed to attach connection: ${result.error}`);
+        }
+      } catch (error) {
+        logError('Failed to create session:', error);
+      }
+    } else {
+      // Wrapper mode but no primary session (shouldn't happen normally)
+      sendToConnection(
+        connectionId,
+        createError('NO_SESSION', 'No active session in wrapper mode'),
+      );
     }
   },
 
   onDisconnect: async (connectionId: UUID, reason: string) => {
-    console.log(`Client disconnected: ${connectionId}`);
-    console.log(`   Reason: ${reason}`);
+    log(`Client disconnected: ${connectionId}`);
+    log(`   Reason: ${reason}`);
 
-    // Detach connection from session (session stays alive for 5 minutes)
     sessionRegistry.detachConnection(connectionId);
-
-    // Untrack connection from adapter registry
     registry.untrackConnection(connectionId);
   },
 
   onUserInput: async (connectionId: UUID, _sessionId: UUID, content: string) => {
-    console.log(`User input from ${connectionId}: ${content}`);
+    log(`User input from ${connectionId}: ${content}`);
 
     const session = sessionRegistry.getSessionForConnection(connectionId);
     if (session) {
       await session.pty.submitInput(content);
     } else {
-      console.warn(`No session found for connection ${connectionId}`);
+      log(`No session found for connection ${connectionId}`);
     }
   },
 
   onAnswer: async (connectionId: UUID, _questionId: UUID, answer: string) => {
-    console.log(`Answer from ${connectionId}: ${answer}`);
+    log(`Answer from ${connectionId}: ${answer}`);
 
     const session = sessionRegistry.getSessionForConnection(connectionId);
     if (session) {
-      // Submit answer as input to the PTY
       await session.pty.submitInput(answer);
-      // Clear the question
       sessionRegistry.updateQuestion(session.sessionId, null);
     } else {
-      console.warn(`No session found for connection ${connectionId}`);
+      log(`No session found for connection ${connectionId}`);
     }
   },
 
@@ -541,14 +702,12 @@ const sharedEvents = {
   ) => {
     const session = sessionRegistry.getSession(sessionId);
     if (!session) {
-      console.warn(`Bullet expand: session ${sessionId} not found`);
       sendToConnection(connectionId, createError('NOT_FOUND', `Session ${sessionId} not found`));
       return;
     }
 
     const fullContent = session.messageApi.getFullBulletContent(bulletId);
     if (fullContent === null) {
-      console.warn(`Bullet expand: content for bullet ${bulletId} not found or expired`);
       sendToConnection(
         connectionId,
         createError('CONTENT_EXPIRED', `Content for bullet ${bulletId} not found or expired`),
@@ -556,7 +715,6 @@ const sharedEvents = {
       return;
     }
 
-    // Send expand response
     sendToConnection(connectionId, createBulletExpandResponse(bulletId, fullContent, requestId));
   },
 
@@ -566,25 +724,89 @@ const sharedEvents = {
     let allSessions = [...daemonSessions];
 
     if (includeExternal) {
-      // Discover external sessions, excluding ones already managed by daemon
       const managedIds = new Set(sessionRegistry.getActiveSessionIds());
       const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
       allSessions = [...daemonSessions, ...externalSessions];
     }
 
-    console.log(
+    log(
       `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
         `(${daemonSessions.length} daemon, ${allSessions.length - daemonSessions.length} external)`,
     );
     sendToConnection(connectionId, createSessionListResponse(allSessions, requestId));
   },
 
+  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
+    log(`Transcript load request from ${connectionId} for session ${sessionId}`);
+
+    const filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
+    if (!filePath) {
+      sendToConnection(
+        connectionId,
+        createError('NOT_FOUND', `Transcript for session ${sessionId} not found`),
+      );
+      return;
+    }
+
+    // Create a temporary MessageAPI and bridge to read the transcript
+    const messageApi = new MessageAPI({ sessionId: sessionId as UUID });
+    let messageCount = 0;
+
+    const bridge = new TranscriptMessageBridge({ sessionId: sessionId as UUID }, messageApi, {
+      onTranscriptContent: (message) => {
+        messageCount++;
+        sendToConnection(connectionId, message);
+      },
+    });
+
+    const watcher = new TranscriptWatcher(
+      {
+        filePath,
+        readExisting: true,
+        pollIntervalMs: 0, // We only want to read existing, not watch
+      },
+      {
+        onAssistantMessage: (entry: AssistantEntry) => {
+          bridge.handleAssistantEntry(entry);
+        },
+        onUserMessage: (entry) => {
+          bridge.handleUserEntry(entry);
+        },
+        onError: (error) => {
+          logError(`[TranscriptLoad] Error reading ${sessionId}:`, error.message);
+        },
+      },
+    );
+
+    // Read the transcript file, then send completion
+    watcher
+      .start()
+      .then(() => {
+        // Stop the watcher immediately since we only needed to read existing entries
+        watcher.stop();
+        log(`Transcript load complete for ${sessionId}: ${messageCount} messages`);
+        sendToConnection(
+          connectionId,
+          createTranscriptLoadComplete(sessionId, messageCount, requestId),
+        );
+      })
+      .catch((error) => {
+        logError(`[TranscriptLoad] Failed to read ${sessionId}:`, error);
+        sendToConnection(
+          connectionId,
+          createError('LOAD_FAILED', `Failed to load transcript: ${error.message}`),
+        );
+      });
+  },
+
   onError: (connectionId: UUID, error: Error) => {
-    console.error(`Error from ${connectionId}:`, error);
+    logError(`Error from ${connectionId}:`, error);
   },
 };
 
-// Create and register WebSocket adapter
+// ---------------------------------------------------------------------------
+// Create and register adapters
+// ---------------------------------------------------------------------------
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
@@ -593,9 +815,7 @@ const wsAdapter = new WebSocketAdapter(
   sharedEvents,
 );
 registry.register(wsAdapter);
-console.log(`WebSocket adapter configured on port ${PORT}`);
 
-// Create and register Telegram adapter if token is provided
 if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   const telegramAdapter = new TelegramAdapter(
     {
@@ -605,46 +825,128 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
     sharedEvents,
   );
   registry.register(telegramAdapter);
-  console.log('Telegram adapter configured');
-} else {
-  console.log('Telegram adapter disabled (no TELEGRAM_BOT_TOKEN)');
 }
 
-// Start all adapters
-await registry.startAll();
-
-console.log('');
-console.log('Remi daemon ready!');
-console.log(`  WebSocket: ws://localhost:${PORT}/ws`);
-console.log(`  Port: ${PORT} (use --port to change)`);
-console.log(
-  `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
-);
-if (TELEGRAM_ENABLED) {
-  console.log('  Telegram: Bot is running');
-}
-console.log('');
-console.log('Press Ctrl+C to stop');
-console.log('');
-
-// Graceful shutdown
-async function shutdown() {
-  console.log('\nShutting down gracefully...');
-
-  // Stop all transcript watchers
+// ---------------------------------------------------------------------------
+// Cleanup helper
+// ---------------------------------------------------------------------------
+async function cleanup(): Promise<void> {
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
   transcriptWatchers.clear();
-
-  // Stop all adapters
   await registry.stopAll();
-
-  // Close all sessions via registry
   await sessionRegistry.shutdown();
-
-  process.exit(0);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+// ---------------------------------------------------------------------------
+// Main: Start in wrapper or daemon mode
+// ---------------------------------------------------------------------------
+if (cliDaemonMode) {
+  // Legacy daemon mode: headless server, spawns Claude on WebSocket connect
+  console.log('Starting Remi daemon...');
+  await registry.startAll();
+
+  console.log('');
+  console.log('Remi daemon ready!');
+  console.log(`  WebSocket: ws://localhost:${PORT}/ws`);
+  console.log(`  Port: ${PORT} (use --port to change)`);
+  console.log(
+    `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
+  );
+  if (TELEGRAM_ENABLED) {
+    console.log('  Telegram: Bot is running');
+  }
+  console.log('');
+  console.log('Press Ctrl+C to stop');
+  console.log('');
+
+  process.on('SIGINT', async () => {
+    console.log('\nShutting down gracefully...');
+    await cleanup();
+    process.exit(0);
+  });
+  process.on('SIGTERM', async () => {
+    console.log('\nShutting down gracefully...');
+    await cleanup();
+    process.exit(0);
+  });
+} else {
+  // Wrapper mode: spawn Claude immediately, pass through terminal I/O
+  const workingDirectory = process.cwd();
+  const sessionId = sessionRegistry.createSessionId();
+  primarySessionId = sessionId;
+
+  // Start WebSocket server silently in the background
+  await registry.startAll();
+  log(`WebSocket server listening on ws://localhost:${PORT}/ws`);
+
+  // Create and start the primary PTY session
+  const ptySession = await createNewSession(
+    sessionId,
+    workingDirectory,
+    (sid, msg) => {
+      // Broadcast to all connected WebSocket clients
+      const session = sessionRegistry.getSession(sid);
+      if (session?.activeConnectionId) {
+        sendToConnection(session.activeConnectionId, msg);
+      }
+      // Also broadcast to all connections (for viewers without explicit attach)
+      registry.broadcast(msg);
+    },
+    claudeArgs,
+    true, // pass-through mode
+  );
+
+  // Set up raw stdin pass-through to PTY
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+  process.stdin.on('data', (data: Buffer) => {
+    if (ptySession.isRunning) {
+      try {
+        ptySession.write(data.toString());
+      } catch {
+        // PTY may have exited between the check and write
+      }
+    }
+  });
+
+  // Handle terminal resize
+  process.stdout.on('resize', () => {
+    const cols = process.stdout.columns || 120;
+    const rows = process.stdout.rows || 40;
+    try {
+      if (ptySession.isRunning) {
+        ptySession.resize({ cols, rows });
+      }
+    } catch {
+      // PTY may have exited
+    }
+  });
+
+  // Forward SIGINT/SIGTERM to PTY instead of exiting
+  process.on('SIGINT', () => {
+    if (ptySession.isRunning) {
+      try {
+        // Send Ctrl+C (0x03) to the PTY
+        ptySession.write('\x03');
+      } catch {
+        // PTY may have exited
+      }
+    }
+  });
+
+  process.on('SIGTERM', async () => {
+    if (ptySession.isRunning) {
+      try {
+        ptySession.signal('SIGTERM');
+      } catch {
+        // ignore
+      }
+    }
+    await cleanup();
+    process.exit(0);
+  });
+}

@@ -10,3 +10,5 @@ export {
   type SessionRegistryConfig,
   type SessionRegistryEvents,
 } from './session-registry.ts';
+
+export { SessionStore, type StoredSession } from './session-store.ts';

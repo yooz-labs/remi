@@ -44,6 +44,9 @@ export interface AdapterEvents {
   /** Session list request received */
   onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
 
+  /** Transcript load request received */
+  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

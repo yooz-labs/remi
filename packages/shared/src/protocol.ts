@@ -81,7 +81,9 @@ export type ProtocolMessage =
   | BulletExpandResponseMessage
   | SessionListRequestMessage
   | SessionListResponseMessage
-  | TranscriptContentMessage;
+  | TranscriptContentMessage
+  | TranscriptLoadRequestMessage
+  | TranscriptLoadCompleteMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -298,6 +300,28 @@ export interface TranscriptContentMessage {
   readonly isUpdate: boolean;
 }
 
+/** Request to load transcript history for an external session */
+export interface TranscriptLoadRequestMessage {
+  readonly type: 'transcript_load_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Session ID of the external transcript session to load */
+  readonly sessionId: string;
+}
+
+/** Signals that all transcript content for a load request has been sent */
+export interface TranscriptLoadCompleteMessage {
+  readonly type: 'transcript_load_complete';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Session ID that was loaded */
+  readonly sessionId: string;
+  /** Number of messages sent */
+  readonly messageCount: number;
+  /** ID of the original request */
+  readonly requestId: UUID;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -358,6 +382,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'session_list_request',
     'session_list_response',
     'transcript_content',
+    'transcript_load_request',
+    'transcript_load_complete',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -671,6 +697,36 @@ export function createTranscriptContent(
     ...(options?.model != null && options.model !== '' && { model: options.model }),
     ...(options?.hadThinking != null && { hadThinking: options.hadThinking }),
     ...(options?.usage != null && { usage: options.usage }),
+  };
+}
+
+/**
+ * Create a transcript load request for an external session.
+ */
+export function createTranscriptLoadRequest(sessionId: string): TranscriptLoadRequestMessage {
+  return {
+    type: 'transcript_load_request',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+  };
+}
+
+/**
+ * Create a transcript load complete message.
+ */
+export function createTranscriptLoadComplete(
+  sessionId: string,
+  messageCount: number,
+  requestId: UUID,
+): TranscriptLoadCompleteMessage {
+  return {
+    type: 'transcript_load_complete',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    messageCount,
+    requestId,
   };
 }
 

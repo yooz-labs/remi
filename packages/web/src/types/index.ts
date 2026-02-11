@@ -53,6 +53,8 @@ export interface UIMessage {
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
+  /** Transcript entry UUID for deduplication */
+  readonly entryUuid?: string;
   /** Whether this message is currently being streamed */
   readonly isStreaming?: boolean;
   /** Partial content during streaming */
@@ -78,6 +80,10 @@ export interface UISession {
   readonly cwd?: string;
   /** Last agent output preview */
   readonly preview?: string;
+  /** Source of this session */
+  readonly source?: 'daemon' | 'transcript';
+  /** Whether transcript history is loading */
+  readonly isLoadingTranscript?: boolean;
 }
 
 /** Question from the agent requiring user response */
