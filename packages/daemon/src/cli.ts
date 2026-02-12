@@ -812,7 +812,7 @@ const sharedEvents = {
       logError(`Directory error: ${dirResult.error}`);
       sendToConnection(
         connectionId,
-        createCreateSessionResponse('' as UUID, false, requestId, dirResult.error),
+        createCreateSessionResponse(false, requestId, undefined, dirResult.error),
       );
       return;
     }
@@ -834,7 +834,7 @@ const sharedEvents = {
       const result = sessionRegistry.attachConnection(sessionId, connectionId);
 
       if (result.success) {
-        sendToConnection(connectionId, createCreateSessionResponse(sessionId, true, requestId));
+        sendToConnection(connectionId, createCreateSessionResponse(true, requestId, sessionId));
         // Also send hello_ack so client knows about the new session
         sendToConnection(
           connectionId,
@@ -846,18 +846,17 @@ const sharedEvents = {
         );
         log(`Session ${sessionId} created via create_session_request`);
       } else {
+        // Clean up the orphaned session to avoid resource leak
+        sessionRegistry.closeSession(sessionId, 'forced');
         sendToConnection(
           connectionId,
-          createCreateSessionResponse(sessionId, false, requestId, result.error),
+          createCreateSessionResponse(false, requestId, undefined, result.error),
         );
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError('Failed to create session:', msg);
-      sendToConnection(
-        connectionId,
-        createCreateSessionResponse('' as UUID, false, requestId, msg),
-      );
+      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
     }
   },
 

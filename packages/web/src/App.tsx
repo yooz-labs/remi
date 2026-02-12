@@ -24,6 +24,7 @@ function App() {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
@@ -34,16 +35,16 @@ function App() {
   const handleMessage = useCallback((message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        if (message.isResume) {
-          // Session resume: just update connection status, don't create new session
-          setSessions((prev) =>
-            prev.map((s) =>
+        setSessions((prev) => {
+          const exists = prev.some((s) => s.id === message.sessionId);
+          if (exists) {
+            return prev.map((s) =>
               s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s,
-            ),
-          );
-        } else {
-          // New session: create entry or update existing
-          const newSession: UISession = {
+            );
+          }
+          // Only create new entry for non-resume (resume expects session to exist)
+          if (message.isResume) return prev;
+          return [...prev, {
             id: message.sessionId,
             name: 'Claude Code Session',
             createdAt: new Date().toISOString(),
@@ -52,13 +53,9 @@ function App() {
             connectionStatus: 'connected',
             unreadCount: 0,
             preview: 'Connected',
-          };
-          setSessions((prev) => {
-            const exists = prev.find((s) => s.id === message.sessionId);
-            if (exists) return prev.map((s) => (s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s));
-            return [...prev, newSession];
-          });
-        }
+          } satisfies UISession];
+        });
+        setCreatingSession(false);
         setActiveSessionId(message.sessionId);
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
         break;
@@ -293,12 +290,20 @@ function App() {
       }
 
       case 'create_session_response': {
-        if (message.success) {
-          // The hello_ack that follows will create the session entry
-          // Just log success here
-          console.log(`New session created: ${message.sessionId}`);
-        } else {
+        setCreatingSession(false);
+        if (!message.success) {
           console.error(`Failed to create session: ${message.error}`);
+          // Add error message to the current session's chat so the user sees it
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            sender: 'system',
+            content: `Failed to create session: ${message.error ?? 'Unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
         }
         break;
       }
@@ -318,8 +323,10 @@ function App() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  // Restore session ID from localStorage for reconnect after page reload
-  const storedSessionId = localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null;
+  // Restore session ID from localStorage for reconnect after page reload (read once)
+  const [storedSessionId] = useState<UUID | null>(
+    () => localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null,
+  );
 
   const {
     status: connectionStatus,
@@ -469,16 +476,19 @@ function App() {
   );
 
   const handleNewSession = useCallback(() => {
+    if (creatingSession) return;
+    setCreatingSession(true);
     requestNewSession();
-  }, [requestNewSession]);
+  }, [requestNewSession, creatingSession]);
 
   // Sidebar content
+  const canCreateSession = connectionStatus === 'connected' && !creatingSession;
   const sidebar = (
     <SessionList
       sessions={sessions}
       activeSessionId={activeSessionId}
       onSelectSession={handleSelectSession}
-      onNewSession={connectionStatus === 'connected' ? handleNewSession : undefined}
+      onNewSession={canCreateSession ? handleNewSession : undefined}
       onConnect={() => setShowConnectModal(true)}
       onSettings={() => console.log('Open settings')}
     />

@@ -338,8 +338,8 @@ export interface CreateSessionResponseMessage {
   readonly type: 'create_session_response';
   readonly id: UUID;
   readonly timestamp: Timestamp;
-  /** Session ID of the newly created session */
-  readonly sessionId: UUID;
+  /** Session ID of the newly created session (present on success) */
+  readonly sessionId?: UUID;
   /** Whether creation succeeded */
   readonly success: boolean;
   /** Error message if creation failed */
@@ -774,19 +774,19 @@ export function createCreateSessionRequest(directory?: string): CreateSessionReq
  * Create a response for a create session request.
  */
 export function createCreateSessionResponse(
-  sessionId: UUID,
   success: boolean,
   requestId: UUID,
+  sessionId?: UUID,
   error?: string,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
     id: generateId(),
     timestamp: now(),
-    sessionId,
     success,
     requestId,
-    ...(error && { error }),
+    ...(sessionId !== undefined && { sessionId }),
+    ...(error !== undefined && { error }),
   };
 }
 
