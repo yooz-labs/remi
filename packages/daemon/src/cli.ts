@@ -42,6 +42,7 @@ if (fs.existsSync(envPath)) {
 
 import {
   createBulletExpandResponse,
+  createCreateSessionResponse,
   createError,
   createHelloAck,
   createReplayBatch,
@@ -610,6 +611,13 @@ const sharedEvents = {
       }
 
       log(`Resume failed: ${result.error}, creating new session`);
+      sendToConnection(
+        connectionId,
+        createError(
+          'RESUME_FAILED',
+          `Could not resume session ${resumeSessionId}: ${result.error}. Creating new session.`,
+        ),
+      );
     }
 
     // In daemon mode, create new session on connect
@@ -650,9 +658,19 @@ const sharedEvents = {
           log(`Session ${sessionId} created and attached to connection ${connectionId}`);
         } else {
           logError(`Failed to attach connection: ${result.error}`);
+          sessionRegistry.closeSession(sessionId, 'forced');
+          sendToConnection(
+            connectionId,
+            createError('ATTACH_FAILED', result.error ?? 'Failed to attach connection'),
+          );
         }
       } catch (error) {
-        logError('Failed to create session:', error);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logError('Failed to create session:', errMsg);
+        sendToConnection(
+          connectionId,
+          createError('SESSION_CREATE_FAILED', `Failed to create session: ${errMsg}`),
+        );
       }
     } else {
       // Wrapper mode but no primary session (shouldn't happen normally)
@@ -799,6 +817,66 @@ const sharedEvents = {
       });
   },
 
+  onCreateSessionRequest: async (
+    connectionId: UUID,
+    directory: string | undefined,
+    requestId: UUID,
+  ) => {
+    log(`Create session request from ${connectionId}, directory: ${directory || '(default)'}`);
+
+    const dirResult = resolveDirectory(directory);
+    if ('error' in dirResult) {
+      logError(`Directory error: ${dirResult.error}`);
+      sendToConnection(
+        connectionId,
+        createCreateSessionResponse(false, requestId, undefined, dirResult.error),
+      );
+      return;
+    }
+
+    const workingDirectory = dirResult.resolved;
+    const sessionId = sessionRegistry.createSessionId();
+
+    log(`Creating new session ${sessionId} in ${workingDirectory}...`);
+
+    try {
+      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
+        const session = sessionRegistry.getSession(sid);
+        if (session?.activeConnectionId) {
+          sendToConnection(session.activeConnectionId, msg);
+        }
+      });
+
+      // Attach requesting connection to the new session
+      const result = sessionRegistry.attachConnection(sessionId, connectionId);
+
+      if (result.success) {
+        sendToConnection(connectionId, createCreateSessionResponse(true, requestId, sessionId));
+        // Also send hello_ack so client knows about the new session
+        sendToConnection(
+          connectionId,
+          createHelloAck('1.0.0', sessionId, {
+            isResume: false,
+            replayCount: 0,
+            nextBulletId: 1,
+          }),
+        );
+        log(`Session ${sessionId} created via create_session_request`);
+      } else {
+        // Clean up the orphaned session to avoid resource leak
+        sessionRegistry.closeSession(sessionId, 'forced');
+        sendToConnection(
+          connectionId,
+          createCreateSessionResponse(false, requestId, undefined, result.error),
+        );
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logError('Failed to create session:', msg);
+      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
+    }
+  },
+
   onError: (connectionId: UUID, error: Error) => {
     logError(`Error from ${connectionId}:`, error);
   },
@@ -895,7 +973,9 @@ if (cliDaemonMode) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('EADDRINUSE') || msg.includes('in use')) {
-      logError(`Port ${PORT} is in use. Remote monitoring disabled. Use --port to specify a different port.`);
+      logError(
+        `Port ${PORT} is in use. Remote monitoring disabled. Use --port to specify a different port.`,
+      );
     } else {
       logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
     }

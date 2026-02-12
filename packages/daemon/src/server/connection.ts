@@ -23,6 +23,7 @@ import type {
   Acknowledgment,
   AnswerMessage,
   BulletExpandRequestMessage,
+  CreateSessionRequestMessage,
   HelloMessage,
   PingMessage,
   ProtocolMessage,
@@ -57,6 +58,9 @@ export interface ConnectionEvents {
 
   /** Transcript load request received */
   onTranscriptLoadRequest: (sessionId: string, requestId: UUID) => void;
+
+  /** Create session request received */
+  onCreateSessionRequest: (directory: string | undefined, requestId: UUID) => void;
 
   /** Error occurred */
   onError: (error: Error) => void;
@@ -187,6 +191,9 @@ export class Connection {
         break;
       case 'transcript_load_request':
         this.handleTranscriptLoadRequest(message);
+        break;
+      case 'create_session_request':
+        this.handleCreateSessionRequest(message);
         break;
       case 'ping':
         this.handlePing(message);
@@ -322,6 +329,11 @@ export class Connection {
   private handleTranscriptLoadRequest(message: TranscriptLoadRequestMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onTranscriptLoadRequest?.(message.sessionId, message.id);
+  }
+
+  private handleCreateSessionRequest(message: CreateSessionRequestMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onCreateSessionRequest?.(message.directory, message.id);
   }
 
   private handlePing(message: PingMessage): void {

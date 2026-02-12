@@ -9,6 +9,7 @@ import type { ConnectionStatus } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
+  createCreateSessionRequest,
   createHello,
   createPing,
   createSessionListRequest,
@@ -42,6 +43,8 @@ export interface UseWebSocketReturn {
   requestSessionList: (includeExternal?: boolean) => boolean;
   /** Request transcript history for an external session */
   requestTranscriptLoad: (sessionId: string) => boolean;
+  /** Request creation of a new Claude Code session */
+  requestNewSession: (directory?: string) => boolean;
   /** Current session ID (after hello_ack) */
   sessionId: UUID | null;
 }
@@ -56,6 +59,8 @@ export interface UseWebSocketOptions {
   clientVersion?: string;
   /** Message handler */
   onMessage?: (message: ProtocolMessage) => void;
+  /** Session ID to resume on initial connect (e.g., from localStorage after page reload) */
+  initialResumeSessionId?: UUID;
 }
 
 /**
@@ -63,10 +68,11 @@ export interface UseWebSocketOptions {
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
   const {
-    autoReconnect = false,
+    autoReconnect = true,
     clientId = 'remi-web',
     clientVersion = '0.0.1',
     onMessage,
+    initialResumeSessionId,
   } = options;
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
@@ -75,6 +81,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   const clientRef = useRef<WebSocketClient | null>(null);
   const onMessageRef = useRef(onMessage);
+  const lastSessionIdRef = useRef<UUID | null>(initialResumeSessionId ?? null);
+  const directoryRef = useRef<string | undefined>(undefined);
 
   // Keep onMessage ref updated
   useEffect(() => {
@@ -86,6 +94,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     // Handle hello_ack to get session ID
     if (message.type === 'hello_ack') {
       setSessionId(message.sessionId);
+      lastSessionIdRef.current = message.sessionId;
     }
 
     // Forward to user handler
@@ -98,6 +107,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       // Clean up existing connection
       clientRef.current?.disconnect();
 
+      // Store directory for reconnects
+      if (directory !== undefined) {
+        directoryRef.current = directory;
+      }
+
       const config: WebSocketClientConfig = {
         url,
         autoReconnect,
@@ -108,10 +122,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           console.log('[WebSocket] Status changed:', newStatus);
           setStatus(newStatus);
           if (newStatus === 'connected') {
-            // Send hello message with directory
-            console.log('[WebSocket] Sending hello message...');
-            const sent = client.send(createHello(clientId, clientVersion, directory));
-            console.log('[WebSocket] Hello message sent:', sent, 'directory:', directory);
+            // On reconnect, include resumeSessionId so daemon replays missed messages
+            const resumeId = lastSessionIdRef.current ?? undefined;
+            console.log('[WebSocket] Sending hello message...', resumeId ? `(resume: ${resumeId})` : '(new)');
+            const sent = client.send(createHello(clientId, clientVersion, directoryRef.current, resumeId));
+            console.log('[WebSocket] Hello message sent:', sent);
           }
           if (newStatus === 'disconnected') {
             setSessionId(null);
@@ -182,6 +197,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     return clientRef.current.send(createTranscriptLoadRequest(targetSessionId));
   }, []);
 
+  // Request creation of a new Claude Code session
+  const requestNewSession = useCallback((directory?: string): boolean => {
+    if (!clientRef.current) return false;
+    return clientRef.current.send(createCreateSessionRequest(directory));
+  }, []);
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
@@ -211,6 +232,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
+    requestNewSession,
     sessionId,
   };
 }

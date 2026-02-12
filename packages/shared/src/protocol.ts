@@ -83,7 +83,9 @@ export type ProtocolMessage =
   | SessionListResponseMessage
   | TranscriptContentMessage
   | TranscriptLoadRequestMessage
-  | TranscriptLoadCompleteMessage;
+  | TranscriptLoadCompleteMessage
+  | CreateSessionRequestMessage
+  | CreateSessionResponseMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -322,6 +324,30 @@ export interface TranscriptLoadCompleteMessage {
   readonly requestId: UUID;
 }
 
+/** Request to create a new Claude Code session */
+export interface CreateSessionRequestMessage {
+  readonly type: 'create_session_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Working directory for the new session */
+  readonly directory?: string;
+}
+
+/** Response after creating a new session */
+export interface CreateSessionResponseMessage {
+  readonly type: 'create_session_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Session ID of the newly created session (present on success) */
+  readonly sessionId?: UUID;
+  /** Whether creation succeeded */
+  readonly success: boolean;
+  /** Error message if creation failed */
+  readonly error?: string;
+  /** ID of the original request */
+  readonly requestId: UUID;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -384,6 +410,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'transcript_content',
     'transcript_load_request',
     'transcript_load_complete',
+    'create_session_request',
+    'create_session_response',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -405,8 +433,8 @@ export function createHello(
     timestamp: now(),
     clientVersion,
     clientId,
-    ...(directory && { directory }),
-    ...(resumeSessionId && { resumeSessionId }),
+    ...(directory !== undefined && { directory }),
+    ...(resumeSessionId !== undefined && { resumeSessionId }),
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
   };
 }
@@ -727,6 +755,38 @@ export function createTranscriptLoadComplete(
     sessionId,
     messageCount,
     requestId,
+  };
+}
+
+/**
+ * Create a request to spawn a new Claude Code session.
+ */
+export function createCreateSessionRequest(directory?: string): CreateSessionRequestMessage {
+  return {
+    type: 'create_session_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(directory !== undefined && { directory }),
+  };
+}
+
+/**
+ * Create a response for a create session request.
+ */
+export function createCreateSessionResponse(
+  success: boolean,
+  requestId: UUID,
+  sessionId?: UUID,
+  error?: string,
+): CreateSessionResponseMessage {
+  return {
+    type: 'create_session_response',
+    id: generateId(),
+    timestamp: now(),
+    success,
+    requestId,
+    ...(sessionId !== undefined && { sessionId }),
+    ...(error !== undefined && { error }),
   };
 }
 

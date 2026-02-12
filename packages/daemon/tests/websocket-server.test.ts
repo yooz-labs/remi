@@ -3,7 +3,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { createHello, createPing, createUserInput, serialize } from '@remi/shared';
+import {
+  type UUID,
+  createCreateSessionRequest,
+  createHello,
+  createPing,
+  createUserInput,
+  serialize,
+} from '@remi/shared';
 import { WebSocketServer } from '../src/server/websocket-server.ts';
 
 describe('WebSocketServer', () => {
@@ -325,6 +332,176 @@ describe('WebSocketServer', () => {
 
       ws1.close();
       await limitedServer.stop();
+    });
+  });
+
+  describe('Create session request', () => {
+    test('fires onCreateSessionRequest with correct params', async () => {
+      const receivedPromise = new Promise<{
+        connectionId: UUID;
+        directory: string | undefined;
+        requestId: UUID;
+      }>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 10 },
+          {
+            onCreateSessionRequest: (connectionId, directory, requestId) => {
+              resolve({ connectionId, directory, requestId });
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 10}/ws`);
+
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => {
+          ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data.toString());
+          if (data.type === 'hello_ack') {
+            // Send create session request
+            ws.send(serialize(createCreateSessionRequest('/test/dir')));
+            resolve();
+          }
+        };
+
+        ws.onerror = () => reject(new Error('WebSocket error'));
+        setTimeout(() => reject(new Error('Timeout')), 5000);
+      });
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 2000),
+        ),
+      ]);
+
+      expect(received.directory).toBe('/test/dir');
+      expect(received.requestId).toBeTruthy();
+      expect(received.connectionId).toBeTruthy();
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('fires onCreateSessionRequest without directory', async () => {
+      const receivedPromise = new Promise<{ directory: string | undefined }>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 11 },
+          {
+            onCreateSessionRequest: (_connectionId, directory) => {
+              resolve({ directory });
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 11}/ws`);
+
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => {
+          ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data.toString());
+          if (data.type === 'hello_ack') {
+            ws.send(serialize(createCreateSessionRequest()));
+            resolve();
+          }
+        };
+
+        ws.onerror = () => reject(new Error('WebSocket error'));
+        setTimeout(() => reject(new Error('Timeout')), 5000);
+      });
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 2000),
+        ),
+      ]);
+
+      expect(received.directory).toBeUndefined();
+
+      ws.close();
+      await server.stop();
+    });
+  });
+
+  describe('Hello with resumeSessionId', () => {
+    test('passes resumeSessionId through onClientConnect metadata', async () => {
+      const resumeId = 'session-to-resume' as UUID;
+      const receivedPromise = new Promise<string | undefined>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 12 },
+          {
+            onClientConnect: (connection) => {
+              resolve(connection.connectionResumeSessionId ?? undefined);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 12}/ws`);
+
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', undefined, resumeId)));
+      };
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 5000),
+        ),
+      ]);
+
+      expect(received).toBe(resumeId);
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('passes directory through onClientConnect', async () => {
+      const receivedPromise = new Promise<string | null>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 13 },
+          {
+            onClientConnect: (connection) => {
+              resolve(connection.connectionDirectory);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 13}/ws`);
+
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', '/my/project')));
+      };
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 5000),
+        ),
+      ]);
+
+      expect(received).toBe('/my/project');
+
+      ws.close();
+      await server.stop();
     });
   });
 });

@@ -123,6 +123,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onTranscriptLoadRequest?.(connectionId, sessionId, requestId);
       },
 
+      onCreateSessionRequest: (connectionId, directory, requestId) => {
+        this.events.onCreateSessionRequest?.(connectionId, directory, requestId);
+      },
+
       onError: (error) => {
         // For server-level errors, use a dummy connection ID
         this.events.onError?.('server' as UUID, error);
