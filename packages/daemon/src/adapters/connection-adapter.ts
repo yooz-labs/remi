@@ -47,6 +47,13 @@ export interface AdapterEvents {
   /** Transcript load request received */
   onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
 
+  /** Create session request received */
+  onCreateSessionRequest: (
+    connectionId: UUID,
+    directory: string | undefined,
+    requestId: UUID,
+  ) => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

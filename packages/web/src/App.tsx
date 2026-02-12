@@ -15,6 +15,7 @@ import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const LOCALSTORAGE_URL_KEY = 'remi-last-url';
+const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
 
 function App() {
   // State
@@ -33,23 +34,33 @@ function App() {
   const handleMessage = useCallback((message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        // Create a session for this connection
-        const newSession: UISession = {
-          id: message.sessionId,
-          name: 'Claude Code Session',
-          createdAt: new Date().toISOString(),
-          lastActiveAt: new Date().toISOString(),
-          status: 'idle',
-          connectionStatus: 'connected',
-          unreadCount: 0,
-          preview: 'Connected',
-        };
-        setSessions((prev) => {
-          const exists = prev.find((s) => s.id === message.sessionId);
-          if (exists) return prev.map((s) => (s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s));
-          return [...prev, newSession];
-        });
+        if (message.isResume) {
+          // Session resume: just update connection status, don't create new session
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s,
+            ),
+          );
+        } else {
+          // New session: create entry or update existing
+          const newSession: UISession = {
+            id: message.sessionId,
+            name: 'Claude Code Session',
+            createdAt: new Date().toISOString(),
+            lastActiveAt: new Date().toISOString(),
+            status: 'idle',
+            connectionStatus: 'connected',
+            unreadCount: 0,
+            preview: 'Connected',
+          };
+          setSessions((prev) => {
+            const exists = prev.find((s) => s.id === message.sessionId);
+            if (exists) return prev.map((s) => (s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s));
+            return [...prev, newSession];
+          });
+        }
         setActiveSessionId(message.sessionId);
+        localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
         break;
       }
 
@@ -281,6 +292,17 @@ function App() {
         break;
       }
 
+      case 'create_session_response': {
+        if (message.success) {
+          // The hello_ack that follows will create the session entry
+          // Just log success here
+          console.log(`New session created: ${message.sessionId}`);
+        } else {
+          console.error(`Failed to create session: ${message.error}`);
+        }
+        break;
+      }
+
       case 'error':
         console.error('Daemon error:', message);
         break;
@@ -296,6 +318,9 @@ function App() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  // Restore session ID from localStorage for reconnect after page reload
+  const storedSessionId = localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null;
+
   const {
     status: connectionStatus,
     error: wsError,
@@ -305,8 +330,9 @@ function App() {
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
+    requestNewSession,
     sessionId: wsSessionId,
-  } = useWebSocket({ onMessage: handleMessage });
+  } = useWebSocket({ onMessage: handleMessage, initialResumeSessionId: storedSessionId ?? undefined });
 
   const error = wsError?.message ?? null;
 
@@ -345,6 +371,7 @@ function App() {
   // Handlers
   const handleSelectSession = useCallback((id: UUID) => {
     setActiveSessionId(id);
+    localStorage.setItem(LOCALSTORAGE_SESSION_KEY, id);
 
     // If this is an external transcript session we haven't loaded yet, request its history
     const session = sessions.find((s) => s.id === id);
@@ -441,12 +468,17 @@ function App() {
     [activeSessionId, requestBulletExpand],
   );
 
+  const handleNewSession = useCallback(() => {
+    requestNewSession();
+  }, [requestNewSession]);
+
   // Sidebar content
   const sidebar = (
     <SessionList
       sessions={sessions}
       activeSessionId={activeSessionId}
       onSelectSession={handleSelectSession}
+      onNewSession={connectionStatus === 'connected' ? handleNewSession : undefined}
       onConnect={() => setShowConnectModal(true)}
       onSettings={() => console.log('Open settings')}
     />
