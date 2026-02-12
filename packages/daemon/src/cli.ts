@@ -831,6 +831,16 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 // Cleanup helper
 // ---------------------------------------------------------------------------
 async function cleanup(): Promise<void> {
+  // Restore terminal state before shutting down
+  if (process.stdin.isTTY) {
+    try {
+      process.stdin.setRawMode(false);
+    } catch {
+      // May already be restored
+    }
+  }
+  process.stdin.pause();
+
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
@@ -878,8 +888,18 @@ if (cliDaemonMode) {
   primarySessionId = sessionId;
 
   // Start WebSocket server silently in the background
-  await registry.startAll();
-  log(`WebSocket server listening on ws://localhost:${PORT}/ws`);
+  // In wrapper mode, don't crash if port is busy - Claude still works locally
+  try {
+    await registry.startAll();
+    log(`WebSocket server listening on ws://localhost:${PORT}/ws`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('EADDRINUSE') || msg.includes('in use')) {
+      logError(`Port ${PORT} is in use. Remote monitoring disabled. Use --port to specify a different port.`);
+    } else {
+      logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
+    }
+  }
 
   // Create and start the primary PTY session
   const ptySession = await createNewSession(

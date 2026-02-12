@@ -14,7 +14,9 @@
     "format": "biome format --write .",
     "daemon": "bun run packages/daemon/src/cli.ts",
     "daemon:dev": "bun --watch run packages/daemon/src/cli.ts",
-    "remi": "bun run packages/daemon/src/cli.ts"
+    "remi": "bun run packages/daemon/src/cli.ts",
+    "build:binary": "bun build --compile --outfile=dist/remi packages/daemon/src/cli.ts",
+    "install:local": "mkdir -p ~/.local/bin && cp dist/remi ~/.local/bin/remi"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
