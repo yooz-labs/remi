@@ -433,8 +433,8 @@ export function createHello(
     timestamp: now(),
     clientVersion,
     clientId,
-    ...(directory && { directory }),
-    ...(resumeSessionId && { resumeSessionId }),
+    ...(directory !== undefined && { directory }),
+    ...(resumeSessionId !== undefined && { resumeSessionId }),
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
   };
 }
@@ -766,7 +766,7 @@ export function createCreateSessionRequest(directory?: string): CreateSessionReq
     type: 'create_session_request',
     id: generateId(),
     timestamp: now(),
-    ...(directory && { directory }),
+    ...(directory !== undefined && { directory }),
   };
 }
 

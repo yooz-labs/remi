@@ -611,6 +611,13 @@ const sharedEvents = {
       }
 
       log(`Resume failed: ${result.error}, creating new session`);
+      sendToConnection(
+        connectionId,
+        createError(
+          'RESUME_FAILED',
+          `Could not resume session ${resumeSessionId}: ${result.error}. Creating new session.`,
+        ),
+      );
     }
 
     // In daemon mode, create new session on connect
@@ -651,9 +658,19 @@ const sharedEvents = {
           log(`Session ${sessionId} created and attached to connection ${connectionId}`);
         } else {
           logError(`Failed to attach connection: ${result.error}`);
+          sessionRegistry.closeSession(sessionId, 'forced');
+          sendToConnection(
+            connectionId,
+            createError('ATTACH_FAILED', result.error ?? 'Failed to attach connection'),
+          );
         }
       } catch (error) {
-        logError('Failed to create session:', error);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logError('Failed to create session:', errMsg);
+        sendToConnection(
+          connectionId,
+          createError('SESSION_CREATE_FAILED', `Failed to create session: ${errMsg}`),
+        );
       }
     } else {
       // Wrapper mode but no primary session (shouldn't happen normally)
