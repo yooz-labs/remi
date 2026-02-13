@@ -500,10 +500,6 @@ function startTranscriptWatcher(
 
   const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
     onTranscriptContent: (message) => {
-      log(
-        `[Transcript] ${message.role} content (${message.content.length} chars)` +
-          `${message.model ? ` [${message.model}]` : ''}`,
-      );
       sendAndRecord(message);
     },
   });

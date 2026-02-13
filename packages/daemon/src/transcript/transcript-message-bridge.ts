@@ -65,8 +65,8 @@ export class TranscriptMessageBridge {
     const tools = this.extractToolNames(entry.message.content);
     const hadThinking = this.hasThinkingBlocks(entry.message.content);
 
-    // Skip entries with no meaningful content (pure tool invocations with no text)
-    if (!textContent && tools.length === 0) {
+    // Skip entries with no text content (pure tool invocations, thinking-only, etc.)
+    if (!textContent) {
       this.processedEntryUuids.add(entry.uuid);
       return;
     }
@@ -123,6 +123,12 @@ export class TranscriptMessageBridge {
       typeof entry.message.content === 'string'
         ? entry.message.content
         : this.extractTextContent(entry.message.content as readonly ContentBlock[]);
+
+    // Skip user entries with no text content (tool_result entries)
+    if (!content) {
+      this.processedEntryUuids.add(entry.uuid);
+      return;
+    }
 
     // Create a Message for the MessageAPI
     const message: Message = {
