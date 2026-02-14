@@ -61,7 +61,27 @@ interface RemiStatus {
   adapters: string[];
   wsPort: number;
   sessionId: UUID | null;
+  repo: string;
+  branch: string;
 }
+
+function detectGitInfo(): { repo: string; branch: string } {
+  try {
+    const cwd = process.cwd();
+    const repo = path.basename(cwd);
+    const headFile = path.join(cwd, '.git', 'HEAD');
+    if (fs.existsSync(headFile)) {
+      const head = fs.readFileSync(headFile, 'utf-8').trim();
+      const branch = head.startsWith('ref: refs/heads/') ? head.slice(16) : head.slice(0, 8);
+      return { repo, branch };
+    }
+    return { repo, branch: '?' };
+  } catch {
+    return { repo: path.basename(process.cwd()), branch: '?' };
+  }
+}
+
+const gitInfo = detectGitInfo();
 
 const remiStatus: RemiStatus = {
   pid: process.pid,
@@ -70,6 +90,8 @@ const remiStatus: RemiStatus = {
   adapters: [],
   wsPort: 0,
   sessionId: null,
+  repo: gitInfo.repo,
+  branch: gitInfo.branch,
 };
 
 let statusWriteErrorLogged = false;
@@ -116,11 +138,11 @@ if [ -f "${STATUS_FILE}" ]; then
     CONNS=$(jq -r '.connections // 0' "${STATUS_FILE}" 2>/dev/null)
     STATUS=$(jq -r '.sessionStatus // "unknown"' "${STATUS_FILE}" 2>/dev/null)
     PORT=$(jq -r '.wsPort // ""' "${STATUS_FILE}" 2>/dev/null)
-    if [ "\$CONNS" = "0" ]; then
-      REMI="remi :\${PORT} | no clients | \${STATUS}"
-    else
-      REMI="remi :\${PORT} | \${CONNS} client(s) | \${STATUS}"
-    fi
+    REPO=$(jq -r '.repo // ""' "${STATUS_FILE}" 2>/dev/null)
+    BRANCH=$(jq -r '.branch // ""' "${STATUS_FILE}" 2>/dev/null)
+    CLIENT_INFO="no clients"
+    [ "\$CONNS" != "0" ] && CLIENT_INFO="\${CONNS} client(s)"
+    REMI="remi \${REPO}:\${BRANCH} :\${PORT} | \${CLIENT_INFO} | \${STATUS}"
   fi
 fi
 PCT=$(echo "$input" | jq -r '.context_window.used_percentage // 0' 2>/dev/null | cut -d. -f1)
