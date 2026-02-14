@@ -16,6 +16,131 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// ---------------------------------------------------------------------------
+// Paths and utilities for log file and status file (used in wrapper mode)
+// ---------------------------------------------------------------------------
+const REMI_DIR = path.join(os.homedir(), '.remi');
+const LOG_FILE = path.join(REMI_DIR, 'remi.log');
+const STATUS_FILE = path.join(REMI_DIR, 'status.json');
+let logFd: number | null = null;
+
+function ensureRemiDir(): void {
+  fs.mkdirSync(REMI_DIR, { recursive: true });
+}
+
+function openLogFile(): number {
+  ensureRemiDir();
+  const fd = fs.openSync(LOG_FILE, 'a');
+  fs.writeSync(fd, `\n--- Remi session started at ${new Date().toISOString()} ---\n`);
+  return fd;
+}
+
+function writeToLog(msg: string): void {
+  try {
+    if (logFd !== null) {
+      fs.writeSync(logFd, `${msg}\n`);
+    } else {
+      process.stderr.write(`${msg}\n`);
+    }
+  } catch {
+    process.stderr.write(`${msg}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Status file for status line integration
+// Guard: only writes in wrapper mode (wrapperMode is set during arg parsing)
+// ---------------------------------------------------------------------------
+type RemiSessionStatus = AgentStatus | 'starting';
+
+interface RemiStatus {
+  connections: number;
+  sessionStatus: RemiSessionStatus;
+  adapters: string[];
+  wsPort: number;
+  sessionId: UUID | null;
+}
+
+const remiStatus: RemiStatus = {
+  connections: 0,
+  sessionStatus: 'starting',
+  adapters: [],
+  wsPort: 0,
+  sessionId: null,
+};
+
+let statusWriteErrorLogged = false;
+
+function updateRemiStatus(patch: Partial<RemiStatus>): void {
+  Object.assign(remiStatus, patch);
+  writeStatus();
+}
+
+function writeStatus(): void {
+  if (!wrapperMode) return;
+  // Atomic write: write to temp file then rename to avoid readers seeing partial JSON
+  const tmpFile = `${STATUS_FILE}.tmp`;
+  try {
+    fs.writeFileSync(tmpFile, JSON.stringify(remiStatus));
+    fs.renameSync(tmpFile, STATUS_FILE);
+    statusWriteErrorLogged = false;
+  } catch (err) {
+    if (!statusWriteErrorLogged) {
+      writeToLog(`[error] Failed to write status file: ${err}`);
+      statusWriteErrorLogged = true;
+    }
+  }
+}
+
+function cleanupStatusFile(): void {
+  try {
+    fs.unlinkSync(STATUS_FILE);
+  } catch {
+    // File may not exist during cleanup
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Status line script (embedded, written to ~/.remi/statusline.sh)
+// Requires 'jq' to be installed on the host system.
+// ---------------------------------------------------------------------------
+const STATUSLINE_SCRIPT = `#!/bin/bash
+input=$(cat)
+REMI=""
+if [ -f "${STATUS_FILE}" ]; then
+  CONNS=$(jq -r '.connections // 0' "${STATUS_FILE}" 2>/dev/null)
+  STATUS=$(jq -r '.sessionStatus // "unknown"' "${STATUS_FILE}" 2>/dev/null)
+  PORT=$(jq -r '.wsPort // ""' "${STATUS_FILE}" 2>/dev/null)
+  REMI="remi :\${PORT} | \${CONNS} client(s) | \${STATUS}"
+fi
+PCT=$(echo "$input" | jq -r '.context_window.used_percentage // 0' 2>/dev/null | cut -d. -f1)
+MODEL=$(echo "$input" | jq -r '.model.display_name // "?"' 2>/dev/null)
+echo "\${REMI:+\$REMI | }[\$MODEL] \${PCT}% context"
+`;
+
+function installStatusLine(): void {
+  try {
+    ensureRemiDir();
+    const scriptPath = path.join(REMI_DIR, 'statusline.sh');
+    fs.writeFileSync(scriptPath, STATUSLINE_SCRIPT, { mode: 0o755 });
+
+    // Auto-configure Claude Code settings if no statusLine key exists in
+    // ~/.claude/settings.json. Preserves all other settings but rewrites the file.
+    const claudeSettingsFile = path.join(os.homedir(), '.claude', 'settings.json');
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(claudeSettingsFile)) {
+      settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
+    }
+    if (!settings['statusLine']) {
+      fs.mkdirSync(path.dirname(claudeSettingsFile), { recursive: true });
+      settings['statusLine'] = { type: 'command', command: scriptPath };
+      fs.writeFileSync(claudeSettingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+    }
+  } catch (err) {
+    writeToLog(`[warn] Failed to install status line: ${err}`);
+  }
+}
+
 // Load .env file if present
 const envPath = path.join(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
@@ -70,13 +195,13 @@ import {
 import type { AssistantEntry } from './transcript/index.ts';
 
 // ---------------------------------------------------------------------------
-// Logging: In wrapper mode, all daemon logs go to stderr so stdout is clean
+// Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
 // ---------------------------------------------------------------------------
 let wrapperMode = true; // Default to wrapper mode
 
 function log(...args: unknown[]): void {
   if (wrapperMode) {
-    process.stderr.write(`${args.map(String).join(' ')}\n`);
+    writeToLog(args.map(String).join(' '));
   } else {
     console.log(...args);
   }
@@ -84,7 +209,7 @@ function log(...args: unknown[]): void {
 
 function logError(...args: unknown[]): void {
   if (wrapperMode) {
-    process.stderr.write(`[remi] ${args.map(String).join(' ')}\n`);
+    writeToLog(`[error] ${args.map(String).join(' ')}`);
   } else {
     console.error(...args);
   }
@@ -355,6 +480,7 @@ async function createNewSession(
         };
         sendAndRecord(msg);
         sessionRegistry.updateStatus(sessionId, status);
+        updateRemiStatus({ sessionStatus: status });
 
         const watcher = transcriptWatchers.get(sessionId);
         if (watcher) {
@@ -535,9 +661,13 @@ function startTranscriptWatcher(
 const registry = new AdapterRegistry({
   onAdapterStart: (type) => {
     log(`Adapter '${type}' started`);
+    if (!remiStatus.adapters.includes(type)) {
+      updateRemiStatus({ adapters: [...remiStatus.adapters, type] });
+    }
   },
   onAdapterStop: (type) => {
     log(`Adapter '${type}' stopped`);
+    updateRemiStatus({ adapters: remiStatus.adapters.filter((a) => a !== type) });
   },
 });
 
@@ -550,6 +680,7 @@ const sharedEvents = {
     log(`Client connected: ${connectionId} (${metadata.adapterType})`);
 
     registry.trackConnection(connectionId, metadata.adapterType);
+    updateRemiStatus({ connections: remiStatus.connections + 1 });
 
     const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
 
@@ -683,6 +814,7 @@ const sharedEvents = {
 
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);
+    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
   },
 
   onUserInput: async (connectionId: UUID, _sessionId: UUID, content: string) => {
@@ -921,6 +1053,15 @@ async function cleanup(): Promise<void> {
   transcriptWatchers.clear();
   await registry.stopAll();
   await sessionRegistry.shutdown();
+  cleanupStatusFile();
+  if (logFd !== null) {
+    try {
+      fs.closeSync(logFd);
+    } catch {
+      // ignore
+    }
+    logFd = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -957,9 +1098,30 @@ if (cliDaemonMode) {
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
+  // Open log file and redirect all console output so terminal stays clean.
+  // Falls back to stderr if the log file cannot be opened.
+  try {
+    logFd = openLogFile();
+  } catch (err) {
+    process.stderr.write(`[remi] Failed to open log file: ${err}\n`);
+  }
+  const redirectToLog = (prefix?: string) => {
+    return (...args: unknown[]) => {
+      const text = args.map(String).join(' ');
+      writeToLog(prefix ? `[${prefix}] ${text}` : text);
+    };
+  };
+  console.log = redirectToLog();
+  console.error = redirectToLog('error');
+  console.warn = redirectToLog('warn');
+
+  // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
+  installStatusLine();
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   primarySessionId = sessionId;
+
+  updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
   // Start WebSocket server silently in the background
   // In wrapper mode, don't crash if port is busy - Claude still works locally
