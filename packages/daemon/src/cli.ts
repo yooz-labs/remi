@@ -95,10 +95,19 @@ const remiStatus: RemiStatus = {
 };
 
 let statusWriteErrorLogged = false;
+let statusWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
 function updateRemiStatus(patch: Partial<RemiStatus>): void {
   Object.assign(remiStatus, patch);
-  writeStatus();
+  scheduleStatusWrite();
+}
+
+function scheduleStatusWrite(): void {
+  if (statusWriteTimer) return;
+  statusWriteTimer = setTimeout(() => {
+    statusWriteTimer = null;
+    writeStatus();
+  }, 300);
 }
 
 function writeStatus(): void {
@@ -541,13 +550,15 @@ async function createNewSession(
     },
     {
       onData: (output: string) => {
-        if (processor) {
-          processor.process(output);
-        }
         if (passThrough) {
-          // Use saved raw write to bypass stream overrides in wrapper mode
+          // Write to terminal FIRST to avoid ANSI escape sequence corruption.
+          // Processing (which does synchronous file I/O for status updates)
+          // must happen AFTER the terminal write to prevent display delays.
           const write = ptyWrite ?? process.stdout.write.bind(process.stdout);
           write(output);
+        }
+        if (processor) {
+          processor.process(output);
         }
       },
       onExit: (code: number | null) => {
