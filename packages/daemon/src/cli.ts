@@ -1101,10 +1101,10 @@ if (cliDaemonMode) {
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
-  // Save the real stdout.write, then override both stdout and stderr at the
-  // stream level. This catches ALL output: console.log, console.error, native
-  // writes, adapter code, third-party libs, everything. Only the PTY
-  // pass-through uses the saved ptyWrite to reach the actual terminal.
+  // Block ALL output paths to the terminal. In Bun compiled binaries,
+  // console.log uses a native path that bypasses process.stdout.write,
+  // so we must override both layers. Only the PTY pass-through (via
+  // saved ptyWrite) can reach the actual terminal.
   ptyWrite = process.stdout.write.bind(process.stdout);
 
   try {
@@ -1113,6 +1113,19 @@ if (cliDaemonMode) {
     // Cannot open log file; all output will be silently dropped
   }
 
+  // Layer 1: Override console methods (catches Bun's native console path)
+  const toLog = (...args: unknown[]) => writeToLog(args.map(String).join(' '));
+  const toLogPrefixed =
+    (prefix: string) =>
+    (...args: unknown[]) =>
+      writeToLog(`[${prefix}] ${args.map(String).join(' ')}`);
+  console.log = toLog;
+  console.info = toLog;
+  console.error = toLogPrefixed('error');
+  console.warn = toLogPrefixed('warn');
+  console.debug = toLog;
+
+  // Layer 2: Override streams (catches anything that writes directly to streams)
   const streamToLog = (chunk: unknown) => {
     writeToLog(String(chunk).replace(/\n$/, ''));
     return true;
