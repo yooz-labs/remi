@@ -36,14 +36,11 @@ function openLogFile(): number {
 }
 
 function writeToLog(msg: string): void {
+  if (logFd === null) return;
   try {
-    if (logFd !== null) {
-      fs.writeSync(logFd, `${msg}\n`);
-    } else {
-      process.stderr.write(`${msg}\n`);
-    }
+    fs.writeSync(logFd, `${msg}\n`);
   } catch {
-    process.stderr.write(`${msg}\n`);
+    // Silently drop: in wrapper mode, terminal cleanliness is non-negotiable
   }
 }
 
@@ -1054,14 +1051,6 @@ async function cleanup(): Promise<void> {
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
-  if (logFd !== null) {
-    try {
-      fs.closeSync(logFd);
-    } catch {
-      // ignore
-    }
-    logFd = null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,12 +1088,24 @@ if (cliDaemonMode) {
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
   // Open log file and redirect all console output so terminal stays clean.
-  // Falls back to stderr if the log file cannot be opened.
+  // If the log file cannot be opened, all log messages are silently dropped.
   try {
     logFd = openLogFile();
-  } catch (err) {
-    process.stderr.write(`[remi] Failed to open log file: ${err}\n`);
+  } catch {
+    // Cannot open log file; logging will be silently dropped
   }
+
+  // Close log fd as the very last thing on process exit
+  process.on('exit', () => {
+    if (logFd !== null) {
+      try {
+        fs.closeSync(logFd);
+      } catch {
+        // ignore
+      }
+      logFd = null;
+    }
+  });
   const redirectToLog = (prefix?: string) => {
     return (...args: unknown[]) => {
       const text = args.map(String).join(' ');
