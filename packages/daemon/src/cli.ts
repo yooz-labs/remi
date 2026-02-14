@@ -55,6 +55,7 @@ function writeToLog(msg: string): void {
 type RemiSessionStatus = AgentStatus | 'starting';
 
 interface RemiStatus {
+  pid: number;
   connections: number;
   sessionStatus: RemiSessionStatus;
   adapters: string[];
@@ -63,6 +64,7 @@ interface RemiStatus {
 }
 
 const remiStatus: RemiStatus = {
+  pid: process.pid,
   connections: 0,
   sessionStatus: 'starting',
   adapters: [],
@@ -109,10 +111,17 @@ const STATUSLINE_SCRIPT = `#!/bin/bash
 input=$(cat)
 REMI=""
 if [ -f "${STATUS_FILE}" ]; then
-  CONNS=$(jq -r '.connections // 0' "${STATUS_FILE}" 2>/dev/null)
-  STATUS=$(jq -r '.sessionStatus // "unknown"' "${STATUS_FILE}" 2>/dev/null)
-  PORT=$(jq -r '.wsPort // ""' "${STATUS_FILE}" 2>/dev/null)
-  REMI="remi :\${PORT} | \${CONNS} client(s) | \${STATUS}"
+  PID=$(jq -r '.pid // 0' "${STATUS_FILE}" 2>/dev/null)
+  if kill -0 "\$PID" 2>/dev/null; then
+    CONNS=$(jq -r '.connections // 0' "${STATUS_FILE}" 2>/dev/null)
+    STATUS=$(jq -r '.sessionStatus // "unknown"' "${STATUS_FILE}" 2>/dev/null)
+    PORT=$(jq -r '.wsPort // ""' "${STATUS_FILE}" 2>/dev/null)
+    if [ "\$CONNS" = "0" ]; then
+      REMI="remi :\${PORT} | no clients | \${STATUS}"
+    else
+      REMI="remi :\${PORT} | \${CONNS} client(s) | \${STATUS}"
+    fi
+  fi
 fi
 PCT=$(echo "$input" | jq -r '.context_window.used_percentage // 0' 2>/dev/null | cut -d. -f1)
 MODEL=$(echo "$input" | jq -r '.model.display_name // "?"' 2>/dev/null)

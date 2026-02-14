@@ -169,9 +169,11 @@ export class OutputProcessor {
     const cleaned = cleanForParsing(content);
     const rawLines = splitLines(cleaned);
 
-    // Detect status changes from raw content
+    // Detect status changes from raw content.
+    // Only update status if the new detection has reasonable confidence;
+    // low-confidence defaults (0.3) should not overwrite real status.
     const statusResult = parseStatus(content);
-    if (statusResult.status !== this.currentStatus) {
+    if (statusResult.status !== this.currentStatus && statusResult.confidence >= 0.5) {
       this.currentStatus = statusResult.status;
       this.events.onStatusChange?.(statusResult.status, statusResult.context);
     }

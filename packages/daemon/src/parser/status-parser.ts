@@ -37,6 +37,8 @@ const TOOL_PATTERNS: ReadonlyArray<{ pattern: RegExp; tool: string }> = [
   { pattern: /^Building\s+(.+)/i, tool: 'build' },
   { pattern: /^Testing\s+(.+)/i, tool: 'test' },
   { pattern: /^Compiling\s+(.+)/i, tool: 'compile' },
+  // Claude Code agent response marker (actively streaming a response)
+  { pattern: /^⏺\s+(.+)/, tool: 'responding' },
 ];
 
 /** Thinking indicators */
@@ -49,11 +51,15 @@ const THINKING_PATTERNS: readonly RegExp[] = [
   /^processing/i,
   /^examining/i,
   /^reviewing/i,
-  // Claude Code uses funny verb animations: Honking..., Misting..., Discombobulating...
-  // Generic pattern: spinner + word ending in "ing" + "..." or "…"
+  // Claude Code uses funny verb animations: Germinating..., Seasoning..., etc.
+  // Generic pattern: spinner + word ending in "ing" + "..." or "..."
   /[✳✢·✶✻\*]\s*\w+ing\.{2,}/i,
   /[✳✢·✶✻\*]\s*\w+ing…/i,
   /\w+ing\.\.\.\s*\(esc to interrupt/i,
+  // Claude Code thinking indicator with parenthetical
+  /\w+ing…\s*\(thinking\)/i,
+  // Bare spinner characters followed by any word
+  /^[✳✢]\s*$/,
 ];
 
 /** Waiting indicators (question or input prompt) */
