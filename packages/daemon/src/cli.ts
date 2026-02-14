@@ -24,6 +24,10 @@ const LOG_FILE = path.join(REMI_DIR, 'remi.log');
 const STATUS_FILE = path.join(REMI_DIR, 'status.json');
 let logFd: number | null = null;
 
+// In wrapper mode, we save the real stdout.write before overriding it.
+// Only the PTY pass-through uses this; everything else is silenced.
+let ptyWrite: ((chunk: string) => boolean) | null = null;
+
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
 }
@@ -510,8 +514,9 @@ async function createNewSession(
           processor.process(output);
         }
         if (passThrough) {
-          // Write directly to stdout for transparent terminal experience
-          process.stdout.write(output);
+          // Use saved raw write to bypass stream overrides in wrapper mode
+          const write = ptyWrite ?? process.stdout.write.bind(process.stdout);
+          write(output);
         }
       },
       onExit: (code: number | null) => {
@@ -1087,13 +1092,24 @@ if (cliDaemonMode) {
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
-  // Open log file and redirect all console output so terminal stays clean.
-  // If the log file cannot be opened, all log messages are silently dropped.
+  // Save the real stdout.write, then override both stdout and stderr at the
+  // stream level. This catches ALL output: console.log, console.error, native
+  // writes, adapter code, third-party libs, everything. Only the PTY
+  // pass-through uses the saved ptyWrite to reach the actual terminal.
+  ptyWrite = process.stdout.write.bind(process.stdout);
+
   try {
     logFd = openLogFile();
   } catch {
-    // Cannot open log file; logging will be silently dropped
+    // Cannot open log file; all output will be silently dropped
   }
+
+  const streamToLog = (chunk: unknown) => {
+    writeToLog(String(chunk).replace(/\n$/, ''));
+    return true;
+  };
+  process.stdout.write = streamToLog as typeof process.stdout.write;
+  process.stderr.write = streamToLog as typeof process.stderr.write;
 
   // Close log fd as the very last thing on process exit
   process.on('exit', () => {
@@ -1106,15 +1122,6 @@ if (cliDaemonMode) {
       logFd = null;
     }
   });
-  const redirectToLog = (prefix?: string) => {
-    return (...args: unknown[]) => {
-      const text = args.map(String).join(' ');
-      writeToLog(prefix ? `[${prefix}] ${text}` : text);
-    };
-  };
-  console.log = redirectToLog();
-  console.error = redirectToLog('error');
-  console.warn = redirectToLog('warn');
 
   // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
   installStatusLine();
