@@ -63,6 +63,7 @@ interface RemiStatus {
   sessionId: UUID | null;
   repo: string;
   branch: string;
+  cwd: string;
 }
 
 function detectGitInfo(): { repo: string; branch: string } {
@@ -92,6 +93,7 @@ const remiStatus: RemiStatus = {
   sessionId: null,
   repo: gitInfo.repo,
   branch: gitInfo.branch,
+  cwd: process.cwd(),
 };
 
 let statusWriteErrorLogged = false;
@@ -143,8 +145,9 @@ input=$(cat)
 REMI=""
 if [ -f "${STATUS_FILE}" ]; then
   # Single jq call extracts all fields as tab-separated values
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_PORT S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .wsPort // 0, .repo // "", .branch // ""] | @tsv' "${STATUS_FILE}" 2>/dev/null)
-  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_PORT S_REPO S_BRANCH S_CWD < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .wsPort // 0, .repo // "", .branch // "", .cwd // ""] | @tsv' "${STATUS_FILE}" 2>/dev/null)
+  # Only show remi info if: process alive AND this session is in the remi-managed directory
+  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null && [ "\$S_CWD" = "\$PWD" ]; then
     CLIENT_INFO="no clients"
     [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
     REMI="remi \${S_REPO}:\${S_BRANCH} :\${S_PORT} | \${CLIENT_INFO} | \${S_STATUS}"
