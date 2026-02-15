@@ -24,9 +24,9 @@ const LOG_FILE = path.join(REMI_DIR, 'remi.log');
 const STATUS_FILE = path.join(REMI_DIR, 'status.json');
 let logFd: number | null = null;
 
-// In wrapper mode, we save the real stdout.write before overriding it.
-// Only the PTY pass-through uses this; everything else is silenced.
-let ptyWrite: ((chunk: string) => boolean) | null = null;
+// In wrapper mode, we save the real stdout file descriptor before overriding.
+// Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
+let ptyStdoutFd: number | null = null;
 
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
@@ -545,14 +545,17 @@ async function createNewSession(
       size: termSize,
     },
     {
-      onData: (output: string) => {
+      onRawData: (data: Uint8Array) => {
         if (passThrough) {
-          // Write to terminal FIRST to avoid ANSI escape sequence corruption.
-          // Processing (which does synchronous file I/O for status updates)
-          // must happen AFTER the terminal write to prevent display delays.
-          const write = ptyWrite ?? process.stdout.write.bind(process.stdout);
-          write(output);
+          // Write raw bytes directly to terminal - no decode/encode round-trip.
+          // This preserves multi-byte UTF-8 sequences split across chunks and
+          // avoids ANSI escape corruption from processing delays.
+          const fd = ptyStdoutFd ?? 1;
+          fs.writeSync(fd, data);
         }
+      },
+      onData: (output: string) => {
+        // Decoded text goes to processor only (status detection, questions)
         if (processor) {
           processor.process(output);
         }
@@ -1132,9 +1135,9 @@ if (cliDaemonMode) {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
   // Block ALL output paths to the terminal. In Bun compiled binaries,
   // console.log uses a native path that bypasses process.stdout.write,
-  // so we must override both layers. Only the PTY pass-through (via
-  // saved ptyWrite) can reach the actual terminal.
-  ptyWrite = process.stdout.write.bind(process.stdout);
+  // so we must override both layers. Only the PTY raw byte pass-through
+  // (via fs.writeSync to stdout fd) can reach the actual terminal.
+  ptyStdoutFd = 1; // stdout file descriptor
 
   try {
     logFd = openLogFile();
