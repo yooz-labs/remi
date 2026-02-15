@@ -142,21 +142,17 @@ const STATUSLINE_SCRIPT = `#!/bin/bash
 input=$(cat)
 REMI=""
 if [ -f "${STATUS_FILE}" ]; then
-  PID=$(jq -r '.pid // 0' "${STATUS_FILE}" 2>/dev/null)
-  if kill -0 "\$PID" 2>/dev/null; then
-    CONNS=$(jq -r '.connections // 0' "${STATUS_FILE}" 2>/dev/null)
-    STATUS=$(jq -r '.sessionStatus // "unknown"' "${STATUS_FILE}" 2>/dev/null)
-    PORT=$(jq -r '.wsPort // ""' "${STATUS_FILE}" 2>/dev/null)
-    REPO=$(jq -r '.repo // ""' "${STATUS_FILE}" 2>/dev/null)
-    BRANCH=$(jq -r '.branch // ""' "${STATUS_FILE}" 2>/dev/null)
+  # Single jq call extracts all fields as tab-separated values
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_PORT S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .wsPort // 0, .repo // "", .branch // ""] | @tsv' "${STATUS_FILE}" 2>/dev/null)
+  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     CLIENT_INFO="no clients"
-    [ "\$CONNS" != "0" ] && CLIENT_INFO="\${CONNS} client(s)"
-    REMI="remi \${REPO}:\${BRANCH} :\${PORT} | \${CLIENT_INFO} | \${STATUS}"
+    [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
+    REMI="remi \${S_REPO}:\${S_BRANCH} :\${S_PORT} | \${CLIENT_INFO} | \${S_STATUS}"
   fi
 fi
-PCT=$(echo "$input" | jq -r '.context_window.used_percentage // 0' 2>/dev/null | cut -d. -f1)
-MODEL=$(echo "$input" | jq -r '.model.display_name // "?"' 2>/dev/null)
-echo "\${REMI:+\$REMI | }[\$MODEL] \${PCT}% context"
+# Single jq call for stdin context
+IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
+echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
 `;
 
 function installStatusLine(): void {
