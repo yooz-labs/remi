@@ -16,8 +16,11 @@ export interface TerminalSize {
 
 /** Events emitted by PTY session */
 export interface PTYSessionEvents {
-  /** Raw output data from terminal */
+  /** Raw output data from terminal (decoded to string) */
   onData: (data: string) => void;
+
+  /** Raw bytes from terminal, before text decoding. Use for direct pass-through. */
+  onRawData?: (data: Uint8Array) => void;
 
   /** Session status changed */
   onStatusChange: (status: AgentStatus) => void;
@@ -315,11 +318,18 @@ export class PTYSession {
     }
   }
 
+  /** Text decoder with streaming mode to handle multi-byte UTF-8 across chunks */
+  private textDecoder = new TextDecoder('utf-8', { fatal: false });
+
   /** Handle data from terminal */
   private handleData(data: Uint8Array): void {
-    // Convert to string
-    const text = new TextDecoder().decode(data);
-    this.events.onData?.(text);
+    // Emit raw bytes first for direct terminal pass-through (no decode/encode)
+    this.events.onRawData?.(data);
+    // Then decode for text processing (stream: true handles split UTF-8)
+    const text = this.textDecoder.decode(data, { stream: true });
+    if (text.length > 0) {
+      this.events.onData?.(text);
+    }
   }
 
   /** Handle process exit */
