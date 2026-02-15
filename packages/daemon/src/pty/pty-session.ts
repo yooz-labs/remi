@@ -323,8 +323,13 @@ export class PTYSession {
 
   /** Handle data from terminal */
   private handleData(data: Uint8Array): void {
-    // Emit raw bytes first for direct terminal pass-through (no decode/encode)
-    this.events.onRawData?.(data);
+    // Emit raw bytes first for direct terminal pass-through (no decode/encode).
+    // Isolate so a throw here does not prevent text processing from running.
+    try {
+      this.events.onRawData?.(data);
+    } catch (err) {
+      this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
     // Then decode for text processing (stream: true handles split UTF-8)
     const text = this.textDecoder.decode(data, { stream: true });
     if (text.length > 0) {
@@ -334,6 +339,11 @@ export class PTYSession {
 
   /** Handle process exit */
   private handleExit(exitCode: number, signal: string | null): void {
+    // Flush any remaining bytes buffered by the streaming TextDecoder
+    const remaining = this.textDecoder.decode();
+    if (remaining.length > 0) {
+      this.events.onData?.(remaining);
+    }
     this.state = 'exited';
     this.exitCode = exitCode;
     this.exitSignal = signal;

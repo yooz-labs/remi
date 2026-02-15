@@ -546,12 +546,19 @@ async function createNewSession(
     },
     {
       onRawData: (data: Uint8Array) => {
-        if (passThrough) {
+        if (passThrough && ptyStdoutFd !== null) {
           // Write raw bytes directly to terminal - no decode/encode round-trip.
           // This preserves multi-byte UTF-8 sequences split across chunks and
           // avoids ANSI escape corruption from processing delays.
-          const fd = ptyStdoutFd ?? 1;
-          fs.writeSync(fd, data);
+          try {
+            fs.writeSync(ptyStdoutFd, data);
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code === 'EPIPE' || code === 'EIO') {
+              logError(`Terminal write failed (${code}), initiating shutdown`);
+              cleanup().then(() => process.exit(1));
+            }
+          }
         }
       },
       onData: (output: string) => {
