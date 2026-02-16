@@ -63,7 +63,6 @@ interface RemiStatus {
   sessionId: UUID | null;
   repo: string;
   branch: string;
-  cwd: string;
 }
 
 function detectGitInfo(): { repo: string; branch: string } {
@@ -93,7 +92,6 @@ const remiStatus: RemiStatus = {
   sessionId: null,
   repo: gitInfo.repo,
   branch: gitInfo.branch,
-  cwd: process.cwd(),
 };
 
 let statusWriteErrorLogged = false;
@@ -143,17 +141,15 @@ function cleanupStatusFile(): void {
 const STATUSLINE_SCRIPT = `#!/bin/bash
 input=$(cat)
 REMI=""
-if [ -f "${STATUS_FILE}" ]; then
-  # Single jq call extracts all fields as tab-separated values
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_PORT S_REPO S_BRANCH S_CWD < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .wsPort // 0, .repo // "", .branch // "", .cwd // ""] | @tsv' "${STATUS_FILE}" 2>/dev/null)
-  # Only show remi info if: process alive AND this session is in the remi-managed directory
-  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null && [ "\$S_CWD" = "\$PWD" ]; then
+# REMI_PORT is set by remi when spawning Claude; only show remi info for remi-managed sessions
+if [ -n "\$REMI_PORT" ] && [ -f "${STATUS_FILE}" ]; then
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "${STATUS_FILE}" 2>/dev/null)
+  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     CLIENT_INFO="no clients"
     [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
-    REMI="remi \${S_REPO}:\${S_BRANCH} :\${S_PORT} | \${CLIENT_INFO} | \${S_STATUS}"
+    REMI="remi :\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${S_STATUS}"
   fi
 fi
-# Single jq call for stdin context
 IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
 echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
 `;
@@ -546,6 +542,7 @@ async function createNewSession(
       args: extraArgs,
       cwd: workingDirectory,
       size: termSize,
+      env: passThrough ? { REMI_PORT: String(remiStatus.wsPort) } : {},
     },
     {
       onRawData: (data: Uint8Array) => {
