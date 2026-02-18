@@ -288,6 +288,8 @@ let cliMaxBulletLength: number | undefined;
 let cliDaemonMode = false;
 let cliResume: string | true | undefined; // true = resume most recent, string = session ID
 let cliShowSessions = false;
+let cliInstall = false;
+let cliUninstall = false;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -314,6 +316,13 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--no-telegram') {
     cliNoTelegram = true;
+  } else if (arg === '--install') {
+    cliInstall = true;
+  } else if (arg === '--uninstall') {
+    cliUninstall = true;
+  } else if (arg === '--version' || arg === '-v') {
+    console.log('remi 0.1.0');
+    process.exit(0);
   } else if (arg === '--help' || arg === '-h') {
     console.log(`
 Remi - Claude Code with remote monitoring
@@ -328,6 +337,9 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
+  --install                Install as autostart service
+  --uninstall              Remove autostart service
+  --version, -v            Show version
   --help, -h               Show this help
 
 Environment:
@@ -343,6 +355,110 @@ Any other arguments are passed through to Claude Code.
     // Pass through to Claude
     if (arg) claudeArgs.push(arg);
   }
+}
+
+// Handle --install / --uninstall
+if (cliInstall || cliUninstall) {
+  const platform = process.platform;
+  const home = os.homedir();
+  const binaryPath = process.execPath;
+
+  if (platform === 'darwin') {
+    const plistName = 'com.yooz.remi.plist';
+    const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
+
+    if (cliInstall) {
+      const templatePath = path.join(path.dirname(binaryPath), '..', 'scripts', 'install', plistName);
+      let template: string;
+      try {
+        template = fs.readFileSync(templatePath, 'utf-8');
+      } catch {
+        // Fallback: inline template for compiled binary
+        template = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yooz.remi</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REMI_BINARY__</string>
+        <string>--daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.remi/remi-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.remi/remi-stderr.log</string>
+</dict>
+</plist>`;
+      }
+      const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, content);
+      const result = Bun.spawnSync(['launchctl', 'load', dest]);
+      if (result.exitCode === 0) {
+        console.log(`Installed LaunchAgent: ${dest}`);
+        console.log('Remi will start automatically on login.');
+      } else {
+        console.error(`Failed to load LaunchAgent: ${result.stderr.toString()}`);
+        process.exit(1);
+      }
+    } else {
+      if (fs.existsSync(dest)) {
+        Bun.spawnSync(['launchctl', 'unload', dest]);
+        fs.unlinkSync(dest);
+        console.log(`Removed LaunchAgent: ${dest}`);
+      } else {
+        console.log('No LaunchAgent installed.');
+      }
+    }
+  } else if (platform === 'linux') {
+    const serviceDir = path.join(home, '.config', 'systemd', 'user');
+    const dest = path.join(serviceDir, 'remi.service');
+
+    if (cliInstall) {
+      const template = `[Unit]
+Description=Remi - Claude Code Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${binaryPath} --daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target`;
+      fs.mkdirSync(serviceDir, { recursive: true });
+      fs.writeFileSync(dest, template);
+      Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
+      const result = Bun.spawnSync(['systemctl', '--user', 'enable', '--now', 'remi.service']);
+      if (result.exitCode === 0) {
+        console.log(`Installed systemd user service: ${dest}`);
+        console.log('Remi will start automatically on login.');
+      } else {
+        console.error(`Failed to enable service: ${result.stderr.toString()}`);
+        process.exit(1);
+      }
+    } else {
+      if (fs.existsSync(dest)) {
+        Bun.spawnSync(['systemctl', '--user', 'disable', '--now', 'remi.service']);
+        fs.unlinkSync(dest);
+        Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
+        console.log(`Removed systemd user service: ${dest}`);
+      } else {
+        console.log('No systemd service installed.');
+      }
+    }
+  } else {
+    console.error(`Autostart not supported on ${platform}. Run remi --daemon manually.`);
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 // Handle --sessions quickly

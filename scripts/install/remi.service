@@ -1,0 +1,12 @@
+[Unit]
+Description=Remi - Claude Code Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=__REMI_BINARY__ --daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
