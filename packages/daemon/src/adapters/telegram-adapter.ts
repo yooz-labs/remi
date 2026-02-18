@@ -20,9 +20,11 @@ import type {
   Question,
   QuestionMessage,
   ReplayBatchMessage,
+  SessionListResponseMessage,
   SessionUpdateMessage,
   StructuredAgentOutputMessage,
   TranscriptContentMessage,
+  TranscriptLoadCompleteMessage,
   UUID,
 } from '@remi/shared';
 import { Bot, type Context } from 'grammy';
@@ -36,6 +38,7 @@ import {
   formatHelpMessage,
   formatMessageForTelegram,
   formatQuestionKeyboard,
+  formatSessionList,
   isValidContent,
   stripTerminalCodes,
 } from './telegram-ui.ts';
@@ -148,6 +151,12 @@ export class TelegramAdapter implements ConnectionAdapter {
 
   /** Session counters per directory */
   private readonly sessionCounters: Map<string, number> = new Map();
+
+  /** Rate limiter: last input timestamp per session key */
+  private readonly lastInputTimestamp: Map<string, number> = new Map();
+
+  /** Minimum interval between inputs in milliseconds */
+  private static readonly RATE_LIMIT_MS = 1000;
 
   constructor(config: TelegramAdapterConfig, events: Partial<AdapterEvents> = {}) {
     this.config = {
@@ -394,9 +403,40 @@ export class TelegramAdapter implements ConnectionAdapter {
         return true;
       }
 
+      case 'session_list_response': {
+        const slr = message as SessionListResponseMessage;
+        const slrSession = this.getSession(connectionId);
+        if (slrSession && this.bot) {
+          const text = formatSessionList(slr.sessions);
+          this.bot.api
+            .sendMessage(slrSession.chatId, text, {
+              message_thread_id: slrSession.topicId,
+            })
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'transcript_load_complete': {
+        const tlc = message as TranscriptLoadCompleteMessage;
+        const tlcSession = this.getSession(connectionId);
+        if (tlcSession && this.bot) {
+          this.bot.api
+            .sendMessage(
+              tlcSession.chatId,
+              `Transcript loaded for session ${tlc.sessionId} (${tlc.messageCount} messages).`,
+              { message_thread_id: tlcSession.topicId },
+            )
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
       // Messages that don't need Telegram rendering
-      case 'session_list_response':
-      case 'transcript_load_complete':
       case 'create_session_response':
       case 'ping':
       case 'pong':
@@ -478,6 +518,16 @@ export class TelegramAdapter implements ConnectionAdapter {
     // Handle /help command
     this.bot.command('help', async (ctx) => {
       await this.handleHelp(ctx);
+    });
+
+    // Handle /sessions command - list all discoverable sessions
+    this.bot.command('sessions', async (ctx) => {
+      await this.handleSessions(ctx);
+    });
+
+    // Handle /load command - load transcript for an external session
+    this.bot.command('load', async (ctx) => {
+      await this.handleLoad(ctx);
     });
 
     // Handle callback queries (button presses)
@@ -679,6 +729,35 @@ export class TelegramAdapter implements ConnectionAdapter {
     await ctx.reply(formatHelpMessage());
   }
 
+  private async handleSessions(ctx: Context): Promise<void> {
+    const session = this.getSessionFromContext(ctx);
+    if (!session) {
+      await ctx.reply('No active session in this topic. Use /start to create one.');
+      return;
+    }
+
+    const requestId = generateId();
+    this.events.onSessionListRequest?.(session.connectionId, requestId, true);
+  }
+
+  private async handleLoad(ctx: Context): Promise<void> {
+    const session = this.getSessionFromContext(ctx);
+    if (!session) {
+      await ctx.reply('No active session in this topic. Use /start to create one.');
+      return;
+    }
+
+    const sessionId = ctx.match?.toString().trim();
+    if (!sessionId) {
+      await ctx.reply('Usage: /load <sessionId>');
+      return;
+    }
+
+    const requestId = generateId();
+    this.events.onTranscriptLoadRequest?.(session.connectionId, sessionId, requestId);
+    await ctx.reply(`Loading transcript for session ${sessionId}...`);
+  }
+
   private async handleAnswerCallback(ctx: Context): Promise<void> {
     const match = ctx.match as RegExpMatchArray;
     const questionId = match[1] as UUID;
@@ -714,6 +793,16 @@ export class TelegramAdapter implements ConnectionAdapter {
 
     const text = ctx.message?.text;
     if (!text) return;
+
+    // Rate limiting: reject inputs faster than 1 per second
+    const sessionKey = `${session.chatId}:${session.topicId}`;
+    const lastTime = this.lastInputTimestamp.get(sessionKey) ?? 0;
+    const currentTime = Date.now();
+    if (currentTime - lastTime < TelegramAdapter.RATE_LIMIT_MS) {
+      await ctx.reply('Please wait a moment before sending another message.');
+      return;
+    }
+    this.lastInputTimestamp.set(sessionKey, currentTime);
 
     // Notify daemon of user input
     this.events.onUserInput?.(session.connectionId, session.sessionId, text);
