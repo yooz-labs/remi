@@ -488,9 +488,53 @@ function App() {
     [connect],
   );
 
-  const handleConnectCode = useCallback((_code: string) => {
-    void _code;
-    console.warn('WebRTC connection not yet implemented');
+  const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
+
+  // Clean up signaling client on unmount
+  useEffect(() => {
+    return () => {
+      signalingClientRef.current?.close();
+    };
+  }, []);
+
+  const handleConnectCode = useCallback((code: string) => {
+    // Dynamic import to avoid bundling when not used
+    import('@/lib/signaling-client').then(({ WebSignalingClient }) => {
+      // Close existing signaling connection if any
+      if (signalingClientRef.current) {
+        signalingClientRef.current.close();
+      }
+
+      const signalingUrl = 'wss://remi-signaling.yooz.workers.dev/connect';
+      const client = new WebSignalingClient({
+        onStateChange: (state) => {
+          if (state === 'connected') {
+            setShowConnectModal(false);
+            // Send hello via relay
+            const hello = {
+              type: 'hello',
+              id: generateId(),
+              timestamp: new Date().toISOString(),
+              clientId: 'remi-web',
+              clientVersion: '0.1.0',
+            };
+            client.sendMessage(hello);
+          }
+        },
+        onMessage: (message) => {
+          // Forward relay messages to the existing message handler
+          if (handleMessageRef.current && message && typeof message === 'object' && 'type' in message) {
+            handleMessageRef.current(message as ProtocolMessage);
+          }
+        },
+        onError: (errCode, errMsg) => {
+          console.error(`Signaling error [${errCode}]: ${errMsg}`);
+        },
+      });
+
+      signalingClientRef.current = client;
+      client.connect(signalingUrl, code);
+    });
   }, []);
 
   const handleBulletExpand = useCallback(

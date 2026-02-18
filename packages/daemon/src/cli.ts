@@ -297,6 +297,8 @@ let cliPort: number | undefined;
 let cliNoTelegram = false;
 let cliMaxBulletLength: number | undefined;
 let cliDaemonMode = false;
+let cliRemote = false;
+let cliSignalingUrl: string | undefined;
 let cliResume: string | true | undefined; // true = resume most recent, string = session ID
 let cliShowSessions = false;
 let cliInstall = false;
@@ -327,6 +329,11 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--no-telegram') {
     cliNoTelegram = true;
+  } else if (arg === '--remote') {
+    cliRemote = true;
+  } else if (arg === '--signaling-url' && nextArg) {
+    cliSignalingUrl = nextArg;
+    i++;
   } else if (arg === '--install') {
     cliInstall = true;
   } else if (arg === '--uninstall') {
@@ -348,6 +355,8 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
+  --remote                 Enable remote access via signaling relay
+  --signaling-url URL      Signaling server URL (default: wss://remi-signaling.yooz.workers.dev/connect)
   --install                Install as autostart service
   --uninstall              Remove autostart service
   --version, -v            Show version
@@ -1218,6 +1227,19 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
     sharedEvents,
   );
   registry.register(telegramAdapter);
+}
+
+if (cliRemote) {
+  const { RelayAdapter } = await import('./remote/relay-adapter.ts');
+  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.yooz.workers.dev/connect';
+  const relayAdapter = new RelayAdapter(
+    {
+      enabled: true,
+      signalingUrl,
+    },
+    sharedEvents,
+  );
+  registry.register(relayAdapter);
 }
 
 // ---------------------------------------------------------------------------

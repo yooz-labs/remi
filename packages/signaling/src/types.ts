@@ -24,7 +24,8 @@ export type SignalingMessage =
   | IceCandidateMessage
   | ErrorMessage
   | PeerConnectedMessage
-  | PeerDisconnectedMessage;
+  | PeerDisconnectedMessage
+  | RelayMessage;
 
 /** Host registers to get a connection code */
 export interface RegisterMessage {
@@ -89,6 +90,12 @@ export interface PeerDisconnectedMessage {
   readonly role: PeerRole;
 }
 
+/** Relay message - forwarded between host and client */
+export interface RelayMessage {
+  readonly type: 'relay';
+  readonly payload: string;
+}
+
 /**
  * Parse a signaling message from JSON.
  */
@@ -115,6 +122,7 @@ export function parseMessage(data: string): SignalingMessage | null {
       'error',
       'peer-connected',
       'peer-disconnected',
+      'relay',
     ];
 
     if (!validTypes.includes(obj.type)) {

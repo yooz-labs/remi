@@ -100,6 +100,7 @@ export class ConnectionRoom {
       case 'offer':
       case 'answer':
       case 'ice-candidate':
+      case 'relay':
         await this.handleSignaling(ws, message);
         break;
       default:
