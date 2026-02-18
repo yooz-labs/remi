@@ -1085,8 +1085,12 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
     {
       token: TELEGRAM_TOKEN,
       defaultDirectory: process.cwd(),
-      authorizedChatIds: TELEGRAM_AUTHORIZED_CHAT_IDS.length ? TELEGRAM_AUTHORIZED_CHAT_IDS : undefined,
-      authorizedUserIds: TELEGRAM_AUTHORIZED_USER_IDS.length ? TELEGRAM_AUTHORIZED_USER_IDS : undefined,
+      authorizedChatIds: TELEGRAM_AUTHORIZED_CHAT_IDS.length
+        ? TELEGRAM_AUTHORIZED_CHAT_IDS
+        : undefined,
+      authorizedUserIds: TELEGRAM_AUTHORIZED_USER_IDS.length
+        ? TELEGRAM_AUTHORIZED_USER_IDS
+        : undefined,
     },
     sharedEvents,
   );

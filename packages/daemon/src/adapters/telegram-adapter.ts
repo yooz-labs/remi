@@ -356,10 +356,16 @@ export class TelegramAdapter implements ConnectionAdapter {
         const editSession = this.getSession(connectionId);
         if (editSession && this.bot && edit.newContent) {
           const cleanContent = stripTerminalCodes(edit.newContent).trim();
-          if (cleanContent && isValidContent(cleanContent) && editSession.currentMessageId !== undefined) {
+          if (
+            cleanContent &&
+            isValidContent(cleanContent) &&
+            editSession.currentMessageId !== undefined
+          ) {
             this.bot.api
               .editMessageText(editSession.chatId, editSession.currentMessageId, cleanContent)
-              .catch(() => { /* message may not be editable */ });
+              .catch(() => {
+                /* message may not be editable */
+              });
           }
         }
         return true;
@@ -373,7 +379,9 @@ export class TelegramAdapter implements ConnectionAdapter {
             .sendMessage(errSession.chatId, `Error: ${err.message}`, {
               message_thread_id: errSession.topicId,
             })
-            .catch(() => { /* ignore send errors */ });
+            .catch(() => {
+              /* ignore send errors */
+            });
         }
         return true;
       }
