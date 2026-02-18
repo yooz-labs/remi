@@ -28,6 +28,10 @@ export class SignalingClient extends EventEmitter {
   }
 
   connect(): void {
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
     this.closed = false;
     this.ws = new WebSocket(this.url);
 

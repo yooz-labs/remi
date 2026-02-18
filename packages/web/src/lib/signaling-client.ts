@@ -17,17 +17,36 @@ export class WebSignalingClient {
   private ws: WebSocket | null = null;
   private readonly callbacks: SignalingClientCallbacks;
   private state: SignalingState = 'disconnected';
+  private intentionallyClosed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private readonly maxReconnectAttempts = 3;
+  private signalingUrl: string | null = null;
+  private code: string | null = null;
 
   constructor(callbacks: SignalingClientCallbacks) {
     this.callbacks = callbacks;
   }
 
   connect(signalingUrl: string, code: string): void {
+    this.signalingUrl = signalingUrl;
+    this.code = code;
+    this.intentionallyClosed = false;
+    this.reconnectAttempts = 0;
+    this.connectInternal();
+  }
+
+  private connectInternal(): void {
+    if (!this.signalingUrl || !this.code) return;
+
     this.setState('connecting');
 
-    this.ws = new WebSocket(signalingUrl);
+    this.ws = new WebSocket(this.signalingUrl);
+
+    const code = this.code;
 
     this.ws.addEventListener('open', () => {
+      this.reconnectAttempts = 0;
       // Join with the provided code
       this.send({ type: 'join', code });
     });
@@ -65,7 +84,11 @@ export class WebSignalingClient {
 
     this.ws.addEventListener('close', () => {
       this.ws = null;
-      this.setState('disconnected');
+      if (!this.intentionallyClosed && this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.scheduleReconnect();
+      } else {
+        this.setState('disconnected');
+      }
     });
 
     this.ws.addEventListener('error', () => {
@@ -79,11 +102,27 @@ export class WebSignalingClient {
   }
 
   close(): void {
+    this.intentionallyClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
     this.setState('disconnected');
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.intentionallyClosed) {
+        this.connectInternal();
+      }
+    }, 5000);
   }
 
   get isConnected(): boolean {

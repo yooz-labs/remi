@@ -170,7 +170,7 @@ export class RelayAdapter implements ConnectionAdapter {
 
   sendStatus(_connectionId: UUID, _status: AgentStatus, _context?: string): boolean {
     // Status updates are sent as raw session_update messages by the daemon
-    return true;
+    return false;
   }
 
   sendRaw(connectionId: UUID, message: ProtocolMessage): boolean {

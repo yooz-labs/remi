@@ -450,6 +450,13 @@ function App() {
 
   const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
 
+  // Clean up signaling client on unmount
+  useEffect(() => {
+    return () => {
+      signalingClientRef.current?.close();
+    };
+  }, []);
+
   const handleConnectCode = useCallback((code: string) => {
     // Dynamic import to avoid bundling when not used
     import('@/lib/signaling-client').then(({ WebSignalingClient }) => {
