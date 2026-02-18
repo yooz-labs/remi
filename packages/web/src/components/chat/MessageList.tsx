@@ -6,6 +6,7 @@
 
 import type { AgentStatus, UIMessage } from '@/types';
 import { clsx } from 'clsx';
+import { MessageSquare } from 'lucide-react';
 import { useCallback, useEffect, useRef } from 'react';
 import { ErrorBubble, MessageBubble, TypingIndicator } from './MessageBubble';
 
@@ -97,10 +98,8 @@ export function MessageList({
       {/* Empty state */}
       {messages.length === 0 && !error && (
         <div className="flex h-full flex-col items-center justify-center text-[--color-text-muted]">
-          <div className="mb-2 text-4xl">
-            <span role="img" aria-label="wave"></span>
-          </div>
-          <p className="text-sm">Start a conversation with Claude</p>
+          <MessageSquare className="mb-3 size-10 opacity-40" />
+          <p className="text-sm">Waiting for agent output</p>
         </div>
       )}
 

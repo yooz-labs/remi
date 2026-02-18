@@ -19,7 +19,9 @@ interface ChatViewProps {
   readonly onCancel?: () => void;
   readonly onRetry?: () => void;
   readonly onBack?: () => void;
-  readonly onMore?: () => void;
+  readonly onCopyConversation?: () => void;
+  readonly onClearMessages?: () => void;
+  readonly onExportText?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
   readonly className?: string;
 }
@@ -33,7 +35,9 @@ export function ChatView({
   onCancel,
   onRetry,
   onBack,
-  onMore,
+  onCopyConversation,
+  onClearMessages,
+  onExportText,
   onBulletExpand,
   className,
 }: ChatViewProps) {
@@ -41,7 +45,13 @@ export function ChatView({
 
   return (
     <div className={clsx('flex h-full flex-col bg-[--color-surface]', className)}>
-      <ChatHeader session={session} onBack={onBack} onMore={onMore} />
+      <ChatHeader
+        session={session}
+        onBack={onBack}
+        onCopyConversation={onCopyConversation}
+        onClearMessages={onClearMessages}
+        onExportText={onExportText}
+      />
 
       <MessageList
         messages={messages}

@@ -7,8 +7,10 @@
 import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
+import { SettingsPanel } from '@/components/settings';
 import { useWebSocket } from '@/hooks';
-import type { UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
+import type { AppSettings, UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
+import { DEFAULT_SETTINGS } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { generateId } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
@@ -16,6 +18,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const LOCALSTORAGE_URL_KEY = 'remi-last-url';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
+const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
+
+function loadSettings(): AppSettings {
+  try {
+    const stored = localStorage.getItem(LOCALSTORAGE_SETTINGS_KEY);
+    if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+  } catch { /* use defaults */ }
+  return DEFAULT_SETTINGS;
+}
+
+function applyTheme(theme: AppSettings['theme']) {
+  const root = document.documentElement;
+  if (theme === 'system') {
+    root.removeAttribute('data-theme');
+  } else {
+    root.setAttribute('data-theme', theme);
+  }
+}
 
 function App() {
   // State
@@ -25,11 +45,23 @@ function App() {
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
   const activeSessionIdRef = useRef<UUID | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
+
+  // Apply theme on settings change
+  useEffect(() => {
+    applyTheme(settings.theme);
+    localStorage.setItem(LOCALSTORAGE_SETTINGS_KEY, JSON.stringify(settings));
+  }, [settings]);
+
+  const handleSettingsChange = useCallback((newSettings: AppSettings) => {
+    setSettings(newSettings);
+  }, []);
 
   // WebSocket connection
   const handleMessage = useCallback((message: ProtocolMessage) => {
@@ -481,6 +513,33 @@ function App() {
     requestNewSession();
   }, [requestNewSession, creatingSession]);
 
+  // Menu actions
+  const handleCopyConversation = useCallback(() => {
+    const text = sessionMessages
+      .map((m) => `[${m.sender}] ${m.content}`)
+      .join('\n\n');
+    navigator.clipboard.writeText(text);
+  }, [sessionMessages]);
+
+  const handleClearMessages = useCallback(() => {
+    if (activeSessionId) {
+      setMessages((prev) => prev.filter((m) => m.sessionId !== activeSessionId));
+    }
+  }, [activeSessionId]);
+
+  const handleExportText = useCallback(() => {
+    const text = sessionMessages
+      .map((m) => `[${new Date(m.timestamp).toLocaleString()}] [${m.sender}] ${m.content}`)
+      .join('\n\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `remi-session-${activeSessionId?.slice(0, 8) ?? 'unknown'}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [sessionMessages, activeSessionId]);
+
   // Sidebar content
   const canCreateSession = connectionStatus === 'connected' && !creatingSession;
   const sidebar = (
@@ -490,7 +549,7 @@ function App() {
       onSelectSession={handleSelectSession}
       onNewSession={canCreateSession ? handleNewSession : undefined}
       onConnect={() => setShowConnectModal(true)}
-      onSettings={() => console.log('Open settings')}
+      onSettings={() => setShowSettings(true)}
     />
   );
 
@@ -503,7 +562,9 @@ function App() {
       error={error}
       onSend={handleSend}
       onBack={handleBack}
-      onMore={() => console.log('More options')}
+      onCopyConversation={handleCopyConversation}
+      onClearMessages={handleClearMessages}
+      onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
     />
   ) : (
@@ -515,6 +576,13 @@ function App() {
   return (
     <>
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
+
+      <SettingsPanel
+        open={showSettings}
+        settings={settings}
+        onClose={() => setShowSettings(false)}
+        onChange={handleSettingsChange}
+      />
 
       <ConnectModal
         isOpen={showConnectModal}
