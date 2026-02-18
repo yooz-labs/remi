@@ -8,6 +8,7 @@ import type { AppSettings } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { clsx } from 'clsx';
 import { Moon, Sun, Monitor, X } from 'lucide-react';
+import { useEffect } from 'react';
 
 interface SettingsPanelProps {
   readonly open: boolean;
@@ -76,6 +77,16 @@ function Toggle({
 }
 
 export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPanelProps) {
+  // Close on Escape key
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const update = (partial: Partial<AppSettings>) => {

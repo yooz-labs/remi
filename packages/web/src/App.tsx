@@ -31,7 +31,8 @@ function loadSettings(): AppSettings {
 function applyTheme(theme: AppSettings['theme']) {
   const root = document.documentElement;
   if (theme === 'system') {
-    root.removeAttribute('data-theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    root.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
   } else {
     root.setAttribute('data-theme', theme);
   }
@@ -53,9 +54,16 @@ function App() {
   const activeSessionIdRef = useRef<UUID | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
 
-  // Apply theme on settings change
+  // Apply theme and font size on settings change
   useEffect(() => {
     applyTheme(settings.theme);
+
+    const fontSizeMap = { small: '14px', medium: '16px', large: '18px' } as const;
+    document.documentElement.style.setProperty(
+      '--font-size-base',
+      fontSizeMap[settings.fontSize] ?? '16px',
+    );
+
     localStorage.setItem(LOCALSTORAGE_SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 

@@ -119,6 +119,16 @@ export function ChatHeader({
     return () => document.removeEventListener('mousedown', handler);
   }, [menuOpen, closeMenu]);
 
+  // Close menu on Escape key
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenu();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [menuOpen, closeMenu]);
+
   return (
     <header
       className={clsx(
