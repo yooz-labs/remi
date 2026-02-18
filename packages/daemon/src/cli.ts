@@ -321,7 +321,14 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--uninstall') {
     cliUninstall = true;
   } else if (arg === '--version' || arg === '-v') {
-    console.log('remi 0.1.0');
+    // Read version from root package.json
+    try {
+      const pkgPath = path.resolve(import.meta.dir, '..', '..', '..', 'package.json');
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+      console.log(`remi ${pkg.version}`);
+    } catch {
+      console.log('remi 0.1.0');
+    }
     process.exit(0);
   } else if (arg === '--help' || arg === '-h') {
     console.log(`
@@ -398,6 +405,7 @@ if (cliInstall || cliUninstall) {
       }
       const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
       fs.writeFileSync(dest, content);
       const result = Bun.spawnSync(['launchctl', 'load', dest]);
       if (result.exitCode === 0) {
