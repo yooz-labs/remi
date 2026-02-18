@@ -375,7 +375,13 @@ if (cliInstall || cliUninstall) {
     const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
 
     if (cliInstall) {
-      const templatePath = path.join(path.dirname(binaryPath), '..', 'scripts', 'install', plistName);
+      const templatePath = path.join(
+        path.dirname(binaryPath),
+        '..',
+        'scripts',
+        'install',
+        plistName,
+      );
       let template: string;
       try {
         template = fs.readFileSync(templatePath, 'utf-8');
