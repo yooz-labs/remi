@@ -12,11 +12,17 @@ import { generateId, now } from '@remi/shared';
 import type {
   AgentOutputMessage,
   AgentStatus,
+  EditMessage,
+  ErrorMessage,
+  HelloAckMessage,
   Message,
   ProtocolMessage,
   Question,
   QuestionMessage,
+  ReplayBatchMessage,
   SessionUpdateMessage,
+  StructuredAgentOutputMessage,
+  TranscriptContentMessage,
   UUID,
 } from '@remi/shared';
 import { Bot, type Context } from 'grammy';
@@ -72,6 +78,12 @@ export interface TelegramAdapterConfig extends AdapterConfig {
 
   /** Default working directory for new sessions */
   readonly defaultDirectory?: string;
+
+  /** Authorized chat IDs (empty = allow all) */
+  readonly authorizedChatIds?: readonly number[] | undefined;
+
+  /** Authorized user IDs (empty = allow all) */
+  readonly authorizedUserIds?: readonly number[] | undefined;
 }
 
 /** Session binding - maps Telegram topic to Claude session */
@@ -142,8 +154,30 @@ export class TelegramAdapter implements ConnectionAdapter {
       enabled: config.enabled ?? true,
       token: config.token,
       defaultDirectory: config.defaultDirectory ?? process.cwd(),
+      authorizedChatIds: config.authorizedChatIds,
+      authorizedUserIds: config.authorizedUserIds,
     };
     this.events = events;
+  }
+
+  /** Check if a chat/user is authorized */
+  private isAuthorized(ctx: Context): boolean {
+    const chatId = ctx.chat?.id;
+    const userId = ctx.from?.id;
+
+    if (this.config.authorizedChatIds?.length) {
+      if (!chatId || !this.config.authorizedChatIds.includes(chatId)) {
+        return false;
+      }
+    }
+
+    if (this.config.authorizedUserIds?.length) {
+      if (!userId || !this.config.authorizedUserIds.includes(userId)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   get connectionCount(): number {
@@ -273,18 +307,98 @@ export class TelegramAdapter implements ConnectionAdapter {
   }
 
   sendRaw(connectionId: UUID, message: ProtocolMessage): boolean {
-    // Telegram doesn't use raw protocol messages
-    // Convert to appropriate Telegram message type
-    if (message.type === 'agent_output') {
-      return this.sendMessage(connectionId, (message as AgentOutputMessage).message);
+    switch (message.type) {
+      case 'agent_output':
+        return this.sendMessage(connectionId, (message as AgentOutputMessage).message);
+
+      case 'structured_agent_output': {
+        const structured = message as StructuredAgentOutputMessage;
+        return this.sendMessage(connectionId, structured.message);
+      }
+
+      case 'question':
+        return this.sendQuestion(connectionId, (message as QuestionMessage).question);
+
+      case 'session_update':
+        return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);
+
+      case 'hello_ack': {
+        const ack = message as HelloAckMessage;
+        const sessionKey = this.connectionToSession.get(connectionId);
+        if (sessionKey) {
+          const session = this.sessions.get(sessionKey);
+          if (session) {
+            session.sessionId = ack.sessionId;
+          }
+        }
+        return true;
+      }
+
+      case 'transcript_content': {
+        const tc = message as TranscriptContentMessage;
+        if (tc.role === 'assistant' && tc.content) {
+          return this.sendMessage(connectionId, {
+            id: tc.id,
+            sessionId: tc.sessionId,
+            sender: 'agent',
+            content: tc.content,
+            createdAt: tc.timestamp,
+            state: 'delivered',
+            stateChangedAt: tc.timestamp,
+            isEditing: false,
+          });
+        }
+        return true;
+      }
+
+      case 'edit': {
+        const edit = message as EditMessage;
+        const editSession = this.getSession(connectionId);
+        if (editSession && this.bot && edit.newContent) {
+          const cleanContent = stripTerminalCodes(edit.newContent).trim();
+          if (cleanContent && isValidContent(cleanContent) && editSession.currentMessageId !== undefined) {
+            this.bot.api
+              .editMessageText(editSession.chatId, editSession.currentMessageId, cleanContent)
+              .catch(() => { /* message may not be editable */ });
+          }
+        }
+        return true;
+      }
+
+      case 'error': {
+        const err = message as ErrorMessage;
+        const errSession = this.getSession(connectionId);
+        if (errSession && this.bot) {
+          this.bot.api
+            .sendMessage(errSession.chatId, `Error: ${err.message}`, {
+              message_thread_id: errSession.topicId,
+            })
+            .catch(() => { /* ignore send errors */ });
+        }
+        return true;
+      }
+
+      case 'replay_batch': {
+        const batch = message as ReplayBatchMessage;
+        for (const inner of batch.messages) {
+          this.sendRaw(connectionId, inner);
+        }
+        return true;
+      }
+
+      // Messages that don't need Telegram rendering
+      case 'session_list_response':
+      case 'transcript_load_complete':
+      case 'create_session_response':
+      case 'ping':
+      case 'pong':
+      case 'ack':
+      case 'bullet_expand_response':
+        return true;
+
+      default:
+        return false;
     }
-    if (message.type === 'question') {
-      return this.sendQuestion(connectionId, (message as QuestionMessage).question);
-    }
-    if (message.type === 'session_update') {
-      return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);
-    }
-    return false;
   }
 
   broadcast(message: ProtocolMessage): void {
@@ -309,6 +423,14 @@ export class TelegramAdapter implements ConnectionAdapter {
 
   private setupHandlers(): void {
     if (!this.bot) return;
+
+    // Authorization middleware
+    this.bot.use(async (ctx, next) => {
+      if (!this.isAuthorized(ctx)) {
+        return; // silently ignore unauthorized messages
+      }
+      await next();
+    });
 
     // Handle /start command
     this.bot.command('start', async (ctx) => {

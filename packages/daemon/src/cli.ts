@@ -334,7 +334,9 @@ Environment:
   REMI_PORT                WebSocket port
   REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
   TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
-  TELEGRAM_ENABLED         Set to 'false' to disable Telegram
+  TELEGRAM_ENABLED              Set to 'false' to disable Telegram
+  TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
+  TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
 
 Any other arguments are passed through to Claude Code.
 `);
@@ -426,6 +428,12 @@ const MAX_BULLET_LENGTH =
 const TELEGRAM_TOKEN = process.env['TELEGRAM_BOT_TOKEN'];
 const TELEGRAM_ENABLED =
   !cliNoTelegram && process.env['TELEGRAM_ENABLED'] !== 'false' && !!TELEGRAM_TOKEN;
+const TELEGRAM_AUTHORIZED_CHAT_IDS = process.env['TELEGRAM_AUTHORIZED_CHAT_IDS']
+  ? process.env['TELEGRAM_AUTHORIZED_CHAT_IDS'].split(',').map(Number).filter(Boolean)
+  : [];
+const TELEGRAM_AUTHORIZED_USER_IDS = process.env['TELEGRAM_AUTHORIZED_USER_IDS']
+  ? process.env['TELEGRAM_AUTHORIZED_USER_IDS'].split(',').map(Number).filter(Boolean)
+  : [];
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -1077,6 +1085,8 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
     {
       token: TELEGRAM_TOKEN,
       defaultDirectory: process.cwd(),
+      authorizedChatIds: TELEGRAM_AUTHORIZED_CHAT_IDS.length ? TELEGRAM_AUTHORIZED_CHAT_IDS : undefined,
+      authorizedUserIds: TELEGRAM_AUTHORIZED_USER_IDS.length ? TELEGRAM_AUTHORIZED_USER_IDS : undefined,
     },
     sharedEvents,
   );
