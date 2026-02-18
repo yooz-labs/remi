@@ -175,7 +175,7 @@ describe('Protocol factory functions', () => {
         '{"type":"create_session_request","id":"1","timestamp":"2024-01-01T00:00:00Z"}',
       );
       expect(result).not.toBeNull();
-      expect(result!.type).toBe('create_session_request');
+      expect(result?.type).toBe('create_session_request');
     });
 
     test('accepts create_session_response type', () => {
@@ -183,7 +183,7 @@ describe('Protocol factory functions', () => {
         '{"type":"create_session_response","id":"1","timestamp":"2024-01-01T00:00:00Z","success":true,"requestId":"r1"}',
       );
       expect(result).not.toBeNull();
-      expect(result!.type).toBe('create_session_response');
+      expect(result?.type).toBe('create_session_response');
     });
   });
 });
