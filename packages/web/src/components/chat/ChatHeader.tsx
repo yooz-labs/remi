@@ -11,17 +11,23 @@ import {
   ArrowLeft,
   Brain,
   Clock,
+  Copy,
+  FileText,
   Loader2,
   MoreVertical,
   Terminal,
+  Trash2,
   Wifi,
   WifiOff,
 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface ChatHeaderProps {
   readonly session: UISession;
   readonly onBack?: () => void;
-  readonly onMore?: () => void;
+  readonly onCopyConversation?: () => void;
+  readonly onClearMessages?: () => void;
+  readonly onExportText?: () => void;
   readonly className?: string;
 }
 
@@ -86,7 +92,43 @@ function AgentStatusIndicator({ status }: { readonly status: AgentStatus }) {
   );
 }
 
-export function ChatHeader({ session, onBack, onMore, className }: ChatHeaderProps) {
+export function ChatHeader({
+  session,
+  onBack,
+  onCopyConversation,
+  onClearMessages,
+  onExportText,
+  className,
+}: ChatHeaderProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const hasMenuActions = onCopyConversation || onClearMessages || onExportText;
+
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        closeMenu();
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen, closeMenu]);
+
+  // Close menu on Escape key
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenu();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [menuOpen, closeMenu]);
+
   return (
     <header
       className={clsx(
@@ -125,15 +167,52 @@ export function ChatHeader({ session, onBack, onMore, className }: ChatHeaderPro
         </div>
       </div>
 
-      {/* More button */}
-      {onMore && (
-        <button
-          onClick={onMore}
-          className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
-          aria-label="More options"
-        >
-          <MoreVertical className="size-5" />
-        </button>
+      {/* More button with dropdown */}
+      {hasMenuActions && (
+        <div className="relative" ref={menuRef}>
+          <button
+            onClick={() => setMenuOpen(!menuOpen)}
+            className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
+            aria-label="More options"
+          >
+            <MoreVertical className="size-5" />
+          </button>
+
+          {menuOpen && (
+            <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-[--color-border] bg-[--color-surface-elevated] py-1 shadow-lg">
+              {onCopyConversation && (
+                <button
+                  onClick={() => { onCopyConversation(); closeMenu(); }}
+                  className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[--color-text] transition-colors hover:bg-[--color-surface-light]"
+                >
+                  <Copy className="size-4 text-[--color-text-muted]" />
+                  Copy conversation
+                </button>
+              )}
+              {onExportText && (
+                <button
+                  onClick={() => { onExportText(); closeMenu(); }}
+                  className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[--color-text] transition-colors hover:bg-[--color-surface-light]"
+                >
+                  <FileText className="size-4 text-[--color-text-muted]" />
+                  Export as text
+                </button>
+              )}
+              {onClearMessages && (
+                <>
+                  <div className="my-1 h-px bg-[--color-border]" />
+                  <button
+                    onClick={() => { onClearMessages(); closeMenu(); }}
+                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[--color-error] transition-colors hover:bg-[--color-surface-light]"
+                  >
+                    <Trash2 className="size-4" />
+                    Clear messages
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </header>
   );

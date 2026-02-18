@@ -16,6 +16,17 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// Version constant - read once at startup with fallback for compiled binaries
+const REMI_VERSION = (() => {
+  try {
+    const pkgPath = path.resolve(import.meta.dir, '..', '..', '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version as string;
+  } catch {
+    return '0.1.0';
+  }
+})();
+
 // ---------------------------------------------------------------------------
 // Paths and utilities for log file and status file (used in wrapper mode)
 // ---------------------------------------------------------------------------
@@ -290,6 +301,8 @@ let cliRemote = false;
 let cliSignalingUrl: string | undefined;
 let cliResume: string | true | undefined; // true = resume most recent, string = session ID
 let cliShowSessions = false;
+let cliInstall = false;
+let cliUninstall = false;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -321,6 +334,13 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--signaling-url' && nextArg) {
     cliSignalingUrl = nextArg;
     i++;
+  } else if (arg === '--install') {
+    cliInstall = true;
+  } else if (arg === '--uninstall') {
+    cliUninstall = true;
+  } else if (arg === '--version' || arg === '-v') {
+    console.log(`remi ${REMI_VERSION}`);
+    process.exit(0);
   } else if (arg === '--help' || arg === '-h') {
     console.log(`
 Remi - Claude Code with remote monitoring
@@ -337,13 +357,18 @@ Options:
   --no-telegram            Disable Telegram adapter
   --remote                 Enable remote access via signaling relay
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.yooz.workers.dev/connect)
+  --install                Install as autostart service
+  --uninstall              Remove autostart service
+  --version, -v            Show version
   --help, -h               Show this help
 
 Environment:
   REMI_PORT                WebSocket port
   REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
   TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
-  TELEGRAM_ENABLED         Set to 'false' to disable Telegram
+  TELEGRAM_ENABLED              Set to 'false' to disable Telegram
+  TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
+  TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
 
 Any other arguments are passed through to Claude Code.
 `);
@@ -352,6 +377,106 @@ Any other arguments are passed through to Claude Code.
     // Pass through to Claude
     if (arg) claudeArgs.push(arg);
   }
+}
+
+// Handle --install / --uninstall
+if (cliInstall || cliUninstall) {
+  const platform = process.platform;
+  const home = os.homedir();
+  const binaryPath = process.execPath;
+
+  if (platform === 'darwin') {
+    const plistName = 'com.yooz.remi.plist';
+    const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
+
+    if (cliInstall) {
+      const template = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yooz.remi</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REMI_BINARY__</string>
+        <string>--daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.remi/remi-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.remi/remi-stderr.log</string>
+</dict>
+</plist>`;
+      const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
+      fs.writeFileSync(dest, content);
+      const uid = process.getuid?.() ?? 501;
+      const result = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${uid}`, dest]);
+      if (result.exitCode === 0) {
+        console.log(`Installed LaunchAgent: ${dest}`);
+        console.log('Remi will start automatically on login.');
+      } else {
+        console.error(`Failed to load LaunchAgent: ${result.stderr.toString()}`);
+        process.exit(1);
+      }
+    } else {
+      if (fs.existsSync(dest)) {
+        const uid = process.getuid?.() ?? 501;
+        Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+        fs.unlinkSync(dest);
+        console.log(`Removed LaunchAgent: ${dest}`);
+      } else {
+        console.log('No LaunchAgent installed.');
+      }
+    }
+  } else if (platform === 'linux') {
+    const serviceDir = path.join(home, '.config', 'systemd', 'user');
+    const dest = path.join(serviceDir, 'remi.service');
+
+    if (cliInstall) {
+      const template = `[Unit]
+Description=Remi - Claude Code Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${binaryPath} --daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target`;
+      fs.mkdirSync(serviceDir, { recursive: true });
+      fs.writeFileSync(dest, template);
+      Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
+      const result = Bun.spawnSync(['systemctl', '--user', 'enable', '--now', 'remi.service']);
+      if (result.exitCode === 0) {
+        console.log(`Installed systemd user service: ${dest}`);
+        console.log('Remi will start automatically on login.');
+      } else {
+        console.error(`Failed to enable service: ${result.stderr.toString()}`);
+        process.exit(1);
+      }
+    } else {
+      if (fs.existsSync(dest)) {
+        Bun.spawnSync(['systemctl', '--user', 'disable', '--now', 'remi.service']);
+        fs.unlinkSync(dest);
+        Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
+        console.log(`Removed systemd user service: ${dest}`);
+      } else {
+        console.log('No systemd service installed.');
+      }
+    }
+  } else {
+    console.error(`Autostart not supported on ${platform}. Run remi --daemon manually.`);
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 // Handle --sessions quickly
@@ -435,6 +560,12 @@ const MAX_BULLET_LENGTH =
 const TELEGRAM_TOKEN = process.env['TELEGRAM_BOT_TOKEN'];
 const TELEGRAM_ENABLED =
   !cliNoTelegram && process.env['TELEGRAM_ENABLED'] !== 'false' && !!TELEGRAM_TOKEN;
+const TELEGRAM_AUTHORIZED_CHAT_IDS = process.env['TELEGRAM_AUTHORIZED_CHAT_IDS']
+  ? process.env['TELEGRAM_AUTHORIZED_CHAT_IDS'].split(',').map(Number).filter(Boolean)
+  : [];
+const TELEGRAM_AUTHORIZED_USER_IDS = process.env['TELEGRAM_AUTHORIZED_USER_IDS']
+  ? process.env['TELEGRAM_AUTHORIZED_USER_IDS'].split(',').map(Number).filter(Boolean)
+  : [];
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -1086,6 +1217,12 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
     {
       token: TELEGRAM_TOKEN,
       defaultDirectory: process.cwd(),
+      authorizedChatIds: TELEGRAM_AUTHORIZED_CHAT_IDS.length
+        ? TELEGRAM_AUTHORIZED_CHAT_IDS
+        : undefined,
+      authorizedUserIds: TELEGRAM_AUTHORIZED_USER_IDS.length
+        ? TELEGRAM_AUTHORIZED_USER_IDS
+        : undefined,
     },
     sharedEvents,
   );

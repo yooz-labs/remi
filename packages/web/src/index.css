@@ -75,6 +75,15 @@
   }
 }
 
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
 @keyframes pulse {
   0%,
   100% {
@@ -85,19 +94,17 @@
   }
 }
 
-/* Light mode overrides */
-@media (prefers-color-scheme: light) {
-  @theme {
-    --color-surface: #ffffff;
-    --color-surface-light: #f8fafc;
-    --color-surface-elevated: #f1f5f9;
-    --color-text: #0f172a;
-    --color-text-secondary: #475569;
-    --color-text-muted: #64748b;
-    --color-border: #e2e8f0;
-    --color-bubble-assistant: #e2e8f0;
-    --color-bubble-system: #dbeafe;
-  }
+/* Light mode: JS sets data-theme="light" for both manual and system preference */
+html[data-theme="light"] {
+  --color-surface: #ffffff;
+  --color-surface-light: #f8fafc;
+  --color-surface-elevated: #f1f5f9;
+  --color-text: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #64748b;
+  --color-border: #e2e8f0;
+  --color-bubble-assistant: #e2e8f0;
+  --color-bubble-system: #dbeafe;
 }
 
 /* Base styles */
@@ -111,6 +118,7 @@ body,
 
 body {
   font-family: var(--font-sans);
+  font-size: var(--font-size-base, 16px);
   background-color: var(--color-surface);
   color: var(--color-text);
   -webkit-font-smoothing: antialiased;

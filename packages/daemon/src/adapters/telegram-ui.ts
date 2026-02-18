@@ -5,7 +5,14 @@
  * Uses Telegram's MarkdownV2 formatting where appropriate.
  */
 
-import type { AgentStatus, Message, Question, QuestionOption } from '@remi/shared';
+import * as path from 'node:path';
+import type {
+  AgentStatus,
+  DiscoverableSession,
+  Message,
+  Question,
+  QuestionOption,
+} from '@remi/shared';
 import { InlineKeyboard } from 'grammy';
 
 /**
@@ -225,6 +232,8 @@ export function formatHelpMessage(): string {
     '/pause - Pause the session',
     '/resume - Resume paused session',
     '/status - Show session info',
+    '/sessions - List all discoverable sessions',
+    '/load <sessionId> - Load transcript for a session',
     '/clear - Clear and start fresh session',
     '/help - Show this help message',
     '',
@@ -234,6 +243,37 @@ export function formatHelpMessage(): string {
     '- Each topic = one Claude session',
     '- Paths can use ~ for home directory (e.g., ~/Projects/myapp)',
   ].join('\n');
+}
+
+/**
+ * Format a list of discoverable sessions for Telegram display.
+ */
+export function formatSessionList(sessions: readonly DiscoverableSession[]): string {
+  if (sessions.length === 0) {
+    return 'No sessions found.';
+  }
+
+  const lines: string[] = [`Sessions (${sessions.length}):\n`];
+
+  for (const session of sessions) {
+    const statusIcon =
+      session.status === 'active'
+        ? '🟢'
+        : session.status === 'idle'
+          ? '💤'
+          : session.status === 'orphaned'
+            ? '🔴'
+            : '✅';
+    const project = path.basename(session.projectPath);
+    lines.push(
+      `${statusIcon} ${project} [${session.status}]`,
+      `   ID: ${session.sessionId}`,
+      `   Messages: ${session.messageCount}`,
+      '',
+    );
+  }
+
+  return lines.join('\n').trim();
 }
 
 /**
