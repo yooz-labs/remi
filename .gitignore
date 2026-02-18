@@ -11,6 +11,8 @@ build/
 
 # Bun
 bun.lockb
+*.bun-build
+/remi
 
 # Environment
 .env
