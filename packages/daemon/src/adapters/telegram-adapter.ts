@@ -12,11 +12,19 @@ import { generateId, now } from '@remi/shared';
 import type {
   AgentOutputMessage,
   AgentStatus,
+  EditMessage,
+  ErrorMessage,
+  HelloAckMessage,
   Message,
   ProtocolMessage,
   Question,
   QuestionMessage,
+  ReplayBatchMessage,
+  SessionListResponseMessage,
   SessionUpdateMessage,
+  StructuredAgentOutputMessage,
+  TranscriptContentMessage,
+  TranscriptLoadCompleteMessage,
   UUID,
 } from '@remi/shared';
 import { Bot, type Context } from 'grammy';
@@ -30,6 +38,7 @@ import {
   formatHelpMessage,
   formatMessageForTelegram,
   formatQuestionKeyboard,
+  formatSessionList,
   isValidContent,
   stripTerminalCodes,
 } from './telegram-ui.ts';
@@ -72,6 +81,12 @@ export interface TelegramAdapterConfig extends AdapterConfig {
 
   /** Default working directory for new sessions */
   readonly defaultDirectory?: string;
+
+  /** Authorized chat IDs (empty = allow all) */
+  readonly authorizedChatIds?: readonly number[] | undefined;
+
+  /** Authorized user IDs (empty = allow all) */
+  readonly authorizedUserIds?: readonly number[] | undefined;
 }
 
 /** Session binding - maps Telegram topic to Claude session */
@@ -137,13 +152,41 @@ export class TelegramAdapter implements ConnectionAdapter {
   /** Session counters per directory */
   private readonly sessionCounters: Map<string, number> = new Map();
 
+  /** Rate limiter: last input timestamp per session key */
+  private readonly lastInputTimestamp: Map<string, number> = new Map();
+
+  /** Minimum interval between inputs in milliseconds */
+  private static readonly RATE_LIMIT_MS = 1000;
+
   constructor(config: TelegramAdapterConfig, events: Partial<AdapterEvents> = {}) {
     this.config = {
       enabled: config.enabled ?? true,
       token: config.token,
       defaultDirectory: config.defaultDirectory ?? process.cwd(),
+      authorizedChatIds: config.authorizedChatIds,
+      authorizedUserIds: config.authorizedUserIds,
     };
     this.events = events;
+  }
+
+  /** Check if a chat/user is authorized */
+  private isAuthorized(ctx: Context): boolean {
+    const chatId = ctx.chat?.id;
+    const userId = ctx.from?.id;
+
+    if (this.config.authorizedChatIds?.length) {
+      if (!chatId || !this.config.authorizedChatIds.includes(chatId)) {
+        return false;
+      }
+    }
+
+    if (this.config.authorizedUserIds?.length) {
+      if (!userId || !this.config.authorizedUserIds.includes(userId)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   get connectionCount(): number {
@@ -273,18 +316,137 @@ export class TelegramAdapter implements ConnectionAdapter {
   }
 
   sendRaw(connectionId: UUID, message: ProtocolMessage): boolean {
-    // Telegram doesn't use raw protocol messages
-    // Convert to appropriate Telegram message type
-    if (message.type === 'agent_output') {
-      return this.sendMessage(connectionId, (message as AgentOutputMessage).message);
+    switch (message.type) {
+      case 'agent_output':
+        return this.sendMessage(connectionId, (message as AgentOutputMessage).message);
+
+      case 'structured_agent_output': {
+        const structured = message as StructuredAgentOutputMessage;
+        return this.sendMessage(connectionId, structured.message);
+      }
+
+      case 'question':
+        return this.sendQuestion(connectionId, (message as QuestionMessage).question);
+
+      case 'session_update':
+        return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);
+
+      case 'hello_ack': {
+        const ack = message as HelloAckMessage;
+        const sessionKey = this.connectionToSession.get(connectionId);
+        if (sessionKey) {
+          const session = this.sessions.get(sessionKey);
+          if (session) {
+            session.sessionId = ack.sessionId;
+          }
+        }
+        return true;
+      }
+
+      case 'transcript_content': {
+        const tc = message as TranscriptContentMessage;
+        if (tc.role === 'assistant' && tc.content) {
+          return this.sendMessage(connectionId, {
+            id: tc.id,
+            sessionId: tc.sessionId,
+            sender: 'agent',
+            content: tc.content,
+            createdAt: tc.timestamp,
+            state: 'delivered',
+            stateChangedAt: tc.timestamp,
+            isEditing: false,
+          });
+        }
+        return true;
+      }
+
+      case 'edit': {
+        const edit = message as EditMessage;
+        const editSession = this.getSession(connectionId);
+        if (editSession && this.bot && edit.newContent) {
+          const cleanContent = stripTerminalCodes(edit.newContent).trim();
+          if (
+            cleanContent &&
+            isValidContent(cleanContent) &&
+            editSession.currentMessageId !== undefined
+          ) {
+            this.bot.api
+              .editMessageText(editSession.chatId, editSession.currentMessageId, cleanContent)
+              .catch(() => {
+                /* message may not be editable */
+              });
+          }
+        }
+        return true;
+      }
+
+      case 'error': {
+        const err = message as ErrorMessage;
+        const errSession = this.getSession(connectionId);
+        if (errSession && this.bot) {
+          this.bot.api
+            .sendMessage(errSession.chatId, `Error: ${err.message}`, {
+              message_thread_id: errSession.topicId,
+            })
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'replay_batch': {
+        const batch = message as ReplayBatchMessage;
+        for (const inner of batch.messages) {
+          this.sendRaw(connectionId, inner);
+        }
+        return true;
+      }
+
+      case 'session_list_response': {
+        const slr = message as SessionListResponseMessage;
+        const slrSession = this.getSession(connectionId);
+        if (slrSession && this.bot) {
+          const text = formatSessionList(slr.sessions);
+          this.bot.api
+            .sendMessage(slrSession.chatId, text, {
+              message_thread_id: slrSession.topicId,
+            })
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'transcript_load_complete': {
+        const tlc = message as TranscriptLoadCompleteMessage;
+        const tlcSession = this.getSession(connectionId);
+        if (tlcSession && this.bot) {
+          this.bot.api
+            .sendMessage(
+              tlcSession.chatId,
+              `Transcript loaded for session ${tlc.sessionId} (${tlc.messageCount} messages).`,
+              { message_thread_id: tlcSession.topicId },
+            )
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      // Messages that don't need Telegram rendering
+      case 'create_session_response':
+      case 'ping':
+      case 'pong':
+      case 'ack':
+      case 'bullet_expand_response':
+        return true;
+
+      default:
+        return false;
     }
-    if (message.type === 'question') {
-      return this.sendQuestion(connectionId, (message as QuestionMessage).question);
-    }
-    if (message.type === 'session_update') {
-      return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);
-    }
-    return false;
   }
 
   broadcast(message: ProtocolMessage): void {
@@ -309,6 +471,14 @@ export class TelegramAdapter implements ConnectionAdapter {
 
   private setupHandlers(): void {
     if (!this.bot) return;
+
+    // Authorization middleware
+    this.bot.use(async (ctx, next) => {
+      if (!this.isAuthorized(ctx)) {
+        return; // silently ignore unauthorized messages
+      }
+      await next();
+    });
 
     // Handle /start command
     this.bot.command('start', async (ctx) => {
@@ -348,6 +518,16 @@ export class TelegramAdapter implements ConnectionAdapter {
     // Handle /help command
     this.bot.command('help', async (ctx) => {
       await this.handleHelp(ctx);
+    });
+
+    // Handle /sessions command - list all discoverable sessions
+    this.bot.command('sessions', async (ctx) => {
+      await this.handleSessions(ctx);
+    });
+
+    // Handle /load command - load transcript for an external session
+    this.bot.command('load', async (ctx) => {
+      await this.handleLoad(ctx);
     });
 
     // Handle callback queries (button presses)
@@ -549,6 +729,35 @@ export class TelegramAdapter implements ConnectionAdapter {
     await ctx.reply(formatHelpMessage());
   }
 
+  private async handleSessions(ctx: Context): Promise<void> {
+    const session = this.getSessionFromContext(ctx);
+    if (!session) {
+      await ctx.reply('No active session in this topic. Use /start to create one.');
+      return;
+    }
+
+    const requestId = generateId();
+    this.events.onSessionListRequest?.(session.connectionId, requestId, true);
+  }
+
+  private async handleLoad(ctx: Context): Promise<void> {
+    const session = this.getSessionFromContext(ctx);
+    if (!session) {
+      await ctx.reply('No active session in this topic. Use /start to create one.');
+      return;
+    }
+
+    const sessionId = ctx.match?.toString().trim();
+    if (!sessionId) {
+      await ctx.reply('Usage: /load <sessionId>');
+      return;
+    }
+
+    const requestId = generateId();
+    this.events.onTranscriptLoadRequest?.(session.connectionId, sessionId, requestId);
+    await ctx.reply(`Loading transcript for session ${sessionId}...`);
+  }
+
   private async handleAnswerCallback(ctx: Context): Promise<void> {
     const match = ctx.match as RegExpMatchArray;
     const questionId = match[1] as UUID;
@@ -584,6 +793,16 @@ export class TelegramAdapter implements ConnectionAdapter {
 
     const text = ctx.message?.text;
     if (!text) return;
+
+    // Rate limiting: reject inputs faster than 1 per second
+    const sessionKey = `${session.chatId}:${session.topicId}`;
+    const lastTime = this.lastInputTimestamp.get(sessionKey) ?? 0;
+    const currentTime = Date.now();
+    if (currentTime - lastTime < TelegramAdapter.RATE_LIMIT_MS) {
+      await ctx.reply('Please wait a moment before sending another message.');
+      return;
+    }
+    this.lastInputTimestamp.set(sessionKey, currentTime);
 
     // Notify daemon of user input
     this.events.onUserInput?.(session.connectionId, session.sessionId, text);
