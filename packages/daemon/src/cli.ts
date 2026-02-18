@@ -16,6 +16,17 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// Version constant - read once at startup with fallback for compiled binaries
+const REMI_VERSION = (() => {
+  try {
+    const pkgPath = path.resolve(import.meta.dir, '..', '..', '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version as string;
+  } catch {
+    return '0.1.0';
+  }
+})();
+
 // ---------------------------------------------------------------------------
 // Paths and utilities for log file and status file (used in wrapper mode)
 // ---------------------------------------------------------------------------
@@ -321,14 +332,7 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--uninstall') {
     cliUninstall = true;
   } else if (arg === '--version' || arg === '-v') {
-    // Read version from root package.json
-    try {
-      const pkgPath = path.resolve(import.meta.dir, '..', '..', '..', 'package.json');
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-      console.log(`remi ${pkg.version}`);
-    } catch {
-      console.log('remi 0.1.0');
-    }
+    console.log(`remi ${REMI_VERSION}`);
     process.exit(0);
   } else if (arg === '--help' || arg === '-h') {
     console.log(`
@@ -375,19 +379,7 @@ if (cliInstall || cliUninstall) {
     const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
 
     if (cliInstall) {
-      const templatePath = path.join(
-        path.dirname(binaryPath),
-        '..',
-        'scripts',
-        'install',
-        plistName,
-      );
-      let template: string;
-      try {
-        template = fs.readFileSync(templatePath, 'utf-8');
-      } catch {
-        // Fallback: inline template for compiled binary
-        template = `<?xml version="1.0" encoding="UTF-8"?>
+      const template = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -408,12 +400,12 @@ if (cliInstall || cliUninstall) {
     <string>__HOME__/.remi/remi-stderr.log</string>
 </dict>
 </plist>`;
-      }
       const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
       fs.writeFileSync(dest, content);
-      const result = Bun.spawnSync(['launchctl', 'load', dest]);
+      const uid = process.getuid?.() ?? 501;
+      const result = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${uid}`, dest]);
       if (result.exitCode === 0) {
         console.log(`Installed LaunchAgent: ${dest}`);
         console.log('Remi will start automatically on login.');
@@ -423,7 +415,8 @@ if (cliInstall || cliUninstall) {
       }
     } else {
       if (fs.existsSync(dest)) {
-        Bun.spawnSync(['launchctl', 'unload', dest]);
+        const uid = process.getuid?.() ?? 501;
+        Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
         fs.unlinkSync(dest);
         console.log(`Removed LaunchAgent: ${dest}`);
       } else {
