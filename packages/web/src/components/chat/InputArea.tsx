@@ -6,7 +6,7 @@
 
 import type { UIQuestion } from '@/types';
 import { clsx } from 'clsx';
-import { Mic, Paperclip, Send, StopCircle } from 'lucide-react';
+import { Send, StopCircle } from 'lucide-react';
 import {
   type ChangeEvent,
   type KeyboardEvent,
@@ -212,15 +212,6 @@ export function InputArea({
 
       {/* Input row */}
       <div className="flex items-end gap-2 p-3">
-        {/* Attachment button (future) */}
-        <button
-          className="rounded-full p-2 text-[--color-text-muted] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
-          aria-label="Attach file"
-          disabled
-        >
-          <Paperclip className="size-5" />
-        </button>
-
         {/* Text input */}
         <div className="relative flex-1">
           <textarea
@@ -241,30 +232,21 @@ export function InputArea({
           />
         </div>
 
-        {/* Send / Voice button */}
-        {value.trim() ? (
-          <button
-            onClick={handleSend}
-            disabled={disabled}
-            className={clsx(
-              'rounded-full bg-[--color-primary] p-2.5 text-white',
-              'transition-all hover:bg-[--color-primary-dark]',
-              'active:scale-95',
-              disabled && 'cursor-not-allowed opacity-50',
-            )}
-            aria-label="Send message"
-          >
-            <Send className="size-5" />
-          </button>
-        ) : (
-          <button
-            className="rounded-full p-2.5 text-[--color-text-muted] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
-            aria-label="Voice input"
-            disabled
-          >
-            <Mic className="size-5" />
-          </button>
-        )}
+        {/* Send button */}
+        <button
+          onClick={handleSend}
+          disabled={disabled || !value.trim()}
+          className={clsx(
+            'rounded-full p-2.5 transition-all',
+            value.trim()
+              ? 'bg-[--color-primary] text-white hover:bg-[--color-primary-dark] active:scale-95'
+              : 'text-[--color-text-muted]',
+            disabled && 'cursor-not-allowed opacity-50',
+          )}
+          aria-label="Send message"
+        >
+          <Send className="size-5" />
+        </button>
       </div>
     </div>
   );
