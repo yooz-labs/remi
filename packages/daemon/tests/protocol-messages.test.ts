@@ -52,7 +52,7 @@ describe('Protocol factory functions', () => {
       const serialized = serialize(original);
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
-      expect(deserialized!.type).toBe('hello');
+      expect(deserialized?.type).toBe('hello');
       expect((deserialized as typeof original).clientId).toBe('client-1');
       expect((deserialized as typeof original).directory).toBe('/dir');
       expect((deserialized as typeof original).resumeSessionId).toBe('sess-1');
@@ -111,7 +111,7 @@ describe('Protocol factory functions', () => {
       const original = createCreateSessionRequest('/some/dir');
       const deserialized = deserialize(serialize(original));
       expect(deserialized).not.toBeNull();
-      expect(deserialized!.type).toBe('create_session_request');
+      expect(deserialized?.type).toBe('create_session_request');
       expect((deserialized as typeof original).directory).toBe('/some/dir');
     });
   });
@@ -149,7 +149,7 @@ describe('Protocol factory functions', () => {
       const original = createCreateSessionResponse(true, 'req-1' as UUID, 'sess-1' as UUID);
       const deserialized = deserialize(serialize(original));
       expect(deserialized).not.toBeNull();
-      expect(deserialized!.type).toBe('create_session_response');
+      expect(deserialized?.type).toBe('create_session_response');
       expect((deserialized as typeof original).success).toBe(true);
       expect((deserialized as typeof original).sessionId).toBe('sess-1');
     });

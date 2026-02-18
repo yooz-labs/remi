@@ -95,18 +95,10 @@ export class RelayAdapter implements ConnectionAdapter {
         // Route incoming protocol messages from the remote client
         switch (message.type) {
           case 'user_input':
-            this.events.onUserInput?.(
-              this.clientConnectionId,
-              message.sessionId,
-              message.content,
-            );
+            this.events.onUserInput?.(this.clientConnectionId, message.sessionId, message.content);
             break;
           case 'answer':
-            this.events.onAnswer?.(
-              this.clientConnectionId,
-              message.questionId,
-              message.answer,
-            );
+            this.events.onAnswer?.(this.clientConnectionId, message.questionId, message.answer);
             break;
           case 'session_list_request':
             this.events.onSessionListRequest?.(
