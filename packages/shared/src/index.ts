@@ -60,6 +60,7 @@ export type {
   TranscriptUsage,
   CreateSessionRequestMessage,
   CreateSessionResponseMessage,
+  TerminalResizeMessage,
 } from './protocol.ts';
 
 export {
@@ -89,5 +90,6 @@ export {
   createTranscriptLoadComplete,
   createCreateSessionRequest,
   createCreateSessionResponse,
+  createTerminalResize,
   MessageIdTracker,
 } from './protocol.ts';

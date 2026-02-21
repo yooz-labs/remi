@@ -54,6 +54,9 @@ export interface AdapterEvents {
     requestId: UUID,
   ) => void;
 
+  /** Terminal resize from attached CLI client */
+  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

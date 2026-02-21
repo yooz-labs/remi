@@ -85,7 +85,8 @@ export type ProtocolMessage =
   | TranscriptLoadRequestMessage
   | TranscriptLoadCompleteMessage
   | CreateSessionRequestMessage
-  | CreateSessionResponseMessage;
+  | CreateSessionResponseMessage
+  | TerminalResizeMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -324,6 +325,17 @@ export interface TranscriptLoadCompleteMessage {
   readonly requestId: UUID;
 }
 
+/** Terminal resize event from attached CLI client */
+export interface TerminalResizeMessage {
+  readonly type: 'terminal_resize';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** New terminal column count */
+  readonly cols: number;
+  /** New terminal row count */
+  readonly rows: number;
+}
+
 /** Request to create a new Claude Code session */
 export interface CreateSessionRequestMessage {
   readonly type: 'create_session_request';
@@ -412,6 +424,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'transcript_load_complete',
     'create_session_request',
     'create_session_response',
+    'terminal_resize',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -787,6 +800,19 @@ export function createCreateSessionResponse(
     requestId,
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
+  };
+}
+
+/**
+ * Create a terminal resize message.
+ */
+export function createTerminalResize(cols: number, rows: number): TerminalResizeMessage {
+  return {
+    type: 'terminal_resize',
+    id: generateId(),
+    timestamp: now(),
+    cols,
+    rows,
   };
 }
 

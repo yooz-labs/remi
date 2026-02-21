@@ -303,6 +303,8 @@ let cliResume: string | true | undefined; // true = resume most recent, string =
 let cliShowSessions = false;
 let cliInstall = false;
 let cliUninstall = false;
+let cliSubcommand: 'ls' | 'attach' | undefined;
+let cliSubcommandArg: string | undefined;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -347,6 +349,8 @@ Remi - Claude Code with remote monitoring
 
 Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
+  remi ls                        List live sessions from running daemon
+  remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
   remi --resume [session-id]     Resume a previous session
   remi --sessions                List stored sessions
   remi --daemon                  Legacy daemon mode (headless server)
@@ -373,6 +377,12 @@ Environment:
 Any other arguments are passed through to Claude Code.
 `);
     process.exit(0);
+  } else if (arg === 'ls' || arg === 'attach') {
+    cliSubcommand = arg;
+    if (arg === 'attach' && nextArg && !nextArg.startsWith('-')) {
+      cliSubcommandArg = nextArg;
+      i++;
+    }
   } else {
     // Pass through to Claude
     if (arg) claudeArgs.push(arg);
@@ -477,6 +487,85 @@ WantedBy=default.target`;
     process.exit(1);
   }
   process.exit(0);
+}
+
+// Handle 'ls' subcommand: query live sessions from running daemon
+if (cliSubcommand === 'ls') {
+  const resolvedPort =
+    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+  const { runLsClient } = await import('./cli/ls-client.ts');
+  try {
+    await runLsClient({ host: 'localhost', port: resolvedPort });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// Handle 'attach' subcommand: attach terminal to an orphaned session
+if (cliSubcommand === 'attach') {
+  const store = new SessionStore();
+  let targetSessionId = cliSubcommandArg;
+  let resolvedPort =
+    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+
+  if (!targetSessionId) {
+    // Auto-attach to most recent active (non-exited) session
+    const sessions = store.list();
+    const active = sessions.filter((s) => s.exitedAt === null);
+    if (active.length === 0) {
+      console.error('No active sessions found. Run `remi ls` to see live sessions.');
+      process.exit(1);
+    }
+    // Pick the most recently started session
+    const latest = active.reduce((a, b) =>
+      new Date(b.startedAt).getTime() > new Date(a.startedAt).getTime() ? b : a,
+    );
+    targetSessionId = latest.remiSessionId;
+    resolvedPort = cliPort ?? latest.port;
+  } else {
+    // Prefix-match session ID, look up port
+    const all = store.list();
+    const matches = all.filter(
+      (s) =>
+        s.remiSessionId === targetSessionId ||
+        s.remiSessionId.startsWith(targetSessionId as string),
+    );
+    if (matches.length === 1) {
+      // biome-ignore lint/style/noNonNullAssertion: length checked above
+      const match = matches[0]!;
+      resolvedPort = cliPort ?? match.port;
+      targetSessionId = match.remiSessionId;
+    } else if (matches.length > 1) {
+      console.error(
+        `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
+      );
+      for (const m of matches) {
+        console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
+      }
+      console.error('Provide a longer prefix to disambiguate.');
+      process.exit(1);
+    } else {
+      console.error(
+        `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
+      );
+      process.exit(1);
+    }
+  }
+
+  const { runAttachClient } = await import('./cli/attach-client.ts');
+  try {
+    const result = await runAttachClient({
+      host: 'localhost',
+      port: resolvedPort,
+      sessionId: targetSessionId,
+    });
+    process.exit(result.exitCode);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 }
 
 // Handle --sessions quickly
@@ -1192,6 +1281,21 @@ const sharedEvents = {
       const msg = error instanceof Error ? error.message : String(error);
       logError('Failed to create session:', msg);
       sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
+    }
+  },
+
+  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => {
+    const session = sessionRegistry.getSessionForConnection(connectionId);
+    if (session) {
+      try {
+        session.pty.resize({ cols, rows });
+      } catch (err) {
+        log(
+          `Failed to resize PTY for connection ${connectionId}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    } else {
+      log(`Terminal resize ignored: no session for connection ${connectionId}`);
     }
   },
 
