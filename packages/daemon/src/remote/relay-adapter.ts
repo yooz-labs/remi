@@ -152,6 +152,10 @@ export class RelayAdapter implements ConnectionAdapter {
             );
             break;
           case 'terminal_resize':
+            if (typeof message.cols !== 'number' || typeof message.rows !== 'number') {
+              console.warn('Invalid terminal_resize payload: cols and rows must be numbers');
+              return;
+            }
             this.events.onTerminalResize?.(this.clientConnectionId, message.cols, message.rows);
             break;
           case 'hello':

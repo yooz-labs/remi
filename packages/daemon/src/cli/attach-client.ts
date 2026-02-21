@@ -21,7 +21,7 @@ export interface AttachClientOptions {
 
 export interface AttachClientResult {
   exitCode: number;
-  reason: 'detached' | 'session_ended' | 'error' | 'connection_closed';
+  reason: 'detached' | 'session_ended' | 'error' | 'timeout' | 'connection_closed';
 }
 
 const CTRL_B = 0x02;
@@ -39,12 +39,18 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let stdinListener: ((data: Buffer) => void) | null = null;
   let resizeListener: (() => void) | null = null;
   let resolved = false;
+  let outputBroken = false;
 
   function writeOutput(text: string): void {
+    if (outputBroken) return;
     try {
       fs.writeSync(outputFd, text);
-    } catch {
-      // output fd may be closed
+    } catch (err) {
+      outputBroken = true;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EBADF' && code !== 'EPIPE') {
+        process.stderr.write(`[remi] output write failed: ${code ?? err}\n`);
+      }
     }
   }
 
@@ -52,8 +58,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     if (rawModeSet && process.stdin.isTTY) {
       try {
         process.stdin.setRawMode(false);
-      } catch {
-        // ignore
+      } catch (err) {
+        process.stderr.write(
+          `[remi] warning: failed to restore terminal mode (run 'reset' to fix): ${err}\n`,
+        );
       }
       rawModeSet = false;
     }
@@ -83,8 +91,6 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   function renderMessage(msg: ProtocolMessage): void {
     switch (msg.type) {
       case 'agent_output':
-        writeOutput(msg.message.content);
-        break;
       case 'structured_agent_output':
         writeOutput(msg.message.content);
         break;
@@ -115,7 +121,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     }
   }
 
-  return new Promise<AttachClientResult>((resolve, reject) => {
+  return new Promise<AttachClientResult>((resolve) => {
     function finish(result: AttachClientResult): void {
       if (resolved) return;
       resolved = true;
@@ -123,20 +129,16 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       try {
         ws.close();
       } catch {
-        // ignore
+        // ws may already be closed or in CLOSING state; safe to ignore
       }
       resolve(result);
     }
 
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
-      return;
-    }
+    ws = new WebSocket(url);
 
     const connectionTimer = setTimeout(() => {
-      finish({ exitCode: 1, reason: 'error' });
+      writeOutput(`\n[timed out connecting to daemon at ${host}:${port}]\n`);
+      finish({ exitCode: 1, reason: 'timeout' });
     }, timeout);
 
     ws.onopen = () => {
@@ -162,7 +164,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         process.stdin.resume();
 
-        // Pipe stdin to daemon
+        // Pipe stdin to daemon, processing byte-by-byte for Ctrl+B detection
         stdinListener = (chunk: Buffer) => {
           for (let i = 0; i < chunk.length; i++) {
             // biome-ignore lint/style/noNonNullAssertion: bounds checked by loop condition
@@ -198,10 +200,14 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
               continue;
             }
 
-            // Forward the remaining bytes as a chunk
-            const remaining = chunk.slice(i).toString();
-            sendInput(remaining);
-            break;
+            // Scan ahead for the next Ctrl+B in this chunk
+            let end = i + 1;
+            while (end < chunk.length && chunk[end] !== CTRL_B) {
+              end++;
+            }
+            // Forward the normal bytes as a batch
+            sendInput(chunk.slice(i, end).toString());
+            i = end - 1; // loop increment will advance to `end`
           }
         };
         process.stdin.on('data', stdinListener);
@@ -248,9 +254,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
     ws.onerror = () => {
       clearTimeout(connectionTimer);
-      if (!resolved) {
-        finish({ exitCode: 1, reason: 'error' });
-      }
+      writeOutput(`\n[cannot connect to daemon at ${host}:${port}]\n`);
+      finish({ exitCode: 1, reason: 'error' });
     };
   });
 }

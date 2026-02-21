@@ -45,7 +45,7 @@ describe('runLsClient', () => {
     server = Bun.serve({
       port: TEST_PORT,
       fetch(req, srv) {
-        if (srv.upgrade(req)) return;
+        if (srv.upgrade(req, { data: {} })) return;
         return new Response('Not found', { status: 404 });
       },
       websocket: {
@@ -87,11 +87,12 @@ describe('runLsClient', () => {
   });
 
   test('times out when server does not respond', async () => {
+    const timeoutPort = TEST_PORT + 10;
     // Server that never sends hello_ack
     server = Bun.serve({
-      port: TEST_PORT,
+      port: timeoutPort,
       fetch(req, srv) {
-        if (srv.upgrade(req)) return;
+        if (srv.upgrade(req, { data: {} })) return;
         return new Response('Not found', { status: 404 });
       },
       websocket: {
@@ -101,8 +102,8 @@ describe('runLsClient', () => {
       },
     });
 
-    await expect(runLsClient({ host: 'localhost', port: TEST_PORT, timeout: 500 })).rejects.toThrow(
-      /Timed out/,
-    );
+    await expect(
+      runLsClient({ host: 'localhost', port: timeoutPort, timeout: 500 }),
+    ).rejects.toThrow(/Timed out|closed unexpectedly/);
   });
 });

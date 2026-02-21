@@ -19,6 +19,7 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
   const url = `ws://${host}:${port}/ws`;
 
   return new Promise<void>((resolve, reject) => {
+    let settled = false;
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -29,7 +30,10 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
 
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error(`Timed out connecting to daemon at ${host}:${port}`));
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Timed out connecting to daemon at ${host}:${port}`));
+      }
     }, timeout);
 
     ws.onopen = () => {
@@ -46,19 +50,32 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
         ws.send(serialize(createSessionListRequest(false)));
       } else if (msg.type === 'session_list_response') {
         clearTimeout(timer);
+        settled = true;
         ws.close();
         renderSessionList(msg.sessions);
         resolve();
       } else if (msg.type === 'error') {
         clearTimeout(timer);
+        settled = true;
         ws.close();
         reject(new Error(`Daemon error: ${msg.message}`));
       }
     };
 
+    ws.onclose = () => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        reject(new Error('Connection to daemon closed unexpectedly. Is remi running?'));
+      }
+    };
+
     ws.onerror = () => {
       clearTimeout(timer);
-      reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
+      }
     };
   });
 }
@@ -75,7 +92,7 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
 
   for (const s of sessions) {
     const id = s.sessionId.slice(0, 8);
-    const status = s.canAttach ? 'orphaned' : s.status;
+    const status = s.status;
     const project = path.basename(s.projectPath).slice(0, 28);
     const age = formatAge(s.lastActivity);
     const mark = s.canAttach ? ' *' : '';

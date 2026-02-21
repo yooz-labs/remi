@@ -25,6 +25,7 @@ function makeMessage(content: string): Message {
     createdAt: now(),
     state: 'delivered',
     stateChangedAt: now(),
+    isEditing: false,
   };
 }
 
@@ -32,17 +33,21 @@ describe('runAttachClient', () => {
   let server: ReturnType<typeof Bun.serve> | null = null;
   let outputPath: string;
   let outputFd: number;
+  let outputClosed: boolean;
 
   function setupOutput(): void {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-attach-test-'));
     outputPath = path.join(dir, 'output.txt');
     fs.writeFileSync(outputPath, '');
     outputFd = fs.openSync(outputPath, 'w');
+    outputClosed = false;
   }
 
   function readOutput(): string {
-    // Flush and re-read
-    fs.closeSync(outputFd);
+    if (!outputClosed) {
+      fs.closeSync(outputFd);
+      outputClosed = true;
+    }
     return fs.readFileSync(outputPath, 'utf-8');
   }
 
@@ -51,10 +56,13 @@ describe('runAttachClient', () => {
       server.stop(true);
       server = null;
     }
-    try {
-      fs.closeSync(outputFd);
-    } catch {
-      // may already be closed
+    if (!outputClosed) {
+      try {
+        fs.closeSync(outputFd);
+        outputClosed = true;
+      } catch {
+        // fd may be invalid if setupOutput was never called
+      }
     }
   });
 
@@ -66,7 +74,7 @@ describe('runAttachClient', () => {
     server = Bun.serve({
       port: TEST_PORT,
       fetch(req, srv) {
-        if (srv.upgrade(req)) return;
+        if (srv.upgrade(req, { data: {} })) return;
         return new Response('Not found', { status: 404 });
       },
       websocket: {
@@ -111,7 +119,7 @@ describe('runAttachClient', () => {
     server = Bun.serve({
       port: TEST_PORT + 1,
       fetch(req, srv) {
-        if (srv.upgrade(req)) return;
+        if (srv.upgrade(req, { data: {} })) return;
         return new Response('Not found', { status: 404 });
       },
       websocket: {

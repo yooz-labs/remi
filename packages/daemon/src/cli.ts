@@ -513,24 +513,44 @@ if (cliSubcommand === 'attach') {
   if (!targetSessionId) {
     // Auto-attach to most recent active (non-exited) session
     const sessions = store.list();
-    const active = sessions.find((s) => s.exitedAt === null);
-    if (!active) {
+    const active = sessions.filter((s) => s.exitedAt === null);
+    if (active.length === 0) {
       console.error('No active sessions found. Run `remi ls` to see live sessions.');
       process.exit(1);
     }
-    targetSessionId = active.remiSessionId;
-    resolvedPort = cliPort ?? active.port;
+    // Pick the most recently started session
+    const latest = active.reduce((a, b) =>
+      new Date(b.startedAt).getTime() > new Date(a.startedAt).getTime() ? b : a,
+    );
+    targetSessionId = latest.remiSessionId;
+    resolvedPort = cliPort ?? latest.port;
   } else {
     // Prefix-match session ID, look up port
     const all = store.list();
-    const match = all.find(
+    const matches = all.filter(
       (s) =>
         s.remiSessionId === targetSessionId ||
         s.remiSessionId.startsWith(targetSessionId as string),
     );
-    if (match) {
+    if (matches.length === 1) {
+      // biome-ignore lint/style/noNonNullAssertion: length checked above
+      const match = matches[0]!;
       resolvedPort = cliPort ?? match.port;
       targetSessionId = match.remiSessionId;
+    } else if (matches.length > 1) {
+      console.error(
+        `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
+      );
+      for (const m of matches) {
+        console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
+      }
+      console.error('Provide a longer prefix to disambiguate.');
+      process.exit(1);
+    } else {
+      console.error(
+        `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
+      );
+      process.exit(1);
     }
   }
 
@@ -1269,9 +1289,13 @@ const sharedEvents = {
     if (session) {
       try {
         session.pty.resize({ cols, rows });
-      } catch {
-        log(`Failed to resize PTY for connection ${connectionId}`);
+      } catch (err) {
+        log(
+          `Failed to resize PTY for connection ${connectionId}: ${err instanceof Error ? err.message : err}`,
+        );
       }
+    } else {
+      log(`Terminal resize ignored: no session for connection ${connectionId}`);
     }
   },
 
