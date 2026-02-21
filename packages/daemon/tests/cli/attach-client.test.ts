@@ -4,14 +4,17 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   createAgentOutput,
+  createError,
   createHelloAck,
+  createPing,
+  createQuestion,
   createReplayBatch,
   deserialize,
   generateId,
   now,
   serialize,
 } from '@remi/shared';
-import type { Message, UUID } from '@remi/shared';
+import type { Message, Question, UUID } from '@remi/shared';
 import { runAttachClient } from '../../src/cli/attach-client.ts';
 
 const TEST_PORT = 9873;
@@ -168,5 +171,149 @@ describe('runAttachClient', () => {
     });
     expect(result.exitCode).toBe(1);
     expect(result.reason).toBe('error');
+  });
+
+  test('handles SESSION_ENDED with clean exit', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 2,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createError('SESSION_ENDED', 'Session ended')));
+            }, 50);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 2,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('[session ended]');
+    expect(result.exitCode).toBe(0);
+    expect(result.reason).toBe('session_ended');
+  });
+
+  test('responds to ping with pong', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const receivedMessages: string[] = [];
+
+    server = Bun.serve({
+      port: TEST_PORT + 3,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          receivedMessages.push(text);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            // Send a ping after hello_ack
+            setTimeout(() => {
+              ws.send(serialize(createPing()));
+            }, 50);
+            // Close after giving time for pong
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 3,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    // Find the pong response in received messages
+    const pongMsg = receivedMessages.find((text) => {
+      const msg = deserialize(text);
+      return msg?.type === 'pong';
+    });
+    expect(pongMsg).toBeTruthy();
+  });
+
+  test('renders question with options', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const question: Question = {
+      id: generateId() as UUID,
+      text: 'Allow file edit?',
+      options: [
+        { label: 'Yes', value: 'yes', isRecommended: true, isYes: true, isNo: false },
+        { label: 'No', value: 'no', isRecommended: false, isYes: false, isNo: true },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    };
+
+    server = Bun.serve({
+      port: TEST_PORT + 4,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createQuestion(question)));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 4,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('Allow file edit?');
+    expect(output).toContain('Yes');
+    expect(output).toContain('No');
   });
 });

@@ -9,6 +9,7 @@ import {
   createCreateSessionResponse,
   createHello,
   createHelloAck,
+  createTerminalResize,
   deserialize,
   serialize,
 } from '@remi/shared';
@@ -155,6 +156,26 @@ describe('Protocol factory functions', () => {
     });
   });
 
+  describe('createTerminalResize', () => {
+    test('creates terminal_resize with cols and rows', () => {
+      const msg = createTerminalResize(120, 40);
+      expect(msg.type).toBe('terminal_resize');
+      expect(msg.cols).toBe(120);
+      expect(msg.rows).toBe(40);
+      expect(msg.id).toBeTruthy();
+      expect(msg.timestamp).toBeTruthy();
+    });
+
+    test('round-trips through serialize/deserialize', () => {
+      const original = createTerminalResize(80, 24);
+      const deserialized = deserialize(serialize(original));
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('terminal_resize');
+      expect((deserialized as typeof original).cols).toBe(80);
+      expect((deserialized as typeof original).rows).toBe(24);
+    });
+  });
+
   describe('deserialize edge cases', () => {
     test('rejects invalid JSON', () => {
       expect(deserialize('not json')).toBeNull();
@@ -176,6 +197,14 @@ describe('Protocol factory functions', () => {
       );
       expect(result).not.toBeNull();
       expect(result?.type).toBe('create_session_request');
+    });
+
+    test('accepts terminal_resize type', () => {
+      const result = deserialize(
+        '{"type":"terminal_resize","id":"1","timestamp":"2024-01-01T00:00:00Z","cols":80,"rows":24}',
+      );
+      expect(result).not.toBeNull();
+      expect(result?.type).toBe('terminal_resize');
     });
 
     test('accepts create_session_response type', () => {
