@@ -12,7 +12,7 @@ class_name = "ConnectionRoom"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["ConnectionRoom"]
+new_sqlite_classes = ["ConnectionRoom"]
 
 # Development settings
 [dev]

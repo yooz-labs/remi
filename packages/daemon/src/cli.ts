@@ -356,7 +356,7 @@ Options:
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
   --remote                 Enable remote access via signaling relay
-  --signaling-url URL      Signaling server URL (default: wss://remi-signaling.yooz.workers.dev/connect)
+  --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --install                Install as autostart service
   --uninstall              Remove autostart service
   --version, -v            Show version
@@ -1231,7 +1231,7 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 
 if (cliRemote) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
-  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.yooz.workers.dev/connect';
+  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
   const relayAdapter = new RelayAdapter(
     {
       enabled: true,
