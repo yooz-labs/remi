@@ -5,9 +5,10 @@
  * Warm conversational design with mobile-first touch targets.
  */
 
+import { type PairedDevice, getPairedDevices, removePairedDevice } from '@/lib/device-store';
 import type { ConnectionStatus } from '@/types';
 import { clsx } from 'clsx';
-import { AlertCircle, CheckCircle2, Globe, Loader2, Wifi, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Globe, Loader2, Trash2, Wifi, X } from 'lucide-react';
 import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from 'react';
 
 interface ConnectModalProps {
@@ -15,11 +16,23 @@ interface ConnectModalProps {
   readonly onClose: () => void;
   readonly onConnectDirect: (url: string, directory?: string) => void;
   readonly onConnectCode: (code: string) => void;
+  readonly onConnectDevice?: (device: PairedDevice) => void;
   readonly connectionStatus: ConnectionStatus;
   readonly error?: string | null;
 }
 
 type ConnectionMode = 'direct' | 'code';
+
+function formatRelativeTime(isoString: string): string {
+  const diff = Date.now() - new Date(isoString).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 /** Split code input: 4 letter boxes + dash + 4 number boxes */
 function SplitCodeInput({
@@ -151,6 +164,7 @@ export function ConnectModal({
   onClose,
   onConnectDirect,
   onConnectCode,
+  onConnectDevice,
   connectionStatus,
   error,
 }: ConnectModalProps) {
@@ -159,6 +173,7 @@ export function ConnectModal({
   const [directory, setDirectory] = useState('');
   const [code, setCode] = useState('');
   const [isVisible, setIsVisible] = useState(false);
+  const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
 
   // Animate in
   useEffect(() => {
@@ -169,9 +184,11 @@ export function ConnectModal({
     }
   }, [isOpen]);
 
-  // Reset on close
+  // Load paired devices and reset on open/close
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      setPairedDevices(getPairedDevices());
+    } else {
       setCode('');
       setDirectUrl(localStorage.getItem('remi-last-url') || 'ws://localhost:18765/ws');
       setDirectory('');
@@ -245,8 +262,55 @@ export function ConnectModal({
           </button>
         </div>
 
+        {/* Paired devices */}
+        {pairedDevices.length > 0 && onConnectDevice && (
+          <div className="px-6 pt-3">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[--color-text-muted]">
+              Your Devices
+            </p>
+            <div className="space-y-1.5">
+              {pairedDevices.map((device) => (
+                <div
+                  key={device.deviceId}
+                  className="flex items-center justify-between rounded-2xl border border-[--color-border]/50 bg-[--color-surface-light] px-4 py-3"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onConnectDevice(device)}
+                    disabled={isConnecting || isConnected}
+                    className="flex-1 text-left"
+                  >
+                    <span className="block text-sm font-semibold text-[--color-text]">
+                      {device.deviceId}
+                    </span>
+                    <span className="text-xs text-[--color-text-muted]">
+                      Last connected {formatRelativeTime(device.lastConnectedAt)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      removePairedDevice(device.deviceId);
+                      setPairedDevices(getPairedDevices());
+                    }}
+                    className="ml-2 rounded-full p-1.5 text-[--color-text-muted] transition-colors hover:bg-[--color-surface-elevated] hover:text-[--color-error]"
+                    aria-label={`Forget ${device.deviceId}`}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="my-4 flex items-center gap-3">
+              <div className="h-px flex-1 bg-[--color-border]/50" />
+              <span className="text-xs text-[--color-text-muted]">or pair a new device</span>
+              <div className="h-px flex-1 bg-[--color-border]/50" />
+            </div>
+          </div>
+        )}
+
         {/* Content */}
-        <div className="px-6 pt-4 pb-2">
+        <div className={clsx('px-6 pb-2', pairedDevices.length > 0 ? 'pt-0' : 'pt-4')}>
           {/* Mode toggle */}
           <div className="mb-5 flex rounded-2xl bg-[--color-surface-light] border border-[--color-border]/50 p-1">
             <button

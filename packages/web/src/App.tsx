@@ -15,6 +15,9 @@ import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { generateId } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PairedDevice } from '@/lib/device-store';
+import { savePairedDevice, updateLastConnected } from '@/lib/device-store';
+import type { WebDeviceSignalingClient } from '@/lib/device-signaling-client';
 
 const LOCALSTORAGE_URL_KEY = 'remi-last-url';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
@@ -489,11 +492,13 @@ function App() {
   );
 
   const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
+  const deviceClientRef = useRef<WebDeviceSignalingClient | null>(null);
 
-  // Clean up signaling client on unmount
+  // Clean up signaling clients on unmount
   useEffect(() => {
     return () => {
       signalingClientRef.current?.close();
+      deviceClientRef.current?.close();
     };
   }, []);
 
@@ -519,12 +524,37 @@ function App() {
               clientVersion: '0.1.0',
             };
             client.sendMessage(hello);
+
+            // Auto-initiate pairing handshake
+            client.sendMessage({
+              type: 'pair_request',
+              id: generateId(),
+              timestamp: new Date().toISOString(),
+              clientName: 'Remi Web',
+            });
           }
         },
         onMessage: (message) => {
-          // Forward relay messages to the existing message handler
-          if (handleMessageRef.current && message && typeof message === 'object' && 'type' in message) {
-            handleMessageRef.current(message as ProtocolMessage);
+          if (!message || typeof message !== 'object' || !('type' in message)) return;
+          const msg = message as Record<string, unknown>;
+
+          // Handle pair_response: save device credentials for reconnection
+          if (msg.type === 'pair_response' && msg.deviceId && msg.pairingToken && msg.clientId) {
+            const now = new Date().toISOString();
+            savePairedDevice({
+              deviceId: msg.deviceId as string,
+              clientId: msg.clientId as string,
+              pairingToken: msg.pairingToken as string,
+              signalingUrl,
+              pairedAt: now,
+              lastConnectedAt: now,
+            });
+            return;
+          }
+
+          // Forward other relay messages to the existing message handler
+          if (handleMessageRef.current) {
+            handleMessageRef.current(msg as ProtocolMessage);
           }
         },
         onError: (errCode, errMsg) => {
@@ -534,6 +564,44 @@ function App() {
 
       signalingClientRef.current = client;
       client.connect(signalingUrl, code);
+    });
+  }, []);
+
+  const handleConnectDevice = useCallback((device: PairedDevice) => {
+    // Dynamic import to avoid bundling when not used
+    import('@/lib/device-signaling-client').then(({ WebDeviceSignalingClient: Client }) => {
+      // Close existing device connection if any
+      if (deviceClientRef.current) {
+        deviceClientRef.current.close();
+      }
+
+      const client = new Client({
+        onStateChange: (state) => {
+          if (state === 'connected') {
+            setShowConnectModal(false);
+            updateLastConnected(device.deviceId);
+            // Send hello via relay
+            client.sendMessage({
+              type: 'hello',
+              id: generateId(),
+              timestamp: new Date().toISOString(),
+              clientId: device.clientId,
+              clientVersion: '0.1.0',
+            });
+          }
+        },
+        onMessage: (message) => {
+          if (handleMessageRef.current && message && typeof message === 'object' && 'type' in message) {
+            handleMessageRef.current(message as ProtocolMessage);
+          }
+        },
+        onError: (errCode, errMsg) => {
+          console.error(`Device signaling error [${errCode}]: ${errMsg}`);
+        },
+      });
+
+      deviceClientRef.current = client;
+      client.connect(device.signalingUrl, device.deviceId, device.clientId, device.pairingToken);
     });
   }, []);
 
@@ -641,6 +709,7 @@ function App() {
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         onConnectCode={handleConnectCode}
+        onConnectDevice={handleConnectDevice}
         connectionStatus={connectionStatus}
         error={null}
       />
