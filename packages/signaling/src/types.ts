@@ -103,11 +103,13 @@ export function parseMessage(data: string): SignalingMessage | null {
   try {
     const parsed = JSON.parse(data) as unknown;
     if (typeof parsed !== 'object' || parsed === null) {
+      console.warn('Signaling message is not a JSON object');
       return null;
     }
 
     const obj = parsed as Record<string, unknown>;
     if (typeof obj.type !== 'string') {
+      console.warn('Signaling message missing "type" field');
       return null;
     }
 
@@ -126,11 +128,13 @@ export function parseMessage(data: string): SignalingMessage | null {
     ];
 
     if (!validTypes.includes(obj.type)) {
+      console.warn(`Unknown signaling message type: ${obj.type}`);
       return null;
     }
 
     return parsed as SignalingMessage;
-  } catch {
+  } catch (e) {
+    console.warn('Failed to parse signaling message:', e instanceof Error ? e.message : e);
     return null;
   }
 }

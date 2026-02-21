@@ -59,8 +59,8 @@ export function generateCode(
  * @returns True if valid format
  */
 export function isValidCode(code: string): boolean {
-  // Format: XXXX-YYYY where X is alpha and Y is numeric
-  const pattern = /^[A-Z]{4}-[0-9]{4}$/;
+  // Format: XXXX-YYYY using only unambiguous chars (no 0/O, 1/I/L)
+  const pattern = /^[ABCDEFGHJKMNPQRSTUVWXYZ]{4}-[23456789]{4}$/;
   return pattern.test(code);
 }
 
@@ -74,7 +74,7 @@ export function normalizeCode(code: string): ConnectionCode | null {
   const normalized = code.trim().toUpperCase();
 
   // Handle case where user types without dash
-  if (/^[A-Z]{4}[0-9]{4}$/.test(normalized)) {
+  if (/^[ABCDEFGHJKMNPQRSTUVWXYZ]{4}[23456789]{4}$/.test(normalized)) {
     return `${normalized.slice(0, 4)}-${normalized.slice(4)}`;
   }
 

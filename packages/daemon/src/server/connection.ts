@@ -13,6 +13,7 @@ import {
   createAck,
   createError,
   createHelloAck,
+  createPing,
   createPong,
   deserialize,
   generateId,
@@ -356,10 +357,8 @@ export class Connection {
 
   private startPingTimer(): void {
     this.pingTimer = setInterval(() => {
-      // Bun WebSocket has built-in ping/pong, but we can also use protocol-level
       if (this.ws.readyState === WebSocket.OPEN) {
-        // Let's rely on Bun's built-in ping/pong for now
-        // The protocol ping/pong is available for application-level health checks
+        this.send(createPing());
       }
     }, this.config.pingInterval);
   }

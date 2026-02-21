@@ -8,7 +8,7 @@ import { codeEntropy, generateCode, isValidCode, normalizeCode } from '../src/co
 describe('generateCode()', () => {
   test('generates code with correct format', () => {
     const code = generateCode();
-    expect(code).toMatch(/^[A-Z]{4}-[0-9]{4}$/);
+    expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ]{4}-[23456789]{4}$/);
   });
 
   test('generates unique codes', () => {
@@ -32,42 +32,42 @@ describe('generateCode()', () => {
 
   test('accepts custom lengths', () => {
     const code = generateCode(6, 2);
-    expect(code).toMatch(/^[A-Z]{6}-[0-9]{2}$/);
+    expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ]{6}-[23456789]{2}$/);
   });
 
   test('handles minimum length', () => {
     const code = generateCode(1, 1);
-    expect(code).toMatch(/^[A-Z]{1}-[0-9]{1}$/);
+    expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ]{1}-[23456789]{1}$/);
   });
 });
 
 describe('isValidCode()', () => {
   test('accepts valid codes', () => {
-    expect(isValidCode('ABCD-1234')).toBe(true);
+    expect(isValidCode('ABCD-2345')).toBe(true);
     expect(isValidCode('WXYZ-5678')).toBe(true);
   });
 
   test('rejects lowercase', () => {
-    expect(isValidCode('abcd-1234')).toBe(false);
+    expect(isValidCode('abcd-2345')).toBe(false);
   });
 
   test('rejects missing dash', () => {
-    expect(isValidCode('ABCD1234')).toBe(false);
+    expect(isValidCode('ABCD2345')).toBe(false);
   });
 
   test('rejects wrong lengths', () => {
-    expect(isValidCode('ABC-1234')).toBe(false);
-    expect(isValidCode('ABCDE-1234')).toBe(false);
-    expect(isValidCode('ABCD-123')).toBe(false);
-    expect(isValidCode('ABCD-12345')).toBe(false);
+    expect(isValidCode('ABC-2345')).toBe(false);
+    expect(isValidCode('ABCDE-2345')).toBe(false);
+    expect(isValidCode('ABCD-234')).toBe(false);
+    expect(isValidCode('ABCD-23456')).toBe(false);
   });
 
   test('rejects letters in number part', () => {
-    expect(isValidCode('ABCD-123A')).toBe(false);
+    expect(isValidCode('ABCD-234A')).toBe(false);
   });
 
   test('rejects numbers in letter part', () => {
-    expect(isValidCode('ABC1-1234')).toBe(false);
+    expect(isValidCode('ABC2-2345')).toBe(false);
   });
 
   test('rejects empty string', () => {
@@ -75,28 +75,37 @@ describe('isValidCode()', () => {
   });
 
   test('rejects special characters', () => {
-    expect(isValidCode('AB@D-1234')).toBe(false);
-    expect(isValidCode('ABCD-12#4')).toBe(false);
+    expect(isValidCode('AB@D-2345')).toBe(false);
+    expect(isValidCode('ABCD-23#4')).toBe(false);
+  });
+
+  test('rejects ambiguous characters', () => {
+    // O, I, L are ambiguous alpha chars
+    expect(isValidCode('OICD-2345')).toBe(false);
+    expect(isValidCode('ALCD-2345')).toBe(false);
+    // 0, 1 are ambiguous numeric chars
+    expect(isValidCode('ABCD-0234')).toBe(false);
+    expect(isValidCode('ABCD-1234')).toBe(false);
   });
 });
 
 describe('normalizeCode()', () => {
   test('normalizes lowercase to uppercase', () => {
-    expect(normalizeCode('abcd-1234')).toBe('ABCD-1234');
+    expect(normalizeCode('abcd-2345')).toBe('ABCD-2345');
   });
 
   test('trims whitespace', () => {
-    expect(normalizeCode('  ABCD-1234  ')).toBe('ABCD-1234');
+    expect(normalizeCode('  ABCD-2345  ')).toBe('ABCD-2345');
   });
 
   test('adds missing dash', () => {
-    expect(normalizeCode('ABCD1234')).toBe('ABCD-1234');
-    expect(normalizeCode('abcd1234')).toBe('ABCD-1234');
+    expect(normalizeCode('ABCD2345')).toBe('ABCD-2345');
+    expect(normalizeCode('abcd2345')).toBe('ABCD-2345');
   });
 
   test('returns null for invalid format', () => {
-    expect(normalizeCode('ABC-123')).toBeNull();
-    expect(normalizeCode('ABCDE-12345')).toBeNull();
+    expect(normalizeCode('ABC-234')).toBeNull();
+    expect(normalizeCode('ABCDE-23456')).toBeNull();
     expect(normalizeCode('invalid')).toBeNull();
   });
 
@@ -105,7 +114,12 @@ describe('normalizeCode()', () => {
   });
 
   test('preserves valid codes', () => {
-    expect(normalizeCode('ABCD-1234')).toBe('ABCD-1234');
+    expect(normalizeCode('ABCD-2345')).toBe('ABCD-2345');
+  });
+
+  test('returns null for ambiguous characters', () => {
+    expect(normalizeCode('OICD-2345')).toBeNull();
+    expect(normalizeCode('ABCD-0123')).toBeNull();
   });
 });
 

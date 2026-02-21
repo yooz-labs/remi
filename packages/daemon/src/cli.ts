@@ -1206,7 +1206,7 @@ const sharedEvents = {
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
-    host: '0.0.0.0',
+    host: 'localhost',
   },
   sharedEvents,
 );

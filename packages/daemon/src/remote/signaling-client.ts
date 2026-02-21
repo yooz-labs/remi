@@ -1,10 +1,32 @@
 /**
  * Signaling Client - connects to the signaling server.
  *
- * Handles registration, code display, and relay message forwarding.
+ * Generates a connection code locally, connects to the code-named room,
+ * and handles relay message forwarding.
  */
 
 import { EventEmitter } from 'node:events';
+
+/** Unambiguous characters for code generation (no 0/O, 1/I/L) */
+const ALPHA_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ';
+const NUMERIC_CHARS = '23456789';
+
+/** Generate a connection code locally (XXXX-YYYY format) */
+function generateConnectionCode(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let alpha = '';
+  let numeric = '';
+  for (let i = 0; i < 4; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: index bounded by array length
+    alpha += ALPHA_CHARS[bytes[i]! % ALPHA_CHARS.length];
+  }
+  for (let i = 0; i < 4; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: index bounded by array length
+    numeric += NUMERIC_CHARS[bytes[4 + i]! % NUMERIC_CHARS.length];
+  }
+  return `${alpha}-${numeric}`;
+}
 
 export interface SignalingClientEvents {
   registered: (code: string, expiresAt: string) => void;
@@ -18,13 +40,15 @@ export interface SignalingClientEvents {
 
 export class SignalingClient extends EventEmitter {
   private ws: WebSocket | null = null;
-  private readonly url: string;
+  private readonly baseUrl: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private code: string | null = null;
 
-  constructor(url: string) {
+  constructor(baseUrl: string) {
     super();
-    this.url = url;
+    // Strip trailing slash
+    this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
   connect(): void {
@@ -33,10 +57,15 @@ export class SignalingClient extends EventEmitter {
       this.ws = null;
     }
     this.closed = false;
-    this.ws = new WebSocket(this.url);
+
+    // Generate code locally and connect to the code-named room
+    this.code = generateConnectionCode();
+    const wsUrl = `${this.baseUrl}/${this.code}`;
+    this.ws = new WebSocket(wsUrl);
 
     this.ws.addEventListener('open', () => {
       this.emit('open');
+      // Register as host in the code-named room
       this.send({ type: 'register' });
     });
 
@@ -59,9 +88,11 @@ export class SignalingClient extends EventEmitter {
           case 'error':
             this.emit('error', msg.code, msg.message);
             break;
+          default:
+            console.warn(`Unknown signaling message type: ${msg.type}`);
         }
-      } catch {
-        // ignore parse errors
+      } catch (e) {
+        console.warn('Failed to parse signaling message:', e instanceof Error ? e.message : e);
       }
     });
 
@@ -73,7 +104,8 @@ export class SignalingClient extends EventEmitter {
       }
     });
 
-    this.ws.addEventListener('error', () => {
+    this.ws.addEventListener('error', (event) => {
+      console.warn('Signaling WebSocket error:', event);
       // close event will follow
     });
   }
@@ -96,6 +128,10 @@ export class SignalingClient extends EventEmitter {
 
   get isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  get connectionCode(): string | null {
+    return this.code;
   }
 
   private send(msg: Record<string, unknown>): void {

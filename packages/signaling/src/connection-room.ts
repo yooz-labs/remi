@@ -258,11 +258,13 @@ export class ConnectionRoom {
   /**
    * Send a message to a WebSocket.
    */
-  private send(ws: CFWebSocket, message: SignalingMessage): void {
+  private send(ws: CFWebSocket, message: SignalingMessage): boolean {
     try {
       ws.send(serializeMessage(message));
-    } catch {
-      // Ignore send errors (connection might be closed)
+      return true;
+    } catch (e) {
+      console.error(`Failed to send ${message.type} message:`, e);
+      return false;
     }
   }
 

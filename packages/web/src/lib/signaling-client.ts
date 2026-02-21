@@ -1,8 +1,8 @@
 /**
  * Signaling client for web app.
  *
- * Connects to the signaling server, joins a room via code,
- * and relays Remi protocol messages.
+ * Connects to the signaling server via code-named room,
+ * joins as client, and relays Remi protocol messages.
  */
 
 export type SignalingState = 'disconnected' | 'connecting' | 'joined' | 'connected' | 'error';
@@ -21,15 +21,15 @@ export class WebSignalingClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private readonly maxReconnectAttempts = 3;
-  private signalingUrl: string | null = null;
+  private baseUrl: string | null = null;
   private code: string | null = null;
 
   constructor(callbacks: SignalingClientCallbacks) {
     this.callbacks = callbacks;
   }
 
-  connect(signalingUrl: string, code: string): void {
-    this.signalingUrl = signalingUrl;
+  connect(baseUrl: string, code: string): void {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
     this.code = code;
     this.intentionallyClosed = false;
     this.reconnectAttempts = 0;
@@ -37,11 +37,13 @@ export class WebSignalingClient {
   }
 
   private connectInternal(): void {
-    if (!this.signalingUrl || !this.code) return;
+    if (!this.baseUrl || !this.code) return;
 
     this.setState('connecting');
 
-    this.ws = new WebSocket(this.signalingUrl);
+    // Connect to the code-named room directly
+    const wsUrl = `${this.baseUrl}/${this.code}`;
+    this.ws = new WebSocket(wsUrl);
 
     const code = this.code;
 
@@ -68,17 +70,19 @@ export class WebSignalingClient {
             try {
               const payload = JSON.parse(msg.payload as string);
               this.callbacks.onMessage(payload);
-            } catch {
-              // ignore bad payloads
+            } catch (e) {
+              console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
             }
             break;
           case 'error':
             this.callbacks.onError(msg.code, msg.message);
             this.setState('error');
             break;
+          default:
+            console.warn(`Unknown signaling message type: ${msg.type}`);
         }
-      } catch {
-        // ignore parse errors
+      } catch (e) {
+        console.warn('Failed to parse signaling message:', e instanceof Error ? e.message : e);
       }
     });
 

@@ -65,6 +65,14 @@ export class RelayAdapter implements ConnectionAdapter {
       console.log(`Remote access code: ${code}`);
     });
 
+    this.client.on('open', () => {
+      // The code is generated locally by SignalingClient before connecting
+      this.connectionCode = this.client?.connectionCode ?? null;
+      if (this.connectionCode) {
+        console.log(`Remote access code: ${this.connectionCode}`);
+      }
+    });
+
     this.client.on('peer-connected', () => {
       const connectionId = generateId();
       this.clientConnectionId = connectionId;
@@ -86,18 +94,32 @@ export class RelayAdapter implements ConnectionAdapter {
     });
 
     this.client.on('relay', (payload: string) => {
-      if (!this.clientConnectionId) return;
+      if (!this.clientConnectionId) {
+        console.warn('Received relay message before client connection established');
+        return;
+      }
 
       try {
         const message = JSON.parse(payload);
-        if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
+        if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
+          console.warn('Relay payload missing required "type" field');
+          return;
+        }
 
         // Route incoming protocol messages from the remote client
         switch (message.type) {
           case 'user_input':
+            if (typeof message.content !== 'string' || typeof message.sessionId !== 'string') {
+              console.warn('Invalid user_input payload: missing content or sessionId');
+              return;
+            }
             this.events.onUserInput?.(this.clientConnectionId, message.sessionId, message.content);
             break;
           case 'answer':
+            if (typeof message.questionId !== 'string' || typeof message.answer !== 'string') {
+              console.warn('Invalid answer payload: missing questionId or answer');
+              return;
+            }
             this.events.onAnswer?.(this.clientConnectionId, message.questionId, message.answer);
             break;
           case 'session_list_request':
@@ -132,9 +154,11 @@ export class RelayAdapter implements ConnectionAdapter {
           case 'hello':
             // Forward as connect event (already handled above)
             break;
+          default:
+            console.warn(`Unknown relay message type: ${message.type}`);
         }
-      } catch {
-        // ignore parse errors
+      } catch (e) {
+        console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
       }
     });
 
