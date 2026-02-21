@@ -68,6 +68,9 @@ export interface ServerEvents {
     requestId: UUID,
   ) => void;
 
+  /** Terminal resize from attached CLI client */
+  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -301,6 +304,10 @@ export class WebSocketServer {
 
       onCreateSessionRequest: (directory, requestId) => {
         this.events.onCreateSessionRequest?.(ws.data.connectionId, directory, requestId);
+      },
+
+      onTerminalResize: (cols, rows) => {
+        this.events.onTerminalResize?.(ws.data.connectionId, cols, rows);
       },
 
       onError: (error) => {

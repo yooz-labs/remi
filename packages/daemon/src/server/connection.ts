@@ -29,6 +29,7 @@ import type {
   PingMessage,
   ProtocolMessage,
   SessionListRequestMessage,
+  TerminalResizeMessage,
   TranscriptLoadRequestMessage,
   UUID,
   UserInputMessage,
@@ -62,6 +63,9 @@ export interface ConnectionEvents {
 
   /** Create session request received */
   onCreateSessionRequest: (directory: string | undefined, requestId: UUID) => void;
+
+  /** Terminal resize from attached CLI client */
+  onTerminalResize: (cols: number, rows: number) => void;
 
   /** Error occurred */
   onError: (error: Error) => void;
@@ -195,6 +199,9 @@ export class Connection {
         break;
       case 'create_session_request':
         this.handleCreateSessionRequest(message);
+        break;
+      case 'terminal_resize':
+        this.handleTerminalResize(message);
         break;
       case 'ping':
         this.handlePing(message);
@@ -335,6 +342,11 @@ export class Connection {
   private handleCreateSessionRequest(message: CreateSessionRequestMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onCreateSessionRequest?.(message.directory, message.id);
+  }
+
+  private handleTerminalResize(message: TerminalResizeMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onTerminalResize?.(message.cols, message.rows);
   }
 
   private handlePing(message: PingMessage): void {

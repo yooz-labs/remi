@@ -151,6 +151,9 @@ export class RelayAdapter implements ConnectionAdapter {
               message.id,
             );
             break;
+          case 'terminal_resize':
+            this.events.onTerminalResize?.(this.clientConnectionId, message.cols, message.rows);
+            break;
           case 'hello':
             // Forward as connect event (already handled above)
             break;
