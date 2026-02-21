@@ -47,6 +47,10 @@ export class ConnectionRoom {
   private client: PeerSession | null = null;
   private expiresAt = 0;
 
+  /** Per-WebSocket failed join attempt counter for rate limiting */
+  private failedAttempts = new Map<CFWebSocket, number>();
+  private static readonly MAX_FAILED_ATTEMPTS = 5;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
@@ -112,6 +116,9 @@ export class ConnectionRoom {
    * Handle WebSocket close.
    */
   async webSocketClose(ws: CFWebSocket): Promise<void> {
+    // Clean up rate limit tracking
+    this.failedAttempts.delete(ws);
+
     // Clean up the peer
     if (this.host?.ws === ws) {
       const _wasHost = this.host;
@@ -189,8 +196,17 @@ export class ConnectionRoom {
    * Handle client joining with code.
    */
   private async handleJoin(ws: CFWebSocket, code: ConnectionCode): Promise<void> {
+    // Rate limiting: check failed attempts
+    const attempts = this.failedAttempts.get(ws) ?? 0;
+    if (attempts >= ConnectionRoom.MAX_FAILED_ATTEMPTS) {
+      this.sendError(ws, 'RATE_LIMITED', 'Too many failed attempts');
+      ws.close(4429, 'Rate limited');
+      return;
+    }
+
     // Validate code
     if (this.code !== code) {
+      this.failedAttempts.set(ws, attempts + 1);
       this.sendError(ws, 'INVALID_CODE', 'Connection code not found or expired');
       return;
     }

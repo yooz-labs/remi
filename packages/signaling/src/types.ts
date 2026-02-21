@@ -25,7 +25,11 @@ export type SignalingMessage =
   | ErrorMessage
   | PeerConnectedMessage
   | PeerDisconnectedMessage
-  | RelayMessage;
+  | RelayMessage
+  | DeviceRegisterMessage
+  | DeviceRegisteredMessage
+  | ConnectDeviceMessage
+  | ClientConnectRequestMessage;
 
 /** Host registers to get a connection code */
 export interface RegisterMessage {
@@ -96,6 +100,31 @@ export interface RelayMessage {
   readonly payload: string;
 }
 
+/** Daemon registers its persistent device room */
+export interface DeviceRegisterMessage {
+  readonly type: 'device_register';
+  readonly deviceId: string;
+}
+
+/** Device registration confirmed */
+export interface DeviceRegisteredMessage {
+  readonly type: 'device_registered';
+  readonly deviceId: string;
+}
+
+/** Client wants to connect to a device by name */
+export interface ConnectDeviceMessage {
+  readonly type: 'connect_device';
+  readonly deviceId: string;
+  readonly clientId: string;
+}
+
+/** Forwarded to daemon: a client wants to connect */
+export interface ClientConnectRequestMessage {
+  readonly type: 'client_connect_request';
+  readonly clientId: string;
+}
+
 /**
  * Parse a signaling message from JSON.
  */
@@ -125,6 +154,10 @@ export function parseMessage(data: string): SignalingMessage | null {
       'peer-connected',
       'peer-disconnected',
       'relay',
+      'device_register',
+      'device_registered',
+      'connect_device',
+      'client_connect_request',
     ];
 
     if (!validTypes.includes(obj.type)) {

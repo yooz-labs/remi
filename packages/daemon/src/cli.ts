@@ -1231,15 +1231,20 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 
 if (cliRemote) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
+  const { DeviceIdentity } = await import('./remote/identity.ts');
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
+  const identity = new DeviceIdentity();
+  identity.load();
   const relayAdapter = new RelayAdapter(
     {
       enabled: true,
       signalingUrl,
     },
     sharedEvents,
+    identity,
   );
   registry.register(relayAdapter);
+  console.log(`Device: ${identity.deviceId}  Code: ${relayAdapter.code ?? '(connecting...)'}`);
 }
 
 // ---------------------------------------------------------------------------

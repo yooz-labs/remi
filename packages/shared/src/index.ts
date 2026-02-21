@@ -60,6 +60,11 @@ export type {
   TranscriptUsage,
   CreateSessionRequestMessage,
   CreateSessionResponseMessage,
+  PairRequestMessage,
+  PairResponseMessage,
+  AuthChallengeMessage,
+  AuthResponseMessage,
+  AuthResultMessage,
 } from './protocol.ts';
 
 export {
@@ -89,5 +94,18 @@ export {
   createTranscriptLoadComplete,
   createCreateSessionRequest,
   createCreateSessionResponse,
+  createPairRequest,
+  createPairResponse,
+  createAuthChallenge,
+  createAuthResponse,
+  createAuthResult,
   MessageIdTracker,
 } from './protocol.ts';
+
+// Device names
+export {
+  generateDeviceName,
+  isValidDeviceName,
+  DEVICE_ADJECTIVES,
+  DEVICE_NOUNS,
+} from './device-names.ts';

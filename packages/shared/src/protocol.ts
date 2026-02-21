@@ -85,7 +85,12 @@ export type ProtocolMessage =
   | TranscriptLoadRequestMessage
   | TranscriptLoadCompleteMessage
   | CreateSessionRequestMessage
-  | CreateSessionResponseMessage;
+  | CreateSessionResponseMessage
+  | PairRequestMessage
+  | PairResponseMessage
+  | AuthChallengeMessage
+  | AuthResponseMessage
+  | AuthResultMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -412,6 +417,11 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'transcript_load_complete',
     'create_session_request',
     'create_session_response',
+    'pair_request',
+    'pair_response',
+    'auth_challenge',
+    'auth_response',
+    'auth_result',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -786,6 +796,89 @@ export function createCreateSessionResponse(
     success,
     requestId,
     ...(sessionId !== undefined && { sessionId }),
+    ...(error !== undefined && { error }),
+  };
+}
+
+// --- Pairing and authentication messages ---
+
+/** Client requests to pair with a daemon */
+export interface PairRequestMessage {
+  readonly type: 'pair_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly clientName: string;
+}
+
+/** Daemon responds with pairing credentials */
+export interface PairResponseMessage {
+  readonly type: 'pair_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly deviceId: string;
+  readonly clientId: string;
+  readonly pairingToken: string;
+}
+
+/** Daemon sends challenge nonce to reconnecting client */
+export interface AuthChallengeMessage {
+  readonly type: 'auth_challenge';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly nonce: string;
+}
+
+/** Client responds with HMAC proof of pairing token */
+export interface AuthResponseMessage {
+  readonly type: 'auth_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly clientId: string;
+  readonly hmac: string;
+}
+
+/** Daemon confirms or rejects authentication */
+export interface AuthResultMessage {
+  readonly type: 'auth_result';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly accepted: boolean;
+  readonly error?: string;
+}
+
+export function createPairRequest(clientName: string): PairRequestMessage {
+  return { type: 'pair_request', id: generateId(), timestamp: now(), clientName };
+}
+
+export function createPairResponse(
+  deviceId: string,
+  clientId: string,
+  pairingToken: string,
+): PairResponseMessage {
+  return {
+    type: 'pair_response',
+    id: generateId(),
+    timestamp: now(),
+    deviceId,
+    clientId,
+    pairingToken,
+  };
+}
+
+export function createAuthChallenge(nonce: string): AuthChallengeMessage {
+  return { type: 'auth_challenge', id: generateId(), timestamp: now(), nonce };
+}
+
+export function createAuthResponse(clientId: string, hmac: string): AuthResponseMessage {
+  return { type: 'auth_response', id: generateId(), timestamp: now(), clientId, hmac };
+}
+
+export function createAuthResult(accepted: boolean, error?: string): AuthResultMessage {
+  return {
+    type: 'auth_result',
+    id: generateId(),
+    timestamp: now(),
+    accepted,
     ...(error !== undefined && { error }),
   };
 }

@@ -10,9 +10,17 @@ compatibility_date = "2025-01-10"
 name = "CONNECTIONS"
 class_name = "ConnectionRoom"
 
+[[durable_objects.bindings]]
+name = "DEVICES"
+class_name = "DeviceRoom"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ConnectionRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DeviceRoom"]
 
 # Development settings
 [dev]
@@ -24,3 +32,4 @@ local_protocol = "http"
 MAX_CONNECTIONS_PER_ROOM = "100"
 CONNECTION_TIMEOUT_MS = "300000"  # 5 minutes
 CODE_LENGTH = "8"
+DEVICE_IDLE_TIMEOUT_MS = "3600000"  # 1 hour

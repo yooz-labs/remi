@@ -5,12 +5,14 @@
  * Uses Cloudflare Durable Objects for state management.
  *
  * Endpoints:
- * - GET /connect/:code: WebSocket upgrade for host/client (both use same code-based room)
+ * - GET /connect/:code: WebSocket upgrade for ephemeral code-based rooms
+ * - GET /device/:deviceId: WebSocket upgrade for persistent device rooms
  * - GET /health: Health check
  */
 
 import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
+import { DeviceRoom } from './device-room.ts';
 
 // Cloudflare-specific types
 // biome-ignore lint/suspicious/noExplicitAny: Cloudflare Worker runtime type
@@ -19,8 +21,10 @@ type DurableObjectNamespace = any;
 /** Environment bindings */
 interface Env {
   CONNECTIONS: DurableObjectNamespace;
+  DEVICES: DurableObjectNamespace;
   MAX_CONNECTIONS_PER_ROOM: string;
   CONNECTION_TIMEOUT_MS: string;
+  DEVICE_IDLE_TIMEOUT_MS: string;
 }
 
 /** Main worker */
@@ -68,9 +72,25 @@ export default {
       return room.fetch(request);
     }
 
+    // Connect to a persistent device room by name
+    const deviceMatch = url.pathname.match(/^\/device\/([a-z]+-[a-z]+-[a-z]+)$/);
+    if (deviceMatch && request.method === 'GET') {
+      const deviceId = deviceMatch[1];
+      if (!deviceId) {
+        return new Response(
+          JSON.stringify({ error: 'INVALID_DEVICE', message: 'Invalid device name' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const id = env.DEVICES.idFromName(deviceId);
+      const room = env.DEVICES.get(id);
+      return room.fetch(request);
+    }
+
     return new Response('Not found', { status: 404 });
   },
 };
 
-// Export the Durable Object class
-export { ConnectionRoom };
+// Export the Durable Object classes
+export { ConnectionRoom, DeviceRoom };
