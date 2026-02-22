@@ -554,7 +554,7 @@ function App() {
 
           // Forward other relay messages to the existing message handler
           if (handleMessageRef.current) {
-            handleMessageRef.current(msg as ProtocolMessage);
+            handleMessageRef.current(msg as unknown as ProtocolMessage);
           }
         },
         onError: (errCode, errMsg) => {

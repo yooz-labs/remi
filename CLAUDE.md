@@ -93,6 +93,20 @@ Use **Serena MCP** for efficient code navigation instead of reading entire files
 | `search_for_pattern` | Regex search across codebase |
 | `replace_symbol_body` | Edit entire function/method bodies |
 
+## Deployment
+
+Use `cfman` (multi-account Cloudflare CLI) with the `yooz-labs` account for all Cloudflare deployments. Never use `wrangler` directly.
+
+```bash
+# Signaling server (Cloudflare Workers + Durable Objects)
+cd packages/signaling
+npx cfman wrangler --account yooz-labs deploy
+
+# Web client (Cloudflare Pages)
+cd packages/web && bun run build
+npx cfman wrangler --account yooz-labs pages deploy dist --project-name remi-app --branch main
+```
+
 ## CI
 
 GitHub Actions runs on push/PR to main: `bunx biome check`, `bun run typecheck`, `bun test --coverage` with 60% minimum threshold.
