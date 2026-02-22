@@ -123,9 +123,17 @@ export class DeviceSignalingClient extends EventEmitter {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  private send(msg: Record<string, unknown>): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+  private send(msg: Record<string, unknown>): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      console.warn(`Cannot send ${String(msg['type'] ?? 'unknown')} message: WebSocket not open`);
+      return false;
+    }
+    try {
       this.ws.send(JSON.stringify(msg));
+      return true;
+    } catch (e) {
+      console.error(`Failed to send ${String(msg['type'] ?? 'unknown')} message:`, e);
+      return false;
     }
   }
 
@@ -153,6 +161,7 @@ export class DeviceSignalingClient extends EventEmitter {
       DeviceSignalingClient.BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
       DeviceSignalingClient.MAX_RECONNECT_DELAY_MS,
     );
+    console.warn(`Device signaling reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.closed) {

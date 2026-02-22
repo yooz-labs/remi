@@ -98,7 +98,9 @@ export class WebDeviceSignalingClient {
       }
     });
 
-    this.ws.addEventListener('error', () => {});
+    this.ws.addEventListener('error', () => {
+      this.callbacks.onError('TRANSPORT_ERROR', 'Connection to signaling server failed');
+    });
   }
 
   private async handleRelay(payloadStr: string): Promise<void> {

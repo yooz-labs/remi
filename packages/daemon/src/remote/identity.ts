@@ -46,23 +46,39 @@ export class DeviceIdentity {
   }
 
   private read(): RemiIdentity | null {
+    if (!fs.existsSync(this.filePath)) return null;
+
+    let raw: string;
     try {
-      if (!fs.existsSync(this.filePath)) return null;
-      const raw = fs.readFileSync(this.filePath, 'utf-8');
-      const data = JSON.parse(raw) as RemiIdentity;
-      if (data.version !== 1 || !data.deviceId || !data.deviceSecret) return null;
-      if (!Array.isArray(data.pairedClients)) {
-        data.pairedClients = [];
-      }
-      return data;
-    } catch {
+      raw = fs.readFileSync(this.filePath, 'utf-8');
+    } catch (e) {
+      console.error(`Failed to read identity file ${this.filePath}:`, e);
+      throw e;
+    }
+
+    let data: RemiIdentity;
+    try {
+      data = JSON.parse(raw) as RemiIdentity;
+    } catch (e) {
+      console.error(`Identity file ${this.filePath} contains invalid JSON. Paired clients may be lost.`);
+      throw e;
+    }
+
+    if (data.version !== 1 || !data.deviceId || !data.deviceSecret) {
+      console.warn(`Identity file ${this.filePath} has unsupported version or missing fields`);
       return null;
     }
+    if (!Array.isArray(data.pairedClients)) {
+      data.pairedClients = [];
+    }
+    return data;
   }
 
   private write(identity: RemiIdentity): void {
     this.ensureDir();
-    fs.writeFileSync(this.filePath, JSON.stringify(identity, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    const tmpPath = `${this.filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(identity, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(tmpPath, this.filePath);
   }
 
   /** Load existing identity or create a new one. */

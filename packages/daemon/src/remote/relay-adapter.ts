@@ -255,83 +255,95 @@ export class RelayAdapter implements ConnectionAdapter {
   // --- Unified relay payload handler ---
 
   private handleRelayPayload(payload: string, source: 'code' | 'device'): void {
+    let message: { type: string; [key: string]: unknown };
     try {
-      const message = JSON.parse(payload);
-      if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
-        console.warn('Relay payload missing required "type" field');
-        return;
-      }
-
-      // Handle pairing messages (only from code-based connections)
-      if (source === 'code' && message.type === 'pair_request') {
-        this.handlePairRequest(message.clientName);
-        return;
-      }
-
-      // Handle auth response (only from device-based connections, before authenticated)
-      if (source === 'device' && message.type === 'auth_response') {
-        this.handleAuthResponse(message.clientId, message.hmac);
-        return;
-      }
-
-      // All other messages require an authenticated connection
-      if (!this.clientConnectionId) {
-        console.warn('Received relay message before client authenticated');
-        return;
-      }
-
-      // Route incoming protocol messages from the remote client
-      switch (message.type) {
-        case 'user_input':
-          if (typeof message.content !== 'string' || typeof message.sessionId !== 'string') {
-            console.warn('Invalid user_input payload: missing content or sessionId');
-            return;
-          }
-          this.events.onUserInput?.(this.clientConnectionId, message.sessionId, message.content);
-          break;
-        case 'answer':
-          if (typeof message.questionId !== 'string' || typeof message.answer !== 'string') {
-            console.warn('Invalid answer payload: missing questionId or answer');
-            return;
-          }
-          this.events.onAnswer?.(this.clientConnectionId, message.questionId, message.answer);
-          break;
-        case 'session_list_request':
-          this.events.onSessionListRequest?.(
-            this.clientConnectionId,
-            message.id,
-            message.includeExternal ?? false,
-          );
-          break;
-        case 'transcript_load_request':
-          this.events.onTranscriptLoadRequest?.(
-            this.clientConnectionId,
-            message.sessionId,
-            message.id,
-          );
-          break;
-        case 'create_session_request':
-          this.events.onCreateSessionRequest?.(
-            this.clientConnectionId,
-            message.directory,
-            message.id,
-          );
-          break;
-        case 'bullet_expand_request':
-          this.events.onBulletExpandRequest?.(
-            this.clientConnectionId,
-            message.sessionId,
-            message.bulletId,
-            message.id,
-          );
-          break;
-        case 'hello':
-          break;
-        default:
-          console.warn(`Unknown relay message type: ${message.type}`);
-      }
+      message = JSON.parse(payload);
     } catch (e) {
       console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
+      return;
+    }
+
+    if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
+      console.warn('Relay payload missing required "type" field');
+      return;
+    }
+
+    try {
+      this.routeRelayMessage(message, source);
+    } catch (e) {
+      console.error(`Error handling relay message type=${message.type}:`, e);
+    }
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: dynamic relay payload from JSON
+  private routeRelayMessage(message: any, source: 'code' | 'device'): void {
+    // Handle pairing messages (only from code-based connections)
+    if (source === 'code' && message.type === 'pair_request') {
+      this.handlePairRequest(message.clientName);
+      return;
+    }
+
+    // Handle auth response (only from device-based connections, before authenticated)
+    if (source === 'device' && message.type === 'auth_response') {
+      this.handleAuthResponse(message.clientId, message.hmac);
+      return;
+    }
+
+    // All other messages require an authenticated connection
+    if (!this.clientConnectionId) {
+      console.warn('Received relay message before client authenticated');
+      return;
+    }
+
+    // Route incoming protocol messages from the remote client
+    switch (message.type) {
+      case 'user_input':
+        if (typeof message.content !== 'string' || typeof message.sessionId !== 'string') {
+          console.warn('Invalid user_input payload: missing content or sessionId');
+          return;
+        }
+        this.events.onUserInput?.(this.clientConnectionId, message.sessionId, message.content);
+        break;
+      case 'answer':
+        if (typeof message.questionId !== 'string' || typeof message.answer !== 'string') {
+          console.warn('Invalid answer payload: missing questionId or answer');
+          return;
+        }
+        this.events.onAnswer?.(this.clientConnectionId, message.questionId, message.answer);
+        break;
+      case 'session_list_request':
+        this.events.onSessionListRequest?.(
+          this.clientConnectionId,
+          message.id,
+          message.includeExternal ?? false,
+        );
+        break;
+      case 'transcript_load_request':
+        this.events.onTranscriptLoadRequest?.(
+          this.clientConnectionId,
+          message.sessionId,
+          message.id,
+        );
+        break;
+      case 'create_session_request':
+        this.events.onCreateSessionRequest?.(
+          this.clientConnectionId,
+          message.directory,
+          message.id,
+        );
+        break;
+      case 'bullet_expand_request':
+        this.events.onBulletExpandRequest?.(
+          this.clientConnectionId,
+          message.sessionId,
+          message.bulletId,
+          message.id,
+        );
+        break;
+      case 'hello':
+        break;
+      default:
+        console.warn(`Unknown relay message type: ${message.type}`);
     }
   }
 
@@ -339,6 +351,7 @@ export class RelayAdapter implements ConnectionAdapter {
 
   private handlePairRequest(clientName: string): void {
     if (this.activeClient !== 'code' || !this.clientConnectionId || !this.codeClient?.isConnected) {
+      console.warn('Pair request received but no active code-based connection');
       return;
     }
 
@@ -354,7 +367,13 @@ export class RelayAdapter implements ConnectionAdapter {
   // --- Auth protocol (device reconnection) ---
 
   private handleAuthResponse(clientId: string, hmac: string): void {
-    if (!this.pendingAuth || !this.deviceClient?.isConnected) {
+    if (!this.pendingAuth) {
+      console.warn(`Auth response from ${clientId} but no pending challenge`);
+      this.deviceClient?.sendRelay(JSON.stringify(createAuthResult(false, 'No pending challenge')));
+      return;
+    }
+    if (!this.deviceClient?.isConnected) {
+      console.warn('Auth response received but device signaling client disconnected');
       return;
     }
 
