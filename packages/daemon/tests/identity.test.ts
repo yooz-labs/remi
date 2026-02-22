@@ -132,10 +132,10 @@ describe('DeviceIdentity', () => {
     const token = identity.addPairedClient(clientId, 'Phone');
     const nonce = crypto.randomUUID();
 
-    // Compute expected HMAC matching daemon's approach:
-    // crypto.createHmac('sha256', pairingToken).update(nonce).digest('hex')
+    // Compute HMAC using hex-decoded key bytes (matching both daemon and web client)
     const nodeCrypto = require('node:crypto');
-    const hmac = nodeCrypto.createHmac('sha256', token).update(nonce).digest('hex');
+    const keyBytes = Buffer.from(token, 'hex');
+    const hmac = nodeCrypto.createHmac('sha256', keyBytes).update(nonce).digest('hex');
 
     const result = identity.verifyChallenge(clientId, nonce, hmac);
     expect(result).toBe(true);

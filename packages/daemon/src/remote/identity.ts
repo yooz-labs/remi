@@ -152,7 +152,8 @@ export class DeviceIdentity {
     const client = this.findClient(clientId);
     if (!client) return false;
 
-    const expected = crypto.createHmac('sha256', client.pairingToken).update(nonce).digest('hex');
+    const keyBytes = Buffer.from(client.pairingToken, 'hex');
+    const expected = crypto.createHmac('sha256', keyBytes).update(nonce).digest('hex');
 
     return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(hmacHex, 'hex'));
   }
