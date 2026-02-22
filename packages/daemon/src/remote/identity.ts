@@ -41,7 +41,7 @@ export class DeviceIdentity {
   private ensureDir(): void {
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
   }
 
@@ -62,7 +62,7 @@ export class DeviceIdentity {
 
   private write(identity: RemiIdentity): void {
     this.ensureDir();
-    fs.writeFileSync(this.filePath, JSON.stringify(identity, null, 2), 'utf-8');
+    fs.writeFileSync(this.filePath, JSON.stringify(identity, null, 2), { encoding: 'utf-8', mode: 0o600 });
   }
 
   /** Load existing identity or create a new one. */
@@ -154,6 +154,9 @@ export class DeviceIdentity {
 
     const keyBytes = Buffer.from(client.pairingToken, 'hex');
     const expected = crypto.createHmac('sha256', keyBytes).update(nonce).digest('hex');
+
+    // timingSafeEqual throws RangeError if lengths differ
+    if (hmacHex.length !== expected.length) return false;
 
     return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(hmacHex, 'hex'));
   }

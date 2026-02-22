@@ -52,8 +52,8 @@ export class RelayAdapter implements ConnectionAdapter {
   private clientConnectionId: UUID | null = null;
   /** Which signaling client is currently active for the connected client */
   private activeClient: 'code' | 'device' | null = null;
-  /** Pending auth nonce for device reconnection */
-  private pendingAuthNonce: string | null = null;
+  /** Pending auth state for device reconnection */
+  private pendingAuth: { clientId: string; nonce: string } | null = null;
 
   constructor(
     config: RelayAdapterConfig,
@@ -221,9 +221,10 @@ export class RelayAdapter implements ConnectionAdapter {
       }
 
       // Generate and send challenge nonce
-      this.pendingAuthNonce = crypto.randomBytes(32).toString('hex');
+      const nonce = crypto.randomBytes(32).toString('hex');
+      this.pendingAuth = { clientId, nonce };
       if (this.deviceClient?.isConnected) {
-        this.deviceClient.sendRelay(JSON.stringify(createAuthChallenge(this.pendingAuthNonce)));
+        this.deviceClient.sendRelay(JSON.stringify(createAuthChallenge(nonce)));
       }
     });
 
@@ -237,7 +238,7 @@ export class RelayAdapter implements ConnectionAdapter {
         this.clientConnectionId = null;
         this.activeClient = null;
       }
-      this.pendingAuthNonce = null;
+      this.pendingAuth = null;
     });
 
     this.deviceClient.on('relay', (payload: string) => {
@@ -353,12 +354,18 @@ export class RelayAdapter implements ConnectionAdapter {
   // --- Auth protocol (device reconnection) ---
 
   private handleAuthResponse(clientId: string, hmac: string): void {
-    if (!this.pendingAuthNonce || !this.deviceClient?.isConnected) {
+    if (!this.pendingAuth || !this.deviceClient?.isConnected) {
       return;
     }
 
-    const nonce = this.pendingAuthNonce;
-    this.pendingAuthNonce = null;
+    // Verify the clientId matches the one we challenged
+    if (this.pendingAuth.clientId !== clientId) {
+      this.deviceClient.sendRelay(JSON.stringify(createAuthResult(false, 'Client ID mismatch')));
+      return;
+    }
+
+    const nonce = this.pendingAuth.nonce;
+    this.pendingAuth = null;
 
     const accepted = this.identity.verifyChallenge(clientId, nonce, hmac);
 
