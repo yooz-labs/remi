@@ -86,7 +86,10 @@ export type ProtocolMessage =
   | TranscriptLoadCompleteMessage
   | CreateSessionRequestMessage
   | CreateSessionResponseMessage
-  | TerminalResizeMessage;
+  | TerminalResizeMessage
+  | AuthChallengeMessage
+  | AuthResponseMessage
+  | AuthResultMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -360,6 +363,45 @@ export interface CreateSessionResponseMessage {
   readonly requestId: UUID;
 }
 
+/** Authentication challenge from server to client */
+export interface AuthChallengeMessage {
+  readonly type: 'auth_challenge';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Base64-encoded 32-byte random challenge nonce */
+  readonly challenge: string;
+  /** Server's public key fingerprint for display */
+  readonly serverFingerprint: string;
+  /** Base64-encoded server Ed25519 public key */
+  readonly serverPublicKey: string;
+}
+
+/** Authentication response from client to server */
+export interface AuthResponseMessage {
+  readonly type: 'auth_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Base64-encoded client Ed25519 public key */
+  readonly clientPublicKey: string;
+  /** Base64-encoded Ed25519 signature of the challenge */
+  readonly signature: string;
+  /** Client's fingerprint for display */
+  readonly clientFingerprint: string;
+}
+
+/** Authentication result from server to client */
+export interface AuthResultMessage {
+  readonly type: 'auth_result';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Whether authentication succeeded */
+  readonly success: boolean;
+  /** Error code if failed: UNKNOWN_KEY, INVALID_SIGNATURE, AUTH_DISABLED */
+  readonly error?: string;
+  /** Server's signature of the challenge (for mutual authentication) */
+  readonly serverSignature?: string;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -425,6 +467,9 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'create_session_request',
     'create_session_response',
     'terminal_resize',
+    'auth_challenge',
+    'auth_response',
+    'auth_result',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -813,6 +858,60 @@ export function createTerminalResize(cols: number, rows: number): TerminalResize
     timestamp: now(),
     cols,
     rows,
+  };
+}
+
+/**
+ * Create an auth challenge message.
+ */
+export function createAuthChallenge(
+  challenge: string,
+  serverFingerprint: string,
+  serverPublicKey: string,
+): AuthChallengeMessage {
+  return {
+    type: 'auth_challenge',
+    id: generateId(),
+    timestamp: now(),
+    challenge,
+    serverFingerprint,
+    serverPublicKey,
+  };
+}
+
+/**
+ * Create an auth response message.
+ */
+export function createAuthResponse(
+  clientPublicKey: string,
+  signature: string,
+  clientFingerprint: string,
+): AuthResponseMessage {
+  return {
+    type: 'auth_response',
+    id: generateId(),
+    timestamp: now(),
+    clientPublicKey,
+    signature,
+    clientFingerprint,
+  };
+}
+
+/**
+ * Create an auth result message.
+ */
+export function createAuthResult(
+  success: boolean,
+  serverSignature?: string,
+  error?: string,
+): AuthResultMessage {
+  return {
+    type: 'auth_result',
+    id: generateId(),
+    timestamp: now(),
+    success,
+    ...(serverSignature !== undefined && { serverSignature }),
+    ...(error !== undefined && { error }),
   };
 }
 
