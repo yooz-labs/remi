@@ -21,6 +21,6 @@ local_protocol = "http"
 
 # Environment variables
 [vars]
-MAX_CONNECTIONS_PER_ROOM = "100"
+MAX_CONNECTIONS_PER_ROOM = "2"
 CONNECTION_TIMEOUT_MS = "300000"  # 5 minutes
 CODE_LENGTH = "8"

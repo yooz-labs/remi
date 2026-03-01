@@ -17,6 +17,8 @@ import { SignalingClient } from './signaling-client.ts';
 
 export interface RelayAdapterConfig extends AdapterConfig {
   readonly signalingUrl: string;
+  /** Pre-set connection code (persisted across restarts) */
+  readonly code?: string;
 }
 
 export class RelayAdapter implements ConnectionAdapter {
@@ -173,7 +175,7 @@ export class RelayAdapter implements ConnectionAdapter {
       console.error(`Relay signaling error [${code}]: ${msg}`);
     });
 
-    this.client.connect();
+    this.client.connect(this.config.code);
     this.running = true;
   }
 

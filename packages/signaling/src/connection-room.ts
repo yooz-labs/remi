@@ -8,7 +8,6 @@
  * Type assertions are used where necessary for compatibility.
  */
 
-import { generateCode } from './code-generator.ts';
 import {
   type ConnectionCode,
   type PeerRole,
@@ -43,6 +42,8 @@ export class ConnectionRoom {
   private readonly env: Env;
 
   private code: ConnectionCode | null = null;
+  /** Code derived from the URL path, set on first fetch */
+  private roomCode: ConnectionCode | null = null;
   private host: PeerSession | null = null;
   private client: PeerSession | null = null;
   private expiresAt = 0;
@@ -60,6 +61,13 @@ export class ConnectionRoom {
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader !== 'websocket') {
       return new Response('Expected WebSocket', { status: 426 });
+    }
+
+    // Extract room code from URL path (e.g., /connect/AXBY-1234)
+    const url = new URL(request.url);
+    const pathMatch = url.pathname.match(/\/connect\/([A-Z0-9-]+)$/i);
+    if (pathMatch?.[1] && !this.roomCode) {
+      this.roomCode = pathMatch[1].toUpperCase() as ConnectionCode;
     }
 
     // Create WebSocket pair (Cloudflare-specific API)
@@ -160,8 +168,13 @@ export class ConnectionRoom {
       return;
     }
 
-    // Generate connection code
-    this.code = generateCode();
+    // Use the URL-derived code (set during fetch) as the room code.
+    // Both host and client connect to the same URL, so the code matches.
+    if (!this.roomCode) {
+      this.sendError(ws, 'INTERNAL_ERROR', 'Room code not available');
+      return;
+    }
+    this.code = this.roomCode;
 
     // Set expiration
     const timeoutMs = Number.parseInt(this.env.CONNECTION_TIMEOUT_MS) || 300000;

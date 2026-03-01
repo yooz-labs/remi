@@ -51,15 +51,19 @@ export class SignalingClient extends EventEmitter {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
-  connect(): void {
+  connect(code?: string): void {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
     this.closed = false;
 
-    // Generate code locally and connect to the code-named room
-    this.code = generateConnectionCode();
+    // Use provided code or generate one; reuse on reconnect
+    if (code) {
+      this.code = code;
+    } else if (!this.code) {
+      this.code = generateConnectionCode();
+    }
     const wsUrl = `${this.baseUrl}/${this.code}`;
     this.ws = new WebSocket(wsUrl);
 
