@@ -303,8 +303,21 @@ let cliResume: string | true | undefined; // true = resume most recent, string =
 let cliShowSessions = false;
 let cliInstall = false;
 let cliUninstall = false;
-let cliSubcommand: 'ls' | 'attach' | undefined;
+let cliSubcommand:
+  | 'ls'
+  | 'attach'
+  | 'keygen'
+  | 'export-key'
+  | 'import-key'
+  | 'authorize'
+  | 'keys'
+  | undefined;
 let cliSubcommandArg: string | undefined;
+let _cliNoAuth = false;
+let cliForce = false;
+let cliLabel: string | undefined;
+let cliPublicOnly = false;
+let cliRemoveFingerprint: string | undefined;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -340,6 +353,18 @@ for (let i = 0; i < args.length; i++) {
     cliInstall = true;
   } else if (arg === '--uninstall') {
     cliUninstall = true;
+  } else if (arg === '--no-auth') {
+    _cliNoAuth = true;
+  } else if (arg === '--force') {
+    cliForce = true;
+  } else if (arg === '--label' && nextArg) {
+    cliLabel = nextArg;
+    i++;
+  } else if (arg === '--public-only') {
+    cliPublicOnly = true;
+  } else if (arg === '--remove' && nextArg) {
+    cliRemoveFingerprint = nextArg;
+    i++;
   } else if (arg === '--version' || arg === '-v') {
     console.log(`remi ${REMI_VERSION}`);
     process.exit(0);
@@ -351,6 +376,11 @@ Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
   remi ls                        List live sessions from running daemon
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
+  remi keygen                    Generate Ed25519 identity keypair
+  remi export-key                Export identity JSON (for sharing across devices)
+  remi import-key [file]         Import identity from file or stdin
+  remi authorize <key-file>      Add a client's public key to authorized keys
+  remi keys                      List authorized keys
   remi --resume [session-id]     Resume a previous session
   remi --sessions                List stored sessions
   remi --daemon                  Legacy daemon mode (headless server)
@@ -359,8 +389,13 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
+  --no-auth                Disable authentication (development only)
   --remote                 Enable remote access via signaling relay
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
+  --force                  Overwrite existing identity (keygen/import-key)
+  --label NAME             Label for authorized key (authorize)
+  --public-only            Export only public key (export-key)
+  --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
   --install                Install as autostart service
   --uninstall              Remove autostart service
   --version, -v            Show version
@@ -377,9 +412,21 @@ Environment:
 Any other arguments are passed through to Claude Code.
 `);
     process.exit(0);
-  } else if (arg === 'ls' || arg === 'attach') {
+  } else if (
+    arg === 'ls' ||
+    arg === 'attach' ||
+    arg === 'keygen' ||
+    arg === 'export-key' ||
+    arg === 'import-key' ||
+    arg === 'authorize' ||
+    arg === 'keys'
+  ) {
     cliSubcommand = arg;
-    if (arg === 'attach' && nextArg && !nextArg.startsWith('-')) {
+    if (
+      (arg === 'attach' || arg === 'import-key' || arg === 'authorize') &&
+      nextArg &&
+      !nextArg.startsWith('-')
+    ) {
       cliSubcommandArg = nextArg;
       i++;
     }
@@ -486,6 +533,41 @@ WantedBy=default.target`;
     console.error(`Autostart not supported on ${platform}. Run remi --daemon manually.`);
     process.exit(1);
   }
+  process.exit(0);
+}
+
+// Handle key management subcommands
+if (cliSubcommand === 'keygen') {
+  const { runKeygen } = await import('./cli/keygen.ts');
+  await runKeygen({ force: cliForce });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'export-key') {
+  const { runKeyExport } = await import('./cli/key-export.ts');
+  runKeyExport({ publicOnly: cliPublicOnly });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'import-key') {
+  const { runKeyImport } = await import('./cli/key-import.ts');
+  await runKeyImport({ file: cliSubcommandArg, force: cliForce });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'authorize') {
+  const { runAuthorize } = await import('./cli/authorize.ts');
+  await runAuthorize({
+    input: cliSubcommandArg,
+    label: cliLabel,
+    remove: cliRemoveFingerprint,
+  });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'keys') {
+  const { runListKeys } = await import('./cli/authorize.ts');
+  runListKeys();
   process.exit(0);
 }
 

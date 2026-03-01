@@ -23,6 +23,7 @@ import {
 import type {
   Acknowledgment,
   AnswerMessage,
+  AuthResponseMessage,
   BulletExpandRequestMessage,
   CreateSessionRequestMessage,
   HelloMessage,
@@ -34,9 +35,10 @@ import type {
   UUID,
   UserInputMessage,
 } from '@remi/shared';
+import type { Authenticator } from '../auth/authenticator.ts';
 
 /** Connection state */
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
 
 /** Events emitted by connection */
 export interface ConnectionEvents {
@@ -67,6 +69,12 @@ export interface ConnectionEvents {
   /** Terminal resize from attached CLI client */
   onTerminalResize: (cols: number, rows: number) => void;
 
+  /** Authentication succeeded */
+  onAuthSuccess: (clientFingerprint: string) => void;
+
+  /** Authentication failed */
+  onAuthFailed: (error: string, clientFingerprint?: string) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -84,6 +92,9 @@ export interface ConnectionConfig {
 
   /** Skip sending HelloAck from Connection (let daemon handle it) */
   readonly skipHelloAck?: boolean;
+
+  /** Authenticator instance (if set, authentication is required) */
+  readonly authenticator?: Authenticator | undefined;
 }
 
 const DEFAULT_PING_INTERVAL = 30000;
@@ -101,7 +112,10 @@ export class Connection {
   private resumeSessionId: UUID | null = null;
 
   private readonly ws: WebSocket;
-  private readonly config: Required<ConnectionConfig> & { skipHelloAck: boolean };
+  private readonly config: Required<ConnectionConfig> & {
+    skipHelloAck: boolean;
+    authenticator: Authenticator | undefined;
+  };
   private readonly events: Partial<ConnectionEvents>;
   private readonly messageTracker: MessageIdTracker;
 
@@ -124,14 +138,22 @@ export class Connection {
       pingInterval: config.pingInterval ?? DEFAULT_PING_INTERVAL,
       connectionTimeout: config.connectionTimeout ?? DEFAULT_CONNECTION_TIMEOUT,
       skipHelloAck: config.skipHelloAck ?? false,
+      authenticator: config.authenticator,
     };
 
-    // Set connection timeout
+    // Set connection timeout (applies to both auth and hello phases)
     this.connectionTimer = setTimeout(() => {
-      if (this.state === 'connecting') {
+      if (this.state === 'connecting' || this.state === 'authenticating') {
         this.close('Connection timeout');
       }
     }, this.config.connectionTimeout);
+
+    // If authenticator is configured, send challenge immediately
+    if (this.config.authenticator) {
+      this.state = 'authenticating';
+      const challenge = this.config.authenticator.createChallenge(this.id);
+      this.send(challenge);
+    }
   }
 
   /** Get current state */
@@ -174,6 +196,18 @@ export class Connection {
     if (this.messageTracker.checkAndMark(message.id)) {
       // Duplicate - still acknowledge but don't process
       this.sendAck(message.id, 'delivered');
+      return;
+    }
+
+    // In authenticating state, only accept auth_response
+    if (this.state === 'authenticating') {
+      if (message.type === 'auth_response') {
+        this.handleAuthResponse(message);
+      } else if (message.type === 'ping') {
+        this.handlePing(message);
+      } else {
+        this.sendError('AUTH_REQUIRED', 'Authentication required before other messages');
+      }
       return;
     }
 
@@ -247,6 +281,25 @@ export class Connection {
       this.sendError('CLOSING', reason);
       this.ws.close();
       this.cleanup(reason);
+    }
+  }
+
+  private async handleAuthResponse(message: AuthResponseMessage): Promise<void> {
+    if (this.state !== 'authenticating' || !this.config.authenticator) {
+      this.sendError('INVALID_STATE', 'Not in authenticating state');
+      return;
+    }
+
+    const result = await this.config.authenticator.verifyResponse(this.id, message);
+    this.send(result);
+
+    if (result.success) {
+      // Auth passed; transition to 'connecting' (waiting for hello)
+      this.state = 'connecting';
+      this.events.onAuthSuccess?.(message.clientFingerprint);
+    } else {
+      this.events.onAuthFailed?.(result.error ?? 'unknown', message.clientFingerprint);
+      this.close(`Authentication failed: ${result.error}`);
     }
   }
 
@@ -385,6 +438,9 @@ export class Connection {
       clearTimeout(this.connectionTimer);
       this.connectionTimer = null;
     }
+
+    // Clean up pending auth challenge if connection closes during auth
+    this.config.authenticator?.removePendingChallenge(this.id);
 
     this.state = 'disconnected';
     this.events.onDisconnect?.(reason);
