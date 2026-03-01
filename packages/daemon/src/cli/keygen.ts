@@ -8,9 +8,9 @@
 import { IdentityStore } from '../auth/identity-store.ts';
 
 export interface KeygenOptions {
-  passphrase?: string;
-  force?: boolean;
-  dir?: string;
+  passphrase?: string | undefined;
+  force?: boolean | undefined;
+  dir?: string | undefined;
 }
 
 export async function runKeygen(options: KeygenOptions = {}): Promise<void> {

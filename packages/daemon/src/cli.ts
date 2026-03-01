@@ -223,7 +223,8 @@ import {
   generateId,
   now,
 } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import { unlockIdentity } from '@remi/shared';
 import {
   type AdapterMetadata,
   AdapterRegistry,
@@ -231,6 +232,8 @@ import {
   WebSocketAdapter,
 } from './adapters/index.ts';
 import { MessageAPI } from './api/index.ts';
+import { Authenticator } from './auth/authenticator.ts';
+import { IdentityStore } from './auth/identity-store.ts';
 import { OutputProcessor } from './parser/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
@@ -318,6 +321,7 @@ let _cliNoAuth = false;
 let cliForce = false;
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
+let cliPassphrase: string | undefined;
 let cliRemoveFingerprint: string | undefined;
 const claudeArgs: string[] = [];
 
@@ -363,6 +367,9 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--public-only') {
     cliPublicOnly = true;
+  } else if (arg === '--passphrase' && nextArg) {
+    cliPassphrase = nextArg;
+    i++;
   } else if (arg === '--remove' && nextArg) {
     cliRemoveFingerprint = nextArg;
     i++;
@@ -393,6 +400,7 @@ Options:
   --no-auth                Disable authentication (development only, not yet wired)
   --remote                 Enable remote access via signaling relay
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
+  --passphrase PASS        Passphrase for keygen (avoids interactive prompt)
   --force                  Overwrite existing identity (keygen/import-key)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
@@ -431,6 +439,17 @@ Any other arguments are passed through to Claude Code.
       cliSubcommandArg = nextArg;
       i++;
     }
+  } else if (
+    cliSubcommand &&
+    (cliSubcommand === 'import-key' ||
+      cliSubcommand === 'authorize' ||
+      cliSubcommand === 'attach') &&
+    !cliSubcommandArg &&
+    arg &&
+    !arg.startsWith('-')
+  ) {
+    // Positional arg for subcommand (supports flags before or after)
+    cliSubcommandArg = arg;
   } else {
     // Pass through to Claude
     if (arg) claudeArgs.push(arg);
@@ -540,7 +559,7 @@ WantedBy=default.target`;
 // Handle key management subcommands
 if (cliSubcommand === 'keygen') {
   const { runKeygen } = await import('./cli/keygen.ts');
-  await runKeygen({ force: cliForce });
+  await runKeygen({ passphrase: cliPassphrase, force: cliForce });
   process.exit(0);
 }
 
@@ -1388,12 +1407,84 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
+// Auth setup: load identity and create authenticator if available
+// ---------------------------------------------------------------------------
+let authenticator: Authenticator | undefined;
+
+if (!_cliNoAuth) {
+  const identityStore = new IdentityStore();
+  if (identityStore.exists()) {
+    let unlockedIdentity: UnlockedIdentity | undefined;
+    const storedIdentity = identityStore.load();
+    if (storedIdentity) {
+      // Prompt for passphrase to unlock identity
+      if (process.stdin.isTTY) {
+        process.stdout.write('Passphrase to unlock identity: ');
+        const passphrase = await new Promise<string>((resolve, reject) => {
+          let input = '';
+          process.stdin.setRawMode?.(true);
+          process.stdin.resume();
+          process.stdin.setEncoding('utf-8');
+          const onData = (chunk: string) => {
+            for (const ch of chunk) {
+              if (ch === '\r' || ch === '\n') {
+                process.stdin.setRawMode?.(false);
+                process.stdin.pause();
+                process.stdin.removeListener('data', onData);
+                process.stdout.write('\n');
+                resolve(input);
+                return;
+              }
+              if (ch === '\x7f' || ch === '\b') {
+                if (input.length > 0) {
+                  input = input.slice(0, -1);
+                  process.stdout.write('\b \b');
+                }
+              } else if (ch === '\x03') {
+                process.stdout.write('\n');
+                process.exit(130);
+              } else if (ch >= ' ') {
+                input += ch;
+                process.stdout.write('*');
+              }
+            }
+          };
+          process.stdin.on('data', onData);
+          process.stdin.on('error', (err: Error) => {
+            process.stdin.setRawMode?.(false);
+            reject(new Error(`Failed to read passphrase: ${err.message}`));
+          });
+        });
+        try {
+          unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
+        } catch {
+          console.error('Failed to unlock identity. Wrong passphrase?');
+          process.exit(1);
+        }
+      } else {
+        console.warn('No TTY available; running without authentication.');
+        console.warn('Use --no-auth to suppress this warning.');
+      }
+    }
+
+    if (unlockedIdentity) {
+      authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
+      console.log(`Authentication enabled (fingerprint: ${storedIdentity?.fingerprint})`);
+    }
+  } else {
+    console.log('No identity found. Running without authentication.');
+    console.log('Run "remi keygen" to generate an identity.');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Create and register adapters
 // ---------------------------------------------------------------------------
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
     host: 'localhost',
+    ...(authenticator && { authenticator }),
   },
   sharedEvents,
 );
