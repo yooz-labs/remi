@@ -1,14 +1,21 @@
 /**
  * SettingsPanel component.
  *
- * Slide-in panel for app settings.
+ * Slide-in panel for app settings including identity management.
  */
 
+import {
+  exportIdentity,
+  generateIdentity,
+  getFingerprint,
+  importIdentity,
+  removeIdentity,
+} from '@/lib/identity-client';
 import type { AppSettings } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { clsx } from 'clsx';
-import { Moon, Sun, Monitor, X } from 'lucide-react';
-import { useEffect } from 'react';
+import { Copy, Download, Key, Moon, Monitor, Shield, Sun, Upload, X } from 'lucide-react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 interface SettingsPanelProps {
   readonly open: boolean;
@@ -76,6 +83,234 @@ function Toggle({
   );
 }
 
+/** Identity management sub-section */
+function IdentitySection() {
+  const [fingerprint, setFingerprint] = useState<string | null>(getFingerprint);
+  const [showGenerate, setShowGenerate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+  const [confirmPassphrase, setConfirmPassphrase] = useState('');
+  const [importJson, setImportJson] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const passphraseRef = useRef<HTMLInputElement>(null);
+
+  const refresh = useCallback(() => {
+    setFingerprint(getFingerprint());
+  }, []);
+
+  const handleGenerate = async (e: FormEvent) => {
+    e.preventDefault();
+    if (passphrase.length < 8) {
+      setFeedback('Passphrase must be at least 8 characters.');
+      return;
+    }
+    if (passphrase !== confirmPassphrase) {
+      setFeedback('Passphrases do not match.');
+      return;
+    }
+    setGenerating(true);
+    setFeedback(null);
+    try {
+      await generateIdentity(passphrase);
+      refresh();
+      setShowGenerate(false);
+      setPassphrase('');
+      setConfirmPassphrase('');
+      setFeedback('Identity generated successfully.');
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Failed to generate identity');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleImport = (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      importIdentity(importJson);
+      refresh();
+      setShowImport(false);
+      setImportJson('');
+      setFeedback('Identity imported successfully.');
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Failed to import identity');
+    }
+  };
+
+  const handleExport = () => {
+    const json = exportIdentity();
+    if (!json) return;
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'remi-identity.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCopyFingerprint = () => {
+    if (fingerprint) {
+      navigator.clipboard.writeText(fingerprint);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleRemove = () => {
+    removeIdentity();
+    refresh();
+    setFeedback('Identity removed.');
+  };
+
+  return (
+    <section>
+      <h3 className="mb-3 text-sm font-medium text-[--color-text-secondary]">
+        Identity & Security
+      </h3>
+
+      {fingerprint ? (
+        <div className="space-y-3">
+          {/* Fingerprint display */}
+          <div className="flex items-center gap-2 rounded-lg bg-[--color-surface-light] p-3">
+            <Shield className="size-5 shrink-0 text-[--color-primary]" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-[--color-text-muted]">Your fingerprint</p>
+              <p className="truncate font-mono text-sm text-[--color-text]">{fingerprint}</p>
+            </div>
+            <button
+              onClick={handleCopyFingerprint}
+              className="shrink-0 rounded p-1 text-[--color-text-muted] hover:text-[--color-text]"
+              title="Copy fingerprint"
+            >
+              <Copy className="size-4" />
+            </button>
+          </div>
+          {copied && (
+            <p className="text-xs text-[--color-success]">Copied to clipboard</p>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex gap-2">
+            <button
+              onClick={handleExport}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-surface-light] py-2 text-xs text-[--color-text-secondary] hover:bg-[--color-surface-elevated]"
+            >
+              <Download className="size-3.5" />
+              Export
+            </button>
+            <button
+              onClick={handleRemove}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-error]/10 py-2 text-xs text-[--color-error] hover:bg-[--color-error]/20"
+            >
+              <X className="size-3.5" />
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-[--color-text-muted]">
+            No identity configured. Generate one or import from another device.
+          </p>
+
+          {!showGenerate && !showImport && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setShowGenerate(true); setShowImport(false); }}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-primary] py-2 text-xs text-white hover:bg-[--color-primary-dark]"
+              >
+                <Key className="size-3.5" />
+                Generate
+              </button>
+              <button
+                onClick={() => { setShowImport(true); setShowGenerate(false); }}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-surface-light] py-2 text-xs text-[--color-text-secondary] hover:bg-[--color-surface-elevated]"
+              >
+                <Upload className="size-3.5" />
+                Import
+              </button>
+            </div>
+          )}
+
+          {/* Generate form */}
+          {showGenerate && (
+            <form onSubmit={handleGenerate} className="space-y-2">
+              <input
+                ref={passphraseRef}
+                type="password"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                placeholder="Passphrase (min 8 chars)"
+                className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+              />
+              <input
+                type="password"
+                value={confirmPassphrase}
+                onChange={(e) => setConfirmPassphrase(e.target.value)}
+                placeholder="Confirm passphrase"
+                className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={generating}
+                  className="flex-1 rounded-lg bg-[--color-primary] py-2 text-xs text-white hover:bg-[--color-primary-dark] disabled:opacity-50"
+                >
+                  {generating ? 'Generating...' : 'Create Identity'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowGenerate(false); setPassphrase(''); setConfirmPassphrase(''); }}
+                  className="rounded-lg bg-[--color-surface-light] px-3 py-2 text-xs text-[--color-text-secondary]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Import form */}
+          {showImport && (
+            <form onSubmit={handleImport} className="space-y-2">
+              <textarea
+                value={importJson}
+                onChange={(e) => setImportJson(e.target.value)}
+                placeholder="Paste identity JSON here"
+                rows={4}
+                className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm font-mono text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={!importJson.trim()}
+                  className="flex-1 rounded-lg bg-[--color-primary] py-2 text-xs text-white hover:bg-[--color-primary-dark] disabled:opacity-50"
+                >
+                  Import
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowImport(false); setImportJson(''); }}
+                  className="rounded-lg bg-[--color-surface-light] px-3 py-2 text-xs text-[--color-text-secondary]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+
+      {feedback && (
+        <p className="mt-2 text-xs text-[--color-text-muted]">{feedback}</p>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPanelProps) {
   // Close on Escape key
   useEffect(() => {
@@ -113,6 +348,9 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
         </header>
 
         <div className="overflow-y-auto p-4 space-y-6">
+          {/* Identity & Security */}
+          <IdentitySection />
+
           {/* Theme */}
           <section>
             <h3 className="mb-3 text-sm font-medium text-[--color-text-secondary]">Theme</h3>

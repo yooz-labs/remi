@@ -11,6 +11,8 @@ import { SettingsPanel } from '@/components/settings';
 import { useWebSocket } from '@/hooks';
 import type { AppSettings, UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
+import type { UnlockedIdentity } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { generateId } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
@@ -48,6 +50,7 @@ function App() {
   const [creatingSession, setCreatingSession] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
@@ -379,7 +382,14 @@ function App() {
     requestTranscriptLoad,
     requestNewSession,
     sessionId: wsSessionId,
-  } = useWebSocket({ onMessage: handleMessage, initialResumeSessionId: storedSessionId ?? undefined });
+    needsPassphrase,
+    serverFingerprint,
+    provideIdentity,
+  } = useWebSocket({
+    onMessage: handleMessage,
+    initialResumeSessionId: storedSessionId ?? undefined,
+    unlockedIdentity,
+  });
 
   const error = wsError?.message ?? null;
 
@@ -479,6 +489,17 @@ function App() {
     },
     [activeSessionId, sendInput, sendAnswer, sessionQuestion],
   );
+
+  const handlePassphraseSubmit = useCallback(async (passphrase: string) => {
+    try {
+      const identity = await unlockStoredIdentity(passphrase);
+      setUnlockedIdentity(identity);
+      provideIdentity(identity);
+    } catch (err) {
+      console.error('Failed to unlock identity:', err);
+      throw err;
+    }
+  }, [provideIdentity]);
 
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
@@ -637,12 +658,16 @@ function App() {
       />
 
       <ConnectModal
-        isOpen={showConnectModal}
+        isOpen={showConnectModal || needsPassphrase}
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         onConnectCode={handleConnectCode}
         connectionStatus={connectionStatus}
         error={null}
+        needsPassphrase={needsPassphrase}
+        hasIdentity={hasIdentity()}
+        serverFingerprint={serverFingerprint}
+        onPassphraseSubmit={handlePassphraseSubmit}
       />
     </>
   );
