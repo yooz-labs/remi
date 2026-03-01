@@ -64,9 +64,9 @@ export default {
         );
       }
 
-      // Rate limit per client IP
-      const clientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-      if (!rateLimiter.check(clientIp)) {
+      // Rate limit per client IP (skip if IP unavailable)
+      const clientIp = request.headers.get('CF-Connecting-IP');
+      if (clientIp && !rateLimiter.check(clientIp)) {
         return new Response(
           JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many connection attempts' }),
           { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },

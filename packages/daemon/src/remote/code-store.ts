@@ -16,7 +16,8 @@ const CODE_FILE = path.join(REMI_DIR, 'connection-code');
 const ALPHA_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ';
 const NUMERIC_CHARS = '23456789';
 
-const CODE_PATTERN = /^[A-Z]{4}-[0-9]{4}$/;
+/** Only accept codes using the unambiguous character set */
+const CODE_PATTERN = /^[ABCDEFGHJKMNPQRSTUVWXYZ]{4}-[23456789]{4}$/;
 
 function generateConnectionCode(): string {
   const bytes = new Uint8Array(8);
@@ -49,16 +50,23 @@ export class CodeStore {
         return content;
       }
       return null;
-    } catch {
-      return null;
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        'code' in err &&
+        (err as NodeJS.ErrnoException).code === 'ENOENT'
+      ) {
+        return null;
+      }
+      throw err;
     }
   }
 
-  /** Save a code to disk. Creates ~/.remi/ if needed. */
+  /** Save a code to disk with restrictive permissions. Creates ~/.remi/ if needed. */
   save(code: string): void {
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.filePath, code, 'utf-8');
+    fs.writeFileSync(this.filePath, code, { encoding: 'utf-8', mode: 0o600 });
   }
 
   /** Generate a new code, save it, and return it. */

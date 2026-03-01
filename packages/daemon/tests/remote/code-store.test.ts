@@ -49,15 +49,17 @@ describe('CodeStore', () => {
   });
 
   test('load rejects codes with ambiguous characters', () => {
-    // 0, O, 1, I, L are excluded from generation but pattern allows any uppercase + digit
+    // 0, O, 1, I, L are excluded from the unambiguous character set
     fs.writeFileSync(codeFile, 'ABCD-0000', 'utf-8');
-    // Pattern is [A-Z]{4}-[0-9]{4}, so this is valid even with 0
-    expect(store.load()).toBe('ABCD-0000');
+    expect(store.load()).toBeNull();
+
+    fs.writeFileSync(codeFile, 'OILZ-2345', 'utf-8');
+    expect(store.load()).toBeNull();
   });
 
   test('refresh generates a valid code and saves it', () => {
     const code = store.refresh();
-    expect(code).toMatch(/^[A-Z]{4}-[0-9]{4}$/);
+    expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ]{4}-[23456789]{4}$/);
     expect(store.load()).toBe(code);
   });
 
@@ -77,10 +79,26 @@ describe('CodeStore', () => {
     expect(deepStore.load()).toBe('MNPQ-5678');
   });
 
+  test('load throws on permission errors (non-ENOENT)', () => {
+    // Create a file then make it unreadable
+    fs.writeFileSync(codeFile, 'ABCD-2345', 'utf-8');
+    fs.chmodSync(codeFile, 0o000);
+    expect(() => store.load()).toThrow();
+    // Restore permissions for cleanup
+    fs.chmodSync(codeFile, 0o644);
+  });
+
+  test('save sets restrictive file permissions', () => {
+    store.save('ABCD-2345');
+    const stat = fs.statSync(codeFile);
+    // 0o600 = owner read/write only
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+
   test('refresh overwrites existing code', () => {
-    store.save('AAAA-1111');
+    store.save('AAAA-2222');
     const newCode = store.refresh();
-    expect(newCode).not.toBe('AAAA-1111');
+    expect(newCode).not.toBe('AAAA-2222');
     expect(store.load()).toBe(newCode);
   });
 });

@@ -1,9 +1,10 @@
 /**
- * Sliding-window rate limiter for the signaling worker.
+ * Fixed-window rate limiter for the signaling worker.
  *
  * Tracks request counts per key (typically client IP) within a time window.
- * Workers reuse isolates across requests, so in-memory state persists
- * for the lifetime of the isolate (typically minutes to hours).
+ * When the window expires, the counter resets. Workers reuse isolates
+ * across requests, so in-memory state persists for the lifetime of the
+ * isolate (typically minutes to hours).
  */
 
 interface WindowEntry {

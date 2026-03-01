@@ -1,7 +1,7 @@
 /**
  * Signaling Client - connects to the signaling server.
  *
- * Generates a connection code locally, connects to the code-named room,
+ * Connects to a code-named room (using a provided or locally generated code)
  * and handles relay message forwarding.
  */
 

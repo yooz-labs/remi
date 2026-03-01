@@ -30,7 +30,7 @@ describe('SignalingClient', () => {
     }
     const code = client.connectionCode;
     expect(code).not.toBeNull();
-    expect(code).toMatch(/^[A-Z]{4}-[0-9]{4}$/);
+    expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ]{4}-[23456789]{4}$/);
     client.close();
   });
 

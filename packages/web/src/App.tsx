@@ -400,9 +400,13 @@ function App() {
 
   // Relay-aware send: dispatches through signaling client when in relay mode
   const relaySend = useCallback((message: ProtocolMessage): boolean => {
-    if (connectionMode === 'relay' && signalingClientRef.current?.isConnected) {
-      signalingClientRef.current.sendMessage(message);
-      return true;
+    if (connectionMode === 'relay') {
+      if (signalingClientRef.current?.isConnected) {
+        signalingClientRef.current.sendMessage(message);
+        return true;
+      }
+      console.warn(`Relay send dropped (not connected): ${message.type}`);
+      return false;
     }
     return false;
   }, [connectionMode]);
@@ -611,6 +615,10 @@ function App() {
 
       signalingClientRef.current = client;
       client.connect(signalingUrl, code);
+    }).catch((err) => {
+      console.error('Failed to load signaling client:', err);
+      setRelayStatus('disconnected');
+      setConnectionMode('direct');
     });
   }, []);
 

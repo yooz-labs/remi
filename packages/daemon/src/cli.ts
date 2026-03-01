@@ -298,6 +298,7 @@ let cliNoTelegram = false;
 let cliMaxBulletLength: number | undefined;
 let cliDaemonMode = false;
 let cliSignalingUrl: string | undefined;
+let cliNoRelay = false;
 let cliResume: string | true | undefined; // true = resume most recent, string = session ID
 let cliShowSessions = false;
 let cliInstall = false;
@@ -331,6 +332,8 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--no-telegram') {
     cliNoTelegram = true;
+  } else if (arg === '--no-relay') {
+    cliNoRelay = true;
   } else if (arg === '--signaling-url' && nextArg) {
     cliSignalingUrl = nextArg;
     i++;
@@ -359,6 +362,7 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
+  --no-relay               Disable signaling relay (no remote access via connection code)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --install                Install as autostart service
   --uninstall              Remove autostart service
@@ -1356,7 +1360,7 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-{
+if (!cliNoRelay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
   const { CodeStore } = await import('./remote/code-store.ts');
   const codeStore = new CodeStore();
