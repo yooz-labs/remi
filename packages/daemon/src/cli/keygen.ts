@@ -45,9 +45,15 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
 }
 
 async function promptPassphrase(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    console.error('Cannot prompt for passphrase: stdin is not a terminal.');
+    console.error('Use --passphrase option instead.');
+    process.exit(1);
+  }
+
   process.stdout.write('Passphrase (min 8 chars): ');
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let input = '';
     process.stdin.setRawMode?.(true);
     process.stdin.resume();
@@ -81,5 +87,9 @@ async function promptPassphrase(): Promise<string> {
     };
 
     process.stdin.on('data', onData);
+    process.stdin.on('error', (err: Error) => {
+      process.stdin.setRawMode?.(false);
+      reject(new Error(`Failed to read passphrase: ${err.message}`));
+    });
   });
 }

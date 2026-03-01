@@ -19,14 +19,17 @@ export interface KnownHost {
   readonly lastSeen: string;
 }
 
-/** Load stored identity (still encrypted) */
+/** Load stored identity (still encrypted). Returns null if not found. Throws on corrupt data. */
 export function loadIdentity(): RemiIdentity | null {
+  const stored = localStorage.getItem(IDENTITY_KEY);
+  if (!stored) return null;
   try {
-    const stored = localStorage.getItem(IDENTITY_KEY);
-    if (!stored) return null;
     return deserializeIdentity(stored);
-  } catch {
-    return null;
+  } catch (err) {
+    console.error('[remi] Stored identity is corrupt:', err);
+    throw new Error(
+      'Your stored identity is corrupt. You may need to remove and re-create it in Settings.',
+    );
   }
 }
 

@@ -396,7 +396,7 @@ export interface AuthResultMessage {
   readonly timestamp: Timestamp;
   /** Whether authentication succeeded */
   readonly success: boolean;
-  /** Error code if failed: UNKNOWN_KEY, INVALID_SIGNATURE, AUTH_DISABLED */
+  /** Error code if failed: UNKNOWN_KEY, INVALID_SIGNATURE, NO_PENDING_CHALLENGE, VERIFICATION_ERROR */
   readonly error?: string;
   /** Server's signature of the challenge (for mutual authentication) */
   readonly serverSignature?: string;

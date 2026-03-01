@@ -313,6 +313,7 @@ let cliSubcommand:
   | 'keys'
   | undefined;
 let cliSubcommandArg: string | undefined;
+// TODO: wire --no-auth to connection handler to skip authentication
 let _cliNoAuth = false;
 let cliForce = false;
 let cliLabel: string | undefined;
@@ -389,7 +390,7 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
-  --no-auth                Disable authentication (development only)
+  --no-auth                Disable authentication (development only, not yet wired)
   --remote                 Enable remote access via signaling relay
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --force                  Overwrite existing identity (keygen/import-key)

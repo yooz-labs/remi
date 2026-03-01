@@ -53,14 +53,16 @@ export class IdentityStore {
     return fs.existsSync(this.identityPath);
   }
 
-  /** Load the stored identity. Returns null if not found or corrupt. */
+  /** Load the stored identity. Returns null if file does not exist. Throws on corrupt file. */
   load(): RemiIdentity | null {
+    if (!fs.existsSync(this.identityPath)) return null;
     try {
-      if (!fs.existsSync(this.identityPath)) return null;
       const raw = fs.readFileSync(this.identityPath, 'utf-8');
       return deserializeIdentity(raw);
-    } catch {
-      return null;
+    } catch (err) {
+      throw new Error(
+        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -91,17 +93,24 @@ export class IdentityStore {
 
   // -- Authorized Keys --
 
-  /** Load authorized keys. Returns empty file if not found. */
+  /** Load authorized keys. Returns empty file if not found. Throws on corrupt file. */
   loadAuthorizedKeys(): AuthorizedKeysFile {
+    if (!fs.existsSync(this.authorizedKeysPath)) return createAuthorizedKeysFile();
+    const raw = fs.readFileSync(this.authorizedKeysPath, 'utf-8');
+    let parsed: Record<string, unknown>;
     try {
-      if (!fs.existsSync(this.authorizedKeysPath)) return createAuthorizedKeysFile();
-      const raw = fs.readFileSync(this.authorizedKeysPath, 'utf-8');
-      const parsed = JSON.parse(raw) as AuthorizedKeysFile;
-      if (parsed.version !== 1 || !Array.isArray(parsed.keys)) return createAuthorizedKeysFile();
-      return parsed;
-    } catch {
-      return createAuthorizedKeysFile();
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(
+        `Authorized keys file is corrupt (${this.authorizedKeysPath}): ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
+    if (parsed['version'] !== 1 || !Array.isArray(parsed['keys'])) {
+      throw new Error(
+        `Authorized keys file has unsupported format (version: ${parsed['version']})`,
+      );
+    }
+    return parsed as unknown as AuthorizedKeysFile;
   }
 
   /** Save authorized keys to disk. */

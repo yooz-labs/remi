@@ -160,9 +160,17 @@ function IdentitySection() {
     }
   };
 
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
   const handleRemove = () => {
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      setFeedback('Click Remove again to confirm. This is irreversible.');
+      return;
+    }
     removeIdentity();
     refresh();
+    setConfirmRemove(false);
     setFeedback('Identity removed.');
   };
 

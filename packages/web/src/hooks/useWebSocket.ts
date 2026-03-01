@@ -82,8 +82,12 @@ export interface UseWebSocketOptions {
   unlockedIdentity?: UnlockedIdentity | null;
 }
 
-/** Time to wait for auth_challenge before assuming no-auth mode (ms) */
-const AUTH_CHALLENGE_TIMEOUT = 500;
+/**
+ * Time to wait for auth_challenge after WebSocket opens before assuming
+ * no-auth mode. Set high enough for slow networks; auth-enabled servers
+ * send the challenge immediately on connection.
+ */
+const AUTH_CHALLENGE_TIMEOUT = 3000;
 
 /**
  * React hook for managing WebSocket connection.
@@ -149,10 +153,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     setAuthRequired(true);
     setServerFingerprint(srvFingerprint);
 
+    // Always store for mutual auth verification in handleAuthResult
+    pendingChallengeRef.current = { challenge, serverPublicKey: srvPublicKey };
+
     const identity = identityRef.current;
     if (!identity) {
-      // Need passphrase from user; store pending challenge
-      pendingChallengeRef.current = { challenge, serverPublicKey: srvPublicKey };
+      // Need passphrase from user
       setNeedsPassphrase(true);
       return;
     }
@@ -169,6 +175,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       client.send(response);
     } catch (err) {
       setError(new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`));
+      client.disconnect();
     }
   }, []);
 
@@ -198,8 +205,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           client.disconnect();
           return;
         }
-      } catch {
-        // Non-fatal; server signature verification is optional
+      } catch (err) {
+        setError(new Error(
+          `Server verification error: ${err instanceof Error ? err.message : String(err)}`,
+        ));
+        client.disconnect();
+        return;
       }
     }
 
@@ -269,6 +280,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         client.send(response);
       } catch (err) {
         setError(new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`));
+        client.disconnect();
       }
     })();
   }, []);
@@ -307,8 +319,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           if (newStatus === 'authenticating') {
             // WebSocket is open; wait for auth_challenge or assume no-auth
             authChallengeTimerRef.current = setTimeout(() => {
-              // No auth_challenge received; assume no-auth mode
               authChallengeTimerRef.current = null;
+              console.warn('[remi] No auth_challenge received; assuming no-auth mode');
               client.setConnected();
               sendHello(client);
             }, AUTH_CHALLENGE_TIMEOUT);

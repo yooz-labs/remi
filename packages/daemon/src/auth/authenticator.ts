@@ -84,8 +84,9 @@ export class Authenticator {
       if (!valid) {
         return createAuthResult(false, undefined, 'INVALID_SIGNATURE');
       }
-    } catch {
-      return createAuthResult(false, undefined, 'INVALID_SIGNATURE');
+    } catch (err) {
+      const code = err instanceof DOMException ? 'INVALID_KEY_DATA' : 'VERIFICATION_ERROR';
+      return createAuthResult(false, undefined, code);
     }
 
     // Update lastUsedAt

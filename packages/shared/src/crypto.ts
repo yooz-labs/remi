@@ -34,7 +34,12 @@ export const FINGERPRINT_LENGTH = 16;
 // -- Encoding helpers --
 
 export function toBase64(buffer: ArrayBuffer): Base64 {
-  return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i] as number);
+  }
+  return btoa(binary);
 }
 
 export function fromBase64(base64: Base64): ArrayBuffer {
