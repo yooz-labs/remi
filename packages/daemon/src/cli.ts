@@ -1479,7 +1479,7 @@ console.log(`Authentication enabled (fingerprint: ${storedIdentity.fingerprint})
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
-    host: 'localhost',
+    host: '0.0.0.0',
     authenticator,
   },
   sharedEvents,
