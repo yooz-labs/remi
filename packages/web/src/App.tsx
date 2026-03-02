@@ -13,10 +13,16 @@ import type { AppSettings, UIBullet, UIMessage, UIQuestion, UISession } from '@/
 import { DEFAULT_SETTINGS } from '@/types';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import type { UnlockedIdentity } from '@remi/shared';
+import {
+  createAuthResponse,
+  fromBase64,
+  sign,
+} from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
   createCreateSessionRequest,
+  createHello,
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
@@ -608,15 +614,9 @@ function App() {
           if (state === 'connected') {
             setRelayStatus('connected');
             setShowConnectModal(false);
-            // Send hello via relay
-            const hello: ProtocolMessage = {
-              type: 'hello',
-              id: generateId(),
-              timestamp: now(),
-              clientId: 'remi-web',
-              clientVersion: '0.1.0',
-            };
-            client.sendMessage(hello);
+            // Send hello via relay (harmless if auth is required; daemon drops it
+            // and sends auth_challenge first, then hello_ack after auth completes)
+            client.sendMessage(createHello('remi-web', '0.1.0'));
           } else if (state === 'connecting' || state === 'joined') {
             setRelayStatus('connecting');
           } else if (state === 'disconnected' || state === 'error') {
@@ -624,10 +624,46 @@ function App() {
           }
         },
         onMessage: (message) => {
-          // Forward relay messages to the existing message handler
-          if (handleMessageRef.current && message && typeof message === 'object' && 'type' in message) {
-            handleMessageRef.current(message as ProtocolMessage);
+          if (!message || typeof message !== 'object' || !('type' in message)) return;
+          const msg = message as ProtocolMessage;
+
+          // Handle auth_challenge: sign with identity and respond
+          if (msg.type === 'auth_challenge') {
+            const identity = unlockedIdentity;
+            if (!identity) {
+              console.error('Relay auth_challenge received but no unlocked identity');
+              // TODO: prompt for passphrase in relay mode
+              return;
+            }
+            (async () => {
+              try {
+                const challengeData = fromBase64(msg.challenge);
+                const signature = await sign(identity.privateKey, challengeData);
+                const response = createAuthResponse(
+                  identity.publicKeyRaw,
+                  signature,
+                  identity.fingerprint,
+                );
+                client.sendMessage(response);
+              } catch (err) {
+                console.error('Relay auth failed:', err instanceof Error ? err.message : err);
+              }
+            })();
+            return;
           }
+
+          // Handle auth_result: log success/failure
+          if (msg.type === 'auth_result') {
+            if (!msg.success) {
+              console.error(`Relay auth rejected: ${msg.error ?? 'unknown'}`);
+              setRelayStatus('disconnected');
+            }
+            // On success, daemon will send hello_ack next (handled by handleMessage)
+            return;
+          }
+
+          // Forward all other messages to the existing handler
+          handleMessageRef.current?.(msg);
         },
         onError: (errCode, errMsg) => {
           console.error(`Signaling error [${errCode}]: ${errMsg}`);
@@ -641,7 +677,7 @@ function App() {
       setRelayStatus('disconnected');
       setConnectionMode('direct');
     });
-  }, []);
+  }, [unlockedIdentity]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {

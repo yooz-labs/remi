@@ -318,6 +318,7 @@ let cliSubcommand:
   | undefined;
 let cliSubcommandArg: string | undefined;
 let cliCodeRefresh = false;
+let cliPermanentCode = false;
 let cliForce = false;
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
@@ -351,6 +352,8 @@ for (let i = 0; i < args.length; i++) {
     cliNoTelegram = true;
   } else if (arg === '--no-relay') {
     cliNoRelay = true;
+  } else if (arg === '--permanent-code') {
+    cliPermanentCode = true;
   } else if (arg === '--signaling-url' && nextArg) {
     cliSignalingUrl = nextArg;
     i++;
@@ -398,6 +401,7 @@ Options:
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
   --no-relay               Disable signaling relay (no remote access via connection code)
+  --permanent-code         Use a persistent connection code (requires Ed25519 auth over relay)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --passphrase PASS        Passphrase for keygen (avoids interactive prompt)
   --force                  Overwrite existing identity (keygen/import-key)
@@ -596,23 +600,27 @@ if (cliSubcommand === 'keys') {
   process.exit(0);
 }
 
-// Handle 'code' subcommand: show or refresh the remote access code
+// Handle 'code' subcommand: show or refresh the persistent connection code
 if (cliSubcommand === 'code') {
   const { CodeStore } = await import('./remote/code-store.ts');
   const codeStore = new CodeStore();
   if (cliCodeRefresh) {
     const newCode = codeStore.refresh();
-    console.log(`New connection code: ${newCode}`);
+    console.log(`New permanent connection code: ${newCode}`);
     console.log('Restart the daemon for the new code to take effect.');
   } else {
     const code = codeStore.load();
     if (code) {
-      console.log(`Connection code: ${code}`);
+      console.log(`Permanent connection code: ${code}`);
+      console.log('Use --permanent-code flag when starting daemon to enable this code.');
     } else {
       const newCode = codeStore.refresh();
-      console.log(`Connection code: ${newCode} (newly generated)`);
+      console.log(`Permanent connection code: ${newCode} (newly generated)`);
+      console.log('Use --permanent-code flag when starting daemon to enable this code.');
     }
   }
+  console.log('\nNote: By default, codes rotate on each reconnect. Use --permanent-code to');
+  console.log('persist a fixed code (requires Ed25519 authentication for relay connections).');
   process.exit(0);
 }
 
@@ -1534,19 +1542,39 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 
 if (!cliNoRelay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
-  const { CodeStore } = await import('./remote/code-store.ts');
-  const codeStore = new CodeStore();
-  const code = codeStore.load() ?? codeStore.refresh();
+  const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
-  const relayAdapter = new RelayAdapter(
-    {
-      enabled: true,
-      signalingUrl,
-      code,
-    },
-    sharedEvents,
-  );
-  registry.register(relayAdapter);
+
+  if (cliPermanentCode) {
+    // Permanent code mode: persist code to disk, require Ed25519 auth over relay
+    const { CodeStore } = await import('./remote/code-store.ts');
+    const codeStore = new CodeStore();
+    const code = codeStore.load() ?? codeStore.refresh();
+    const relayAdapter = new RelayAdapter(
+      {
+        enabled: true,
+        signalingUrl,
+        code,
+        rotateCode: false,
+        authenticator,
+      },
+      sharedEvents,
+    );
+    registry.register(relayAdapter);
+  } else {
+    // Rotating code mode (default): ephemeral code, no Ed25519 auth
+    const code = generateConnectionCode();
+    const relayAdapter = new RelayAdapter(
+      {
+        enabled: true,
+        signalingUrl,
+        code,
+        rotateCode: true,
+      },
+      sharedEvents,
+    );
+    registry.register(relayAdapter);
+  }
 }
 
 // ---------------------------------------------------------------------------
