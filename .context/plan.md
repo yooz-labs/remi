@@ -1,112 +1,110 @@
-# Remote Connectivity via WebRTC - Implementation Plan
+# Remi Development Plan
 
-## Issue: #10 (feature/issue-10-remote-connectivity)
+## Completed Work
 
-## Current State
-- Signaling server code complete in packages/signaling/ (Cloudflare Worker + Durable Objects)
-- ConnectionRoom handles register/join/offer/answer/ice-candidate
-- Code generator creates AXBY-1234 format codes
-- Web client has ConnectModal with "Remote (Code)" tab but it's a stub
-- NO WebRTC code exists anywhere in the codebase
-- NO STUN/TURN configuration
+### Remote Connectivity via Relay (PR #15, Issue #10)
+Initial implementation of relay-based remote access:
+- Signaling server on Cloudflare Workers + Durable Objects
+- `ConnectionRoom` handles register/join/relay message forwarding
+- Daemon `SignalingClient` and `RelayAdapter` for signaling connection
+- Web client `signaling-client.ts` for code-based remote connection
+- Relay-first approach (no WebRTC needed; signaling server forwards all messages)
 
-## Architecture (Relay-First)
+### tmux-style CLI (PR #18)
+- `remi ls` lists running sessions
+- `remi attach <id>` attaches to a session in terminal
+
+### Daemon Signaling Integration (PR #23, Issue #21)
+Comprehensive fix and hardening of remote access. Four phases:
+
+**Phase 1: Signaling Server Hardening**
+- Fixed critical code mismatch bug: room code now derived from URL path, not randomly generated
+- Fixed Durable Object hibernation bug: state persisted to storage, peer roles tracked via WebSocket attachments
+- Added per-IP rate limiting (10 connections/minute, fixed-window)
+- Tightened room limit to 2 peers
+- Cleaned up legacy `DeviceRoom` DO via migration v3
+
+**Phase 2: Daemon Always-On Signaling**
+- Persistent connection codes in `~/.remi/connection-code` (`CodeStore` class)
+- Unambiguous character set: `ABCDEFGHJKMNPQRSTUVWXYZ` + `23456789` (no 0/O/1/I/L)
+- Relay adapter starts automatically (no `--remote` flag needed)
+- `--no-relay` opt-out flag added
+- `remi code` prints current code; `remi code --refresh` generates a new one
+
+**Phase 3: Web Client Relay Fix**
+- All message types now route through relay when in relay mode (was only `hello` before)
+- Connection mode tracking (`direct` vs `relay` state)
+- `relaySend()` wrapper dispatches to signaling client
+- Relay connection status shown in UI
+- Error handling for dynamic import and disconnected relay
+
+**Phase 4: Testing**
+- `code-store.test.ts`: load/save/refresh, permissions, invalid formats, ambiguous chars
+- `signaling-client.test.ts`: connect with provided code, pattern validation
+- `rate-limiter.test.ts`: allow/block thresholds, window reset
+- 671+ tests passing, CI green
+
+## Current Architecture
+
 ```
-Daemon                    Signaling Server              Web Client
-  |                       (Cloudflare Worker)               |
-  |--- WS: register -------->|                              |
-  |<-- WS: registered (code) |                              |
-  |                           |                              |
-  |                           |<---- WS: join (code) --------|
-  |                           |----> WS: peer-connected ---->|
-  |<-- WS: peer-connected ---|                              |
-  |                           |                              |
-  |--- WS: remi msg -------->|----> WS: remi msg ---------->|
-  |<-- WS: remi msg ---------|<---- WS: remi msg -----------|
-  |                           |                              |
-  |    (Remi protocol messages relayed through signaling)   |
+┌─────────────────────────────────────────────────────────────────┐
+│                    REMI CLIENT (Phone/Browser)                   │
+│  React + Capacitor (iOS/Android/Web/Desktop)                     │
+│  Chat View (xterm.js) | Session List | Notifications             │
+└──────────┬───────────────────────────────┬──────────────────────┘
+           │ Direct WebSocket              │ Relay (via signaling)
+           │ (LAN/Tailscale/VPN)           │ (remote, any network)
+           │                               │
+┌──────────▼───────────────────────────────▼──────────────────────┐
+│                 REMI DAEMON (on dev machine)                     │
+│  PTY Manager | Session Registry | Event Parser                   │
+│  WebSocket :28765 | RelayAdapter (always-on)                     │
+│  Persistent code: ~/.remi/connection-code                        │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ PTY
+┌──────────────────────────▼──────────────────────────────────────┐
+│                      CLAUDE CODE CLI                             │
+└─────────────────────────────────────────────────────────────────┘
+
+Relay path:
+  Daemon ←→ wss://remi-signaling.dev-941.workers.dev ←→ Web Client
+  (register+code)        (Durable Object room)        (join+code)
 ```
 
-## Key Decision: Relay-First, WebRTC Later
-Instead of WebRTC immediately (complex, Bun N-API compatibility uncertain for
-node-datachannel), use the signaling server as a message relay:
-- Works immediately with existing WebSocket code
-- No native dependencies needed
-- Signaling server already handles message forwarding
-- Can upgrade to WebRTC P2P later as optimization
-- Cloudflare Workers have low latency globally
+## Deployments
 
-## Implementation Phases
+| Service | URL | Deploy Command |
+|---------|-----|----------------|
+| Signaling | `wss://remi-signaling.dev-941.workers.dev` | `cd packages/signaling && npx cfman wrangler --account yooz-labs deploy` |
+| Web App | `https://remi-app.pages.dev` | `cd packages/web && bun run build && npx cfman wrangler --account yooz-labs pages deploy dist --project-name remi-app --branch main` |
 
-### Phase 1: Deploy Signaling Server
-- Deploy packages/signaling/ to Cloudflare (yooz account)
-- Verify: POST /register, GET /health
-- Update wrangler.toml with production config
-- **Blocker**: Need Wrangler access to yooz account
+## Key Files
 
-### Phase 2: Extend Signaling for Relay Mode
-**Modify: `packages/signaling/src/connection-room.ts`**
-- Add 'relay' message type to SignalingMessage union
-- Forward relay messages between host and client (same as signaling)
-- This allows Remi protocol messages to flow through the signaling WS
+| File | Purpose |
+|------|---------|
+| `packages/signaling/src/connection-room.ts` | Durable Object: room state, hibernation-safe, peer management |
+| `packages/signaling/src/index.ts` | Worker entry: routing, rate limiting, CORS |
+| `packages/signaling/src/rate-limiter.ts` | Per-IP fixed-window rate limiter |
+| `packages/daemon/src/remote/code-store.ts` | Persistent connection code storage |
+| `packages/daemon/src/remote/signaling-client.ts` | WebSocket client for signaling server |
+| `packages/daemon/src/remote/relay-adapter.ts` | Bridges signaling to daemon adapter system |
+| `packages/daemon/src/cli.ts` | CLI entry: daemon start, `remi code`, `remi ls`, `remi attach` |
+| `packages/web/src/App.tsx` | Web client: direct + relay connection modes |
+| `packages/web/src/lib/signaling-client.ts` | Web signaling client for relay mode |
 
-**Modify: `packages/signaling/src/types.ts`**
-- Add RelayMessage type: `{ type: 'relay', payload: string }`
+## Future Work
 
-### Phase 3: Daemon Side - Signaling Client
-**Create: `packages/daemon/src/remote/signaling-client.ts`**
-- Connect to signaling server via WebSocket
-- Send 'register' message, receive code
-- Display code in CLI output
-- Forward incoming relay messages to daemon's event system
-
-**Create: `packages/daemon/src/remote/relay-adapter.ts`**
-- Implements ConnectionAdapter interface
-- Bridges signaling client to daemon's adapter registry
-- Translates relay messages to/from protocol messages
-
-**Modify: `packages/daemon/src/cli.ts`**
-- Add `--signaling-url` flag (default: production signaling server URL)
-- Add `--remote` flag to enable remote connectivity
-- Register relay adapter alongside WebSocket adapter
-
-### Phase 4: Web Client Side
-**Modify: `packages/web/src/App.tsx`**
-- Implement handleConnectCode (currently console.warn stub)
-- Create signaling WebSocket connection on code entry
-- Send 'join' message with code
-- Bridge relay messages to existing message handler
-
-**Create: `packages/web/src/lib/signaling-client.ts`**
-- WebSocket client for signaling server
-- Handles join flow and relay message forwarding
-
-**Modify: `packages/web/src/components/session/ConnectModal.tsx`**
-- Wire code input to signaling client
-
-### Phase 5: WebRTC Upgrade (Future)
-- Add WebRTC DataChannel on web client (browser-native API)
-- Research node-datachannel Bun compatibility for daemon side
-- Upgrade from relay to P2P when both peers support it
+### WebRTC Upgrade (P2P)
+- Use signaling server for initial handshake only
+- Browser-native WebRTC DataChannel for web client
+- Research `node-datachannel` Bun compatibility for daemon
 - Keep relay as fallback for symmetric NAT
 
-## Files Summary
-| File | Action |
-|------|--------|
-| `packages/signaling/src/connection-room.ts` | Modify (relay support) |
-| `packages/signaling/src/types.ts` | Modify (relay message type) |
-| `packages/signaling/wrangler.toml` | Modify (deploy config) |
-| `packages/daemon/src/remote/signaling-client.ts` | Create |
-| `packages/daemon/src/remote/relay-adapter.ts` | Create |
-| `packages/daemon/src/cli.ts` | Modify (--signaling-url, --remote) |
-| `packages/web/src/App.tsx` | Modify (handleConnectCode) |
-| `packages/web/src/lib/signaling-client.ts` | Create |
-| `packages/web/src/components/session/ConnectModal.tsx` | Modify |
+### Authentication
+- Connection codes provide room isolation but no auth
+- Consider TOTP or challenge-response for daemon identity verification
+- Rate limiting provides basic abuse protection for now
 
-## Testing
-- Deploy signaling server, test with curl
-- Start daemon with --remote --signaling-url, verify code displayed
-- Enter code in web client, verify connection via relay
-- Send messages both directions
-- Test disconnect/reconnect
-- Test with daemon and client on different networks
+### Notifications
+- Push notifications for mobile (Capacitor)
+- Question detection alerts when agent needs input
