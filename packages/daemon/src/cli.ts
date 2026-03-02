@@ -316,8 +316,6 @@ let cliSubcommand:
   | 'keys'
   | undefined;
 let cliSubcommandArg: string | undefined;
-// TODO: wire --no-auth to connection handler to skip authentication
-let _cliNoAuth = false;
 let cliForce = false;
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
@@ -358,8 +356,6 @@ for (let i = 0; i < args.length; i++) {
     cliInstall = true;
   } else if (arg === '--uninstall') {
     cliUninstall = true;
-  } else if (arg === '--no-auth') {
-    _cliNoAuth = true;
   } else if (arg === '--force') {
     cliForce = true;
   } else if (arg === '--label' && nextArg) {
@@ -397,7 +393,6 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
-  --no-auth                Disable authentication (development only, not yet wired)
   --remote                 Enable remote access via signaling relay
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --passphrase PASS        Passphrase for keygen (avoids interactive prompt)
@@ -1408,83 +1403,75 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: load identity and create authenticator if available
+// Auth setup: identity is required
 // ---------------------------------------------------------------------------
-let authenticator: Authenticator | undefined;
+const identityStore = new IdentityStore();
 
-if (!_cliNoAuth) {
-  const identityStore = new IdentityStore();
-  if (identityStore.exists()) {
-    let unlockedIdentity: UnlockedIdentity | undefined;
-    const storedIdentity = identityStore.load();
-    if (storedIdentity) {
-      // Get passphrase from env, CLI flag, or interactive prompt
-      const envPassphrase = process.env['REMI_PASSPHRASE'];
-      if (envPassphrase) {
-        try {
-          unlockedIdentity = await unlockIdentity(storedIdentity, envPassphrase);
-        } catch {
-          console.error('REMI_PASSPHRASE is incorrect.');
-          process.exit(1);
-        }
-      } else if (process.stdin.isTTY) {
-        process.stdout.write('Passphrase to unlock identity: ');
-        const passphrase = await new Promise<string>((resolve, reject) => {
-          let input = '';
-          process.stdin.setRawMode?.(true);
-          process.stdin.resume();
-          process.stdin.setEncoding('utf-8');
-          const onData = (chunk: string) => {
-            for (const ch of chunk) {
-              if (ch === '\r' || ch === '\n') {
-                process.stdin.setRawMode?.(false);
-                process.stdin.pause();
-                process.stdin.removeListener('data', onData);
-                process.stdout.write('\n');
-                resolve(input);
-                return;
-              }
-              if (ch === '\x7f' || ch === '\b') {
-                if (input.length > 0) {
-                  input = input.slice(0, -1);
-                  process.stdout.write('\b \b');
-                }
-              } else if (ch === '\x03') {
-                process.stdout.write('\n');
-                process.exit(130);
-              } else if (ch >= ' ') {
-                input += ch;
-                process.stdout.write('*');
-              }
-            }
-          };
-          process.stdin.on('data', onData);
-          process.stdin.on('error', (err: Error) => {
-            process.stdin.setRawMode?.(false);
-            reject(new Error(`Failed to read passphrase: ${err.message}`));
-          });
-        });
-        try {
-          unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
-        } catch {
-          console.error('Failed to unlock identity. Wrong passphrase?');
-          process.exit(1);
-        }
-      } else {
-        console.warn('No TTY available; running without authentication.');
-        console.warn('Use --no-auth to suppress this warning.');
-      }
-    }
-
-    if (unlockedIdentity) {
-      authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
-      console.log(`Authentication enabled (fingerprint: ${storedIdentity?.fingerprint})`);
-    }
-  } else {
-    console.log('No identity found. Running without authentication.');
-    console.log('Run "remi keygen" to generate an identity.');
-  }
+if (!identityStore.exists()) {
+  console.error('No identity found. Run "remi keygen" first.');
+  process.exit(1);
 }
+
+const storedIdentity = identityStore.load();
+if (!storedIdentity) {
+  console.error('Identity file is empty. Run "remi keygen --force" to regenerate.');
+  process.exit(1);
+}
+
+let passphrase = process.env['REMI_PASSPHRASE'];
+if (!passphrase) {
+  if (!process.stdin.isTTY) {
+    console.error('No TTY and REMI_PASSPHRASE not set. Cannot unlock identity.');
+    process.exit(1);
+  }
+  process.stdout.write('Passphrase to unlock identity: ');
+  passphrase = await new Promise<string>((resolve, reject) => {
+    let input = '';
+    process.stdin.setRawMode?.(true);
+    process.stdin.resume();
+    process.stdin.setEncoding('utf-8');
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') {
+          process.stdin.setRawMode?.(false);
+          process.stdin.pause();
+          process.stdin.removeListener('data', onData);
+          process.stdout.write('\n');
+          resolve(input);
+          return;
+        }
+        if (ch === '\x7f' || ch === '\b') {
+          if (input.length > 0) {
+            input = input.slice(0, -1);
+            process.stdout.write('\b \b');
+          }
+        } else if (ch === '\x03') {
+          process.stdout.write('\n');
+          process.exit(130);
+        } else if (ch >= ' ') {
+          input += ch;
+          process.stdout.write('*');
+        }
+      }
+    };
+    process.stdin.on('data', onData);
+    process.stdin.on('error', (err: Error) => {
+      process.stdin.setRawMode?.(false);
+      reject(new Error(`Failed to read passphrase: ${err.message}`));
+    });
+  });
+}
+
+let unlockedIdentity: UnlockedIdentity;
+try {
+  unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
+} catch {
+  console.error('Failed to unlock identity. Wrong passphrase?');
+  process.exit(1);
+}
+
+const authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
+console.log(`Authentication enabled (fingerprint: ${storedIdentity.fingerprint})`);
 
 // ---------------------------------------------------------------------------
 // Create and register adapters
@@ -1493,7 +1480,7 @@ const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
     host: 'localhost',
-    ...(authenticator && { authenticator }),
+    authenticator,
   },
   sharedEvents,
 );

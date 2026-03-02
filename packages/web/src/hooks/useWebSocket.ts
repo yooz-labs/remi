@@ -83,13 +83,6 @@ export interface UseWebSocketOptions {
 }
 
 /**
- * Time to wait for auth_challenge after WebSocket opens before assuming
- * no-auth mode. Set high enough for slow networks; auth-enabled servers
- * send the challenge immediately on connection.
- */
-const AUTH_CHALLENGE_TIMEOUT = 3000;
-
-/**
  * React hook for managing WebSocket connection.
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
@@ -114,7 +107,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const lastSessionIdRef = useRef<UUID | null>(initialResumeSessionId ?? null);
   const directoryRef = useRef<string | undefined>(undefined);
   const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
-  const authChallengeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingChallengeRef = useRef<{ challenge: string; serverPublicKey: string } | null>(null);
   const helloSentRef = useRef(false);
 
@@ -144,12 +136,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     srvPublicKey: string,
     client: WebSocketClient,
   ) => {
-    // Clear no-auth timeout
-    if (authChallengeTimerRef.current) {
-      clearTimeout(authChallengeTimerRef.current);
-      authChallengeTimerRef.current = null;
-    }
-
     setAuthRequired(true);
     setServerFingerprint(srvFingerprint);
 
@@ -290,10 +276,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     (url: string, directory?: string) => {
       // Clean up existing connection
       clientRef.current?.disconnect();
-      if (authChallengeTimerRef.current) {
-        clearTimeout(authChallengeTimerRef.current);
-        authChallengeTimerRef.current = null;
-      }
 
       // Reset state
       helloSentRef.current = false;
@@ -316,16 +298,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         onStatusChange: (newStatus) => {
           setStatus(newStatus);
 
-          if (newStatus === 'authenticating') {
-            // WebSocket is open; wait for auth_challenge or assume no-auth
-            authChallengeTimerRef.current = setTimeout(() => {
-              authChallengeTimerRef.current = null;
-              console.warn('[remi] No auth_challenge received; assuming no-auth mode');
-              client.setConnected();
-              sendHello(client);
-            }, AUTH_CHALLENGE_TIMEOUT);
-          }
-
           if (newStatus === 'disconnected') {
             setSessionId(null);
             helloSentRef.current = false;
@@ -346,10 +318,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   // Disconnect from daemon
   const disconnect = useCallback(() => {
-    if (authChallengeTimerRef.current) {
-      clearTimeout(authChallengeTimerRef.current);
-      authChallengeTimerRef.current = null;
-    }
     clientRef.current?.disconnect();
     setSessionId(null);
   }, []);
@@ -409,9 +377,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   // Clean up on unmount
   useEffect(() => {
     return () => {
-      if (authChallengeTimerRef.current) {
-        clearTimeout(authChallengeTimerRef.current);
-      }
       clientRef.current?.disconnect();
     };
   }, []);
