@@ -2,9 +2,9 @@
  * Authenticator - Server-side authentication logic.
  *
  * Handles the Ed25519 challenge-response handshake:
- * 1. Generate a random one-time challenge with server's public key
- * 2. Verify client's signature and check authorized keys
- * 3. Sign challenge for mutual authentication
+ * 1. Generate a random one-time challenge, include server's fingerprint and public key
+ * 2. Verify client's Ed25519 signature and check authorized keys list
+ * 3. Sign the same challenge with the server's private key (mutual authentication)
  *
  * Each challenge is consumed on first verification attempt (one-time use)
  * to prevent replay attacks.
@@ -75,6 +75,7 @@ export class Authenticator {
       isAuthorized = this.store.isAuthorized(response.clientPublicKey, response.clientFingerprint);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
+      console.error(`Auth store error during verification: ${detail}`);
       return createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`);
     }
     if (!isAuthorized) {
@@ -95,14 +96,19 @@ export class Authenticator {
       return createAuthResult(false, undefined, code);
     }
 
-    // Update lastUsedAt
+    // Update lastUsedAt (non-critical; don't let failures break auth)
     this.store.touchAuthorizedKey(response.clientFingerprint);
 
-    // Sign the challenge ourselves for mutual authentication
-    const challengeData = fromBase64(challenge);
-    const serverSignature = await sign(this.identity.privateKey, challengeData);
-
-    return createAuthResult(true, serverSignature);
+    // Sign the same challenge with server's key for mutual authentication
+    try {
+      const challengeData = fromBase64(challenge);
+      const serverSignature = await sign(this.identity.privateKey, challengeData);
+      return createAuthResult(true, serverSignature);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`Server failed to sign mutual auth challenge: ${detail}`);
+      return createAuthResult(false, undefined, 'SERVER_SIGN_ERROR');
+    }
   }
 
   /**

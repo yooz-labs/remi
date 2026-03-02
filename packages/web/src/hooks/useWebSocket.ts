@@ -203,38 +203,42 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       return;
     }
 
+    // Server signature is mandatory when auth was performed (prevents MITM bypass)
+    if (!srvSignature || !pendingChallengeRef.current) {
+      setError(new Error('Server did not provide mutual authentication signature'));
+      client.disconnect();
+      return;
+    }
+
     // Verify server signature for mutual auth
-    if (srvSignature && pendingChallengeRef.current) {
-      try {
-        const serverPubKey = await importPublicKey(
-          fromBase64(pendingChallengeRef.current.serverPublicKey),
-        );
-        const challengeData = fromBase64(pendingChallengeRef.current.challenge);
-        const valid = await verify(serverPubKey, challengeData, srvSignature);
-        if (!valid) {
-          setError(new Error('Server signature verification failed'));
-          client.disconnect();
-          return;
-        }
-      } catch (err) {
-        setError(new Error(
-          `Server verification error: ${err instanceof Error ? err.message : String(err)}`,
-        ));
+    try {
+      const serverPubKey = await importPublicKey(
+        fromBase64(pendingChallengeRef.current.serverPublicKey),
+      );
+      const challengeData = fromBase64(pendingChallengeRef.current.challenge);
+      const valid = await verify(serverPubKey, challengeData, srvSignature);
+      if (!valid) {
+        setError(new Error('Server signature verification failed'));
         client.disconnect();
         return;
       }
+    } catch (err) {
+      setError(new Error(
+        `Server verification error: ${err instanceof Error ? err.message : String(err)}`,
+      ));
+      client.disconnect();
+      return;
     }
 
     // TOFU: trust the server on first use (or update lastSeen)
     const pending = pendingChallengeRef.current;
-    if (pending) {
-      trustHost(urlRef.current, pending.serverFingerprint, pending.serverPublicKey);
-    }
+    trustHost(urlRef.current, pending.serverFingerprint, pending.serverPublicKey);
 
     pendingChallengeRef.current = null;
     setNeedsPassphrase(false);
 
-    // Auth passed; now send hello
+    // Auth passed; re-send hello (reset flag since the pre-auth hello was rejected)
+    helloSentRef.current = false;
     client.setConnected();
     sendHello(client);
   }, [sendHello]);
@@ -244,14 +248,17 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     const client = clientRef.current;
     if (!client) return;
 
-    // Intercept auth messages
+    // Intercept auth messages (both are async; attach .catch to surface errors)
     if (message.type === 'auth_challenge') {
       handleAuthChallenge(
         message.challenge,
         message.serverFingerprint,
         message.serverPublicKey,
         client,
-      );
+      ).catch((err) => {
+        setError(err instanceof Error ? err : new Error(String(err)));
+        client.disconnect();
+      });
       return;
     }
 
@@ -261,14 +268,21 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         message.error,
         message.serverSignature,
         client,
-      );
+      ).catch((err) => {
+        setError(err instanceof Error ? err : new Error(String(err)));
+        client.disconnect();
+      });
       return;
     }
 
-    // Handle hello_ack to get session ID
+    // Handle hello_ack to get session ID and ensure connected state
     if (message.type === 'hello_ack') {
       setSessionId(message.sessionId);
       lastSessionIdRef.current = message.sessionId;
+      // Ensure connected state (for non-auth path where setConnected wasn't called)
+      if (client && !client.isConnected) {
+        client.setConnected();
+      }
     }
 
     // Forward to user handler
@@ -321,6 +335,14 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         onStatusChange: (newStatus) => {
           setStatus(newStatus);
 
+          if (newStatus === 'authenticating') {
+            // Transport is open. Send hello immediately; if the daemon requires
+            // auth, it will send auth_challenge first and reject this hello with
+            // AUTH_REQUIRED (benign). After auth completes, hello is re-sent.
+            // For daemons without auth, this hello is accepted directly.
+            sendHello(client);
+          }
+
           if (newStatus === 'disconnected') {
             setSessionId(null);
             helloSentRef.current = false;
@@ -336,7 +358,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       clientRef.current = client;
       client.connect();
     },
-    [autoReconnect, handleMessage, sendHello],
+    [autoReconnect, handleMessage],
   );
 
   // Disconnect from daemon

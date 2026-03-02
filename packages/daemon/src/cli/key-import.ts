@@ -19,8 +19,13 @@ export async function runKeyImport(options: KeyImportOptions = {}): Promise<void
   const store = new IdentityStore(options.dir);
 
   if (store.exists() && !options.force) {
-    const existing = store.load();
-    console.error(`Identity already exists (fingerprint: ${existing?.fingerprint ?? 'unknown'}).`);
+    let fp = 'unknown';
+    try {
+      fp = store.load()?.fingerprint ?? 'unknown';
+    } catch {
+      /* corrupt file; show unknown */
+    }
+    console.error(`Identity already exists (fingerprint: ${fp}).`);
     console.error('Use --force to overwrite.');
     process.exit(1);
   }

@@ -72,10 +72,14 @@ export function exportIdentity(): string | null {
   return serializeIdentity(identity);
 }
 
-/** Get the identity fingerprint without unlocking */
+/** Get the identity fingerprint without unlocking. Returns null on missing or corrupt data. */
 export function getFingerprint(): string | null {
-  const identity = loadIdentity();
-  return identity?.fingerprint ?? null;
+  try {
+    const identity = loadIdentity();
+    return identity?.fingerprint ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // -- Known Hosts (TOFU) --
@@ -98,6 +102,11 @@ function saveKnownHosts(hosts: Record<string, KnownHost>): void {
   localStorage.setItem(KNOWN_HOSTS_KEY, JSON.stringify(hosts));
 }
 
+/** Normalize a URL for use as TOFU host key (strip trailing slashes, lowercase host). */
+function normalizeHostKey(url: string): string {
+  return url.replace(/\/+$/, '').toLowerCase();
+}
+
 /**
  * Check a server's fingerprint against known hosts.
  * Returns 'new' if never seen, 'match' if same, 'mismatch' if changed.
@@ -107,7 +116,7 @@ export function checkKnownHost(
   fingerprint: string,
 ): 'new' | 'match' | 'mismatch' {
   const hosts = loadKnownHosts();
-  const existing = hosts[serverUrl];
+  const existing = hosts[normalizeHostKey(serverUrl)];
   if (!existing) return 'new';
   return existing.fingerprint === fingerprint ? 'match' : 'mismatch';
 }
@@ -115,11 +124,12 @@ export function checkKnownHost(
 /** Record a server fingerprint (TOFU - trust on first use) */
 export function trustHost(serverUrl: string, fingerprint: string, publicKey: string): void {
   const hosts = loadKnownHosts();
+  const key = normalizeHostKey(serverUrl);
   const now = new Date().toISOString();
-  hosts[serverUrl] = {
+  hosts[key] = {
     fingerprint,
     publicKey,
-    firstSeen: hosts[serverUrl]?.firstSeen ?? now,
+    firstSeen: hosts[key]?.firstSeen ?? now,
     lastSeen: now,
   };
   saveKnownHosts(hosts);
@@ -128,6 +138,6 @@ export function trustHost(serverUrl: string, fingerprint: string, publicKey: str
 /** Remove a known host */
 export function removeKnownHost(serverUrl: string): void {
   const hosts = loadKnownHosts();
-  delete hosts[serverUrl];
+  delete hosts[normalizeHostKey(serverUrl)];
   saveKnownHosts(hosts);
 }

@@ -27,9 +27,8 @@ export async function promptPassphrase(label = 'Passphrase'): Promise<string> {
     const onData = (chunk: string) => {
       for (const ch of chunk) {
         if (ch === '\r' || ch === '\n') {
-          process.stdin.setRawMode?.(false);
+          cleanup();
           process.stdin.pause();
-          process.stdin.removeListener('data', onData);
           process.stdout.write('\n');
           resolve(input);
           return;
@@ -49,10 +48,24 @@ export async function promptPassphrase(label = 'Passphrase'): Promise<string> {
       }
     };
 
+    const cleanup = () => {
+      process.stdin.setRawMode?.(false);
+      process.stdin.removeListener('data', onData);
+    };
+
     process.stdin.on('data', onData);
     process.stdin.on('error', (err: Error) => {
-      process.stdin.setRawMode?.(false);
+      cleanup();
       reject(new Error(`Failed to read passphrase: ${err.message}`));
+    });
+    process.stdin.on('end', () => {
+      cleanup();
+      if (input.length > 0) {
+        process.stdout.write('\n');
+        resolve(input);
+      } else {
+        reject(new Error('Passphrase input ended without data'));
+      }
     });
   });
 }

@@ -46,8 +46,9 @@ export function fromBase64(base64: Base64): ArrayBuffer {
   let binary: string;
   try {
     binary = atob(base64);
-  } catch {
-    throw new Error(`Invalid Base64 input (length=${base64.length})`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : 'unknown';
+    throw new Error(`Invalid Base64 input (length=${base64.length}): ${detail}`);
   }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {

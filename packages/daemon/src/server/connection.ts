@@ -9,13 +9,14 @@
  * - Ping/pong keep-alive
  *
  * State transitions:
- *   With auth:    connecting -> authenticating -> connecting -> connected
- *   Without auth: connecting -> connected
+ *   With auth:    authenticating -> connecting (post-auth) -> connected -> disconnected
+ *   Without auth: connecting -> connected -> disconnected
  */
 
 import {
   MessageIdTracker,
   createAck,
+  createAuthResult,
   createError,
   createHelloAck,
   createPing,
@@ -208,7 +209,7 @@ export class Connection {
     if (this.state === 'authenticating') {
       if (message.type === 'auth_response') {
         this.handleAuthResponse(message).catch((err) => {
-          this.sendError('AUTH_ERROR', 'Internal authentication error');
+          this.send(createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR'));
           this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
           this.close('Authentication error');
         });

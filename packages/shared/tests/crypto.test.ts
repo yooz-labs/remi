@@ -35,6 +35,22 @@ describe('toBase64 / fromBase64', () => {
     const decoded = new Uint8Array(fromBase64(encoded));
     expect(decoded).toEqual(empty);
   });
+
+  test('fromBase64 throws on invalid input with error context', () => {
+    expect(() => fromBase64('not-valid-base64!!!')).toThrow(/Invalid Base64 input/);
+    expect(() => fromBase64('not-valid-base64!!!')).toThrow(/length=19/);
+  });
+
+  test('fromBase64 throws with original error detail', () => {
+    try {
+      fromBase64('###invalid###');
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      // Should include both length and the underlying error message
+      expect((err as Error).message).toContain('length=');
+    }
+  });
 });
 
 describe('generateKeyPair', () => {

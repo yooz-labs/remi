@@ -16,8 +16,11 @@ import type { UnlockedIdentity } from '@remi/shared';
 import {
   createAuthResponse,
   fromBase64,
+  importPublicKey,
   sign,
+  verify,
 } from '@remi/shared';
+import { checkKnownHost, trustHost } from '@/lib/identity-client';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
@@ -70,6 +73,7 @@ function App() {
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
   const activeSessionIdRef = useRef<UUID | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
+  const unlockedIdentityRef = useRef<UnlockedIdentity | null>(null);
 
   // Apply theme and font size on settings change
   useEffect(() => {
@@ -380,14 +384,29 @@ function App() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  useEffect(() => {
+    unlockedIdentityRef.current = unlockedIdentity;
+  }, [unlockedIdentity]);
+
   // Restore session ID from localStorage for reconnect after page reload (read once)
   const [storedSessionId] = useState<UUID | null>(
     () => localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null,
   );
 
   const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
+  const pendingRelayChallengeRef = useRef<{
+    challenge: string;
+    serverPublicKey: string;
+    serverFingerprint: string;
+  } | null>(null);
   const [connectionMode, setConnectionMode] = useState<'direct' | 'relay'>('direct');
   const [relayStatus, setRelayStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [relayError, setRelayError] = useState<Error | null>(null);
+
+  /** Set error (works for both direct and relay modes) */
+  const setError = useCallback((err: Error) => {
+    setRelayError(err);
+  }, []);
 
   const {
     status: connectionStatus,
@@ -409,7 +428,7 @@ function App() {
     unlockedIdentity,
   });
 
-  const error = wsError?.message ?? null;
+  const error = (connectionMode === 'relay' ? relayError?.message : wsError?.message) ?? null;
 
   // Effective connection status: use relay status when in relay mode
   const effectiveStatus = connectionMode === 'relay' ? relayStatus : connectionStatus;
@@ -607,6 +626,8 @@ function App() {
 
       setConnectionMode('relay');
       setRelayStatus('connecting');
+      setRelayError(null);
+      pendingRelayChallengeRef.current = null;
 
       const signalingUrl = 'wss://remi-signaling.dev-941.workers.dev/connect';
       const client = new WebSignalingClient({
@@ -627,15 +648,37 @@ function App() {
           if (!message || typeof message !== 'object' || !('type' in message)) return;
           const msg = message as ProtocolMessage;
 
-          // Handle auth_challenge: sign with identity and respond
+          // Handle auth_challenge: TOFU check, sign, and respond
           if (msg.type === 'auth_challenge') {
-            const identity = unlockedIdentity;
+            const identity = unlockedIdentityRef.current;
             if (!identity) {
-              console.error('Relay auth_challenge received but no unlocked identity');
+              setError(new Error(
+                'This daemon requires authentication. Unlock your identity first (Settings > Identity).',
+              ));
               setRelayStatus('disconnected');
               client.close();
               return;
             }
+
+            // TOFU: check known hosts for relay server
+            const relayUrl = `relay:${msg.serverFingerprint}`;
+            const tofuResult = checkKnownHost(relayUrl, msg.serverFingerprint);
+            if (tofuResult === 'mismatch') {
+              setError(new Error(
+                'Server fingerprint changed. This could indicate a MITM attack. Connection rejected.',
+              ));
+              setRelayStatus('disconnected');
+              client.close();
+              return;
+            }
+
+            // Store challenge data for mutual auth verification in auth_result
+            pendingRelayChallengeRef.current = {
+              challenge: msg.challenge,
+              serverPublicKey: msg.serverPublicKey,
+              serverFingerprint: msg.serverFingerprint,
+            };
+
             (async () => {
               try {
                 const challengeData = fromBase64(msg.challenge);
@@ -646,22 +689,59 @@ function App() {
                   identity.fingerprint,
                 ));
               } catch (err) {
-                console.error('Relay auth failed:', err instanceof Error ? err.message : err);
+                const detail = err instanceof Error ? err.message : String(err);
+                setError(new Error(`Relay authentication failed: ${detail}`));
                 setRelayStatus('disconnected');
+                client.close();
               }
             })();
             return;
           }
 
-          // Handle auth_result: on success re-send hello, on failure disconnect
+          // Handle auth_result: verify mutual auth, TOFU trust, then send hello
           if (msg.type === 'auth_result') {
             if (!msg.success) {
-              console.error(`Relay auth rejected: ${msg.error ?? 'unknown'}`);
+              setError(new Error(`Relay auth rejected: ${msg.error ?? 'unknown'}`));
               setRelayStatus('disconnected');
-            } else {
-              // Auth succeeded; now send hello so the daemon creates our session
-              client.sendMessage(createHello('remi-web', '0.1.0'));
+              client.close();
+              return;
             }
+
+            const pending = pendingRelayChallengeRef.current;
+            if (!msg.serverSignature || !pending) {
+              setError(new Error('Server did not provide mutual authentication signature'));
+              setRelayStatus('disconnected');
+              client.close();
+              return;
+            }
+
+            // Verify server signature for mutual auth
+            (async () => {
+              try {
+                const serverPubKey = await importPublicKey(fromBase64(pending.serverPublicKey));
+                const challengeData = fromBase64(pending.challenge);
+                const valid = await verify(serverPubKey, challengeData, msg.serverSignature!);
+                if (!valid) {
+                  setError(new Error('Server signature verification failed'));
+                  setRelayStatus('disconnected');
+                  client.close();
+                  return;
+                }
+
+                // TOFU: trust server on first use
+                const relayUrl = `relay:${pending.serverFingerprint}`;
+                trustHost(relayUrl, pending.serverFingerprint, pending.serverPublicKey);
+                pendingRelayChallengeRef.current = null;
+
+                // Auth succeeded; now send hello so the daemon creates our session
+                client.sendMessage(createHello('remi-web', '0.1.0'));
+              } catch (err) {
+                const detail = err instanceof Error ? err.message : String(err);
+                setError(new Error(`Server verification failed: ${detail}`));
+                setRelayStatus('disconnected');
+                client.close();
+              }
+            })();
             return;
           }
 
@@ -680,7 +760,7 @@ function App() {
       setRelayStatus('disconnected');
       setConnectionMode('direct');
     });
-  }, [unlockedIdentity]);
+  }, []);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {

@@ -1506,33 +1506,26 @@ if (!cliNoRelay) {
   const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
 
-  let relayCode: string;
-  let rotateCode: boolean;
-  let relayAuth: typeof authenticator | undefined;
+  let relayAdapter: InstanceType<typeof RelayAdapter>;
 
   if (cliPermanentCode) {
     // Permanent code mode: persist code to disk, require Ed25519 auth over relay
     const { CodeStore } = await import('./remote/code-store.ts');
     const codeStore = new CodeStore();
-    relayCode = codeStore.load() ?? codeStore.refresh();
-    rotateCode = false;
-    relayAuth = authenticator;
+    const code = codeStore.load() ?? codeStore.refresh();
+    relayAdapter = new RelayAdapter(
+      { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
+      sharedEvents,
+    );
   } else {
     // Rotating code mode (default): ephemeral code, no Ed25519 auth
-    relayCode = generateConnectionCode();
-    rotateCode = true;
+    const code = generateConnectionCode();
+    relayAdapter = new RelayAdapter(
+      { enabled: true, signalingUrl, code, rotateCode: true as const },
+      sharedEvents,
+    );
   }
 
-  const relayAdapter = new RelayAdapter(
-    {
-      enabled: true,
-      signalingUrl,
-      code: relayCode,
-      rotateCode,
-      ...(relayAuth ? { authenticator: relayAuth } : {}),
-    },
-    sharedEvents,
-  );
   registry.register(relayAdapter);
 }
 

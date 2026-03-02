@@ -14,7 +14,7 @@
  *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
  */
 
-import { createAgentOutput, createQuestion, generateId } from '@remi/shared';
+import { createAgentOutput, createAuthResult, createQuestion, generateId } from '@remi/shared';
 import type {
   AgentStatus,
   AuthResponseMessage,
@@ -32,15 +32,26 @@ import type {
 import type { Authenticator } from '../auth/authenticator.ts';
 import { SignalingClient } from './signaling-client.ts';
 
-export interface RelayAdapterConfig extends AdapterConfig {
+/** Base relay config fields shared by both modes */
+interface RelayAdapterConfigBase extends AdapterConfig {
   readonly signalingUrl: string;
-  /** Pre-set connection code (persisted across restarts) */
+}
+
+/** Rotating codes (default): code changes on reconnect; no auth required */
+interface RelayRotatingConfig extends RelayAdapterConfigBase {
+  readonly rotateCode?: true;
   readonly code?: string;
-  /** Rotate to a new code on each reconnect (default: true) */
-  readonly rotateCode?: boolean;
-  /** Authenticator for Ed25519 auth (required when rotateCode is false) */
   readonly authenticator?: Authenticator;
 }
+
+/** Permanent code: code persists; Ed25519 auth is mandatory */
+interface RelayPermanentConfig extends RelayAdapterConfigBase {
+  readonly rotateCode: false;
+  readonly code: string;
+  readonly authenticator: Authenticator;
+}
+
+export type RelayAdapterConfig = RelayRotatingConfig | RelayPermanentConfig;
 
 type RelayAuthState = 'none' | 'challenging' | 'authenticated';
 
@@ -153,6 +164,8 @@ export class RelayAdapter implements ConnectionAdapter {
         if (message.type === 'auth_response') {
           this.handleAuthResponse(message as AuthResponseMessage).catch((err) => {
             console.error('Relay auth error:', err instanceof Error ? err.message : err);
+            const failResult = createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR');
+            this.client?.sendRelay(JSON.stringify(failResult));
             this.resetClient();
           });
           return;

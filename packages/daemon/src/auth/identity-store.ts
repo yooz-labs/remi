@@ -156,13 +156,21 @@ export class IdentityStore {
     return file.keys.some((k) => k.fingerprint === fp && k.publicKey === publicKeyBase64);
   }
 
-  /** Update lastUsedAt for an authorized key. */
+  /** Update lastUsedAt for an authorized key. Non-critical; errors are logged but not thrown. */
   touchAuthorizedKey(fp: Fingerprint): void {
-    const file = this.loadAuthorizedKeys();
-    const key = file.keys.find((k) => k.fingerprint === fp);
-    if (key) {
-      (key as { lastUsedAt: string | null }).lastUsedAt = new Date().toISOString();
-      this.saveAuthorizedKeys(file);
+    try {
+      const file = this.loadAuthorizedKeys();
+      const updated = {
+        ...file,
+        keys: file.keys.map((k) =>
+          k.fingerprint === fp ? { ...k, lastUsedAt: new Date().toISOString() } : k,
+        ),
+      };
+      this.saveAuthorizedKeys(updated);
+    } catch (err) {
+      console.warn(
+        `Failed to update lastUsedAt for key ${fp}: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
 
