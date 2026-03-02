@@ -300,8 +300,8 @@ let cliPort: number | undefined;
 let cliNoTelegram = false;
 let cliMaxBulletLength: number | undefined;
 let cliDaemonMode = false;
-let cliRemote = false;
 let cliSignalingUrl: string | undefined;
+let cliNoRelay = false;
 let cliResume: string | true | undefined; // true = resume most recent, string = session ID
 let cliShowSessions = false;
 let cliInstall = false;
@@ -309,6 +309,7 @@ let cliUninstall = false;
 let cliSubcommand:
   | 'ls'
   | 'attach'
+  | 'code'
   | 'keygen'
   | 'export-key'
   | 'import-key'
@@ -316,6 +317,7 @@ let cliSubcommand:
   | 'keys'
   | undefined;
 let cliSubcommandArg: string | undefined;
+let cliCodeRefresh = false;
 let cliForce = false;
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
@@ -347,8 +349,8 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--no-telegram') {
     cliNoTelegram = true;
-  } else if (arg === '--remote') {
-    cliRemote = true;
+  } else if (arg === '--no-relay') {
+    cliNoRelay = true;
   } else if (arg === '--signaling-url' && nextArg) {
     cliSignalingUrl = nextArg;
     i++;
@@ -380,6 +382,8 @@ Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
   remi ls                        List live sessions from running daemon
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
+  remi code                      Show remote access connection code
+  remi code --refresh            Generate a new connection code
   remi keygen                    Generate Ed25519 identity keypair
   remi export-key                Export identity JSON (for sharing across devices)
   remi import-key [file]         Import identity from file or stdin
@@ -393,7 +397,7 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
-  --remote                 Enable remote access via signaling relay
+  --no-relay               Disable signaling relay (no remote access via connection code)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --passphrase PASS        Passphrase for keygen (avoids interactive prompt)
   --force                  Overwrite existing identity (keygen/import-key)
@@ -420,6 +424,7 @@ Any other arguments are passed through to Claude Code.
   } else if (
     arg === 'ls' ||
     arg === 'attach' ||
+    arg === 'code' ||
     arg === 'keygen' ||
     arg === 'export-key' ||
     arg === 'import-key' ||
@@ -433,6 +438,10 @@ Any other arguments are passed through to Claude Code.
       !nextArg.startsWith('-')
     ) {
       cliSubcommandArg = nextArg;
+      i++;
+    }
+    if (arg === 'code' && nextArg === '--refresh') {
+      cliCodeRefresh = true;
       i++;
     }
   } else if (
@@ -584,6 +593,26 @@ if (cliSubcommand === 'authorize') {
 if (cliSubcommand === 'keys') {
   const { runListKeys } = await import('./cli/authorize.ts');
   runListKeys();
+  process.exit(0);
+}
+
+// Handle 'code' subcommand: show or refresh the remote access code
+if (cliSubcommand === 'code') {
+  const { CodeStore } = await import('./remote/code-store.ts');
+  const codeStore = new CodeStore();
+  if (cliCodeRefresh) {
+    const newCode = codeStore.refresh();
+    console.log(`New connection code: ${newCode}`);
+    console.log('Restart the daemon for the new code to take effect.');
+  } else {
+    const code = codeStore.load();
+    if (code) {
+      console.log(`Connection code: ${code}`);
+    } else {
+      const newCode = codeStore.refresh();
+      console.log(`Connection code: ${newCode} (newly generated)`);
+    }
+  }
   process.exit(0);
 }
 
@@ -1503,13 +1532,17 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-if (cliRemote) {
+if (!cliNoRelay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
+  const { CodeStore } = await import('./remote/code-store.ts');
+  const codeStore = new CodeStore();
+  const code = codeStore.load() ?? codeStore.refresh();
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
   const relayAdapter = new RelayAdapter(
     {
       enabled: true,
       signalingUrl,
+      code,
     },
     sharedEvents,
   );

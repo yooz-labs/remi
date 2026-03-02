@@ -11,6 +11,7 @@
 
 import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
+import { RateLimiter } from './rate-limiter.ts';
 
 // Cloudflare-specific types
 // biome-ignore lint/suspicious/noExplicitAny: Cloudflare Worker runtime type
@@ -22,6 +23,9 @@ interface Env {
   MAX_CONNECTIONS_PER_ROOM: string;
   CONNECTION_TIMEOUT_MS: string;
 }
+
+/** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
+const rateLimiter = new RateLimiter(10, 60_000);
 
 /** Main worker */
 export default {
@@ -60,11 +64,20 @@ export default {
         );
       }
 
+      // Rate limit per client IP (skip if IP unavailable)
+      const clientIp = request.headers.get('CF-Connecting-IP');
+      if (clientIp && !rateLimiter.check(clientIp)) {
+        return new Response(
+          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many connection attempts' }),
+          { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
+        );
+      }
+
       // Both host and client connect to the same code-named Durable Object
       const id = env.CONNECTIONS.idFromName(code);
       const room = env.CONNECTIONS.get(id);
 
-      // Forward the WebSocket upgrade request
+      // Forward the WebSocket upgrade request (URL contains the code for the DO to extract)
       return room.fetch(request);
     }
 

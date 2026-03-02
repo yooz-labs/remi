@@ -14,7 +14,15 @@ import { DEFAULT_SETTINGS } from '@/types';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import type { UnlockedIdentity } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
-import { generateId } from '@remi/shared/protocol.ts';
+import {
+  createBulletExpandRequest,
+  createCreateSessionRequest,
+  createSessionListRequest,
+  createTranscriptLoadRequest,
+  createUserInput,
+  generateId,
+  now,
+} from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -371,6 +379,10 @@ function App() {
     () => localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null,
   );
 
+  const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
+  const [connectionMode, setConnectionMode] = useState<'direct' | 'relay'>('direct');
+  const [relayStatus, setRelayStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+
   const {
     status: connectionStatus,
     error: wsError,
@@ -393,6 +405,55 @@ function App() {
 
   const error = wsError?.message ?? null;
 
+  // Effective connection status: use relay status when in relay mode
+  const effectiveStatus = connectionMode === 'relay' ? relayStatus : connectionStatus;
+
+  // Relay-aware send: dispatches through signaling client when in relay mode
+  const relaySend = useCallback((message: ProtocolMessage): boolean => {
+    if (connectionMode === 'relay') {
+      if (signalingClientRef.current?.isConnected) {
+        signalingClientRef.current.sendMessage(message);
+        return true;
+      }
+      console.warn(`Relay send dropped (not connected): ${message.type}`);
+      return false;
+    }
+    return false;
+  }, [connectionMode]);
+
+  // Relay-aware wrappers for send functions
+  const effectiveSendInput = useCallback((sessionId: UUID, content: string): boolean => {
+    if (connectionMode === 'relay') return relaySend(createUserInput(sessionId, content));
+    return sendInput(sessionId, content);
+  }, [connectionMode, relaySend, sendInput]);
+
+  const effectiveSendAnswer = useCallback((questionId: UUID, answer: string): boolean => {
+    if (connectionMode === 'relay') {
+      return relaySend({ type: 'answer', id: generateId(), timestamp: now(), questionId, answer });
+    }
+    return sendAnswer(questionId, answer);
+  }, [connectionMode, relaySend, sendAnswer]);
+
+  const effectiveRequestBulletExpand = useCallback((sessionId: UUID, bulletId: number): boolean => {
+    if (connectionMode === 'relay') return relaySend(createBulletExpandRequest(sessionId, bulletId));
+    return requestBulletExpand(sessionId, bulletId);
+  }, [connectionMode, relaySend, requestBulletExpand]);
+
+  const effectiveRequestSessionList = useCallback((includeExternal?: boolean): boolean => {
+    if (connectionMode === 'relay') return relaySend(createSessionListRequest(includeExternal));
+    return requestSessionList(includeExternal);
+  }, [connectionMode, relaySend, requestSessionList]);
+
+  const effectiveRequestTranscriptLoad = useCallback((sessionId: string): boolean => {
+    if (connectionMode === 'relay') return relaySend(createTranscriptLoadRequest(sessionId));
+    return requestTranscriptLoad(sessionId);
+  }, [connectionMode, relaySend, requestTranscriptLoad]);
+
+  const effectiveRequestNewSession = useCallback((directory?: string): boolean => {
+    if (connectionMode === 'relay') return relaySend(createCreateSessionRequest(directory));
+    return requestNewSession(directory);
+  }, [connectionMode, relaySend, requestNewSession]);
+
   // Close modal and store URL on successful connect
   useEffect(() => {
     if (connectionStatus === 'connected') {
@@ -400,12 +461,19 @@ function App() {
     }
   }, [connectionStatus]);
 
-  // Request session list after connection
+  // Request session list after direct connection
   useEffect(() => {
     if (connectionStatus === 'connected' && wsSessionId) {
-      requestSessionList(true);
+      effectiveRequestSessionList(true);
     }
-  }, [connectionStatus, wsSessionId, requestSessionList]);
+  }, [connectionStatus, wsSessionId, effectiveRequestSessionList]);
+
+  // Request session list after relay connection (hello_ack received)
+  useEffect(() => {
+    if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
+      effectiveRequestSessionList(true);
+    }
+  }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
   const connectRef = useRef(connect);
@@ -437,9 +505,9 @@ function App() {
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, isLoadingTranscript: true } : s)),
       );
-      requestTranscriptLoad(id);
+      effectiveRequestTranscriptLoad(id);
     }
-  }, [sessions, requestTranscriptLoad]);
+  }, [sessions, effectiveRequestTranscriptLoad]);
 
   const handleBack = useCallback(() => {
     setActiveSessionId(null);
@@ -451,7 +519,7 @@ function App() {
 
       // If there's an active question, send as answer
       if (sessionQuestion) {
-        sendAnswer(sessionQuestion.id, content);
+        effectiveSendAnswer(sessionQuestion.id, content);
         setQuestion(null);
         // Add user message to UI
         const userMsg: UIMessage = {
@@ -480,14 +548,14 @@ function App() {
 
       setMessages((prev) => [...prev, newMessage]);
 
-      const success = sendInput(activeSessionId, content);
+      const success = effectiveSendInput(activeSessionId, content);
       if (success) {
         setMessages((prev) =>
           prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
         );
       }
     },
-    [activeSessionId, sendInput, sendAnswer, sessionQuestion],
+    [activeSessionId, effectiveSendInput, effectiveSendAnswer, sessionQuestion],
   );
 
   const handlePassphraseSubmit = useCallback(async (passphrase: string) => {
@@ -503,13 +571,18 @@ function App() {
 
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
+      setConnectionMode('direct');
+      // Close any existing relay connection
+      if (signalingClientRef.current) {
+        signalingClientRef.current.close();
+        signalingClientRef.current = null;
+        setRelayStatus('disconnected');
+      }
       localStorage.setItem(LOCALSTORAGE_URL_KEY, url);
       connect(url, directory);
     },
     [connect],
   );
-
-  const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
 
   // Clean up signaling client on unmount
   useEffect(() => {
@@ -526,20 +599,28 @@ function App() {
         signalingClientRef.current.close();
       }
 
+      setConnectionMode('relay');
+      setRelayStatus('connecting');
+
       const signalingUrl = 'wss://remi-signaling.dev-941.workers.dev/connect';
       const client = new WebSignalingClient({
         onStateChange: (state) => {
           if (state === 'connected') {
+            setRelayStatus('connected');
             setShowConnectModal(false);
             // Send hello via relay
-            const hello = {
+            const hello: ProtocolMessage = {
               type: 'hello',
               id: generateId(),
-              timestamp: new Date().toISOString(),
+              timestamp: now(),
               clientId: 'remi-web',
               clientVersion: '0.1.0',
             };
             client.sendMessage(hello);
+          } else if (state === 'connecting' || state === 'joined') {
+            setRelayStatus('connecting');
+          } else if (state === 'disconnected' || state === 'error') {
+            setRelayStatus('disconnected');
           }
         },
         onMessage: (message) => {
@@ -555,6 +636,10 @@ function App() {
 
       signalingClientRef.current = client;
       client.connect(signalingUrl, code);
+    }).catch((err) => {
+      console.error('Failed to load signaling client:', err);
+      setRelayStatus('disconnected');
+      setConnectionMode('direct');
     });
   }, []);
 
@@ -575,16 +660,16 @@ function App() {
         }),
       );
 
-      requestBulletExpand(activeSessionId, bulletId);
+      effectiveRequestBulletExpand(activeSessionId, bulletId);
     },
-    [activeSessionId, requestBulletExpand],
+    [activeSessionId, effectiveRequestBulletExpand],
   );
 
   const handleNewSession = useCallback(() => {
     if (creatingSession) return;
     setCreatingSession(true);
-    requestNewSession();
-  }, [requestNewSession, creatingSession]);
+    effectiveRequestNewSession();
+  }, [effectiveRequestNewSession, creatingSession]);
 
   // Menu actions
   const handleCopyConversation = useCallback(() => {
@@ -614,7 +699,7 @@ function App() {
   }, [sessionMessages, activeSessionId]);
 
   // Sidebar content
-  const canCreateSession = connectionStatus === 'connected' && !creatingSession;
+  const canCreateSession = effectiveStatus === 'connected' && !creatingSession;
   const sidebar = (
     <SessionList
       sessions={sessions}
@@ -662,7 +747,7 @@ function App() {
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         onConnectCode={handleConnectCode}
-        connectionStatus={connectionStatus}
+        connectionStatus={effectiveStatus}
         error={null}
         needsPassphrase={needsPassphrase}
         hasIdentity={hasIdentity()}
