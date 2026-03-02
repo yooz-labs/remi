@@ -164,7 +164,7 @@ describe('Connection auth state machine', () => {
       conn.handleMessage(serialize(hello));
 
       expect(conn.connectionState).toBe('connected');
-      expect(connectedSessionId).toBe(conn.id);
+      expect(String(connectedSessionId)).toBe(conn.id);
 
       // Should have sent hello_ack
       const helloAck = ws.lastOfType('hello_ack');
@@ -294,7 +294,7 @@ describe('Connection auth state machine', () => {
       conn.handleMessage(serialize(hello));
 
       expect(conn.connectionState).toBe('connected');
-      expect(connectedSessionId).toBe(conn.id);
+      expect(String(connectedSessionId)).toBe(conn.id);
     });
 
     test('rejects messages before hello', () => {
