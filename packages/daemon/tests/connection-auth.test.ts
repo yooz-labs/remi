@@ -85,7 +85,9 @@ describe('Connection auth state machine', () => {
   afterEach(() => {
     try {
       fs.rmSync(tmpDir, { recursive: true });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   });
 
   describe('with auth', () => {
@@ -95,15 +97,21 @@ describe('Connection auth state machine', () => {
 
       expect(conn.connectionState).toBe('authenticating');
       expect(ws.sentMessages.length).toBe(1);
-      expect(ws.sentMessages[0]!.type).toBe('auth_challenge');
+      expect(ws.sentMessages[0]?.type).toBe('auth_challenge');
     });
 
     test('transitions to connecting after valid auth_response', async () => {
       const ws = new MockWebSocket();
       let authSuccess = false;
-      const conn = new Connection(ws as unknown as WebSocket, {
-        onAuthSuccess: () => { authSuccess = true; },
-      }, { authenticator });
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {
+          onAuthSuccess: () => {
+            authSuccess = true;
+          },
+        },
+        { authenticator },
+      );
 
       // Get the challenge from the sent message
       const challenge = ws.sentMessages[0] as ProtocolMessage & { challenge: string };
@@ -131,9 +139,15 @@ describe('Connection auth state machine', () => {
     test('full handshake: auth -> hello -> connected', async () => {
       const ws = new MockWebSocket();
       let connectedSessionId: string | null = null;
-      const conn = new Connection(ws as unknown as WebSocket, {
-        onConnect: (sessionId) => { connectedSessionId = sessionId; },
-      }, { authenticator, skipHelloAck: false });
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {
+          onConnect: (sessionId) => {
+            connectedSessionId = sessionId;
+          },
+        },
+        { authenticator, skipHelloAck: false },
+      );
 
       // Auth phase
       const challenge = ws.sentMessages[0] as ProtocolMessage & { challenge: string };
@@ -187,10 +201,16 @@ describe('Connection auth state machine', () => {
     test('closes connection on failed auth', async () => {
       const ws = new MockWebSocket();
       let authFailed = false;
-      const conn = new Connection(ws as unknown as WebSocket, {
-        onAuthFailed: () => { authFailed = true; },
-        onDisconnect: () => {},
-      }, { authenticator });
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {
+          onAuthFailed: () => {
+            authFailed = true;
+          },
+          onDisconnect: () => {},
+        },
+        { authenticator },
+      );
 
       // Create unauthorized client
       const unknownId = await createIdentity('unknown');
@@ -208,26 +228,39 @@ describe('Connection auth state machine', () => {
       expect(conn.connectionState).toBe('disconnected');
 
       // Should have sent auth_result(failure)
-      const result = ws.lastOfType('auth_result') as ProtocolMessage & { success: boolean; error?: string };
+      const result = ws.lastOfType('auth_result') as ProtocolMessage & {
+        success: boolean;
+        error?: string;
+      };
       expect(result).toBeDefined();
       expect(result.success).toBe(false);
     });
 
     test('sends auth_result(false) on internal auth error', async () => {
       const ws = new MockWebSocket();
-      let errorOccurred = false;
-      const conn = new Connection(ws as unknown as WebSocket, {
-        onError: () => { errorOccurred = true; },
-        onDisconnect: () => {},
-      }, { authenticator });
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {
+          onError: () => {},
+          onDisconnect: () => {},
+        },
+        { authenticator },
+      );
 
       // Send a malformed auth_response (valid structure but garbage signature)
-      const malformed = createAuthResponse(clientPublicKeyBase64, 'not-valid-base64!!!', clientFingerprint);
+      const malformed = createAuthResponse(
+        clientPublicKeyBase64,
+        'not-valid-base64!!!',
+        clientFingerprint,
+      );
       conn.handleMessage(serialize(malformed));
       await new Promise((r) => setTimeout(r, 100));
 
       // Should have sent auth_result(false) with INTERNAL_AUTH_ERROR
-      const result = ws.lastOfType('auth_result') as ProtocolMessage & { success: boolean; error?: string };
+      const result = ws.lastOfType('auth_result') as ProtocolMessage & {
+        success: boolean;
+        error?: string;
+      };
       expect(result).toBeDefined();
       expect(result.success).toBe(false);
       expect(conn.connectionState).toBe('disconnected');
@@ -247,9 +280,15 @@ describe('Connection auth state machine', () => {
     test('accepts hello and transitions to connected', () => {
       const ws = new MockWebSocket();
       let connectedSessionId: string | null = null;
-      const conn = new Connection(ws as unknown as WebSocket, {
-        onConnect: (sessionId) => { connectedSessionId = sessionId; },
-      }, { skipHelloAck: false });
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {
+          onConnect: (sessionId) => {
+            connectedSessionId = sessionId;
+          },
+        },
+        { skipHelloAck: false },
+      );
 
       const hello = createHello('test-client', '1.0.0');
       conn.handleMessage(serialize(hello));
@@ -276,9 +315,15 @@ describe('Connection auth state machine', () => {
     test('times out during authenticating state', async () => {
       const ws = new MockWebSocket();
       let disconnected = false;
-      new Connection(ws as unknown as WebSocket, {
-        onDisconnect: () => { disconnected = true; },
-      }, { authenticator, connectionTimeout: 50 });
+      new Connection(
+        ws as unknown as WebSocket,
+        {
+          onDisconnect: () => {
+            disconnected = true;
+          },
+        },
+        { authenticator, connectionTimeout: 50 },
+      );
 
       await new Promise((r) => setTimeout(r, 100));
       expect(disconnected).toBe(true);
@@ -287,9 +332,15 @@ describe('Connection auth state machine', () => {
     test('times out during connecting state (no hello received)', async () => {
       const ws = new MockWebSocket();
       let disconnected = false;
-      new Connection(ws as unknown as WebSocket, {
-        onDisconnect: () => { disconnected = true; },
-      }, { connectionTimeout: 50 });
+      new Connection(
+        ws as unknown as WebSocket,
+        {
+          onDisconnect: () => {
+            disconnected = true;
+          },
+        },
+        { connectionTimeout: 50 },
+      );
 
       await new Promise((r) => setTimeout(r, 100));
       expect(disconnected).toBe(true);
@@ -299,9 +350,13 @@ describe('Connection auth state machine', () => {
   describe('cleanup', () => {
     test('removes pending auth challenge on close during auth', () => {
       const ws = new MockWebSocket();
-      const conn = new Connection(ws as unknown as WebSocket, {
-        onDisconnect: () => {},
-      }, { authenticator });
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {
+          onDisconnect: () => {},
+        },
+        { authenticator },
+      );
 
       // Close during authenticating state
       conn.handleClose();
