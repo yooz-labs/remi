@@ -297,14 +297,15 @@ let cliPort: number | undefined;
 let cliNoTelegram = false;
 let cliMaxBulletLength: number | undefined;
 let cliDaemonMode = false;
-let cliRemote = false;
 let cliSignalingUrl: string | undefined;
+let cliNoRelay = false;
 let cliResume: string | true | undefined; // true = resume most recent, string = session ID
 let cliShowSessions = false;
 let cliInstall = false;
 let cliUninstall = false;
-let cliSubcommand: 'ls' | 'attach' | undefined;
+let cliSubcommand: 'ls' | 'attach' | 'code' | undefined;
 let cliSubcommandArg: string | undefined;
+let cliCodeRefresh = false;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -331,8 +332,8 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--no-telegram') {
     cliNoTelegram = true;
-  } else if (arg === '--remote') {
-    cliRemote = true;
+  } else if (arg === '--no-relay') {
+    cliNoRelay = true;
   } else if (arg === '--signaling-url' && nextArg) {
     cliSignalingUrl = nextArg;
     i++;
@@ -351,6 +352,8 @@ Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
   remi ls                        List live sessions from running daemon
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
+  remi code                      Show remote access connection code
+  remi code --refresh            Generate a new connection code
   remi --resume [session-id]     Resume a previous session
   remi --sessions                List stored sessions
   remi --daemon                  Legacy daemon mode (headless server)
@@ -359,7 +362,7 @@ Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
-  --remote                 Enable remote access via signaling relay
+  --no-relay               Disable signaling relay (no remote access via connection code)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --install                Install as autostart service
   --uninstall              Remove autostart service
@@ -377,10 +380,14 @@ Environment:
 Any other arguments are passed through to Claude Code.
 `);
     process.exit(0);
-  } else if (arg === 'ls' || arg === 'attach') {
+  } else if (arg === 'ls' || arg === 'attach' || arg === 'code') {
     cliSubcommand = arg;
     if (arg === 'attach' && nextArg && !nextArg.startsWith('-')) {
       cliSubcommandArg = nextArg;
+      i++;
+    }
+    if (arg === 'code' && nextArg === '--refresh') {
+      cliCodeRefresh = true;
       i++;
     }
   } else {
@@ -485,6 +492,26 @@ WantedBy=default.target`;
   } else {
     console.error(`Autostart not supported on ${platform}. Run remi --daemon manually.`);
     process.exit(1);
+  }
+  process.exit(0);
+}
+
+// Handle 'code' subcommand: show or refresh the remote access code
+if (cliSubcommand === 'code') {
+  const { CodeStore } = await import('./remote/code-store.ts');
+  const codeStore = new CodeStore();
+  if (cliCodeRefresh) {
+    const newCode = codeStore.refresh();
+    console.log(`New connection code: ${newCode}`);
+    console.log('Restart the daemon for the new code to take effect.');
+  } else {
+    const code = codeStore.load();
+    if (code) {
+      console.log(`Connection code: ${code}`);
+    } else {
+      const newCode = codeStore.refresh();
+      console.log(`Connection code: ${newCode} (newly generated)`);
+    }
   }
   process.exit(0);
 }
@@ -1333,13 +1360,17 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-if (cliRemote) {
+if (!cliNoRelay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
+  const { CodeStore } = await import('./remote/code-store.ts');
+  const codeStore = new CodeStore();
+  const code = codeStore.load() ?? codeStore.refresh();
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
   const relayAdapter = new RelayAdapter(
     {
       enabled: true,
       signalingUrl,
+      code,
     },
     sharedEvents,
   );
