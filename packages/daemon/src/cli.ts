@@ -414,6 +414,7 @@ Environment:
   REMI_PORT                WebSocket port
   REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
   TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
+  REMI_PASSPHRASE              Passphrase to unlock identity (avoids interactive prompt)
   TELEGRAM_ENABLED              Set to 'false' to disable Telegram
   TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
   TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
@@ -1417,8 +1418,16 @@ if (!_cliNoAuth) {
     let unlockedIdentity: UnlockedIdentity | undefined;
     const storedIdentity = identityStore.load();
     if (storedIdentity) {
-      // Prompt for passphrase to unlock identity
-      if (process.stdin.isTTY) {
+      // Get passphrase from env, CLI flag, or interactive prompt
+      const envPassphrase = process.env['REMI_PASSPHRASE'];
+      if (envPassphrase) {
+        try {
+          unlockedIdentity = await unlockIdentity(storedIdentity, envPassphrase);
+        } catch {
+          console.error('REMI_PASSPHRASE is incorrect.');
+          process.exit(1);
+        }
+      } else if (process.stdin.isTTY) {
         process.stdout.write('Passphrase to unlock identity: ');
         const passphrase = await new Promise<string>((resolve, reject) => {
           let input = '';

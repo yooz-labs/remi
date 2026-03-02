@@ -60,6 +60,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(config.host && { host: config.host }),
       ...(config.path && { path: config.path }),
       ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
+      ...(config.authenticator && { authenticator: config.authenticator }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
