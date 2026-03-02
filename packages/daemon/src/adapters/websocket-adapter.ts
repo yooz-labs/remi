@@ -7,6 +7,7 @@
 
 import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
 import { createAgentOutput, createQuestion, createSessionUpdate } from '@remi/shared';
+import type { Authenticator } from '../auth/authenticator.ts';
 import {
   type ServerConfig,
   type ServerEvents,
@@ -32,6 +33,9 @@ export interface WebSocketAdapterConfig extends AdapterConfig {
 
   /** Maximum concurrent connections */
   readonly maxConnections?: number;
+
+  /** Authenticator instance (enables SSH-style auth) */
+  readonly authenticator?: Authenticator | undefined;
 }
 
 const DEFAULT_PORT = 8765;
@@ -56,6 +60,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(config.host && { host: config.host }),
       ...(config.path && { path: config.path }),
       ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
+      ...(config.authenticator && { authenticator: config.authenticator }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
@@ -147,6 +152,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       // Let daemon handle HelloAck to include resume info
       connection: {
         skipHelloAck: true,
+        ...(this.config.authenticator && { authenticator: this.config.authenticator }),
       },
     };
 

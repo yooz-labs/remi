@@ -13,6 +13,7 @@ export type PeerRole = 'host' | 'client';
 export type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
+  | 'authenticating'
   | 'connected'
   | 'reconnecting'
   | 'error';

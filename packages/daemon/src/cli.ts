@@ -223,7 +223,8 @@ import {
   generateId,
   now,
 } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import { unlockIdentity } from '@remi/shared';
 import {
   type AdapterMetadata,
   AdapterRegistry,
@@ -231,6 +232,8 @@ import {
   WebSocketAdapter,
 } from './adapters/index.ts';
 import { MessageAPI } from './api/index.ts';
+import { Authenticator } from './auth/authenticator.ts';
+import { IdentityStore } from './auth/identity-store.ts';
 import { OutputProcessor } from './parser/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
@@ -303,9 +306,24 @@ let cliResume: string | true | undefined; // true = resume most recent, string =
 let cliShowSessions = false;
 let cliInstall = false;
 let cliUninstall = false;
-let cliSubcommand: 'ls' | 'attach' | 'code' | undefined;
+let cliSubcommand:
+  | 'ls'
+  | 'attach'
+  | 'code'
+  | 'keygen'
+  | 'export-key'
+  | 'import-key'
+  | 'authorize'
+  | 'keys'
+  | undefined;
 let cliSubcommandArg: string | undefined;
 let cliCodeRefresh = false;
+let cliPermanentCode = false;
+let cliForce = false;
+let cliLabel: string | undefined;
+let cliPublicOnly = false;
+let cliBindHost: string | undefined;
+let cliRemoveFingerprint: string | undefined;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -334,6 +352,8 @@ for (let i = 0; i < args.length; i++) {
     cliNoTelegram = true;
   } else if (arg === '--no-relay') {
     cliNoRelay = true;
+  } else if (arg === '--permanent-code') {
+    cliPermanentCode = true;
   } else if (arg === '--signaling-url' && nextArg) {
     cliSignalingUrl = nextArg;
     i++;
@@ -341,6 +361,19 @@ for (let i = 0; i < args.length; i++) {
     cliInstall = true;
   } else if (arg === '--uninstall') {
     cliUninstall = true;
+  } else if (arg === '--force') {
+    cliForce = true;
+  } else if (arg === '--label' && nextArg) {
+    cliLabel = nextArg;
+    i++;
+  } else if (arg === '--public-only') {
+    cliPublicOnly = true;
+  } else if (arg === '--bind' && nextArg) {
+    cliBindHost = nextArg;
+    i++;
+  } else if (arg === '--remove' && nextArg) {
+    cliRemoveFingerprint = nextArg;
+    i++;
   } else if (arg === '--version' || arg === '-v') {
     console.log(`remi ${REMI_VERSION}`);
     process.exit(0);
@@ -354,6 +387,11 @@ Usage:
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
   remi code                      Show remote access connection code
   remi code --refresh            Generate a new connection code
+  remi keygen                    Generate Ed25519 identity keypair
+  remi export-key                Export identity JSON (for sharing across devices)
+  remi import-key [file]         Import identity from file or stdin
+  remi authorize <key-file>      Add a client's public key to authorized keys
+  remi keys                      List authorized keys
   remi --resume [session-id]     Resume a previous session
   remi --sessions                List stored sessions
   remi --daemon                  Legacy daemon mode (headless server)
@@ -363,7 +401,13 @@ Options:
   --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
   --no-telegram            Disable Telegram adapter
   --no-relay               Disable signaling relay (no remote access via connection code)
+  --permanent-code         Use a persistent connection code (requires Ed25519 auth over relay)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
+  --bind HOST              Bind WebSocket to HOST (default: localhost; use 0.0.0.0 for all interfaces)
+  --force                  Overwrite existing identity (keygen/import-key)
+  --label NAME             Label for authorized key (authorize)
+  --public-only            Export only public key (export-key)
+  --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
   --install                Install as autostart service
   --uninstall              Remove autostart service
   --version, -v            Show version
@@ -373,6 +417,7 @@ Environment:
   REMI_PORT                WebSocket port
   REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
   TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
+  REMI_PASSPHRASE              Passphrase for identity operations (avoids interactive prompt)
   TELEGRAM_ENABLED              Set to 'false' to disable Telegram
   TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
   TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
@@ -380,9 +425,22 @@ Environment:
 Any other arguments are passed through to Claude Code.
 `);
     process.exit(0);
-  } else if (arg === 'ls' || arg === 'attach' || arg === 'code') {
+  } else if (
+    arg === 'ls' ||
+    arg === 'attach' ||
+    arg === 'code' ||
+    arg === 'keygen' ||
+    arg === 'export-key' ||
+    arg === 'import-key' ||
+    arg === 'authorize' ||
+    arg === 'keys'
+  ) {
     cliSubcommand = arg;
-    if (arg === 'attach' && nextArg && !nextArg.startsWith('-')) {
+    if (
+      (arg === 'attach' || arg === 'import-key' || arg === 'authorize') &&
+      nextArg &&
+      !nextArg.startsWith('-')
+    ) {
       cliSubcommandArg = nextArg;
       i++;
     }
@@ -390,6 +448,17 @@ Any other arguments are passed through to Claude Code.
       cliCodeRefresh = true;
       i++;
     }
+  } else if (
+    cliSubcommand &&
+    (cliSubcommand === 'import-key' ||
+      cliSubcommand === 'authorize' ||
+      cliSubcommand === 'attach') &&
+    !cliSubcommandArg &&
+    arg &&
+    !arg.startsWith('-')
+  ) {
+    // Positional arg for subcommand (supports flags before or after)
+    cliSubcommandArg = arg;
   } else {
     // Pass through to Claude
     if (arg) claudeArgs.push(arg);
@@ -496,23 +565,62 @@ WantedBy=default.target`;
   process.exit(0);
 }
 
-// Handle 'code' subcommand: show or refresh the remote access code
+// Handle key management subcommands
+if (cliSubcommand === 'keygen') {
+  const { runKeygen } = await import('./cli/keygen.ts');
+  await runKeygen({ passphrase: process.env['REMI_PASSPHRASE'], force: cliForce });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'export-key') {
+  const { runKeyExport } = await import('./cli/key-export.ts');
+  runKeyExport({ publicOnly: cliPublicOnly });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'import-key') {
+  const { runKeyImport } = await import('./cli/key-import.ts');
+  await runKeyImport({ file: cliSubcommandArg, force: cliForce });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'authorize') {
+  const { runAuthorize } = await import('./cli/authorize.ts');
+  await runAuthorize({
+    input: cliSubcommandArg,
+    label: cliLabel,
+    remove: cliRemoveFingerprint,
+  });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'keys') {
+  const { runListKeys } = await import('./cli/authorize.ts');
+  runListKeys();
+  process.exit(0);
+}
+
+// Handle 'code' subcommand: show or refresh the persistent connection code
 if (cliSubcommand === 'code') {
   const { CodeStore } = await import('./remote/code-store.ts');
   const codeStore = new CodeStore();
   if (cliCodeRefresh) {
     const newCode = codeStore.refresh();
-    console.log(`New connection code: ${newCode}`);
+    console.log(`New permanent connection code: ${newCode}`);
     console.log('Restart the daemon for the new code to take effect.');
   } else {
     const code = codeStore.load();
     if (code) {
-      console.log(`Connection code: ${code}`);
+      console.log(`Permanent connection code: ${code}`);
+      console.log('Use --permanent-code flag when starting daemon to enable this code.');
     } else {
       const newCode = codeStore.refresh();
-      console.log(`Connection code: ${newCode} (newly generated)`);
+      console.log(`Permanent connection code: ${newCode} (newly generated)`);
+      console.log('Use --permanent-code flag when starting daemon to enable this code.');
     }
   }
+  console.log('\nNote: By default, codes rotate on each reconnect. Use --permanent-code to');
+  console.log('persist a fixed code (requires Ed25519 authentication for relay connections).');
   process.exit(0);
 }
 
@@ -1332,12 +1440,45 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
+// Auth setup: identity is required
+// ---------------------------------------------------------------------------
+const identityStore = new IdentityStore();
+
+if (!identityStore.exists()) {
+  console.error('No identity found. Run "remi keygen" first.');
+  process.exit(1);
+}
+
+const storedIdentity = identityStore.load();
+if (!storedIdentity) {
+  console.error('Identity file is empty. Run "remi keygen --force" to regenerate.');
+  process.exit(1);
+}
+
+const { promptPassphrase } = await import('./cli/prompt-passphrase.ts');
+const passphrase = await promptPassphrase('Passphrase to unlock identity');
+
+let unlockedIdentity: UnlockedIdentity;
+try {
+  unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
+} catch (err) {
+  const detail = err instanceof Error ? err.message : String(err);
+  console.error(`Failed to unlock identity: ${detail}`);
+  console.error('Wrong passphrase?');
+  process.exit(1);
+}
+
+const authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
+console.log(`Authentication enabled (fingerprint: ${storedIdentity.fingerprint})`);
+
+// ---------------------------------------------------------------------------
 // Create and register adapters
 // ---------------------------------------------------------------------------
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
-    host: 'localhost',
+    host: cliBindHost ?? 'localhost',
+    authenticator,
   },
   sharedEvents,
 );
@@ -1362,18 +1503,29 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 
 if (!cliNoRelay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
-  const { CodeStore } = await import('./remote/code-store.ts');
-  const codeStore = new CodeStore();
-  const code = codeStore.load() ?? codeStore.refresh();
+  const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
-  const relayAdapter = new RelayAdapter(
-    {
-      enabled: true,
-      signalingUrl,
-      code,
-    },
-    sharedEvents,
-  );
+
+  let relayAdapter: InstanceType<typeof RelayAdapter>;
+
+  if (cliPermanentCode) {
+    // Permanent code mode: persist code to disk, require Ed25519 auth over relay
+    const { CodeStore } = await import('./remote/code-store.ts');
+    const codeStore = new CodeStore();
+    const code = codeStore.load() ?? codeStore.refresh();
+    relayAdapter = new RelayAdapter(
+      { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
+      sharedEvents,
+    );
+  } else {
+    // Rotating code mode (default): ephemeral code, no Ed25519 auth
+    const code = generateConnectionCode();
+    relayAdapter = new RelayAdapter(
+      { enabled: true, signalingUrl, code, rotateCode: true as const },
+      sharedEvents,
+    );
+  }
+
   registry.register(relayAdapter);
 }
 

@@ -11,10 +11,21 @@ import { SettingsPanel } from '@/components/settings';
 import { useWebSocket } from '@/hooks';
 import type { AppSettings, UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
+import type { UnlockedIdentity } from '@remi/shared';
+import {
+  createAuthResponse,
+  fromBase64,
+  importPublicKey,
+  sign,
+  verify,
+} from '@remi/shared';
+import { checkKnownHost, trustHost } from '@/lib/identity-client';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
   createCreateSessionRequest,
+  createHello,
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
@@ -56,11 +67,13 @@ function App() {
   const [creatingSession, setCreatingSession] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
   const activeSessionIdRef = useRef<UUID | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
+  const unlockedIdentityRef = useRef<UnlockedIdentity | null>(null);
 
   // Apply theme and font size on settings change
   useEffect(() => {
@@ -371,14 +384,29 @@ function App() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  useEffect(() => {
+    unlockedIdentityRef.current = unlockedIdentity;
+  }, [unlockedIdentity]);
+
   // Restore session ID from localStorage for reconnect after page reload (read once)
   const [storedSessionId] = useState<UUID | null>(
     () => localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null,
   );
 
   const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(null);
+  const pendingRelayChallengeRef = useRef<{
+    challenge: string;
+    serverPublicKey: string;
+    serverFingerprint: string;
+  } | null>(null);
   const [connectionMode, setConnectionMode] = useState<'direct' | 'relay'>('direct');
   const [relayStatus, setRelayStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [relayError, setRelayError] = useState<Error | null>(null);
+
+  /** Set error (works for both direct and relay modes) */
+  const setError = useCallback((err: Error) => {
+    setRelayError(err);
+  }, []);
 
   const {
     status: connectionStatus,
@@ -391,9 +419,16 @@ function App() {
     requestTranscriptLoad,
     requestNewSession,
     sessionId: wsSessionId,
-  } = useWebSocket({ onMessage: handleMessage, initialResumeSessionId: storedSessionId ?? undefined });
+    needsPassphrase,
+    serverFingerprint,
+    provideIdentity,
+  } = useWebSocket({
+    onMessage: handleMessage,
+    initialResumeSessionId: storedSessionId ?? undefined,
+    unlockedIdentity,
+  });
 
-  const error = wsError?.message ?? null;
+  const error = (connectionMode === 'relay' ? relayError?.message : wsError?.message) ?? null;
 
   // Effective connection status: use relay status when in relay mode
   const effectiveStatus = connectionMode === 'relay' ? relayStatus : connectionStatus;
@@ -548,6 +583,17 @@ function App() {
     [activeSessionId, effectiveSendInput, effectiveSendAnswer, sessionQuestion],
   );
 
+  const handlePassphraseSubmit = useCallback(async (passphrase: string) => {
+    try {
+      const identity = await unlockStoredIdentity(passphrase);
+      setUnlockedIdentity(identity);
+      provideIdentity(identity);
+    } catch (err) {
+      console.error('Failed to unlock identity:', err);
+      throw err;
+    }
+  }, [provideIdentity]);
+
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
       setConnectionMode('direct');
@@ -580,6 +626,8 @@ function App() {
 
       setConnectionMode('relay');
       setRelayStatus('connecting');
+      setRelayError(null);
+      pendingRelayChallengeRef.current = null;
 
       const signalingUrl = 'wss://remi-signaling.dev-941.workers.dev/connect';
       const client = new WebSignalingClient({
@@ -587,15 +635,9 @@ function App() {
           if (state === 'connected') {
             setRelayStatus('connected');
             setShowConnectModal(false);
-            // Send hello via relay
-            const hello: ProtocolMessage = {
-              type: 'hello',
-              id: generateId(),
-              timestamp: now(),
-              clientId: 'remi-web',
-              clientVersion: '0.1.0',
-            };
-            client.sendMessage(hello);
+            // Send hello via relay (harmless if auth is required; daemon drops it
+            // and sends auth_challenge first, then hello_ack after auth completes)
+            client.sendMessage(createHello('remi-web', '0.1.0'));
           } else if (state === 'connecting' || state === 'joined') {
             setRelayStatus('connecting');
           } else if (state === 'disconnected' || state === 'error') {
@@ -603,10 +645,108 @@ function App() {
           }
         },
         onMessage: (message) => {
-          // Forward relay messages to the existing message handler
-          if (handleMessageRef.current && message && typeof message === 'object' && 'type' in message) {
-            handleMessageRef.current(message as ProtocolMessage);
+          if (!message || typeof message !== 'object' || !('type' in message)) return;
+          const msg = message as ProtocolMessage;
+
+          // Handle auth_challenge: TOFU check, sign, and respond
+          if (msg.type === 'auth_challenge') {
+            const identity = unlockedIdentityRef.current;
+            if (!identity) {
+              setError(new Error(
+                'This daemon requires authentication. Unlock your identity first (Settings > Identity).',
+              ));
+              setRelayStatus('disconnected');
+              client.close();
+              return;
+            }
+
+            // TOFU: check known hosts for relay server
+            const relayUrl = `relay:${msg.serverFingerprint}`;
+            const tofuResult = checkKnownHost(relayUrl, msg.serverFingerprint);
+            if (tofuResult === 'mismatch') {
+              setError(new Error(
+                'Server fingerprint changed. This could indicate a MITM attack. Connection rejected.',
+              ));
+              setRelayStatus('disconnected');
+              client.close();
+              return;
+            }
+
+            // Store challenge data for mutual auth verification in auth_result
+            pendingRelayChallengeRef.current = {
+              challenge: msg.challenge,
+              serverPublicKey: msg.serverPublicKey,
+              serverFingerprint: msg.serverFingerprint,
+            };
+
+            (async () => {
+              try {
+                const challengeData = fromBase64(msg.challenge);
+                const signature = await sign(identity.privateKey, challengeData);
+                client.sendMessage(createAuthResponse(
+                  identity.publicKeyRaw,
+                  signature,
+                  identity.fingerprint,
+                ));
+              } catch (err) {
+                const detail = err instanceof Error ? err.message : String(err);
+                setError(new Error(`Relay authentication failed: ${detail}`));
+                setRelayStatus('disconnected');
+                client.close();
+              }
+            })();
+            return;
           }
+
+          // Handle auth_result: verify mutual auth, TOFU trust, then send hello
+          if (msg.type === 'auth_result') {
+            if (!msg.success) {
+              setError(new Error(`Relay auth rejected: ${msg.error ?? 'unknown'}`));
+              setRelayStatus('disconnected');
+              client.close();
+              return;
+            }
+
+            const pending = pendingRelayChallengeRef.current;
+            if (!msg.serverSignature || !pending) {
+              setError(new Error('Server did not provide mutual authentication signature'));
+              setRelayStatus('disconnected');
+              client.close();
+              return;
+            }
+
+            // Verify server signature for mutual auth
+            (async () => {
+              try {
+                const serverPubKey = await importPublicKey(fromBase64(pending.serverPublicKey));
+                const challengeData = fromBase64(pending.challenge);
+                const valid = await verify(serverPubKey, challengeData, msg.serverSignature!);
+                if (!valid) {
+                  setError(new Error('Server signature verification failed'));
+                  setRelayStatus('disconnected');
+                  client.close();
+                  return;
+                }
+
+                // TOFU: trust server on first use
+                const relayUrl = `relay:${pending.serverFingerprint}`;
+                trustHost(relayUrl, pending.serverFingerprint, pending.serverPublicKey);
+                pendingRelayChallengeRef.current = null;
+
+                // Auth succeeded; now send hello so the daemon creates our session
+                client.sendMessage(createHello('remi-web', '0.1.0'));
+              } catch (err) {
+                const detail = err instanceof Error ? err.message : String(err);
+                setError(new Error(`Server verification failed: ${detail}`));
+                setRelayStatus('disconnected');
+                client.close();
+              }
+            })();
+            return;
+          }
+
+          // Forward all other messages to the existing handler
+          handleMessageRef.current?.(msg);
         },
         onError: (errCode, errMsg) => {
           console.error(`Signaling error [${errCode}]: ${errMsg}`);
@@ -722,12 +862,16 @@ function App() {
       />
 
       <ConnectModal
-        isOpen={showConnectModal}
+        isOpen={showConnectModal || needsPassphrase}
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
         onConnectCode={handleConnectCode}
         connectionStatus={effectiveStatus}
-        error={null}
+        error={error}
+        needsPassphrase={needsPassphrase}
+        hasIdentity={hasIdentity()}
+        serverFingerprint={serverFingerprint}
+        onPassphraseSubmit={handlePassphraseSubmit}
       />
     </>
   );

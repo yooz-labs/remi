@@ -61,6 +61,9 @@ export type {
   CreateSessionRequestMessage,
   CreateSessionResponseMessage,
   TerminalResizeMessage,
+  AuthChallengeMessage,
+  AuthResponseMessage,
+  AuthResultMessage,
 } from './protocol.ts';
 
 export {
@@ -91,5 +94,48 @@ export {
   createCreateSessionRequest,
   createCreateSessionResponse,
   createTerminalResize,
+  createAuthChallenge,
+  createAuthResponse,
+  createAuthResult,
   MessageIdTracker,
 } from './protocol.ts';
+
+// Crypto
+export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
+export {
+  PBKDF2_ITERATIONS,
+  SALT_SIZE,
+  IV_SIZE,
+  CHALLENGE_SIZE,
+  FINGERPRINT_LENGTH,
+  toBase64,
+  fromBase64,
+  generateKeyPair,
+  exportKeyPair,
+  importPublicKey,
+  importPrivateKey,
+  sign,
+  verify,
+  deriveKeyFromPassphrase,
+  encryptPrivateKey,
+  decryptPrivateKey,
+  fingerprint,
+  generateChallenge,
+} from './crypto.ts';
+
+// Identity
+export type {
+  RemiIdentity,
+  AuthorizedKey,
+  AuthorizedKeysFile,
+  UnlockedIdentity,
+  KnownHost,
+} from './identity.ts';
+export {
+  createIdentity,
+  unlockIdentity,
+  serializeIdentity,
+  deserializeIdentity,
+  createAuthorizedKey,
+  createAuthorizedKeysFile,
+} from './identity.ts';

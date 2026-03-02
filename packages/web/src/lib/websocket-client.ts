@@ -82,7 +82,7 @@ export class WebSocketClient {
 
       // Set connection timeout
       this.connectionTimer = setTimeout(() => {
-        if (this.status === 'connecting') {
+        if (this.status === 'connecting' || this.status === 'authenticating') {
           this.handleError(new Error('Connection timeout'));
           this.ws?.close();
         }
@@ -112,7 +112,7 @@ export class WebSocketClient {
 
   /** Send a message to the daemon */
   send(message: ProtocolMessage): boolean {
-    if (!this.ws || this.status !== 'connected') {
+    if (!this.ws || (this.status !== 'connected' && this.status !== 'authenticating')) {
       return false;
     }
 
@@ -129,6 +129,13 @@ export class WebSocketClient {
   private handleOpen(): void {
     this.clearConnectionTimer();
     this.reconnectAttempts = 0;
+    // Don't set 'connected' yet; wait for auth handshake or hello_ack.
+    // Set 'authenticating' to signal that the transport is open but auth is pending.
+    this.setStatus('authenticating');
+  }
+
+  /** Transition to connected state (called after auth completes) */
+  setConnected(): void {
     this.setStatus('connected');
   }
 

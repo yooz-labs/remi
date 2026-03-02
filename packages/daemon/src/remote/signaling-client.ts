@@ -12,7 +12,7 @@ const ALPHA_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ';
 const NUMERIC_CHARS = '23456789';
 
 /** Generate a connection code locally (XXXX-YYYY format) */
-function generateConnectionCode(): string {
+export function generateConnectionCode(): string {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
   let alpha = '';
@@ -28,6 +28,11 @@ function generateConnectionCode(): string {
   return `${alpha}-${numeric}`;
 }
 
+export interface SignalingClientOptions {
+  /** Rotate to a new code on each auto-reconnect (default: true) */
+  rotateOnReconnect?: boolean;
+}
+
 export interface SignalingClientEvents {
   registered: (code: string, expiresAt: string) => void;
   'peer-connected': () => void;
@@ -36,19 +41,23 @@ export interface SignalingClientEvents {
   error: (code: string, message: string) => void;
   close: () => void;
   open: () => void;
+  'code-rotated': (newCode: string) => void;
 }
 
 export class SignalingClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private readonly baseUrl: string;
+  private readonly rotateOnReconnect: boolean;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private code: string | null = null;
+  private isReconnect = false;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, options?: SignalingClientOptions) {
     super();
     // Strip trailing slash
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.rotateOnReconnect = options?.rotateOnReconnect ?? true;
   }
 
   connect(code?: string): void {
@@ -58,12 +67,18 @@ export class SignalingClient extends EventEmitter {
     }
     this.closed = false;
 
-    // Use provided code or generate one; reuse on reconnect
     if (code) {
+      // Explicit code provided (initial connect)
       this.code = code;
+    } else if (this.isReconnect && this.rotateOnReconnect) {
+      // Auto-reconnect with rotation: generate new code
+      this.code = generateConnectionCode();
+      this.emit('code-rotated', this.code);
     } else if (!this.code) {
+      // First connect with no code: generate one
       this.code = generateConnectionCode();
     }
+    // Otherwise: reuse existing code (permanent mode)
     const wsUrl = `${this.baseUrl}/${this.code}`;
     this.ws = new WebSocket(wsUrl);
 
@@ -149,6 +164,7 @@ export class SignalingClient extends EventEmitter {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.closed) {
+        this.isReconnect = true;
         this.connect();
       }
     }, 5000);
