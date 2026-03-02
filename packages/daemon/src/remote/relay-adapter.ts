@@ -7,6 +7,11 @@
  * Supports two modes:
  * - Rotating codes (default): code changes on each reconnect; no Ed25519 auth
  * - Permanent code (--permanent-code): code persists; Ed25519 auth required
+ *
+ * Auth is determined by the presence of an `authenticator` in the config.
+ * When set, the adapter runs a challenge-response handshake before accepting
+ * any protocol messages from the relay peer:
+ *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
  */
 
 import { createAgentOutput, createQuestion, generateId } from '@remi/shared';
@@ -128,17 +133,7 @@ export class RelayAdapter implements ConnectionAdapter {
     });
 
     this.client.on('peer-disconnected', () => {
-      if (this.clientConnectionId) {
-        // Clean up pending auth challenge if peer disconnects during auth
-        if (this.authState === 'challenging' && this.config.authenticator) {
-          this.config.authenticator.removePendingChallenge(this.clientConnectionId);
-        }
-        if (this.authState === 'authenticated') {
-          this.events.onDisconnect?.(this.clientConnectionId, 'Remote client disconnected');
-        }
-        this.clientConnectionId = null;
-        this.authState = 'none';
-      }
+      this.resetClient('Remote client disconnected');
     });
 
     this.client.on('relay', (payload: string) => {
@@ -156,7 +151,10 @@ export class RelayAdapter implements ConnectionAdapter {
 
         // Handle auth_response during challenging state
         if (message.type === 'auth_response') {
-          this.handleAuthResponse(message as AuthResponseMessage);
+          this.handleAuthResponse(message as AuthResponseMessage).catch((err) => {
+            console.error('Relay auth error:', err instanceof Error ? err.message : err);
+            this.resetClient();
+          });
           return;
         }
 
@@ -209,9 +207,21 @@ export class RelayAdapter implements ConnectionAdapter {
       this.events.onConnect?.(this.clientConnectionId, metadata);
     } else {
       console.warn(`Relay auth failed: ${result.error}`);
-      this.authState = 'none';
-      // Don't disconnect; the peer can retry or the signaling TTL will clean up
+      this.resetClient();
     }
+  }
+
+  /** Reset client state, cleaning up auth challenges and notifying disconnect if authenticated. */
+  private resetClient(reason?: string): void {
+    if (!this.clientConnectionId) return;
+    if (this.authState === 'challenging' && this.config.authenticator) {
+      this.config.authenticator.removePendingChallenge(this.clientConnectionId);
+    }
+    if (this.authState === 'authenticated') {
+      this.events.onDisconnect?.(this.clientConnectionId, reason ?? 'Connection reset');
+    }
+    this.clientConnectionId = null;
+    this.authState = 'none';
   }
 
   private routeMessage(msg: Record<string, unknown>): void {
@@ -233,32 +243,48 @@ export class RelayAdapter implements ConnectionAdapter {
         this.events.onAnswer?.(connectionId, msg['questionId'], msg['answer']);
         break;
       case 'session_list_request':
+        if (typeof msg['id'] !== 'string') {
+          console.warn('Invalid session_list_request payload: missing id');
+          return;
+        }
         this.events.onSessionListRequest?.(
           connectionId,
-          msg['id'] as string,
+          msg['id'],
           (msg['includeExternal'] as boolean) ?? false,
         );
         break;
       case 'transcript_load_request':
-        this.events.onTranscriptLoadRequest?.(
-          connectionId,
-          msg['sessionId'] as string,
-          msg['id'] as string,
-        );
+        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
+          console.warn('Invalid transcript_load_request payload: missing sessionId or id');
+          return;
+        }
+        this.events.onTranscriptLoadRequest?.(connectionId, msg['sessionId'], msg['id']);
         break;
       case 'create_session_request':
+        if (typeof msg['id'] !== 'string') {
+          console.warn('Invalid create_session_request payload: missing id');
+          return;
+        }
         this.events.onCreateSessionRequest?.(
           connectionId,
           msg['directory'] as string | undefined,
-          msg['id'] as string,
+          msg['id'],
         );
         break;
       case 'bullet_expand_request':
+        if (
+          typeof msg['sessionId'] !== 'string' ||
+          typeof msg['bulletId'] !== 'number' ||
+          typeof msg['id'] !== 'string'
+        ) {
+          console.warn('Invalid bullet_expand_request payload: missing required fields');
+          return;
+        }
         this.events.onBulletExpandRequest?.(
           connectionId,
-          msg['sessionId'] as string,
-          msg['bulletId'] as number,
-          msg['id'] as string,
+          msg['sessionId'],
+          msg['bulletId'],
+          msg['id'],
         );
         break;
       case 'terminal_resize':
@@ -279,16 +305,7 @@ export class RelayAdapter implements ConnectionAdapter {
   async stop(): Promise<void> {
     if (!this.running || !this.client) return;
 
-    if (this.clientConnectionId) {
-      if (this.authState === 'challenging' && this.config.authenticator) {
-        this.config.authenticator.removePendingChallenge(this.clientConnectionId);
-      }
-      if (this.authState === 'authenticated') {
-        this.events.onDisconnect?.(this.clientConnectionId, 'Relay adapter stopped');
-      }
-      this.clientConnectionId = null;
-      this.authState = 'none';
-    }
+    this.resetClient('Relay adapter stopped');
 
     this.client.close();
     this.client = null;

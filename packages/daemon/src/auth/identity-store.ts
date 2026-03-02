@@ -31,7 +31,7 @@ const AUTHORIZED_KEYS_FILE = 'authorized_keys.json';
 
 export class IdentityStore {
   private readonly dir: string;
-  private readonly identityPath: string;
+  readonly identityPath: string;
   private readonly authorizedKeysPath: string;
 
   constructor(dir?: string) {

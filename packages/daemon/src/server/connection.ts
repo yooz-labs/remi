@@ -2,10 +2,15 @@
  * WebSocket Connection - Wraps a WebSocket with protocol handling.
  *
  * Features:
+ * - Authentication state machine (challenge-response before hello)
  * - Message serialization/deserialization
  * - Message ID tracking for deduplication
  * - Acknowledgment handling
  * - Ping/pong keep-alive
+ *
+ * State transitions:
+ *   With auth:    connecting -> authenticating -> connecting -> connected
+ *   Without auth: connecting -> connected
  */
 
 import {
@@ -202,7 +207,11 @@ export class Connection {
     // In authenticating state, only accept auth_response
     if (this.state === 'authenticating') {
       if (message.type === 'auth_response') {
-        this.handleAuthResponse(message);
+        this.handleAuthResponse(message).catch((err) => {
+          this.sendError('AUTH_ERROR', 'Internal authentication error');
+          this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+          this.close('Authentication error');
+        });
       } else if (message.type === 'ping') {
         this.handlePing(message);
       } else {

@@ -632,33 +632,36 @@ function App() {
             const identity = unlockedIdentity;
             if (!identity) {
               console.error('Relay auth_challenge received but no unlocked identity');
-              // TODO: prompt for passphrase in relay mode
+              setRelayStatus('disconnected');
+              client.close();
               return;
             }
             (async () => {
               try {
                 const challengeData = fromBase64(msg.challenge);
                 const signature = await sign(identity.privateKey, challengeData);
-                const response = createAuthResponse(
+                client.sendMessage(createAuthResponse(
                   identity.publicKeyRaw,
                   signature,
                   identity.fingerprint,
-                );
-                client.sendMessage(response);
+                ));
               } catch (err) {
                 console.error('Relay auth failed:', err instanceof Error ? err.message : err);
+                setRelayStatus('disconnected');
               }
             })();
             return;
           }
 
-          // Handle auth_result: log success/failure
+          // Handle auth_result: on success re-send hello, on failure disconnect
           if (msg.type === 'auth_result') {
             if (!msg.success) {
               console.error(`Relay auth rejected: ${msg.error ?? 'unknown'}`);
               setRelayStatus('disconnected');
+            } else {
+              // Auth succeeded; now send hello so the daemon creates our session
+              client.sendMessage(createHello('remi-web', '0.1.0'));
             }
-            // On success, daemon will send hello_ack next (handled by handleMessage)
             return;
           }
 
@@ -784,7 +787,7 @@ function App() {
         onConnectDirect={handleConnectDirect}
         onConnectCode={handleConnectCode}
         connectionStatus={effectiveStatus}
-        error={null}
+        error={error}
         needsPassphrase={needsPassphrase}
         hasIdentity={hasIdentity()}
         serverFingerprint={serverFingerprint}

@@ -1,10 +1,13 @@
 /**
  * Authenticator - Server-side authentication logic.
  *
- * Handles the challenge-response handshake:
- * 1. Generate challenge with server's public key
+ * Handles the Ed25519 challenge-response handshake:
+ * 1. Generate a random one-time challenge with server's public key
  * 2. Verify client's signature and check authorized keys
  * 3. Sign challenge for mutual authentication
+ *
+ * Each challenge is consumed on first verification attempt (one-time use)
+ * to prevent replay attacks.
  */
 
 import type {
@@ -25,8 +28,8 @@ import {
 import type { IdentityStore } from './identity-store.ts';
 
 export interface AuthenticatorConfig {
-  identity: UnlockedIdentity;
-  identityStore: IdentityStore;
+  readonly identity: UnlockedIdentity;
+  readonly identityStore: IdentityStore;
 }
 
 export class Authenticator {
@@ -67,10 +70,13 @@ export class Authenticator {
     this.pendingChallenges.delete(connectionId);
 
     // Check if client's key is authorized
-    const isAuthorized = this.store.isAuthorized(
-      response.clientPublicKey,
-      response.clientFingerprint,
-    );
+    let isAuthorized: boolean;
+    try {
+      isAuthorized = this.store.isAuthorized(response.clientPublicKey, response.clientFingerprint);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`);
+    }
     if (!isAuthorized) {
       return createAuthResult(false, undefined, 'UNKNOWN_KEY');
     }

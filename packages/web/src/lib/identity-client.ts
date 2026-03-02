@@ -5,19 +5,13 @@
  * Manages known hosts (TOFU model) for server fingerprint verification.
  */
 
-import type { RemiIdentity, UnlockedIdentity } from '@remi/shared';
+import type { KnownHost, RemiIdentity, UnlockedIdentity } from '@remi/shared';
 import { createIdentity, deserializeIdentity, serializeIdentity, unlockIdentity } from '@remi/shared';
+
+export type { KnownHost };
 
 const IDENTITY_KEY = 'remi-identity';
 const KNOWN_HOSTS_KEY = 'remi-known-hosts';
-
-/** Known host entry (TOFU) */
-export interface KnownHost {
-  readonly fingerprint: string;
-  readonly publicKey: string;
-  readonly firstSeen: string;
-  readonly lastSeen: string;
-}
 
 /** Load stored identity (still encrypted). Returns null if not found. Throws on corrupt data. */
 export function loadIdentity(): RemiIdentity | null {
@@ -86,14 +80,16 @@ export function getFingerprint(): string | null {
 
 // -- Known Hosts (TOFU) --
 
-/** Load known hosts map */
+/** Load known hosts map. Throws on corrupt data. */
 export function loadKnownHosts(): Record<string, KnownHost> {
+  const stored = localStorage.getItem(KNOWN_HOSTS_KEY);
+  if (!stored) return {};
   try {
-    const stored = localStorage.getItem(KNOWN_HOSTS_KEY);
-    if (!stored) return {};
     return JSON.parse(stored) as Record<string, KnownHost>;
   } catch {
-    return {};
+    throw new Error(
+      'Known hosts data is corrupt. Remove the entry from localStorage (key: remi-known-hosts) to reset.',
+    );
   }
 }
 

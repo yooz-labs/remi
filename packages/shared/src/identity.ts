@@ -12,6 +12,7 @@ import {
   encryptPrivateKey,
   exportKeyPair,
   fingerprint,
+  fromBase64,
   generateKeyPair,
   importPrivateKey,
   importPublicKey,
@@ -102,10 +103,7 @@ export async function unlockIdentity(
   );
 
   const privateKey = await importPrivateKey(privateKeyPkcs8);
-  const publicKey = await importPublicKey(
-    // Convert base64 public key back to ArrayBuffer
-    Uint8Array.from(atob(identity.publicKey), (c) => c.charCodeAt(0)).buffer,
-  );
+  const publicKey = await importPublicKey(fromBase64(identity.publicKey));
 
   return {
     publicKey,
@@ -160,7 +158,7 @@ export async function createAuthorizedKey(
   publicKeyBase64: Base64,
   label: string,
 ): Promise<AuthorizedKey> {
-  const publicKeyRaw = Uint8Array.from(atob(publicKeyBase64), (c) => c.charCodeAt(0)).buffer;
+  const publicKeyRaw = fromBase64(publicKeyBase64);
   const fp = await fingerprint(publicKeyRaw);
 
   return {

@@ -6,6 +6,7 @@
  */
 
 import { IdentityStore } from '../auth/identity-store.ts';
+import { promptPassphrase } from './prompt-passphrase.ts';
 
 export interface KeygenOptions {
   passphrase?: string | undefined;
@@ -23,11 +24,7 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
     process.exit(1);
   }
 
-  let passphrase = options.passphrase;
-
-  if (!passphrase) {
-    passphrase = await promptPassphrase();
-  }
+  const passphrase = options.passphrase ?? (await promptPassphrase('Passphrase (min 8 chars)'));
 
   if (passphrase.length < 8) {
     console.error('Passphrase must be at least 8 characters.');
@@ -39,57 +36,7 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
 
   console.log('Identity generated successfully.');
   console.log(`  Fingerprint: ${identity.fingerprint}`);
-  console.log('  Stored at:   ~/.remi/identity.json');
+  console.log(`  Stored at:   ${store.identityPath}`);
   console.log('');
   console.log('Share your public key with clients using: remi export-key --public-only');
-}
-
-async function promptPassphrase(): Promise<string> {
-  if (!process.stdin.isTTY) {
-    console.error('Cannot prompt for passphrase: stdin is not a terminal.');
-    console.error('Use --passphrase option instead.');
-    process.exit(1);
-  }
-
-  process.stdout.write('Passphrase (min 8 chars): ');
-
-  return new Promise((resolve, reject) => {
-    let input = '';
-    process.stdin.setRawMode?.(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf-8');
-
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === '\r' || ch === '\n') {
-          process.stdin.setRawMode?.(false);
-          process.stdin.pause();
-          process.stdin.removeListener('data', onData);
-          process.stdout.write('\n');
-          resolve(input);
-          return;
-        }
-        if (ch === '\x7f' || ch === '\b') {
-          // Backspace
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            process.stdout.write('\b \b');
-          }
-        } else if (ch === '\x03') {
-          // Ctrl+C
-          process.stdout.write('\n');
-          process.exit(130);
-        } else if (ch >= ' ') {
-          input += ch;
-          process.stdout.write('*');
-        }
-      }
-    };
-
-    process.stdin.on('data', onData);
-    process.stdin.on('error', (err: Error) => {
-      process.stdin.setRawMode?.(false);
-      reject(new Error(`Failed to read passphrase: ${err.message}`));
-    });
-  });
 }

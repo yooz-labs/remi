@@ -322,7 +322,7 @@ let cliPermanentCode = false;
 let cliForce = false;
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
-let cliPassphrase: string | undefined;
+let cliBindHost: string | undefined;
 let cliRemoveFingerprint: string | undefined;
 const claudeArgs: string[] = [];
 
@@ -368,8 +368,8 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--public-only') {
     cliPublicOnly = true;
-  } else if (arg === '--passphrase' && nextArg) {
-    cliPassphrase = nextArg;
+  } else if (arg === '--bind' && nextArg) {
+    cliBindHost = nextArg;
     i++;
   } else if (arg === '--remove' && nextArg) {
     cliRemoveFingerprint = nextArg;
@@ -403,7 +403,7 @@ Options:
   --no-relay               Disable signaling relay (no remote access via connection code)
   --permanent-code         Use a persistent connection code (requires Ed25519 auth over relay)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
-  --passphrase PASS        Passphrase for keygen (avoids interactive prompt)
+  --bind HOST              Bind WebSocket to HOST (default: localhost; use 0.0.0.0 for all interfaces)
   --force                  Overwrite existing identity (keygen/import-key)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
@@ -417,7 +417,7 @@ Environment:
   REMI_PORT                WebSocket port
   REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
   TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
-  REMI_PASSPHRASE              Passphrase to unlock identity (avoids interactive prompt)
+  REMI_PASSPHRASE              Passphrase for identity operations (avoids interactive prompt)
   TELEGRAM_ENABLED              Set to 'false' to disable Telegram
   TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
   TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
@@ -568,7 +568,7 @@ WantedBy=default.target`;
 // Handle key management subcommands
 if (cliSubcommand === 'keygen') {
   const { runKeygen } = await import('./cli/keygen.ts');
-  await runKeygen({ passphrase: cliPassphrase, force: cliForce });
+  await runKeygen({ passphrase: process.env['REMI_PASSPHRASE'], force: cliForce });
   process.exit(0);
 }
 
@@ -1455,55 +1455,16 @@ if (!storedIdentity) {
   process.exit(1);
 }
 
-let passphrase = process.env['REMI_PASSPHRASE'];
-if (!passphrase) {
-  if (!process.stdin.isTTY) {
-    console.error('No TTY and REMI_PASSPHRASE not set. Cannot unlock identity.');
-    process.exit(1);
-  }
-  process.stdout.write('Passphrase to unlock identity: ');
-  passphrase = await new Promise<string>((resolve, reject) => {
-    let input = '';
-    process.stdin.setRawMode?.(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf-8');
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === '\r' || ch === '\n') {
-          process.stdin.setRawMode?.(false);
-          process.stdin.pause();
-          process.stdin.removeListener('data', onData);
-          process.stdout.write('\n');
-          resolve(input);
-          return;
-        }
-        if (ch === '\x7f' || ch === '\b') {
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            process.stdout.write('\b \b');
-          }
-        } else if (ch === '\x03') {
-          process.stdout.write('\n');
-          process.exit(130);
-        } else if (ch >= ' ') {
-          input += ch;
-          process.stdout.write('*');
-        }
-      }
-    };
-    process.stdin.on('data', onData);
-    process.stdin.on('error', (err: Error) => {
-      process.stdin.setRawMode?.(false);
-      reject(new Error(`Failed to read passphrase: ${err.message}`));
-    });
-  });
-}
+const { promptPassphrase } = await import('./cli/prompt-passphrase.ts');
+const passphrase = await promptPassphrase('Passphrase to unlock identity');
 
 let unlockedIdentity: UnlockedIdentity;
 try {
   unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
-} catch {
-  console.error('Failed to unlock identity. Wrong passphrase?');
+} catch (err) {
+  const detail = err instanceof Error ? err.message : String(err);
+  console.error(`Failed to unlock identity: ${detail}`);
+  console.error('Wrong passphrase?');
   process.exit(1);
 }
 
@@ -1516,7 +1477,7 @@ console.log(`Authentication enabled (fingerprint: ${storedIdentity.fingerprint})
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
-    host: '0.0.0.0',
+    host: cliBindHost ?? 'localhost',
     authenticator,
   },
   sharedEvents,
@@ -1545,36 +1506,34 @@ if (!cliNoRelay) {
   const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
 
+  let relayCode: string;
+  let rotateCode: boolean;
+  let relayAuth: typeof authenticator | undefined;
+
   if (cliPermanentCode) {
     // Permanent code mode: persist code to disk, require Ed25519 auth over relay
     const { CodeStore } = await import('./remote/code-store.ts');
     const codeStore = new CodeStore();
-    const code = codeStore.load() ?? codeStore.refresh();
-    const relayAdapter = new RelayAdapter(
-      {
-        enabled: true,
-        signalingUrl,
-        code,
-        rotateCode: false,
-        authenticator,
-      },
-      sharedEvents,
-    );
-    registry.register(relayAdapter);
+    relayCode = codeStore.load() ?? codeStore.refresh();
+    rotateCode = false;
+    relayAuth = authenticator;
   } else {
     // Rotating code mode (default): ephemeral code, no Ed25519 auth
-    const code = generateConnectionCode();
-    const relayAdapter = new RelayAdapter(
-      {
-        enabled: true,
-        signalingUrl,
-        code,
-        rotateCode: true,
-      },
-      sharedEvents,
-    );
-    registry.register(relayAdapter);
+    relayCode = generateConnectionCode();
+    rotateCode = true;
   }
+
+  const relayAdapter = new RelayAdapter(
+    {
+      enabled: true,
+      signalingUrl,
+      code: relayCode,
+      rotateCode,
+      ...(relayAuth ? { authenticator: relayAuth } : {}),
+    },
+    sharedEvents,
+  );
+  registry.register(relayAdapter);
 }
 
 // ---------------------------------------------------------------------------

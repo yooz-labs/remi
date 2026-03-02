@@ -5,6 +5,7 @@
  * Handles auth handshake when daemon requires authentication.
  */
 
+import { checkKnownHost, trustHost } from '@/lib/identity-client';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
@@ -82,6 +83,16 @@ export interface UseWebSocketOptions {
   unlockedIdentity?: UnlockedIdentity | null;
 }
 
+/** Sign an auth challenge with the given identity and return an auth_response message. */
+async function signChallenge(
+  identity: UnlockedIdentity,
+  challenge: string,
+): Promise<ProtocolMessage> {
+  const challengeData = fromBase64(challenge);
+  const signature = await sign(identity.privateKey, challengeData);
+  return createAuthResponse(identity.publicKeyRaw, signature, identity.fingerprint);
+}
+
 /**
  * React hook for managing WebSocket connection.
  */
@@ -106,8 +117,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const onMessageRef = useRef(onMessage);
   const lastSessionIdRef = useRef<UUID | null>(initialResumeSessionId ?? null);
   const directoryRef = useRef<string | undefined>(undefined);
+  const urlRef = useRef<string>('');
   const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
-  const pendingChallengeRef = useRef<{ challenge: string; serverPublicKey: string } | null>(null);
+  const pendingChallengeRef = useRef<{
+    challenge: string;
+    serverPublicKey: string;
+    serverFingerprint: string;
+  } | null>(null);
   const helloSentRef = useRef(false);
 
   // Keep refs updated
@@ -139,8 +155,23 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     setAuthRequired(true);
     setServerFingerprint(srvFingerprint);
 
+    // TOFU: check known hosts
+    const tofuResult = checkKnownHost(urlRef.current, srvFingerprint);
+    if (tofuResult === 'mismatch') {
+      setError(new Error(
+        `Server fingerprint changed for ${urlRef.current}. ` +
+        'This could indicate a MITM attack. Connection rejected.',
+      ));
+      client.disconnect();
+      return;
+    }
+
     // Always store for mutual auth verification in handleAuthResult
-    pendingChallengeRef.current = { challenge, serverPublicKey: srvPublicKey };
+    pendingChallengeRef.current = {
+      challenge,
+      serverPublicKey: srvPublicKey,
+      serverFingerprint: srvFingerprint,
+    };
 
     const identity = identityRef.current;
     if (!identity) {
@@ -151,13 +182,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
     // Sign the challenge
     try {
-      const challengeData = fromBase64(challenge);
-      const signature = await sign(identity.privateKey, challengeData);
-      const response = createAuthResponse(
-        identity.publicKeyRaw,
-        signature,
-        identity.fingerprint,
-      );
+      const response = await signChallenge(identity, challenge);
       client.send(response);
     } catch (err) {
       setError(new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`));
@@ -198,6 +223,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         client.disconnect();
         return;
       }
+    }
+
+    // TOFU: trust the server on first use (or update lastSeen)
+    const pending = pendingChallengeRef.current;
+    if (pending) {
+      trustHost(urlRef.current, pending.serverFingerprint, pending.serverPublicKey);
     }
 
     pendingChallengeRef.current = null;
@@ -254,21 +285,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     if (!client || !pending) return;
 
     // Sign the pending challenge
-    (async () => {
-      try {
-        const challengeData = fromBase64(pending.challenge);
-        const signature = await sign(identity.privateKey, challengeData);
-        const response = createAuthResponse(
-          identity.publicKeyRaw,
-          signature,
-          identity.fingerprint,
-        );
-        client.send(response);
-      } catch (err) {
+    signChallenge(identity, pending.challenge)
+      .then((response) => client.send(response))
+      .catch((err) => {
         setError(new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`));
         client.disconnect();
-      }
-    })();
+      });
   }, []);
 
   // Connect to daemon
@@ -284,7 +306,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       setServerFingerprint(null);
       setNeedsPassphrase(false);
 
-      // Store directory for reconnects
+      // Store URL and directory for reconnects/TOFU
+      urlRef.current = url;
       if (directory !== undefined) {
         directoryRef.current = directory;
       }

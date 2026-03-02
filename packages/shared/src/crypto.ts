@@ -43,7 +43,12 @@ export function toBase64(buffer: ArrayBuffer): Base64 {
 }
 
 export function fromBase64(base64: Base64): ArrayBuffer {
-  const binary = atob(base64);
+  let binary: string;
+  try {
+    binary = atob(base64);
+  } catch {
+    throw new Error(`Invalid Base64 input (length=${base64.length})`);
+  }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
@@ -79,7 +84,9 @@ export async function generateKeyPair(): Promise<RawKeyPair> {
 }
 
 /**
- * Export a keypair to raw bytes.
+ * Export a keypair to transferable byte arrays.
+ * Public key is exported as raw bytes (32 bytes for Ed25519).
+ * Private key is exported in PKCS8 format (48 bytes for Ed25519).
  */
 export async function exportKeyPair(keyPair: RawKeyPair): Promise<ExportedKeyPair> {
   const [publicKeyRaw, privateKeyRaw] = await Promise.all([
@@ -162,9 +169,9 @@ export async function deriveKeyFromPassphrase(
 // -- Private key encryption at rest --
 
 export interface EncryptedData {
-  ciphertext: Base64;
-  iv: Base64;
-  salt: Base64;
+  readonly ciphertext: Base64;
+  readonly iv: Base64;
+  readonly salt: Base64;
 }
 
 /**
