@@ -1,0 +1,59 @@
+#!/usr/bin/env node
+
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+
+const PLATFORMS = {
+  "darwin-arm64": "@yooz-labs/remi-darwin-arm64",
+  "darwin-x64": "@yooz-labs/remi-darwin-x64",
+  "linux-arm64": "@yooz-labs/remi-linux-arm64",
+  "linux-x64": "@yooz-labs/remi-linux-x64",
+};
+
+const platform = os.platform();
+const arch = os.arch();
+const key = `${platform}-${arch}`;
+const pkg = PLATFORMS[key];
+
+if (!pkg) {
+  console.error(`Unsupported platform: ${key}`);
+  console.error("Remi supports: darwin-arm64, darwin-x64, linux-arm64, linux-x64");
+  process.exit(1);
+}
+
+let binPath;
+try {
+  const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
+  binPath = path.join(pkgDir, "bin", "remi");
+} catch (err) {
+  if (err.code === "MODULE_NOT_FOUND") {
+    console.error(`Platform package ${pkg} is not installed.`);
+  } else {
+    console.error(`Failed to resolve ${pkg}: ${err.message}`);
+  }
+  console.error("Try reinstalling: npm install -g @yooz-labs/remi");
+  process.exit(1);
+}
+
+if (!fs.existsSync(binPath)) {
+  console.error(`Remi binary not found at: ${binPath}`);
+  console.error("Try reinstalling: npm install -g @yooz-labs/remi");
+  process.exit(1);
+}
+
+const result = spawnSync(binPath, process.argv.slice(2), {
+  stdio: "inherit",
+  env: process.env,
+});
+
+if (result.error) {
+  console.error(`Failed to execute remi: ${result.error.message}`);
+  if (result.error.code === "EACCES") {
+    console.error(`Try: chmod +x "${binPath}"`);
+  }
+  process.exit(1);
+}
+
+process.exit(result.status ?? 1);

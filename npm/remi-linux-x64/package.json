@@ -1,0 +1,14 @@
+{
+  "name": "@yooz-labs/remi-linux-x64",
+  "version": "0.1.0",
+  "description": "Remi binary for Linux x64",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yooz-labs/remi"
+  },
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "preferUnplugged": true,
+  "files": ["bin/remi"]
+}

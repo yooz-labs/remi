@@ -1,0 +1,14 @@
+{
+  "name": "@yooz-labs/remi-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Remi binary for macOS ARM64",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yooz-labs/remi"
+  },
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "preferUnplugged": true,
+  "files": ["bin/remi"]
+}
