@@ -86,34 +86,42 @@ jobs:
 
       - name: Prepare npm packages
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9] ]]; then
+            echo "ERROR: Invalid version from tag: '${GITHUB_REF_NAME}'" >&2
+            exit 1
+          fi
+          echo "Publishing version: $VERSION"
+          REPO_ROOT="$(pwd)"
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             mkdir -p npm/remi-$PLAT/bin
             cp "artifacts/remi-$PLAT/remi-$PLAT" "npm/remi-$PLAT/bin/remi"
             chmod +x "npm/remi-$PLAT/bin/remi"
-            node -e "
+            PLAT_PKG="$REPO_ROOT/npm/remi-$PLAT/package.json" PKG_VERSION="$VERSION" node -e "
               const fs = require('fs');
-              const pkg = JSON.parse(fs.readFileSync('npm/remi-$PLAT/package.json', 'utf8'));
-              pkg.version = '$VERSION';
-              fs.writeFileSync('npm/remi-$PLAT/package.json', JSON.stringify(pkg, null, 2) + '\n');
+              const pkg = JSON.parse(fs.readFileSync(process.env.PLAT_PKG, 'utf8'));
+              pkg.version = process.env.PKG_VERSION;
+              fs.writeFileSync(process.env.PLAT_PKG, JSON.stringify(pkg, null, 2) + '\n');
             "
           done
-          node -e "
+          MAIN_PKG="$REPO_ROOT/npm/remi/package.json" PKG_VERSION="$VERSION" node -e "
             const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('npm/remi/package.json', 'utf8'));
-            pkg.version = '$VERSION';
+            const pkg = JSON.parse(fs.readFileSync(process.env.MAIN_PKG, 'utf8'));
+            pkg.version = process.env.PKG_VERSION;
             for (const key of Object.keys(pkg.optionalDependencies || {})) {
-              pkg.optionalDependencies[key] = '$VERSION';
+              pkg.optionalDependencies[key] = process.env.PKG_VERSION;
             }
-            fs.writeFileSync('npm/remi/package.json', JSON.stringify(pkg, null, 2) + '\n');
+            fs.writeFileSync(process.env.MAIN_PKG, JSON.stringify(pkg, null, 2) + '\n');
           "
 
       - name: Publish platform packages
         run: |
+          set -euo pipefail
+          REPO_ROOT="$(pwd)"
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            cd npm/remi-$PLAT
-            npm publish --provenance --access public
-            cd ../..
+            echo "Publishing @yooz-labs/remi-$PLAT..."
+            (cd "$REPO_ROOT/npm/remi-$PLAT" && npm publish --provenance --access public)
           done
 
       - name: Publish main package

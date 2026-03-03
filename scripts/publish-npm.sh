@@ -7,6 +7,12 @@ if [[ "${2:-}" == "--dry-run" ]]; then
   DRY_RUN="--dry-run"
 fi
 
+# Validate semver format
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+  echo "Error: VERSION must be semver (e.g. 1.2.3), got: $VERSION" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NPM_DIR="$ROOT_DIR/npm"
@@ -17,28 +23,39 @@ echo "==> Building all platform binaries..."
 cd "$ROOT_DIR"
 bun run build:all
 
+echo "==> Validating built binaries..."
+for PLAT in "${PLATFORMS[@]}"; do
+  BINARY="$ROOT_DIR/dist/remi-$PLAT"
+  if [[ ! -f "$BINARY" || ! -s "$BINARY" ]]; then
+    echo "Error: Missing or empty binary for $PLAT at $BINARY" >&2
+    exit 1
+  fi
+  echo "  OK: remi-$PLAT ($(wc -c < "$BINARY" | tr -d ' ') bytes)"
+done
+
 echo "==> Updating versions to $VERSION..."
 
-# Update main package version and optionalDependencies versions
-node -e "
+# Use env vars to avoid shell interpolation into JS
+# npm publish is used here because bun publish does not support provenance or scoped packages
+MAIN_PKG="$NPM_DIR/remi/package.json" PKG_VERSION="$VERSION" node -e "
 const fs = require('fs');
-const pkg = JSON.parse(fs.readFileSync('$NPM_DIR/remi/package.json', 'utf8'));
-pkg.version = '$VERSION';
+const pkg = JSON.parse(fs.readFileSync(process.env.MAIN_PKG, 'utf8'));
+pkg.version = process.env.PKG_VERSION;
 for (const key of Object.keys(pkg.optionalDependencies || {})) {
-  pkg.optionalDependencies[key] = '$VERSION';
+  pkg.optionalDependencies[key] = process.env.PKG_VERSION;
 }
-fs.writeFileSync('$NPM_DIR/remi/package.json', JSON.stringify(pkg, null, 2) + '\n');
+fs.writeFileSync(process.env.MAIN_PKG, JSON.stringify(pkg, null, 2) + '\n');
 "
 
 for PLAT in "${PLATFORMS[@]}"; do
   PLAT_DIR="$NPM_DIR/remi-$PLAT"
 
-  # Update version
-  node -e "
+  # Update version via env var
+  PLAT_PKG="$PLAT_DIR/package.json" PKG_VERSION="$VERSION" node -e "
   const fs = require('fs');
-  const pkg = JSON.parse(fs.readFileSync('$PLAT_DIR/package.json', 'utf8'));
-  pkg.version = '$VERSION';
-  fs.writeFileSync('$PLAT_DIR/package.json', JSON.stringify(pkg, null, 2) + '\n');
+  const pkg = JSON.parse(fs.readFileSync(process.env.PLAT_PKG, 'utf8'));
+  pkg.version = process.env.PKG_VERSION;
+  fs.writeFileSync(process.env.PLAT_PKG, JSON.stringify(pkg, null, 2) + '\n');
   "
 
   # Copy binary
@@ -47,12 +64,10 @@ for PLAT in "${PLATFORMS[@]}"; do
   chmod +x "$PLAT_DIR/bin/remi"
 
   echo "==> Publishing @yooz-labs/remi-$PLAT@$VERSION..."
-  cd "$PLAT_DIR"
-  npm publish --access public $DRY_RUN
+  (cd "$PLAT_DIR" && npm publish --access public $DRY_RUN)
 done
 
 echo "==> Publishing @yooz-labs/remi@$VERSION..."
-cd "$NPM_DIR/remi"
-npm publish --access public $DRY_RUN
+(cd "$NPM_DIR/remi" && npm publish --access public $DRY_RUN)
 
 echo "==> Done. Published @yooz-labs/remi@$VERSION"

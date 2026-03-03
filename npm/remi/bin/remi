@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
@@ -26,8 +27,18 @@ let binPath;
 try {
   const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
   binPath = path.join(pkgDir, "bin", "remi");
-} catch {
-  console.error(`Platform package ${pkg} is not installed.`);
+} catch (err) {
+  if (err.code === "MODULE_NOT_FOUND") {
+    console.error(`Platform package ${pkg} is not installed.`);
+  } else {
+    console.error(`Failed to resolve ${pkg}: ${err.message}`);
+  }
+  console.error("Try reinstalling: npm install -g @yooz-labs/remi");
+  process.exit(1);
+}
+
+if (!fs.existsSync(binPath)) {
+  console.error(`Remi binary not found at: ${binPath}`);
   console.error("Try reinstalling: npm install -g @yooz-labs/remi");
   process.exit(1);
 }
@@ -36,5 +47,13 @@ const result = spawnSync(binPath, process.argv.slice(2), {
   stdio: "inherit",
   env: process.env,
 });
+
+if (result.error) {
+  console.error(`Failed to execute remi: ${result.error.message}`);
+  if (result.error.code === "EACCES") {
+    console.error(`Try: chmod +x "${binPath}"`);
+  }
+  process.exit(1);
+}
 
 process.exit(result.status ?? 1);

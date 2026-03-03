@@ -8,14 +8,7 @@
     "url": "https://github.com/yooz-labs/remi"
   },
   "homepage": "https://github.com/yooz-labs/remi",
-  "keywords": [
-    "claude",
-    "claude-code",
-    "cli",
-    "monitor",
-    "remote",
-    "terminal"
-  ],
+  "keywords": ["claude", "claude-code", "cli", "monitor", "remote", "terminal"],
   "bin": {
     "remi": "bin/remi"
   },
