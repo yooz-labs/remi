@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -65,3 +66,57 @@ jobs:
             artifacts/remi-darwin-x64/remi-darwin-x64
             artifacts/remi-linux-x64/remi-linux-x64
             artifacts/remi-linux-arm64/remi-linux-arm64
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare npm packages
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            mkdir -p npm/remi-$PLAT/bin
+            cp "artifacts/remi-$PLAT/remi-$PLAT" "npm/remi-$PLAT/bin/remi"
+            chmod +x "npm/remi-$PLAT/bin/remi"
+            node -e "
+              const fs = require('fs');
+              const pkg = JSON.parse(fs.readFileSync('npm/remi-$PLAT/package.json', 'utf8'));
+              pkg.version = '$VERSION';
+              fs.writeFileSync('npm/remi-$PLAT/package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+          done
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('npm/remi/package.json', 'utf8'));
+            pkg.version = '$VERSION';
+            for (const key of Object.keys(pkg.optionalDependencies || {})) {
+              pkg.optionalDependencies[key] = '$VERSION';
+            }
+            fs.writeFileSync('npm/remi/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Publish platform packages
+        run: |
+          for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            cd npm/remi-$PLAT
+            npm publish --provenance --access public
+            cd ../..
+          done
+
+      - name: Publish main package
+        run: |
+          cd npm/remi
+          npm publish --provenance --access public

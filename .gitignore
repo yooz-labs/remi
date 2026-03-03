@@ -9,6 +9,9 @@ build/
 .output/
 *.tsbuildinfo
 
+# npm platform binaries (copied at build/publish time)
+npm/remi-*/bin/
+
 # Bun
 bun.lockb
 *.bun-build

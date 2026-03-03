@@ -1,0 +1,31 @@
+{
+  "name": "@yooz-labs/remi",
+  "version": "0.1.0",
+  "description": "Remote monitor for Claude Code CLI sessions",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yooz-labs/remi"
+  },
+  "homepage": "https://github.com/yooz-labs/remi",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cli",
+    "monitor",
+    "remote",
+    "terminal"
+  ],
+  "bin": {
+    "remi": "bin/remi"
+  },
+  "optionalDependencies": {
+    "@yooz-labs/remi-darwin-arm64": "0.1.0",
+    "@yooz-labs/remi-darwin-x64": "0.1.0",
+    "@yooz-labs/remi-linux-arm64": "0.1.0",
+    "@yooz-labs/remi-linux-x64": "0.1.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
