@@ -128,3 +128,41 @@ jobs:
         run: |
           cd npm/remi
           npm publish --provenance --access public
+
+  update-homebrew:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for npm registry propagation
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Waiting for @yooz-labs/remi@$VERSION on npm..."
+          for i in $(seq 1 30); do
+            if curl -sf "https://registry.npmjs.org/@yooz-labs/remi-darwin-arm64/$VERSION" > /dev/null 2>&1; then
+              echo "Available after ${i}0 seconds"
+              break
+            fi
+            if [[ $i -eq 30 ]]; then
+              echo "ERROR: Timed out waiting for npm" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash scripts/update-homebrew.sh "$VERSION" > /tmp/remi.rb
+          gh api repos/yooz-labs/homebrew-tap/contents/Formula/remi.rb \
+            --method PUT \
+            --field message="remi ${VERSION}" \
+            --field content="$(base64 -w 0 /tmp/remi.rb)" \
+            --field sha="$(gh api repos/yooz-labs/homebrew-tap/contents/Formula/remi.rb --jq .sha)"
+          echo "Updated homebrew formula to ${VERSION}"
