@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ProtocolMessage } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../src/api/message-api.ts';
-import type { OutputProcessor } from '../src/parser/output-processor.ts';
 import type { PTYSession } from '../src/pty/pty-session.ts';
 import { SessionRegistry } from '../src/session/session-registry.ts';
 
@@ -15,13 +14,6 @@ function createMockPTY(): PTYSession {
     id: generateId(),
     close: mock(() => Promise.resolve()),
   } as unknown as PTYSession;
-}
-
-function createMockProcessor(): OutputProcessor {
-  return {
-    process: mock(() => {}),
-    flush: mock(() => {}),
-  } as unknown as OutputProcessor;
 }
 
 function createMockMessageAPI(bulletCount = 0): MessageAPI {
@@ -64,10 +56,9 @@ describe('SessionRegistry', () => {
     test('registers a new session', () => {
       const sessionId = generateId();
       const pty = createMockPTY();
-      const processor = createMockProcessor();
       const messageApi = createMockMessageAPI();
 
-      registry.registerSession(sessionId, '/test/dir', pty, processor, messageApi);
+      registry.registerSession(sessionId, '/test/dir', pty, messageApi);
 
       expect(registry.sessionCount).toBe(1);
       expect(registry.getSession(sessionId)).toBeDefined();
@@ -76,13 +67,7 @@ describe('SessionRegistry', () => {
 
     test('session starts with no connection', () => {
       const sessionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
 
       const session = registry.getSession(sessionId);
       expect(session?.activeConnectionId).toBeNull();
@@ -94,13 +79,7 @@ describe('SessionRegistry', () => {
     test('attaches connection to session', () => {
       const sessionId = generateId();
       const connectionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
 
       const result = registry.attachConnection(sessionId, connectionId);
 
@@ -121,13 +100,7 @@ describe('SessionRegistry', () => {
 
     test('returns error if session already has connection', () => {
       const sessionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, generateId());
 
       const result = registry.attachConnection(sessionId, generateId());
@@ -139,13 +112,7 @@ describe('SessionRegistry', () => {
     test('getSessionForConnection works after attach', () => {
       const sessionId = generateId();
       const connectionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId);
 
       const session = registry.getSessionForConnection(connectionId);
@@ -157,13 +124,7 @@ describe('SessionRegistry', () => {
     test('detaches connection and marks session orphaned', () => {
       const sessionId = generateId();
       const connectionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId);
 
       registry.detachConnection(connectionId);
@@ -177,13 +138,7 @@ describe('SessionRegistry', () => {
     test('getSessionForConnection returns undefined after detach', () => {
       const sessionId = generateId();
       const connectionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId);
       registry.detachConnection(connectionId);
 
@@ -194,13 +149,7 @@ describe('SessionRegistry', () => {
       const sessionId = generateId();
       const connectionId = generateId();
       const pty = createMockPTY();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        pty,
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId);
       registry.detachConnection(connectionId);
 
@@ -220,13 +169,7 @@ describe('SessionRegistry', () => {
 
     test('returns false for connected session', () => {
       const sessionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, generateId());
 
       expect(registry.canResume(sessionId)).toBe(false);
@@ -235,13 +178,7 @@ describe('SessionRegistry', () => {
     test('returns true for orphaned session', () => {
       const sessionId = generateId();
       const connectionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId);
       registry.detachConnection(connectionId);
 
@@ -256,13 +193,7 @@ describe('SessionRegistry', () => {
       const connectionId2 = generateId();
       const pty = createMockPTY();
 
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        pty,
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId1);
       registry.detachConnection(connectionId1);
 
@@ -286,13 +217,7 @@ describe('SessionRegistry', () => {
       const connectionId1 = generateId();
       const connectionId2 = generateId();
 
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(5),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI(5));
       registry.attachConnection(sessionId, connectionId1);
 
       // Record some messages
@@ -320,13 +245,7 @@ describe('SessionRegistry', () => {
   describe('recordOutgoingMessage()', () => {
     test('stores messages in history', () => {
       const sessionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, generateId());
 
       const msg: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
@@ -344,7 +263,6 @@ describe('SessionRegistry', () => {
         sessionId,
         '/test/dir',
         createMockPTY(),
-        createMockProcessor(),
         createMockMessageAPI(),
       );
       registryWithSmallHistory.attachConnection(sessionId, generateId());
@@ -366,13 +284,7 @@ describe('SessionRegistry', () => {
   describe('updateStatus()', () => {
     test('updates session status', () => {
       const sessionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
 
       registry.updateStatus(sessionId, 'thinking');
 
@@ -385,13 +297,7 @@ describe('SessionRegistry', () => {
     test('closes session and emits event', () => {
       const sessionId = generateId();
       const pty = createMockPTY();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        pty,
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI());
 
       registry.closeSession(sessionId, 'forced');
 
@@ -403,13 +309,7 @@ describe('SessionRegistry', () => {
     test('handlePTYExit closes session with pty_exit reason', () => {
       const sessionId = generateId();
       const pty = createMockPTY();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        pty,
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI());
 
       registry.handlePTYExit(sessionId);
 
@@ -423,20 +323,8 @@ describe('SessionRegistry', () => {
       const sessionId2 = generateId();
       const connectionId1 = generateId();
 
-      registry.registerSession(
-        sessionId1,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
-      registry.registerSession(
-        sessionId2,
-        '/test/dir',
-        createMockPTY(),
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(sessionId1, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.registerSession(sessionId2, '/test/dir', createMockPTY(), createMockMessageAPI());
 
       registry.attachConnection(sessionId1, connectionId1);
       registry.attachConnection(sessionId2, generateId());
@@ -450,20 +338,8 @@ describe('SessionRegistry', () => {
     test('closes all sessions', async () => {
       const pty1 = createMockPTY();
       const pty2 = createMockPTY();
-      registry.registerSession(
-        generateId(),
-        '/test',
-        pty1,
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
-      registry.registerSession(
-        generateId(),
-        '/test',
-        pty2,
-        createMockProcessor(),
-        createMockMessageAPI(),
-      );
+      registry.registerSession(generateId(), '/test', pty1, createMockMessageAPI());
+      registry.registerSession(generateId(), '/test', pty2, createMockMessageAPI());
 
       await registry.shutdown();
 

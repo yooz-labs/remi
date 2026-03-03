@@ -18,7 +18,6 @@ import type {
 } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
-import type { OutputProcessor } from '../parser/output-processor.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
 
 /** Configuration for SessionRegistry */
@@ -70,8 +69,6 @@ export interface ManagedSession {
 
   /** PTY session running Claude Code */
   pty: PTYSession;
-  /** Output processor for parsing PTY output */
-  processor: OutputProcessor;
   /** Message API for structured messages */
   messageApi: MessageAPI;
 
@@ -122,7 +119,6 @@ export class SessionRegistry {
     sessionId: UUID,
     workingDirectory: string,
     pty: PTYSession,
-    processor: OutputProcessor,
     messageApi: MessageAPI,
   ): void {
     const session: ManagedSession = {
@@ -130,7 +126,6 @@ export class SessionRegistry {
       createdAt: now(),
       workingDirectory,
       pty,
-      processor,
       messageApi,
       activeConnectionId: null,
       lastDisconnectedAt: null,
@@ -309,7 +304,7 @@ export class SessionRegistry {
   }
 
   /**
-   * Update session status (from OutputProcessor events).
+   * Update session status (from hook events).
    */
   updateStatus(sessionId: UUID, status: AgentStatus): void {
     const session = this.sessions.get(sessionId);
@@ -319,7 +314,7 @@ export class SessionRegistry {
   }
 
   /**
-   * Update current question (from OutputProcessor events).
+   * Update current question (from hook events).
    */
   updateQuestion(sessionId: UUID, question: Question | null): void {
     const session = this.sessions.get(sessionId);

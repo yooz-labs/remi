@@ -234,7 +234,7 @@ import {
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
-import { OutputProcessor } from './parser/index.ts';
+import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
 import {
@@ -828,6 +828,11 @@ const sessionRegistry = new SessionRegistry(
 // The primary session ID (in wrapper mode, this is the one running in the terminal)
 let primarySessionId: UUID | null = null;
 
+// Hook infrastructure (initialized in wrapper mode when hooks are enabled)
+const HOOK_PORT = PORT + 1;
+let hookServer: HookServer | null = null;
+let hookConfigManager: HookConfigManager | null = null;
+
 // ---------------------------------------------------------------------------
 // Create session helper (shared between wrapper and daemon modes)
 // ---------------------------------------------------------------------------
@@ -892,6 +897,36 @@ async function createNewSession(
     },
   );
 
+  // Hook-based event bridge for status/question detection
+  if (hookServer) {
+    const hookBridge = new HookEventBridge(sessionId, {
+      onStatusChange: (status: AgentStatus, context?: string) => {
+        messageApi.handleStatusChange(status, context);
+      },
+      onQuestion: (question) => {
+        messageApi.handleQuestion(question);
+      },
+      onSessionInfo: (claudeSessionId: string, transcriptPath: string) => {
+        log(`[Hooks] SessionStart: claude=${claudeSessionId}, transcript=${transcriptPath}`);
+        sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+        // Start transcript watcher immediately using the path from the hook
+        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+        }
+      },
+    });
+
+    const handlers = hookBridge.hookHandlers();
+    hookServer.on('PreToolUse', (input) => handlers.onPreToolUse?.(input));
+    hookServer.on('PostToolUse', (input) => handlers.onPostToolUse?.(input));
+    hookServer.on('Notification', (input) => handlers.onNotification?.(input));
+    hookServer.on('Stop', (input) => handlers.onStop?.(input));
+    hookServer.on('SessionStart', (input) => handlers.onSessionStart?.(input));
+
+    log(`[Hooks] Event bridge active for session ${sessionId}`);
+  }
+
   // Determine terminal size
   const termSize = passThrough
     ? {
@@ -911,9 +946,6 @@ async function createNewSession(
     {
       onRawData: (data: Uint8Array) => {
         if (passThrough && ptyStdoutFd !== null) {
-          // Write raw bytes directly to terminal - no decode/encode round-trip.
-          // This preserves multi-byte UTF-8 sequences split across chunks and
-          // avoids ANSI escape corruption from processing delays.
           try {
             fs.writeSync(ptyStdoutFd, data);
           } catch (err) {
@@ -925,22 +957,15 @@ async function createNewSession(
           }
         }
       },
-      onData: (output: string) => {
-        // Decoded text goes to processor only (status detection, questions)
-        if (processor) {
-          processor.process(output);
-        }
+      onData: (_output: string) => {
+        // No PTY output parsing; hooks handle status/questions, transcript handles content
       },
       onExit: (code: number | null) => {
         log(`PTY ${ptySession.id} exited with code ${code}`);
-        if (processor) {
-          processor.flush();
-        }
         sessionRegistry.handlePTYExit(sessionId);
         sessionStore.markExited(sessionId, code);
 
         if (passThrough) {
-          // In wrapper mode, exit with the same code as Claude
           cleanup().then(() => {
             process.exit(code ?? 0);
           });
@@ -952,32 +977,9 @@ async function createNewSession(
     },
   );
 
-  const processor = new OutputProcessor(
-    {
-      sessionId: sessionId,
-      updateThrottleMs: 100,
-      streamStatusOnly: true,
-    },
-    {
-      onMessage: (message) => {
-        messageApi.handleMessage(message);
-      },
-      onMessageUpdate: (messageId, content, tool) => {
-        messageApi.handleMessageUpdate(messageId, content, tool);
-      },
-      onQuestion: (question) => {
-        messageApi.handleQuestion(question);
-      },
-      onStatusChange: (status: AgentStatus, context?: string) => {
-        messageApi.handleStatusChange(status, context);
-      },
-    },
-  );
-
-  sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, processor, messageApi);
+  sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, messageApi);
   await ptySession.start();
 
-  // Save session to persistent store
   sessionStore.save({
     remiSessionId: sessionId,
     claudeSessionId: null,
@@ -988,27 +990,18 @@ async function createNewSession(
     exitCode: null,
   });
 
-  // Start transcript watcher after delay
+  // Transcript watcher: started by SessionStart hook (provides path directly).
+  // Safety net: if hook doesn't fire within 5s, fall back to filesystem discovery.
   setTimeout(() => {
+    if (transcriptWatchers.has(sessionId)) return;
     if (!sessionRegistry.hasSession(sessionId)) return;
+    log('[Hooks] SessionStart hook not received, falling back to transcript discovery');
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
-    if (!transcriptPath) {
-      log(`No transcript file found for ${workingDirectory}, will retry...`);
-      setTimeout(() => {
-        if (!sessionRegistry.hasSession(sessionId)) return;
-        const retryPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
-        if (retryPath) {
-          startTranscriptWatcher(sessionId, retryPath, messageApi, sendAndRecord);
-          extractClaudeSessionId(retryPath, sessionId);
-        } else {
-          log(`Could not find transcript file for session ${sessionId}`);
-        }
-      }, 5000);
-      return;
+    if (transcriptPath) {
+      startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+      extractClaudeSessionId(transcriptPath, sessionId);
     }
-    startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-    extractClaudeSessionId(transcriptPath, sessionId);
-  }, 2000);
+  }, 5000);
 
   return ptySession;
 }
@@ -1543,6 +1536,20 @@ async function cleanup(): Promise<void> {
   }
   process.stdin.pause();
 
+  // Clean up hook infrastructure
+  if (hookServer) {
+    hookServer.stop();
+    hookServer = null;
+  }
+  if (hookConfigManager) {
+    try {
+      hookConfigManager.uninstall();
+    } catch {
+      // Best-effort cleanup
+    }
+    hookConfigManager = null;
+  }
+
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
@@ -1652,6 +1659,28 @@ if (cliDaemonMode) {
     } else {
       logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
     }
+  }
+
+  // Start hook server for Claude Code event detection
+  try {
+    hookServer = new HookServer(
+      { port: HOOK_PORT },
+      {
+        onError: (err) => logError(`[HookServer] ${err.message}`),
+      },
+    );
+    hookServer.start();
+    log(`Hook server listening on ${hookServer.url}`);
+
+    // Configure Claude Code hooks to POST to our server
+    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+    hookConfigManager.install();
+    log('[Hooks] Claude Code hooks configured');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError(`Hook server failed to start: ${msg}.`);
+    hookServer = null;
+    hookConfigManager = null;
   }
 
   // Create and start the primary PTY session
