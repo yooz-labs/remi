@@ -3,7 +3,7 @@
  *
  * Claude Code HTTP hooks POST JSON to a configured URL when events fire.
  * These types match the documented hook input schemas.
- * Reference: https://code.claude.com/docs/en/hooks
+ * Reference: Claude Code hooks documentation (claude --help or docs.anthropic.com)
  */
 
 /** Fields present in all hook event payloads */
@@ -12,7 +12,7 @@ export interface HookCommonInput {
   transcript_path: string;
   cwd: string;
   permission_mode: string;
-  hook_event_name: string;
+  hook_event_name: HookEventName;
 }
 
 export interface PreToolUseHookInput extends HookCommonInput {

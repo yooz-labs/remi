@@ -29,9 +29,6 @@ interface ClaudeSettings {
   [key: string]: unknown;
 }
 
-/** Marker in the URL that identifies Remi-managed hooks */
-const REMI_HOOK_URL_MARKER = '/hooks';
-
 export class HookConfigManager {
   private readonly settingsPath: string;
   private readonly hookUrl: string;
@@ -98,11 +95,7 @@ export class HookConfigManager {
       const matchers = hooks[event];
       if (!matchers) continue;
       const filtered = matchers.filter(
-        (m) =>
-          !m.hooks.some(
-            (h) =>
-              h.type === 'http' && h.url === this.hookUrl && h.url.includes(REMI_HOOK_URL_MARKER),
-          ),
+        (m) => !m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
       );
       if (filtered.length !== matchers.length) {
         hooks[event] = filtered;
@@ -135,8 +128,10 @@ export class HookConfigManager {
         // Settings file is empty; remove it
         try {
           fs.unlinkSync(this.settingsPath);
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error(
+            `Warning: failed to remove ${this.settingsPath}; stale hooks may remain: ${err}`,
+          );
         }
       } else {
         this.writeSettings(cleanSettings);
@@ -160,13 +155,26 @@ export class HookConfigManager {
   }
 
   private readSettings(): ClaudeSettings {
-    if (!fs.existsSync(this.settingsPath)) return {};
+    let content: string;
+    try {
+      content = fs.readFileSync(this.settingsPath, 'utf-8');
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        'code' in err &&
+        (err as NodeJS.ErrnoException).code === 'ENOENT'
+      ) {
+        return {};
+      }
+      throw err;
+    }
 
     try {
-      const content = fs.readFileSync(this.settingsPath, 'utf-8');
       return JSON.parse(content) as ClaudeSettings;
-    } catch {
-      return {};
+    } catch (err) {
+      throw new Error(
+        `Corrupted settings file at ${this.settingsPath}: ${err}. Fix or remove the file before running Remi.`,
+      );
     }
   }
 

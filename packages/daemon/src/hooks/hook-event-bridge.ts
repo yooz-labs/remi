@@ -58,14 +58,25 @@ export class HookEventBridge {
       this.events.onStatusChange('waiting');
     } else if (input.notification_type === 'idle_prompt') {
       this.events.onStatusChange('idle');
+    } else {
+      // Intentionally unhandled notification types:
+      // - 'auth_success': informational only, no status change needed
+      // - 'elicitation_dialog': not yet supported by Remi
     }
   }
 
-  handleStop(_input: StopHookInput): void {
-    this.events.onStatusChange('idle');
+  handleStop(input: StopHookInput): void {
+    // When stop_hook_active is true, the stop hook is intercepting and the
+    // session is NOT actually stopping; it remains active.
+    if (!input.stop_hook_active) {
+      this.events.onStatusChange('idle');
+    }
   }
 
   handleSessionStart(input: SessionStartHookInput): void {
+    if (!input.session_id || !input.transcript_path) {
+      return;
+    }
     this.events.onSessionInfo(input.session_id, input.transcript_path);
   }
 

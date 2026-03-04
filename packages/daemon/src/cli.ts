@@ -899,6 +899,10 @@ async function createNewSession(
 
   // Hook-based event bridge for status/question detection
   if (hookServer) {
+    // Track the Claude session ID so we can filter hook events by session.
+    // Before SessionStart fires, we let events through (claudeSessionId is null).
+    let claudeSessionId: string | null = null;
+
     const hookBridge = new HookEventBridge(sessionId, {
       onStatusChange: (status: AgentStatus, context?: string) => {
         messageApi.handleStatusChange(status, context);
@@ -906,9 +910,10 @@ async function createNewSession(
       onQuestion: (question) => {
         messageApi.handleQuestion(question);
       },
-      onSessionInfo: (claudeSessionId: string, transcriptPath: string) => {
-        log(`[Hooks] SessionStart: claude=${claudeSessionId}, transcript=${transcriptPath}`);
-        sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+      onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
+        claudeSessionId = hookClaudeSessionId;
+        log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
+        sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
 
         // Start transcript watcher immediately using the path from the hook
         if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
@@ -918,11 +923,23 @@ async function createNewSession(
     });
 
     const handlers = hookBridge.hookHandlers();
-    hookServer.on('PreToolUse', (input) => handlers.onPreToolUse?.(input));
-    hookServer.on('PostToolUse', (input) => handlers.onPostToolUse?.(input));
-    hookServer.on('Notification', (input) => handlers.onNotification?.(input));
-    hookServer.on('Stop', (input) => handlers.onStop?.(input));
     hookServer.on('SessionStart', (input) => handlers.onSessionStart?.(input));
+    hookServer.on('PreToolUse', (input) => {
+      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      handlers.onPreToolUse?.(input);
+    });
+    hookServer.on('PostToolUse', (input) => {
+      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      handlers.onPostToolUse?.(input);
+    });
+    hookServer.on('Notification', (input) => {
+      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      handlers.onNotification?.(input);
+    });
+    hookServer.on('Stop', (input) => {
+      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      handlers.onStop?.(input);
+    });
 
     log(`[Hooks] Event bridge active for session ${sessionId}`);
   }
@@ -995,11 +1012,15 @@ async function createNewSession(
   setTimeout(() => {
     if (transcriptWatchers.has(sessionId)) return;
     if (!sessionRegistry.hasSession(sessionId)) return;
-    log('[Hooks] SessionStart hook not received, falling back to transcript discovery');
+    logError('[Hooks] SessionStart hook not received, falling back to transcript discovery');
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
       extractClaudeSessionId(transcriptPath, sessionId);
+    } else {
+      logError(
+        `[Hooks] Transcript discovery failed for session ${sessionId}. No transcript content available.`,
+      );
     }
   }, 5000);
 
@@ -1544,8 +1565,10 @@ async function cleanup(): Promise<void> {
   if (hookConfigManager) {
     try {
       hookConfigManager.uninstall();
-    } catch {
-      // Best-effort cleanup
+    } catch (err) {
+      logError(
+        `[Hooks] Failed to uninstall hook config: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     hookConfigManager = null;
   }
@@ -1678,7 +1701,9 @@ if (cliDaemonMode) {
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logError(`Hook server failed to start: ${msg}.`);
+    logError(
+      `Hook server failed to start on port ${HOOK_PORT}: ${msg}. Status detection and question forwarding disabled.`,
+    );
     hookServer = null;
     hookConfigManager = null;
   }
