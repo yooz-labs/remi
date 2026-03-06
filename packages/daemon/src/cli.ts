@@ -224,7 +224,7 @@ import {
   now,
 } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
-import { unlockIdentity } from '@remi/shared';
+import { isEncrypted, unlockIdentity } from '@remi/shared';
 import {
   type AdapterMetadata,
   AdapterRegistry,
@@ -320,6 +320,8 @@ let cliSubcommandArg: string | undefined;
 let cliCodeRefresh = false;
 let cliPermanentCode = false;
 let cliForce = false;
+let cliUsePassphrase = false;
+let cliNoTofu = false;
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
 let cliBindHost: string | undefined;
@@ -363,6 +365,10 @@ for (let i = 0; i < args.length; i++) {
     cliUninstall = true;
   } else if (arg === '--force') {
     cliForce = true;
+  } else if (arg === '--passphrase') {
+    cliUsePassphrase = true;
+  } else if (arg === '--no-tofu') {
+    cliNoTofu = true;
   } else if (arg === '--label' && nextArg) {
     cliLabel = nextArg;
     i++;
@@ -405,6 +411,8 @@ Options:
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
   --bind HOST              Bind WebSocket to HOST (default: localhost; use 0.0.0.0 for all interfaces)
   --force                  Overwrite existing identity (keygen/import-key)
+  --passphrase             Encrypt identity with a passphrase (keygen)
+  --no-tofu                Reject unknown clients (disable Trust On First Use)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
   --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
@@ -568,7 +576,11 @@ WantedBy=default.target`;
 // Handle key management subcommands
 if (cliSubcommand === 'keygen') {
   const { runKeygen } = await import('./cli/keygen.ts');
-  await runKeygen({ passphrase: process.env['REMI_PASSPHRASE'], force: cliForce });
+  await runKeygen({
+    passphrase: process.env['REMI_PASSPHRASE'],
+    usePassphrase: cliUsePassphrase,
+    force: cliForce,
+  });
   process.exit(0);
 }
 
@@ -1454,13 +1466,14 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: identity is required
+// Auth setup: auto-generate identity if missing, auto-unlock if unencrypted
 // ---------------------------------------------------------------------------
 const identityStore = new IdentityStore();
 
 if (!identityStore.exists()) {
-  console.error('No identity found. Run "remi keygen" first.');
-  process.exit(1);
+  console.log('No identity found. Generating new Ed25519 keypair...');
+  const newIdentity = await identityStore.generate();
+  console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
 }
 
 const storedIdentity = identityStore.load();
@@ -1469,21 +1482,38 @@ if (!storedIdentity) {
   process.exit(1);
 }
 
-const { promptPassphrase } = await import('./cli/prompt-passphrase.ts');
-const passphrase = await promptPassphrase('Passphrase to unlock identity');
-
 let unlockedIdentity: UnlockedIdentity;
-try {
-  unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
-} catch (err) {
-  const detail = err instanceof Error ? err.message : String(err);
-  console.error(`Failed to unlock identity: ${detail}`);
-  console.error('Wrong passphrase?');
-  process.exit(1);
+
+if (isEncrypted(storedIdentity)) {
+  // Encrypted identity: use REMI_PASSPHRASE env var or prompt
+  const envPassphrase = process.env['REMI_PASSPHRASE'];
+  let passphrase: string;
+
+  if (envPassphrase) {
+    passphrase = envPassphrase;
+  } else {
+    const { promptPassphrase } = await import('./cli/prompt-passphrase.ts');
+    passphrase = await promptPassphrase('Passphrase to unlock identity');
+  }
+
+  try {
+    unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to unlock identity: ${detail}`);
+    console.error('Wrong passphrase?');
+    process.exit(1);
+  }
+} else {
+  // Unencrypted identity: unlock instantly
+  unlockedIdentity = await unlockIdentity(storedIdentity);
 }
 
-const authenticator = new Authenticator({ identity: unlockedIdentity, identityStore });
-console.log(`Authentication enabled (fingerprint: ${storedIdentity.fingerprint})`);
+const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
+const authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
+console.log(
+  `Authentication enabled (fingerprint: ${storedIdentity.fingerprint}, TOFU: ${tofuMode})`,
+);
 
 // ---------------------------------------------------------------------------
 // Create and register adapters

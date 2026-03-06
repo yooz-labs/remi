@@ -9,6 +9,7 @@ import {
   generateIdentity,
   getFingerprint,
   importIdentity,
+  isIdentityEncrypted,
   removeIdentity,
 } from '@/lib/identity-client';
 import type { AppSettings } from '@/types';
@@ -88,37 +89,48 @@ function IdentitySection() {
   const [fingerprint, setFingerprint] = useState<string | null>(getFingerprint);
   const [showGenerate, setShowGenerate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [usePassphrase, setUsePassphrase] = useState(false);
   const [passphrase, setPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [importJson, setImportJson] = useState('');
   const [generating, setGenerating] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [encrypted, setEncrypted] = useState(false);
 
   const passphraseRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(() => {
     setFingerprint(getFingerprint());
+    setEncrypted(isIdentityEncrypted());
+  }, []);
+
+  // Check encryption status on mount
+  useEffect(() => {
+    setEncrypted(isIdentityEncrypted());
   }, []);
 
   const handleGenerate = async (e: FormEvent) => {
     e.preventDefault();
-    if (passphrase.length < 8) {
-      setFeedback('Passphrase must be at least 8 characters.');
-      return;
-    }
-    if (passphrase !== confirmPassphrase) {
-      setFeedback('Passphrases do not match.');
-      return;
+    if (usePassphrase) {
+      if (passphrase.length < 8) {
+        setFeedback('Passphrase must be at least 8 characters.');
+        return;
+      }
+      if (passphrase !== confirmPassphrase) {
+        setFeedback('Passphrases do not match.');
+        return;
+      }
     }
     setGenerating(true);
     setFeedback(null);
     try {
-      await generateIdentity(passphrase);
+      await generateIdentity(usePassphrase ? passphrase : undefined);
       refresh();
       setShowGenerate(false);
       setPassphrase('');
       setConfirmPassphrase('');
+      setUsePassphrase(false);
       setFeedback('Identity generated successfully.');
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'Failed to generate identity');
@@ -186,7 +198,9 @@ function IdentitySection() {
           <div className="flex items-center gap-2 rounded-lg bg-[--color-surface-light] p-3">
             <Shield className="size-5 shrink-0 text-[--color-primary]" />
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-[--color-text-muted]">Your fingerprint</p>
+              <p className="text-xs text-[--color-text-muted]">
+                Your fingerprint {encrypted ? '(encrypted)' : '(unencrypted)'}
+              </p>
               <p className="truncate font-mono text-sm text-[--color-text]">{fingerprint}</p>
             </div>
             <button
@@ -247,21 +261,34 @@ function IdentitySection() {
           {/* Generate form */}
           {showGenerate && (
             <form onSubmit={handleGenerate} className="space-y-2">
-              <input
-                ref={passphraseRef}
-                type="password"
-                value={passphrase}
-                onChange={(e) => setPassphrase(e.target.value)}
-                placeholder="Passphrase (min 8 chars)"
-                className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
-              />
-              <input
-                type="password"
-                value={confirmPassphrase}
-                onChange={(e) => setConfirmPassphrase(e.target.value)}
-                placeholder="Confirm passphrase"
-                className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
-              />
+              <label className="flex items-center gap-2 text-sm text-[--color-text-secondary]">
+                <input
+                  type="checkbox"
+                  checked={usePassphrase}
+                  onChange={(e) => setUsePassphrase(e.target.checked)}
+                  className="rounded"
+                />
+                Encrypt with passphrase
+              </label>
+              {usePassphrase && (
+                <>
+                  <input
+                    ref={passphraseRef}
+                    type="password"
+                    value={passphrase}
+                    onChange={(e) => setPassphrase(e.target.value)}
+                    placeholder="Passphrase (min 8 chars)"
+                    className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+                  />
+                  <input
+                    type="password"
+                    value={confirmPassphrase}
+                    onChange={(e) => setConfirmPassphrase(e.target.value)}
+                    placeholder="Confirm passphrase"
+                    className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+                  />
+                </>
+              )}
               <div className="flex gap-2">
                 <button
                   type="submit"

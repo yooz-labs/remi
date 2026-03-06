@@ -105,6 +105,7 @@ export interface ConnectionConfig {
 
 const DEFAULT_PING_INTERVAL = 30000;
 const DEFAULT_CONNECTION_TIMEOUT = 10000;
+const DEFAULT_AUTH_CONNECTION_TIMEOUT = 60000;
 const SERVER_VERSION = '0.1.0';
 
 /**
@@ -142,7 +143,9 @@ export class Connection {
     this.config = {
       serverVersion: config.serverVersion ?? SERVER_VERSION,
       pingInterval: config.pingInterval ?? DEFAULT_PING_INTERVAL,
-      connectionTimeout: config.connectionTimeout ?? DEFAULT_CONNECTION_TIMEOUT,
+      connectionTimeout:
+        config.connectionTimeout ??
+        (config.authenticator ? DEFAULT_AUTH_CONNECTION_TIMEOUT : DEFAULT_CONNECTION_TIMEOUT),
       skipHelloAck: config.skipHelloAck ?? false,
       authenticator: config.authenticator,
     };

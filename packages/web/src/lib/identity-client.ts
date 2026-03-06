@@ -6,7 +6,7 @@
  */
 
 import type { KnownHost, RemiIdentity, UnlockedIdentity } from '@remi/shared';
-import { createIdentity, deserializeIdentity, serializeIdentity, unlockIdentity } from '@remi/shared';
+import { createIdentity, deserializeIdentity, isEncrypted, serializeIdentity, unlockIdentity } from '@remi/shared';
 
 export type { KnownHost };
 
@@ -42,20 +42,34 @@ export function hasIdentity(): boolean {
   return localStorage.getItem(IDENTITY_KEY) !== null;
 }
 
-/** Generate a new identity and store it */
-export async function generateIdentity(passphrase: string): Promise<RemiIdentity> {
+/** Generate a new identity and store it. Without a passphrase, the key is stored unencrypted. */
+export async function generateIdentity(passphrase?: string): Promise<RemiIdentity> {
   const identity = await createIdentity(passphrase);
   saveIdentity(identity);
   return identity;
 }
 
-/** Unlock a stored identity with passphrase */
-export async function unlockStoredIdentity(passphrase: string): Promise<UnlockedIdentity> {
+/** Unlock a stored identity. Encrypted identities require a passphrase. */
+export async function unlockStoredIdentity(passphrase?: string): Promise<UnlockedIdentity> {
   const identity = loadIdentity();
   if (!identity) {
     throw new Error('No identity found');
   }
   return unlockIdentity(identity, passphrase);
+}
+
+/** Check if the stored identity has an encrypted private key. */
+export function isIdentityEncrypted(): boolean {
+  const identity = loadIdentity();
+  if (!identity) return false;
+  return isEncrypted(identity);
+}
+
+/** Ensure an identity exists. Auto-generates an unencrypted one if missing. */
+export async function ensureIdentity(): Promise<RemiIdentity> {
+  const existing = loadIdentity();
+  if (existing) return existing;
+  return generateIdentity();
 }
 
 /** Import identity from JSON string */

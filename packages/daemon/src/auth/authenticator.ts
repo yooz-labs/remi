@@ -3,8 +3,9 @@
  *
  * Handles the Ed25519 challenge-response handshake:
  * 1. Generate a random one-time challenge, include server's fingerprint and public key
- * 2. Verify client's Ed25519 signature and check authorized keys list
- * 3. Sign the same challenge with the server's private key (mutual authentication)
+ * 2. Verify client's Ed25519 signature first (bad signatures never trigger TOFU)
+ * 3. Check authorized keys; if unknown and TOFU is enabled, auto-accept
+ * 4. Sign the same challenge with the server's private key (mutual authentication)
  *
  * Each challenge is consumed on first verification attempt (one-time use)
  * to prevent replay attacks.
@@ -27,20 +28,25 @@ import {
 } from '@remi/shared';
 import type { IdentityStore } from './identity-store.ts';
 
+export type TofuMode = 'auto-accept' | 'reject';
+
 export interface AuthenticatorConfig {
   readonly identity: UnlockedIdentity;
   readonly identityStore: IdentityStore;
+  readonly tofuMode?: TofuMode;
 }
 
 export class Authenticator {
   private readonly identity: UnlockedIdentity;
   private readonly store: IdentityStore;
+  private readonly tofuMode: TofuMode;
   /** Active challenges keyed by connection ID */
   private readonly pendingChallenges = new Map<string, string>();
 
   constructor(config: AuthenticatorConfig) {
     this.identity = config.identity;
     this.store = config.identityStore;
+    this.tofuMode = config.tofuMode ?? 'reject';
   }
 
   /**
@@ -56,6 +62,9 @@ export class Authenticator {
   /**
    * Verify a client's auth response.
    * Returns an AuthResultMessage with success/failure.
+   *
+   * Order: verify signature first (bad sigs never trigger TOFU),
+   * then check authorization, then TOFU if applicable.
    */
   async verifyResponse(
     connectionId: string,
@@ -69,20 +78,7 @@ export class Authenticator {
     // Remove challenge (one-time use)
     this.pendingChallenges.delete(connectionId);
 
-    // Check if client's key is authorized
-    let isAuthorized: boolean;
-    try {
-      isAuthorized = this.store.isAuthorized(response.clientPublicKey, response.clientFingerprint);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error(`Auth store error during verification: ${detail}`);
-      return createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`);
-    }
-    if (!isAuthorized) {
-      return createAuthResult(false, undefined, 'UNKNOWN_KEY');
-    }
-
-    // Verify the signature
+    // Step 1: Verify the signature FIRST (before checking authorization)
     try {
       const clientPublicKey = await importPublicKey(fromBase64(response.clientPublicKey));
       const challengeData = fromBase64(challenge);
@@ -94,6 +90,39 @@ export class Authenticator {
     } catch (err) {
       const code = err instanceof DOMException ? 'INVALID_KEY_DATA' : 'VERIFICATION_ERROR';
       return createAuthResult(false, undefined, code);
+    }
+
+    // Step 2: Check if client's key is authorized
+    let isAuthorized: boolean;
+    try {
+      isAuthorized = this.store.isAuthorized(response.clientPublicKey, response.clientFingerprint);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`Auth store error during verification: ${detail}`);
+      return createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`);
+    }
+
+    // Step 3: TOFU - if not authorized and auto-accept is enabled, add the key
+    if (!isAuthorized) {
+      if (this.tofuMode === 'auto-accept') {
+        try {
+          const label = `tofu-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`;
+          await this.store.addAuthorizedKey(response.clientPublicKey, label);
+          console.log(`New client auto-accepted (TOFU): ${response.clientFingerprint} [${label}]`);
+          isAuthorized = true;
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          // Duplicate key means already authorized (race condition); treat as success
+          if (detail.includes('already authorized')) {
+            isAuthorized = true;
+          } else {
+            console.error(`TOFU auto-accept failed: ${detail}`);
+            return createAuthResult(false, undefined, 'TOFU_FAILED');
+          }
+        }
+      } else {
+        return createAuthResult(false, undefined, 'UNKNOWN_KEY');
+      }
     }
 
     // Update lastUsedAt (non-critical; don't let failures break auth)

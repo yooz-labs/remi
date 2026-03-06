@@ -5,7 +5,13 @@
  * Handles auth handshake when daemon requires authentication.
  */
 
-import { checkKnownHost, trustHost } from '@/lib/identity-client';
+import {
+  checkKnownHost,
+  ensureIdentity,
+  isIdentityEncrypted,
+  trustHost,
+  unlockStoredIdentity,
+} from '@/lib/identity-client';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
@@ -173,11 +179,24 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       serverFingerprint: srvFingerprint,
     };
 
-    const identity = identityRef.current;
+    let identity = identityRef.current;
     if (!identity) {
-      // Need passphrase from user
-      setNeedsPassphrase(true);
-      return;
+      // Auto-generate identity if missing, auto-unlock if unencrypted
+      try {
+        await ensureIdentity();
+        if (!isIdentityEncrypted()) {
+          identity = await unlockStoredIdentity();
+          identityRef.current = identity;
+        } else {
+          // Encrypted identity needs passphrase from user
+          setNeedsPassphrase(true);
+          return;
+        }
+      } catch (err) {
+        setError(new Error(`Identity setup failed: ${err instanceof Error ? err.message : String(err)}`));
+        client.disconnect();
+        return;
+      }
     }
 
     // Sign the challenge

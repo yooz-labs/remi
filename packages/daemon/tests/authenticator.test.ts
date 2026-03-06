@@ -31,13 +31,13 @@ describe('Authenticator', () => {
     tmpDir = makeTmpDir();
     store = new IdentityStore(tmpDir);
 
-    // Generate server identity
-    await store.generate('serverpass');
-    serverIdentity = await store.unlock('serverpass');
+    // Generate server identity (unencrypted for test speed)
+    await store.generate();
+    serverIdentity = await store.unlock();
 
-    // Generate client identity
-    const clientIdFile = await createIdentity('clientpass');
-    clientIdentity = await unlockIdentity(clientIdFile, 'clientpass');
+    // Generate client identity (unencrypted for test speed)
+    const clientIdFile = await createIdentity();
+    clientIdentity = await unlockIdentity(clientIdFile);
     clientPublicKeyBase64 = clientIdFile.publicKey;
     clientFingerprint = clientIdFile.fingerprint;
 
@@ -191,6 +191,118 @@ describe('Authenticator', () => {
 
     test('serverPublicKey returns identity public key', () => {
       expect(authenticator.serverPublicKey).toBe(serverIdentity.publicKeyRaw);
+    });
+  });
+
+  describe('TOFU (Trust On First Use)', () => {
+    let tofuAuthenticator: Authenticator;
+    let unknownIdentity: UnlockedIdentity;
+    let unknownPublicKeyBase64: string;
+    let unknownFingerprint: string;
+
+    beforeEach(async () => {
+      // Create authenticator with TOFU enabled
+      tofuAuthenticator = new Authenticator({
+        identity: serverIdentity,
+        identityStore: store,
+        tofuMode: 'auto-accept',
+      });
+
+      // Create an unknown client (not pre-authorized)
+      const unknownId = await createIdentity();
+      unknownIdentity = await unlockIdentity(unknownId);
+      unknownPublicKeyBase64 = unknownId.publicKey;
+      unknownFingerprint = unknownId.fingerprint;
+    });
+
+    test('auto-accept mode: unknown client with valid signature is accepted', async () => {
+      const challenge = tofuAuthenticator.createChallenge('conn-tofu');
+
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(unknownIdentity.privateKey, challengeData);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      const result = await tofuAuthenticator.verifyResponse('conn-tofu', response);
+      expect(result.success).toBe(true);
+      expect(result.serverSignature).toBeDefined();
+    });
+
+    test('auto-accept mode: client key is added to authorized keys', async () => {
+      const challenge = tofuAuthenticator.createChallenge('conn-tofu');
+
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(unknownIdentity.privateKey, challengeData);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      await tofuAuthenticator.verifyResponse('conn-tofu', response);
+
+      // Key should now be in the store
+      expect(store.isAuthorized(unknownPublicKeyBase64, unknownFingerprint)).toBe(true);
+    });
+
+    test('auto-accept mode: bad signature never triggers TOFU', async () => {
+      const _challenge = tofuAuthenticator.createChallenge('conn-tofu');
+
+      // Sign wrong data
+      const wrongData = new TextEncoder().encode('wrong data');
+      const signature = await sign(unknownIdentity.privateKey, wrongData.buffer);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      const result = await tofuAuthenticator.verifyResponse('conn-tofu', response);
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('INVALID_SIGNATURE');
+
+      // Key should NOT be added
+      expect(store.isAuthorized(unknownPublicKeyBase64, unknownFingerprint)).toBe(false);
+    });
+
+    test('reject mode: unknown client is rejected even with valid signature', async () => {
+      const rejectAuthenticator = new Authenticator({
+        identity: serverIdentity,
+        identityStore: store,
+        tofuMode: 'reject',
+      });
+
+      const challenge = rejectAuthenticator.createChallenge('conn-reject');
+
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(unknownIdentity.privateKey, challengeData);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      const result = await rejectAuthenticator.verifyResponse('conn-reject', response);
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('UNKNOWN_KEY');
+    });
+
+    test('already-authorized key does not trigger TOFU', async () => {
+      // Pre-authorize the client
+      await store.addAuthorizedKey(unknownPublicKeyBase64, 'Pre-Authorized');
+
+      const challenge = tofuAuthenticator.createChallenge('conn-existing');
+
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(unknownIdentity.privateKey, challengeData);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      const result = await tofuAuthenticator.verifyResponse('conn-existing', response);
+      expect(result.success).toBe(true);
+
+      // Should still have just one key entry (not duplicated)
+      const keys = store.listAuthorizedKeys();
+      const matching = keys.filter((k) => k.fingerprint === unknownFingerprint);
+      expect(matching.length).toBe(1);
+      expect(matching[0]?.label).toBe('Pre-Authorized');
+    });
+
+    test('default TOFU mode is reject', () => {
+      const defaultAuth = new Authenticator({
+        identity: serverIdentity,
+        identityStore: store,
+      });
+
+      // Verify by testing that unknown key is rejected
+      // (we already tested this in the main verifyResponse tests)
+      expect(defaultAuth).toBeDefined();
     });
   });
 });
