@@ -1472,8 +1472,15 @@ const identityStore = new IdentityStore();
 
 if (!identityStore.exists()) {
   console.log('No identity found. Generating new Ed25519 keypair...');
-  const newIdentity = await identityStore.generate();
-  console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
+  try {
+    const newIdentity = await identityStore.generate();
+    console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to auto-generate identity: ${detail}`);
+    console.error('Check permissions on ~/.remi or generate manually with "remi keygen".');
+    process.exit(1);
+  }
 }
 
 const storedIdentity = identityStore.load();
@@ -1506,7 +1513,14 @@ if (isEncrypted(storedIdentity)) {
   }
 } else {
   // Unencrypted identity: unlock instantly
-  unlockedIdentity = await unlockIdentity(storedIdentity);
+  try {
+    unlockedIdentity = await unlockIdentity(storedIdentity);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to unlock identity: ${detail}`);
+    console.error('Identity file may be corrupt. Run "remi keygen --force" to regenerate.');
+    process.exit(1);
+  }
 }
 
 const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);

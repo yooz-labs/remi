@@ -1,7 +1,8 @@
 /**
  * Client-side identity management.
  *
- * Stores identity in localStorage (private key stays passphrase-encrypted).
+ * Stores identity in localStorage. Private key is either passphrase-encrypted
+ * or stored as raw PKCS8 (unencrypted, for zero-friction startup).
  * Manages known hosts (TOFU model) for server fingerprint verification.
  */
 

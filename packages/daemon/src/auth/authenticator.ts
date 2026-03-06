@@ -26,7 +26,7 @@ import {
   sign,
   verify,
 } from '@remi/shared';
-import type { IdentityStore } from './identity-store.ts';
+import { DuplicateKeyError, type IdentityStore } from './identity-store.ts';
 
 export type TofuMode = 'auto-accept' | 'reject';
 
@@ -111,11 +111,11 @@ export class Authenticator {
           console.log(`New client auto-accepted (TOFU): ${response.clientFingerprint} [${label}]`);
           isAuthorized = true;
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
-          // Duplicate key means already authorized (race condition); treat as success
-          if (detail.includes('already authorized')) {
+          if (err instanceof DuplicateKeyError) {
+            // Race condition: another connection added the key first
             isAuthorized = true;
           } else {
+            const detail = err instanceof Error ? err.message : String(err);
             console.error(`TOFU auto-accept failed: ${detail}`);
             return createAuthResult(false, undefined, 'TOFU_FAILED');
           }

@@ -6,6 +6,7 @@
  * Writes identity to ~/.remi/identity.json with 0600 permissions.
  */
 
+import { isEncrypted } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
 import { promptPassphrase } from './prompt-passphrase.ts';
 
@@ -52,6 +53,6 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
 
   console.log('Identity generated successfully.');
   console.log(`  Fingerprint: ${identity.fingerprint}`);
-  console.log(`  Encrypted:   ${identity.iterations > 0 ? 'yes' : 'no'}`);
+  console.log(`  Encrypted:   ${isEncrypted(identity) ? 'yes' : 'no'}`);
   console.log(`  Stored at:   ${store.identityPath}`);
 }

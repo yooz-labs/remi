@@ -26,6 +26,13 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 
+export class DuplicateKeyError extends Error {
+  constructor(fingerprint: string) {
+    super(`Key with fingerprint ${fingerprint} already authorized`);
+    this.name = 'DuplicateKeyError';
+  }
+}
+
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const IDENTITY_FILE = 'identity.json';
 const AUTHORIZED_KEYS_FILE = 'authorized_keys.json';
@@ -138,7 +145,7 @@ export class IdentityStore {
     // Check for duplicate
     const existing = file.keys.find((k) => k.fingerprint === key.fingerprint);
     if (existing) {
-      throw new Error(`Key with fingerprint ${key.fingerprint} already authorized`);
+      throw new DuplicateKeyError(key.fingerprint);
     }
 
     file.keys.push(key);

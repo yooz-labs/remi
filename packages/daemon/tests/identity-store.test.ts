@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createIdentity } from '@remi/shared';
-import { IdentityStore } from '../src/auth/identity-store.ts';
+import { DuplicateKeyError, IdentityStore } from '../src/auth/identity-store.ts';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'remi-auth-test-'));
@@ -73,6 +73,34 @@ describe('IdentityStore', () => {
       await expect(store.unlock('any')).rejects.toThrow('No identity found');
     });
 
+    test('generate creates unencrypted identity without passphrase', async () => {
+      const identity = await store.generate();
+      expect(identity.iterations).toBe(0);
+      expect(identity.salt).toBe('');
+      expect(store.exists()).toBe(true);
+    });
+
+    test('unlock succeeds without passphrase for unencrypted identity', async () => {
+      await store.generate();
+      const unlocked = await store.unlock();
+      expect(unlocked.publicKey.type).toBe('public');
+      expect(unlocked.privateKey.type).toBe('private');
+    });
+
+    test('isEncrypted returns true for encrypted identity', async () => {
+      await store.generate('testpass');
+      expect(store.isEncrypted()).toBe(true);
+    });
+
+    test('isEncrypted returns false for unencrypted identity', async () => {
+      await store.generate();
+      expect(store.isEncrypted()).toBe(false);
+    });
+
+    test('isEncrypted returns false when no identity exists', () => {
+      expect(store.isEncrypted()).toBe(false);
+    });
+
     test('identity file has restricted permissions', async () => {
       await store.generate('pass');
       const identityPath = path.join(tmpDir, 'identity.json');
@@ -103,12 +131,16 @@ describe('IdentityStore', () => {
       expect(keys[0]?.fingerprint).toBe(identity.fingerprint);
     });
 
-    test('addAuthorizedKey rejects duplicate fingerprint', async () => {
+    test('addAuthorizedKey rejects duplicate fingerprint with DuplicateKeyError', async () => {
       const identity = await createIdentity('pass');
       await store.addAuthorizedKey(identity.publicKey, 'First');
-      await expect(store.addAuthorizedKey(identity.publicKey, 'Duplicate')).rejects.toThrow(
-        'already authorized',
-      );
+      try {
+        await store.addAuthorizedKey(identity.publicKey, 'Duplicate');
+        expect(true).toBe(false); // should not reach here
+      } catch (err) {
+        expect(err).toBeInstanceOf(DuplicateKeyError);
+        expect((err as Error).message).toContain('already authorized');
+      }
     });
 
     test('removeAuthorizedKey removes a key', async () => {

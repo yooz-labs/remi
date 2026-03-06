@@ -83,6 +83,10 @@ export async function createIdentity(passphrase?: string): Promise<RemiIdentity>
   const exported = await exportKeyPair(keyPair);
   const fp = await fingerprint(exported.publicKeyRaw);
 
+  if (passphrase !== undefined && passphrase.length === 0) {
+    throw new Error('Passphrase must not be empty. Omit it to create an unencrypted identity.');
+  }
+
   if (passphrase) {
     const encrypted = await encryptPrivateKey(exported.privateKeyRaw, passphrase);
     return {
@@ -188,6 +192,14 @@ export function deserializeIdentity(json: string): RemiIdentity {
 
   if (typeof obj['iterations'] !== 'number' || obj['iterations'] < 0) {
     throw new Error('Invalid identity: invalid iterations count');
+  }
+
+  // Cross-field consistency: encrypted vs unencrypted
+  if (obj['iterations'] === 0 && (obj['salt'] !== '' || obj['iv'] !== '')) {
+    throw new Error('Invalid identity: unencrypted identity must have empty salt and iv');
+  }
+  if ((obj['iterations'] as number) > 0 && (obj['salt'] === '' || obj['iv'] === '')) {
+    throw new Error('Invalid identity: encrypted identity requires non-empty salt and iv');
   }
 
   return parsed as RemiIdentity;

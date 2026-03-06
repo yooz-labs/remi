@@ -77,6 +77,10 @@ describe('createIdentity', () => {
     const raw = fromBase64(identity.publicKey);
     expect(raw.byteLength).toBe(32);
   });
+
+  test('rejects empty string passphrase', async () => {
+    await expect(createIdentity('')).rejects.toThrow('Passphrase must not be empty');
+  });
 });
 
 describe('unlockIdentity', () => {
@@ -208,6 +212,40 @@ describe('serializeIdentity / deserializeIdentity', () => {
         }),
       ),
     ).toThrow('invalid iterations');
+  });
+
+  test('rejects unencrypted identity with non-empty salt', () => {
+    expect(() =>
+      deserializeIdentity(
+        JSON.stringify({
+          version: 1,
+          publicKey: 'x',
+          encryptedPrivateKey: 'x',
+          salt: 'somesalt',
+          iv: '',
+          iterations: 0,
+          fingerprint: 'x',
+          createdAt: 'x',
+        }),
+      ),
+    ).toThrow('unencrypted identity must have empty salt and iv');
+  });
+
+  test('rejects encrypted identity with empty salt', () => {
+    expect(() =>
+      deserializeIdentity(
+        JSON.stringify({
+          version: 1,
+          publicKey: 'x',
+          encryptedPrivateKey: 'x',
+          salt: '',
+          iv: 'someiv',
+          iterations: 600000,
+          fingerprint: 'x',
+          createdAt: 'x',
+        }),
+      ),
+    ).toThrow('encrypted identity requires non-empty salt and iv');
   });
 });
 

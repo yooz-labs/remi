@@ -294,15 +294,35 @@ describe('Authenticator', () => {
       expect(matching[0]?.label).toBe('Pre-Authorized');
     });
 
-    test('default TOFU mode is reject', () => {
+    test('default TOFU mode is reject', async () => {
       const defaultAuth = new Authenticator({
         identity: serverIdentity,
         identityStore: store,
       });
 
-      // Verify by testing that unknown key is rejected
-      // (we already tested this in the main verifyResponse tests)
-      expect(defaultAuth).toBeDefined();
+      const challenge = defaultAuth.createChallenge('conn-default');
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(unknownIdentity.privateKey, challengeData);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      const result = await defaultAuth.verifyResponse('conn-default', response);
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('UNKNOWN_KEY');
+    });
+
+    test('auto-accept mode: handles race condition when key is added concurrently', async () => {
+      const challenge = tofuAuthenticator.createChallenge('conn-race');
+
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(unknownIdentity.privateKey, challengeData);
+      const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
+
+      // Simulate concurrent authorization (another connection added the key first)
+      await store.addAuthorizedKey(unknownPublicKeyBase64, 'concurrent-add');
+
+      // TOFU should still succeed (catches DuplicateKeyError)
+      const result = await tofuAuthenticator.verifyResponse('conn-race', response);
+      expect(result.success).toBe(true);
     });
   });
 });
