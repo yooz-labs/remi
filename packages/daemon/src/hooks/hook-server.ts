@@ -97,7 +97,9 @@ export class HookServer {
     });
 
     // Update config with the actual port assigned by the OS (matters when port=0)
-    this.config.port = this.server.port;
+    if (this.server.port != null) {
+      this.config.port = this.server.port;
+    }
   }
 
   stop(): void {
