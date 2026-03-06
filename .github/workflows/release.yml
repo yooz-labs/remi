@@ -126,13 +126,13 @@ jobs:
           REPO_ROOT="$(pwd)"
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             echo "Publishing @yooz-labs/remi-$PLAT..."
-            (cd "$REPO_ROOT/npm/remi-$PLAT" && npm publish --provenance --access public)
+            (cd "$REPO_ROOT/npm/remi-$PLAT" && npm publish --access public)
           done
 
       - name: Publish main package
         run: |
           cd npm/remi
-          npm publish --provenance --access public
+          npm publish --access public
 
   update-homebrew:
     needs: publish-npm
