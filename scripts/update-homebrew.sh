@@ -12,7 +12,7 @@ fi
 PLATFORMS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
 declare -A SHAS
 
-echo "==> Fetching SHA-256 hashes from npm registry..."
+echo "==> Fetching SHA-256 hashes from npm registry..." >&2
 for PLAT in "${PLATFORMS[@]}"; do
   URL="https://registry.npmjs.org/@yooz-labs/remi-${PLAT}/-/remi-${PLAT}-${VERSION}.tgz"
   SHA=$(curl -sfL "$URL" | shasum -a 256 | cut -d' ' -f1)
@@ -21,7 +21,7 @@ for PLAT in "${PLATFORMS[@]}"; do
     exit 1
   fi
   SHAS[$PLAT]="$SHA"
-  echo "  $PLAT: $SHA"
+  echo "  $PLAT: $SHA" >&2
 done
 
 FORMULA="class Remi < Formula
@@ -60,5 +60,5 @@ FORMULA="class Remi < Formula
 end
 "
 
-echo "==> Generated formula for remi ${VERSION}"
+echo "==> Generated formula for remi ${VERSION}" >&2
 echo "$FORMULA"
