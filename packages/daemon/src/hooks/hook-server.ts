@@ -95,6 +95,9 @@ export class HookServer {
       hostname: this.config.hostname,
       fetch: (req) => this.handleRequest(req),
     });
+
+    // Update config with the actual port assigned by the OS (matters when port=0)
+    this.config.port = this.server.port;
   }
 
   stop(): void {
