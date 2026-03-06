@@ -132,6 +132,7 @@ export type {
   KnownHost,
 } from './identity.ts';
 export {
+  isEncrypted,
   createIdentity,
   unlockIdentity,
   serializeIdentity,

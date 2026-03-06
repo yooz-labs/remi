@@ -1,8 +1,9 @@
 /**
  * Identity management for Remi authentication.
  *
- * Handles creation, serialization, and unlocking of Ed25519 identities
- * with passphrase-encrypted private keys.
+ * Handles creation, serialization, and unlocking of Ed25519 identities.
+ * Private keys can be passphrase-encrypted (AES-256-GCM) or stored
+ * unencrypted for zero-friction startup.
  */
 
 import type { Base64, Fingerprint } from './crypto.ts';
@@ -19,10 +20,15 @@ import {
   toBase64,
 } from './crypto.ts';
 
-/** Persisted identity with passphrase-encrypted private key */
+/**
+ * Persisted identity. The private key is either passphrase-encrypted
+ * (iterations > 0, non-empty salt/iv) or stored as raw PKCS8 base64
+ * (iterations === 0, empty salt/iv). Use `isEncrypted()` to check.
+ */
 export interface RemiIdentity {
   readonly version: 1;
   readonly publicKey: Base64;
+  /** Encrypted ciphertext (when encrypted) or raw PKCS8 base64 (when unencrypted) */
   readonly encryptedPrivateKey: Base64;
   readonly salt: Base64;
   readonly iv: Base64;
@@ -62,45 +68,78 @@ export interface KnownHost {
   readonly lastSeen: string;
 }
 
+/** Check whether an identity has an encrypted private key. */
+export function isEncrypted(identity: RemiIdentity): boolean {
+  return identity.iterations > 0;
+}
+
 /**
- * Generate a new identity with a passphrase-encrypted private key.
+ * Generate a new identity. When a passphrase is provided the private key
+ * is encrypted with PBKDF2 + AES-256-GCM. Without a passphrase the raw
+ * PKCS8 key is stored directly (zero-friction mode).
  */
-export async function createIdentity(passphrase: string): Promise<RemiIdentity> {
+export async function createIdentity(passphrase?: string): Promise<RemiIdentity> {
   const keyPair = await generateKeyPair();
   const exported = await exportKeyPair(keyPair);
   const fp = await fingerprint(exported.publicKeyRaw);
 
-  const encrypted = await encryptPrivateKey(exported.privateKeyRaw, passphrase);
+  if (passphrase !== undefined && passphrase.length === 0) {
+    throw new Error('Passphrase must not be empty. Omit it to create an unencrypted identity.');
+  }
+
+  if (passphrase) {
+    const encrypted = await encryptPrivateKey(exported.privateKeyRaw, passphrase);
+    return {
+      version: 1,
+      publicKey: toBase64(exported.publicKeyRaw),
+      encryptedPrivateKey: encrypted.ciphertext,
+      salt: encrypted.salt,
+      iv: encrypted.iv,
+      iterations: PBKDF2_ITERATIONS,
+      fingerprint: fp,
+      createdAt: new Date().toISOString(),
+    };
+  }
 
   return {
     version: 1,
     publicKey: toBase64(exported.publicKeyRaw),
-    encryptedPrivateKey: encrypted.ciphertext,
-    salt: encrypted.salt,
-    iv: encrypted.iv,
-    iterations: PBKDF2_ITERATIONS,
+    encryptedPrivateKey: toBase64(exported.privateKeyRaw),
+    salt: '',
+    iv: '',
+    iterations: 0,
     fingerprint: fp,
     createdAt: new Date().toISOString(),
   };
 }
 
 /**
- * Unlock an identity by decrypting the private key with a passphrase.
- * @throws if passphrase is incorrect
+ * Unlock an identity. Encrypted identities require a passphrase;
+ * unencrypted identities can be unlocked without one.
+ * @throws if passphrase is required but missing, or if it is incorrect
  */
 export async function unlockIdentity(
   identity: RemiIdentity,
-  passphrase: string,
+  passphrase?: string,
 ): Promise<UnlockedIdentity> {
-  const privateKeyPkcs8 = await decryptPrivateKey(
-    {
-      ciphertext: identity.encryptedPrivateKey,
-      iv: identity.iv,
-      salt: identity.salt,
-    },
-    passphrase,
-    identity.iterations,
-  );
+  let privateKeyPkcs8: ArrayBuffer;
+
+  if (isEncrypted(identity)) {
+    if (!passphrase) {
+      throw new Error('Passphrase required for encrypted identity');
+    }
+    privateKeyPkcs8 = await decryptPrivateKey(
+      {
+        ciphertext: identity.encryptedPrivateKey,
+        iv: identity.iv,
+        salt: identity.salt,
+      },
+      passphrase,
+      identity.iterations,
+    );
+  } else {
+    privateKeyPkcs8 = fromBase64(identity.encryptedPrivateKey);
+  }
 
   const privateKey = await importPrivateKey(privateKeyPkcs8);
   const publicKey = await importPublicKey(fromBase64(identity.publicKey));
@@ -137,15 +176,30 @@ export function deserializeIdentity(json: string): RemiIdentity {
     throw new Error(`Unsupported identity version: ${String(obj['version'])}`);
   }
 
-  const required = ['publicKey', 'encryptedPrivateKey', 'salt', 'iv', 'fingerprint', 'createdAt'];
+  const required = ['publicKey', 'encryptedPrivateKey', 'fingerprint', 'createdAt'];
   for (const field of required) {
     if (typeof obj[field] !== 'string') {
       throw new Error(`Invalid identity: missing or invalid field '${field}'`);
     }
   }
 
-  if (typeof obj['iterations'] !== 'number' || obj['iterations'] < 1) {
+  // salt and iv must be strings (empty string for unencrypted)
+  for (const field of ['salt', 'iv']) {
+    if (typeof obj[field] !== 'string') {
+      throw new Error(`Invalid identity: missing or invalid field '${field}'`);
+    }
+  }
+
+  if (typeof obj['iterations'] !== 'number' || obj['iterations'] < 0) {
     throw new Error('Invalid identity: invalid iterations count');
+  }
+
+  // Cross-field consistency: encrypted vs unencrypted
+  if (obj['iterations'] === 0 && (obj['salt'] !== '' || obj['iv'] !== '')) {
+    throw new Error('Invalid identity: unencrypted identity must have empty salt and iv');
+  }
+  if ((obj['iterations'] as number) > 0 && (obj['salt'] === '' || obj['iv'] === '')) {
+    throw new Error('Invalid identity: encrypted identity requires non-empty salt and iv');
   }
 
   return parsed as RemiIdentity;

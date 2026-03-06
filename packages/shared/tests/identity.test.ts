@@ -10,6 +10,7 @@ import {
   createAuthorizedKeysFile,
   createIdentity,
   deserializeIdentity,
+  isEncrypted,
   serializeIdentity,
   unlockIdentity,
 } from '../src/identity.ts';
@@ -25,8 +26,20 @@ async function createTestIdentity(passphrase: string): Promise<RemiIdentity> {
   return createIdentity(passphrase);
 }
 
+describe('isEncrypted', () => {
+  test('returns true for encrypted identity', async () => {
+    const identity = await createTestIdentity('testpass');
+    expect(isEncrypted(identity)).toBe(true);
+  });
+
+  test('returns false for unencrypted identity', async () => {
+    const identity = await createIdentity();
+    expect(isEncrypted(identity)).toBe(false);
+  });
+});
+
 describe('createIdentity', () => {
-  test('creates a valid identity with all fields', async () => {
+  test('creates a valid encrypted identity with all fields', async () => {
     const identity = await createTestIdentity('testpass');
 
     expect(identity.version).toBe(1);
@@ -40,15 +53,38 @@ describe('createIdentity', () => {
     expect(typeof identity.createdAt).toBe('string');
   });
 
+  test('creates unencrypted identity without passphrase', async () => {
+    const identity = await createIdentity();
+
+    expect(identity.version).toBe(1);
+    expect(typeof identity.publicKey).toBe('string');
+    expect(typeof identity.encryptedPrivateKey).toBe('string');
+    expect(identity.salt).toBe('');
+    expect(identity.iv).toBe('');
+    expect(identity.iterations).toBe(0);
+    expect(identity.fingerprint.length).toBe(FINGERPRINT_LENGTH);
+    expect(identity.fingerprint).toMatch(/^[0-9a-f]+$/);
+  });
+
   test('public key is valid base64 of 32 bytes', async () => {
     const identity = await createTestIdentity('pass');
     const raw = fromBase64(identity.publicKey);
     expect(raw.byteLength).toBe(32);
   });
+
+  test('unencrypted public key is valid base64 of 32 bytes', async () => {
+    const identity = await createIdentity();
+    const raw = fromBase64(identity.publicKey);
+    expect(raw.byteLength).toBe(32);
+  });
+
+  test('rejects empty string passphrase', async () => {
+    await expect(createIdentity('')).rejects.toThrow('Passphrase must not be empty');
+  });
 });
 
 describe('unlockIdentity', () => {
-  test('unlocks with correct passphrase', async () => {
+  test('unlocks encrypted identity with correct passphrase', async () => {
     const identity = await createTestIdentity('correct');
     const unlocked = await unlockIdentity(identity, 'correct');
 
@@ -58,14 +94,41 @@ describe('unlockIdentity', () => {
     expect(unlocked.fingerprint).toBe(identity.fingerprint);
   });
 
-  test('rejects wrong passphrase', async () => {
+  test('unlocks unencrypted identity without passphrase', async () => {
+    const identity = await createIdentity();
+    const unlocked = await unlockIdentity(identity);
+
+    expect(unlocked.publicKey.type).toBe('public');
+    expect(unlocked.privateKey.type).toBe('private');
+    expect(unlocked.publicKeyRaw).toBe(identity.publicKey);
+    expect(unlocked.fingerprint).toBe(identity.fingerprint);
+  });
+
+  test('rejects wrong passphrase on encrypted identity', async () => {
     const identity = await createTestIdentity('correct');
     await expect(unlockIdentity(identity, 'wrong')).rejects.toThrow();
   });
 
-  test('unlocked key can sign and verify', async () => {
+  test('throws when passphrase missing for encrypted identity', async () => {
+    const identity = await createTestIdentity('secure');
+    await expect(unlockIdentity(identity)).rejects.toThrow(
+      'Passphrase required for encrypted identity',
+    );
+  });
+
+  test('unlocked encrypted key can sign and verify', async () => {
     const identity = await createTestIdentity('mypass');
     const unlocked = await unlockIdentity(identity, 'mypass');
+
+    const data = new TextEncoder().encode('test data');
+    const sig = await sign(unlocked.privateKey, data.buffer);
+    const valid = await verify(unlocked.publicKey, data.buffer, sig);
+    expect(valid).toBe(true);
+  });
+
+  test('unlocked unencrypted key can sign and verify', async () => {
+    const identity = await createIdentity();
+    const unlocked = await unlockIdentity(identity);
 
     const data = new TextEncoder().encode('test data');
     const sig = await sign(unlocked.privateKey, data.buffer);
@@ -75,7 +138,7 @@ describe('unlockIdentity', () => {
 });
 
 describe('serializeIdentity / deserializeIdentity', () => {
-  test('round-trips identity through JSON', async () => {
+  test('round-trips encrypted identity through JSON', async () => {
     const original = await createTestIdentity('pass');
     const json = serializeIdentity(original);
     const deserialized = deserializeIdentity(json);
@@ -86,6 +149,20 @@ describe('serializeIdentity / deserializeIdentity', () => {
     expect(deserialized.salt).toBe(original.salt);
     expect(deserialized.iv).toBe(original.iv);
     expect(deserialized.iterations).toBe(original.iterations);
+    expect(deserialized.fingerprint).toBe(original.fingerprint);
+  });
+
+  test('round-trips unencrypted identity through JSON', async () => {
+    const original = await createIdentity();
+    const json = serializeIdentity(original);
+    const deserialized = deserializeIdentity(json);
+
+    expect(deserialized.version).toBe(1);
+    expect(deserialized.publicKey).toBe(original.publicKey);
+    expect(deserialized.encryptedPrivateKey).toBe(original.encryptedPrivateKey);
+    expect(deserialized.salt).toBe('');
+    expect(deserialized.iv).toBe('');
+    expect(deserialized.iterations).toBe(0);
     expect(deserialized.fingerprint).toBe(original.fingerprint);
   });
 
@@ -118,6 +195,57 @@ describe('serializeIdentity / deserializeIdentity', () => {
     expect(() => deserializeIdentity('"string"')).toThrow();
     expect(() => deserializeIdentity('null')).toThrow();
     expect(() => deserializeIdentity('42')).toThrow();
+  });
+
+  test('rejects negative iterations', () => {
+    expect(() =>
+      deserializeIdentity(
+        JSON.stringify({
+          version: 1,
+          publicKey: 'x',
+          encryptedPrivateKey: 'x',
+          salt: '',
+          iv: '',
+          iterations: -1,
+          fingerprint: 'x',
+          createdAt: 'x',
+        }),
+      ),
+    ).toThrow('invalid iterations');
+  });
+
+  test('rejects unencrypted identity with non-empty salt', () => {
+    expect(() =>
+      deserializeIdentity(
+        JSON.stringify({
+          version: 1,
+          publicKey: 'x',
+          encryptedPrivateKey: 'x',
+          salt: 'somesalt',
+          iv: '',
+          iterations: 0,
+          fingerprint: 'x',
+          createdAt: 'x',
+        }),
+      ),
+    ).toThrow('unencrypted identity must have empty salt and iv');
+  });
+
+  test('rejects encrypted identity with empty salt', () => {
+    expect(() =>
+      deserializeIdentity(
+        JSON.stringify({
+          version: 1,
+          publicKey: 'x',
+          encryptedPrivateKey: 'x',
+          salt: '',
+          iv: 'someiv',
+          iterations: 600000,
+          fingerprint: 'x',
+          createdAt: 'x',
+        }),
+      ),
+    ).toThrow('encrypted identity requires non-empty salt and iv');
   });
 });
 

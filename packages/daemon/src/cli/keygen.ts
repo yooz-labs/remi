@@ -1,15 +1,18 @@
 /**
  * `remi keygen` - Generate a new Ed25519 identity keypair.
  *
- * Prompts for a passphrase to encrypt the private key.
+ * By default, creates an unencrypted identity for zero-friction startup.
+ * Use --passphrase to encrypt the private key with a passphrase.
  * Writes identity to ~/.remi/identity.json with 0600 permissions.
  */
 
+import { isEncrypted } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
 import { promptPassphrase } from './prompt-passphrase.ts';
 
 export interface KeygenOptions {
   passphrase?: string | undefined;
+  usePassphrase?: boolean | undefined;
   force?: boolean | undefined;
   dir?: string | undefined;
 }
@@ -29,9 +32,18 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
     process.exit(1);
   }
 
-  const passphrase = options.passphrase ?? (await promptPassphrase('Passphrase (min 8 chars)'));
+  let passphrase: string | undefined;
 
-  if (passphrase.length < 8) {
+  if (options.passphrase) {
+    // Explicit passphrase provided via env or option
+    passphrase = options.passphrase;
+  } else if (options.usePassphrase) {
+    // --passphrase flag: prompt interactively
+    passphrase = await promptPassphrase('Passphrase (min 8 chars)');
+  }
+  // Otherwise: no passphrase (unencrypted identity)
+
+  if (passphrase !== undefined && passphrase.length < 8) {
     console.error('Passphrase must be at least 8 characters.');
     process.exit(1);
   }
@@ -41,7 +53,6 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
 
   console.log('Identity generated successfully.');
   console.log(`  Fingerprint: ${identity.fingerprint}`);
+  console.log(`  Encrypted:   ${isEncrypted(identity) ? 'yes' : 'no'}`);
   console.log(`  Stored at:   ${store.identityPath}`);
-  console.log('');
-  console.log('Share your public key with clients using: remi export-key --public-only');
 }
