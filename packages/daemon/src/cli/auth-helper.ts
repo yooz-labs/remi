@@ -22,6 +22,8 @@ export interface AuthHandshakeResult {
   identity: UnlockedIdentity;
 }
 
+const AUTH_HANDSHAKE_TIMEOUT_MS = 10_000;
+
 /**
  * Perform auth handshake on a WebSocket that just received an auth_challenge.
  *
@@ -30,19 +32,26 @@ export interface AuthHandshakeResult {
  *
  * @param ws Open WebSocket connection
  * @param challengeMsg The auth_challenge message already received
- * @param onMessage Callback invoked for non-auth messages received during handshake
  * @returns Promise that resolves when auth succeeds
  */
 export async function performAuthHandshake(
   ws: WebSocket,
   challengeMsg: ProtocolMessage & { type: 'auth_challenge' },
-  onMessage?: (msg: ProtocolMessage) => void,
 ): Promise<AuthHandshakeResult> {
   const store = new IdentityStore();
 
   // Auto-generate identity if missing
   if (!store.exists()) {
-    await store.generate();
+    console.error('No client identity found. Generating new Ed25519 keypair...');
+    try {
+      const newIdentity = await store.generate();
+      console.error(`Client identity created (fingerprint: ${newIdentity.fingerprint})`);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to auto-generate client identity: ${detail}. Check permissions on ~/.remi or generate manually with "remi keygen".`,
+      );
+    }
   }
 
   const storedIdentity = store.load();
@@ -59,38 +68,75 @@ export async function performAuthHandshake(
           'Set REMI_PASSPHRASE or use an unencrypted identity.',
       );
     }
-    identity = await unlockIdentity(storedIdentity, envPassphrase);
+    try {
+      identity = await unlockIdentity(storedIdentity, envPassphrase);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to unlock identity: ${detail}. Wrong passphrase?`);
+    }
   } else {
-    identity = await unlockIdentity(storedIdentity);
+    try {
+      identity = await unlockIdentity(storedIdentity);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to unlock identity: ${detail}. Identity file may be corrupt. Run "remi keygen --force" to regenerate.`,
+      );
+    }
   }
 
   // Sign the challenge
-  const challengeData = fromBase64(challengeMsg.challenge);
-  const signature = await sign(identity.privateKey, challengeData);
-  const response = createAuthResponse(identity.publicKeyRaw, signature, identity.fingerprint);
-  ws.send(serialize(response));
+  try {
+    const challengeData = fromBase64(challengeMsg.challenge);
+    const signature = await sign(identity.privateKey, challengeData);
+    const response = createAuthResponse(identity.publicKeyRaw, signature, identity.fingerprint);
+    ws.send(serialize(response));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to sign auth challenge: ${detail}`);
+  }
 
-  // Wait for auth_result
+  // Wait for auth_result (with timeout and close/error handling)
   return new Promise<AuthHandshakeResult>((resolve, reject) => {
-    const handler = (event: MessageEvent) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.removeEventListener('message', messageHandler);
+      ws.removeEventListener('close', closeHandler);
+      ws.removeEventListener('error', errorHandler);
+    };
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Auth handshake timed out waiting for auth_result'));
+    }, AUTH_HANDSHAKE_TIMEOUT_MS);
+
+    const closeHandler = () => {
+      cleanup();
+      reject(new Error('WebSocket closed during auth handshake'));
+    };
+
+    const errorHandler = () => {
+      cleanup();
+      reject(new Error('WebSocket error during auth handshake'));
+    };
+
+    const messageHandler = (event: MessageEvent) => {
       const data = typeof event.data === 'string' ? event.data : String(event.data);
       const msg = deserialize(data);
       if (!msg) return;
 
       if (msg.type === 'auth_result') {
-        ws.removeEventListener('message', handler);
+        cleanup();
         if (msg.success) {
           resolve({ identity });
         } else {
           reject(new Error(`Authentication failed: ${msg.error ?? 'unknown'}`));
         }
-        return;
       }
-
-      // Forward non-auth messages to caller
-      onMessage?.(msg);
     };
 
-    ws.addEventListener('message', handler);
+    ws.addEventListener('message', messageHandler);
+    ws.addEventListener('close', closeHandler);
+    ws.addEventListener('error', errorHandler);
   });
 }

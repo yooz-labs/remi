@@ -53,8 +53,8 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
         renderSessionList(msg.sessions);
         resolve();
       } else if (msg.type === 'error') {
-        // Ignore AUTH_REQUIRED errors (benign; happens when hello is sent before auth)
-        if (msg.code === 'AUTH_REQUIRED') return;
+        // AUTH_REQUIRED is expected when hello is sent before auth completes
+        if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
         clearTimeout(timer);
         settled = true;
         ws.close();
@@ -75,10 +75,12 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
       if (!msg) return;
 
       // If daemon sends auth_challenge, perform handshake then re-send hello
-      if (msg.type === 'auth_challenge' && !authInProgress) {
+      if (msg.type === 'auth_challenge') {
+        if (authInProgress) return; // duplicate challenge; ignore
         authInProgress = true;
-        performAuthHandshake(ws, msg, handleProtocolMessage)
+        performAuthHandshake(ws, msg)
           .then(() => {
+            authInProgress = false;
             sendHelloAndRequestList();
           })
           .catch((err) => {
@@ -90,6 +92,10 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
           });
         return;
       }
+
+      // During auth, the auth-helper's addEventListener handles messages;
+      // only process in the caller after auth is done
+      if (authInProgress) return;
 
       handleProtocolMessage(msg);
     };

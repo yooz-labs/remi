@@ -1476,7 +1476,7 @@ const sharedEvents = {
 // Auth setup: auto based on bind host (localhost=off, 0.0.0.0=on), --auth/--no-auth override
 // ---------------------------------------------------------------------------
 const bindHost = cliBindHost ?? 'localhost';
-const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1';
+const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
 // Default: auth off for localhost, auth on for 0.0.0.0/network binds
@@ -1547,7 +1547,14 @@ if (authEnabled) {
     `Authentication enabled (fingerprint: ${storedIdentity.fingerprint}, TOFU: ${tofuMode})`,
   );
 } else {
-  console.log('Authentication disabled (localhost binding)');
+  if (!isLocalhostBind) {
+    console.warn(
+      'WARNING: Authentication disabled on non-localhost bind. ' +
+        'The daemon is accessible without authentication on the network.',
+    );
+  } else {
+    console.log('Authentication disabled (localhost binding)');
+  }
 }
 
 // ---------------------------------------------------------------------------

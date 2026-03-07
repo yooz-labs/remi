@@ -116,8 +116,6 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         writeOutput(`\n[${msg.role}] ${msg.content}\n`);
         break;
       case 'error':
-        // Ignore AUTH_REQUIRED (benign; happens when hello sent before auth)
-        if (msg.code === 'AUTH_REQUIRED') return;
         writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
         break;
       default:
@@ -255,10 +253,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       if (!msg) return;
 
       // If daemon sends auth_challenge, perform handshake then re-send hello
-      if (msg.type === 'auth_challenge' && !authInProgress) {
+      if (msg.type === 'auth_challenge') {
+        if (authInProgress) return; // duplicate challenge; ignore
         authInProgress = true;
-        performAuthHandshake(ws, msg, handleProtocolMessage)
+        performAuthHandshake(ws, msg)
           .then(() => {
+            authInProgress = false;
             sendHello();
           })
           .catch((err) => {
@@ -268,6 +268,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
           });
         return;
       }
+
+      // During auth, the auth-helper's addEventListener handles messages;
+      // only process in the caller after auth is done
+      if (authInProgress) return;
 
       handleProtocolMessage(msg);
     };
