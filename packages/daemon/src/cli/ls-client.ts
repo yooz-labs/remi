@@ -6,7 +6,8 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
-import type { DiscoverableSession, Timestamp } from '@remi/shared';
+import type { DiscoverableSession, ProtocolMessage, Timestamp } from '@remi/shared';
+import { performAuthHandshake } from './auth-helper.ts';
 
 export interface LsClientOptions {
   host: string;
@@ -20,6 +21,7 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
+    let authInProgress = false;
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -36,16 +38,12 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
       }
     }, timeout);
 
-    ws.onopen = () => {
+    function sendHelloAndRequestList(): void {
       const clientId = generateId();
       ws.send(serialize(createHello(clientId, '1.0.0')));
-    };
+    }
 
-    ws.onmessage = (event: MessageEvent) => {
-      const data = typeof event.data === 'string' ? event.data : String(event.data);
-      const msg = deserialize(data);
-      if (!msg) return;
-
+    function handleProtocolMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
         ws.send(serialize(createSessionListRequest(false)));
       } else if (msg.type === 'session_list_response') {
@@ -55,11 +53,51 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
         renderSessionList(msg.sessions);
         resolve();
       } else if (msg.type === 'error') {
+        // AUTH_REQUIRED is expected when hello is sent before auth completes
+        if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
         clearTimeout(timer);
         settled = true;
         ws.close();
         reject(new Error(`Daemon error: ${msg.message}`));
       }
+    }
+
+    ws.onopen = () => {
+      // Send hello immediately. If auth is needed, the daemon will send
+      // auth_challenge and reject this hello with AUTH_REQUIRED (benign).
+      // After auth succeeds, we re-send hello.
+      sendHelloAndRequestList();
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      const data = typeof event.data === 'string' ? event.data : String(event.data);
+      const msg = deserialize(data);
+      if (!msg) return;
+
+      // If daemon sends auth_challenge, perform handshake then re-send hello
+      if (msg.type === 'auth_challenge') {
+        if (authInProgress) return; // duplicate challenge; ignore
+        authInProgress = true;
+        performAuthHandshake(ws, msg)
+          .then(() => {
+            authInProgress = false;
+            sendHelloAndRequestList();
+          })
+          .catch((err) => {
+            clearTimeout(timer);
+            if (!settled) {
+              settled = true;
+              reject(err);
+            }
+          });
+        return;
+      }
+
+      // During auth, the auth-helper's addEventListener handles messages;
+      // only process in the caller after auth is done
+      if (authInProgress) return;
+
+      handleProtocolMessage(msg);
     };
 
     ws.onclose = () => {

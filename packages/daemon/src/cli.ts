@@ -322,6 +322,7 @@ let cliPermanentCode = false;
 let cliForce = false;
 let cliUsePassphrase = false;
 let cliNoTofu = false;
+let cliAuth: boolean | undefined; // undefined = auto (auth when bind != localhost)
 let cliLabel: string | undefined;
 let cliPublicOnly = false;
 let cliBindHost: string | undefined;
@@ -369,6 +370,10 @@ for (let i = 0; i < args.length; i++) {
     cliUsePassphrase = true;
   } else if (arg === '--no-tofu') {
     cliNoTofu = true;
+  } else if (arg === '--auth') {
+    cliAuth = true;
+  } else if (arg === '--no-auth') {
+    cliAuth = false;
   } else if (arg === '--label' && nextArg) {
     cliLabel = nextArg;
     i++;
@@ -412,6 +417,8 @@ Options:
   --bind HOST              Bind WebSocket to HOST (default: localhost; use 0.0.0.0 for all interfaces)
   --force                  Overwrite existing identity (keygen/import-key)
   --passphrase             Encrypt identity with a passphrase (keygen)
+  --auth                   Force enable authentication (default: auto based on --bind)
+  --no-auth                Disable authentication (even when binding to all interfaces)
   --no-tofu                Reject unknown clients (disable Trust On First Use)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
@@ -1466,68 +1473,89 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: auto-generate identity if missing, auto-unlock if unencrypted
+// Auth setup: auto based on bind host (localhost=off, 0.0.0.0=on), --auth/--no-auth override
 // ---------------------------------------------------------------------------
-const identityStore = new IdentityStore();
+const bindHost = cliBindHost ?? 'localhost';
+const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
-if (!identityStore.exists()) {
-  console.log('No identity found. Generating new Ed25519 keypair...');
-  try {
-    const newIdentity = await identityStore.generate();
-    console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(`Failed to auto-generate identity: ${detail}`);
-    console.error('Check permissions on ~/.remi or generate manually with "remi keygen".');
+// Determine whether auth should be enabled
+// Default: auth off for localhost, auth on for 0.0.0.0/network binds
+// Explicit --auth/--no-auth overrides the default
+const authEnabled = cliAuth ?? !isLocalhostBind;
+
+let authenticator: Authenticator | undefined;
+
+if (authEnabled) {
+  const identityStore = new IdentityStore();
+
+  if (!identityStore.exists()) {
+    console.log('No identity found. Generating new Ed25519 keypair...');
+    try {
+      const newIdentity = await identityStore.generate();
+      console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to auto-generate identity: ${detail}`);
+      console.error('Check permissions on ~/.remi or generate manually with "remi keygen".');
+      process.exit(1);
+    }
+  }
+
+  const storedIdentity = identityStore.load();
+  if (!storedIdentity) {
+    console.error('Identity file is empty. Run "remi keygen --force" to regenerate.');
     process.exit(1);
   }
-}
 
-const storedIdentity = identityStore.load();
-if (!storedIdentity) {
-  console.error('Identity file is empty. Run "remi keygen --force" to regenerate.');
-  process.exit(1);
-}
+  let unlockedIdentity: UnlockedIdentity;
 
-let unlockedIdentity: UnlockedIdentity;
+  if (isEncrypted(storedIdentity)) {
+    // Encrypted identity: use REMI_PASSPHRASE env var or prompt
+    const envPassphrase = process.env['REMI_PASSPHRASE'];
+    let passphrase: string;
 
-if (isEncrypted(storedIdentity)) {
-  // Encrypted identity: use REMI_PASSPHRASE env var or prompt
-  const envPassphrase = process.env['REMI_PASSPHRASE'];
-  let passphrase: string;
+    if (envPassphrase) {
+      passphrase = envPassphrase;
+    } else {
+      const { promptPassphrase } = await import('./cli/prompt-passphrase.ts');
+      passphrase = await promptPassphrase('Passphrase to unlock identity');
+    }
 
-  if (envPassphrase) {
-    passphrase = envPassphrase;
+    try {
+      unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to unlock identity: ${detail}`);
+      console.error('Wrong passphrase?');
+      process.exit(1);
+    }
   } else {
-    const { promptPassphrase } = await import('./cli/prompt-passphrase.ts');
-    passphrase = await promptPassphrase('Passphrase to unlock identity');
+    // Unencrypted identity: unlock instantly
+    try {
+      unlockedIdentity = await unlockIdentity(storedIdentity);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to unlock identity: ${detail}`);
+      console.error('Identity file may be corrupt. Run "remi keygen --force" to regenerate.');
+      process.exit(1);
+    }
   }
 
-  try {
-    unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(`Failed to unlock identity: ${detail}`);
-    console.error('Wrong passphrase?');
-    process.exit(1);
-  }
+  const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
+  authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
+  console.log(
+    `Authentication enabled (fingerprint: ${storedIdentity.fingerprint}, TOFU: ${tofuMode})`,
+  );
 } else {
-  // Unencrypted identity: unlock instantly
-  try {
-    unlockedIdentity = await unlockIdentity(storedIdentity);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(`Failed to unlock identity: ${detail}`);
-    console.error('Identity file may be corrupt. Run "remi keygen --force" to regenerate.');
-    process.exit(1);
+  if (!isLocalhostBind) {
+    console.warn(
+      'WARNING: Authentication disabled on non-localhost bind. ' +
+        'The daemon is accessible without authentication on the network.',
+    );
+  } else {
+    console.log('Authentication disabled (localhost binding)');
   }
 }
-
-const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
-const authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
-console.log(
-  `Authentication enabled (fingerprint: ${storedIdentity.fingerprint}, TOFU: ${tofuMode})`,
-);
 
 // ---------------------------------------------------------------------------
 // Create and register adapters
@@ -1535,7 +1563,7 @@ console.log(
 const wsAdapter = new WebSocketAdapter(
   {
     port: PORT,
-    host: cliBindHost ?? 'localhost',
+    host: bindHost,
     authenticator,
   },
   sharedEvents,
@@ -1568,6 +1596,12 @@ if (!cliNoRelay) {
 
   if (cliPermanentCode) {
     // Permanent code mode: persist code to disk, require Ed25519 auth over relay
+    if (!authenticator) {
+      console.error(
+        'Permanent connection codes require authentication (--auth or non-localhost bind).',
+      );
+      process.exit(1);
+    }
     const { CodeStore } = await import('./remote/code-store.ts');
     const codeStore = new CodeStore();
     const code = codeStore.load() ?? codeStore.refresh();

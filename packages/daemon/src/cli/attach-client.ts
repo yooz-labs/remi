@@ -9,6 +9,7 @@ import {
   serialize,
 } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { performAuthHandshake } from './auth-helper.ts';
 
 export interface AttachClientOptions {
   host: string;
@@ -40,6 +41,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let resizeListener: (() => void) | null = null;
   let resolved = false;
   let outputBroken = false;
+  let authInProgress = false;
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -121,6 +123,11 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     }
   }
 
+  function sendHello(): void {
+    const clientId = generateId();
+    ws.send(serialize(createHello(clientId, '1.0.0', undefined, sessionId as UUID)));
+  }
+
   return new Promise<AttachClientResult>((resolve) => {
     function finish(result: AttachClientResult): void {
       if (resolved) return;
@@ -141,16 +148,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       finish({ exitCode: 1, reason: 'timeout' });
     }, timeout);
 
-    ws.onopen = () => {
-      const clientId = generateId();
-      ws.send(serialize(createHello(clientId, '1.0.0', undefined, sessionId as UUID)));
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      const data = typeof event.data === 'string' ? event.data : String(event.data);
-      const msg = deserialize(data);
-      if (!msg) return;
-
+    function handleProtocolMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
         clearTimeout(connectionTimer);
         attachedSessionId = msg.sessionId;
@@ -240,6 +238,42 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       }
 
       renderMessage(msg);
+    }
+
+    ws.onopen = () => {
+      // Send hello immediately. If auth is needed, the daemon will send
+      // auth_challenge and reject this hello with AUTH_REQUIRED (benign).
+      // After auth succeeds, we re-send hello.
+      sendHello();
+    };
+
+    ws.onmessage = (event: MessageEvent) => {
+      const data = typeof event.data === 'string' ? event.data : String(event.data);
+      const msg = deserialize(data);
+      if (!msg) return;
+
+      // If daemon sends auth_challenge, perform handshake then re-send hello
+      if (msg.type === 'auth_challenge') {
+        if (authInProgress) return; // duplicate challenge; ignore
+        authInProgress = true;
+        performAuthHandshake(ws, msg)
+          .then(() => {
+            authInProgress = false;
+            sendHello();
+          })
+          .catch((err) => {
+            clearTimeout(connectionTimer);
+            writeOutput(`\n[auth failed: ${err instanceof Error ? err.message : String(err)}]\n`);
+            finish({ exitCode: 1, reason: 'error' });
+          });
+        return;
+      }
+
+      // During auth, the auth-helper's addEventListener handles messages;
+      // only process in the caller after auth is done
+      if (authInProgress) return;
+
+      handleProtocolMessage(msg);
     };
 
     ws.onclose = () => {
