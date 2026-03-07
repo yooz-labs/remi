@@ -8,7 +8,7 @@ import {
   now,
   serialize,
 } from '@remi/shared';
-import { runLsClient } from '../../src/cli/ls-client.ts';
+import { fetchSessions, runLsClient } from '../../src/cli/ls-client.ts';
 
 const TEST_PORT = 9871;
 
@@ -105,5 +105,57 @@ describe('runLsClient', () => {
     await expect(
       runLsClient({ host: 'localhost', port: timeoutPort, timeout: 500 }),
     ).rejects.toThrow(/Timed out|closed unexpectedly/);
+  });
+});
+
+describe('fetchSessions', () => {
+  let server: ReturnType<typeof Bun.serve> | null = null;
+  const FETCH_PORT = 9875;
+
+  afterEach(() => {
+    if (server) {
+      server.stop(true);
+      server = null;
+    }
+  });
+
+  test('returns session array without rendering', async () => {
+    const sessions = [
+      makeSession({ status: 'active', canAttach: true }),
+      makeSession({ status: 'idle', canAttach: false }),
+    ];
+
+    server = Bun.serve({
+      port: FETCH_PORT,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            const sessionId = generateId();
+            ws.send(serialize(createHelloAck('1.0.0', sessionId)));
+          } else if (msg.type === 'session_list_request') {
+            ws.send(serialize(createSessionListResponse(sessions, msg.id)));
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await fetchSessions('localhost', FETCH_PORT, 3000);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.status).toBe('active');
+    expect(result[1]?.status).toBe('idle');
+  });
+
+  test('rejects when server is unreachable', async () => {
+    await expect(fetchSessions('localhost', 9876, 1000)).rejects.toThrow();
   });
 });

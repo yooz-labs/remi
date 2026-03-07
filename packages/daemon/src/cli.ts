@@ -327,6 +327,8 @@ let cliLabel: string | undefined;
 let cliPublicOnly = false;
 let cliBindHost: string | undefined;
 let cliRemoveFingerprint: string | undefined;
+let cliNoMdns = false;
+let cliNetwork = false;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -385,6 +387,10 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--remove' && nextArg) {
     cliRemoveFingerprint = nextArg;
     i++;
+  } else if (arg === '--no-mdns') {
+    cliNoMdns = true;
+  } else if (arg === '--network') {
+    cliNetwork = true;
   } else if (arg === '--version' || arg === '-v') {
     console.log(`remi ${REMI_VERSION}`);
     process.exit(0);
@@ -395,7 +401,9 @@ Remi - Claude Code with remote monitoring
 Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
   remi ls                        List live sessions from running daemon
+  remi ls --network              Discover and list sessions across the network
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
+  remi attach host:port/id       Attach to a remote session
   remi code                      Show remote access connection code
   remi code --refresh            Generate a new connection code
   remi keygen                    Generate Ed25519 identity keypair
@@ -420,6 +428,7 @@ Options:
   --auth                   Force enable authentication (default: auto based on --bind)
   --no-auth                Disable authentication (even when binding to all interfaces)
   --no-tofu                Reject unknown clients (disable Trust On First Use)
+  --no-mdns                Disable mDNS network advertising
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
   --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
@@ -647,12 +656,22 @@ if (cliSubcommand === 'code') {
 if (cliSubcommand === 'ls') {
   const resolvedPort =
     cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
-  const { runLsClient } = await import('./cli/ls-client.ts');
-  try {
-    await runLsClient({ host: 'localhost', port: resolvedPort });
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
+  if (cliNetwork) {
+    const { runNetworkLs } = await import('./cli/ls-client.ts');
+    try {
+      await runNetworkLs({ localPort: resolvedPort });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else {
+    const { runLsClient } = await import('./cli/ls-client.ts');
+    try {
+      await runLsClient({ host: 'localhost', port: resolvedPort });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
   }
   process.exit(0);
 }
@@ -663,8 +682,21 @@ if (cliSubcommand === 'attach') {
   let targetSessionId = cliSubcommandArg;
   let resolvedPort =
     cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+  let resolvedHost = 'localhost';
 
-  if (!targetSessionId) {
+  // Check for remote attach: host:port/session-id
+  if (targetSessionId?.includes('/')) {
+    const slashIdx = targetSessionId.indexOf('/');
+    const hostPort = targetSessionId.slice(0, slashIdx);
+    targetSessionId = targetSessionId.slice(slashIdx + 1);
+    const colonIdx = hostPort.lastIndexOf(':');
+    if (colonIdx > 0) {
+      resolvedHost = hostPort.slice(0, colonIdx);
+      resolvedPort = Number.parseInt(hostPort.slice(colonIdx + 1));
+    } else {
+      resolvedHost = hostPort;
+    }
+  } else if (!targetSessionId) {
     // Auto-attach to most recent active (non-exited) session
     const sessions = store.list();
     const active = sessions.filter((s) => s.exitedAt === null);
@@ -711,7 +743,7 @@ if (cliSubcommand === 'attach') {
   const { runAttachClient } = await import('./cli/attach-client.ts');
   try {
     const result = await runAttachClient({
-      host: 'localhost',
+      host: resolvedHost,
       port: resolvedPort,
       sessionId: targetSessionId,
     });
@@ -851,6 +883,9 @@ let primarySessionId: UUID | null = null;
 const HOOK_PORT = PORT + 1;
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
+
+// mDNS publisher (initialized when daemon is network-accessible)
+let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
 
 // ---------------------------------------------------------------------------
 // Create session helper (shared between wrapper and daemon modes)
@@ -1484,6 +1519,7 @@ const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || 
 const authEnabled = cliAuth ?? !isLocalhostBind;
 
 let authenticator: Authenticator | undefined;
+let serverFingerprint: string | undefined;
 
 if (authEnabled) {
   const identityStore = new IdentityStore();
@@ -1543,9 +1579,8 @@ if (authEnabled) {
 
   const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
   authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
-  console.log(
-    `Authentication enabled (fingerprint: ${storedIdentity.fingerprint}, TOFU: ${tofuMode})`,
-  );
+  serverFingerprint = storedIdentity.fingerprint;
+  console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
   if (!isLocalhostBind) {
     console.warn(
@@ -1651,6 +1686,11 @@ async function cleanup(): Promise<void> {
     hookConfigManager = null;
   }
 
+  if (mdnsPublisher) {
+    await mdnsPublisher.stop();
+    mdnsPublisher = null;
+  }
+
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }
@@ -1668,13 +1708,33 @@ if (cliDaemonMode) {
   console.log('Starting Remi daemon...');
   await registry.startAll();
 
+  // Start mDNS advertising when network-accessible
+  if (!cliNoMdns && !isLocalhostBind) {
+    try {
+      const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
+      mdnsPublisher = new MdnsPublisher({
+        port: PORT,
+        version: REMI_VERSION,
+        authEnabled,
+        fingerprint: serverFingerprint,
+      });
+      await mdnsPublisher.start();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
+    }
+  }
+
   console.log('');
   console.log('Remi daemon ready!');
-  console.log(`  WebSocket: ws://localhost:${PORT}/ws`);
+  console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
   console.log(`  Port: ${PORT} (use --port to change)`);
   console.log(
     `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
   );
+  if (mdnsPublisher?.isRunning) {
+    console.log('  mDNS: Advertising on local network');
+  }
   if (TELEGRAM_ENABLED) {
     console.log('  Telegram: Bot is running');
   }
@@ -1750,7 +1810,25 @@ if (cliDaemonMode) {
   // In wrapper mode, don't crash if port is busy - Claude still works locally
   try {
     await registry.startAll();
-    log(`WebSocket server listening on ws://localhost:${PORT}/ws`);
+    log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
+
+    // Start mDNS advertising when network-accessible
+    if (!cliNoMdns && !isLocalhostBind) {
+      try {
+        const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
+        mdnsPublisher = new MdnsPublisher({
+          port: PORT,
+          version: REMI_VERSION,
+          authEnabled,
+          fingerprint: serverFingerprint,
+        });
+        await mdnsPublisher.start();
+        log('[mDNS] Advertising on local network');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
+      }
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('EADDRINUSE') || msg.includes('in use')) {
