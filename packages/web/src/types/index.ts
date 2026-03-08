@@ -6,6 +6,9 @@
 
 import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
+/** Source that produced a UI message */
+export type MessageSource = 'pty' | 'transcript';
+
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';
 
@@ -56,6 +59,8 @@ export interface UIMessage {
   readonly tool?: string;
   /** Transcript entry UUID for deduplication */
   readonly entryUuid?: string;
+  /** Source that produced this message (pty stream or transcript file) */
+  readonly source?: MessageSource;
   /** Whether this message is currently being streamed */
   readonly isStreaming?: boolean;
   /** Partial content during streaming */

@@ -1,4 +1,5 @@
 import type { Service } from 'bonjour-service';
+import { MDNS_SERVICE_TYPE } from './constants.ts';
 
 export interface DiscoveredDaemon {
   /** mDNS service name (e.g., "remi-macbook-pro") */
@@ -30,7 +31,7 @@ export async function discoverDaemons(opts?: BrowseOptions): Promise<DiscoveredD
         console.error(`[mDNS] Browse error: ${err.message}`);
       });
 
-      const browser = instance.find({ type: 'remi' }, (service: Service) => {
+      const browser = instance.find({ type: MDNS_SERVICE_TYPE }, (service: Service) => {
         const txt = (service.txt || {}) as Record<string, string>;
 
         let host = service.host || 'localhost';

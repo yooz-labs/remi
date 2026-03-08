@@ -1,5 +1,6 @@
 import * as os from 'node:os';
 import type { Bonjour, Service } from 'bonjour-service';
+import { MDNS_SERVICE_TYPE } from './constants.ts';
 
 export interface MdnsPublisherConfig {
   readonly port: number;
@@ -45,7 +46,7 @@ export class MdnsPublisher {
 
       this.service = this.instance.publish({
         name: this.config.name ?? `remi-${hostname}`,
-        type: 'remi',
+        type: MDNS_SERVICE_TYPE,
         port: this.config.port,
         txt,
         probe: this.config.probe ?? true,
