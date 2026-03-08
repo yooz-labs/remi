@@ -75,6 +75,9 @@ export interface ManagedSession {
   /** Message API for structured messages */
   messageApi: MessageAPI;
 
+  /** When session last had activity (message, status change) */
+  lastActivityAt: Timestamp;
+
   /** Currently attached connection ID (null if orphaned) */
   activeConnectionId: UUID | null;
   /** When session was last disconnected (null if connected) */
@@ -128,13 +131,15 @@ export class SessionRegistry {
     const existingNames = this.getExistingNames();
     const name = makeUniqueName(baseName, existingNames);
 
+    const createdAt = now();
     const session: ManagedSession = {
       sessionId,
       name,
-      createdAt: now(),
+      createdAt,
       workingDirectory,
       pty,
       messageApi,
+      lastActivityAt: createdAt,
       activeConnectionId: null,
       lastDisconnectedAt: null,
       orphanTimeoutId: null,
@@ -301,6 +306,7 @@ export class SessionRegistry {
     }
 
     session.messageHistory.push(message);
+    session.lastActivityAt = now();
 
     // If connected, mark as delivered
     if (session.activeConnectionId !== null) {
@@ -318,6 +324,7 @@ export class SessionRegistry {
     const session = this.sessions.get(sessionId);
     if (session !== undefined) {
       session.currentStatus = status;
+      session.lastActivityAt = now();
     }
   }
 
@@ -328,6 +335,7 @@ export class SessionRegistry {
     const session = this.sessions.get(sessionId);
     if (session !== undefined) {
       session.currentQuestion = question;
+      session.lastActivityAt = now();
     }
   }
 
@@ -429,7 +437,8 @@ export class SessionRegistry {
         name: session.name,
         projectPath: session.workingDirectory,
         status,
-        lastActivity: session.lastDisconnectedAt ?? session.createdAt,
+        createdAt: session.createdAt,
+        lastActivity: session.lastActivityAt,
         messageCount: session.messageHistory.length,
         lastMessage,
         source: 'daemon',

@@ -259,6 +259,9 @@ export interface DiscoverableSession {
   /** Current session status */
   readonly status: DiscoverableSessionStatus;
 
+  /** When the session was created. For daemon sessions: registration time. For transcript sessions: file creation time. */
+  readonly createdAt?: Timestamp | undefined;
+
   /** When the session was last active. For daemon sessions: last disconnection time (or creation time if still connected). For transcript sessions: file modification time. */
   readonly lastActivity: Timestamp;
 

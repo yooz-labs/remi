@@ -266,38 +266,20 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       continue;
     }
 
-    const hasNames = sessions.some((s) => s.name);
+    const header = `  ${'NAME'.padEnd(28)}${'HOST'.padEnd(18)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    console.log(header);
+    console.log(`  ${'-'.repeat(header.length - 2)}`);
 
-    if (hasNames) {
-      const header = `  ${'NAME'.padEnd(30)}${'STATUS'.padEnd(12)}${'ID'.padEnd(10)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
-      console.log(header);
-      console.log(`  ${'-'.repeat(header.length - 2)}`);
+    for (const s of sessions) {
+      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+      const host = `${daemon.host}:${daemon.port}`;
+      const duration = formatDuration(s.createdAt);
+      const lastAct = formatAge(s.lastActivity);
+      const mark = s.canAttach ? ' *' : '';
 
-      for (const s of sessions) {
-        const id = s.sessionId.slice(0, 8);
-        const name = (s.name ?? path.basename(s.projectPath)).slice(0, 28);
-        const age = formatAge(s.lastActivity);
-        const mark = s.canAttach ? ' *' : '';
-
-        console.log(
-          `  ${name.padEnd(30)}${s.status.padEnd(12)}${id.padEnd(10)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
-        );
-      }
-    } else {
-      const header = `  ${'ID'.padEnd(10)}${'STATUS'.padEnd(12)}${'PROJECT'.padEnd(30)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
-      console.log(header);
-      console.log(`  ${'-'.repeat(header.length - 2)}`);
-
-      for (const s of sessions) {
-        const id = s.sessionId.slice(0, 8);
-        const project = path.basename(s.projectPath).slice(0, 28);
-        const age = formatAge(s.lastActivity);
-        const mark = s.canAttach ? ' *' : '';
-
-        console.log(
-          `  ${id.padEnd(10)}${s.status.padEnd(12)}${project.padEnd(30)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
-        );
-      }
+      console.log(
+        `  ${name.padEnd(28)}${host.padEnd(18)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+      );
     }
   }
 
@@ -310,11 +292,13 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
   if (attachable.length > 0) {
     console.log('');
     for (const a of attachable) {
-      const id = a.sessionId.slice(0, 8);
+      const name = a.name ?? a.sessionId.slice(0, 8);
       if (a.daemon.host === 'localhost') {
-        console.log(`  * ${id}: remi attach ${id}`);
+        console.log(`  * ${name}: remi attach ${name}`);
       } else {
-        console.log(`  * ${id}: remi attach ${a.daemon.host}:${a.daemon.port}/${id}`);
+        console.log(
+          `  * ${name}: remi attach ${a.daemon.host}:${a.daemon.port}/${a.sessionId.slice(0, 8)}`,
+        );
       }
     }
   }
@@ -330,38 +314,19 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
     return;
   }
 
-  const hasNames = sessions.some((s) => s.name);
+  const header = `${'NAME'.padEnd(28)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  console.log(header);
+  console.log('-'.repeat(header.length));
 
-  if (hasNames) {
-    const header = `${'NAME'.padEnd(30)}${'STATUS'.padEnd(12)}${'ID'.padEnd(10)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
-    console.log(header);
-    console.log('-'.repeat(header.length));
+  for (const s of sessions) {
+    const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+    const duration = formatDuration(s.createdAt);
+    const lastAct = formatAge(s.lastActivity);
+    const mark = s.canAttach ? ' *' : '';
 
-    for (const s of sessions) {
-      const id = s.sessionId.slice(0, 8);
-      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 28);
-      const age = formatAge(s.lastActivity);
-      const mark = s.canAttach ? ' *' : '';
-
-      console.log(
-        `${name.padEnd(30)}${s.status.padEnd(12)}${id.padEnd(10)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
-      );
-    }
-  } else {
-    const header = `${'ID'.padEnd(10)}${'STATUS'.padEnd(12)}${'PROJECT'.padEnd(30)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
-    console.log(header);
-    console.log('-'.repeat(header.length));
-
-    for (const s of sessions) {
-      const id = s.sessionId.slice(0, 8);
-      const project = path.basename(s.projectPath).slice(0, 28);
-      const age = formatAge(s.lastActivity);
-      const mark = s.canAttach ? ' *' : '';
-
-      console.log(
-        `${id.padEnd(10)}${s.status.padEnd(12)}${project.padEnd(30)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
-      );
-    }
+    console.log(
+      `${name.padEnd(28)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+    );
   }
 
   const attachable = sessions.filter((s) => s.canAttach);
@@ -373,7 +338,10 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
   }
 }
 
-function formatAge(timestamp: Timestamp): string {
+/**
+ * Format a timestamp as relative time: "30s ago", "5m ago", "2h ago", "3d ago".
+ */
+export function formatAge(timestamp: Timestamp): string {
   const diff = Date.now() - new Date(timestamp).getTime();
   const seconds = Math.floor(diff / 1000);
 
@@ -384,4 +352,27 @@ function formatAge(timestamp: Timestamp): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+/**
+ * Format a timestamp as a duration from creation to now: "30s", "45m", "2h 15m", "3d 2h".
+ * If createdAt is undefined, returns "-".
+ */
+export function formatDuration(createdAt: Timestamp | undefined): string {
+  if (createdAt === undefined) return '-';
+
+  const diff = Date.now() - new Date(createdAt).getTime();
+  const totalSeconds = Math.max(0, Math.floor(diff / 1000));
+
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  if (hours < 24) {
+    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 }
