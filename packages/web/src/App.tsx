@@ -165,11 +165,24 @@ function App() {
             return prev;
           }
 
+          const newSender = role === 'user' ? 'user' : 'agent';
+
+          // Cross-type dedup: check if a structured_agent_output already
+          // delivered a message with the same content. If so, replace it
+          // with the transcript version (which carries the entryUuid).
+          const dupIdx = prev.findIndex(
+            (m) =>
+              !m.entryUuid &&
+              m.sessionId === sessionId &&
+              m.sender === newSender &&
+              m.content === (structuredMsg.content || content),
+          );
+
           // Add new message
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId,
-            sender: role === 'user' ? 'user' : 'agent',
+            sender: newSender,
             content: structuredMsg.content || content,
             timestamp: structuredMsg.createdAt || message.timestamp,
             state: 'delivered',
@@ -180,6 +193,12 @@ function App() {
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
           };
+
+          if (dupIdx >= 0) {
+            // Replace the PTY-sourced duplicate with the transcript version
+            return prev.map((m, i) => (i === dupIdx ? uiMessage : m));
+          }
+
           return [...prev, uiMessage];
         });
 
@@ -211,6 +230,7 @@ function App() {
         }));
 
         setMessages((prev) => {
+          // Same-type dedup by message ID (streaming updates)
           const existingIndex = prev.findIndex((m) => m.id === structuredMsg.id);
           if (existingIndex >= 0) {
             return prev.map((m, i) =>
@@ -227,6 +247,20 @@ function App() {
                 : m,
             );
           }
+
+          // Cross-type dedup: skip if transcript_content already delivered
+          // a message with the same content (identified by having entryUuid)
+          const hasTranscriptDup = prev.some(
+            (m) =>
+              m.entryUuid &&
+              m.sessionId === structuredMsg.sessionId &&
+              m.sender === structuredMsg.sender &&
+              m.content === structuredMsg.content,
+          );
+          if (hasTranscriptDup) {
+            return prev;
+          }
+
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId: structuredMsg.sessionId,
