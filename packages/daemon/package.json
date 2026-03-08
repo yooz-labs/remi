@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@remi/shared": "workspace:*",
+    "bonjour-service": "^1.3.0",
     "grammy": "^1.39.2"
   }
 }

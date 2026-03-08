@@ -8,7 +8,12 @@ import {
   now,
   serialize,
 } from '@remi/shared';
-import { runLsClient } from '../../src/cli/ls-client.ts';
+import {
+  fetchSessions,
+  getLocalAddresses,
+  parseRemoteTarget,
+  runLsClient,
+} from '../../src/cli/ls-client.ts';
 
 const TEST_PORT = 9871;
 
@@ -105,5 +110,116 @@ describe('runLsClient', () => {
     await expect(
       runLsClient({ host: 'localhost', port: timeoutPort, timeout: 500 }),
     ).rejects.toThrow(/Timed out|closed unexpectedly/);
+  });
+});
+
+describe('fetchSessions', () => {
+  let server: ReturnType<typeof Bun.serve> | null = null;
+  const FETCH_PORT = 9875;
+
+  afterEach(() => {
+    if (server) {
+      server.stop(true);
+      server = null;
+    }
+  });
+
+  test('returns session array without rendering', async () => {
+    const sessions = [
+      makeSession({ status: 'active', canAttach: true }),
+      makeSession({ status: 'idle', canAttach: false }),
+    ];
+
+    server = Bun.serve({
+      port: FETCH_PORT,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            const sessionId = generateId();
+            ws.send(serialize(createHelloAck('1.0.0', sessionId)));
+          } else if (msg.type === 'session_list_request') {
+            ws.send(serialize(createSessionListResponse(sessions, msg.id)));
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await fetchSessions('localhost', FETCH_PORT, 3000);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.status).toBe('active');
+    expect(result[1]?.status).toBe('idle');
+  });
+
+  test('rejects when server is unreachable', async () => {
+    await expect(fetchSessions('localhost', 9876, 1000)).rejects.toThrow(/Cannot connect/);
+  });
+});
+
+describe('parseRemoteTarget', () => {
+  test('parses host:port/session-id', () => {
+    const result = parseRemoteTarget('192.168.1.5:18765/abc123', 18765);
+    expect(result).toEqual({ host: '192.168.1.5', port: 18765, sessionId: 'abc123' });
+  });
+
+  test('parses host/session-id with default port', () => {
+    const result = parseRemoteTarget('myhost/abc123', 18765);
+    expect(result).toEqual({ host: 'myhost', port: 18765, sessionId: 'abc123' });
+  });
+
+  test('parses hostname with dots', () => {
+    const result = parseRemoteTarget('my.host.local:9000/sess-id', 18765);
+    expect(result).toEqual({ host: 'my.host.local', port: 9000, sessionId: 'sess-id' });
+  });
+
+  test('throws on invalid port', () => {
+    expect(() => parseRemoteTarget('host:abc/session', 18765)).toThrow(/Invalid port/);
+  });
+
+  test('throws on port out of range', () => {
+    expect(() => parseRemoteTarget('host:99999/session', 18765)).toThrow(/Invalid port/);
+  });
+
+  test('throws on port 0', () => {
+    expect(() => parseRemoteTarget('host:0/session', 18765)).toThrow(/Invalid port/);
+  });
+
+  test('throws on missing session ID', () => {
+    expect(() => parseRemoteTarget('host:1234/', 18765)).toThrow(/Missing session ID/);
+  });
+
+  test('throws on input without slash', () => {
+    expect(() => parseRemoteTarget('noseparator', 18765)).toThrow(/Invalid remote address/);
+  });
+});
+
+describe('getLocalAddresses', () => {
+  test('includes standard local addresses', () => {
+    const addrs = getLocalAddresses('my-host');
+    expect(addrs.has('127.0.0.1')).toBe(true);
+    expect(addrs.has('::1')).toBe(true);
+    expect(addrs.has('localhost')).toBe(true);
+    expect(addrs.has('my-host')).toBe(true);
+  });
+
+  test('includes at least one network interface address', () => {
+    const addrs = getLocalAddresses('test');
+    // Should have more than just the 4 hardcoded entries
+    expect(addrs.size).toBeGreaterThan(4);
+  });
+
+  test('does not include random addresses', () => {
+    const addrs = getLocalAddresses('test');
+    expect(addrs.has('8.8.8.8')).toBe(false);
+    expect(addrs.has('not-a-host')).toBe(false);
   });
 });
