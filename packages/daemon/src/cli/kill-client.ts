@@ -146,7 +146,10 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
     ws.onmessage = (event: MessageEvent) => {
       const data = typeof event.data === 'string' ? event.data : String(event.data);
       const msg = deserialize(data);
-      if (!msg) return;
+      if (!msg) {
+        console.error('Warning: received unparseable message from daemon');
+        return;
+      }
 
       // Handle auth challenge if needed
       if (msg.type === 'auth_challenge') {

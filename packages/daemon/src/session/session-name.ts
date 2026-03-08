@@ -50,6 +50,8 @@ export function cleanHostname(hostname: string): string {
   return hostname;
 }
 
+let gitNotFoundWarned = false;
+
 /**
  * Detect the current git branch in the given directory.
  * Returns null if not a git repo or git is unavailable.
@@ -67,7 +69,12 @@ function detectGitBranch(cwd: string): string | null {
       return branch;
     }
     return null;
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' && !gitNotFoundWarned) {
+      gitNotFoundWarned = true;
+      console.warn('git not found in PATH; session names will not include branch');
+    }
     return null;
   }
 }
