@@ -947,6 +947,7 @@ async function createNewSession(
           id: generateId(),
           timestamp: now(),
           question: question,
+          sessionId,
         };
         sendAndRecord(msg);
         sessionRegistry.updateQuestion(sessionId, question);

@@ -175,6 +175,8 @@ export interface QuestionMessage {
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly question: Question;
+  /** Session that owns this question */
+  readonly sessionId?: UUID | undefined;
 }
 
 /** Answer to a question */
@@ -638,12 +640,13 @@ export function createError(
 /**
  * Create a question message.
  */
-export function createQuestion(question: Question): QuestionMessage {
+export function createQuestion(question: Question, sessionId?: UUID): QuestionMessage {
   return {
     type: 'question',
     id: generateId(),
     timestamp: now(),
     question,
+    ...(sessionId !== undefined && { sessionId }),
   };
 }
 
