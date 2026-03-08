@@ -266,19 +266,38 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       continue;
     }
 
-    const header = `  ${'ID'.padEnd(10)}${'STATUS'.padEnd(12)}${'PROJECT'.padEnd(30)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
-    console.log(header);
-    console.log(`  ${'-'.repeat(header.length - 2)}`);
+    const hasNames = sessions.some((s) => s.name);
 
-    for (const s of sessions) {
-      const id = s.sessionId.slice(0, 8);
-      const project = path.basename(s.projectPath).slice(0, 28);
-      const age = formatAge(s.lastActivity);
-      const mark = s.canAttach ? ' *' : '';
+    if (hasNames) {
+      const header = `  ${'NAME'.padEnd(30)}${'STATUS'.padEnd(12)}${'ID'.padEnd(10)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
+      console.log(header);
+      console.log(`  ${'-'.repeat(header.length - 2)}`);
 
-      console.log(
-        `  ${id.padEnd(10)}${s.status.padEnd(12)}${project.padEnd(30)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
-      );
+      for (const s of sessions) {
+        const id = s.sessionId.slice(0, 8);
+        const name = (s.name ?? path.basename(s.projectPath)).slice(0, 28);
+        const age = formatAge(s.lastActivity);
+        const mark = s.canAttach ? ' *' : '';
+
+        console.log(
+          `  ${name.padEnd(30)}${s.status.padEnd(12)}${id.padEnd(10)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
+        );
+      }
+    } else {
+      const header = `  ${'ID'.padEnd(10)}${'STATUS'.padEnd(12)}${'PROJECT'.padEnd(30)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
+      console.log(header);
+      console.log(`  ${'-'.repeat(header.length - 2)}`);
+
+      for (const s of sessions) {
+        const id = s.sessionId.slice(0, 8);
+        const project = path.basename(s.projectPath).slice(0, 28);
+        const age = formatAge(s.lastActivity);
+        const mark = s.canAttach ? ' *' : '';
+
+        console.log(
+          `  ${id.padEnd(10)}${s.status.padEnd(12)}${project.padEnd(30)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
+        );
+      }
     }
   }
 
@@ -311,26 +330,45 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
     return;
   }
 
-  const header = `${'ID'.padEnd(10)}${'STATUS'.padEnd(12)}${'PROJECT'.padEnd(30)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
-  console.log(header);
-  console.log('-'.repeat(header.length));
+  const hasNames = sessions.some((s) => s.name);
 
-  for (const s of sessions) {
-    const id = s.sessionId.slice(0, 8);
-    const project = path.basename(s.projectPath).slice(0, 28);
-    const age = formatAge(s.lastActivity);
-    const mark = s.canAttach ? ' *' : '';
+  if (hasNames) {
+    const header = `${'NAME'.padEnd(30)}${'STATUS'.padEnd(12)}${'ID'.padEnd(10)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
+    console.log(header);
+    console.log('-'.repeat(header.length));
 
-    console.log(
-      `${id.padEnd(10)}${s.status.padEnd(12)}${project.padEnd(30)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
-    );
+    for (const s of sessions) {
+      const id = s.sessionId.slice(0, 8);
+      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 28);
+      const age = formatAge(s.lastActivity);
+      const mark = s.canAttach ? ' *' : '';
+
+      console.log(
+        `${name.padEnd(30)}${s.status.padEnd(12)}${id.padEnd(10)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
+      );
+    }
+  } else {
+    const header = `${'ID'.padEnd(10)}${'STATUS'.padEnd(12)}${'PROJECT'.padEnd(30)}${'AGE'.padStart(10)}${'MSGS'.padStart(6)}`;
+    console.log(header);
+    console.log('-'.repeat(header.length));
+
+    for (const s of sessions) {
+      const id = s.sessionId.slice(0, 8);
+      const project = path.basename(s.projectPath).slice(0, 28);
+      const age = formatAge(s.lastActivity);
+      const mark = s.canAttach ? ' *' : '';
+
+      console.log(
+        `${id.padEnd(10)}${s.status.padEnd(12)}${project.padEnd(30)}${age.padStart(10)}${String(s.messageCount).padStart(6)}${mark}`,
+      );
+    }
   }
 
   const attachable = sessions.filter((s) => s.canAttach);
   if (attachable.length > 0) {
     console.log('');
     console.log(
-      `${attachable.length} session(s) available to attach (* marked). Use: remi attach <id>`,
+      `${attachable.length} session(s) available to attach (* marked). Use: remi attach <name-or-id>`,
     );
   }
 }

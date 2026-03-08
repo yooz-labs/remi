@@ -692,7 +692,11 @@ if (cliSubcommand === 'attach') {
   let resolvedHost = cliHost ?? 'localhost';
 
   // Check for remote attach: host:port/session-id
-  if (targetSessionId?.includes('/')) {
+  // Remote targets have a colon before the first slash (port separator).
+  // Session names (hostname/dir/branch) do not have a colon before the first slash.
+  const firstSlash = targetSessionId?.indexOf('/') ?? -1;
+  const hasRemoteFormat = firstSlash > 0 && targetSessionId?.slice(0, firstSlash).includes(':');
+  if (targetSessionId && hasRemoteFormat) {
     try {
       const { parseRemoteTarget } = await import('./cli/ls-client.ts');
       const remote = parseRemoteTarget(targetSessionId, resolvedPort);
@@ -718,32 +722,60 @@ if (cliSubcommand === 'attach') {
     targetSessionId = latest.remiSessionId;
     resolvedPort = cliPort ?? latest.port;
   } else {
-    // Prefix-match session ID, look up port
-    const all = store.list();
-    const matches = all.filter(
-      (s) =>
-        s.remiSessionId === targetSessionId ||
-        s.remiSessionId.startsWith(targetSessionId as string),
-    );
-    if (matches.length === 1) {
-      // biome-ignore lint/style/noNonNullAssertion: length checked above
-      const match = matches[0]!;
-      resolvedPort = cliPort ?? match.port;
-      targetSessionId = match.remiSessionId;
-    } else if (matches.length > 1) {
-      console.error(
-        `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
+    // Try name-based resolution first by querying the daemon
+    let resolvedByName = false;
+    try {
+      const { fetchSessions } = await import('./cli/ls-client.ts');
+      const sessions = await fetchSessions(resolvedHost, resolvedPort, 3000);
+      const nameMatches = sessions.filter(
+        (s) => s.name === targetSessionId || s.name?.startsWith(targetSessionId as string),
       );
-      for (const m of matches) {
-        console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
+      if (nameMatches.length === 1) {
+        // biome-ignore lint/style/noNonNullAssertion: length checked above
+        targetSessionId = nameMatches[0]!.sessionId;
+        resolvedByName = true;
+      } else if (nameMatches.length > 1) {
+        console.error(
+          `Ambiguous session name "${targetSessionId}" matches ${nameMatches.length} sessions:`,
+        );
+        for (const m of nameMatches) {
+          console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
+        }
+        console.error('Provide a longer name to disambiguate.');
+        process.exit(1);
       }
-      console.error('Provide a longer prefix to disambiguate.');
-      process.exit(1);
-    } else {
-      console.error(
-        `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
+    } catch {
+      // Daemon not reachable; fall through to local store lookup
+    }
+
+    if (!resolvedByName) {
+      // Prefix-match session ID, look up port
+      const all = store.list();
+      const matches = all.filter(
+        (s) =>
+          s.remiSessionId === targetSessionId ||
+          s.remiSessionId.startsWith(targetSessionId as string),
       );
-      process.exit(1);
+      if (matches.length === 1) {
+        // biome-ignore lint/style/noNonNullAssertion: length checked above
+        const match = matches[0]!;
+        resolvedPort = cliPort ?? match.port;
+        targetSessionId = match.remiSessionId;
+      } else if (matches.length > 1) {
+        console.error(
+          `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
+        );
+        for (const m of matches) {
+          console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
+        }
+        console.error('Provide a longer prefix to disambiguate.');
+        process.exit(1);
+      } else {
+        console.error(
+          `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
+        );
+        process.exit(1);
+      }
     }
   }
 

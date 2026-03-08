@@ -250,6 +250,9 @@ export interface DiscoverableSession {
   /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
   readonly sessionId: string;
 
+  /** Human-readable session name (e.g. "hostname/project/branch") */
+  readonly name?: string | undefined;
+
   /** Project path this session is working in. For transcript sessions, this is decoded from Claude Code's lossy path encoding and may be inaccurate for paths containing dashes. */
   readonly projectPath: string;
 
