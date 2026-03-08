@@ -10,6 +10,36 @@ import {
 import type { DiscoverableSession, ProtocolMessage, Timestamp } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
 
+export interface RemoteTarget {
+  readonly host: string;
+  readonly port: number;
+  readonly sessionId: string;
+}
+
+export function parseRemoteTarget(input: string, defaultPort: number): RemoteTarget {
+  const slashIdx = input.indexOf('/');
+  if (slashIdx < 0) {
+    throw new Error(`Invalid remote address "${input}". Expected: host:port/session-id`);
+  }
+  const hostPort = input.slice(0, slashIdx);
+  const sessionId = input.slice(slashIdx + 1);
+  if (!sessionId) {
+    throw new Error(`Missing session ID in "${input}". Expected: host:port/session-id`);
+  }
+
+  const colonIdx = hostPort.lastIndexOf(':');
+  if (colonIdx > 0) {
+    const host = hostPort.slice(0, colonIdx);
+    const portStr = hostPort.slice(colonIdx + 1);
+    const port = Number.parseInt(portStr);
+    if (Number.isNaN(port) || port < 1 || port > 65535) {
+      throw new Error(`Invalid port "${portStr}" in remote address. Must be 1-65535.`);
+    }
+    return { host, port, sessionId };
+  }
+  return { host: hostPort, port: defaultPort, sessionId };
+}
+
 export interface LsClientOptions {
   host: string;
   port: number;
@@ -123,30 +153,41 @@ export async function fetchSessions(
 // ---------------------------------------------------------------------------
 
 export interface NetworkLsOptions {
-  localPort: number;
-  timeout?: number;
-  mdnsTimeout?: number;
+  readonly localPort: number;
+  /** Timeout for WebSocket session fetches, in ms. Default: 5000 */
+  readonly fetchTimeoutMs?: number | undefined;
+  /** Timeout for mDNS network browse, in ms. Default: 3000 */
+  readonly browseTimeoutMs?: number | undefined;
 }
 
 interface DaemonSessions {
-  daemon: { name: string; host: string; port: number; hostname: string };
-  sessions: DiscoverableSession[];
+  readonly daemon: {
+    readonly name: string;
+    readonly host: string;
+    readonly port: number;
+    readonly hostname: string;
+  };
+  readonly sessions: readonly DiscoverableSession[];
 }
 
 export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
-  const { localPort, timeout = 5000, mdnsTimeout = 3000 } = opts;
+  const { localPort, fetchTimeoutMs: timeout = 5000, browseTimeoutMs: mdnsTimeout = 3000 } = opts;
 
   // Try local daemon first
   let localSessions: DiscoverableSession[] = [];
   try {
     localSessions = await fetchSessions('localhost', localPort, timeout);
-  } catch {
-    // Local daemon not running; that's OK when scanning network
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Connection refused is expected when no local daemon is running
+    if (!msg.includes('Cannot connect') && !msg.includes('closed unexpectedly')) {
+      console.error(`Warning: local daemon error: ${msg}`);
+    }
   }
 
   console.error('Scanning network for Remi daemons...');
   const { discoverDaemons } = await import('../mdns/mdns-browser.ts');
-  const daemons = await discoverDaemons({ timeout: mdnsTimeout });
+  const daemons = await discoverDaemons({ timeoutMs: mdnsTimeout });
 
   const results: DaemonSessions[] = [];
   const myHostname = os.hostname();
@@ -159,32 +200,44 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
   }
 
   // Query remote daemons in parallel, filtering out self
-  const remotePromises = daemons
-    .filter((d) => !(d.port === localPort && isLocalAddress(d.host, myHostname)))
-    .map(async (daemon) => {
-      try {
-        const sessions = await fetchSessions(daemon.host, daemon.port, timeout);
-        results.push({
-          daemon: {
-            name: daemon.name,
-            host: daemon.host,
-            port: daemon.port,
-            hostname: daemon.hostname,
-          },
-          sessions,
-        });
-      } catch {
-        // Could not reach this daemon; skip
-      }
-    });
+  const localAddrs = getLocalAddresses(myHostname);
+  const remoteDaemons = daemons.filter((d) => !(d.port === localPort && localAddrs.has(d.host)));
 
-  await Promise.all(remotePromises);
+  const remoteResults = await Promise.allSettled(
+    remoteDaemons.map(async (daemon) => {
+      const sessions = await fetchSessions(daemon.host, daemon.port, timeout);
+      return {
+        daemon: {
+          name: daemon.name,
+          host: daemon.host,
+          port: daemon.port,
+          hostname: daemon.hostname,
+        },
+        sessions,
+      } satisfies DaemonSessions;
+    }),
+  );
+
+  for (const r of remoteResults) {
+    if (r.status === 'fulfilled') {
+      results.push(r.value);
+    }
+  }
 
   renderNetworkSessionList(results);
 }
 
-function isLocalAddress(addr: string, hostname: string): boolean {
-  return addr === '127.0.0.1' || addr === '::1' || addr === 'localhost' || addr === hostname;
+export function getLocalAddresses(hostname: string): Set<string> {
+  const addrs = new Set(['127.0.0.1', '::1', 'localhost', hostname]);
+  const interfaces = os.networkInterfaces();
+  for (const ifaces of Object.values(interfaces)) {
+    if (ifaces) {
+      for (const iface of ifaces) {
+        addrs.add(iface.address);
+      }
+    }
+  }
+  return addrs;
 }
 
 function renderNetworkSessionList(results: DaemonSessions[]): void {

@@ -22,7 +22,7 @@ describe('discoverDaemons', () => {
     });
     await publisher.start();
 
-    const daemons = await discoverDaemons({ timeout: 2000 });
+    const daemons = await discoverDaemons({ timeoutMs: 2000 });
     const found = daemons.find((d) => d.port === 19990);
     expect(found).toBeDefined();
     expect(found?.version).toBe('0.2.3');
@@ -30,7 +30,7 @@ describe('discoverDaemons', () => {
   });
 
   test('returns empty array gracefully on short timeout', async () => {
-    const daemons = await discoverDaemons({ timeout: 100 });
+    const daemons = await discoverDaemons({ timeoutMs: 100 });
     expect(Array.isArray(daemons)).toBe(true);
   });
 
@@ -45,7 +45,7 @@ describe('discoverDaemons', () => {
     });
     await publisher.start();
 
-    const daemons = await discoverDaemons({ timeout: 2000 });
+    const daemons = await discoverDaemons({ timeoutMs: 2000 });
     const found = daemons.find((d) => d.port === 19989);
     expect(found).toBeDefined();
     expect(found?.authEnabled).toBe(true);
@@ -63,7 +63,7 @@ describe('discoverDaemons', () => {
     });
     await publisher.start();
 
-    const daemons = await discoverDaemons({ timeout: 2000 });
+    const daemons = await discoverDaemons({ timeoutMs: 2000 });
     const found = daemons.find((d) => d.port === 19988);
     expect(found).toBeDefined();
     expect(found?.hostname).toBeTruthy();

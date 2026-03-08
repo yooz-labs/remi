@@ -686,15 +686,15 @@ if (cliSubcommand === 'attach') {
 
   // Check for remote attach: host:port/session-id
   if (targetSessionId?.includes('/')) {
-    const slashIdx = targetSessionId.indexOf('/');
-    const hostPort = targetSessionId.slice(0, slashIdx);
-    targetSessionId = targetSessionId.slice(slashIdx + 1);
-    const colonIdx = hostPort.lastIndexOf(':');
-    if (colonIdx > 0) {
-      resolvedHost = hostPort.slice(0, colonIdx);
-      resolvedPort = Number.parseInt(hostPort.slice(colonIdx + 1));
-    } else {
-      resolvedHost = hostPort;
+    try {
+      const { parseRemoteTarget } = await import('./cli/ls-client.ts');
+      const remote = parseRemoteTarget(targetSessionId, resolvedPort);
+      resolvedHost = remote.host;
+      resolvedPort = remote.port;
+      targetSessionId = remote.sessionId;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
     }
   } else if (!targetSessionId) {
     // Auto-attach to most recent active (non-exited) session
@@ -886,6 +886,28 @@ let hookConfigManager: HookConfigManager | null = null;
 
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
+
+async function startMdnsIfNeeded(
+  logFn: (msg: string) => void,
+): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
+  if (cliNoMdns || isLocalhostBind) return null;
+  try {
+    const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
+    const publisher = new MdnsPublisher({
+      port: PORT,
+      version: REMI_VERSION,
+      authEnabled,
+      fingerprint: serverFingerprint,
+    });
+    await publisher.start();
+    logFn('[mDNS] Advertising on local network');
+    return publisher;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logFn(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Create session helper (shared between wrapper and daemon modes)
@@ -1687,7 +1709,12 @@ async function cleanup(): Promise<void> {
   }
 
   if (mdnsPublisher) {
-    await mdnsPublisher.stop();
+    try {
+      await mdnsPublisher.stop();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`[mDNS] Error during cleanup: ${msg}`);
+    }
     mdnsPublisher = null;
   }
 
@@ -1708,22 +1735,7 @@ if (cliDaemonMode) {
   console.log('Starting Remi daemon...');
   await registry.startAll();
 
-  // Start mDNS advertising when network-accessible
-  if (!cliNoMdns && !isLocalhostBind) {
-    try {
-      const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
-      mdnsPublisher = new MdnsPublisher({
-        port: PORT,
-        version: REMI_VERSION,
-        authEnabled,
-        fingerprint: serverFingerprint,
-      });
-      await mdnsPublisher.start();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
-    }
-  }
+  mdnsPublisher = await startMdnsIfNeeded(console.log);
 
   console.log('');
   console.log('Remi daemon ready!');
@@ -1812,23 +1824,7 @@ if (cliDaemonMode) {
     await registry.startAll();
     log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
 
-    // Start mDNS advertising when network-accessible
-    if (!cliNoMdns && !isLocalhostBind) {
-      try {
-        const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
-        mdnsPublisher = new MdnsPublisher({
-          port: PORT,
-          version: REMI_VERSION,
-          authEnabled,
-          fingerprint: serverFingerprint,
-        });
-        await mdnsPublisher.start();
-        log('[mDNS] Advertising on local network');
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
-      }
-    }
+    mdnsPublisher = await startMdnsIfNeeded(log);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('EADDRINUSE') || msg.includes('in use')) {

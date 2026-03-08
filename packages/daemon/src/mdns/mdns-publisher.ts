@@ -57,20 +57,32 @@ export class MdnsPublisher {
     if (!this.running || !this.instance) return;
 
     return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        console.error('[mDNS] Shutdown timed out, forcing cleanup');
+        this.forceCleanup();
+        resolve();
+      }, 2000);
+
       try {
         this.instance?.unpublishAll(() => {
+          clearTimeout(timer);
           this.instance?.destroy();
-          this.instance = null;
-          this.service = null;
-          this.running = false;
+          this.forceCleanup();
           resolve();
         });
-      } catch {
-        this.instance = null;
-        this.service = null;
-        this.running = false;
+      } catch (err) {
+        clearTimeout(timer);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[mDNS] Error during shutdown: ${msg}`);
+        this.forceCleanup();
         resolve();
       }
     });
+  }
+
+  private forceCleanup(): void {
+    this.instance = null;
+    this.service = null;
+    this.running = false;
   }
 }

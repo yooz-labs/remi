@@ -1,21 +1,25 @@
 import type { Service } from 'bonjour-service';
 
 export interface DiscoveredDaemon {
-  name: string;
-  host: string;
-  port: number;
-  version: string;
-  authEnabled: boolean;
-  fingerprint?: string | undefined;
-  hostname: string;
+  /** mDNS service name (e.g., "remi-macbook-pro") */
+  readonly name: string;
+  /** Resolved IP address to connect to (prefers IPv4) */
+  readonly host: string;
+  readonly port: number;
+  readonly version: string;
+  readonly authEnabled: boolean;
+  readonly fingerprint?: string | undefined;
+  /** OS hostname from TXT record */
+  readonly hostname: string;
 }
 
 export interface BrowseOptions {
-  timeout?: number;
+  /** Browse duration in milliseconds. Default: 3000 */
+  readonly timeoutMs?: number | undefined;
 }
 
 export async function discoverDaemons(opts?: BrowseOptions): Promise<DiscoveredDaemon[]> {
-  const timeout = opts?.timeout ?? 3000;
+  const timeout = opts?.timeoutMs ?? 3000;
   const daemons: DiscoveredDaemon[] = [];
 
   const { Bonjour } = await import('bonjour-service');
