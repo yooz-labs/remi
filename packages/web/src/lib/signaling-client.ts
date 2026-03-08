@@ -19,8 +19,12 @@ export class WebSignalingClient {
   private state: SignalingState = 'disconnected';
   private intentionallyClosed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private peerRejoinTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
+  private peerRejoinAttempts = 0;
   private readonly maxReconnectAttempts = 3;
+  private readonly maxPeerRejoinAttempts = 10;
+  private readonly peerRejoinIntervalMs = 3000;
   private baseUrl: string | null = null;
   private code: string | null = null;
 
@@ -61,10 +65,19 @@ export class WebSignalingClient {
             this.setState('joined');
             break;
           case 'peer-connected':
+            // Peer reconnected; cancel any pending rejoin loop
+            if (this.peerRejoinTimer) {
+              clearTimeout(this.peerRejoinTimer);
+              this.peerRejoinTimer = null;
+            }
+            this.peerRejoinAttempts = 0;
             this.setState('connected');
             break;
           case 'peer-disconnected':
-            this.setState('disconnected');
+            // Peer (daemon) dropped; stay in room and periodically re-join
+            // to wait for peer to come back
+            this.setState('joined');
+            this.schedulePeerRejoin();
             break;
           case 'relay':
             try {
@@ -101,7 +114,10 @@ export class WebSignalingClient {
   }
 
   sendMessage(message: unknown): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[SignalingClient] Message dropped: WebSocket not open');
+      return;
+    }
     this.send({ type: 'relay', payload: JSON.stringify(message) });
   }
 
@@ -110,6 +126,10 @@ export class WebSignalingClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.peerRejoinTimer) {
+      clearTimeout(this.peerRejoinTimer);
+      this.peerRejoinTimer = null;
     }
     if (this.ws) {
       this.ws.close();
@@ -127,6 +147,35 @@ export class WebSignalingClient {
         this.connectInternal();
       }
     }, 5000);
+  }
+
+  /**
+   * Periodically re-send join to wait for peer to reconnect.
+   * Stops after maxPeerRejoinAttempts or when peer connects.
+   */
+  private schedulePeerRejoin(): void {
+    if (this.peerRejoinTimer || this.intentionallyClosed) return;
+    this.peerRejoinAttempts = 0;
+    this.peerRejoinLoop();
+  }
+
+  private peerRejoinLoop(): void {
+    if (this.intentionallyClosed || this.state === 'connected') return;
+    if (this.peerRejoinAttempts >= this.maxPeerRejoinAttempts) {
+      console.warn(`[SignalingClient] Peer rejoin attempts exhausted (${this.maxPeerRejoinAttempts})`);
+      this.setState('disconnected');
+      return;
+    }
+    this.peerRejoinAttempts++;
+    this.peerRejoinTimer = setTimeout(() => {
+      this.peerRejoinTimer = null;
+      if (this.intentionallyClosed || this.state === 'connected') return;
+      // Re-send join in the existing WebSocket to signal we are still waiting
+      if (this.code) {
+        this.send({ type: 'join', code: this.code });
+      }
+      this.peerRejoinLoop();
+    }, this.peerRejoinIntervalMs);
   }
 
   get isConnected(): boolean {

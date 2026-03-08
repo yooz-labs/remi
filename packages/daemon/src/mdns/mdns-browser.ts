@@ -1,4 +1,5 @@
 import type { Service } from 'bonjour-service';
+import { MDNS_SERVICE_TYPE } from './constants.ts';
 
 export interface DiscoveredDaemon {
   /** mDNS service name (e.g., "remi-macbook-pro") */
@@ -23,35 +24,40 @@ export async function discoverDaemons(opts?: BrowseOptions): Promise<DiscoveredD
   const daemons: DiscoveredDaemon[] = [];
 
   const { Bonjour } = await import('bonjour-service');
-  const instance = new Bonjour(undefined, (err: Error) => {
-    console.error(`[mDNS] Browse error: ${err.message}`);
-  });
 
-  return new Promise<DiscoveredDaemon[]>((resolve) => {
-    const browser = instance.find({ type: 'remi' }, (service: Service) => {
-      const txt = (service.txt || {}) as Record<string, string>;
-
-      let host = service.host || 'localhost';
-      if (service.addresses && service.addresses.length > 0) {
-        const ipv4 = service.addresses.find((a: string) => !a.includes(':'));
-        host = ipv4 || service.addresses[0] || host;
-      }
-
-      daemons.push({
-        name: service.name,
-        host,
-        port: service.port,
-        version: txt['version'] || 'unknown',
-        authEnabled: txt['auth'] === 'true',
-        fingerprint: txt['fingerprint'],
-        hostname: txt['hostname'] || service.name,
+  return new Promise<DiscoveredDaemon[]>((resolve, reject) => {
+    try {
+      const instance = new Bonjour(undefined, (err: Error) => {
+        console.error(`[mDNS] Browse error: ${err.message}`);
       });
-    });
 
-    setTimeout(() => {
-      browser.stop();
-      instance.destroy();
-      resolve(daemons);
-    }, timeout);
+      const browser = instance.find({ type: MDNS_SERVICE_TYPE }, (service: Service) => {
+        const txt = (service.txt || {}) as Record<string, string>;
+
+        let host = service.host || 'localhost';
+        if (service.addresses && service.addresses.length > 0) {
+          const ipv4 = service.addresses.find((a: string) => !a.includes(':'));
+          host = ipv4 || service.addresses[0] || host;
+        }
+
+        daemons.push({
+          name: service.name,
+          host,
+          port: service.port,
+          version: txt['version'] || 'unknown',
+          authEnabled: txt['auth'] === 'true',
+          fingerprint: txt['fingerprint'],
+          hostname: txt['hostname'] || service.name,
+        });
+      });
+
+      setTimeout(() => {
+        browser.stop();
+        instance.destroy();
+        resolve(daemons);
+      }, timeout);
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(`[mDNS] Discovery failed: ${String(err)}`));
+    }
   });
 }

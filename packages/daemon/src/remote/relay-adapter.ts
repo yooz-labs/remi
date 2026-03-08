@@ -330,8 +330,8 @@ export class RelayAdapter implements ConnectionAdapter {
     return this.sendRaw(connectionId, createAgentOutput(message));
   }
 
-  sendQuestion(connectionId: UUID, question: Question): boolean {
-    return this.sendRaw(connectionId, createQuestion(question));
+  sendQuestion(connectionId: UUID, question: Question, sessionId?: UUID): boolean {
+    return this.sendRaw(connectionId, createQuestion(question, sessionId));
   }
 
   sendStatus(_connectionId: UUID, _status: AgentStatus, _context?: string): boolean {

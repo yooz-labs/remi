@@ -11,6 +11,7 @@ import { SettingsPanel } from '@/components/settings';
 import { useWebSocket } from '@/hooks';
 import type { AppSettings, UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { deduplicateMessage } from '@/lib/message-dedup';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import type { UnlockedIdentity } from '@remi/shared';
 import {
@@ -165,21 +166,44 @@ function App() {
             return prev;
           }
 
+          const newSender = role === 'user' ? 'user' : 'agent';
+          const resolvedContent = structuredMsg.content || content;
+
+          // Cross-type dedup via extracted pure function
+          const dedup = deduplicateMessage(prev, {
+            sessionId,
+            sender: newSender,
+            content: resolvedContent,
+            entryUuid,
+            source: 'transcript',
+          });
+
+          if (dedup.action === 'skip') {
+            return prev;
+          }
+
           // Add new message
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId,
-            sender: role === 'user' ? 'user' : 'agent',
-            content: structuredMsg.content || content,
+            sender: newSender,
+            content: resolvedContent,
             timestamp: structuredMsg.createdAt || message.timestamp,
             state: 'delivered',
             isEditing: structuredMsg.isEditing,
             tool: structuredMsg.tool,
             entryUuid,
+            source: 'transcript',
             bullets: uiBullets.length > 0 ? uiBullets : undefined,
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
           };
+
+          if (dedup.action === 'replace') {
+            // Replace the PTY-sourced duplicate with the transcript version
+            return prev.map((m, i) => (i === dedup.replaceIndex ? uiMessage : m));
+          }
+
           return [...prev, uiMessage];
         });
 
@@ -211,6 +235,7 @@ function App() {
         }));
 
         setMessages((prev) => {
+          // Same-type dedup by message ID (streaming updates)
           const existingIndex = prev.findIndex((m) => m.id === structuredMsg.id);
           if (existingIndex >= 0) {
             return prev.map((m, i) =>
@@ -227,6 +252,18 @@ function App() {
                 : m,
             );
           }
+
+          // Cross-type dedup via extracted pure function
+          const dedup = deduplicateMessage(prev, {
+            sessionId: structuredMsg.sessionId,
+            sender: structuredMsg.sender,
+            content: structuredMsg.content,
+            source: 'pty',
+          });
+          if (dedup.action === 'skip') {
+            return prev;
+          }
+
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId: structuredMsg.sessionId,
@@ -236,6 +273,7 @@ function App() {
             state: structuredMsg.state,
             isEditing: structuredMsg.isEditing,
             tool: structuredMsg.tool,
+            source: 'pty',
             bullets: uiBullets,
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
@@ -274,9 +312,11 @@ function App() {
           }
         }
 
+        // Use sessionId from the message when available; fall back to active session
+        const questionSessionId = message.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
         const uiQuestion: UIQuestion = {
           id: q.id,
-          sessionId: activeSessionIdRef.current ?? ('' as UUID),
+          sessionId: questionSessionId,
           type: questionType,
           prompt: q.text,
           options: q.options.length > 0 ? q.options.map((o) => o.label) : undefined,
@@ -486,6 +526,32 @@ function App() {
     }
   }, [connectionStatus]);
 
+  // Update session connectionStatus on disconnect/reconnecting
+  // Clear stale question on disconnect
+  useEffect(() => {
+    if (effectiveStatus === 'disconnected' || effectiveStatus === 'reconnecting') {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.connectionStatus === 'connected'
+            ? { ...s, connectionStatus: 'disconnected' as const }
+            : s,
+        ),
+      );
+      setQuestion(null);
+    } else if (effectiveStatus === 'connected') {
+      // Restore connected status for active session
+      if (activeSessionId) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === activeSessionId
+              ? { ...s, connectionStatus: 'connected' as const }
+              : s,
+          ),
+        );
+      }
+    }
+  }, [effectiveStatus, activeSessionId]);
+
   // Request session list after direct connection
   useEffect(() => {
     if (connectionStatus === 'connected' && wsSessionId) {
@@ -635,9 +701,11 @@ function App() {
           if (state === 'connected') {
             setRelayStatus('connected');
             setShowConnectModal(false);
-            // Send hello via relay (harmless if auth is required; daemon drops it
-            // and sends auth_challenge first, then hello_ack after auth completes)
-            client.sendMessage(createHello('remi-web', '0.1.0'));
+            // Send hello via relay with resumeSessionId if reconnecting
+            // (harmless if auth is required; daemon drops it and sends
+            // auth_challenge first, then hello_ack after auth completes)
+            const resumeId = activeSessionIdRef.current ?? undefined;
+            client.sendMessage(createHello('remi-web', '0.1.0', undefined, resumeId));
           } else if (state === 'connecting' || state === 'joined') {
             setRelayStatus('connecting');
           } else if (state === 'disconnected' || state === 'error') {
@@ -734,7 +802,8 @@ function App() {
                 pendingRelayChallengeRef.current = null;
 
                 // Auth succeeded; now send hello so the daemon creates our session
-                client.sendMessage(createHello('remi-web', '0.1.0'));
+                const resumeId = activeSessionIdRef.current ?? undefined;
+                client.sendMessage(createHello('remi-web', '0.1.0', undefined, resumeId));
               } catch (err) {
                 const detail = err instanceof Error ? err.message : String(err);
                 setError(new Error(`Server verification failed: ${detail}`));

@@ -525,6 +525,36 @@ describe('Message factory functions', () => {
       expect(msg.question.text).toBe('Do you want to continue?');
       expect(msg.question.options.length).toBe(2);
     });
+
+    test('creates question message with sessionId', () => {
+      const question: Question = {
+        id: generateId(),
+        text: 'Allow this action?',
+        allowsFreeText: false,
+        isAnswered: false,
+        options: [],
+      };
+      const sid = generateId();
+
+      const msg = createQuestion(question, sid);
+      expect(msg.type).toBe('question');
+      expect(msg.question).toBe(question);
+      expect(msg.sessionId).toBe(sid);
+    });
+
+    test('creates question message without sessionId when omitted', () => {
+      const question: Question = {
+        id: generateId(),
+        text: 'Continue?',
+        allowsFreeText: false,
+        isAnswered: false,
+        options: [],
+      };
+
+      const msg = createQuestion(question);
+      expect(msg.type).toBe('question');
+      expect(msg.sessionId).toBeUndefined();
+    });
   });
 
   describe('createSessionUpdate()', () => {

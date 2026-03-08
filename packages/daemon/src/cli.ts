@@ -234,6 +234,7 @@ import {
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+import { DetachScanner } from './cli/detach-scanner.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
@@ -248,6 +249,7 @@ import type { AssistantEntry } from './transcript/index.ts';
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
 // ---------------------------------------------------------------------------
 let wrapperMode = true; // Default to wrapper mode
+let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
 
 function log(...args: unknown[]): void {
   if (wrapperMode) {
@@ -329,6 +331,7 @@ let cliBindHost: string | undefined;
 let cliRemoveFingerprint: string | undefined;
 let cliNoMdns = false;
 let cliNetwork = false;
+let cliHost: string | undefined;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -391,6 +394,9 @@ for (let i = 0; i < args.length; i++) {
     cliNoMdns = true;
   } else if (arg === '--network') {
     cliNetwork = true;
+  } else if (arg === '--host' && nextArg) {
+    cliHost = nextArg;
+    i++;
   } else if (arg === '--version' || arg === '-v') {
     console.log(`remi ${REMI_VERSION}`);
     process.exit(0);
@@ -429,6 +435,7 @@ Options:
   --no-auth                Disable authentication (even when binding to all interfaces)
   --no-tofu                Reject unknown clients (disable Trust On First Use)
   --no-mdns                Disable mDNS network advertising
+  --host HOST              Connect to daemon at HOST (for ls/attach; default: localhost)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
   --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
@@ -667,7 +674,7 @@ if (cliSubcommand === 'ls') {
   } else {
     const { runLsClient } = await import('./cli/ls-client.ts');
     try {
-      await runLsClient({ host: 'localhost', port: resolvedPort });
+      await runLsClient({ host: cliHost ?? 'localhost', port: resolvedPort });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -682,7 +689,7 @@ if (cliSubcommand === 'attach') {
   let targetSessionId = cliSubcommandArg;
   let resolvedPort =
     cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
-  let resolvedHost = 'localhost';
+  let resolvedHost = cliHost ?? 'localhost';
 
   // Check for remote attach: host:port/session-id
   if (targetSessionId?.includes('/')) {
@@ -941,6 +948,7 @@ async function createNewSession(
           id: generateId(),
           timestamp: now(),
           question: question,
+          sessionId,
         };
         sendAndRecord(msg);
         sessionRegistry.updateQuestion(sessionId, question);
@@ -1038,7 +1046,7 @@ async function createNewSession(
     },
     {
       onRawData: (data: Uint8Array) => {
-        if (passThrough && ptyStdoutFd !== null) {
+        if (passThrough && ptyStdoutFd !== null && !wrapperDetached) {
           try {
             fs.writeSync(ptyStdoutFd, data);
           } catch (err) {
@@ -1877,19 +1885,45 @@ if (cliDaemonMode) {
     true, // pass-through mode
   );
 
-  // Set up raw stdin pass-through to PTY
+  // Set up raw stdin pass-through to PTY with Ctrl+B d detach detection.
+  // Uses the extracted DetachScanner module for byte-level scanning.
+  function writeToPty(text: string): void {
+    if (ptySession.isRunning) {
+      try {
+        ptySession.write(text);
+      } catch (err) {
+        log(`[PTY] write failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  const detachScanner = new DetachScanner({
+    onDetach: () => {
+      const shortId = sessionId.slice(0, 8);
+      if (ptyStdoutFd !== null) {
+        try {
+          fs.writeSync(ptyStdoutFd, `\r\n[detached (session ${shortId})]\r\n`);
+          fs.writeSync(ptyStdoutFd, `Reattach with: remi attach ${shortId}\r\n`);
+        } catch (err) {
+          log(
+            `[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      detachLocalTerminal('keybinding');
+    },
+    onData: (data) => {
+      writeToPty(data.toString());
+    },
+    timeoutMs: 1000,
+  });
+
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
   }
   process.stdin.resume();
-  process.stdin.on('data', (data: Buffer) => {
-    if (ptySession.isRunning) {
-      try {
-        ptySession.write(data.toString());
-      } catch {
-        // PTY may have exited between the check and write
-      }
-    }
+  process.stdin.on('data', (chunk: Buffer) => {
+    detachScanner.write(chunk);
   });
 
   // Handle terminal resize
@@ -1900,13 +1934,43 @@ if (cliDaemonMode) {
       if (ptySession.isRunning) {
         ptySession.resize({ cols, rows });
       }
-    } catch {
-      // PTY may have exited
+    } catch (err) {
+      log(`[PTY] resize failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  });
+
+  // Detach local terminal but keep PTY + WebSocket alive.
+  // Used by SIGHUP (terminal close) and Ctrl+B d (manual detach).
+  function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
+    if (wrapperDetached) return;
+    wrapperDetached = true;
+
+    // Stop reading from stdin
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch (err) {
+        log(
+          `[Detach] setRawMode restore failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    process.stdin.pause();
+    process.stdin.removeAllListeners('data');
+
+    log(`Local terminal detached (${reason}), PTY and WebSocket server still running`);
+  }
+
+  // SIGHUP: terminal closed (e.g. window closed, SSH disconnect).
+  // Detach the local terminal but keep the PTY and server alive.
+  process.on('SIGHUP', () => {
+    detachLocalTerminal('sighup');
+    // Do NOT exit; the event loop keeps running for remote clients and PTY.
   });
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
   process.on('SIGINT', () => {
+    if (wrapperDetached) return; // No local terminal to forward from
     if (ptySession.isRunning) {
       try {
         // Send Ctrl+C (0x03) to the PTY
