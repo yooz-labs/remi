@@ -215,12 +215,14 @@ function App() {
         });
 
         // Update session last active time and increment unread if not the active session
+        // Also clear questionPending since new content means the question was resolved
         setSessions((prev) =>
           prev.map((s) =>
             s.id === sessionId
               ? {
                   ...s,
                   lastActiveAt: new Date().toISOString(),
+                  questionPending: false,
                   unreadCount:
                     s.id === activeSessionIdRef.current ? s.unreadCount : s.unreadCount + 1,
                   preview: structuredMsg.content?.slice(0, 80) || s.preview,
@@ -300,6 +302,7 @@ function App() {
               ? {
                   ...s,
                   lastActiveAt: new Date().toISOString(),
+                  questionPending: false,
                   unreadCount:
                     s.id === activeSessionIdRef.current ? s.unreadCount : s.unreadCount + 1,
                   preview: structuredMsg.content?.slice(0, 80) || s.preview,
@@ -374,7 +377,7 @@ function App() {
         // Map DiscoverableSession[] to UISession[]
         const discovered: UISession[] = message.sessions.map((ds: DiscoverableSession) => ({
           id: ds.sessionId as UUID,
-          name: ds.projectPath.split('/').pop() || 'Session',
+          name: ds.name || ds.projectPath.split('/').pop() || 'Session',
           createdAt: ds.lastActivity,
           lastActiveAt: ds.lastActivity,
           status:
@@ -603,7 +606,7 @@ function App() {
       setSessions((prev) =>
         prev.map((s) =>
           s.connectionStatus === 'connected'
-            ? { ...s, connectionStatus: 'disconnected' as const }
+            ? { ...s, connectionStatus: 'disconnected' as const, questionPending: false }
             : s,
         ),
       );
@@ -905,6 +908,7 @@ function App() {
           },
           onError: (errCode, errMsg) => {
             console.error(`Signaling error [${errCode}]: ${errMsg}`);
+            setError(new Error(`Connection failed: ${errMsg}`));
           },
         });
 
@@ -949,7 +953,9 @@ function App() {
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(text).catch((err) => {
+      console.warn('Failed to copy to clipboard:', err);
+    });
   }, [sessionMessages]);
 
   const handleClearMessages = useCallback(() => {

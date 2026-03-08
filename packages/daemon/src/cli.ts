@@ -809,8 +809,11 @@ if (cliSubcommand === 'attach') {
         console.error('Provide a longer name to disambiguate.');
         process.exit(1);
       }
-    } catch {
-      // Daemon not reachable; fall through to local store lookup
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('connect') && !msg.includes('timeout') && !msg.includes('ECONNREFUSED')) {
+        log(`[Attach] Failed to query daemon for name resolution: ${msg}`);
+      }
     }
 
     if (!resolvedByName) {
