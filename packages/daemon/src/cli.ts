@@ -248,6 +248,7 @@ import type { AssistantEntry } from './transcript/index.ts';
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
 // ---------------------------------------------------------------------------
 let wrapperMode = true; // Default to wrapper mode
+let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
 
 function log(...args: unknown[]): void {
   if (wrapperMode) {
@@ -1043,7 +1044,7 @@ async function createNewSession(
     },
     {
       onRawData: (data: Uint8Array) => {
-        if (passThrough && ptyStdoutFd !== null) {
+        if (passThrough && ptyStdoutFd !== null && !wrapperDetached) {
           try {
             fs.writeSync(ptyStdoutFd, data);
           } catch (err) {
@@ -1910,8 +1911,36 @@ if (cliDaemonMode) {
     }
   });
 
+  // Detach local terminal but keep PTY + WebSocket alive.
+  // Used by SIGHUP (terminal close) and Ctrl+B d (manual detach).
+  function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
+    if (wrapperDetached) return;
+    wrapperDetached = true;
+
+    // Stop reading from stdin
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // May already be restored or terminal gone
+      }
+    }
+    process.stdin.pause();
+    process.stdin.removeAllListeners('data');
+
+    log(`Local terminal detached (${reason}), PTY and WebSocket server still running`);
+  }
+
+  // SIGHUP: terminal closed (e.g. window closed, SSH disconnect).
+  // Detach the local terminal but keep the PTY and server alive.
+  process.on('SIGHUP', () => {
+    detachLocalTerminal('sighup');
+    // Do NOT exit; the event loop keeps running for remote clients and PTY.
+  });
+
   // Forward SIGINT/SIGTERM to PTY instead of exiting
   process.on('SIGINT', () => {
+    if (wrapperDetached) return; // No local terminal to forward from
     if (ptySession.isRunning) {
       try {
         // Send Ctrl+C (0x03) to the PTY
