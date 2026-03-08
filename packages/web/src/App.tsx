@@ -522,8 +522,8 @@ function App() {
     }
   }, [connectionStatus]);
 
-  // B2: Update session connectionStatus on disconnect/reconnecting
-  // B3: Clear stale question on disconnect
+  // Update session connectionStatus on disconnect/reconnecting
+  // Clear stale question on disconnect
   useEffect(() => {
     if (effectiveStatus === 'disconnected' || effectiveStatus === 'reconnecting') {
       setSessions((prev) =>

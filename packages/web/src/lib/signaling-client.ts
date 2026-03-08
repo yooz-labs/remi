@@ -114,7 +114,10 @@ export class WebSignalingClient {
   }
 
   sendMessage(message: unknown): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[SignalingClient] Message dropped: WebSocket not open');
+      return;
+    }
     this.send({ type: 'relay', payload: JSON.stringify(message) });
   }
 
@@ -159,6 +162,7 @@ export class WebSignalingClient {
   private peerRejoinLoop(): void {
     if (this.intentionallyClosed || this.state === 'connected') return;
     if (this.peerRejoinAttempts >= this.maxPeerRejoinAttempts) {
+      console.warn(`[SignalingClient] Peer rejoin attempts exhausted (${this.maxPeerRejoinAttempts})`);
       this.setState('disconnected');
       return;
     }
