@@ -329,6 +329,7 @@ let cliBindHost: string | undefined;
 let cliRemoveFingerprint: string | undefined;
 let cliNoMdns = false;
 let cliNetwork = false;
+let cliHost: string | undefined;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -391,6 +392,9 @@ for (let i = 0; i < args.length; i++) {
     cliNoMdns = true;
   } else if (arg === '--network') {
     cliNetwork = true;
+  } else if (arg === '--host' && nextArg) {
+    cliHost = nextArg;
+    i++;
   } else if (arg === '--version' || arg === '-v') {
     console.log(`remi ${REMI_VERSION}`);
     process.exit(0);
@@ -429,6 +433,7 @@ Options:
   --no-auth                Disable authentication (even when binding to all interfaces)
   --no-tofu                Reject unknown clients (disable Trust On First Use)
   --no-mdns                Disable mDNS network advertising
+  --host HOST              Connect to daemon at HOST (for ls/attach; default: localhost)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
   --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
@@ -667,7 +672,7 @@ if (cliSubcommand === 'ls') {
   } else {
     const { runLsClient } = await import('./cli/ls-client.ts');
     try {
-      await runLsClient({ host: 'localhost', port: resolvedPort });
+      await runLsClient({ host: cliHost ?? 'localhost', port: resolvedPort });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -682,7 +687,7 @@ if (cliSubcommand === 'attach') {
   let targetSessionId = cliSubcommandArg;
   let resolvedPort =
     cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
-  let resolvedHost = 'localhost';
+  let resolvedHost = cliHost ?? 'localhost';
 
   // Check for remote attach: host:port/session-id
   if (targetSessionId?.includes('/')) {
