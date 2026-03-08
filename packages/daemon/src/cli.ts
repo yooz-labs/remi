@@ -1883,18 +1883,78 @@ if (cliDaemonMode) {
     true, // pass-through mode
   );
 
-  // Set up raw stdin pass-through to PTY
+  // Set up raw stdin pass-through to PTY with Ctrl+B d detach detection.
+  // Mirrors the byte-level scanning from attach-client.ts.
+  const CTRL_B = 0x02;
+  const DETACH_TIMEOUT_MS = 1000;
+  let ctrlBPending = false;
+  let ctrlBTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function writeToPty(text: string): void {
+    if (ptySession.isRunning) {
+      try {
+        ptySession.write(text);
+      } catch {
+        // PTY may have exited between the check and write
+      }
+    }
+  }
+
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
   }
   process.stdin.resume();
-  process.stdin.on('data', (data: Buffer) => {
-    if (ptySession.isRunning) {
-      try {
-        ptySession.write(data.toString());
-      } catch {
-        // PTY may have exited between the check and write
+  process.stdin.on('data', (chunk: Buffer) => {
+    for (let i = 0; i < chunk.length; i++) {
+      // biome-ignore lint/style/noNonNullAssertion: bounds checked by loop condition
+      const byte = chunk[i]!;
+
+      if (ctrlBPending) {
+        ctrlBPending = false;
+        if (ctrlBTimer) {
+          clearTimeout(ctrlBTimer);
+          ctrlBTimer = null;
+        }
+
+        if (byte === 0x64) {
+          // 'd' after Ctrl+B: detach
+          const shortId = sessionId.slice(0, 8);
+          if (ptyStdoutFd !== null) {
+            try {
+              fs.writeSync(ptyStdoutFd, `\r\n[detached (session ${shortId})]\r\n`);
+              fs.writeSync(ptyStdoutFd, `Reattach with: remi attach ${shortId}\r\n`);
+            } catch {
+              // Terminal may already be gone
+            }
+          }
+          detachLocalTerminal('keybinding');
+          return;
+        }
+
+        // Not a detach sequence: forward buffered Ctrl+B and this byte
+        writeToPty(String.fromCharCode(CTRL_B));
+        writeToPty(String.fromCharCode(byte));
+        continue;
       }
+
+      if (byte === CTRL_B) {
+        ctrlBPending = true;
+        ctrlBTimer = setTimeout(() => {
+          ctrlBPending = false;
+          ctrlBTimer = null;
+          writeToPty(String.fromCharCode(CTRL_B));
+        }, DETACH_TIMEOUT_MS);
+        continue;
+      }
+
+      // Scan ahead for the next Ctrl+B in this chunk
+      let end = i + 1;
+      while (end < chunk.length && chunk[end] !== CTRL_B) {
+        end++;
+      }
+      // Forward the normal bytes as a batch
+      writeToPty(chunk.slice(i, end).toString());
+      i = end - 1; // loop increment will advance to `end`
     }
   });
 
