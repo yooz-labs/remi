@@ -11,6 +11,7 @@ import { SettingsPanel } from '@/components/settings';
 import { useWebSocket } from '@/hooks';
 import type { AppSettings, UIBullet, UIMessage, UIQuestion, UISession } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { deduplicateMessage } from '@/lib/message-dedup';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import type { UnlockedIdentity } from '@remi/shared';
 import {
@@ -166,37 +167,41 @@ function App() {
           }
 
           const newSender = role === 'user' ? 'user' : 'agent';
+          const resolvedContent = structuredMsg.content || content;
 
-          // Cross-type dedup: check if a structured_agent_output already
-          // delivered a message with the same content. If so, replace it
-          // with the transcript version (which carries the entryUuid).
-          const dupIdx = prev.findIndex(
-            (m) =>
-              !m.entryUuid &&
-              m.sessionId === sessionId &&
-              m.sender === newSender &&
-              m.content === (structuredMsg.content || content),
-          );
+          // Cross-type dedup via extracted pure function
+          const dedup = deduplicateMessage(prev, {
+            sessionId,
+            sender: newSender,
+            content: resolvedContent,
+            entryUuid,
+            source: 'transcript',
+          });
+
+          if (dedup.action === 'skip') {
+            return prev;
+          }
 
           // Add new message
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId,
             sender: newSender,
-            content: structuredMsg.content || content,
+            content: resolvedContent,
             timestamp: structuredMsg.createdAt || message.timestamp,
             state: 'delivered',
             isEditing: structuredMsg.isEditing,
             tool: structuredMsg.tool,
             entryUuid,
+            source: 'transcript',
             bullets: uiBullets.length > 0 ? uiBullets : undefined,
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
           };
 
-          if (dupIdx >= 0) {
+          if (dedup.action === 'replace') {
             // Replace the PTY-sourced duplicate with the transcript version
-            return prev.map((m, i) => (i === dupIdx ? uiMessage : m));
+            return prev.map((m, i) => (i === dedup.replaceIndex ? uiMessage : m));
           }
 
           return [...prev, uiMessage];
@@ -248,16 +253,14 @@ function App() {
             );
           }
 
-          // Cross-type dedup: skip if transcript_content already delivered
-          // a message with the same content (identified by having entryUuid)
-          const hasTranscriptDup = prev.some(
-            (m) =>
-              m.entryUuid &&
-              m.sessionId === structuredMsg.sessionId &&
-              m.sender === structuredMsg.sender &&
-              m.content === structuredMsg.content,
-          );
-          if (hasTranscriptDup) {
+          // Cross-type dedup via extracted pure function
+          const dedup = deduplicateMessage(prev, {
+            sessionId: structuredMsg.sessionId,
+            sender: structuredMsg.sender,
+            content: structuredMsg.content,
+            source: 'pty',
+          });
+          if (dedup.action === 'skip') {
             return prev;
           }
 
@@ -270,6 +273,7 @@ function App() {
             state: structuredMsg.state,
             isEditing: structuredMsg.isEditing,
             tool: structuredMsg.tool,
+            source: 'pty',
             bullets: uiBullets,
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
