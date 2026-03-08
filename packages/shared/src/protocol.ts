@@ -89,7 +89,9 @@ export type ProtocolMessage =
   | TerminalResizeMessage
   | AuthChallengeMessage
   | AuthResponseMessage
-  | AuthResultMessage;
+  | AuthResultMessage
+  | KillSessionRequestMessage
+  | KillSessionResponseMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -404,6 +406,28 @@ export interface AuthResultMessage {
   readonly serverSignature?: string;
 }
 
+/** Request to kill (terminate) a session by ID */
+export interface KillSessionRequestMessage {
+  readonly type: 'kill_session_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Session ID to kill */
+  readonly sessionId: UUID;
+}
+
+/** Response after killing a session */
+export interface KillSessionResponseMessage {
+  readonly type: 'kill_session_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Whether the kill succeeded */
+  readonly success: boolean;
+  /** Error message if kill failed */
+  readonly error?: string;
+  /** ID of the original request */
+  readonly requestId: UUID;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -472,6 +496,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'auth_challenge',
     'auth_response',
     'auth_result',
+    'kill_session_request',
+    'kill_session_response',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -914,6 +940,36 @@ export function createAuthResult(
     timestamp: now(),
     success,
     ...(serverSignature !== undefined && { serverSignature }),
+    ...(error !== undefined && { error }),
+  };
+}
+
+/**
+ * Create a kill session request message.
+ */
+export function createKillSessionRequest(sessionId: UUID): KillSessionRequestMessage {
+  return {
+    type: 'kill_session_request',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+  };
+}
+
+/**
+ * Create a kill session response message.
+ */
+export function createKillSessionResponse(
+  success: boolean,
+  requestId: UUID,
+  error?: string,
+): KillSessionResponseMessage {
+  return {
+    type: 'kill_session_response',
+    id: generateId(),
+    timestamp: now(),
+    success,
+    requestId,
     ...(error !== undefined && { error }),
   };
 }

@@ -33,6 +33,7 @@ import type {
   BulletExpandRequestMessage,
   CreateSessionRequestMessage,
   HelloMessage,
+  KillSessionRequestMessage,
   PingMessage,
   ProtocolMessage,
   SessionListRequestMessage,
@@ -74,6 +75,9 @@ export interface ConnectionEvents {
 
   /** Terminal resize from attached CLI client */
   onTerminalResize: (cols: number, rows: number) => void;
+
+  /** Kill session request received */
+  onKillSessionRequest: (sessionId: UUID, requestId: UUID) => void;
 
   /** Authentication succeeded */
   onAuthSuccess: (clientFingerprint: string) => void;
@@ -250,6 +254,9 @@ export class Connection {
       case 'terminal_resize':
         this.handleTerminalResize(message);
         break;
+      case 'kill_session_request':
+        this.handleKillSessionRequest(message);
+        break;
       case 'ping':
         this.handlePing(message);
         break;
@@ -408,6 +415,11 @@ export class Connection {
   private handleCreateSessionRequest(message: CreateSessionRequestMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onCreateSessionRequest?.(message.directory, message.id);
+  }
+
+  private handleKillSessionRequest(message: KillSessionRequestMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onKillSessionRequest?.(message.sessionId, message.id);
   }
 
   private handleTerminalResize(message: TerminalResizeMessage): void {
