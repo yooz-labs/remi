@@ -217,6 +217,7 @@ import {
   createCreateSessionResponse,
   createError,
   createHelloAck,
+  createKillSessionResponse,
   createReplayBatch,
   createSessionListResponse,
   createTranscriptLoadComplete,
@@ -317,6 +318,9 @@ let cliSubcommand:
   | 'import-key'
   | 'authorize'
   | 'keys'
+  | 'new'
+  | 'kill'
+  | 'detach'
   | undefined;
 let cliSubcommandArg: string | undefined;
 let cliCodeRefresh = false;
@@ -406,6 +410,9 @@ Remi - Claude Code with remote monitoring
 
 Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
+  remi new [-- claude-args...]   Explicit session creation (alias for remi [args])
+  remi kill <name>               Kill a session by name or ID
+  remi detach [name]             Detach from current or named session
   remi ls                        List live sessions from running daemon
   remi ls --network              Discover and list sessions across the network
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
@@ -464,11 +471,18 @@ Any other arguments are passed through to Claude Code.
     arg === 'export-key' ||
     arg === 'import-key' ||
     arg === 'authorize' ||
-    arg === 'keys'
+    arg === 'keys' ||
+    arg === 'new' ||
+    arg === 'kill' ||
+    arg === 'detach'
   ) {
     cliSubcommand = arg;
     if (
-      (arg === 'attach' || arg === 'import-key' || arg === 'authorize') &&
+      (arg === 'attach' ||
+        arg === 'import-key' ||
+        arg === 'authorize' ||
+        arg === 'kill' ||
+        arg === 'detach') &&
       nextArg &&
       !nextArg.startsWith('-')
     ) {
@@ -479,11 +493,22 @@ Any other arguments are passed through to Claude Code.
       cliCodeRefresh = true;
       i++;
     }
+    // For 'new', collect remaining args after '--' as claude args
+    if (arg === 'new') {
+      for (let j = i + 1; j < args.length; j++) {
+        const nextA = args[j];
+        if (nextA === '--') continue; // skip bare '--'
+        if (nextA) claudeArgs.push(nextA);
+      }
+      break; // stop processing args
+    }
   } else if (
     cliSubcommand &&
     (cliSubcommand === 'import-key' ||
       cliSubcommand === 'authorize' ||
-      cliSubcommand === 'attach') &&
+      cliSubcommand === 'attach' ||
+      cliSubcommand === 'kill' ||
+      cliSubcommand === 'detach') &&
     !cliSubcommandArg &&
     arg &&
     !arg.startsWith('-')
@@ -683,6 +708,46 @@ if (cliSubcommand === 'ls') {
   process.exit(0);
 }
 
+// Handle 'kill' subcommand: kill a session by name or ID
+if (cliSubcommand === 'kill') {
+  if (!cliSubcommandArg) {
+    console.error('Usage: remi kill <session-name-or-id>');
+    console.error('Run `remi ls` to see live sessions.');
+    process.exit(1);
+  }
+  const resolvedPort =
+    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+  const resolvedHost = cliHost ?? 'localhost';
+
+  const { runKillClient } = await import('./cli/kill-client.ts');
+  try {
+    await runKillClient({
+      host: resolvedHost,
+      port: resolvedPort,
+      target: cliSubcommandArg,
+    });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// Handle 'detach' subcommand: detach from a session
+if (cliSubcommand === 'detach') {
+  // Without args: not meaningful from CLI (Ctrl+B d handles interactive detach)
+  // With name: informational only; there's no remote detach protocol yet
+  if (!cliSubcommandArg) {
+    console.log('To detach from a session interactively, press Ctrl+B d.');
+    console.log('To detach a specific session by name: remi detach <session-name>');
+    console.log('(Remote detach is not yet implemented; use Ctrl+B d in the attached terminal.)');
+  } else {
+    console.log('Remote detach of named sessions is not yet implemented.');
+    console.log('To detach, press Ctrl+B d in the attached terminal.');
+  }
+  process.exit(0);
+}
+
 // Handle 'attach' subcommand: attach terminal to an orphaned session
 if (cliSubcommand === 'attach') {
   const store = new SessionStore();
@@ -692,7 +757,11 @@ if (cliSubcommand === 'attach') {
   let resolvedHost = cliHost ?? 'localhost';
 
   // Check for remote attach: host:port/session-id
-  if (targetSessionId?.includes('/')) {
+  // Remote targets have a colon before the first slash (port separator).
+  // Session names (hostname/dir/branch) do not have a colon before the first slash.
+  const firstSlash = targetSessionId?.indexOf('/') ?? -1;
+  const hasRemoteFormat = firstSlash > 0 && targetSessionId?.slice(0, firstSlash).includes(':');
+  if (targetSessionId && hasRemoteFormat) {
     try {
       const { parseRemoteTarget } = await import('./cli/ls-client.ts');
       const remote = parseRemoteTarget(targetSessionId, resolvedPort);
@@ -718,32 +787,63 @@ if (cliSubcommand === 'attach') {
     targetSessionId = latest.remiSessionId;
     resolvedPort = cliPort ?? latest.port;
   } else {
-    // Prefix-match session ID, look up port
-    const all = store.list();
-    const matches = all.filter(
-      (s) =>
-        s.remiSessionId === targetSessionId ||
-        s.remiSessionId.startsWith(targetSessionId as string),
-    );
-    if (matches.length === 1) {
-      // biome-ignore lint/style/noNonNullAssertion: length checked above
-      const match = matches[0]!;
-      resolvedPort = cliPort ?? match.port;
-      targetSessionId = match.remiSessionId;
-    } else if (matches.length > 1) {
-      console.error(
-        `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
+    // Try name-based resolution first by querying the daemon
+    let resolvedByName = false;
+    try {
+      const { fetchSessions } = await import('./cli/ls-client.ts');
+      const sessions = await fetchSessions(resolvedHost, resolvedPort, 3000);
+      const nameMatches = sessions.filter(
+        (s) => s.name === targetSessionId || s.name?.startsWith(targetSessionId as string),
       );
-      for (const m of matches) {
-        console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
+      if (nameMatches.length === 1) {
+        // biome-ignore lint/style/noNonNullAssertion: length checked above
+        targetSessionId = nameMatches[0]!.sessionId;
+        resolvedByName = true;
+      } else if (nameMatches.length > 1) {
+        console.error(
+          `Ambiguous session name "${targetSessionId}" matches ${nameMatches.length} sessions:`,
+        );
+        for (const m of nameMatches) {
+          console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
+        }
+        console.error('Provide a longer name to disambiguate.');
+        process.exit(1);
       }
-      console.error('Provide a longer prefix to disambiguate.');
-      process.exit(1);
-    } else {
-      console.error(
-        `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('connect') && !msg.includes('timeout') && !msg.includes('ECONNREFUSED')) {
+        log(`[Attach] Failed to query daemon for name resolution: ${msg}`);
+      }
+    }
+
+    if (!resolvedByName) {
+      // Prefix-match session ID, look up port
+      const all = store.list();
+      const matches = all.filter(
+        (s) =>
+          s.remiSessionId === targetSessionId ||
+          s.remiSessionId.startsWith(targetSessionId as string),
       );
-      process.exit(1);
+      if (matches.length === 1) {
+        // biome-ignore lint/style/noNonNullAssertion: length checked above
+        const match = matches[0]!;
+        resolvedPort = cliPort ?? match.port;
+        targetSessionId = match.remiSessionId;
+      } else if (matches.length > 1) {
+        console.error(
+          `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
+        );
+        for (const m of matches) {
+          console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
+        }
+        console.error('Provide a longer prefix to disambiguate.');
+        process.exit(1);
+      } else {
+        console.error(
+          `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
+        );
+        process.exit(1);
+      }
     }
   }
 
@@ -1517,6 +1617,25 @@ const sharedEvents = {
     }
   },
 
+  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => {
+    log(`Kill session request from ${connectionId} for session ${sessionId}`);
+
+    const session = sessionRegistry.getSession(sessionId);
+    if (!session) {
+      sendToConnection(
+        connectionId,
+        createKillSessionResponse(false, requestId, `Session ${sessionId} not found`),
+      );
+      return;
+    }
+
+    const sessionName = session.name;
+    log(`Killing session: ${sessionName} (${sessionId})`);
+    sessionRegistry.closeSession(sessionId, 'forced');
+    sendToConnection(connectionId, createKillSessionResponse(true, requestId));
+    log(`Session killed: ${sessionName}`);
+  },
+
   onTerminalResize: (connectionId: UUID, cols: number, rows: number) => {
     const session = sessionRegistry.getSessionForConnection(connectionId);
     if (session) {
@@ -1884,6 +2003,18 @@ if (cliDaemonMode) {
     claudeArgs,
     true, // pass-through mode
   );
+
+  // Print session name to terminal (useful for 'remi new' and general awareness)
+  if (ptyStdoutFd !== null) {
+    const managedSession = sessionRegistry.getSession(sessionId);
+    if (managedSession) {
+      try {
+        fs.writeSync(ptyStdoutFd, `Session: ${managedSession.name}\r\n`);
+      } catch {
+        // Terminal write may fail if output is piped
+      }
+    }
+  }
 
   // Set up raw stdin pass-through to PTY with Ctrl+B d detach detection.
   // Uses the extracted DetachScanner module for byte-level scanning.

@@ -19,6 +19,7 @@ import type {
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
+import { generateSessionName, makeUniqueName } from './session-name.ts';
 
 /** Configuration for SessionRegistry */
 export interface SessionRegistryConfig {
@@ -62,6 +63,8 @@ export interface SessionRegistryEvents {
 export interface ManagedSession {
   /** Unique session ID */
   readonly sessionId: UUID;
+  /** Human-readable session name (e.g. "hostname/project/branch") */
+  readonly name: string;
   /** When session was created */
   readonly createdAt: Timestamp;
   /** Working directory for Claude Code */
@@ -71,6 +74,9 @@ export interface ManagedSession {
   pty: PTYSession;
   /** Message API for structured messages */
   messageApi: MessageAPI;
+
+  /** When session last had activity (message, status change) */
+  lastActivityAt: Timestamp;
 
   /** Currently attached connection ID (null if orphaned) */
   activeConnectionId: UUID | null;
@@ -121,12 +127,19 @@ export class SessionRegistry {
     pty: PTYSession,
     messageApi: MessageAPI,
   ): void {
+    const baseName = generateSessionName(workingDirectory);
+    const existingNames = this.getExistingNames();
+    const name = makeUniqueName(baseName, existingNames);
+
+    const createdAt = now();
     const session: ManagedSession = {
       sessionId,
-      createdAt: now(),
+      name,
+      createdAt,
       workingDirectory,
       pty,
       messageApi,
+      lastActivityAt: createdAt,
       activeConnectionId: null,
       lastDisconnectedAt: null,
       orphanTimeoutId: null,
@@ -293,6 +306,7 @@ export class SessionRegistry {
     }
 
     session.messageHistory.push(message);
+    session.lastActivityAt = now();
 
     // If connected, mark as delivered
     if (session.activeConnectionId !== null) {
@@ -310,6 +324,7 @@ export class SessionRegistry {
     const session = this.sessions.get(sessionId);
     if (session !== undefined) {
       session.currentStatus = status;
+      session.lastActivityAt = now();
     }
   }
 
@@ -320,6 +335,7 @@ export class SessionRegistry {
     const session = this.sessions.get(sessionId);
     if (session !== undefined) {
       session.currentQuestion = question;
+      session.lastActivityAt = now();
     }
   }
 
@@ -364,6 +380,41 @@ export class SessionRegistry {
   }
 
   /**
+   * Resolve a session by its human-readable name.
+   * Supports exact match and prefix match.
+   */
+  resolveByName(name: string): ManagedSession | undefined {
+    // Exact match first
+    for (const session of this.sessions.values()) {
+      if (session.name === name) {
+        return session;
+      }
+    }
+    // Prefix match (e.g. "mac/remi" matches "mac/remi/main")
+    const matches: ManagedSession[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.name.startsWith(name)) {
+        matches.push(session);
+      }
+    }
+    if (matches.length === 1) {
+      return matches[0];
+    }
+    return undefined;
+  }
+
+  /**
+   * Get all existing session names for uniqueness checks.
+   */
+  private getExistingNames(): Set<string> {
+    const names = new Set<string>();
+    for (const session of this.sessions.values()) {
+      names.add(session.name);
+    }
+    return names;
+  }
+
+  /**
    * Get all active session IDs.
    */
   getActiveSessionIds(): UUID[] {
@@ -383,9 +434,11 @@ export class SessionRegistry {
 
       result.push({
         sessionId: session.sessionId,
+        name: session.name,
         projectPath: session.workingDirectory,
         status,
-        lastActivity: session.lastDisconnectedAt ?? session.createdAt,
+        createdAt: session.createdAt,
+        lastActivity: session.lastActivityAt,
         messageCount: session.messageHistory.length,
         lastMessage,
         source: 'daemon',

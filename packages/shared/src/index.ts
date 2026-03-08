@@ -64,6 +64,8 @@ export type {
   AuthChallengeMessage,
   AuthResponseMessage,
   AuthResultMessage,
+  KillSessionRequestMessage,
+  KillSessionResponseMessage,
 } from './protocol.ts';
 
 export {
@@ -97,6 +99,8 @@ export {
   createAuthChallenge,
   createAuthResponse,
   createAuthResult,
+  createKillSessionRequest,
+  createKillSessionResponse,
   MessageIdTracker,
 } from './protocol.ts';
 

@@ -250,11 +250,17 @@ export interface DiscoverableSession {
   /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
   readonly sessionId: string;
 
+  /** Human-readable session name (e.g. "hostname/project/branch") */
+  readonly name?: string | undefined;
+
   /** Project path this session is working in. For transcript sessions, this is decoded from Claude Code's lossy path encoding and may be inaccurate for paths containing dashes. */
   readonly projectPath: string;
 
   /** Current session status */
   readonly status: DiscoverableSessionStatus;
+
+  /** When the session was created. For daemon sessions: registration time. For transcript sessions: file creation time. */
+  readonly createdAt?: Timestamp | undefined;
 
   /** When the session was last active. For daemon sessions: last disconnection time (or creation time if still connected). For transcript sessions: file modification time. */
   readonly lastActivity: Timestamp;

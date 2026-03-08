@@ -71,6 +71,9 @@ export interface ServerEvents {
   /** Terminal resize from attached CLI client */
   onTerminalResize: (connectionId: UUID, cols: number, rows: number) => void;
 
+  /** Kill session request from client */
+  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -308,6 +311,10 @@ export class WebSocketServer {
 
       onTerminalResize: (cols, rows) => {
         this.events.onTerminalResize?.(ws.data.connectionId, cols, rows);
+      },
+
+      onKillSessionRequest: (sessionId, requestId) => {
+        this.events.onKillSessionRequest?.(ws.data.connectionId, sessionId, requestId);
       },
 
       onError: (error) => {

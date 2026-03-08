@@ -10,6 +10,8 @@ import {
 } from '@remi/shared';
 import {
   fetchSessions,
+  formatAge,
+  formatDuration,
   getLocalAddresses,
   parseRemoteTarget,
   runLsClient,
@@ -221,5 +223,68 @@ describe('getLocalAddresses', () => {
     const addrs = getLocalAddresses('test');
     expect(addrs.has('8.8.8.8')).toBe(false);
     expect(addrs.has('not-a-host')).toBe(false);
+  });
+});
+
+describe('formatAge', () => {
+  test('formats seconds ago', () => {
+    const ts = new Date(Date.now() - 30 * 1000).toISOString();
+    expect(formatAge(ts)).toBe('30s ago');
+  });
+
+  test('formats minutes ago', () => {
+    const ts = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    expect(formatAge(ts)).toBe('5m ago');
+  });
+
+  test('formats hours ago', () => {
+    const ts = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    expect(formatAge(ts)).toBe('2h ago');
+  });
+
+  test('formats days ago', () => {
+    const ts = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    expect(formatAge(ts)).toBe('3d ago');
+  });
+
+  test('formats 0 seconds for just-now timestamp', () => {
+    const ts = new Date().toISOString();
+    expect(formatAge(ts)).toBe('0s ago');
+  });
+});
+
+describe('formatDuration', () => {
+  test('returns "-" for undefined', () => {
+    expect(formatDuration(undefined)).toBe('-');
+  });
+
+  test('formats seconds', () => {
+    const ts = new Date(Date.now() - 45 * 1000).toISOString();
+    expect(formatDuration(ts)).toBe('45s');
+  });
+
+  test('formats minutes', () => {
+    const ts = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    expect(formatDuration(ts)).toBe('45m');
+  });
+
+  test('formats hours and minutes', () => {
+    const ts = new Date(Date.now() - (2 * 60 + 15) * 60 * 1000).toISOString();
+    expect(formatDuration(ts)).toBe('2h 15m');
+  });
+
+  test('formats exact hours without minutes', () => {
+    const ts = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    expect(formatDuration(ts)).toBe('3h');
+  });
+
+  test('formats days and hours', () => {
+    const ts = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
+    expect(formatDuration(ts)).toBe('1d 2h');
+  });
+
+  test('formats exact days without hours', () => {
+    const ts = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    expect(formatDuration(ts)).toBe('2d');
   });
 });

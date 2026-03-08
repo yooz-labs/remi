@@ -136,6 +136,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onTerminalResize?.(connectionId, cols, rows);
       },
 
+      onKillSessionRequest: (connectionId, sessionId, requestId) => {
+        this.events.onKillSessionRequest?.(connectionId, sessionId, requestId);
+      },
+
       onError: (error) => {
         // For server-level errors, use a dummy connection ID
         this.events.onError?.('server' as UUID, error);

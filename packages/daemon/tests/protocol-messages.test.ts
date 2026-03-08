@@ -9,6 +9,8 @@ import {
   createCreateSessionResponse,
   createHello,
   createHelloAck,
+  createKillSessionRequest,
+  createKillSessionResponse,
   createTerminalResize,
   deserialize,
   serialize,
@@ -213,6 +215,65 @@ describe('Protocol factory functions', () => {
       );
       expect(result).not.toBeNull();
       expect(result?.type).toBe('create_session_response');
+    });
+
+    test('accepts kill_session_request type', () => {
+      const result = deserialize(
+        '{"type":"kill_session_request","id":"1","timestamp":"2024-01-01T00:00:00Z","sessionId":"s1"}',
+      );
+      expect(result).not.toBeNull();
+      expect(result?.type).toBe('kill_session_request');
+    });
+
+    test('accepts kill_session_response type', () => {
+      const result = deserialize(
+        '{"type":"kill_session_response","id":"1","timestamp":"2024-01-01T00:00:00Z","success":true,"requestId":"r1"}',
+      );
+      expect(result).not.toBeNull();
+      expect(result?.type).toBe('kill_session_response');
+    });
+  });
+
+  describe('createKillSessionRequest', () => {
+    test('creates request with sessionId', () => {
+      const msg = createKillSessionRequest('session-1' as UUID);
+      expect(msg.type).toBe('kill_session_request');
+      expect(msg.sessionId).toBe('session-1');
+      expect(msg.id).toBeTruthy();
+      expect(msg.timestamp).toBeTruthy();
+    });
+
+    test('round-trips through serialize/deserialize', () => {
+      const original = createKillSessionRequest('session-1' as UUID);
+      const deserialized = deserialize(serialize(original));
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('kill_session_request');
+      expect((deserialized as typeof original).sessionId).toBe('session-1');
+    });
+  });
+
+  describe('createKillSessionResponse', () => {
+    test('creates success response', () => {
+      const msg = createKillSessionResponse(true, 'req-1' as UUID);
+      expect(msg.type).toBe('kill_session_response');
+      expect(msg.success).toBe(true);
+      expect(msg.requestId).toBe('req-1');
+      expect(msg.error).toBeUndefined();
+    });
+
+    test('creates failure response with error', () => {
+      const msg = createKillSessionResponse(false, 'req-1' as UUID, 'Session not found');
+      expect(msg.success).toBe(false);
+      expect(msg.error).toBe('Session not found');
+      expect(msg.requestId).toBe('req-1');
+    });
+
+    test('round-trips through serialize/deserialize', () => {
+      const original = createKillSessionResponse(true, 'req-1' as UUID);
+      const deserialized = deserialize(serialize(original));
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('kill_session_response');
+      expect((deserialized as typeof original).success).toBe(true);
     });
   });
 });
