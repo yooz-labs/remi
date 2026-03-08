@@ -5,6 +5,7 @@
  */
 
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
+import type { ViewMode } from './ChatView';
 import { clsx } from 'clsx';
 import {
   AlertCircle,
@@ -14,9 +15,11 @@ import {
   Copy,
   FileText,
   Loader2,
+  MessageSquare,
   MoreVertical,
   Terminal,
   Trash2,
+  Type,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -24,6 +27,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface ChatHeaderProps {
   readonly session: UISession;
+  readonly viewMode?: ViewMode;
+  readonly onViewModeChange?: (mode: ViewMode) => void;
   readonly onBack?: () => void;
   readonly onCopyConversation?: () => void;
   readonly onClearMessages?: () => void;
@@ -94,6 +99,8 @@ function AgentStatusIndicator({ status }: { readonly status: AgentStatus }) {
 
 export function ChatHeader({
   session,
+  viewMode = 'compact',
+  onViewModeChange,
   onBack,
   onCopyConversation,
   onClearMessages,
@@ -166,6 +173,30 @@ export function ChatHeader({
           )}
         </div>
       </div>
+
+      {/* View mode toggle */}
+      {onViewModeChange && (
+        <button
+          onClick={() => onViewModeChange(viewMode === 'chat' ? 'compact' : 'chat')}
+          className={clsx(
+            'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
+            viewMode === 'chat'
+              ? 'bg-[--color-primary]/15 text-[--color-primary]'
+              : 'text-[--color-text-secondary] hover:bg-[--color-surface-light] hover:text-[--color-text]',
+          )}
+          aria-label={`Switch to ${viewMode === 'chat' ? 'compact' : 'chat'} view`}
+          title={viewMode === 'chat' ? 'Switch to compact view' : 'Switch to chat view'}
+        >
+          {viewMode === 'chat' ? (
+            <MessageSquare className="size-3.5" />
+          ) : (
+            <Type className="size-3.5" />
+          )}
+          <span className="hidden sm:inline">
+            {viewMode === 'chat' ? 'Chat' : 'Compact'}
+          </span>
+        </button>
+      )}
 
       {/* More button with dropdown */}
       {hasMenuActions && (

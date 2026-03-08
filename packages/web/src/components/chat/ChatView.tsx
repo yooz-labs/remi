@@ -2,13 +2,18 @@
  * ChatView component.
  *
  * Main chat interface combining header, messages, and input.
+ * Supports two view modes: compact (plain text) and chat (parsed markdown/code).
  */
 
 import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
+import { useState } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
+
+/** View mode for the chat interface */
+export type ViewMode = 'compact' | 'chat';
 
 interface ChatViewProps {
   readonly session: UISession;
@@ -41,12 +46,15 @@ export function ChatView({
   onBulletExpand,
   className,
 }: ChatViewProps) {
+  const [viewMode, setViewMode] = useState<ViewMode>('chat');
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
 
   return (
     <div className={clsx('flex h-full flex-col bg-[--color-surface]', className)}>
       <ChatHeader
         session={session}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
         onBack={onBack}
         onCopyConversation={onCopyConversation}
         onClearMessages={onClearMessages}
@@ -59,6 +67,7 @@ export function ChatView({
         error={error}
         onRetry={onRetry}
         onBulletExpand={onBulletExpand}
+        viewMode={viewMode}
       />
 
       <InputArea

@@ -5,6 +5,7 @@
  */
 
 import type { UIBullet, UIMessage } from '@/types';
+import type { ViewMode } from './ChatView';
 import type { MessageState } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
 import {
@@ -17,11 +18,13 @@ import {
   Pencil,
   Terminal,
 } from 'lucide-react';
+import { ChatMessage } from './ChatMessage';
 
 interface MessageBubbleProps {
   readonly message: UIMessage;
   readonly showTimestamp?: boolean;
   readonly onBulletExpand?: (bulletId: number) => void;
+  readonly viewMode?: ViewMode;
 }
 
 /** Status icon based on message delivery state */
@@ -103,12 +106,40 @@ export function MessageBubble({
   message,
   showTimestamp = true,
   onBulletExpand,
+  viewMode = 'compact',
 }: MessageBubbleProps) {
   const isUser = message.sender === 'user';
   const isSystem = message.sender === 'system';
+  const enhanced = viewMode === 'chat';
 
   // Use bullets if available, otherwise fall back to raw content
   const hasBullets = message.bullets && message.bullets.length > 0;
+
+  // In enhanced chat mode, tool messages render as collapsible cards (not bubbles)
+  if (enhanced && message.tool && !isUser) {
+    return (
+      <div className="flex w-full animate-[slide-up] justify-start">
+        <div className="w-full max-w-[95%]">
+          <ChatMessage content={message.content} toolName={message.tool} />
+          {/* Footer */}
+          <div className="mt-0.5 flex items-center gap-1.5 px-1">
+            {showTimestamp && (
+              <span className="text-[10px] text-[--color-text-muted]">
+                {formatTime(message.timestamp)}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Sender label for enhanced chat mode
+  const senderLabel = enhanced && !isUser && !isSystem
+    ? 'Claude'
+    : enhanced && isUser
+      ? 'You'
+      : null;
 
   return (
     <div
@@ -116,9 +147,11 @@ export function MessageBubble({
     >
       <div
         className={clsx(
-          'max-w-[85%] rounded-2xl px-4 py-2.5',
+          'rounded-2xl px-4 py-2.5',
           'transition-all duration-200',
           'shadow-sm border',
+          // Width: wider in enhanced mode for better code block display
+          enhanced ? 'max-w-[95%]' : 'max-w-[85%]',
           // Bubble colors
           isUser && 'bg-[--color-bubble-user] text-white border-[--color-bubble-user]',
           !isUser && !isSystem && 'bg-[--color-bubble-assistant] border-[--color-border]',
@@ -133,21 +166,39 @@ export function MessageBubble({
           message.isEditing && 'border-[--color-primary] border-dashed',
         )}
       >
-        {/* Tool indicator */}
-        {message.tool && (
+        {/* Sender label in enhanced mode */}
+        {senderLabel && (
+          <div className="mb-1 text-[11px] font-semibold text-[--color-text-muted]">
+            {senderLabel}
+          </div>
+        )}
+
+        {/* Tool indicator (compact mode only; enhanced mode uses ToolUseCard) */}
+        {!enhanced && message.tool && (
           <div className="mb-1 flex items-center gap-1.5 text-xs text-[--color-text-secondary]">
             <Terminal className="size-3" />
             <span>{message.tool}</span>
           </div>
         )}
 
-        {/* Message content - render bullets if available */}
+        {/* Message content */}
         <div className={clsx(isUser ? 'text-white' : 'text-[--color-text]')}>
           {message.isStreaming ? (
             <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
               {message.streamedContent}
               <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
             </div>
+          ) : enhanced ? (
+            /* Enhanced chat mode: parsed content with code blocks and markdown */
+            hasBullets ? (
+              <div className="space-y-2">
+                {message.bullets!.map((bullet) => (
+                  <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
+                ))}
+              </div>
+            ) : (
+              <ChatMessage content={message.content} isUser={isUser} />
+            )
           ) : hasBullets ? (
             <div className="space-y-2">
               {message.bullets!.map((bullet) => (

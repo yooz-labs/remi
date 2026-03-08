@@ -5,6 +5,7 @@
  */
 
 import type { AgentStatus, UIMessage } from '@/types';
+import type { ViewMode } from './ChatView';
 import { clsx } from 'clsx';
 import { MessageSquare } from 'lucide-react';
 import { useCallback, useEffect, useRef } from 'react';
@@ -16,6 +17,7 @@ interface MessageListProps {
   readonly error?: string | null;
   readonly onRetry?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
+  readonly viewMode?: ViewMode;
   readonly className?: string;
 }
 
@@ -63,6 +65,7 @@ export function MessageList({
   error,
   onRetry,
   onBulletExpand,
+  viewMode = 'compact',
   className,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -113,7 +116,7 @@ export function MessageList({
           return (
             <div key={message.id}>
               {showDateSeparator && <DateSeparator date={formatDate(message.timestamp)} />}
-              <MessageBubble message={message} onBulletExpand={onBulletExpand} />
+              <MessageBubble message={message} onBulletExpand={onBulletExpand} viewMode={viewMode} />
             </div>
           );
         })}
