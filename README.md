@@ -1,129 +1,116 @@
 # Remi
 
-> Cross-platform Claude Code session monitor with WhatsApp-style messaging
+> Your agents need you. Yes or No.
 
-Remi lets you monitor and respond to Claude Code CLI sessions from your phone, tablet, or browser. Get notified when Claude asks a question and respond with a tap; whether you're at a coffee shop, on a train, or away from your desk.
+Remi is a cross-platform monitor for Claude Code sessions. Run your AI agents on any machine, walk away, and stay connected from your phone, tablet, or browser. Get notified when Claude needs input. Respond with a tap. Never lose a session.
 
-## Features
+## The Problem
 
-- **Zero friction** - Direct connection or signaling-based; your choice
-- **Encrypted P2P** - WebRTC with DTLS encryption (automatic)
-- **Reliable delivery** - Message states like WhatsApp (✓ sent, ✓✓ delivered, read)
-- **Live updates** - Agent messages update in real-time as work progresses
-- **Cross-platform** - iOS, Android, Web, macOS, Windows, Linux
-- **Notifications** - Get alerted when Claude needs your input
+You start a Claude Code session on your workstation. It's working on a complex task. You need to leave. Your options today: keep the terminal open and hope nothing goes wrong, or kill it and start over later.
 
-## Connection Methods
+## What Remi Does
 
-Remi tries the most direct path first:
+**1. Session Persistence** - Like tmux for AI agents. Close your terminal, your session survives. Detach with `Ctrl+B d`, reattach from anywhere with `remi attach`.
 
-### 1. Direct Connection (Best)
-If you have SSH, Tailscale, VPN, or local network access:
+**2. Multi-Machine Discovery** - Run agents across multiple machines. Remi discovers all your sessions on the local network automatically. One command to see everything: `remi ls --network`.
 
-```bash
-# SSH tunnel (creates local path)
-ssh -L 8765:localhost:8765 user@server
-remi connect localhost
-
-# Tailscale
-remi connect 100.x.x.x
-
-# Local network
-remi connect 192.168.1.100
-```
-
-### 2. Signaling + WebRTC (Zero Config)
-No direct path? Use a connection code:
-
-```
-Daemon                              Phone
-   │                                  │
-   ├── Register ──► Cloudflare ◄── Connect with code
-   │                    │                │
-   │◄─────── Exchange SDP/ICE ──────────►│
-   │                                      │
-   │◄════ P2P (or TURN relay) ══════════►│
-            encrypted data
-```
-
-```bash
-# On server
-$ remi daemon
-Connection code: AXBY-1234
-[QR CODE]
-
-# On phone: enter code or scan QR
-```
-
-## Message Delivery
-
-Like WhatsApp, every message has a delivery state:
-
-| State | Icon | Meaning |
-|-------|------|---------|
-| Sending | ○ | In queue |
-| Sent | ✓ | Reached daemon |
-| Delivered | ✓✓ | Reached your phone |
-| Read | ✓✓ | You saw it |
-
-Agent messages can be edited as work progresses:
-```
-"Thinking..."  →  "Reading files..."  →  "Done! Created 3 files"
-```
+**3. Chat Interface** - Monitor your agents from a clean chat view on your phone. See the conversation without the code noise. Answer questions, approve actions, keep things moving.
 
 ## Quick Start
 
-### On Your Server
-
 ```bash
-# Install Remi
+# Install
 bun install -g remi
 
-# Start daemon (shows connection options)
-remi daemon
+# Start Claude Code with Remi (session persists if terminal closes)
+remi -- claude
+
+# Detach: Ctrl+B d
+# List sessions
+remi ls
+
+# Reattach
+remi attach macbook/remi/main
+
+# See sessions on all machines
+remi ls --network
+
+# Attach to a remote session
+remi attach --host 192.168.1.5 macbook/remi/main
 ```
 
-### On Your Phone
+### From Your Phone
 
-1. Install Remi app (iOS/Android) or open web app
-2. Enter connection code, scan QR, or enter direct address
-3. Start monitoring
+1. Open the web app or install the mobile app (iOS/Android)
+2. Connect via local network, connection code, or direct address
+3. Monitor and respond to all your agent sessions
+
+## Features
+
+- **Session persistence** - Survives terminal close (SIGHUP), detach/reattach like tmux
+- **Human-readable session names** - `hostname/project/branch` instead of UUIDs
+- **LAN discovery** - mDNS/Bonjour finds all Remi daemons on your network
+- **Multiple connection methods** - Direct WebSocket, relay via Cloudflare, SSH tunnel, Tailscale
+- **Chat view** - Clean conversation interface without terminal noise
+- **Live updates** - Agent messages stream in real-time as work progresses
+- **Cross-platform** - iOS, Android, Web, macOS, Windows, Linux
+- **Notifications** - Push alerts when Claude needs your input
+- **Encrypted** - TLS/DTLS transport encryption on all connections
+- **No cloud dependency** - All data stays on your machines; relay only forwards encrypted blobs
+
+## Connection Methods
+
+```
+Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN)
+                ──► SSH Tunnel (ssh -L 28765:localhost:28765 server)
+                ──► Relay (connection code, works from anywhere)
+```
 
 ## Architecture
 
 ```
 ┌─────────────────────┐                      ┌─────────────────────┐
-│   Your Phone        │                      │   Your Server       │
+│   Your Phone        │                      │   Your Dev Machine  │
 │   (Remi App)        │◄════════════════════►│   (Remi Daemon)     │
-└─────────────────────┘  Direct/WebRTC/TURN  └──────────┬──────────┘
-                         (DTLS encrypted)               │ PTY
+│                     │   WebSocket / Relay   │   mDNS: _remi._tcp │
+│   Chat View         │   (TLS encrypted)    ├─────────────────────┤
+│   Session List      │                      │   PTY Manager       │
+│   Notifications     │                      │   Session Registry  │
+└─────────────────────┘                      │   Transcript Parser │
+                                             └──────────┬──────────┘
+                                                        │ PTY
                                              ┌──────────▼──────────┐
                                              │   Claude Code CLI   │
                                              └─────────────────────┘
 ```
 
-## Infrastructure
-
-| Component | Provider | Cost |
-|-----------|----------|------|
-| Signaling | Cloudflare Workers | Free |
-| STUN | Google/Twilio | Free |
-| TURN | Self-hosted coturn | ~$5/mo |
-
 ## Tech Stack
 
-- **Backend:** Bun with native PTY support
-- **Frontend:** React + Capacitor
-- **Transport:** WebRTC DataChannel or WebSocket (DTLS/TLS)
-- **Signaling:** Cloudflare Workers
-- **Protocol:** Custom messaging with ACKs and editing
+- **Backend:** Bun + TypeScript, native PTY support
+- **Frontend:** React + Vite + Capacitor (iOS/Android/Web)
+- **Transport:** WebSocket (direct) or Cloudflare Workers relay
+- **Discovery:** mDNS/Bonjour (`_remi._tcp`)
+- **Protocol:** Structured messages with delivery states and deduplication
 
-## Status
+## Development
 
-Phase 0: Research & Foundation (complete)
+```bash
+bun install           # Install deps + set up pre-commit hooks
+bun run dev           # Web dev server
+bun run daemon        # Start Remi daemon
+bun test              # Run tests (854 tests)
+bun run lint          # Biome check
+bun run typecheck     # TypeScript check
+```
 
-See `.context/plan.md` for development roadmap.
+## Roadmap
+
+See `.context/plan.md` for the detailed development roadmap.
 
 ## License
 
 MIT
+
+---
+
+*Part of the [Yooz](https://github.com/yooz-labs) ecosystem. Local-first, privacy-first, no compromises.*

@@ -1,9 +1,98 @@
 # Remi Development Plan
 
-## Completed Work
+## Product Vision
+
+Remi is a session manager and remote monitor for Claude Code. Three core workflows:
+
+1. **Session Persistence** - Like tmux for AI agents. Start a session, walk away, reattach from anywhere.
+2. **Multi-Machine Discovery** - See all your agent sessions across all machines on the network.
+3. **Chat Interface** - Monitor agents from a clean chat view on your phone; no terminal noise, just the conversation.
+
+## Roadmap
+
+### Phase 1: Infrastructure (SHIPPED)
+
+Remote connectivity, relay, authentication, mDNS discovery, session persistence, CLI tooling.
+
+| Feature | Status | PR/Issue |
+|---------|--------|----------|
+| PTY manager + WebSocket server | Done | - |
+| Transcript file watching + parsing | Done | - |
+| `remi ls` / `remi attach` CLI | Done | PR #18 |
+| Relay via Cloudflare Workers | Done | PR #15, #23 |
+| Connection codes + QR | Done | PR #23 |
+| Authentication (TOFU + passphrase) | Done | PR #31 |
+| mDNS/Bonjour LAN discovery | Done | PR #35 |
+| `--host` flag for remote ls/attach | Done | PR #44, #37 |
+| SIGHUP handler (session survives terminal close) | Done | PR #44, #38 |
+| Ctrl+B d detach in wrapper mode | Done | PR #44, #39 |
+| Web client reconnect resilience | Done | PR #44, #40 |
+| Question routing by sessionId | Done | PR #44, #41 |
+| Message deduplication | Done | PR #44, #42 |
+| `remi ls --network` (mDNS scan) | Done | PR #44, #43 |
+| Parallel CI (spelling, lint, typecheck, test) | Done | PR #44 |
+| Pre-commit hook (lefthook + biome) | Done | PR #44 |
+
+### Phase 2: Session UX (NEXT)
+
+Make sessions feel like tmux, not like debugging infrastructure.
+
+| Feature | Status | Issue |
+|---------|--------|-------|
+| Human-readable session names (`hostname/dir/branch`) | Todo | #45 |
+| Explicit `remi new` / `remi detach` / `remi kill` commands | Todo | #46 |
+| Session list shows name, status, duration, last activity | Todo | #47 |
+| Orphan timeout configurable (`--timeout 30m`) | Todo | - |
+
+**Session Naming Convention:**
+Sessions should be named `hostname/directory/branch` instead of UUID hashes. For example:
+- `macbook/remi/main` - Remi project on macbook, main branch
+- `workstation/yooz-engine/feature-stt` - Engine project on workstation, feature branch
+- `macbook/remi/main:2` - Second session in the same context
+
+The name is derived automatically from:
+- `os.hostname()` - machine name
+- Last component of the working directory
+- Current git branch or worktree name
+- Numeric suffix for duplicates
+
+Users see these names in `remi ls`, `remi attach`, and the web client session list.
+
+### Phase 3: Chat Mode (NEXT)
+
+Transform the web client from a terminal mirror to a clean chat interface.
+
+| Feature | Status | Issue |
+|---------|--------|-------|
+| Chat mode view (structured messages, no terminal rendering) | Todo | #48 |
+| Separate code blocks from conversation text | Todo | #48 |
+| Collapsible tool-use sections | Todo | #48 |
+| Question cards with tap-to-answer | Todo | #49 |
+| Session switcher with unread badges | Todo | #50 |
+| Push notifications (Capacitor) | Todo | #51 |
+
+**Chat mode design:**
+The daemon already sends structured `transcript_content` messages with role, content, and type information parsed from Claude's JSONL transcript. The web client currently renders everything through xterm.js (terminal emulator). Chat mode renders the same data as a messaging interface:
+
+- **Assistant messages** - Clean text with syntax-highlighted code blocks
+- **User messages** - What the user typed/approved
+- **Tool use** - Collapsible sections showing what Claude did (file reads, edits, commands)
+- **Questions** - Cards with the question text and response buttons (Yes/No/custom)
+- **Status** - Progress indicators (thinking, reading, writing)
+
+### Phase 4: Polish and Ship
+
+| Feature | Status | Issue |
+|---------|--------|-------|
+| iOS app (Capacitor build + App Store) | Todo | - |
+| Android app (Capacitor build + Play Store) | Todo | - |
+| Homebrew formula | Todo | - |
+| Documentation site | Todo | - |
+| Voice interaction (STT/TTS via yooz-engine) | Future | - |
+
+## Completed Work (Historical)
 
 ### Remote Connectivity via Relay (PR #15, Issue #10)
-Initial implementation of relay-based remote access:
 - Signaling server on Cloudflare Workers + Durable Objects
 - `ConnectionRoom` handles register/join/relay message forwarding
 - Daemon `SignalingClient` and `RelayAdapter` for signaling connection
@@ -15,61 +104,17 @@ Initial implementation of relay-based remote access:
 - `remi attach <id>` attaches to a session in terminal
 
 ### Daemon Signaling Integration (PR #23, Issue #21)
-Comprehensive fix and hardening of remote access. Four phases:
+Four phases: signaling server hardening, daemon always-on signaling, web client relay fix, testing.
 
-**Phase 1: Signaling Server Hardening**
-- Fixed critical code mismatch bug: room code now derived from URL path, not randomly generated
-- Fixed Durable Object hibernation bug: state persisted to storage, peer roles tracked via WebSocket attachments
-- Added per-IP rate limiting (10 connections/minute, fixed-window)
-- Tightened room limit to 2 peers
-- Cleaned up legacy `DeviceRoom` DO via migration v3
+### Authentication (PR #31)
+- Optional passphrase, Trust on First Use (TOFU), auto-auth on localhost
+- Identity auto-generated if missing; `REMI_PASSPHRASE` for non-interactive
 
-**Phase 2: Daemon Always-On Signaling**
-- Persistent connection codes in `~/.remi/connection-code` (`CodeStore` class)
-- Unambiguous character set: `ABCDEFGHJKMNPQRSTUVWXYZ` + `23456789` (no 0/O/1/I/L)
-- Relay adapter starts automatically (no `--remote` flag needed)
-- `--no-relay` opt-out flag added
-- `remi code` prints current code; `remi code --refresh` generates a new one
-
-**Phase 3: Web Client Relay Fix**
-- All message types now route through relay when in relay mode (was only `hello` before)
-- Connection mode tracking (`direct` vs `relay` state)
-- `relaySend()` wrapper dispatches to signaling client
-- Relay connection status shown in UI
-- Error handling for dynamic import and disconnected relay
-
-**Phase 4: Testing**
-- `code-store.test.ts`: load/save/refresh, permissions, invalid formats, ambiguous chars
-- `signaling-client.test.ts`: connect with provided code, pattern validation
-- `rate-limiter.test.ts`: allow/block thresholds, window reset
-- 671+ tests passing, CI green
-
-## Current Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    REMI CLIENT (Phone/Browser)                   │
-│  React + Capacitor (iOS/Android/Web/Desktop)                     │
-│  Chat View (xterm.js) | Session List | Notifications             │
-└──────────┬───────────────────────────────┬──────────────────────┘
-           │ Direct WebSocket              │ Relay (via signaling)
-           │ (LAN/Tailscale/VPN)           │ (remote, any network)
-           │                               │
-┌──────────▼───────────────────────────────▼──────────────────────┐
-│                 REMI DAEMON (on dev machine)                     │
-│  PTY Manager | Session Registry | Event Parser                   │
-│  WebSocket :28765 | RelayAdapter (always-on)                     │
-│  Persistent code: ~/.remi/connection-code                        │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ PTY
-┌──────────────────────────▼──────────────────────────────────────┐
-│                      CLAUDE CODE CLI                             │
-└─────────────────────────────────────────────────────────────────┘
-
-Relay path:
-  Daemon ←→ wss://remi-signaling.dev-941.workers.dev ←→ Web Client
-  (register+code)        (Durable Object room)        (join+code)
-```
+### Ship-Ready Workflows (PR #44, Issue #36)
+- Session persistence (SIGHUP, Ctrl+B d detach)
+- Multi-machine access (`--host`, `--network`, mDNS)
+- Web client resilience (reconnect, dedup, question routing)
+- CI improvements (parallel jobs, pre-commit hooks)
 
 ## Deployments
 
@@ -82,29 +127,12 @@ Relay path:
 
 | File | Purpose |
 |------|---------|
-| `packages/signaling/src/connection-room.ts` | Durable Object: room state, hibernation-safe, peer management |
-| `packages/signaling/src/index.ts` | Worker entry: routing, rate limiting, CORS |
-| `packages/signaling/src/rate-limiter.ts` | Per-IP fixed-window rate limiter |
-| `packages/daemon/src/remote/code-store.ts` | Persistent connection code storage |
-| `packages/daemon/src/remote/signaling-client.ts` | WebSocket client for signaling server |
-| `packages/daemon/src/remote/relay-adapter.ts` | Bridges signaling to daemon adapter system |
-| `packages/daemon/src/cli.ts` | CLI entry: daemon start, `remi code`, `remi ls`, `remi attach` |
-| `packages/web/src/App.tsx` | Web client: direct + relay connection modes |
+| `packages/daemon/src/cli.ts` | CLI entry: daemon start, wrapper mode, ls, attach |
+| `packages/daemon/src/cli/detach-scanner.ts` | Ctrl+B d byte-level detection |
+| `packages/daemon/src/mdns/` | mDNS publisher + browser for LAN discovery |
+| `packages/daemon/src/session/session-registry.ts` | Session lifecycle management |
+| `packages/daemon/src/transcript/` | JSONL transcript file watching + parsing |
+| `packages/signaling/src/connection-room.ts` | Durable Object: relay room state |
+| `packages/web/src/App.tsx` | Web client: sessions, messages, questions |
+| `packages/web/src/lib/message-dedup.ts` | Cross-type message deduplication |
 | `packages/web/src/lib/signaling-client.ts` | Web signaling client for relay mode |
-
-## Future Work
-
-### WebRTC Upgrade (P2P)
-- Use signaling server for initial handshake only
-- Browser-native WebRTC DataChannel for web client
-- Research `node-datachannel` Bun compatibility for daemon
-- Keep relay as fallback for symmetric NAT
-
-### Authentication
-- Connection codes provide room isolation but no auth
-- Consider TOTP or challenge-response for daemon identity verification
-- Rate limiting provides basic abuse protection for now
-
-### Notifications
-- Push notifications for mobile (Capacitor)
-- Question detection alerts when agent needs input
