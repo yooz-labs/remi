@@ -55,7 +55,7 @@ class TestAdapter implements ConnectionAdapter {
     return true;
   }
 
-  sendQuestion(connectionId: UUID, question: Question): boolean {
+  sendQuestion(connectionId: UUID, question: Question, _sessionId?: UUID): boolean {
     if (!this.connections.has(connectionId)) return false;
     this.sentQuestions.push({ connectionId, question });
     return true;

@@ -218,9 +218,14 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     }),
   );
 
-  for (const r of remoteResults) {
-    if (r.status === 'fulfilled') {
+  for (let i = 0; i < remoteResults.length; i++) {
+    const r = remoteResults[i];
+    if (r?.status === 'fulfilled') {
       results.push(r.value);
+    } else if (r?.status === 'rejected') {
+      const daemon = remoteDaemons[i];
+      const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      console.error(`[ls] Failed to query daemon ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}`);
     }
   }
 

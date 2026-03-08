@@ -1895,8 +1895,8 @@ if (cliDaemonMode) {
     if (ptySession.isRunning) {
       try {
         ptySession.write(text);
-      } catch {
-        // PTY may have exited between the check and write
+      } catch (err) {
+        log(`[PTY] write failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -1924,8 +1924,8 @@ if (cliDaemonMode) {
             try {
               fs.writeSync(ptyStdoutFd, `\r\n[detached (session ${shortId})]\r\n`);
               fs.writeSync(ptyStdoutFd, `Reattach with: remi attach ${shortId}\r\n`);
-            } catch {
-              // Terminal may already be gone
+            } catch (err) {
+              log(`[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
           detachLocalTerminal('keybinding');
@@ -1967,8 +1967,8 @@ if (cliDaemonMode) {
       if (ptySession.isRunning) {
         ptySession.resize({ cols, rows });
       }
-    } catch {
-      // PTY may have exited
+    } catch (err) {
+      log(`[PTY] resize failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
@@ -1982,8 +1982,8 @@ if (cliDaemonMode) {
     if (process.stdin.isTTY) {
       try {
         process.stdin.setRawMode(false);
-      } catch {
-        // May already be restored or terminal gone
+      } catch (err) {
+        log(`[Detach] setRawMode restore failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     process.stdin.pause();

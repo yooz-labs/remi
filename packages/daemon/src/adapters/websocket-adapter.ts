@@ -180,12 +180,12 @@ export class WebSocketAdapter implements ConnectionAdapter {
     return this.server.sendTo(connectionId, protocolMessage);
   }
 
-  sendQuestion(connectionId: UUID, question: Question): boolean {
+  sendQuestion(connectionId: UUID, question: Question, sessionId?: UUID): boolean {
     if (!this.server) {
       return false;
     }
 
-    const protocolMessage = createQuestion(question);
+    const protocolMessage = createQuestion(question, sessionId);
     return this.server.sendTo(connectionId, protocolMessage);
   }
 

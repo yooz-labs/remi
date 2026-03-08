@@ -263,7 +263,7 @@ export class TelegramAdapter implements ConnectionAdapter {
     return true;
   }
 
-  sendQuestion(connectionId: UUID, question: Question): boolean {
+  sendQuestion(connectionId: UUID, question: Question, _sessionId?: UUID): boolean {
     const sessionKey = this.connectionToSession.get(connectionId);
     if (!sessionKey) {
       return false;
