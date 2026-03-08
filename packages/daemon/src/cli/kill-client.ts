@@ -147,7 +147,7 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
       const data = typeof event.data === 'string' ? event.data : String(event.data);
       const msg = deserialize(data);
       if (!msg) {
-        console.error('Warning: received unparseable message from daemon');
+        console.error('Warning: received unparsable message from daemon');
         return;
       }
 
