@@ -225,7 +225,9 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     } else if (r?.status === 'rejected') {
       const daemon = remoteDaemons[i];
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      console.error(`[ls] Failed to query daemon ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}`);
+      console.error(
+        `[ls] Failed to query daemon ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}`,
+      );
     }
   }
 

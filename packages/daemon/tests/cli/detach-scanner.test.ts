@@ -12,8 +12,12 @@ describe('DetachScanner', () => {
     detached = false;
     forwarded = [];
     scanner = new DetachScanner({
-      onDetach: () => { detached = true; },
-      onData: (buf) => { forwarded.push(Buffer.from(buf)); },
+      onDetach: () => {
+        detached = true;
+      },
+      onData: (buf) => {
+        forwarded.push(Buffer.from(buf));
+      },
       timeoutMs: 1000,
     });
   });
@@ -72,8 +76,12 @@ describe('DetachScanner', () => {
 
   test('Ctrl+B timeout forwards the byte after delay', async () => {
     const shortScanner = new DetachScanner({
-      onDetach: () => { detached = true; },
-      onData: (buf) => { forwarded.push(Buffer.from(buf)); },
+      onDetach: () => {
+        detached = true;
+      },
+      onData: (buf) => {
+        forwarded.push(Buffer.from(buf));
+      },
       timeoutMs: 50,
     });
 

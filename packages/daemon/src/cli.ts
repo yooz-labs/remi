@@ -231,10 +231,10 @@ import {
   TelegramAdapter,
   WebSocketAdapter,
 } from './adapters/index.ts';
-import { DetachScanner } from './cli/detach-scanner.ts';
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+import { DetachScanner } from './cli/detach-scanner.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
@@ -1905,7 +1905,9 @@ if (cliDaemonMode) {
           fs.writeSync(ptyStdoutFd, `\r\n[detached (session ${shortId})]\r\n`);
           fs.writeSync(ptyStdoutFd, `Reattach with: remi attach ${shortId}\r\n`);
         } catch (err) {
-          log(`[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`);
+          log(
+            `[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
       detachLocalTerminal('keybinding');
@@ -1948,7 +1950,9 @@ if (cliDaemonMode) {
       try {
         process.stdin.setRawMode(false);
       } catch (err) {
-        log(`[Detach] setRawMode restore failed: ${err instanceof Error ? err.message : String(err)}`);
+        log(
+          `[Detach] setRawMode restore failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     process.stdin.pause();
