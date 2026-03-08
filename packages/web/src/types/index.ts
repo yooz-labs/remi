@@ -90,16 +90,30 @@ export interface UISession {
   readonly source?: 'daemon' | 'transcript';
   /** Whether transcript history is loading */
   readonly isLoadingTranscript?: boolean;
+  /** Whether the session has a pending question requiring user input */
+  readonly questionPending?: boolean;
+}
+
+/** Structured option for a question */
+export interface UIQuestionOption {
+  readonly label: string;
+  readonly value: string;
+  readonly isYes?: boolean;
+  readonly isNo?: boolean;
+  readonly isRecommended?: boolean;
 }
 
 /** Question from the agent requiring user response */
 export interface UIQuestion {
   readonly id: UUID;
   readonly sessionId: UUID;
-  readonly type: 'yes_no' | 'numbered' | 'permission' | 'free_text';
+  readonly type: 'yes_no' | 'multi_option' | 'numbered' | 'permission' | 'free_text';
   readonly prompt: string;
   readonly options?: readonly string[];
+  readonly structuredOptions?: readonly UIQuestionOption[];
   readonly timestamp: Timestamp;
+  /** The answer that was selected (set after answering) */
+  readonly answeredWith?: string;
 }
 
 /** App settings */
