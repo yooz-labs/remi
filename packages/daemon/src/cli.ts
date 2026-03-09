@@ -757,11 +757,16 @@ if (cliSubcommand === 'attach') {
     cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
   let resolvedHost = cliHost ?? 'localhost';
 
-  // Check for remote attach: host:port/session-id
-  // Remote targets have a colon before the first slash (port separator).
-  // Session names (hostname/dir/branch) do not have a colon before the first slash.
+  // Check for remote attach: host:port/session-id (e.g., 192.168.0.83:18765/name)
+  // Remote targets have a numeric port after the colon (host:PORT/...).
+  // Session names use hostname:dir/branch where dir is not numeric.
   const firstSlash = targetSessionId?.indexOf('/') ?? -1;
-  const hasRemoteFormat = firstSlash > 0 && targetSessionId?.slice(0, firstSlash).includes(':');
+  const colonBeforeSlash =
+    firstSlash > 0 ? targetSessionId?.slice(0, firstSlash).lastIndexOf(':') : -1;
+  const hasRemoteFormat =
+    colonBeforeSlash != null &&
+    colonBeforeSlash > 0 &&
+    /^\d+$/.test(targetSessionId?.slice(colonBeforeSlash + 1, firstSlash) ?? '');
   if (targetSessionId && hasRemoteFormat) {
     try {
       const { parseRemoteTarget } = await import('./cli/ls-client.ts');
@@ -818,7 +823,7 @@ if (cliSubcommand === 'attach') {
     }
 
     if (!resolvedByName) {
-      // Prefix-match session ID, look up port
+      // Prefix-match session ID from local store
       const all = store.list();
       const matches = all.filter(
         (s) =>
@@ -839,6 +844,52 @@ if (cliSubcommand === 'attach') {
         }
         console.error('Provide a longer prefix to disambiguate.');
         process.exit(1);
+      } else if (!cliHost) {
+        // Not found locally; extract hostname from session name and discover via mDNS.
+        // Session names are formatted as "hostname:dir/branch", so the part before
+        // the first colon identifies the remote machine.
+        let foundRemote = false;
+        const colonIdx = (targetSessionId as string).indexOf(':');
+        if (colonIdx > 0) {
+          const targetHostname = (targetSessionId as string).slice(0, colonIdx);
+          try {
+            const { discoverDaemons } = await import('./mdns/mdns-browser.ts');
+            const { fetchSessions } = await import('./cli/ls-client.ts');
+            console.error(`Resolving "${targetSessionId}" via network discovery...`);
+            const daemons = await discoverDaemons({ timeoutMs: 3000 });
+            const daemon = daemons.find((d: { hostname: string }) => d.hostname === targetHostname);
+            if (daemon) {
+              const sessions = await fetchSessions(daemon.host, daemon.port, 3000);
+              const remoteMatches = sessions.filter(
+                (s) => s.name === targetSessionId || s.name?.startsWith(targetSessionId as string),
+              );
+              if (remoteMatches.length === 1) {
+                // biome-ignore lint/style/noNonNullAssertion: length checked above
+                targetSessionId = remoteMatches[0]!.sessionId;
+                resolvedHost = daemon.host;
+                resolvedPort = daemon.port;
+                foundRemote = true;
+                console.error(`Found on ${daemon.hostname} (${daemon.host}:${daemon.port})`);
+              } else if (remoteMatches.length > 1) {
+                console.error(
+                  `Ambiguous: ${remoteMatches.length} sessions match on ${daemon.hostname}`,
+                );
+                for (const m of remoteMatches) {
+                  console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
+                }
+                process.exit(1);
+              }
+            }
+          } catch {
+            // mDNS discovery failed; fall through to error
+          }
+        }
+        if (!foundRemote) {
+          console.error(
+            `No session found matching "${targetSessionId}". Run \`remi ls --network\` to see available sessions.`,
+          );
+          process.exit(1);
+        }
       } else {
         console.error(
           `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,

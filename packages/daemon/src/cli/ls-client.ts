@@ -296,9 +296,7 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       if (a.daemon.host === 'localhost') {
         console.log(`  * ${name}: remi attach ${name}`);
       } else {
-        console.log(
-          `  * ${name}: remi attach ${a.daemon.host}:${a.daemon.port}/${a.sessionId.slice(0, 8)}`,
-        );
+        console.log(`  * ${name}: remi attach ${a.daemon.host}:${a.daemon.port}/${name}`);
       }
     }
   }
