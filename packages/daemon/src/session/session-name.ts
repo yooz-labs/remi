@@ -1,7 +1,10 @@
 /**
  * Session name generation for human-readable session identifiers.
  *
- * Format: hostname/dirname/branch (or hostname/dirname if no git)
+ * Format: hostname:dirname/branch (or hostname:dirname if no git).
+ * Colon separates hostname from path. Disambiguation from the
+ * host:port/session remote URL format relies on checking whether
+ * the segment after the colon is a numeric port.
  */
 
 import { execSync } from 'node:child_process';
@@ -11,7 +14,7 @@ import * as path from 'node:path';
 /**
  * Generate a human-readable session name from the working directory.
  *
- * Format: hostname/dirname/branch or hostname/dirname (no git).
+ * Format: hostname:dirname/branch or hostname:dirname (no git).
  * The hostname has `.local` suffix stripped if present.
  */
 export function generateSessionName(cwd: string): string {
@@ -20,9 +23,9 @@ export function generateSessionName(cwd: string): string {
   const branch = detectGitBranch(cwd);
 
   if (branch) {
-    return `${hostname}/${dirname}/${branch}`;
+    return `${hostname}:${dirname}/${branch}`;
   }
-  return `${hostname}/${dirname}`;
+  return `${hostname}:${dirname}`;
 }
 
 /**
