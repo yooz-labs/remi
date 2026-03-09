@@ -91,7 +91,8 @@ export type ProtocolMessage =
   | AuthResponseMessage
   | AuthResultMessage
   | KillSessionRequestMessage
-  | KillSessionResponseMessage;
+  | KillSessionResponseMessage
+  | RawPtyOutputMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -150,6 +151,8 @@ export interface UserInputMessage {
   readonly timestamp: Timestamp;
   readonly sessionId: UUID;
   readonly content: string;
+  /** When true, content is raw terminal bytes (no Enter appended) */
+  readonly raw?: boolean;
 }
 
 /** Acknowledgment */
@@ -406,6 +409,17 @@ export interface AuthResultMessage {
   readonly serverSignature?: string;
 }
 
+/** Raw PTY output - broadcasts terminal bytes to remote attached clients */
+export interface RawPtyOutputMessage {
+  readonly type: 'raw_pty_output';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Base64-encoded raw PTY bytes */
+  readonly data: string;
+  /** Session ID this output belongs to */
+  readonly sessionId: UUID;
+}
+
 /** Request to kill (terminate) a session by ID */
 export interface KillSessionRequestMessage {
   readonly type: 'kill_session_request';
@@ -498,6 +512,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'auth_result',
     'kill_session_request',
     'kill_session_response',
+    'raw_pty_output',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -580,13 +595,14 @@ export function createStructuredAgentOutput(
 /**
  * Create a user input message.
  */
-export function createUserInput(sessionId: UUID, content: string): UserInputMessage {
+export function createUserInput(sessionId: UUID, content: string, raw?: boolean): UserInputMessage {
   return {
     type: 'user_input',
     id: generateId(),
     timestamp: now(),
     sessionId,
     content,
+    ...(raw && { raw }),
   };
 }
 
@@ -971,6 +987,19 @@ export function createKillSessionResponse(
     success,
     requestId,
     ...(error !== undefined && { error }),
+  };
+}
+
+/**
+ * Create a raw PTY output message.
+ */
+export function createRawPtyOutput(data: string, sessionId: UUID): RawPtyOutputMessage {
+  return {
+    type: 'raw_pty_output',
+    id: generateId(),
+    timestamp: now(),
+    data,
+    sessionId,
   };
 }
 

@@ -10,6 +10,7 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
+import { DetachScanner } from './detach-scanner.ts';
 
 export interface AttachClientOptions {
   host: string;
@@ -25,20 +26,17 @@ export interface AttachClientResult {
   reason: 'detached' | 'session_ended' | 'error' | 'timeout' | 'connection_closed';
 }
 
-const CTRL_B = 0x02;
-const DETACH_TIMEOUT_MS = 1000;
-
 export async function runAttachClient(opts: AttachClientOptions): Promise<AttachClientResult> {
   const { host, port, sessionId, timeout = 5000, outputFd = 1 } = opts;
   const url = `ws://${host}:${port}/ws`;
 
   let ws: WebSocket;
   let attachedSessionId: UUID | null = null;
-  let ctrlBPending = false;
-  let ctrlBTimer: ReturnType<typeof setTimeout> | null = null;
   let rawModeSet = false;
+  let detachScannerInstance: DetachScanner | null = null;
   let stdinListener: ((data: Buffer) => void) | null = null;
   let resizeListener: (() => void) | null = null;
+  let resizeNudgeTimer: ReturnType<typeof setTimeout> | null = null;
   let resolved = false;
   let outputBroken = false;
   let authInProgress = false;
@@ -57,6 +55,21 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   }
 
   function restoreTerminal(): void {
+    if (resizeNudgeTimer) {
+      clearTimeout(resizeNudgeTimer);
+      resizeNudgeTimer = null;
+    }
+    // Exit alternate screen buffer (restores original terminal content)
+    if (attachedSessionId) {
+      try {
+        fs.writeSync(outputFd, '\x1b[?1049l');
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EBADF' && code !== 'EPIPE') {
+          process.stderr.write(`[remi] warning: failed to exit alternate screen: ${code ?? err}\n`);
+        }
+      }
+    }
     if (rawModeSet && process.stdin.isTTY) {
       try {
         process.stdin.setRawMode(false);
@@ -66,6 +79,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         );
       }
       rawModeSet = false;
+    }
+    if (detachScannerInstance) {
+      detachScannerInstance.destroy();
+      detachScannerInstance = null;
     }
     process.stdin.pause();
     if (stdinListener) {
@@ -86,12 +103,29 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
   function sendInput(content: string): void {
     if (attachedSessionId) {
-      sendMessage(createUserInput(attachedSessionId, content));
+      sendMessage(createUserInput(attachedSessionId, content, true));
+    }
+  }
+
+  function writeRawBytes(base64Data: string): void {
+    if (outputBroken) return;
+    try {
+      const buf = Buffer.from(base64Data, 'base64');
+      fs.writeSync(outputFd, buf);
+    } catch (err) {
+      outputBroken = true;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EBADF' && code !== 'EPIPE') {
+        process.stderr.write(`[remi] output write failed: ${code ?? err}\n`);
+      }
     }
   }
 
   function renderMessage(msg: ProtocolMessage): void {
     switch (msg.type) {
+      case 'raw_pty_output':
+        writeRawBytes(msg.data);
+        break;
       case 'agent_output':
       case 'structured_agent_output':
         writeOutput(msg.message.content);
@@ -105,7 +139,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         break;
       case 'session_update':
-        writeOutput(`\x1b[2m[${msg.session.status}]\x1b[0m `);
+        // Suppress status badges (raw PTY output provides the full terminal view)
         break;
       case 'replay_batch':
         for (const m of msg.messages) {
@@ -113,7 +147,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         break;
       case 'transcript_content':
-        writeOutput(`\n[${msg.role}] ${msg.content}\n`);
+        // Suppress transcript content (raw PTY output provides the full terminal view)
         break;
       case 'error':
         writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
@@ -153,7 +187,11 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         clearTimeout(connectionTimer);
         attachedSessionId = msg.sessionId;
         const shortId = msg.sessionId.slice(0, 8);
-        writeOutput(`[attached to session ${shortId}]\n`);
+
+        // Enter alternate screen buffer (like tmux) first, then show banner
+        // inside the alternate buffer so it doesn't persist in scrollback
+        writeOutput('\x1b[?1049h\x1b[2J\x1b[H');
+        writeOutput(`[attached to session ${shortId}] (Ctrl+B d to detach)\n`);
 
         // Enter raw terminal mode
         if (process.stdin.isTTY) {
@@ -162,51 +200,19 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         process.stdin.resume();
 
-        // Pipe stdin to daemon, processing byte-by-byte for Ctrl+B detection
+        // Use DetachScanner for Ctrl+B d detection (supports both legacy
+        // raw byte 0x02 and kitty keyboard protocol ESC[98;5u)
+        detachScannerInstance = new DetachScanner({
+          onDetach: () => {
+            process.stderr.write('[detached]\n');
+            finish({ exitCode: 0, reason: 'detached' });
+          },
+          onData: (data) => {
+            sendInput(data.toString());
+          },
+        });
         stdinListener = (chunk: Buffer) => {
-          for (let i = 0; i < chunk.length; i++) {
-            // biome-ignore lint/style/noNonNullAssertion: bounds checked by loop condition
-            const byte = chunk[i]!;
-
-            if (ctrlBPending) {
-              ctrlBPending = false;
-              if (ctrlBTimer) {
-                clearTimeout(ctrlBTimer);
-                ctrlBTimer = null;
-              }
-
-              if (byte === 0x64) {
-                // 'd' after Ctrl+B: detach
-                writeOutput('\n[detached]\n');
-                finish({ exitCode: 0, reason: 'detached' });
-                return;
-              }
-
-              // Not a detach sequence: forward buffered Ctrl+B and this byte
-              sendInput(String.fromCharCode(CTRL_B));
-              sendInput(String.fromCharCode(byte));
-              continue;
-            }
-
-            if (byte === CTRL_B) {
-              ctrlBPending = true;
-              ctrlBTimer = setTimeout(() => {
-                ctrlBPending = false;
-                ctrlBTimer = null;
-                sendInput(String.fromCharCode(CTRL_B));
-              }, DETACH_TIMEOUT_MS);
-              continue;
-            }
-
-            // Scan ahead for the next Ctrl+B in this chunk
-            let end = i + 1;
-            while (end < chunk.length && chunk[end] !== CTRL_B) {
-              end++;
-            }
-            // Forward the normal bytes as a batch
-            sendInput(chunk.slice(i, end).toString());
-            i = end - 1; // loop increment will advance to `end`
-          }
+          detachScannerInstance?.write(chunk);
         };
         process.stdin.on('data', stdinListener);
 
@@ -218,9 +224,18 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         };
         process.stdout.on('resize', resizeListener);
 
-        // Send initial size
+        // Send initial size -- nudge with cols-1 first, then real size,
+        // to force Claude Code to re-render its TUI from the top.
+        // Claude Code's TUI only redraws on actual size changes; sending
+        // the same size has no effect, so we nudge first.
         if (process.stdout.columns && process.stdout.rows) {
-          sendMessage(createTerminalResize(process.stdout.columns, process.stdout.rows));
+          const cols = process.stdout.columns;
+          const rows = process.stdout.rows;
+          sendMessage(createTerminalResize(cols - 1, rows));
+          resizeNudgeTimer = setTimeout(() => {
+            resizeNudgeTimer = null;
+            sendMessage(createTerminalResize(cols, rows));
+          }, 50);
         }
 
         return;

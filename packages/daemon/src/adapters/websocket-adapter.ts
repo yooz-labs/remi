@@ -108,8 +108,8 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (connectionId, sessionId, content) => {
-        this.events.onUserInput?.(connectionId, sessionId, content);
+      onUserInput: (connectionId, sessionId, content, raw) => {
+        this.events.onUserInput?.(connectionId, sessionId, content, raw);
       },
 
       onAnswer: (connectionId, questionId, answer) => {

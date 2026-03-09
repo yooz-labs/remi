@@ -218,6 +218,7 @@ import {
   createError,
   createHelloAck,
   createKillSessionResponse,
+  createRawPtyOutput,
   createReplayBatch,
   createSessionListResponse,
   createTranscriptLoadComplete,
@@ -1146,6 +1147,7 @@ async function createNewSession(
     },
     {
       onRawData: (data: Uint8Array) => {
+        // Write to local terminal (wrapper pass-through mode)
         if (passThrough && ptyStdoutFd !== null && !wrapperDetached) {
           try {
             fs.writeSync(ptyStdoutFd, data);
@@ -1156,6 +1158,14 @@ async function createNewSession(
               cleanup().then(() => process.exit(1));
             }
           }
+        }
+
+        // Send raw PTY bytes to the actively attached CLI client (if any)
+        const session = sessionRegistry.getSession(sessionId);
+        if (session?.activeConnectionId) {
+          const base64Data = Buffer.from(data).toString('base64');
+          const msg = createRawPtyOutput(base64Data, sessionId);
+          sendMessage(sessionId, msg);
         }
       },
       onData: (_output: string) => {
@@ -1320,6 +1330,12 @@ const sharedEvents = {
           return;
         }
       }
+
+      // Auto-attach failed (session busy or missing); send hello_ack anyway
+      // so utility clients (ls, kill) can proceed with requests
+      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
+      log(`Connection ${connectionId} connected without attach (session busy or query client)`);
+      return;
     }
 
     if (resumeSessionId && sessionRegistry.canResume(resumeSessionId)) {
@@ -1411,12 +1427,13 @@ const sharedEvents = {
           createError('SESSION_CREATE_FAILED', `Failed to create session: ${errMsg}`),
         );
       }
+    } else if (wrapperMode && primarySessionId) {
+      // Wrapper mode: resume failed but session exists; send hello_ack
+      // so the client can still send queries (ls, kill, etc.)
+      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
+      log(`Connection ${connectionId} connected without attach in wrapper mode`);
     } else {
-      // Wrapper mode but no primary session (shouldn't happen normally)
-      sendToConnection(
-        connectionId,
-        createError('NO_SESSION', 'No active session in wrapper mode'),
-      );
+      sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
     }
   },
 
@@ -1429,12 +1446,22 @@ const sharedEvents = {
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
   },
 
-  onUserInput: async (connectionId: UUID, _sessionId: UUID, content: string) => {
-    log(`User input from ${connectionId}: ${content}`);
+  onUserInput: async (connectionId: UUID, _sessionId: UUID, content: string, raw?: boolean) => {
+    log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
 
     const session = sessionRegistry.getSessionForConnection(connectionId);
     if (session) {
-      await session.pty.submitInput(content);
+      if (raw) {
+        // Raw terminal input from attach client: write directly without Enter
+        try {
+          session.pty.write(content);
+        } catch (err) {
+          log(`[PTY] raw write failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        // Structured input from web/mobile client: append Enter
+        await session.pty.submitInput(content);
+      }
     } else {
       log(`No session found for connection ${connectionId}`);
     }
@@ -1992,13 +2019,14 @@ if (cliDaemonMode) {
     sessionId,
     workingDirectory,
     (sid, msg) => {
-      // Broadcast to all connected WebSocket clients
       const session = sessionRegistry.getSession(sid);
       if (session?.activeConnectionId) {
         sendToConnection(session.activeConnectionId, msg);
       }
-      // Also broadcast to all connections (for viewers without explicit attach)
-      registry.broadcast(msg);
+      // Raw PTY output is high-volume; only send to attached CLI client, not all viewers
+      if (msg.type !== 'raw_pty_output') {
+        registry.broadcast(msg);
+      }
     },
     claudeArgs,
     true, // pass-through mode
@@ -2010,8 +2038,10 @@ if (cliDaemonMode) {
     if (managedSession) {
       try {
         fs.writeSync(ptyStdoutFd, `Session: ${managedSession.name}\r\n`);
-      } catch {
-        // Terminal write may fail if output is piped
+      } catch (err) {
+        log(
+          `[Wrapper] Failed to write session name: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -2030,11 +2060,9 @@ if (cliDaemonMode) {
 
   const detachScanner = new DetachScanner({
     onDetach: () => {
-      const shortId = sessionId.slice(0, 8);
       if (ptyStdoutFd !== null) {
         try {
-          fs.writeSync(ptyStdoutFd, `\r\n[detached (session ${shortId})]\r\n`);
-          fs.writeSync(ptyStdoutFd, `Reattach with: remi attach ${shortId}\r\n`);
+          fs.writeSync(ptyStdoutFd, '\r\n[detached]\r\n');
         } catch (err) {
           log(
             `[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`,
@@ -2070,8 +2098,9 @@ if (cliDaemonMode) {
     }
   });
 
-  // Detach local terminal but keep PTY + WebSocket alive.
-  // Used by SIGHUP (terminal close) and Ctrl+B d (manual detach).
+  // Detach local terminal.
+  // SIGHUP (terminal closed): keep PTY + WebSocket alive as background daemon.
+  // Ctrl+B d (keybinding): cleanly exit and return the shell to the user.
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
     if (wrapperDetached) return;
     wrapperDetached = true;
@@ -2089,7 +2118,16 @@ if (cliDaemonMode) {
     process.stdin.pause();
     process.stdin.removeAllListeners('data');
 
-    log(`Local terminal detached (${reason}), PTY and WebSocket server still running`);
+    if (reason === 'sighup') {
+      // Terminal closed: keep running as orphaned process
+      process.stdin.unref();
+      ptyStdoutFd = null;
+      log('Local terminal detached (SIGHUP), PTY and WebSocket server still running');
+    } else {
+      // Ctrl+B d: cleanly shut down and return shell to user
+      log('Ctrl+B d pressed, shutting down');
+      cleanup().then(() => process.exit(0));
+    }
   }
 
   // SIGHUP: terminal closed (e.g. window closed, SSH disconnect).

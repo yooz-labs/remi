@@ -246,7 +246,12 @@ export class RelayAdapter implements ConnectionAdapter {
           console.warn('Invalid user_input payload: missing content or sessionId');
           return;
         }
-        this.events.onUserInput?.(connectionId, msg['sessionId'], msg['content']);
+        this.events.onUserInput?.(
+          connectionId,
+          msg['sessionId'],
+          msg['content'],
+          msg['raw'] === true,
+        );
         break;
       case 'answer':
         if (typeof msg['questionId'] !== 'string' || typeof msg['answer'] !== 'string') {
