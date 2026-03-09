@@ -32,6 +32,7 @@ const REMI_VERSION = (() => {
 // ---------------------------------------------------------------------------
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const LOG_FILE = path.join(REMI_DIR, 'remi.log');
+const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 const STATUS_FILE = path.join(REMI_DIR, 'status.json');
 let logFd: number | null = null;
 
@@ -122,12 +123,14 @@ function scheduleStatusWrite(): void {
 }
 
 function writeStatus(): void {
-  if (!wrapperMode) return;
+  if (!wrapperMode && !cliDaemonMode) return;
+  // Daemon mode writes to daemon-status.json; wrapper writes to status.json
+  const targetFile = cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE;
   // Atomic write: write to temp file then rename to avoid readers seeing partial JSON
-  const tmpFile = `${STATUS_FILE}.tmp`;
+  const tmpFile = `${targetFile}.tmp`;
   try {
     fs.writeFileSync(tmpFile, JSON.stringify(remiStatus));
-    fs.renameSync(tmpFile, STATUS_FILE);
+    fs.renameSync(tmpFile, targetFile);
     statusWriteErrorLogged = false;
   } catch (err) {
     if (!statusWriteErrorLogged) {
@@ -138,8 +141,9 @@ function writeStatus(): void {
 }
 
 function cleanupStatusFile(): void {
+  const targetFile = cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE;
   try {
-    fs.unlinkSync(STATUS_FILE);
+    fs.unlinkSync(targetFile);
   } catch {
     // File may not exist during cleanup
   }
@@ -322,6 +326,10 @@ let cliSubcommand:
   | 'new'
   | 'kill'
   | 'detach'
+  | 'start'
+  | 'stop'
+  | 'status'
+  | 'logs'
   | undefined;
 let cliSubcommandArg: string | undefined;
 let cliCodeRefresh = false;
@@ -418,6 +426,10 @@ Usage:
   remi new [-- claude-args...]   Explicit session creation (alias for remi [args])
   remi kill <name>               Kill a session by name or ID
   remi detach [name]             Detach from current or named session
+  remi start                     Start daemon in background
+  remi stop                      Stop background daemon
+  remi status                    Show daemon status
+  remi logs                      Show recent daemon logs
   remi ls                        List live sessions from running daemon
   remi ls --network              Discover and list sessions across the network
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
@@ -431,7 +443,7 @@ Usage:
   remi keys                      List authorized keys
   remi --resume [session-id]     Resume a previous session
   remi --sessions                List stored sessions
-  remi --daemon                  Legacy daemon mode (headless server)
+  remi --daemon                  Daemon mode (headless server, prefer remi start)
 
 Options:
   --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
@@ -480,7 +492,11 @@ Any other arguments are passed through to Claude Code.
     arg === 'keys' ||
     arg === 'new' ||
     arg === 'kill' ||
-    arg === 'detach'
+    arg === 'detach' ||
+    arg === 'start' ||
+    arg === 'stop' ||
+    arg === 'status' ||
+    arg === 'logs'
   ) {
     cliSubcommand = arg;
     if (
@@ -687,6 +703,42 @@ if (cliSubcommand === 'code') {
   }
   console.log('\nNote: By default, codes rotate on each reconnect. Use --permanent-code to');
   console.log('persist a fixed code (requires Ed25519 authentication for relay connections).');
+  process.exit(0);
+}
+
+// Handle daemon lifecycle commands: start, stop, status, logs
+if (cliSubcommand === 'start') {
+  const { startDaemon } = await import('./cli/daemon-manager.ts');
+  const resolvedPort =
+    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+  const extraArgs: string[] = [];
+  if (cliBindHost) extraArgs.push('--bind', cliBindHost);
+  if (cliAuth === true) extraArgs.push('--auth');
+  if (cliAuth === false) extraArgs.push('--no-auth');
+  if (cliNoMdns) extraArgs.push('--no-mdns');
+  if (cliNoRelay) extraArgs.push('--no-relay');
+  if (cliNoTelegram) extraArgs.push('--no-telegram');
+  if (cliPermanentCode) extraArgs.push('--permanent-code');
+  if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
+  startDaemon({ port: resolvedPort, extraArgs });
+  process.exit(0);
+}
+
+if (cliSubcommand === 'stop') {
+  const { stopDaemon } = await import('./cli/daemon-manager.ts');
+  stopDaemon();
+  process.exit(0);
+}
+
+if (cliSubcommand === 'status') {
+  const { showDaemonStatus } = await import('./cli/daemon-manager.ts');
+  showDaemonStatus();
+  process.exit(0);
+}
+
+if (cliSubcommand === 'logs') {
+  const { showDaemonLogs } = await import('./cli/daemon-manager.ts');
+  showDaemonLogs();
   process.exit(0);
 }
 
@@ -1984,11 +2036,14 @@ async function cleanup(): Promise<void> {
 // Main: Start in wrapper or daemon mode
 // ---------------------------------------------------------------------------
 if (cliDaemonMode) {
-  // Legacy daemon mode: headless server, spawns Claude on WebSocket connect
+  // Daemon mode: headless server, spawns Claude on WebSocket connect
   console.log('Starting Remi daemon...');
   await registry.startAll();
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
+
+  // Write status.json so remi status/start can detect running daemon
+  updateRemiStatus({ wsPort: PORT, sessionStatus: 'starting' });
 
   console.log('');
   console.log('Remi daemon ready!');
@@ -2009,11 +2064,13 @@ if (cliDaemonMode) {
 
   process.on('SIGINT', async () => {
     console.log('\nShutting down gracefully...');
+    cleanupStatusFile();
     await cleanup();
     process.exit(0);
   });
   process.on('SIGTERM', async () => {
     console.log('\nShutting down gracefully...');
+    cleanupStatusFile();
     await cleanup();
     process.exit(0);
   });
