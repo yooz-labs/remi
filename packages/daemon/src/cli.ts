@@ -707,38 +707,35 @@ if (cliSubcommand === 'code') {
 }
 
 // Handle daemon lifecycle commands: start, stop, status, logs
-if (cliSubcommand === 'start') {
-  const { startDaemon } = await import('./cli/daemon-manager.ts');
-  const resolvedPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
-  const extraArgs: string[] = [];
-  if (cliBindHost) extraArgs.push('--bind', cliBindHost);
-  if (cliAuth === true) extraArgs.push('--auth');
-  if (cliAuth === false) extraArgs.push('--no-auth');
-  if (cliNoMdns) extraArgs.push('--no-mdns');
-  if (cliNoRelay) extraArgs.push('--no-relay');
-  if (cliNoTelegram) extraArgs.push('--no-telegram');
-  if (cliPermanentCode) extraArgs.push('--permanent-code');
-  if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
-  startDaemon({ port: resolvedPort, extraArgs });
-  process.exit(0);
-}
+if (
+  cliSubcommand === 'start' ||
+  cliSubcommand === 'stop' ||
+  cliSubcommand === 'status' ||
+  cliSubcommand === 'logs'
+) {
+  const dm = await import('./cli/daemon-manager.ts');
 
-if (cliSubcommand === 'stop') {
-  const { stopDaemon } = await import('./cli/daemon-manager.ts');
-  stopDaemon();
-  process.exit(0);
-}
+  if (cliSubcommand === 'start') {
+    const resolvedPort =
+      cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+    const extraArgs: string[] = [];
+    if (cliBindHost) extraArgs.push('--bind', cliBindHost);
+    if (cliAuth === true) extraArgs.push('--auth');
+    if (cliAuth === false) extraArgs.push('--no-auth');
+    if (cliNoMdns) extraArgs.push('--no-mdns');
+    if (cliNoRelay) extraArgs.push('--no-relay');
+    if (cliNoTelegram) extraArgs.push('--no-telegram');
+    if (cliPermanentCode) extraArgs.push('--permanent-code');
+    if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
+    dm.startDaemon({ port: resolvedPort, extraArgs });
+  } else if (cliSubcommand === 'stop') {
+    dm.stopDaemon();
+  } else if (cliSubcommand === 'status') {
+    dm.showDaemonStatus();
+  } else {
+    dm.showDaemonLogs();
+  }
 
-if (cliSubcommand === 'status') {
-  const { showDaemonStatus } = await import('./cli/daemon-manager.ts');
-  showDaemonStatus();
-  process.exit(0);
-}
-
-if (cliSubcommand === 'logs') {
-  const { showDaemonLogs } = await import('./cli/daemon-manager.ts');
-  showDaemonLogs();
   process.exit(0);
 }
 
