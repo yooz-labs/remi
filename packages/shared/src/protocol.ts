@@ -6,9 +6,8 @@
  *
  * Protocol guarantees:
  * - Every message has a unique ID
- * - Every message gets an acknowledgment
+ * - Messages are acknowledged at the application level (e.g. hello -> hello_ack)
  * - Messages are ordered within a session
- * - Duplicates are detected and ignored (but still acked)
  */
 
 import type {

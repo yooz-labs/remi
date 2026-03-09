@@ -196,7 +196,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         process.stdin.resume();
 
-        // Use DetachScanner for Ctrl+B d detection (supports both legacy
+        // Use DetachScanner for Ctrl+B d detection (supports both standard
         // raw byte 0x02 and kitty keyboard protocol ESC[98;5u)
         detachScannerInstance = new DetachScanner({
           onDetach: () => {

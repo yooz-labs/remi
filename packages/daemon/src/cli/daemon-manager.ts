@@ -3,7 +3,7 @@
  *
  * Uses child_process.spawn with detached:true to launch remi --daemon
  * in the background. Tracks the daemon via a PID file (~/.remi/daemon.pid).
- * The status.json file provides additional runtime info.
+ * The daemon-status.json file provides additional runtime info.
  */
 
 import { execSync, spawn } from 'node:child_process';
@@ -25,23 +25,33 @@ function ensureRemiDir(): void {
  * Returns null if no PID file exists or the process is not running.
  */
 export function getRunningDaemonPid(): number | null {
+  let content: string;
   try {
-    const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
-    const pid = Number.parseInt(content, 10);
-    if (Number.isNaN(pid) || pid <= 0) return null;
-
-    try {
-      process.kill(pid, 0);
-      return pid;
-    } catch {
-      try {
-        fs.unlinkSync(PID_FILE);
-      } catch {
-        // ignore cleanup errors
-      }
-      return null;
+    content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.error(`Warning: cannot read PID file: ${code ?? err}`);
     }
+    return null;
+  }
+
+  const pid = Number.parseInt(content, 10);
+  if (Number.isNaN(pid) || pid <= 0) return null;
+
+  try {
+    process.kill(pid, 0);
+    return pid;
   } catch {
+    // Process not running; clean up stale PID file
+    try {
+      fs.unlinkSync(PID_FILE);
+    } catch (unlinkErr) {
+      const code = (unlinkErr as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(`Warning: cannot remove stale PID file: ${code}`);
+      }
+    }
     return null;
   }
 }
@@ -50,7 +60,13 @@ function readStatus(): Record<string, unknown> | null {
   try {
     const content = fs.readFileSync(STATUS_FILE, 'utf-8');
     return JSON.parse(content) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.error(
+        `Warning: cannot read status file: ${err instanceof Error ? err.message : err}`,
+      );
+    }
     return null;
   }
 }
@@ -101,7 +117,7 @@ export function startDaemon(opts?: StartOptions): number {
 
   const { command, baseArgs } = resolveRemiCommand();
   const spawnArgs = [...baseArgs, '--daemon'];
-  if (opts?.port) {
+  if (opts?.port !== undefined) {
     spawnArgs.push('--port', String(opts.port));
   }
   if (opts?.extraArgs) {
@@ -140,7 +156,7 @@ export function startDaemon(opts?: StartOptions): number {
   child.unref();
   fs.closeSync(logFd);
 
-  // Poll until daemon writes status.json or times out
+  // Poll until daemon writes daemon-status.json or times out
   const startTime = Date.now();
   const timeout = 5000;
   let port: number | string = 'unknown';
@@ -159,14 +175,21 @@ export function startDaemon(opts?: StartOptions): number {
       try {
         fs.unlinkSync(PID_FILE);
       } catch {
-        // ignore
+        // PID file may already be cleaned up
       }
       process.exit(1);
     }
     Bun.sleepSync(100);
   }
 
-  console.log(`Daemon started (PID ${pid}, port ${port}).`);
+  if (port === 'unknown') {
+    console.log(
+      `Daemon started (PID ${pid}) but did not report its port within ${timeout / 1000}s.`,
+    );
+    console.log('The daemon may still be initializing. Check status with: remi status');
+  } else {
+    console.log(`Daemon started (PID ${pid}, port ${port}).`);
+  }
   console.log(`Logs: ${LOG_FILE}`);
   return pid;
 }
@@ -206,8 +229,13 @@ export function stopDaemon(): void {
   console.error('Daemon did not stop gracefully; sending SIGKILL...');
   try {
     process.kill(pid, 'SIGKILL');
-  } catch {
-    // Already dead
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ESRCH') {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Warning: SIGKILL failed: ${msg}`);
+      console.error('The daemon process may still be running.');
+    }
   }
   Bun.sleepSync(200);
   cleanupFiles();
@@ -239,24 +267,28 @@ export function showDaemonStatus(): void {
 }
 
 export function showDaemonLogs(lines = 50): void {
+  if (!fs.existsSync(LOG_FILE)) {
+    console.error(`No daemon log found at ${LOG_FILE}`);
+    return;
+  }
   try {
-    fs.accessSync(LOG_FILE, fs.constants.R_OK);
     const output = execSync(`tail -n ${lines} "${LOG_FILE}"`, { encoding: 'utf-8' });
     console.log(output);
-  } catch {
-    console.error(`No daemon log found at ${LOG_FILE}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to read daemon log: ${msg}`);
   }
 }
 
 function cleanupFiles(): void {
-  try {
-    fs.unlinkSync(PID_FILE);
-  } catch {
-    // ignore
-  }
-  try {
-    fs.unlinkSync(STATUS_FILE);
-  } catch {
-    // ignore
+  for (const file of [PID_FILE, STATUS_FILE]) {
+    try {
+      fs.unlinkSync(file);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(`Warning: could not remove ${path.basename(file)}: ${code}`);
+      }
+    }
   }
 }
