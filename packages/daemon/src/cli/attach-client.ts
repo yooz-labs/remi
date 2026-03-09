@@ -59,15 +59,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       clearTimeout(resizeNudgeTimer);
       resizeNudgeTimer = null;
     }
-    // Exit alternate screen buffer (restores original terminal content)
+    // Print a newline after detach so the user's shell prompt starts clean
     if (attachedSessionId) {
       try {
-        fs.writeSync(outputFd, '\x1b[?1049l');
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'EBADF' && code !== 'EPIPE') {
-          process.stderr.write(`[remi] warning: failed to exit alternate screen: ${code ?? err}\n`);
-        }
+        fs.writeSync(outputFd, '\n');
+      } catch {
+        // ignore write errors during cleanup
       }
     }
     if (rawModeSet && process.stdin.isTTY) {
@@ -128,15 +125,11 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         break;
       case 'agent_output':
       case 'structured_agent_output':
-        writeOutput(msg.message.content);
+        // Suppress structured output; the raw PTY output already shows everything
         break;
       case 'question':
-        writeOutput(`\n? ${msg.question.text}\n`);
-        if (msg.question.options) {
-          for (const opt of msg.question.options) {
-            writeOutput(`  ${opt.label}\n`);
-          }
-        }
+        // Suppress structured question messages; the raw PTY output already
+        // contains the interactive prompt from Claude Code's TUI
         break;
       case 'session_update':
         // Suppress status badges (raw PTY output provides the full terminal view)
@@ -188,9 +181,9 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         attachedSessionId = msg.sessionId;
         const shortId = msg.sessionId.slice(0, 8);
 
-        // Enter alternate screen buffer (like tmux) first, then show banner
-        // inside the alternate buffer so it doesn't persist in scrollback
-        writeOutput('\x1b[?1049h\x1b[2J\x1b[H');
+        // Clear screen and home cursor; we stay in the primary screen buffer
+        // so the user's terminal emulator provides native scrollback
+        writeOutput('\x1b[2J\x1b[H');
         writeOutput(`[attached to session ${shortId}] (Ctrl+B d to detach)\n`);
 
         // Enter raw terminal mode

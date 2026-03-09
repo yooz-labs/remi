@@ -115,7 +115,7 @@ describe('runAttachClient', () => {
     expect(result.reason).toBe('connection_closed');
   });
 
-  test('renders replay batch messages', async () => {
+  test('suppresses agent_output in replay batch (raw PTY provides full view)', async () => {
     setupOutput();
     const targetSessionId = generateId();
 
@@ -156,7 +156,8 @@ describe('runAttachClient', () => {
     });
 
     const output = readOutput();
-    expect(output).toContain('Hello from replay');
+    // agent_output is suppressed in terminal attach mode; raw PTY provides the view
+    expect(output).not.toContain('Hello from replay');
   });
 
   test('returns error when server is not running', async () => {
@@ -264,7 +265,7 @@ describe('runAttachClient', () => {
     expect(pongMsg).toBeTruthy();
   });
 
-  test('renders question with options', async () => {
+  test('suppresses question messages (raw PTY provides the interactive prompt)', async () => {
     setupOutput();
     const targetSessionId = generateId();
     const question: Question = {
@@ -312,8 +313,8 @@ describe('runAttachClient', () => {
     });
 
     const output = readOutput();
-    expect(output).toContain('Allow file edit?');
-    expect(output).toContain('Yes');
-    expect(output).toContain('No');
+    // Question messages are suppressed in terminal attach mode;
+    // the raw PTY output already contains the interactive prompt
+    expect(output).not.toContain('Allow file edit?');
   });
 });
