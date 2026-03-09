@@ -36,6 +36,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let detachScannerInstance: DetachScanner | null = null;
   let stdinListener: ((data: Buffer) => void) | null = null;
   let resizeListener: (() => void) | null = null;
+  let resizeNudgeTimer: ReturnType<typeof setTimeout> | null = null;
   let resolved = false;
   let outputBroken = false;
   let authInProgress = false;
@@ -54,12 +55,19 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   }
 
   function restoreTerminal(): void {
+    if (resizeNudgeTimer) {
+      clearTimeout(resizeNudgeTimer);
+      resizeNudgeTimer = null;
+    }
     // Exit alternate screen buffer (restores original terminal content)
     if (attachedSessionId) {
       try {
         fs.writeSync(outputFd, '\x1b[?1049l');
-      } catch {
-        // output may already be broken
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EBADF' && code !== 'EPIPE') {
+          process.stderr.write(`[remi] warning: failed to exit alternate screen: ${code ?? err}\n`);
+        }
       }
     }
     if (rawModeSet && process.stdin.isTTY) {
@@ -131,7 +139,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         break;
       case 'session_update':
-        // Suppress status badges when raw PTY output is available
+        // Suppress status badges (raw PTY output provides the full terminal view)
         break;
       case 'replay_batch':
         for (const m of msg.messages) {
@@ -139,7 +147,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         }
         break;
       case 'transcript_content':
-        // Suppress transcript content when raw PTY output is available
+        // Suppress transcript content (raw PTY output provides the full terminal view)
         break;
       case 'error':
         writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
@@ -179,11 +187,11 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         clearTimeout(connectionTimer);
         attachedSessionId = msg.sessionId;
         const shortId = msg.sessionId.slice(0, 8);
-        writeOutput(`[attached to session ${shortId}]\n`);
 
-        // Enter alternate screen buffer (like tmux) so we don't overwrite
-        // the user's existing terminal content, then clear and home cursor
+        // Enter alternate screen buffer (like tmux) first, then show banner
+        // inside the alternate buffer so it doesn't persist in scrollback
         writeOutput('\x1b[?1049h\x1b[2J\x1b[H');
+        writeOutput(`[attached to session ${shortId}] (Ctrl+B d to detach)\n`);
 
         // Enter raw terminal mode
         if (process.stdin.isTTY) {
@@ -196,8 +204,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         // raw byte 0x02 and kitty keyboard protocol ESC[98;5u)
         detachScannerInstance = new DetachScanner({
           onDetach: () => {
-            finish({ exitCode: 0, reason: 'detached' });
             process.stderr.write('[detached]\n');
+            finish({ exitCode: 0, reason: 'detached' });
           },
           onData: (data) => {
             sendInput(data.toString());
@@ -216,13 +224,18 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         };
         process.stdout.on('resize', resizeListener);
 
-        // Send initial size - nudge with cols-1 first, then real size,
-        // to force Claude Code to re-render its TUI from the top
+        // Send initial size -- nudge with cols-1 first, then real size,
+        // to force Claude Code to re-render its TUI from the top.
+        // Claude Code's TUI only redraws on actual size changes; sending
+        // the same size has no effect, so we nudge first.
         if (process.stdout.columns && process.stdout.rows) {
           const cols = process.stdout.columns;
           const rows = process.stdout.rows;
           sendMessage(createTerminalResize(cols - 1, rows));
-          setTimeout(() => sendMessage(createTerminalResize(cols, rows)), 50);
+          resizeNudgeTimer = setTimeout(() => {
+            resizeNudgeTimer = null;
+            sendMessage(createTerminalResize(cols, rows));
+          }, 50);
         }
 
         return;

@@ -1160,7 +1160,7 @@ async function createNewSession(
           }
         }
 
-        // Broadcast raw PTY output to remote attached clients
+        // Send raw PTY bytes to the actively attached CLI client (if any)
         const session = sessionRegistry.getSession(sessionId);
         if (session?.activeConnectionId) {
           const base64Data = Buffer.from(data).toString('base64');
@@ -1453,7 +1453,11 @@ const sharedEvents = {
     if (session) {
       if (raw) {
         // Raw terminal input from attach client: write directly without Enter
-        session.pty.write(content);
+        try {
+          session.pty.write(content);
+        } catch (err) {
+          log(`[PTY] raw write failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       } else {
         // Structured input from web/mobile client: append Enter
         await session.pty.submitInput(content);
@@ -2034,8 +2038,10 @@ if (cliDaemonMode) {
     if (managedSession) {
       try {
         fs.writeSync(ptyStdoutFd, `Session: ${managedSession.name}\r\n`);
-      } catch {
-        // Terminal write may fail if output is piped
+      } catch (err) {
+        log(
+          `[Wrapper] Failed to write session name: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -2056,7 +2062,7 @@ if (cliDaemonMode) {
     onDetach: () => {
       if (ptyStdoutFd !== null) {
         try {
-          fs.writeSync(ptyStdoutFd, '\r\n[session ended]\r\n');
+          fs.writeSync(ptyStdoutFd, '\r\n[detached]\r\n');
         } catch (err) {
           log(
             `[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`,
@@ -2094,7 +2100,7 @@ if (cliDaemonMode) {
 
   // Detach local terminal.
   // SIGHUP (terminal closed): keep PTY + WebSocket alive as background daemon.
-  // Ctrl+B d (keybinding): cleanly exit since we can't daemonize without fork().
+  // Ctrl+B d (keybinding): cleanly exit and return the shell to the user.
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
     if (wrapperDetached) return;
     wrapperDetached = true;

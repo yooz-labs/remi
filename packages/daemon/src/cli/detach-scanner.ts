@@ -21,7 +21,7 @@ export interface DetachScannerOptions {
   readonly onDetach: () => void;
   /** Called with data that should be forwarded (non-detach bytes). */
   readonly onData: (data: Buffer) => void;
-  /** Timeout in ms after a lone Ctrl+B before forwarding it. Default: 1000 */
+  /** Timeout in ms after a lone Ctrl+B or ESC before forwarding it. Default: 1000 */
   readonly timeoutMs?: number | undefined;
 }
 
@@ -30,11 +30,14 @@ export class DetachScanner {
   private ctrlBTimer: ReturnType<typeof setTimeout> | null = null;
   // Buffer for accumulating a partial kitty escape sequence across chunks
   private escBuffer: number[] = [];
+  private escTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly onDetach: () => void;
   private readonly onData: (data: Buffer) => void;
   private readonly timeoutMs: number;
-  // Store the original bytes that triggered ctrlBPending so we can replay them
+  // Store the original bytes (legacy 0x02 or kitty sequence) that triggered
+  // ctrlBPending so we can forward them if 'd' does not follow within the timeout
   private ctrlBBytes: Buffer = Buffer.from([CTRL_B]);
+  private detached = false;
 
   constructor(opts: DetachScannerOptions) {
     this.onDetach = opts.onDetach;
@@ -42,11 +45,37 @@ export class DetachScanner {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
+  /** Clear any pending Ctrl+B timer, flushing buffered bytes if needed. */
+  private clearCtrlBPending(flush: boolean): void {
+    if (this.ctrlBTimer) {
+      clearTimeout(this.ctrlBTimer);
+      this.ctrlBTimer = null;
+    }
+    if (flush && this.ctrlBPending) {
+      this.onData(Buffer.from(this.ctrlBBytes));
+    }
+    this.ctrlBPending = false;
+  }
+
+  /** Clear any pending ESC buffer timer, flushing accumulated bytes if needed. */
+  private clearEscBuffer(flush: boolean): void {
+    if (this.escTimer) {
+      clearTimeout(this.escTimer);
+      this.escTimer = null;
+    }
+    if (flush && this.escBuffer.length > 0) {
+      this.onData(Buffer.from(this.escBuffer));
+    }
+    this.escBuffer = [];
+  }
+
   /**
    * Process an incoming data buffer.
    * Scans for Ctrl+B d sequences and forwards all other data.
    */
   write(chunk: Buffer): void {
+    if (this.detached) return;
+
     for (let i = 0; i < chunk.length; i++) {
       // biome-ignore lint/style/noNonNullAssertion: bounds checked by loop condition
       const byte = chunk[i]!;
@@ -59,8 +88,9 @@ export class DetachScanner {
         if (this.escBuffer.length === KITTY_CTRL_B.length) {
           const match = this.escBuffer.every((b, idx) => b === KITTY_CTRL_B[idx]);
           if (match) {
-            // Matched kitty Ctrl+B
-            this.escBuffer = [];
+            // Matched kitty Ctrl+B; clear ESC timer and enter Ctrl+B pending state
+            this.clearEscBuffer(false);
+            this.clearCtrlBPending(true);
             this.ctrlBBytes = KITTY_CTRL_B;
             this.ctrlBPending = true;
             this.ctrlBTimer = setTimeout(() => {
@@ -70,9 +100,7 @@ export class DetachScanner {
             }, this.timeoutMs);
           } else {
             // Not a kitty Ctrl+B; forward accumulated bytes
-            const buf = Buffer.from(this.escBuffer);
-            this.escBuffer = [];
-            this.onData(buf);
+            this.clearEscBuffer(true);
           }
           continue;
         }
@@ -82,23 +110,18 @@ export class DetachScanner {
           (b, idx) => idx < KITTY_CTRL_B.length && b === KITTY_CTRL_B[idx],
         );
         if (!stillMatches) {
-          // Mismatch; forward accumulated bytes and continue
-          const buf = Buffer.from(this.escBuffer);
-          this.escBuffer = [];
-          this.onData(buf);
+          // Mismatch; forward accumulated bytes
+          this.clearEscBuffer(true);
         }
         continue;
       }
 
       if (this.ctrlBPending) {
-        this.ctrlBPending = false;
-        if (this.ctrlBTimer) {
-          clearTimeout(this.ctrlBTimer);
-          this.ctrlBTimer = null;
-        }
+        this.clearCtrlBPending(false);
 
         if (byte === 0x64) {
           // 'd' after Ctrl+B: detach
+          this.detached = true;
           this.onDetach();
           return;
         }
@@ -120,9 +143,18 @@ export class DetachScanner {
         continue;
       }
 
-      // Start of ESC sequence: could be kitty Ctrl+B
+      // Start of ESC sequence: could be kitty Ctrl+B.
+      // Flush any pending Ctrl+B first since this is a new sequence.
       if (byte === 0x1b) {
+        this.clearCtrlBPending(true);
         this.escBuffer = [byte];
+        this.escTimer = setTimeout(() => {
+          this.escTimer = null;
+          if (this.escBuffer.length > 0) {
+            this.onData(Buffer.from(this.escBuffer));
+            this.escBuffer = [];
+          }
+        }, this.timeoutMs);
         continue;
       }
 
@@ -137,17 +169,9 @@ export class DetachScanner {
     }
   }
 
-  /** Clean up any pending timer. */
+  /** Clean up any pending timers and flush buffered bytes. */
   destroy(): void {
-    if (this.ctrlBTimer) {
-      clearTimeout(this.ctrlBTimer);
-      this.ctrlBTimer = null;
-    }
-    this.ctrlBPending = false;
-    // Flush any partial escape buffer
-    if (this.escBuffer.length > 0) {
-      this.onData(Buffer.from(this.escBuffer));
-      this.escBuffer = [];
-    }
+    this.clearCtrlBPending(false);
+    this.clearEscBuffer(true);
   }
 }
