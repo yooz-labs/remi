@@ -397,7 +397,7 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg === '--local') {
     cliBindHost = 'localhost';
-    cliAuth = false;
+    // Don't set cliAuth; auto-detection disables auth for localhost already
     cliNoMdns = true;
   } else if (arg === '--no-mdns') {
     cliNoMdns = true;
@@ -446,7 +446,7 @@ Options:
   --auth                   Force enable authentication (default: auto based on --bind)
   --no-auth                Disable authentication (even when binding to all interfaces)
   --no-tofu                Reject unknown clients (disable Trust On First Use)
-  --local                  Localhost-only mode (--bind localhost --no-auth --no-mdns)
+  --local                  Localhost-only mode (--bind localhost --no-mdns)
   --no-mdns                Disable mDNS network advertising
   --host HOST              Connect to daemon at HOST (for ls/attach; default: localhost)
   --label NAME             Label for authorized key (authorize)

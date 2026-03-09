@@ -303,7 +303,7 @@ export function getLocalAddresses(hostname: string): Set<string> {
 function renderNetworkSessionList(results: DaemonSessions[]): void {
   if (results.length === 0) {
     console.log('No daemons found on the network.');
-    console.log('Tip: run `remi ls` for local sessions, or start a daemon with `--bind 0.0.0.0`');
+    console.log('Tip: run `remi ls` for local sessions, or ensure a remi daemon is running');
     return;
   }
 
