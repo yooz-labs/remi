@@ -139,17 +139,6 @@ export function startDaemon(opts?: StartOptions): number {
     process.exit(1);
   }
 
-  child.on('error', (err) => {
-    console.error(`Failed to start daemon: ${err.message}`);
-    try {
-      fs.unlinkSync(PID_FILE);
-    } catch {
-      // PID file may not exist yet
-    }
-    fs.closeSync(logFd);
-    process.exit(1);
-  });
-
   try {
     const fd = fs.openSync(PID_FILE, 'wx');
     fs.writeSync(fd, String(pid));
