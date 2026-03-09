@@ -68,7 +68,15 @@ export function getTailscalePeers(): VpnPeer[] {
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const status = JSON.parse(raw) as TailscaleStatus;
+    let status: TailscaleStatus;
+    try {
+      status = JSON.parse(raw) as TailscaleStatus;
+    } catch {
+      console.error(
+        '[vpn-discovery] Tailscale returned invalid JSON; check `tailscale status --json`',
+      );
+      return [];
+    }
     if (!status.Peer) return [];
 
     const peers: VpnPeer[] = [];

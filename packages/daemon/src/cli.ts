@@ -1,15 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Remi CLI - Transparent wrapper around Claude Code.
+ * Remi CLI entry point.
  *
- * Usage:
- *   remi [claude-args...]          Start Claude with remote monitoring
- *   remi --resume [session-id]     Resume a previous session
- *   remi --sessions                List stored sessions
- *   remi --daemon                  Legacy daemon mode (no local PTY)
- *
- * The wrapper spawns Claude immediately, passes through stdin/stdout,
- * and runs a WebSocket server silently for remote phone/browser monitoring.
+ * Routes subcommands (ls, attach, kill, start, stop, status, logs, new)
+ * and wraps Claude Code in the default mode. See --help for full usage.
  */
 
 import * as fs from 'node:fs';
@@ -23,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return pkg.version as string;
   } catch {
-    return '0.1.0';
+    return '0.3.5';
   }
 })();
 
@@ -1806,6 +1800,15 @@ const sharedEvents = {
 
     const sessionName = session.name;
     log(`Killing session: ${sessionName} (${sessionId})`);
+
+    // Notify attached client before destroying the session
+    if (session.activeConnectionId && session.activeConnectionId !== connectionId) {
+      sendToConnection(
+        session.activeConnectionId,
+        createError('SESSION_ENDED', 'Session killed by remote request'),
+      );
+    }
+
     sessionRegistry.closeSession(sessionId, 'forced');
     sendToConnection(connectionId, createKillSessionResponse(true, requestId));
     log(`Session killed: ${sessionName}`);

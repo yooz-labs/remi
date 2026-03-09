@@ -45,8 +45,8 @@ function loadSettings(): AppSettings {
   try {
     const stored = localStorage.getItem(LOCALSTORAGE_SETTINGS_KEY);
     if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
-  } catch {
-    /* use defaults */
+  } catch (err) {
+    console.warn('Failed to load settings, using defaults:', err);
   }
   return DEFAULT_SETTINGS;
 }
@@ -59,6 +59,46 @@ function applyTheme(theme: AppSettings['theme']) {
   } else {
     root.setAttribute('data-theme', theme);
   }
+}
+
+/** Convert shared Bullet[] to UIBullet[] */
+function toBullets(bullets: readonly Bullet[]): UIBullet[] {
+  return bullets.map((b) => ({
+    bulletId: b.bulletId,
+    type: b.type,
+    content: b.content,
+    originalNumber: b.originalNumber,
+    startLine: b.startLine,
+    endLine: b.endLine,
+    hasCodeBlock: b.hasCodeBlock,
+    isTruncated: b.isTruncated,
+    fullLength: b.fullLength,
+  }));
+}
+
+/** Map DiscoverableSession status to UISession agent status */
+function mapSessionStatus(status: string): 'executing' | 'idle' {
+  return status === 'active' ? 'executing' : 'idle';
+}
+
+/** Update a session's last-active time, clear questionPending, and bump unread if not active */
+function updateSessionActivity(
+  sessions: UISession[],
+  sessionId: UUID,
+  activeId: UUID | null,
+  preview?: string,
+): UISession[] {
+  return sessions.map((s) =>
+    s.id === sessionId
+      ? {
+          ...s,
+          lastActiveAt: new Date().toISOString(),
+          questionPending: false,
+          unreadCount: s.id === activeId ? s.unreadCount : s.unreadCount + 1,
+          preview: preview?.slice(0, 80) || s.preview,
+        }
+      : s,
+  );
 }
 
 function App() {
@@ -134,18 +174,7 @@ function App() {
         const { sessionId, entryUuid, role, content, isUpdate } = message;
         const structuredMsg = message.message;
 
-        // Convert bullets
-        const uiBullets: UIBullet[] = structuredMsg.bullets.map((b: Bullet) => ({
-          bulletId: b.bulletId,
-          type: b.type,
-          content: b.content,
-          originalNumber: b.originalNumber,
-          startLine: b.startLine,
-          endLine: b.endLine,
-          hasCodeBlock: b.hasCodeBlock,
-          isTruncated: b.isTruncated,
-          fullLength: b.fullLength,
-        }));
+        const uiBullets = toBullets(structuredMsg.bullets);
 
         setMessages((prev) => {
           // Dedup by entryUuid
@@ -214,21 +243,8 @@ function App() {
           return [...prev, uiMessage];
         });
 
-        // Update session last active time and increment unread if not the active session
-        // Also clear questionPending since new content means the question was resolved
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === sessionId
-              ? {
-                  ...s,
-                  lastActiveAt: new Date().toISOString(),
-                  questionPending: false,
-                  unreadCount:
-                    s.id === activeSessionIdRef.current ? s.unreadCount : s.unreadCount + 1,
-                  preview: structuredMsg.content?.slice(0, 80) || s.preview,
-                }
-              : s,
-          ),
+          updateSessionActivity(prev, sessionId, activeSessionIdRef.current, structuredMsg.content),
         );
         break;
       }
@@ -237,17 +253,7 @@ function App() {
         // Handle structured message with bullets (from PTY stream)
         const structuredMsg = message.message;
 
-        const uiBullets: UIBullet[] = structuredMsg.bullets.map((b: Bullet) => ({
-          bulletId: b.bulletId,
-          type: b.type,
-          content: b.content,
-          originalNumber: b.originalNumber,
-          startLine: b.startLine,
-          endLine: b.endLine,
-          hasCodeBlock: b.hasCodeBlock,
-          isTruncated: b.isTruncated,
-          fullLength: b.fullLength,
-        }));
+        const uiBullets = toBullets(structuredMsg.bullets);
 
         setMessages((prev) => {
           // Same-type dedup by message ID (streaming updates)
@@ -297,17 +303,11 @@ function App() {
         });
 
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === structuredMsg.sessionId
-              ? {
-                  ...s,
-                  lastActiveAt: new Date().toISOString(),
-                  questionPending: false,
-                  unreadCount:
-                    s.id === activeSessionIdRef.current ? s.unreadCount : s.unreadCount + 1,
-                  preview: structuredMsg.content?.slice(0, 80) || s.preview,
-                }
-              : s,
+          updateSessionActivity(
+            prev,
+            structuredMsg.sessionId,
+            activeSessionIdRef.current,
+            structuredMsg.content,
           ),
         );
         break;
@@ -380,14 +380,7 @@ function App() {
           name: ds.name || ds.projectPath.split('/').pop() || 'Session',
           createdAt: ds.lastActivity,
           lastActiveAt: ds.lastActivity,
-          status:
-            ds.status === 'active'
-              ? ('executing' as const)
-              : ds.status === 'idle'
-                ? ('idle' as const)
-                : ds.status === 'orphaned'
-                  ? ('idle' as const)
-                  : ('idle' as const),
+          status: mapSessionStatus(ds.status),
           connectionStatus: ds.canAttach ? ('connected' as const) : ('disconnected' as const),
           unreadCount: 0,
           cwd: ds.projectPath,
@@ -792,7 +785,7 @@ function App() {
               // (harmless if auth is required; daemon drops it and sends
               // auth_challenge first, then hello_ack after auth completes)
               const resumeId = activeSessionIdRef.current ?? undefined;
-              client.sendMessage(createHello('remi-web', '0.1.0', undefined, resumeId));
+              client.sendMessage(createHello(generateId(), '0.1.0', undefined, resumeId));
             } else if (state === 'connecting' || state === 'joined') {
               setRelayStatus('connecting');
             } else if (state === 'disconnected' || state === 'error') {
@@ -892,7 +885,7 @@ function App() {
 
                   // Auth succeeded; now send hello so the daemon creates our session
                   const resumeId = activeSessionIdRef.current ?? undefined;
-                  client.sendMessage(createHello('remi-web', '0.1.0', undefined, resumeId));
+                  client.sendMessage(createHello(generateId(), '0.1.0', undefined, resumeId));
                 } catch (err) {
                   const detail = err instanceof Error ? err.message : String(err);
                   setError(new Error(`Server verification failed: ${detail}`));

@@ -63,7 +63,7 @@ export interface SessionRegistryEvents {
 export interface ManagedSession {
   /** Unique session ID */
   readonly sessionId: UUID;
-  /** Human-readable session name (e.g. "hostname/project/branch") */
+  /** Human-readable session name (e.g. "hostname:dirname/branch") */
   readonly name: string;
   /** When session was created */
   readonly createdAt: Timestamp;

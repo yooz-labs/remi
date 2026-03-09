@@ -102,6 +102,50 @@ function BulletItem({
   );
 }
 
+/** Renders the inner content of a message bubble based on mode and content type */
+function MessageContent({
+  message,
+  enhanced,
+  hasBullets,
+  isUser,
+  onBulletExpand,
+}: {
+  readonly message: UIMessage;
+  readonly enhanced: boolean;
+  readonly hasBullets: boolean;
+  readonly isUser: boolean;
+  readonly onBulletExpand?: (bulletId: number) => void;
+}) {
+  if (message.isStreaming) {
+    return (
+      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+        {message.streamedContent}
+        <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
+      </div>
+    );
+  }
+
+  if (hasBullets) {
+    return (
+      <div className="space-y-2">
+        {message.bullets!.map((bullet) => (
+          <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
+        ))}
+      </div>
+    );
+  }
+
+  if (enhanced) {
+    return <ChatMessage content={message.content} isUser={isUser} />;
+  }
+
+  return (
+    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+      {message.content}
+    </div>
+  );
+}
+
 export function MessageBubble({
   message,
   showTimestamp = true,
@@ -135,11 +179,11 @@ export function MessageBubble({
   }
 
   // Sender label for enhanced chat mode
-  const senderLabel = enhanced && !isUser && !isSystem
-    ? 'Claude'
-    : enhanced && isUser
-      ? 'You'
-      : null;
+  let senderLabel: string | null = null;
+  if (enhanced) {
+    if (isUser) senderLabel = 'You';
+    else if (!isSystem) senderLabel = 'Claude';
+  }
 
   return (
     <div
@@ -183,33 +227,13 @@ export function MessageBubble({
 
         {/* Message content */}
         <div className={clsx(isUser ? 'text-white' : 'text-[--color-text]')}>
-          {message.isStreaming ? (
-            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-              {message.streamedContent}
-              <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
-            </div>
-          ) : enhanced ? (
-            /* Enhanced chat mode: parsed content with code blocks and markdown */
-            hasBullets ? (
-              <div className="space-y-2">
-                {message.bullets!.map((bullet) => (
-                  <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
-                ))}
-              </div>
-            ) : (
-              <ChatMessage content={message.content} isUser={isUser} />
-            )
-          ) : hasBullets ? (
-            <div className="space-y-2">
-              {message.bullets!.map((bullet) => (
-                <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
-              ))}
-            </div>
-          ) : (
-            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-              {message.content}
-            </div>
-          )}
+          <MessageContent
+            message={message}
+            enhanced={enhanced}
+            hasBullets={!!hasBullets}
+            isUser={isUser}
+            onBulletExpand={onBulletExpand}
+          />
         </div>
 
         {/* Footer: timestamp and status */}

@@ -165,6 +165,7 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
         return;
       }
 
+      if (authInProgress) return;
       handleMessage(msg);
     };
 

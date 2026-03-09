@@ -267,6 +267,30 @@ function AnsweredCard({
   );
 }
 
+/** Render the appropriate answer UI based on question type and state */
+function AnswerArea({
+  question,
+  isAnswered,
+  onAnswer,
+}: {
+  readonly question: UIQuestion;
+  readonly isAnswered: boolean;
+  readonly onAnswer: (answer: string) => void;
+}) {
+  if (isAnswered) return <AnsweredCard question={question} />;
+
+  switch (question.type) {
+    case 'yes_no':
+      return <YesNoCard question={question} onAnswer={onAnswer} />;
+    case 'multi_option':
+      return <MultiOptionCard question={question} onAnswer={onAnswer} />;
+    case 'numbered':
+      return <NumberedCard question={question} onAnswer={onAnswer} />;
+    default:
+      return <FreeTextCard onAnswer={onAnswer} />;
+  }
+}
+
 export function QuestionCard({ question, onAnswer, className }: QuestionCardProps) {
   const isAnswered = question.answeredWith != null;
 
@@ -287,17 +311,7 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
       </div>
 
       {/* Answer area */}
-      {isAnswered ? (
-        <AnsweredCard question={question} />
-      ) : question.type === 'yes_no' ? (
-        <YesNoCard question={question} onAnswer={onAnswer} />
-      ) : question.type === 'multi_option' ? (
-        <MultiOptionCard question={question} onAnswer={onAnswer} />
-      ) : question.type === 'numbered' ? (
-        <NumberedCard question={question} onAnswer={onAnswer} />
-      ) : (
-        <FreeTextCard onAnswer={onAnswer} />
-      )}
+      <AnswerArea question={question} isAnswered={isAnswered} onAnswer={onAnswer} />
     </div>
   );
 }
