@@ -6,27 +6,18 @@
  * The status.json file provides additional runtime info.
  */
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-function getRemiDir(): string {
-  const dir = path.join(os.homedir(), '.remi');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
+const REMI_DIR = path.join(os.homedir(), '.remi');
+const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
+const STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
+const LOG_FILE = path.join(REMI_DIR, 'daemon.log');
 
-function pidFile(): string {
-  return path.join(getRemiDir(), 'daemon.pid');
-}
-
-function statusFile(): string {
-  return path.join(getRemiDir(), 'daemon-status.json');
-}
-
-function daemonLogFile(): string {
-  return path.join(getRemiDir(), 'daemon.log');
+function ensureRemiDir(): void {
+  fs.mkdirSync(REMI_DIR, { recursive: true });
 }
 
 /**
@@ -35,18 +26,16 @@ function daemonLogFile(): string {
  */
 export function getRunningDaemonPid(): number | null {
   try {
-    const content = fs.readFileSync(pidFile(), 'utf-8').trim();
+    const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
     const pid = Number.parseInt(content, 10);
     if (Number.isNaN(pid) || pid <= 0) return null;
 
-    // Check if the process is actually running
     try {
       process.kill(pid, 0);
       return pid;
     } catch {
-      // Process not running; clean up stale PID file
       try {
-        fs.unlinkSync(pidFile());
+        fs.unlinkSync(PID_FILE);
       } catch {
         // ignore cleanup errors
       }
@@ -57,12 +46,9 @@ export function getRunningDaemonPid(): number | null {
   }
 }
 
-/**
- * Read status.json for daemon runtime information.
- */
 function readStatus(): Record<string, unknown> | null {
   try {
-    const content = fs.readFileSync(statusFile(), 'utf-8');
+    const content = fs.readFileSync(STATUS_FILE, 'utf-8');
     return JSON.parse(content) as Record<string, unknown>;
   } catch {
     return null;
@@ -103,6 +89,7 @@ export interface StartOptions {
  * Returns the PID of the spawned process.
  */
 export function startDaemon(opts?: StartOptions): number {
+  ensureRemiDir();
   const existingPid = getRunningDaemonPid();
   if (existingPid) {
     const status = readStatus();
@@ -113,9 +100,6 @@ export function startDaemon(opts?: StartOptions): number {
   }
 
   const { command, baseArgs } = resolveRemiCommand();
-  const logPath = daemonLogFile();
-
-  // Build args: [script-if-needed] --daemon [--port N] [extra...]
   const spawnArgs = [...baseArgs, '--daemon'];
   if (opts?.port) {
     spawnArgs.push('--port', String(opts.port));
@@ -124,15 +108,12 @@ export function startDaemon(opts?: StartOptions): number {
     spawnArgs.push(...opts.extraArgs);
   }
 
-  // Open log file for stdout/stderr redirection
-  const logFd = fs.openSync(logPath, 'a');
+  const logFd = fs.openSync(LOG_FILE, 'a');
   fs.writeSync(logFd, `\n--- Daemon starting at ${new Date().toISOString()} ---\n`);
 
-  // Spawn detached process
   const child = spawn(command, spawnArgs, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env },
   });
 
   const pid = child.pid;
@@ -142,14 +123,24 @@ export function startDaemon(opts?: StartOptions): number {
     process.exit(1);
   }
 
-  // Write PID file
-  fs.writeFileSync(pidFile(), String(pid), 'utf-8');
-
-  // Detach from parent so the daemon survives
+  try {
+    const fd = fs.openSync(PID_FILE, 'wx');
+    fs.writeSync(fd, String(pid));
+    fs.closeSync(fd);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      console.error('Another daemon appears to be starting. Check with `remi status`.');
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to write PID file: ${msg}`);
+    }
+    fs.closeSync(logFd);
+    process.exit(1);
+  }
   child.unref();
   fs.closeSync(logFd);
 
-  // Wait briefly for the daemon to initialize and write status.json
+  // Poll until daemon writes status.json or times out
   const startTime = Date.now();
   const timeout = 5000;
   let port: number | string = 'unknown';
@@ -160,31 +151,26 @@ export function startDaemon(opts?: StartOptions): number {
       port = status['wsPort'] as number;
       break;
     }
-    // Verify the process is still alive
     try {
       process.kill(pid, 0);
     } catch {
       console.error('Daemon process exited unexpectedly. Check logs:');
-      console.error(`  ${logPath}`);
+      console.error(`  ${LOG_FILE}`);
       try {
-        fs.unlinkSync(pidFile());
+        fs.unlinkSync(PID_FILE);
       } catch {
         // ignore
       }
       process.exit(1);
     }
-    // Small sync sleep to avoid busy loop
-    execFileSync('sleep', ['0.1']);
+    Bun.sleepSync(100);
   }
 
   console.log(`Daemon started (PID ${pid}, port ${port}).`);
-  console.log(`Logs: ${logPath}`);
+  console.log(`Logs: ${LOG_FILE}`);
   return pid;
 }
 
-/**
- * Stop the running remi daemon.
- */
 export function stopDaemon(): void {
   const pid = getRunningDaemonPid();
   if (!pid) {
@@ -194,7 +180,6 @@ export function stopDaemon(): void {
 
   console.log(`Stopping daemon (PID ${pid})...`);
 
-  // Send SIGTERM for graceful shutdown
   try {
     process.kill(pid, 'SIGTERM');
   } catch (err) {
@@ -203,37 +188,32 @@ export function stopDaemon(): void {
     process.exit(1);
   }
 
-  // Wait for the process to exit (up to 5 seconds)
+  // Wait up to 5 seconds for graceful exit
   const startTime = Date.now();
   const timeout = 5000;
 
   while (Date.now() - startTime < timeout) {
     try {
       process.kill(pid, 0);
-      // Still running; wait
-      execFileSync('sleep', ['0.2']);
+      Bun.sleepSync(200);
     } catch {
-      // Process exited
       cleanupFiles();
       console.log('Daemon stopped.');
       return;
     }
   }
 
-  // Force kill if still running
   console.error('Daemon did not stop gracefully; sending SIGKILL...');
   try {
     process.kill(pid, 'SIGKILL');
   } catch {
     // Already dead
   }
+  Bun.sleepSync(200);
   cleanupFiles();
   console.log('Daemon killed.');
 }
 
-/**
- * Show daemon status.
- */
 export function showDaemonStatus(): void {
   const pid = getRunningDaemonPid();
   if (!pid) {
@@ -255,32 +235,27 @@ export function showDaemonStatus(): void {
     console.log(`Daemon running (PID ${pid}), no status info available.`);
   }
 
-  console.log(`  Logs: ${daemonLogFile()}`);
+  console.log(`  Logs: ${LOG_FILE}`);
 }
 
-/**
- * Show recent daemon log output.
- */
 export function showDaemonLogs(lines = 50): void {
-  const logPath = daemonLogFile();
   try {
-    const content = fs.readFileSync(logPath, 'utf-8');
-    const allLines = content.split('\n');
-    const tail = allLines.slice(-lines);
-    console.log(tail.join('\n'));
+    fs.accessSync(LOG_FILE, fs.constants.R_OK);
+    const output = execSync(`tail -n ${lines} "${LOG_FILE}"`, { encoding: 'utf-8' });
+    console.log(output);
   } catch {
-    console.error(`No daemon log found at ${logPath}`);
+    console.error(`No daemon log found at ${LOG_FILE}`);
   }
 }
 
 function cleanupFiles(): void {
   try {
-    fs.unlinkSync(pidFile());
+    fs.unlinkSync(PID_FILE);
   } catch {
     // ignore
   }
   try {
-    fs.unlinkSync(statusFile());
+    fs.unlinkSync(STATUS_FILE);
   } catch {
     // ignore
   }
