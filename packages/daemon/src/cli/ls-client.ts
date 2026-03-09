@@ -187,7 +187,13 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
 
   console.error('Scanning network for Remi daemons...');
   const { discoverDaemons } = await import('../mdns/mdns-browser.ts');
-  const daemons = await discoverDaemons({ timeoutMs: mdnsTimeout });
+  const { discoverVpnPeers } = await import('../mdns/vpn-discovery.ts');
+
+  // Run mDNS and VPN discovery in parallel
+  const [daemons, vpnPeers] = await Promise.all([
+    discoverDaemons({ timeoutMs: mdnsTimeout }),
+    discoverVpnPeers({ port: localPort, probeTimeoutMs: timeout }).catch(() => []),
+  ]);
 
   const results: DaemonSessions[] = [];
   const myHostname = os.hostname();
@@ -199,13 +205,17 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     });
   }
 
-  // Query remote daemons in parallel, filtering out self
+  // Query remote daemons (mDNS) in parallel, filtering out self
   const localAddrs = getLocalAddresses(myHostname);
   const remoteDaemons = daemons.filter((d) => !(d.port === localPort && localAddrs.has(d.host)));
+
+  // Track hosts already discovered via mDNS to deduplicate VPN results
+  const discoveredHosts = new Set<string>();
 
   const remoteResults = await Promise.allSettled(
     remoteDaemons.map(async (daemon) => {
       const sessions = await fetchSessions(daemon.host, daemon.port, timeout);
+      discoveredHosts.add(daemon.host);
       return {
         daemon: {
           name: daemon.name,
@@ -228,6 +238,34 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
       console.error(
         `[ls] Failed to query daemon ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}`,
       );
+    }
+  }
+
+  // Query VPN peers not already found via mDNS
+  const newVpnPeers = vpnPeers.filter(
+    (v) => !localAddrs.has(v.host) && !discoveredHosts.has(v.host),
+  );
+  if (newVpnPeers.length > 0) {
+    const vpnResults = await Promise.allSettled(
+      newVpnPeers.map(async ({ peer, host, port }) => {
+        const sessions = await fetchSessions(host, port, timeout);
+        return {
+          daemon: {
+            name: `vpn:${peer.hostname}`,
+            host,
+            port,
+            hostname: peer.hostname,
+          },
+          sessions,
+        } satisfies DaemonSessions;
+      }),
+    );
+    for (let i = 0; i < vpnResults.length; i++) {
+      const r = vpnResults[i];
+      if (r?.status === 'fulfilled') {
+        results.push(r.value);
+      }
+      // VPN probe failures are expected (peer online but no remi); skip silently
     }
   }
 
