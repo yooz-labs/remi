@@ -40,6 +40,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let resolved = false;
   let outputBroken = false;
   let authInProgress = false;
+  let receivedRawPty = false;
+  let rawPtyTimer: ReturnType<typeof setTimeout> | null = null;
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -55,18 +57,22 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   }
 
   function restoreTerminal(): void {
+    if (rawPtyTimer) {
+      clearTimeout(rawPtyTimer);
+      rawPtyTimer = null;
+    }
     if (resizeNudgeTimer) {
       clearTimeout(resizeNudgeTimer);
       resizeNudgeTimer = null;
     }
-    // Exit alternate screen buffer (restores original terminal content)
+    // Print a newline after detach so the user's shell prompt starts clean
     if (attachedSessionId) {
       try {
-        fs.writeSync(outputFd, '\x1b[?1049l');
+        fs.writeSync(outputFd, '\n');
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== 'EBADF' && code !== 'EPIPE') {
-          process.stderr.write(`[remi] warning: failed to exit alternate screen: ${code ?? err}\n`);
+          process.stderr.write(`[remi] warning: cleanup write failed: ${code ?? err}\n`);
         }
       }
     }
@@ -124,30 +130,20 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   function renderMessage(msg: ProtocolMessage): void {
     switch (msg.type) {
       case 'raw_pty_output':
+        receivedRawPty = true;
         writeRawBytes(msg.data);
         break;
       case 'agent_output':
       case 'structured_agent_output':
-        writeOutput(msg.message.content);
-        break;
       case 'question':
-        writeOutput(`\n? ${msg.question.text}\n`);
-        if (msg.question.options) {
-          for (const opt of msg.question.options) {
-            writeOutput(`  ${opt.label}\n`);
-          }
-        }
-        break;
       case 'session_update':
-        // Suppress status badges (raw PTY output provides the full terminal view)
+      case 'transcript_content':
+        // Suppressed; raw PTY output already provides the full terminal view
         break;
       case 'replay_batch':
         for (const m of msg.messages) {
           renderMessage(m);
         }
-        break;
-      case 'transcript_content':
-        // Suppress transcript content (raw PTY output provides the full terminal view)
         break;
       case 'error':
         writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
@@ -188,9 +184,9 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         attachedSessionId = msg.sessionId;
         const shortId = msg.sessionId.slice(0, 8);
 
-        // Enter alternate screen buffer (like tmux) first, then show banner
-        // inside the alternate buffer so it doesn't persist in scrollback
-        writeOutput('\x1b[?1049h\x1b[2J\x1b[H');
+        // Clear screen and home cursor; we stay in the primary screen buffer
+        // so the user's terminal emulator provides native scrollback
+        writeOutput('\x1b[2J\x1b[H');
         writeOutput(`[attached to session ${shortId}] (Ctrl+B d to detach)\n`);
 
         // Enter raw terminal mode
@@ -237,6 +233,16 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
             sendMessage(createTerminalResize(cols, rows));
           }, 50);
         }
+
+        // Warn if no raw PTY data arrives within a few seconds
+        rawPtyTimer = setTimeout(() => {
+          rawPtyTimer = null;
+          if (!receivedRawPty && !resolved) {
+            process.stderr.write(
+              '[remi] warning: no raw PTY output received; session may not be producing terminal data\n',
+            );
+          }
+        }, 3000);
 
         return;
       }
