@@ -125,22 +125,15 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         break;
       case 'agent_output':
       case 'structured_agent_output':
-        // Suppress structured output; the raw PTY output already shows everything
-        break;
       case 'question':
-        // Suppress structured question messages; the raw PTY output already
-        // contains the interactive prompt from Claude Code's TUI
-        break;
       case 'session_update':
-        // Suppress status badges (raw PTY output provides the full terminal view)
+      case 'transcript_content':
+        // Suppressed; raw PTY output already provides the full terminal view
         break;
       case 'replay_batch':
         for (const m of msg.messages) {
           renderMessage(m);
         }
-        break;
-      case 'transcript_content':
-        // Suppress transcript content (raw PTY output provides the full terminal view)
         break;
       case 'error':
         writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
