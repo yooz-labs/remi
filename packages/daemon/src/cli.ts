@@ -758,15 +758,15 @@ if (cliSubcommand === 'attach') {
   let resolvedHost = cliHost ?? 'localhost';
 
   // Check for remote attach: host:port/session-id (e.g., 192.168.0.83:18765/name)
-  // Remote targets have a numeric port after the colon (host:PORT/...).
-  // Session names use hostname:dir/branch where dir is not numeric.
+  // Remote targets have a numeric port between the last colon and first slash.
+  // Session names (hostname:dir/branch) have a non-numeric directory segment there.
+  // Note: a purely numeric directory name (e.g., "8765") would be misidentified as a port.
   const firstSlash = targetSessionId?.indexOf('/') ?? -1;
-  const colonBeforeSlash =
-    firstSlash > 0 ? targetSessionId?.slice(0, firstSlash).lastIndexOf(':') : -1;
+  const colonIdx = firstSlash > 0 ? targetSessionId?.lastIndexOf(':', firstSlash - 1) : -1;
   const hasRemoteFormat =
-    colonBeforeSlash != null &&
-    colonBeforeSlash > 0 &&
-    /^\d+$/.test(targetSessionId?.slice(colonBeforeSlash + 1, firstSlash) ?? '');
+    colonIdx != null &&
+    colonIdx > 0 &&
+    /^\d+$/.test(targetSessionId?.slice(colonIdx + 1, firstSlash) ?? '');
   if (targetSessionId && hasRemoteFormat) {
     try {
       const { parseRemoteTarget } = await import('./cli/ls-client.ts');
@@ -846,22 +846,23 @@ if (cliSubcommand === 'attach') {
         process.exit(1);
       } else if (!cliHost) {
         // Not found locally; extract hostname from session name and discover via mDNS.
-        // Session names are formatted as "hostname:dir/branch", so the part before
-        // the first colon identifies the remote machine.
+        // Session names are "hostname:dir/branch" (possibly with ":N" dedup suffix).
+        // The first colon always separates the hostname.
+        const target = targetSessionId as string;
         let foundRemote = false;
-        const colonIdx = (targetSessionId as string).indexOf(':');
-        if (colonIdx > 0) {
-          const targetHostname = (targetSessionId as string).slice(0, colonIdx);
+        const nameColonIdx = target.indexOf(':');
+        if (nameColonIdx > 0) {
+          const targetHostname = target.slice(0, nameColonIdx);
           try {
             const { discoverDaemons } = await import('./mdns/mdns-browser.ts');
             const { fetchSessions } = await import('./cli/ls-client.ts');
-            console.error(`Resolving "${targetSessionId}" via network discovery...`);
+            console.error(`Resolving "${target}" via network discovery...`);
             const daemons = await discoverDaemons({ timeoutMs: 3000 });
             const daemon = daemons.find((d: { hostname: string }) => d.hostname === targetHostname);
             if (daemon) {
               const sessions = await fetchSessions(daemon.host, daemon.port, 3000);
               const remoteMatches = sessions.filter(
-                (s) => s.name === targetSessionId || s.name?.startsWith(targetSessionId as string),
+                (s) => s.name === target || s.name?.startsWith(target),
               );
               if (remoteMatches.length === 1) {
                 // biome-ignore lint/style/noNonNullAssertion: length checked above
@@ -878,15 +879,25 @@ if (cliSubcommand === 'attach') {
                   console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
                 }
                 process.exit(1);
+              } else {
+                console.error(
+                  `Daemon found on ${daemon.hostname} (${daemon.host}:${daemon.port}) but no session matches "${target}".`,
+                );
+                const available = sessions.map((s) => s.name ?? s.sessionId.slice(0, 8)).join(', ');
+                if (available) console.error(`  Available sessions: ${available}`);
               }
+            } else {
+              console.error(`No daemon found for hostname "${targetHostname}" on the network.`);
             }
-          } catch {
-            // mDNS discovery failed; fall through to error
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            log(`[Attach] mDNS discovery error for "${targetHostname}": ${reason}`);
+            console.error(`Network discovery failed: ${reason}`);
           }
         }
         if (!foundRemote) {
           console.error(
-            `No session found matching "${targetSessionId}". Run \`remi ls --network\` to see available sessions.`,
+            `No session found matching "${target}". Run \`remi ls --network\` to see available sessions.`,
           );
           process.exit(1);
         }

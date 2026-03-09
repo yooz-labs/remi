@@ -64,14 +64,16 @@ describe('generateSessionName', () => {
     const name = generateSessionName('/tmp');
     // Should be hostname:tmp (no branch)
     expect(name).toContain(':');
-    const [_hostname, rest] = name.split(':');
+    const colonIdx = name.indexOf(':');
+    const rest = name.slice(colonIdx + 1);
     expect(rest).toBe('tmp');
     expect(rest).not.toContain('/');
   });
 
   test('uses directory basename', () => {
     const name = generateSessionName('/some/deep/project');
-    const [_hostname, rest] = name.split(':');
+    const colonIdx = name.indexOf(':');
+    const rest = name.slice(colonIdx + 1);
     expect(rest).toMatch(/^project/);
   });
 });

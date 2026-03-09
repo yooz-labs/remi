@@ -2,8 +2,9 @@
  * Session name generation for human-readable session identifiers.
  *
  * Format: hostname:dirname/branch (or hostname:dirname if no git).
- * Uses colon after hostname so names don't conflict with the
- * host:port/session remote attach URL format.
+ * Colon separates hostname from path. Disambiguation from the
+ * host:port/session remote URL format relies on checking whether
+ * the segment after the colon is a numeric port.
  */
 
 import { execSync } from 'node:child_process';
