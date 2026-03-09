@@ -40,6 +40,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let resolved = false;
   let outputBroken = false;
   let authInProgress = false;
+  let receivedRawPty = false;
+  let rawPtyTimer: ReturnType<typeof setTimeout> | null = null;
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -55,6 +57,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   }
 
   function restoreTerminal(): void {
+    if (rawPtyTimer) {
+      clearTimeout(rawPtyTimer);
+      rawPtyTimer = null;
+    }
     if (resizeNudgeTimer) {
       clearTimeout(resizeNudgeTimer);
       resizeNudgeTimer = null;
@@ -63,8 +69,11 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     if (attachedSessionId) {
       try {
         fs.writeSync(outputFd, '\n');
-      } catch {
-        // ignore write errors during cleanup
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EBADF' && code !== 'EPIPE') {
+          process.stderr.write(`[remi] warning: cleanup write failed: ${code ?? err}\n`);
+        }
       }
     }
     if (rawModeSet && process.stdin.isTTY) {
@@ -121,6 +130,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   function renderMessage(msg: ProtocolMessage): void {
     switch (msg.type) {
       case 'raw_pty_output':
+        receivedRawPty = true;
         writeRawBytes(msg.data);
         break;
       case 'agent_output':
@@ -223,6 +233,16 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
             sendMessage(createTerminalResize(cols, rows));
           }, 50);
         }
+
+        // Warn if no raw PTY data arrives within a few seconds
+        rawPtyTimer = setTimeout(() => {
+          rawPtyTimer = null;
+          if (!receivedRawPty && !resolved) {
+            process.stderr.write(
+              '[remi] warning: no raw PTY output received; session may not be producing terminal data\n',
+            );
+          }
+        }, 3000);
 
         return;
       }
