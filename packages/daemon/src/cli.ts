@@ -395,6 +395,10 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--remove' && nextArg) {
     cliRemoveFingerprint = nextArg;
     i++;
+  } else if (arg === '--local') {
+    cliBindHost = 'localhost';
+    // Don't set cliAuth; auto-detection disables auth for localhost already
+    cliNoMdns = true;
   } else if (arg === '--no-mdns') {
     cliNoMdns = true;
   } else if (arg === '--network') {
@@ -436,12 +440,13 @@ Options:
   --no-relay               Disable signaling relay (no remote access via connection code)
   --permanent-code         Use a persistent connection code (requires Ed25519 auth over relay)
   --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
-  --bind HOST              Bind WebSocket to HOST (default: localhost; use 0.0.0.0 for all interfaces)
+  --bind HOST              Bind WebSocket to HOST (default: 0.0.0.0; use --local for localhost-only)
   --force                  Overwrite existing identity (keygen/import-key)
   --passphrase             Encrypt identity with a passphrase (keygen)
   --auth                   Force enable authentication (default: auto based on --bind)
   --no-auth                Disable authentication (even when binding to all interfaces)
   --no-tofu                Reject unknown clients (disable Trust On First Use)
+  --local                  Localhost-only mode (--bind localhost --no-mdns)
   --no-mdns                Disable mDNS network advertising
   --host HOST              Connect to daemon at HOST (for ls/attach; default: localhost)
   --label NAME             Label for authorized key (authorize)
@@ -845,7 +850,7 @@ if (cliSubcommand === 'attach') {
         console.error('Provide a longer prefix to disambiguate.');
         process.exit(1);
       } else if (!cliHost) {
-        // Not found locally; extract hostname from session name and discover via mDNS.
+        // Not found locally; discover via mDNS + VPN (Tailscale, etc.).
         // Session names are "hostname:dir/branch" (possibly with ":N" dedup suffix).
         // The first colon always separates the hostname.
         const target = targetSessionId as string;
@@ -855,25 +860,55 @@ if (cliSubcommand === 'attach') {
           const targetHostname = target.slice(0, nameColonIdx);
           try {
             const { discoverDaemons } = await import('./mdns/mdns-browser.ts');
+            const { discoverVpnPeers } = await import('./mdns/vpn-discovery.ts');
             const { fetchSessions } = await import('./cli/ls-client.ts');
             console.error(`Resolving "${target}" via network discovery...`);
-            const daemons = await discoverDaemons({ timeoutMs: 3000 });
-            const daemon = daemons.find((d: { hostname: string }) => d.hostname === targetHostname);
-            if (daemon) {
-              const sessions = await fetchSessions(daemon.host, daemon.port, 3000);
+
+            // Run mDNS and VPN discovery in parallel
+            const [daemons, vpnPeers] = await Promise.all([
+              discoverDaemons({ timeoutMs: 3000 }),
+              discoverVpnPeers({ port: resolvedPort, probeTimeoutMs: 2000 }).catch((err) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                log(`[Attach] VPN discovery failed: ${msg}`);
+                return [] as {
+                  peer: import('./mdns/vpn-discovery.ts').VpnPeer;
+                  host: string;
+                  port: number;
+                }[];
+              }),
+            ]);
+
+            // Try mDNS first, fall back to VPN peers
+            const mdnsMatch = daemons.find(
+              (d: { hostname: string }) => d.hostname === targetHostname,
+            );
+            const vpnMatch = mdnsMatch
+              ? null
+              : vpnPeers.find((v) => v.peer.hostname === targetHostname);
+
+            const resolvedDaemon = mdnsMatch
+              ? { host: mdnsMatch.host, port: mdnsMatch.port, hostname: mdnsMatch.hostname }
+              : vpnMatch
+                ? { host: vpnMatch.host, port: vpnMatch.port, hostname: vpnMatch.peer.hostname }
+                : null;
+
+            if (resolvedDaemon) {
+              const sessions = await fetchSessions(resolvedDaemon.host, resolvedDaemon.port, 3000);
               const remoteMatches = sessions.filter(
                 (s) => s.name === target || s.name?.startsWith(target),
               );
               if (remoteMatches.length === 1) {
                 // biome-ignore lint/style/noNonNullAssertion: length checked above
                 targetSessionId = remoteMatches[0]!.sessionId;
-                resolvedHost = daemon.host;
-                resolvedPort = daemon.port;
+                resolvedHost = resolvedDaemon.host;
+                resolvedPort = resolvedDaemon.port;
                 foundRemote = true;
-                console.error(`Found on ${daemon.hostname} (${daemon.host}:${daemon.port})`);
+                console.error(
+                  `Found on ${resolvedDaemon.hostname} (${resolvedDaemon.host}:${resolvedDaemon.port})`,
+                );
               } else if (remoteMatches.length > 1) {
                 console.error(
-                  `Ambiguous: ${remoteMatches.length} sessions match on ${daemon.hostname}`,
+                  `Ambiguous: ${remoteMatches.length} sessions match on ${resolvedDaemon.hostname}`,
                 );
                 for (const m of remoteMatches) {
                   console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
@@ -881,17 +916,19 @@ if (cliSubcommand === 'attach') {
                 process.exit(1);
               } else {
                 console.error(
-                  `Daemon found on ${daemon.hostname} (${daemon.host}:${daemon.port}) but no session matches "${target}".`,
+                  `Daemon found on ${resolvedDaemon.hostname} (${resolvedDaemon.host}:${resolvedDaemon.port}) but no session matches "${target}".`,
                 );
                 const available = sessions.map((s) => s.name ?? s.sessionId.slice(0, 8)).join(', ');
                 if (available) console.error(`  Available sessions: ${available}`);
               }
             } else {
-              console.error(`No daemon found for hostname "${targetHostname}" on the network.`);
+              console.error(
+                `No daemon found for hostname "${targetHostname}" on the network or VPN.`,
+              );
             }
           } catch (err) {
             const reason = err instanceof Error ? err.message : String(err);
-            log(`[Attach] mDNS discovery error for "${targetHostname}": ${reason}`);
+            log(`[Attach] Network discovery error for "${targetHostname}": ${reason}`);
             console.error(`Network discovery failed: ${reason}`);
           }
         }
@@ -1746,9 +1783,9 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: auto based on bind host (localhost=off, 0.0.0.0=on), --auth/--no-auth override
+// Auth setup: auto based on bind host (default 0.0.0.0=on, localhost=off), --auth/--no-auth override
 // ---------------------------------------------------------------------------
-const bindHost = cliBindHost ?? 'localhost';
+const bindHost = cliBindHost ?? '0.0.0.0';
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
