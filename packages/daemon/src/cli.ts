@@ -867,21 +867,30 @@ if (cliSubcommand === 'attach') {
             // Run mDNS and VPN discovery in parallel
             const [daemons, vpnPeers] = await Promise.all([
               discoverDaemons({ timeoutMs: 3000 }),
-              discoverVpnPeers({ port: resolvedPort, probeTimeoutMs: 2000 }).catch(() => []),
+              discoverVpnPeers({ port: resolvedPort, probeTimeoutMs: 2000 }).catch((err) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                log(`[Attach] VPN discovery failed: ${msg}`);
+                return [] as {
+                  peer: import('./mdns/vpn-discovery.ts').VpnPeer;
+                  host: string;
+                  port: number;
+                }[];
+              }),
             ]);
 
-            // Try mDNS first
-            const daemon = daemons.find((d: { hostname: string }) => d.hostname === targetHostname);
+            // Try mDNS first, fall back to VPN peers
+            const mdnsMatch = daemons.find(
+              (d: { hostname: string }) => d.hostname === targetHostname,
+            );
+            const vpnMatch = mdnsMatch
+              ? null
+              : vpnPeers.find((v) => v.peer.hostname === targetHostname);
 
-            // If not found via mDNS, check VPN peers
-            const resolvedDaemon = daemon
-              ? { host: daemon.host, port: daemon.port, hostname: daemon.hostname }
-              : (() => {
-                  const vpnMatch = vpnPeers.find((v) => v.peer.hostname === targetHostname);
-                  return vpnMatch
-                    ? { host: vpnMatch.host, port: vpnMatch.port, hostname: vpnMatch.peer.hostname }
-                    : null;
-                })();
+            const resolvedDaemon = mdnsMatch
+              ? { host: mdnsMatch.host, port: mdnsMatch.port, hostname: mdnsMatch.hostname }
+              : vpnMatch
+                ? { host: vpnMatch.host, port: vpnMatch.port, hostname: vpnMatch.peer.hostname }
+                : null;
 
             if (resolvedDaemon) {
               const sessions = await fetchSessions(resolvedDaemon.host, resolvedDaemon.port, 3000);

@@ -49,13 +49,12 @@ export async function discoverVpnPeers(
     }),
   );
 
-  const found: { peer: VpnPeer; host: string; port: number }[] = [];
-  for (const r of results) {
-    if (r.status === 'fulfilled') {
-      found.push(r.value);
-    }
-  }
-  return found;
+  return results
+    .filter(
+      (r): r is PromiseFulfilledResult<{ peer: VpnPeer; host: string; port: number }> =>
+        r.status === 'fulfilled',
+    )
+    .map((r) => r.value);
 }
 
 /**
@@ -90,8 +89,13 @@ export function getTailscalePeers(): VpnPeer[] {
       peers.push({ hostname, ip, os: peer.OS ?? 'unknown' });
     }
     return peers;
-  } catch {
-    // Tailscale CLI not available or not running
+  } catch (err) {
+    // ENOENT = tailscale not installed; other errors worth logging
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[vpn-discovery] Tailscale query failed: ${msg}`);
+    }
     return [];
   }
 }

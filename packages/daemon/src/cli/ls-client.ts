@@ -192,7 +192,15 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
   // Run mDNS and VPN discovery in parallel
   const [daemons, vpnPeers] = await Promise.all([
     discoverDaemons({ timeoutMs: mdnsTimeout }),
-    discoverVpnPeers({ port: localPort, probeTimeoutMs: timeout }).catch(() => []),
+    discoverVpnPeers({ port: localPort, probeTimeoutMs: timeout }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[ls] VPN discovery failed: ${msg}`);
+      return [] as {
+        peer: import('../mdns/vpn-discovery.ts').VpnPeer;
+        host: string;
+        port: number;
+      }[];
+    }),
   ]);
 
   const results: DaemonSessions[] = [];
@@ -210,12 +218,11 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
   const remoteDaemons = daemons.filter((d) => !(d.port === localPort && localAddrs.has(d.host)));
 
   // Track hosts already discovered via mDNS to deduplicate VPN results
-  const discoveredHosts = new Set<string>();
+  const discoveredHosts = new Set(remoteDaemons.map((d) => d.host));
 
   const remoteResults = await Promise.allSettled(
     remoteDaemons.map(async (daemon) => {
       const sessions = await fetchSessions(daemon.host, daemon.port, timeout);
-      discoveredHosts.add(daemon.host);
       return {
         daemon: {
           name: daemon.name,
@@ -264,8 +271,16 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
       const r = vpnResults[i];
       if (r?.status === 'fulfilled') {
         results.push(r.value);
+      } else if (r?.status === 'rejected') {
+        // Connection refused is expected (peer has no remi); log other errors
+        const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
+          const vpnPeer = newVpnPeers[i];
+          console.error(
+            `[ls] VPN peer ${vpnPeer?.peer.hostname ?? 'unknown'} at ${vpnPeer?.host ?? '?'}:${vpnPeer?.port ?? '?'}: ${reason}`,
+          );
+        }
       }
-      // VPN probe failures are expected (peer online but no remi); skip silently
     }
   }
 
