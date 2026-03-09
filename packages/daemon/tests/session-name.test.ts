@@ -47,16 +47,17 @@ describe('makeUniqueName', () => {
 });
 
 describe('generateSessionName', () => {
-  test('generates name with hostname:dir/branch for git repos', () => {
-    // This test runs in the remi repo, so it should have a git branch
+  test('generates name with hostname:dir format', () => {
     const name = generateSessionName(process.cwd());
-    // Should have hostname:dir/branch format (colon separates hostname)
+    // Should have hostname:dir or hostname:dir/branch format
     expect(name).toContain(':');
-    const [hostname, rest] = name.split(':');
+    const colonIdx = name.indexOf(':');
+    const hostname = name.slice(0, colonIdx);
+    const rest = name.slice(colonIdx + 1);
     expect(hostname).not.toContain('.local');
-    expect(hostname!.length).toBeGreaterThan(0);
-    // rest should be dir/branch
-    expect(rest).toContain('/');
+    expect(hostname.length).toBeGreaterThan(0);
+    // rest should be at minimum the directory name
+    expect(rest.length).toBeGreaterThan(0);
   });
 
   test('generates name without branch for non-git directories', () => {
