@@ -1,0 +1,262 @@
+/**
+ * Background daemon lifecycle management for remi start/stop/status.
+ *
+ * Uses child_process.spawn with detached:true to launch remi --daemon
+ * in the background. Tracks the daemon via a PID file (~/.remi/daemon.pid).
+ * The status.json file provides additional runtime info.
+ */
+
+import { execSync, spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+const REMI_DIR = path.join(os.homedir(), '.remi');
+const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
+const STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
+const LOG_FILE = path.join(REMI_DIR, 'daemon.log');
+
+function ensureRemiDir(): void {
+  fs.mkdirSync(REMI_DIR, { recursive: true });
+}
+
+/**
+ * Read the daemon PID from the PID file.
+ * Returns null if no PID file exists or the process is not running.
+ */
+export function getRunningDaemonPid(): number | null {
+  try {
+    const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+    const pid = Number.parseInt(content, 10);
+    if (Number.isNaN(pid) || pid <= 0) return null;
+
+    try {
+      process.kill(pid, 0);
+      return pid;
+    } catch {
+      try {
+        fs.unlinkSync(PID_FILE);
+      } catch {
+        // ignore cleanup errors
+      }
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function readStatus(): Record<string, unknown> | null {
+  try {
+    const content = fs.readFileSync(STATUS_FILE, 'utf-8');
+    return JSON.parse(content) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the command and args to invoke remi.
+ * Handles both compiled binary and bun/node script execution.
+ */
+function resolveRemiCommand(): { command: string; baseArgs: string[] } {
+  const argv0 = process.argv[0] ?? '';
+  const argv1 = process.argv[1] ?? '';
+
+  // Compiled binary: argv[0] is the remi binary itself
+  if (argv0.endsWith('/remi') || argv0.endsWith('\\remi')) {
+    return { command: argv0, baseArgs: [] };
+  }
+
+  // Running via bun/node: argv[0] is the runtime, argv[1] is the script
+  if (argv1 && (argv0.includes('bun') || argv0.includes('node'))) {
+    return { command: argv0, baseArgs: [argv1] };
+  }
+
+  // Fallback: assume 'remi' is on PATH
+  return { command: 'remi', baseArgs: [] };
+}
+
+export interface StartOptions {
+  /** Port for WebSocket server */
+  port?: number;
+  /** Extra args to pass to the daemon */
+  extraArgs?: string[];
+}
+
+/**
+ * Start the remi daemon in the background.
+ * Returns the PID of the spawned process.
+ */
+export function startDaemon(opts?: StartOptions): number {
+  ensureRemiDir();
+  const existingPid = getRunningDaemonPid();
+  if (existingPid) {
+    const status = readStatus();
+    const port = status?.['wsPort'] ?? 'unknown';
+    console.error(`Daemon already running (PID ${existingPid}, port ${port}).`);
+    console.error('Use `remi stop` to stop it first.');
+    process.exit(1);
+  }
+
+  const { command, baseArgs } = resolveRemiCommand();
+  const spawnArgs = [...baseArgs, '--daemon'];
+  if (opts?.port) {
+    spawnArgs.push('--port', String(opts.port));
+  }
+  if (opts?.extraArgs) {
+    spawnArgs.push(...opts.extraArgs);
+  }
+
+  const logFd = fs.openSync(LOG_FILE, 'a');
+  fs.writeSync(logFd, `\n--- Daemon starting at ${new Date().toISOString()} ---\n`);
+
+  const child = spawn(command, spawnArgs, {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  });
+
+  const pid = child.pid;
+  if (!pid) {
+    console.error('Failed to start daemon process.');
+    fs.closeSync(logFd);
+    process.exit(1);
+  }
+
+  try {
+    const fd = fs.openSync(PID_FILE, 'wx');
+    fs.writeSync(fd, String(pid));
+    fs.closeSync(fd);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      console.error('Another daemon appears to be starting. Check with `remi status`.');
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to write PID file: ${msg}`);
+    }
+    fs.closeSync(logFd);
+    process.exit(1);
+  }
+  child.unref();
+  fs.closeSync(logFd);
+
+  // Poll until daemon writes status.json or times out
+  const startTime = Date.now();
+  const timeout = 5000;
+  let port: number | string = 'unknown';
+
+  while (Date.now() - startTime < timeout) {
+    const status = readStatus();
+    if (status && status['pid'] === pid && status['wsPort']) {
+      port = status['wsPort'] as number;
+      break;
+    }
+    try {
+      process.kill(pid, 0);
+    } catch {
+      console.error('Daemon process exited unexpectedly. Check logs:');
+      console.error(`  ${LOG_FILE}`);
+      try {
+        fs.unlinkSync(PID_FILE);
+      } catch {
+        // ignore
+      }
+      process.exit(1);
+    }
+    Bun.sleepSync(100);
+  }
+
+  console.log(`Daemon started (PID ${pid}, port ${port}).`);
+  console.log(`Logs: ${LOG_FILE}`);
+  return pid;
+}
+
+export function stopDaemon(): void {
+  const pid = getRunningDaemonPid();
+  if (!pid) {
+    console.error('No running daemon found.');
+    process.exit(1);
+  }
+
+  console.log(`Stopping daemon (PID ${pid})...`);
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to send SIGTERM: ${msg}`);
+    process.exit(1);
+  }
+
+  // Wait up to 5 seconds for graceful exit
+  const startTime = Date.now();
+  const timeout = 5000;
+
+  while (Date.now() - startTime < timeout) {
+    try {
+      process.kill(pid, 0);
+      Bun.sleepSync(200);
+    } catch {
+      cleanupFiles();
+      console.log('Daemon stopped.');
+      return;
+    }
+  }
+
+  console.error('Daemon did not stop gracefully; sending SIGKILL...');
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Already dead
+  }
+  Bun.sleepSync(200);
+  cleanupFiles();
+  console.log('Daemon killed.');
+}
+
+export function showDaemonStatus(): void {
+  const pid = getRunningDaemonPid();
+  if (!pid) {
+    console.log('Daemon is not running.');
+    return;
+  }
+
+  const status = readStatus();
+  if (status && status['pid'] === pid) {
+    console.log(`Daemon running (PID ${pid})`);
+    console.log(`  Port: ${status['wsPort']}`);
+    console.log(`  Connections: ${status['connections']}`);
+    console.log(`  Status: ${status['sessionStatus']}`);
+    const adapters = status['adapters'];
+    if (Array.isArray(adapters) && adapters.length > 0) {
+      console.log(`  Adapters: ${adapters.join(', ')}`);
+    }
+  } else {
+    console.log(`Daemon running (PID ${pid}), no status info available.`);
+  }
+
+  console.log(`  Logs: ${LOG_FILE}`);
+}
+
+export function showDaemonLogs(lines = 50): void {
+  try {
+    fs.accessSync(LOG_FILE, fs.constants.R_OK);
+    const output = execSync(`tail -n ${lines} "${LOG_FILE}"`, { encoding: 'utf-8' });
+    console.log(output);
+  } catch {
+    console.error(`No daemon log found at ${LOG_FILE}`);
+  }
+}
+
+function cleanupFiles(): void {
+  try {
+    fs.unlinkSync(PID_FILE);
+  } catch {
+    // ignore
+  }
+  try {
+    fs.unlinkSync(STATUS_FILE);
+  } catch {
+    // ignore
+  }
+}
