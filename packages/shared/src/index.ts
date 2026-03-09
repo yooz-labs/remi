@@ -66,6 +66,7 @@ export type {
   AuthResultMessage,
   KillSessionRequestMessage,
   KillSessionResponseMessage,
+  RawPtyOutputMessage,
 } from './protocol.ts';
 
 export {
@@ -101,6 +102,7 @@ export {
   createAuthResult,
   createKillSessionRequest,
   createKillSessionResponse,
+  createRawPtyOutput,
   MessageIdTracker,
 } from './protocol.ts';
 

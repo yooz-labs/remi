@@ -56,7 +56,7 @@ export interface ConnectionEvents {
   onDisconnect: (reason: string) => void;
 
   /** User input received */
-  onUserInput: (sessionId: UUID, content: string) => void;
+  onUserInput: (sessionId: UUID, content: string, raw?: boolean) => void;
 
   /** Answer to question received */
   onAnswer: (questionId: UUID, answer: string) => void;
@@ -260,6 +260,9 @@ export class Connection {
       case 'ping':
         this.handlePing(message);
         break;
+      case 'pong':
+        // Client responding to our ping - no action needed
+        break;
       case 'ack':
         // Client acknowledging our message - just track
         break;
@@ -367,7 +370,7 @@ export class Connection {
     this.sendAck(message.id, 'delivered');
 
     // Notify
-    this.events.onUserInput?.(message.sessionId, message.content);
+    this.events.onUserInput?.(message.sessionId, message.content, message.raw);
   }
 
   private handleAnswer(message: AnswerMessage): void {

@@ -28,7 +28,7 @@ export interface AdapterEvents {
   onDisconnect: (connectionId: UUID, reason: string) => void;
 
   /** User input received */
-  onUserInput: (connectionId: UUID, sessionId: UUID, content: string) => void;
+  onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
 
   /** Answer to question received */
   onAnswer: (connectionId: UUID, questionId: UUID, answer: string) => void;

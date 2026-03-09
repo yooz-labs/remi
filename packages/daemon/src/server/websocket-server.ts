@@ -42,7 +42,7 @@ export interface ServerEvents {
   onClientDisconnect: (connectionId: UUID, reason: string) => void;
 
   /** User input from client */
-  onUserInput: (connectionId: UUID, sessionId: UUID, content: string) => void;
+  onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
 
   /** Answer from client */
   onAnswer: (connectionId: UUID, questionId: UUID, answer: string) => void;
@@ -285,8 +285,8 @@ export class WebSocketServer {
         this.events.onClientDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (sessionId, content) => {
-        this.events.onUserInput?.(ws.data.connectionId, sessionId, content);
+      onUserInput: (sessionId, content, raw) => {
+        this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw);
       },
 
       onAnswer: (questionId, answer) => {
