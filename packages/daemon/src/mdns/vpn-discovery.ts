@@ -29,8 +29,10 @@ export interface VpnPeer {
 }
 
 export interface VpnDiscoveryOptions {
-  /** Port to probe for remi daemons. Default: 18765 */
+  /** Base port to probe for remi daemons. Default: 18765 */
   readonly port?: number | undefined;
+  /** Number of ports to probe starting from base port. Default: 10 */
+  readonly portRange?: number | undefined;
   /** Timeout per probe in ms. Default: 2000 */
   readonly probeTimeoutMs?: number | undefined;
 }
@@ -39,12 +41,13 @@ export interface VpnDiscoveryOptions {
  * Discover remi daemons running on VPN peers.
  *
  * Queries Tailscale and WireGuard sequentially (synchronous CLI calls),
- * then probes each discovered peer for a running remi daemon.
+ * then probes each discovered peer across the port range for running remi daemons.
  */
 export async function discoverVpnPeers(
   opts?: VpnDiscoveryOptions,
 ): Promise<{ peer: VpnPeer; host: string; port: number }[]> {
-  const port = opts?.port ?? 18765;
+  const basePort = opts?.port ?? 18765;
+  const portRange = opts?.portRange ?? 10;
   const probeTimeout = opts?.probeTimeoutMs ?? 2000;
 
   const peers = getAllVpnPeers();
@@ -52,12 +55,22 @@ export async function discoverVpnPeers(
 
   const { fetchSessions } = await import('../cli/ls-client.ts');
 
-  const results = await Promise.allSettled(
-    peers.map(async (peer) => {
-      await fetchSessions(peer.ip, port, probeTimeout);
-      return { peer, host: peer.ip, port };
-    }),
-  );
+  // Probe all peers across the port range in parallel
+  const probes: Promise<{ peer: VpnPeer; host: string; port: number }>[] = [];
+  for (const peer of peers) {
+    for (let offset = 0; offset < portRange; offset++) {
+      const port = basePort + offset;
+      probes.push(
+        fetchSessions(peer.ip, port, probeTimeout).then(() => ({
+          peer,
+          host: peer.ip,
+          port,
+        })),
+      );
+    }
+  }
+
+  const results = await Promise.allSettled(probes);
 
   const reachable = results
     .filter(
@@ -67,9 +80,8 @@ export async function discoverVpnPeers(
     .map((r) => r.value);
 
   if (reachable.length === 0 && peers.length > 0) {
-    const failCount = results.filter((r) => r.status === 'rejected').length;
     console.error(
-      `[vpn-discovery] Found ${peers.length} VPN peer(s) but none responded on port ${port} (${failCount} unreachable)`,
+      `[vpn-discovery] Found ${peers.length} VPN peer(s) but none responded on ports ${basePort}-${basePort + portRange - 1}`,
     );
   }
 

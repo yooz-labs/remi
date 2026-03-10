@@ -8,6 +8,7 @@ import {
   serialize,
 } from '@remi/shared';
 import type { DiscoverableSession, ProtocolMessage, Timestamp } from '@remi/shared';
+import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { performAuthHandshake } from './auth-helper.ts';
 
 export interface RemoteTarget {
@@ -154,6 +155,8 @@ export async function fetchSessions(
 
 export interface NetworkLsOptions {
   readonly localPort: number;
+  /** Additional local ports to query (from live sessions registry). */
+  readonly localPorts?: readonly number[];
   /** Timeout for WebSocket session fetches, in ms. Default: 5000 */
   readonly fetchTimeoutMs?: number | undefined;
   /** Timeout for mDNS network browse, in ms. Default: 3000 */
@@ -173,15 +176,25 @@ interface DaemonSessions {
 export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
   const { localPort, fetchTimeoutMs: timeout = 5000, browseTimeoutMs: mdnsTimeout = 3000 } = opts;
 
-  // Try local daemon first
-  let localSessions: DiscoverableSession[] = [];
-  try {
-    localSessions = await fetchSessions('localhost', localPort, timeout);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Connection refused is expected when no local daemon is running
-    if (!msg.includes('Cannot connect') && !msg.includes('closed unexpectedly')) {
-      console.error(`Warning: local daemon error: ${msg}`);
+  // Try all local daemons (multi-port support)
+  const allLocalPorts = new Set([localPort, ...(opts.localPorts ?? [])]);
+  const localSessions: DiscoverableSession[] = [];
+  const localResults = await Promise.allSettled(
+    [...allLocalPorts].map(async (port) => {
+      const sessions = await fetchSessions('localhost', port, timeout);
+      return { port, sessions };
+    }),
+  );
+  const localPortsArr = [...allLocalPorts];
+  for (let i = 0; i < localResults.length; i++) {
+    const result = localResults[i];
+    if (result?.status === 'fulfilled') {
+      localSessions.push(...result.value.sessions);
+    } else if (result?.status === 'rejected') {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
+        console.error(`[ls] Failed to query local port ${localPortsArr[i]}: ${reason}`);
+      }
     }
   }
 
@@ -403,6 +416,54 @@ export function formatAge(timestamp: Timestamp): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-port local discovery
+// ---------------------------------------------------------------------------
+
+export interface MultiPortLsOptions {
+  readonly registry: SessionRegistryFile;
+  readonly timeout?: number;
+}
+
+/**
+ * Discover all local remi sessions by reading the live sessions registry
+ * and querying each unique port.
+ */
+export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
+  const { registry, timeout = 5000 } = opts;
+
+  const ports = registry.getLivePorts();
+
+  if (ports.length === 0) {
+    console.log('No active sessions. Start one with: remi [claude-args...]');
+    return;
+  }
+
+  // Query each port in parallel
+  const results = await Promise.allSettled(
+    ports.map(async (port) => {
+      const sessions = await fetchSessions('localhost', port, timeout);
+      return { port, sessions };
+    }),
+  );
+
+  const allSessions: DiscoverableSession[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result?.status === 'fulfilled') {
+      allSessions.push(...result.value.sessions);
+    } else if (result?.status === 'rejected') {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      // Connection refused is expected (process may have just exited); log others
+      if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
+        console.error(`[ls] Failed to query local port ${ports[i]}: ${reason}`);
+      }
+    }
+  }
+
+  renderSessionList(allSessions);
 }
 
 /**
