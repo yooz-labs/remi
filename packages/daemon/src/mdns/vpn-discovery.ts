@@ -36,10 +36,10 @@ export interface VpnDiscoveryOptions {
 }
 
 /**
- * Discover remi daemons running on VPN peers across all supported providers.
+ * Discover remi daemons running on VPN peers.
  *
- * Queries Tailscale and WireGuard, then probes each discovered peer for a
- * running remi daemon.
+ * Queries Tailscale and WireGuard sequentially (synchronous CLI calls),
+ * then probes each discovered peer for a running remi daemon.
  */
 export async function discoverVpnPeers(
   opts?: VpnDiscoveryOptions,
@@ -59,12 +59,21 @@ export async function discoverVpnPeers(
     }),
   );
 
-  return results
+  const reachable = results
     .filter(
       (r): r is PromiseFulfilledResult<{ peer: VpnPeer; host: string; port: number }> =>
         r.status === 'fulfilled',
     )
     .map((r) => r.value);
+
+  if (reachable.length === 0 && peers.length > 0) {
+    const failCount = results.filter((r) => r.status === 'rejected').length;
+    console.error(
+      `[vpn-discovery] Found ${peers.length} VPN peer(s) but none responded on port ${port} (${failCount} unreachable)`,
+    );
+  }
+
+  return reachable;
 }
 
 /**
@@ -95,6 +104,13 @@ export function getAllVpnPeers(): VpnPeer[] {
 /** Exit status 127 from /bin/sh means "command not found". */
 const CMD_NOT_FOUND_STATUS = 127;
 
+interface ExecError {
+  status?: number | null;
+  killed?: boolean;
+  signal?: string;
+  code?: string;
+}
+
 /**
  * Try to find a CLI command. Checks PATH first via execSync, then falls back
  * to well-known installation paths.
@@ -106,11 +122,13 @@ function findCli(command: string, versionArg: string, fallbackPaths: string[]): 
     execSync(`${command} ${versionArg}`, { stdio: 'pipe', timeout: 3000 });
     return command;
   } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status != null && status !== CMD_NOT_FOUND_STATUS) {
-      // Command exists on PATH but failed (e.g. not logged in); still usable
-      return command;
-    }
+    const e = err as ExecError;
+    // Timed out or killed by signal; command exists but is unresponsive
+    if (e.killed || e.signal) return null;
+    // Spawn failure (shell not found)
+    if (e.code === 'ENOENT') return null;
+    // Non-127 exit = command exists but failed (e.g. not logged in); still usable
+    if (e.status != null && e.status !== CMD_NOT_FOUND_STATUS) return command;
   }
 
   for (const p of fallbackPaths) {
@@ -132,7 +150,12 @@ function runCli(command: string, args: string, provider: string): string | null 
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (err) {
-    const status = (err as { status?: number }).status;
+    const e = err as ExecError;
+    if (e.killed || e.signal) {
+      console.error(`[vpn-discovery] ${provider} timed out (${command} ${args})`);
+      return null;
+    }
+    const status = e.status;
     if (status != null && status !== CMD_NOT_FOUND_STATUS) {
       const msg = err instanceof Error ? err.message : String(err);
       const firstLine = msg.split('\n')[0];
@@ -160,9 +183,11 @@ export function getTailscalePeers(): VpnPeer[] {
   let status: TailscaleStatus;
   try {
     status = JSON.parse(raw) as TailscaleStatus;
-  } catch {
+  } catch (parseErr) {
+    const preview = raw.length > 200 ? `${raw.substring(0, 200)}...` : raw;
+    const detail = parseErr instanceof Error ? parseErr.message : String(parseErr);
     console.error(
-      '[vpn-discovery] Tailscale returned invalid JSON; check `tailscale status --json`',
+      `[vpn-discovery] Tailscale returned invalid JSON: ${detail}. Preview: ${preview}`,
     );
     return [];
   }
@@ -216,7 +241,9 @@ export function getWireGuardPeers(): VpnPeer[] {
     if (latestHandshake === '0') continue;
 
     // Check handshake freshness: skip peers not seen in the last 5 minutes
-    const handshakeAge = Date.now() / 1000 - Number(latestHandshake);
+    const handshakeTs = Number(latestHandshake);
+    if (Number.isNaN(handshakeTs)) continue;
+    const handshakeAge = Date.now() / 1000 - handshakeTs;
     if (handshakeAge > 300) continue;
 
     // Extract first allowed IP (strip CIDR notation)
