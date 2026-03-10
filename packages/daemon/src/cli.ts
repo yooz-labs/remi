@@ -12,13 +12,21 @@ import * as path from 'node:path';
 
 // Version constant - read once at startup with fallback for compiled binaries
 const REMI_VERSION = (() => {
+  const pkgPath = path.resolve(import.meta.dir, '..', '..', '..', 'package.json');
   try {
-    const pkgPath = path.resolve(import.meta.dir, '..', '..', '..', 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    return pkg.version as string;
-  } catch {
+    if (typeof pkg.version !== 'string') {
+      console.error('[remi] package.json missing "version" field');
+      return '0.3.7'; // REMI_COMPILED_VERSION
+    }
+    return pkg.version;
+  } catch (err) {
     // REMI_COMPILED_VERSION is updated by scripts/bump-version.sh at release time.
     // This fallback is used in compiled binaries where package.json is unavailable.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
+      console.error(`[remi] Failed to read version: ${(err as Error).message}`);
+    }
     return '0.3.7'; // REMI_COMPILED_VERSION
   }
 })();
