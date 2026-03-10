@@ -7,6 +7,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
 
 export interface VpnPeer {
   /** Hostname of the peer machine */
@@ -58,12 +59,40 @@ export async function discoverVpnPeers(
 }
 
 /**
+ * Resolve the Tailscale CLI path. On macOS the CLI is often bundled inside
+ * the app at /Applications/Tailscale.app/Contents/MacOS/Tailscale and not
+ * on PATH (shell aliases in zsh/bash/fish are invisible to execSync which
+ * runs under /bin/sh).
+ */
+function findTailscaleCli(): string | null {
+  // Check PATH first
+  try {
+    execSync('tailscale version', { stdio: 'pipe', timeout: 3000 });
+    return 'tailscale';
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // Found on PATH but errored; still usable
+      return 'tailscale';
+    }
+  }
+
+  // macOS app bundle location
+  const macOsPath = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+  if (fs.existsSync(macOsPath)) return macOsPath;
+
+  return null;
+}
+
+/**
  * Get online Tailscale peers, filtering out mobile devices.
  * Returns empty array if Tailscale CLI is not available.
  */
 export function getTailscalePeers(): VpnPeer[] {
+  const cli = findTailscaleCli();
+  if (!cli) return [];
+
   try {
-    const raw = execSync('tailscale status --json', {
+    const raw = execSync(`${cli} status --json`, {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
