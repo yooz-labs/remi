@@ -185,9 +185,16 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
       return { port, sessions };
     }),
   );
-  for (const result of localResults) {
-    if (result.status === 'fulfilled') {
+  const localPortsArr = [...allLocalPorts];
+  for (let i = 0; i < localResults.length; i++) {
+    const result = localResults[i];
+    if (result?.status === 'fulfilled') {
       localSessions.push(...result.value.sessions);
+    } else if (result?.status === 'rejected') {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
+        console.error(`[ls] Failed to query local port ${localPortsArr[i]}: ${reason}`);
+      }
     }
   }
 
@@ -443,11 +450,17 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
   );
 
   const allSessions: DiscoverableSession[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result?.status === 'fulfilled') {
       allSessions.push(...result.value.sessions);
+    } else if (result?.status === 'rejected') {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      // Connection refused is expected (process may have just exited); log others
+      if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
+        console.error(`[ls] Failed to query local port ${ports[i]}: ${reason}`);
+      }
     }
-    // Silently skip unreachable ports (process may have just exited)
   }
 
   renderSessionList(allSessions);

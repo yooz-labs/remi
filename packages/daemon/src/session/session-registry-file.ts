@@ -30,6 +30,21 @@ export interface LiveSessionEntry {
 export const DEFAULT_BASE_PORT = 18765;
 export const DEFAULT_PORT_RANGE = 10;
 
+/** Type guard for LiveSessionEntry after JSON.parse. */
+function isValidEntry(data: unknown): data is LiveSessionEntry {
+  if (typeof data !== 'object' || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  return (
+    typeof obj['sessionId'] === 'string' &&
+    obj['sessionId'].length > 0 &&
+    typeof obj['pid'] === 'number' &&
+    obj['pid'] > 0 &&
+    typeof obj['wsPort'] === 'number' &&
+    obj['wsPort'] > 0 &&
+    obj['wsPort'] <= 65535
+  );
+}
+
 export class SessionRegistryFile {
   private readonly dir: string;
 
@@ -58,8 +73,13 @@ export class SessionRegistryFile {
     const filePath = path.join(this.dir, `${sessionId}.json`);
     try {
       fs.unlinkSync(filePath);
-    } catch {
-      // File may already be removed
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(
+          `[live-sessions] Failed to unregister ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -76,7 +96,13 @@ export class SessionRegistryFile {
     let dirEntries: string[];
     try {
       dirEntries = fs.readdirSync(this.dir);
-    } catch {
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(
+          `[live-sessions] Cannot read directory ${this.dir}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       return [];
     }
 
@@ -86,22 +112,33 @@ export class SessionRegistryFile {
       const filePath = path.join(this.dir, fileName);
       try {
         const raw = fs.readFileSync(filePath, 'utf-8');
-        const entry = JSON.parse(raw) as LiveSessionEntry;
+        const data: unknown = JSON.parse(raw);
 
-        if (!entry.sessionId || !entry.pid || !entry.wsPort) continue;
+        if (!isValidEntry(data)) continue;
 
-        if (isProcessAlive(entry.pid)) {
-          entries.push(entry);
+        if (isProcessAlive(data.pid)) {
+          entries.push(data);
         } else {
           // Stale entry; clean up
           try {
             fs.unlinkSync(filePath);
-          } catch {
-            // Ignore cleanup errors
+          } catch (cleanupErr) {
+            const code = (cleanupErr as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT') {
+              console.error(
+                `[live-sessions] Failed to remove stale entry ${fileName}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+              );
+            }
           }
         }
-      } catch {
-        // Corrupt or unreadable file; skip
+      } catch (err) {
+        // Only silence ENOENT (file removed between readdir and read) and JSON parse errors
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code && code !== 'ENOENT') {
+          console.error(
+            `[live-sessions] Failed to read ${fileName}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
 
@@ -159,12 +196,17 @@ export class SessionRegistryFile {
   }
 }
 
-/** Check if a process is alive by sending signal 0. */
+/**
+ * Check if a process is alive by sending signal 0.
+ * EPERM means the process exists but is owned by a different user.
+ */
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (err) {
+    // EPERM: process exists but we lack permission to signal it
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
     return false;
   }
 }

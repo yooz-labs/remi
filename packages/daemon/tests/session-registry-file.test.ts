@@ -151,6 +151,15 @@ describe('SessionRegistryFile', () => {
     expect(port).toBe(18767);
   });
 
+  test('findAvailablePort fills non-contiguous gaps', () => {
+    // Use ports 18765 and 18767, leaving 18766 as a gap
+    registry.register(makeEntry({ sessionId: 'a', wsPort: 18765 }));
+    registry.register(makeEntry({ sessionId: 'b', wsPort: 18767 }));
+
+    const port = registry.findAvailablePort(18765, 10);
+    expect(port).toBe(18766);
+  });
+
   test('findAvailablePort returns null when all ports exhausted', () => {
     for (let i = 0; i < 3; i++) {
       registry.register(makeEntry({ sessionId: `s-${i}`, wsPort: 18765 + i }));
@@ -208,6 +217,33 @@ describe('SessionRegistryFile', () => {
     expect(ports).toContain(18765);
     expect(ports).toContain(18766);
     expect(ports).toContain(18767);
+  });
+
+  test('listLive skips entries with missing required fields', () => {
+    // Write entries missing required fields directly to disk
+    const missingSessionId = path.join(tmpDir, 'no-sid.json');
+    fs.writeFileSync(missingSessionId, JSON.stringify({ pid: process.pid, wsPort: 18765 }));
+
+    const missingPid = path.join(tmpDir, 'no-pid.json');
+    fs.writeFileSync(missingPid, JSON.stringify({ sessionId: 'x', wsPort: 18765 }));
+
+    const missingPort = path.join(tmpDir, 'no-port.json');
+    fs.writeFileSync(missingPort, JSON.stringify({ sessionId: 'y', pid: process.pid }));
+
+    const invalidPort = path.join(tmpDir, 'bad-port.json');
+    fs.writeFileSync(
+      invalidPort,
+      JSON.stringify({ sessionId: 'z', pid: process.pid, wsPort: 99999 }),
+    );
+
+    const emptySessionId = path.join(tmpDir, 'empty-sid.json');
+    fs.writeFileSync(
+      emptySessionId,
+      JSON.stringify({ sessionId: '', pid: process.pid, wsPort: 18765 }),
+    );
+
+    // All should be skipped
+    expect(registry.listLive()).toEqual([]);
   });
 
   test('register creates directory if it does not exist', () => {

@@ -931,9 +931,16 @@ if (cliSubcommand === 'attach') {
         }),
       );
 
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (result?.status === 'fulfilled') {
           allSessions.push(...result.value);
+        } else if (result?.status === 'rejected') {
+          const reason =
+            result.reason instanceof Error ? result.reason.message : String(result.reason);
+          if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
+            console.error(`[attach] Failed to query port ${portsToQuery[i]}: ${reason}`);
+          }
         }
       }
 
@@ -2273,7 +2280,13 @@ if (cliDaemonMode) {
         if (nextPort !== null) {
           log(`Port ${PORT} taken, retrying with ${nextPort}`);
           // Tear down old adapter before rebinding
-          await registry.unregister('websocket');
+          try {
+            await registry.unregister('websocket');
+          } catch (teardownErr) {
+            const teardownMsg =
+              teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+            logError(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
+          }
           PORT = nextPort;
           STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
           HOOK_PORT = PORT + 100;
