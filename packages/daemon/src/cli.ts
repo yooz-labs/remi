@@ -1723,6 +1723,11 @@ const sharedEvents = {
 
     // In daemon mode, create new session on connect
     if (!wrapperMode) {
+      // Send hello_ack immediately so utility clients (ls, kill, attach) can
+      // proceed with queries even if session creation fails later.
+      sendToConnection(connectionId, createHelloAck('1.0.0', '' as UUID));
+      log(`Connection ${connectionId} accepted in daemon mode`);
+
       const requestedDir = metadata.platformData?.['directory'] as string | undefined;
       const dirResult = resolveDirectory(requestedDir);
 
@@ -1748,6 +1753,7 @@ const sharedEvents = {
         const result = sessionRegistry.attachConnection(sessionId, connectionId);
 
         if (result.success) {
+          // Send updated hello_ack with real session ID
           sendToConnection(
             connectionId,
             createHelloAck('1.0.0', sessionId, {

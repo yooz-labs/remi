@@ -83,8 +83,11 @@ export async function fetchSessions(
       ws.send(serialize(createHello(clientId, '1.0.0')));
     }
 
+    let gotHelloAck = false;
+
     function handleProtocolMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
+        gotHelloAck = true;
         ws.send(serialize(createSessionListRequest(false)));
       } else if (msg.type === 'session_list_response') {
         clearTimeout(timer);
@@ -93,6 +96,15 @@ export async function fetchSessions(
         resolve(msg.sessions as DiscoverableSession[]);
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
+        // After hello_ack, ignore session-creation errors (we only care about the list)
+        if (
+          gotHelloAck &&
+          (msg.code === 'SESSION_CREATE_FAILED' ||
+            msg.code === 'ATTACH_FAILED' ||
+            msg.code === 'INVALID_DIRECTORY')
+        ) {
+          return;
+        }
         clearTimeout(timer);
         settled = true;
         ws.close();
