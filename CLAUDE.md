@@ -93,6 +93,23 @@ Use **Serena MCP** for efficient code navigation instead of reading entire files
 | `search_for_pattern` | Regex search across codebase |
 | `replace_symbol_body` | Edit entire function/method bodies |
 
+## Releasing
+
+**Always use the bump-version script for releases.** Never manually edit version numbers.
+
+```bash
+# Bump and release (triggers CI: build, npm publish, GitHub release, Homebrew update)
+./scripts/bump-version.sh --push patch   # 0.3.9 -> 0.3.10
+./scripts/bump-version.sh --push minor   # 0.3.9 -> 0.4.0
+./scripts/bump-version.sh --push major   # 0.3.9 -> 1.0.0
+./scripts/bump-version.sh --push set 1.0.0  # Explicit version
+
+# Without --push: commits and tags locally, prints push commands
+./scripts/bump-version.sh patch
+```
+
+The script updates both `package.json` and the `REMI_COMPILED_VERSION` fallback in `cli.ts`, commits, tags, and (with `--push`) pushes to trigger the release pipeline.
+
 ## CI
 
 GitHub Actions runs on push/PR to main: `bunx biome check`, `bun run typecheck`, `bun test --coverage` with 60% minimum threshold.
