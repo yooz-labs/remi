@@ -1246,7 +1246,7 @@ const sessionRegistry = new SessionRegistry(
 let primarySessionId: UUID | null = null;
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
-const HOOK_PORT = PORT + 100; // Offset by 100 to avoid collisions with other remi WS ports
+let HOOK_PORT = PORT + 100; // Offset by 100 to avoid collisions with other remi WS ports
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
 
@@ -2272,13 +2272,17 @@ if (cliDaemonMode) {
         );
         if (nextPort !== null) {
           log(`Port ${PORT} taken, retrying with ${nextPort}`);
+          // Tear down old adapter before rebinding
+          await registry.unregister('websocket');
           PORT = nextPort;
-          // Registry needs to be re-created with new port; stopAll first
-          try {
-            await registry.stopAll();
-          } catch {
-            /* ignore */
-          }
+          STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+          HOOK_PORT = PORT + 100;
+          // Create new WS adapter with updated port
+          const retryWsAdapter = new WebSocketAdapter(
+            { port: PORT, host: bindHost, authenticator },
+            sharedEvents,
+          );
+          registry.register(retryWsAdapter);
           continue;
         }
       }
@@ -2294,8 +2298,9 @@ if (cliDaemonMode) {
     }
   }
 
-  // Register this session in the live sessions directory
+  // After port retry, update status with finalized port values
   if (wsStarted) {
+    updateRemiStatus({ wsPort: PORT });
     liveSessionsRegistry.register({
       sessionId,
       pid: process.pid,
