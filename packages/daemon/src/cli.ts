@@ -37,7 +37,9 @@ const REMI_VERSION = (() => {
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const LOG_FILE = path.join(REMI_DIR, 'remi.log');
 const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
-const STATUS_FILE = path.join(REMI_DIR, 'status.json');
+// Status file is per-port so multiple wrapper sessions don't overwrite each other.
+// The statusline script uses $REMI_PORT to read the correct file.
+let STATUS_FILE = path.join(REMI_DIR, 'status.json'); // Updated after PORT is resolved
 let logFd: number | null = null;
 
 // In wrapper mode, we save the real stdout file descriptor before overriding.
@@ -160,9 +162,10 @@ function cleanupStatusFile(): void {
 const STATUSLINE_SCRIPT = `#!/bin/bash
 input=$(cat)
 REMI=""
-# REMI_PORT is set by remi when spawning Claude; only show remi info for remi-managed sessions
-if [ -n "\$REMI_PORT" ] && [ -f "${STATUS_FILE}" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "${STATUS_FILE}" 2>/dev/null)
+# REMI_PORT is set by remi when spawning Claude; status file is per-port
+REMI_STATUS_FILE="${REMI_DIR}/status-\$REMI_PORT.json"
+if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
   if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     CLIENT_INFO="no clients"
     [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
@@ -233,7 +236,13 @@ import {
   generateId,
   now,
 } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import type {
+  AgentStatus,
+  DiscoverableSession,
+  ProtocolMessage,
+  UUID,
+  UnlockedIdentity,
+} from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import {
   type AdapterMetadata,
@@ -247,7 +256,14 @@ import { IdentityStore } from './auth/identity-store.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
-import { SessionRegistry, SessionStore, type StoredSession } from './session/index.ts';
+import {
+  DEFAULT_BASE_PORT,
+  DEFAULT_PORT_RANGE,
+  SessionRegistry,
+  SessionRegistryFile,
+  SessionStore,
+  type StoredSession,
+} from './session/index.ts';
 import {
   TranscriptDiscovery,
   TranscriptMessageBridge,
@@ -743,22 +759,39 @@ if (
   process.exit(0);
 }
 
-// Handle 'ls' subcommand: query live sessions from running daemon
+// Live sessions registry: shared by subcommands and daemon/wrapper mode.
+// Instantiated early so subcommand handlers (ls, attach, kill) can use it.
+const liveSessionsRegistry = new SessionRegistryFile();
+
+// Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
-  const resolvedPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+  const explicitPort =
+    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined);
   if (cliNetwork) {
     const { runNetworkLs } = await import('./cli/ls-client.ts');
     try {
-      await runNetworkLs({ localPort: resolvedPort });
+      await runNetworkLs({
+        localPort: explicitPort ?? DEFAULT_BASE_PORT,
+        localPorts: liveSessionsRegistry.getLivePorts(),
+      });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else if (explicitPort || cliHost) {
+    // Explicit host/port: query single daemon (original behavior)
+    const { runLsClient } = await import('./cli/ls-client.ts');
+    try {
+      await runLsClient({ host: cliHost ?? 'localhost', port: explicitPort ?? DEFAULT_BASE_PORT });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   } else {
-    const { runLsClient } = await import('./cli/ls-client.ts');
+    // No explicit port: discover all local remi sessions via live registry
+    const { runMultiPortLs } = await import('./cli/ls-client.ts');
     try {
-      await runLsClient({ host: cliHost ?? 'localhost', port: resolvedPort });
+      await runMultiPortLs({ registry: liveSessionsRegistry });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -774,9 +807,20 @@ if (cliSubcommand === 'kill') {
     console.error('Run `remi ls` to see live sessions.');
     process.exit(1);
   }
-  const resolvedPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+  let resolvedPort =
+    cliPort ??
+    (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : DEFAULT_BASE_PORT);
   const resolvedHost = cliHost ?? 'localhost';
+
+  // Resolve port from live registry if target matches a known session
+  if (!cliPort && !cliHost) {
+    const liveMatch =
+      liveSessionsRegistry.findByName(cliSubcommandArg) ??
+      liveSessionsRegistry.findBySessionId(cliSubcommandArg);
+    if (liveMatch) {
+      resolvedPort = liveMatch.wsPort;
+    }
+  }
 
   const { runKillClient } = await import('./cli/kill-client.ts');
   try {
@@ -837,38 +881,79 @@ if (cliSubcommand === 'attach') {
       process.exit(1);
     }
   } else if (!targetSessionId) {
-    // Auto-attach to most recent active (non-exited) session
-    const sessions = store.list();
-    const active = sessions.filter((s) => s.exitedAt === null);
-    if (active.length === 0) {
-      console.error('No active sessions found. Run `remi ls` to see live sessions.');
-      process.exit(1);
+    // Auto-attach: prefer live registry, fall back to session store
+    const liveSessions = liveSessionsRegistry.listLive();
+    if (liveSessions.length > 0) {
+      // Pick most recent live session
+      // biome-ignore lint/style/noNonNullAssertion: length checked above
+      const latest = liveSessions[0]!; // Already sorted by startedAt desc
+      targetSessionId = latest.sessionId;
+      resolvedPort = cliPort ?? latest.wsPort;
+    } else {
+      // Fall back to session store (for backward compat)
+      const sessions = store.list();
+      const active = sessions.filter((s) => s.exitedAt === null);
+      if (active.length === 0) {
+        console.error('No active sessions found. Run `remi ls` to see live sessions.');
+        process.exit(1);
+      }
+      const latest = active.reduce((a, b) =>
+        new Date(b.startedAt).getTime() > new Date(a.startedAt).getTime() ? b : a,
+      );
+      targetSessionId = latest.remiSessionId;
+      resolvedPort = cliPort ?? latest.port;
     }
-    // Pick the most recently started session
-    const latest = active.reduce((a, b) =>
-      new Date(b.startedAt).getTime() > new Date(a.startedAt).getTime() ? b : a,
-    );
-    targetSessionId = latest.remiSessionId;
-    resolvedPort = cliPort ?? latest.port;
   } else {
-    // Try name-based resolution first by querying the daemon
+    // Try name-based resolution: first check live registry for port, then query daemon(s)
     let resolvedByName = false;
+
+    // Check live registry for name match (fast, no network)
+    const liveMatch = liveSessionsRegistry.findByName(targetSessionId);
+    if (liveMatch) {
+      resolvedPort = cliPort ?? liveMatch.wsPort;
+    }
+
+    // Query all live ports (or single port if explicitly set) for session name resolution
+    const portsToQuery = cliPort || cliHost ? [resolvedPort] : liveSessionsRegistry.getLivePorts();
+
+    if (portsToQuery.length === 0) {
+      portsToQuery.push(resolvedPort); // fall back to default
+    }
+
     try {
       const { fetchSessions } = await import('./cli/ls-client.ts');
-      const sessions = await fetchSessions(resolvedHost, resolvedPort, 3000);
-      const nameMatches = sessions.filter(
-        (s) => s.name === targetSessionId || s.name?.startsWith(targetSessionId as string),
+      const allSessions: Array<{ session: DiscoverableSession; port: number }> = [];
+
+      const results = await Promise.allSettled(
+        portsToQuery.map(async (port) => {
+          const sessions = await fetchSessions(resolvedHost, port, 3000);
+          return sessions.map((s) => ({ session: s, port }));
+        }),
+      );
+
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          allSessions.push(...result.value);
+        }
+      }
+
+      const nameMatches = allSessions.filter(
+        (entry) =>
+          entry.session.name === targetSessionId ||
+          entry.session.name?.startsWith(targetSessionId as string),
       );
       if (nameMatches.length === 1) {
         // biome-ignore lint/style/noNonNullAssertion: length checked above
-        targetSessionId = nameMatches[0]!.sessionId;
+        const match = nameMatches[0]!;
+        targetSessionId = match.session.sessionId;
+        resolvedPort = cliPort ?? match.port;
         resolvedByName = true;
       } else if (nameMatches.length > 1) {
         console.error(
           `Ambiguous session name "${targetSessionId}" matches ${nameMatches.length} sessions:`,
         );
         for (const m of nameMatches) {
-          console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
+          console.error(`  ${m.session.name ?? m.session.sessionId.slice(0, 8)} (port ${m.port})`);
         }
         console.error('Provide a longer name to disambiguate.');
         process.exit(1);
@@ -1000,6 +1085,11 @@ if (cliSubcommand === 'attach') {
     }
   }
 
+  if (!targetSessionId) {
+    console.error('No session to attach to. Run `remi ls` to see live sessions.');
+    process.exit(1);
+  }
+
   const { runAttachClient } = await import('./cli/attach-client.ts');
   try {
     const result = await runAttachClient({
@@ -1085,8 +1175,24 @@ if (cliResume !== undefined) {
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const PORT =
-  cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
+let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 0);
+
+// Auto-select port if not explicitly set
+if (!portExplicitlySet) {
+  const autoPort = liveSessionsRegistry.findAvailablePort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE);
+  if (autoPort === null) {
+    console.error(
+      `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+    );
+    console.error('Use --port to specify a different port, or stop an existing remi session.');
+    process.exit(1);
+  }
+  PORT = autoPort;
+}
+// Update per-port status file path now that PORT is finalized
+STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+
 const MAX_BULLET_LENGTH =
   cliMaxBulletLength ??
   (process.env['REMI_MAX_BULLET_LENGTH']
@@ -1140,7 +1246,7 @@ const sessionRegistry = new SessionRegistry(
 let primarySessionId: UUID | null = null;
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
-const HOOK_PORT = PORT + 1;
+const HOOK_PORT = PORT + 100; // Offset by 100 to avoid collisions with other remi WS ports
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
 
@@ -2040,6 +2146,11 @@ async function cleanup(): Promise<void> {
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
+
+  // Remove from live sessions directory
+  if (primarySessionId) {
+    liveSessionsRegistry.unregister(primarySessionId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2139,21 +2250,61 @@ if (cliDaemonMode) {
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
   // Start WebSocket server silently in the background
-  // In wrapper mode, don't crash if port is busy - Claude still works locally
-  try {
-    await registry.startAll();
-    log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
+  // With auto-port: retry on EADDRINUSE (race condition with another remi starting simultaneously)
+  let wsStarted = false;
+  const maxPortRetries = portExplicitlySet ? 1 : 3;
+  for (let attempt = 0; attempt < maxPortRetries; attempt++) {
+    try {
+      await registry.startAll();
+      log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
+      mdnsPublisher = await startMdnsIfNeeded(log);
+      wsStarted = true;
+      break;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
 
-    mdnsPublisher = await startMdnsIfNeeded(log);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('EADDRINUSE') || msg.includes('in use')) {
-      logError(
-        `Port ${PORT} is in use. Remote monitoring disabled. Use --port to specify a different port.`,
-      );
-    } else {
-      logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
+      if (isAddrInUse && !portExplicitlySet && attempt < maxPortRetries - 1) {
+        // Auto-port race: another remi grabbed this port. Try next available.
+        const nextPort = liveSessionsRegistry.findAvailablePort(
+          PORT + 1,
+          DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
+        );
+        if (nextPort !== null) {
+          log(`Port ${PORT} taken, retrying with ${nextPort}`);
+          PORT = nextPort;
+          // Registry needs to be re-created with new port; stopAll first
+          try {
+            await registry.stopAll();
+          } catch {
+            /* ignore */
+          }
+          continue;
+        }
+      }
+
+      if (isAddrInUse) {
+        logError(
+          `Port ${PORT} is in use. Remote monitoring disabled. Use --port to specify a different port.`,
+        );
+      } else {
+        logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
+      }
+      break;
     }
+  }
+
+  // Register this session in the live sessions directory
+  if (wsStarted) {
+    liveSessionsRegistry.register({
+      sessionId,
+      pid: process.pid,
+      wsPort: PORT,
+      hookPort: HOOK_PORT,
+      projectPath: workingDirectory,
+      name: path.basename(workingDirectory),
+      startedAt: new Date().toISOString(),
+    });
   }
 
   // Start hook server for Claude Code event detection
