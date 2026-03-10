@@ -859,8 +859,10 @@ if (cliSubcommand === 'attach') {
     cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
   let resolvedHost = cliHost ?? 'localhost';
 
-  // Check for remote attach: host:port/session-id (e.g., 192.168.0.83:18765/name)
-  // Remote targets have a numeric port between the last colon and first slash.
+  // Check for remote attach formats:
+  //   host:port/session-id  (e.g., 192.168.0.83:18765/name)
+  //   host:port             (e.g., 192.168.0.83:18767 - auto-attach to session on that port)
+  // Remote targets have a numeric port between the last colon and first slash (or end of string).
   // Session names (hostname:dir/branch) have a non-numeric directory segment there.
   // Note: a purely numeric directory name (e.g., "8765") would be misidentified as a port.
   const firstSlash = targetSessionId?.indexOf('/') ?? -1;
@@ -869,6 +871,15 @@ if (cliSubcommand === 'attach') {
     colonIdx != null &&
     colonIdx > 0 &&
     /^\d+$/.test(targetSessionId?.slice(colonIdx + 1, firstSlash) ?? '');
+
+  // Also check for host:port without slash (e.g., 100.79.39.98:18767)
+  const hostPortMatch = targetSessionId?.match(/^(.+):(\d+)$/);
+  const isHostPort =
+    !hasRemoteFormat &&
+    hostPortMatch != null &&
+    /^\d+$/.test(hostPortMatch[2] ?? '') &&
+    Number(hostPortMatch[2]) > 1024; // port numbers > 1024 to avoid matching session names
+
   if (targetSessionId && hasRemoteFormat) {
     try {
       const { parseRemoteTarget } = await import('./cli/ls-client.ts');
@@ -878,6 +889,43 @@ if (cliSubcommand === 'attach') {
       targetSessionId = remote.sessionId;
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else if (targetSessionId && isHostPort && hostPortMatch) {
+    // Direct host:port attach - auto-attach to the session on that specific port
+    resolvedHost = hostPortMatch[1] as string;
+    resolvedPort = Number(hostPortMatch[2]);
+    targetSessionId = undefined; // will be resolved by fetching sessions from that port
+    try {
+      const { fetchSessions } = await import('./cli/ls-client.ts');
+      const sessions = await fetchSessions(resolvedHost, resolvedPort, 5000);
+      if (sessions.length === 0) {
+        console.error(`No sessions found at ${resolvedHost}:${resolvedPort}.`);
+        process.exit(1);
+      } else if (sessions.length === 1) {
+        // biome-ignore lint/style/noNonNullAssertion: length checked above
+        targetSessionId = sessions[0]!.sessionId;
+      } else {
+        // Multiple sessions on this port; pick the one with canAttach or most recent
+        const attachable = sessions.filter((s) => s.canAttach);
+        if (attachable.length === 1) {
+          // biome-ignore lint/style/noNonNullAssertion: length checked above
+          targetSessionId = attachable[0]!.sessionId;
+        } else {
+          console.error(`Multiple sessions at ${resolvedHost}:${resolvedPort}:`);
+          for (const s of sessions) {
+            console.error(`  ${s.name ?? s.sessionId.slice(0, 8)}`);
+          }
+          console.error(
+            `Specify the session: remi attach ${resolvedHost}:${resolvedPort}/${sessions[0]?.name ?? sessions[0]?.sessionId.slice(0, 8)}`,
+          );
+          process.exit(1);
+        }
+      }
+    } catch (err) {
+      console.error(
+        `Cannot connect to ${resolvedHost}:${resolvedPort}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       process.exit(1);
     }
   } else if (!targetSessionId) {
@@ -939,7 +987,7 @@ if (cliSubcommand === 'attach') {
           const reason =
             result.reason instanceof Error ? result.reason.message : String(result.reason);
           if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-            console.error(`[attach] Failed to query port ${portsToQuery[i]}: ${reason}`);
+            console.error(`\x1b[2m[attach] local port ${portsToQuery[i]}: ${reason}\x1b[0m`);
           }
         }
       }
@@ -1038,32 +1086,65 @@ if (cliSubcommand === 'attach') {
                 : null;
 
             if (resolvedDaemon) {
-              const sessions = await fetchSessions(resolvedDaemon.host, resolvedDaemon.port, 3000);
-              const remoteMatches = sessions.filter(
-                (s) => s.name === target || s.name?.startsWith(target),
+              // Query all ports on this host (the host may have multiple remi instances)
+              const hostPorts = vpnPeers
+                .filter((v) => v.host === resolvedDaemon.host)
+                .map((v) => v.port);
+              const mdnsPorts = daemons
+                .filter((d: { host: string }) => d.host === resolvedDaemon.host)
+                .map((d: { port: number }) => d.port);
+              const allHostPorts = [...new Set([...mdnsPorts, ...hostPorts])].sort((a, b) => a - b);
+              if (allHostPorts.length === 0) allHostPorts.push(resolvedDaemon.port);
+
+              // Fetch sessions from all ports on this host
+              const portResults = await Promise.allSettled(
+                allHostPorts.map(async (port) => {
+                  const sessions = await fetchSessions(resolvedDaemon.host, port, 3000);
+                  return { port, sessions };
+                }),
+              );
+              const allRemoteSessions: Array<{
+                session: DiscoverableSession;
+                port: number;
+              }> = [];
+              for (const r of portResults) {
+                if (r.status === 'fulfilled') {
+                  for (const s of r.value.sessions) {
+                    allRemoteSessions.push({ session: s, port: r.value.port });
+                  }
+                }
+              }
+
+              const remoteMatches = allRemoteSessions.filter(
+                (entry) => entry.session.name === target || entry.session.name?.startsWith(target),
               );
               if (remoteMatches.length === 1) {
                 // biome-ignore lint/style/noNonNullAssertion: length checked above
-                targetSessionId = remoteMatches[0]!.sessionId;
+                const match = remoteMatches[0]!;
+                targetSessionId = match.session.sessionId;
                 resolvedHost = resolvedDaemon.host;
-                resolvedPort = resolvedDaemon.port;
+                resolvedPort = match.port;
                 foundRemote = true;
                 console.error(
-                  `Found on ${resolvedDaemon.hostname} (${resolvedDaemon.host}:${resolvedDaemon.port})`,
+                  `Found on ${resolvedDaemon.hostname} (${resolvedDaemon.host}:${match.port})`,
                 );
               } else if (remoteMatches.length > 1) {
                 console.error(
                   `Ambiguous: ${remoteMatches.length} sessions match on ${resolvedDaemon.hostname}`,
                 );
                 for (const m of remoteMatches) {
-                  console.error(`  ${m.name ?? m.sessionId.slice(0, 8)}`);
+                  console.error(
+                    `  ${m.session.name ?? m.session.sessionId.slice(0, 8)} (port ${m.port})`,
+                  );
                 }
                 process.exit(1);
               } else {
                 console.error(
-                  `Daemon found on ${resolvedDaemon.hostname} (${resolvedDaemon.host}:${resolvedDaemon.port}) but no session matches "${target}".`,
+                  `Daemon found on ${resolvedDaemon.hostname} but no session matches "${target}".`,
                 );
-                const available = sessions.map((s) => s.name ?? s.sessionId.slice(0, 8)).join(', ');
+                const available = allRemoteSessions
+                  .map((e) => e.session.name ?? e.session.sessionId.slice(0, 8))
+                  .join(', ');
                 if (available) console.error(`  Available sessions: ${available}`);
               }
             } else {

@@ -193,7 +193,8 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     } else if (result?.status === 'rejected') {
       const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
       if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-        console.error(`[ls] Failed to query local port ${localPortsArr[i]}: ${reason}`);
+        // Dim expected errors (e.g. claude not in PATH on client-only machines)
+        console.error(`\x1b[2m[ls] local port ${localPortsArr[i]}: ${reason}\x1b[0m`);
       }
     }
   }
@@ -256,7 +257,7 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
       const daemon = remoteDaemons[i];
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
       console.error(
-        `[ls] Failed to query daemon ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}`,
+        `\x1b[2m[ls] ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}\x1b[0m`,
       );
     }
   }
@@ -458,7 +459,7 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
       const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
       // Connection refused is expected (process may have just exited); log others
       if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-        console.error(`[ls] Failed to query local port ${ports[i]}: ${reason}`);
+        console.error(`\x1b[2m[ls] local port ${ports[i]}: ${reason}\x1b[0m`);
       }
     }
   }
