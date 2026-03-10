@@ -95,7 +95,12 @@ echo "Updated package.json"
 # Update compiled version fallback in cli.ts
 CLI_TS="$ROOT_DIR/packages/daemon/src/cli.ts"
 if [[ -f "$CLI_TS" ]]; then
-  sed -i '' "s/return '[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
+  # Portable sed in-place: macOS uses -i '', GNU uses -i without arg
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "s/return '[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
+  else
+    sed -i "s/return '[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
+  fi
   echo "Updated cli.ts compiled version fallback"
 fi
 

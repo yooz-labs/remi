@@ -3,7 +3,6 @@ import {
   getAllVpnPeers,
   getTailscalePeers,
   getWireGuardPeers,
-  getZeroTierPeers,
 } from '../../src/mdns/vpn-discovery.ts';
 
 describe('getTailscalePeers', () => {
@@ -28,19 +27,6 @@ describe('getTailscalePeers', () => {
   });
 });
 
-describe('getZeroTierPeers', () => {
-  test('returns array (empty if zerotier not available)', () => {
-    const peers = getZeroTierPeers();
-    expect(Array.isArray(peers)).toBe(true);
-    for (const peer of peers) {
-      expect(typeof peer.hostname).toBe('string');
-      expect(typeof peer.ip).toBe('string');
-      expect(peer.provider).toBe('zerotier');
-      expect(peer.ip.length).toBeGreaterThan(0);
-    }
-  });
-});
-
 describe('getWireGuardPeers', () => {
   test('returns array (empty if wireguard not available)', () => {
     const peers = getWireGuardPeers();
@@ -59,7 +45,7 @@ describe('getAllVpnPeers', () => {
     const peers = getAllVpnPeers();
     expect(Array.isArray(peers)).toBe(true);
     for (const peer of peers) {
-      expect(['tailscale', 'zerotier', 'wireguard']).toContain(peer.provider);
+      expect(['tailscale', 'wireguard']).toContain(peer.provider);
     }
   });
 

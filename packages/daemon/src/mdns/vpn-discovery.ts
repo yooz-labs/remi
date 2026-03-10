@@ -1,9 +1,13 @@
 /**
  * VPN-aware peer discovery for finding remi daemons across VPN networks.
  *
- * Supports Tailscale, ZeroTier, and WireGuard. Checks if the VPN CLI is
- * available, queries for online peers, and probes each for a running remi
- * daemon on the default port.
+ * Supports Tailscale and WireGuard. Checks if the VPN CLI is available,
+ * queries for online peers, and probes each for a running remi daemon on
+ * the default port.
+ *
+ * ZeroTier is not supported because its CLI (`zerotier-cli listpeers -j`)
+ * only exposes physical endpoints, not managed VPN IPs. Getting managed IPs
+ * requires the ZeroTier Central API or controller access.
  *
  * CLI resolution note: execSync runs under /bin/sh, so shell aliases
  * (zsh/bash/fish) are invisible. Each provider has fallback path detection
@@ -21,7 +25,7 @@ export interface VpnPeer {
   /** OS of the peer (e.g., "macOS", "linux") */
   readonly os: string;
   /** Which VPN provider discovered this peer */
-  readonly provider: 'tailscale' | 'zerotier' | 'wireguard';
+  readonly provider: 'tailscale' | 'wireguard';
 }
 
 export interface VpnDiscoveryOptions {
@@ -34,8 +38,8 @@ export interface VpnDiscoveryOptions {
 /**
  * Discover remi daemons running on VPN peers across all supported providers.
  *
- * Queries Tailscale, ZeroTier, and WireGuard in parallel, then probes each
- * discovered peer for a running remi daemon.
+ * Queries Tailscale and WireGuard, then probes each discovered peer for a
+ * running remi daemon.
  */
 export async function discoverVpnPeers(
   opts?: VpnDiscoveryOptions,
@@ -65,17 +69,16 @@ export async function discoverVpnPeers(
 
 /**
  * Collect peers from all supported VPN providers.
- * Deduplicates by IP address (prefers Tailscale > ZeroTier > WireGuard).
+ * Deduplicates by IP address (prefers Tailscale > WireGuard).
  */
 export function getAllVpnPeers(): VpnPeer[] {
   const tailscale = getTailscalePeers();
-  const zerotier = getZeroTierPeers();
   const wireguard = getWireGuardPeers();
 
   const seen = new Set<string>();
   const result: VpnPeer[] = [];
 
-  for (const peer of [...tailscale, ...zerotier, ...wireguard]) {
+  for (const peer of [...tailscale, ...wireguard]) {
     if (!seen.has(peer.ip)) {
       seen.add(peer.ip);
       result.push(peer);
@@ -104,7 +107,7 @@ function findCli(command: string, versionArg: string, fallbackPaths: string[]): 
     return command;
   } catch (err) {
     const status = (err as { status?: number }).status;
-    if (status !== CMD_NOT_FOUND_STATUS) {
+    if (status != null && status !== CMD_NOT_FOUND_STATUS) {
       // Command exists on PATH but failed (e.g. not logged in); still usable
       return command;
     }
@@ -130,9 +133,8 @@ function runCli(command: string, args: string, provider: string): string | null 
     });
   } catch (err) {
     const status = (err as { status?: number }).status;
-    if (status !== CMD_NOT_FOUND_STATUS) {
+    if (status != null && status !== CMD_NOT_FOUND_STATUS) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Extract just the meaningful part, not the full command output
       const firstLine = msg.split('\n')[0];
       console.error(`[vpn-discovery] ${provider} query failed: ${firstLine}`);
     }
@@ -179,67 +181,6 @@ export function getTailscalePeers(): VpnPeer[] {
     peers.push({ hostname, ip, os: peer.OS ?? 'unknown', provider: 'tailscale' });
   }
   return peers;
-}
-
-// ---------------------------------------------------------------------------
-// ZeroTier
-// ---------------------------------------------------------------------------
-
-function findZeroTierCli(): string | null {
-  return findCli('zerotier-cli', 'info', [
-    '/Library/Application Support/ZeroTier/One/zerotier-cli',
-    '/usr/sbin/zerotier-cli',
-    '/opt/zerotier/bin/zerotier-cli',
-  ]);
-}
-
-export function getZeroTierPeers(): VpnPeer[] {
-  const cli = findZeroTierCli();
-  if (!cli) return [];
-
-  const raw = runCli(cli, 'listpeers -j', 'ZeroTier');
-  if (!raw) return [];
-
-  let peers: ZeroTierPeerInfo[];
-  try {
-    peers = JSON.parse(raw) as ZeroTierPeerInfo[];
-  } catch {
-    console.error(
-      '[vpn-discovery] ZeroTier returned invalid JSON; check `zerotier-cli listpeers -j`',
-    );
-    return [];
-  }
-
-  if (!Array.isArray(peers)) return [];
-
-  const result: VpnPeer[] = [];
-  for (const peer of peers) {
-    // Skip peers that aren't directly reachable (-1 latency = no direct path)
-    if (peer.latency === -1) continue;
-    // LEAF role = normal peer, PLANET/MOON = infrastructure
-    if (peer.role !== 'LEAF') continue;
-
-    // ZeroTier paths contain the IP:port; extract the IP
-    const ip = extractZeroTierIp(peer.paths);
-    if (!ip) continue;
-
-    const hostname = peer.address ?? 'unknown';
-    result.push({ hostname, ip, os: 'unknown', provider: 'zerotier' });
-  }
-  return result;
-}
-
-function extractZeroTierIp(paths: ZeroTierPath[] | undefined): string | null {
-  if (!paths || paths.length === 0) return null;
-
-  // Prefer active, preferred paths
-  const active =
-    paths.find((p) => p.active && p.preferred) ?? paths.find((p) => p.active) ?? paths[0];
-  if (!active?.address) return null;
-
-  // Address format is "ip/port", extract just the IP
-  const slashIdx = active.address.lastIndexOf('/');
-  return slashIdx > 0 ? active.address.substring(0, slashIdx) : active.address;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,17 +246,4 @@ interface TailscalePeerInfo {
 
 interface TailscaleStatus {
   readonly Peer?: Record<string, TailscalePeerInfo>;
-}
-
-interface ZeroTierPath {
-  readonly active?: boolean;
-  readonly address?: string;
-  readonly preferred?: boolean;
-}
-
-interface ZeroTierPeerInfo {
-  readonly address?: string;
-  readonly latency?: number;
-  readonly role?: string;
-  readonly paths?: ZeroTierPath[];
 }
