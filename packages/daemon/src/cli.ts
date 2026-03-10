@@ -987,7 +987,15 @@ if (cliSubcommand === 'attach') {
           const reason =
             result.reason instanceof Error ? result.reason.message : String(result.reason);
           if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-            console.error(`\x1b[2m[attach] local port ${portsToQuery[i]}: ${reason}\x1b[0m`);
+            const isExpected =
+              reason.includes('not found') ||
+              reason.includes('ENOENT') ||
+              reason.includes('SESSION_CREATE_FAILED');
+            if (isExpected) {
+              console.error(`\x1b[2m[attach] local port ${portsToQuery[i]}: ${reason}\x1b[0m`);
+            } else {
+              console.error(`[attach] Failed to query port ${portsToQuery[i]}: ${reason}`);
+            }
           }
         }
       }
@@ -1107,12 +1115,28 @@ if (cliSubcommand === 'attach') {
                 session: DiscoverableSession;
                 port: number;
               }> = [];
+              let remoteRejections = 0;
               for (const r of portResults) {
                 if (r.status === 'fulfilled') {
                   for (const s of r.value.sessions) {
                     allRemoteSessions.push({ session: s, port: r.value.port });
                   }
+                } else {
+                  remoteRejections++;
+                  const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+                  if (
+                    !reason.includes('Cannot connect') &&
+                    !reason.includes('closed unexpectedly')
+                  ) {
+                    log(`[attach] remote port query failed: ${reason}`);
+                  }
                 }
+              }
+              if (remoteRejections === portResults.length) {
+                console.error(
+                  `Daemon found on ${resolvedDaemon.hostname} but could not query any port. Check connectivity to ${resolvedDaemon.host}.`,
+                );
+                process.exit(1);
               }
 
               const remoteMatches = allRemoteSessions.filter(

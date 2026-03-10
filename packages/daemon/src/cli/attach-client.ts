@@ -180,6 +180,9 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
     function handleProtocolMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
+        // In daemon mode, server sends a preliminary hello_ack with empty sessionId
+        // before session creation. Wait for the real one with a valid session ID.
+        if (!msg.sessionId) return;
         clearTimeout(connectionTimer);
         attachedSessionId = msg.sessionId;
         const shortId = msg.sessionId.slice(0, 8);

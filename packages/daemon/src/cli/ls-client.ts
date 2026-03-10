@@ -83,12 +83,15 @@ export async function fetchSessions(
       ws.send(serialize(createHello(clientId, '1.0.0')));
     }
 
-    let gotHelloAck = false;
+    let sentListRequest = false;
 
     function handleProtocolMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
-        gotHelloAck = true;
-        ws.send(serialize(createSessionListRequest(false)));
+        if (!sentListRequest) {
+          sentListRequest = true;
+          ws.send(serialize(createSessionListRequest(false)));
+        }
+        // Subsequent hello_acks (with real session ID after session creation) are expected
       } else if (msg.type === 'session_list_response') {
         clearTimeout(timer);
         settled = true;
@@ -96,9 +99,9 @@ export async function fetchSessions(
         resolve(msg.sessions as DiscoverableSession[]);
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
-        // After hello_ack, ignore session-creation errors (we only care about the list)
+        // After first hello_ack, ignore session-creation errors (we only care about the list)
         if (
-          gotHelloAck &&
+          sentListRequest &&
           (msg.code === 'SESSION_CREATE_FAILED' ||
             msg.code === 'ATTACH_FAILED' ||
             msg.code === 'INVALID_DIRECTORY')
@@ -205,8 +208,15 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     } else if (result?.status === 'rejected') {
       const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
       if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-        // Dim expected errors (e.g. claude not in PATH on client-only machines)
-        console.error(`\x1b[2m[ls] local port ${localPortsArr[i]}: ${reason}\x1b[0m`);
+        const isExpected =
+          reason.includes('not found') ||
+          reason.includes('ENOENT') ||
+          reason.includes('SESSION_CREATE_FAILED');
+        if (isExpected) {
+          console.error(`\x1b[2m[ls] local port ${localPortsArr[i]}: ${reason}\x1b[0m`);
+        } else {
+          console.error(`[ls] Failed to query local port ${localPortsArr[i]}: ${reason}`);
+        }
       }
     }
   }
@@ -268,9 +278,13 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     } else if (r?.status === 'rejected') {
       const daemon = remoteDaemons[i];
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      console.error(
-        `\x1b[2m[ls] ${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}: ${reason}\x1b[0m`,
-      );
+      const label = `${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}`;
+      const isTimeout = reason.includes('Timed out') || reason.includes('timeout');
+      if (isTimeout) {
+        console.error(`\x1b[2m[ls] ${label}: ${reason}\x1b[0m`);
+      } else {
+        console.error(`[ls] Failed to query ${label}: ${reason}`);
+      }
     }
   }
 
@@ -471,7 +485,15 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
       const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
       // Connection refused is expected (process may have just exited); log others
       if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-        console.error(`\x1b[2m[ls] local port ${ports[i]}: ${reason}\x1b[0m`);
+        const isExpected =
+          reason.includes('not found') ||
+          reason.includes('ENOENT') ||
+          reason.includes('SESSION_CREATE_FAILED');
+        if (isExpected) {
+          console.error(`\x1b[2m[ls] local port ${ports[i]}: ${reason}\x1b[0m`);
+        } else {
+          console.error(`[ls] Failed to query local port ${ports[i]}: ${reason}`);
+        }
       }
     }
   }
