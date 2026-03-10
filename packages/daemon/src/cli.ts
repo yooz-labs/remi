@@ -17,7 +17,9 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return pkg.version as string;
   } catch {
-    return '0.3.5';
+    // REMI_COMPILED_VERSION is updated by scripts/bump-version.sh at release time.
+    // This fallback is used in compiled binaries where package.json is unavailable.
+    return '0.3.7'; // REMI_COMPILED_VERSION
   }
 })();
 

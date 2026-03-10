@@ -1,9 +1,13 @@
 /**
  * VPN-aware peer discovery for finding remi daemons across VPN networks.
  *
- * Supports Tailscale (and extensible to ZeroTier, etc.). Checks if the
- * VPN CLI is available, queries for online peers, and probes each for
- * a running remi daemon on the default port.
+ * Supports Tailscale, ZeroTier, and WireGuard. Checks if the VPN CLI is
+ * available, queries for online peers, and probes each for a running remi
+ * daemon on the default port.
+ *
+ * CLI resolution note: execSync runs under /bin/sh, so shell aliases
+ * (zsh/bash/fish) are invisible. Each provider has fallback path detection
+ * for common installation locations (e.g. macOS app bundles).
  */
 
 import { execSync } from 'node:child_process';
@@ -16,6 +20,8 @@ export interface VpnPeer {
   readonly ip: string;
   /** OS of the peer (e.g., "macOS", "linux") */
   readonly os: string;
+  /** Which VPN provider discovered this peer */
+  readonly provider: 'tailscale' | 'zerotier' | 'wireguard';
 }
 
 export interface VpnDiscoveryOptions {
@@ -26,10 +32,10 @@ export interface VpnDiscoveryOptions {
 }
 
 /**
- * Discover remi daemons running on VPN peers.
+ * Discover remi daemons running on VPN peers across all supported providers.
  *
- * Returns peers that responded to a remi session list request.
- * Currently supports Tailscale; extensible to other VPN providers.
+ * Queries Tailscale, ZeroTier, and WireGuard in parallel, then probes each
+ * discovered peer for a running remi daemon.
  */
 export async function discoverVpnPeers(
   opts?: VpnDiscoveryOptions,
@@ -37,14 +43,13 @@ export async function discoverVpnPeers(
   const port = opts?.port ?? 18765;
   const probeTimeout = opts?.probeTimeoutMs ?? 2000;
 
-  const peers = getTailscalePeers();
+  const peers = getAllVpnPeers();
   if (peers.length === 0) return [];
 
   const { fetchSessions } = await import('../cli/ls-client.ts');
 
   const results = await Promise.allSettled(
     peers.map(async (peer) => {
-      // Quick probe: try to fetch sessions from this peer
       await fetchSessions(peer.ip, port, probeTimeout);
       return { peer, host: peer.ip, port };
     }),
@@ -59,85 +64,237 @@ export async function discoverVpnPeers(
 }
 
 /**
- * Resolve the Tailscale CLI path. On macOS the CLI is often bundled inside
- * the app at /Applications/Tailscale.app/Contents/MacOS/Tailscale and not
- * on PATH (shell aliases in zsh/bash/fish are invisible to execSync which
- * runs under /bin/sh).
+ * Collect peers from all supported VPN providers.
+ * Deduplicates by IP address (prefers Tailscale > ZeroTier > WireGuard).
  */
-function findTailscaleCli(): string | null {
-  // Check PATH first
-  try {
-    execSync('tailscale version', { stdio: 'pipe', timeout: 3000 });
-    return 'tailscale';
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      // Found on PATH but errored; still usable
-      return 'tailscale';
+export function getAllVpnPeers(): VpnPeer[] {
+  const tailscale = getTailscalePeers();
+  const zerotier = getZeroTierPeers();
+  const wireguard = getWireGuardPeers();
+
+  const seen = new Set<string>();
+  const result: VpnPeer[] = [];
+
+  for (const peer of [...tailscale, ...zerotier, ...wireguard]) {
+    if (!seen.has(peer.ip)) {
+      seen.add(peer.ip);
+      result.push(peer);
     }
   }
 
-  // macOS app bundle location
-  const macOsPath = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
-  if (fs.existsSync(macOsPath)) return macOsPath;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// CLI resolution helpers
+// ---------------------------------------------------------------------------
+
+/** Exit status 127 from /bin/sh means "command not found". */
+const CMD_NOT_FOUND_STATUS = 127;
+
+/**
+ * Try to find a CLI command. Checks PATH first via execSync, then falls back
+ * to well-known installation paths.
+ *
+ * Returns the resolved command string or null if not found anywhere.
+ */
+function findCli(command: string, versionArg: string, fallbackPaths: string[]): string | null {
+  try {
+    execSync(`${command} ${versionArg}`, { stdio: 'pipe', timeout: 3000 });
+    return command;
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status !== CMD_NOT_FOUND_STATUS) {
+      // Command exists on PATH but failed (e.g. not logged in); still usable
+      return command;
+    }
+  }
+
+  for (const p of fallbackPaths) {
+    if (fs.existsSync(p)) return p;
+  }
 
   return null;
 }
 
 /**
- * Get online Tailscale peers, filtering out mobile devices.
- * Returns empty array if Tailscale CLI is not available.
+ * Run a CLI command and return stdout. Returns null on failure, logging
+ * only unexpected errors (not "command not found").
  */
-export function getTailscalePeers(): VpnPeer[] {
-  const cli = findTailscaleCli();
-  if (!cli) return [];
-
+function runCli(command: string, args: string, provider: string): string | null {
   try {
-    const raw = execSync(`${cli} status --json`, {
+    return execSync(`${command} ${args}`, {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    let status: TailscaleStatus;
-    try {
-      status = JSON.parse(raw) as TailscaleStatus;
-    } catch {
-      console.error(
-        '[vpn-discovery] Tailscale returned invalid JSON; check `tailscale status --json`',
-      );
-      return [];
-    }
-    if (!status.Peer) return [];
-
-    const peers: VpnPeer[] = [];
-    for (const peer of Object.values(status.Peer)) {
-      // Skip offline peers and mobile devices
-      if (!peer.Online) continue;
-      if (peer.OS === 'iOS' || peer.OS === 'android') continue;
-
-      // Prefer IPv4 address
-      const ipv4 = peer.TailscaleIPs?.find((ip: string) => !ip.includes(':'));
-      const ip = ipv4 ?? peer.TailscaleIPs?.[0];
-      if (!ip) continue;
-
-      // Clean hostname: Tailscale sometimes uses "localhost" for mobile,
-      // and may include special characters in hostnames like "Yahya's MCM"
-      const hostname = peer.DNSName?.split('.')[0] ?? peer.HostName ?? 'unknown';
-
-      peers.push({ hostname, ip, os: peer.OS ?? 'unknown' });
-    }
-    return peers;
   } catch (err) {
-    // ENOENT = tailscale not installed; other errors worth logging
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
+    const status = (err as { status?: number }).status;
+    if (status !== CMD_NOT_FOUND_STATUS) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[vpn-discovery] Tailscale query failed: ${msg}`);
+      // Extract just the meaningful part, not the full command output
+      const firstLine = msg.split('\n')[0];
+      console.error(`[vpn-discovery] ${provider} query failed: ${firstLine}`);
     }
-    return [];
+    return null;
   }
 }
 
-// Minimal Tailscale status JSON types
+// ---------------------------------------------------------------------------
+// Tailscale
+// ---------------------------------------------------------------------------
+
+function findTailscaleCli(): string | null {
+  return findCli('tailscale', 'version', ['/Applications/Tailscale.app/Contents/MacOS/Tailscale']);
+}
+
+export function getTailscalePeers(): VpnPeer[] {
+  const cli = findTailscaleCli();
+  if (!cli) return [];
+
+  const raw = runCli(cli, 'status --json', 'Tailscale');
+  if (!raw) return [];
+
+  let status: TailscaleStatus;
+  try {
+    status = JSON.parse(raw) as TailscaleStatus;
+  } catch {
+    console.error(
+      '[vpn-discovery] Tailscale returned invalid JSON; check `tailscale status --json`',
+    );
+    return [];
+  }
+  if (!status.Peer) return [];
+
+  const peers: VpnPeer[] = [];
+  for (const peer of Object.values(status.Peer)) {
+    if (!peer.Online) continue;
+    if (peer.OS === 'iOS' || peer.OS === 'android') continue;
+
+    const ipv4 = peer.TailscaleIPs?.find((ip: string) => !ip.includes(':'));
+    const ip = ipv4 ?? peer.TailscaleIPs?.[0];
+    if (!ip) continue;
+
+    const hostname = peer.DNSName?.split('.')[0] ?? peer.HostName ?? 'unknown';
+    peers.push({ hostname, ip, os: peer.OS ?? 'unknown', provider: 'tailscale' });
+  }
+  return peers;
+}
+
+// ---------------------------------------------------------------------------
+// ZeroTier
+// ---------------------------------------------------------------------------
+
+function findZeroTierCli(): string | null {
+  return findCli('zerotier-cli', 'info', [
+    '/Library/Application Support/ZeroTier/One/zerotier-cli',
+    '/usr/sbin/zerotier-cli',
+    '/opt/zerotier/bin/zerotier-cli',
+  ]);
+}
+
+export function getZeroTierPeers(): VpnPeer[] {
+  const cli = findZeroTierCli();
+  if (!cli) return [];
+
+  const raw = runCli(cli, 'listpeers -j', 'ZeroTier');
+  if (!raw) return [];
+
+  let peers: ZeroTierPeerInfo[];
+  try {
+    peers = JSON.parse(raw) as ZeroTierPeerInfo[];
+  } catch {
+    console.error(
+      '[vpn-discovery] ZeroTier returned invalid JSON; check `zerotier-cli listpeers -j`',
+    );
+    return [];
+  }
+
+  if (!Array.isArray(peers)) return [];
+
+  const result: VpnPeer[] = [];
+  for (const peer of peers) {
+    // Skip peers that aren't directly reachable (-1 latency = no direct path)
+    if (peer.latency === -1) continue;
+    // LEAF role = normal peer, PLANET/MOON = infrastructure
+    if (peer.role !== 'LEAF') continue;
+
+    // ZeroTier paths contain the IP:port; extract the IP
+    const ip = extractZeroTierIp(peer.paths);
+    if (!ip) continue;
+
+    const hostname = peer.address ?? 'unknown';
+    result.push({ hostname, ip, os: 'unknown', provider: 'zerotier' });
+  }
+  return result;
+}
+
+function extractZeroTierIp(paths: ZeroTierPath[] | undefined): string | null {
+  if (!paths || paths.length === 0) return null;
+
+  // Prefer active, preferred paths
+  const active =
+    paths.find((p) => p.active && p.preferred) ?? paths.find((p) => p.active) ?? paths[0];
+  if (!active?.address) return null;
+
+  // Address format is "ip/port", extract just the IP
+  const slashIdx = active.address.lastIndexOf('/');
+  return slashIdx > 0 ? active.address.substring(0, slashIdx) : active.address;
+}
+
+// ---------------------------------------------------------------------------
+// WireGuard
+// ---------------------------------------------------------------------------
+
+function findWireGuardCli(): string | null {
+  return findCli('wg', '--version', ['/usr/local/bin/wg', '/opt/homebrew/bin/wg']);
+}
+
+export function getWireGuardPeers(): VpnPeer[] {
+  const cli = findWireGuardCli();
+  if (!cli) return [];
+
+  const raw = runCli(cli, 'show all dump', 'WireGuard');
+  if (!raw) return [];
+
+  // `wg show all dump` output is tab-separated:
+  // interface, public-key, preshared-key, endpoint, allowed-ips, latest-handshake, transfer-rx, transfer-tx, persistent-keepalive
+  const lines = raw.trim().split('\n');
+  const result: VpnPeer[] = [];
+  const seen = new Set<string>();
+
+  for (const line of lines) {
+    const fields = line.split('\t');
+    // Interface lines have 4-5 fields, peer lines have 8-9
+    if (fields.length < 8) continue;
+
+    const allowedIps = fields[4];
+    const latestHandshake = fields[5];
+
+    // Skip peers with no recent handshake (0 = never connected)
+    if (latestHandshake === '0') continue;
+
+    // Check handshake freshness: skip peers not seen in the last 5 minutes
+    const handshakeAge = Date.now() / 1000 - Number(latestHandshake);
+    if (handshakeAge > 300) continue;
+
+    // Extract first allowed IP (strip CIDR notation)
+    if (!allowedIps) continue;
+    const ips = allowedIps.split(',').map((s) => s.trim().split('/')[0]);
+    const ipv4 = ips.find((ip) => ip !== undefined && !ip.includes(':'));
+    const ip = ipv4 ?? ips[0];
+    if (!ip || seen.has(ip)) continue;
+    seen.add(ip);
+
+    result.push({ hostname: 'wg-peer', ip, os: 'unknown', provider: 'wireguard' });
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 interface TailscalePeerInfo {
   readonly HostName?: string;
   readonly DNSName?: string;
@@ -148,4 +305,17 @@ interface TailscalePeerInfo {
 
 interface TailscaleStatus {
   readonly Peer?: Record<string, TailscalePeerInfo>;
+}
+
+interface ZeroTierPath {
+  readonly active?: boolean;
+  readonly address?: string;
+  readonly preferred?: boolean;
+}
+
+interface ZeroTierPeerInfo {
+  readonly address?: string;
+  readonly latency?: number;
+  readonly role?: string;
+  readonly paths?: ZeroTierPath[];
 }

@@ -92,13 +92,20 @@ fs.writeFileSync(process.env.PKG_FILE, JSON.stringify(pkg, null, 2) + '\n');
 
 echo "Updated package.json"
 
+# Update compiled version fallback in cli.ts
+CLI_TS="$ROOT_DIR/packages/daemon/src/cli.ts"
+if [[ -f "$CLI_TS" ]]; then
+  sed -i '' "s/return '[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
+  echo "Updated cli.ts compiled version fallback"
+fi
+
 # Check for uncommitted changes beyond our version bump
-if ! git diff --quiet -- ':!package.json'; then
-  echo "Warning: you have other uncommitted changes. Only package.json will be committed." >&2
+if ! git diff --quiet -- ':!package.json' ':!packages/daemon/src/cli.ts'; then
+  echo "Warning: you have other uncommitted changes. Only version files will be committed." >&2
 fi
 
 # Commit and tag
-git add "$PKG_JSON"
+git add "$PKG_JSON" "$CLI_TS"
 git commit -m "chore: bump version to $NEW_VERSION"
 git tag "v$NEW_VERSION"
 
