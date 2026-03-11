@@ -873,7 +873,17 @@ if (cliSubcommand === 'attach') {
     /^\d+$/.test(targetSessionId?.slice(colonIdx + 1, firstSlash) ?? '');
 
   // Also check for host:port without slash (e.g., 100.79.39.98:18767)
-  const hostPortMatch = targetSessionId?.match(/^(.+):(\d+)$/);
+  // Also handle trailing garbage from copy-paste (e.g., 100.79.39.98:18767idle)
+  let hostPortMatch = targetSessionId?.match(/^(.+):(\d+)$/);
+  if (!hostPortMatch && targetSessionId) {
+    const fuzzyMatch = targetSessionId.match(/^(.+):(\d+)[a-zA-Z]+$/);
+    if (fuzzyMatch) {
+      const cleaned = `${fuzzyMatch[1]}:${fuzzyMatch[2]}`;
+      console.error(`\x1b[2mInterpreting "${targetSessionId}" as "${cleaned}"\x1b[0m`);
+      targetSessionId = cleaned;
+      hostPortMatch = targetSessionId.match(/^(.+):(\d+)$/);
+    }
+  }
   const isHostPort =
     !hasRemoteFormat &&
     hostPortMatch != null &&

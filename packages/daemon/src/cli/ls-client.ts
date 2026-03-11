@@ -359,7 +359,7 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       continue;
     }
 
-    const header = `  ${'NAME'.padEnd(28)}${'HOST'.padEnd(18)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    const header = `  ${'NAME'.padEnd(28)}${'HOST'.padEnd(24)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
     console.log(header);
     console.log(`  ${'-'.repeat(header.length - 2)}`);
 
@@ -371,7 +371,7 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `  ${name.padEnd(28)}${host.padEnd(18)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `  ${name.padEnd(28)}${host.padEnd(24)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
