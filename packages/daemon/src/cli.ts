@@ -873,22 +873,16 @@ if (cliSubcommand === 'attach') {
     /^\d+$/.test(targetSessionId?.slice(colonIdx + 1, firstSlash) ?? '');
 
   // Also check for host:port without slash (e.g., 100.79.39.98:18767)
-  // Also handle trailing garbage from copy-paste (e.g., 100.79.39.98:18767idle)
-  let hostPortMatch = targetSessionId?.match(/^(.+):(\d+)$/);
-  if (!hostPortMatch && targetSessionId) {
-    const fuzzyMatch = targetSessionId.match(/^(.+):(\d+)[a-zA-Z]+$/);
-    if (fuzzyMatch) {
-      const cleaned = `${fuzzyMatch[1]}:${fuzzyMatch[2]}`;
-      console.error(`\x1b[2mInterpreting "${targetSessionId}" as "${cleaned}"\x1b[0m`);
-      targetSessionId = cleaned;
-      hostPortMatch = targetSessionId.match(/^(.+):(\d+)$/);
-    }
+  // Detect trailing copy-paste garbage (e.g., 100.79.39.98:18767idle) and suggest correction
+  const { parseHostPort } = await import('./cli/ls-client.ts');
+  const hostPortParsed = targetSessionId ? parseHostPort(targetSessionId) : null;
+  if (hostPortParsed?.cleaned && targetSessionId) {
+    const corrected = `${hostPortParsed.host}:${hostPortParsed.port}`;
+    console.error(`Invalid target "${targetSessionId}". Did you mean "${corrected}"?`);
+    console.error(`  Run: remi attach ${corrected}`);
+    process.exit(1);
   }
-  const isHostPort =
-    !hasRemoteFormat &&
-    hostPortMatch != null &&
-    /^\d+$/.test(hostPortMatch[2] ?? '') &&
-    Number(hostPortMatch[2]) > 1024; // port numbers > 1024 to avoid matching session names
+  const isHostPort = !hasRemoteFormat && hostPortParsed != null && !hostPortParsed.cleaned;
 
   if (targetSessionId && hasRemoteFormat) {
     try {
@@ -901,10 +895,10 @@ if (cliSubcommand === 'attach') {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
-  } else if (targetSessionId && isHostPort && hostPortMatch) {
+  } else if (targetSessionId && isHostPort && hostPortParsed) {
     // Direct host:port attach - auto-attach to the session on that specific port
-    resolvedHost = hostPortMatch[1] as string;
-    resolvedPort = Number(hostPortMatch[2]);
+    resolvedHost = hostPortParsed.host;
+    resolvedPort = hostPortParsed.port;
     targetSessionId = undefined; // will be resolved by fetching sessions from that port
     try {
       const { fetchSessions } = await import('./cli/ls-client.ts');
