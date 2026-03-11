@@ -13,6 +13,7 @@ import {
   formatAge,
   formatDuration,
   getLocalAddresses,
+  parseHostPort,
   parseRemoteTarget,
   runLsClient,
 } from '../../src/cli/ls-client.ts';
@@ -223,6 +224,52 @@ describe('getLocalAddresses', () => {
     const addrs = getLocalAddresses('test');
     expect(addrs.has('8.8.8.8')).toBe(false);
     expect(addrs.has('not-a-host')).toBe(false);
+  });
+});
+
+describe('parseHostPort', () => {
+  test('parses valid host:port', () => {
+    const result = parseHostPort('100.79.39.98:18767');
+    expect(result).toEqual({ host: '100.79.39.98', port: 18767 });
+  });
+
+  test('detects trailing alphabetic garbage', () => {
+    const result = parseHostPort('100.79.39.98:18767idle');
+    expect(result).toEqual({ host: '100.79.39.98', port: 18767, cleaned: 'idle' });
+  });
+
+  test('detects multi-word trailing garbage', () => {
+    const result = parseHostPort('192.168.1.1:8080active');
+    expect(result).toEqual({ host: '192.168.1.1', port: 8080, cleaned: 'active' });
+  });
+
+  test('returns null for ports <= 1024', () => {
+    expect(parseHostPort('host:80')).toBeNull();
+    expect(parseHostPort('host:443')).toBeNull();
+    expect(parseHostPort('host:1024')).toBeNull();
+  });
+
+  test('returns null for ports > 65535', () => {
+    expect(parseHostPort('host:70000')).toBeNull();
+  });
+
+  test('returns null for non-host:port strings', () => {
+    expect(parseHostPort('just-a-name')).toBeNull();
+    expect(parseHostPort('session-id-abc123')).toBeNull();
+  });
+
+  test('returns null for session names with colons but no numeric port', () => {
+    expect(parseHostPort('hostname:project/branch')).toBeNull();
+  });
+
+  test('handles hostname with port', () => {
+    const result = parseHostPort('my-server:18765');
+    expect(result).toEqual({ host: 'my-server', port: 18765 });
+  });
+
+  test('does not match trailing mixed alphanumeric', () => {
+    // "idle2" contains digits, so [a-zA-Z]+ won't match it
+    expect(parseHostPort('host:18767idle2')).toBeNull();
   });
 });
 
