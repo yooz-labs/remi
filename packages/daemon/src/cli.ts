@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.3.12'; // REMI_COMPILED_VERSION
+      return '0.3.13'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.3.12'; // REMI_COMPILED_VERSION
+    return '0.3.13'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1749,64 +1749,13 @@ const sharedEvents = {
       );
     }
 
-    // In daemon mode, create new session on connect
+    // In daemon mode, accept connection without auto-creating a session.
+    // Clients use create_session_request to explicitly create sessions.
+    // This avoids spawning unwanted Claude processes when utility clients
+    // (ls, kill, attach probes) connect.
     if (!wrapperMode) {
-      // Send hello_ack immediately so utility clients (ls, kill, attach) can
-      // proceed with queries even if session creation fails later.
       sendToConnection(connectionId, createHelloAck('1.0.0', '' as UUID));
-      log(`Connection ${connectionId} accepted in daemon mode`);
-
-      const requestedDir = metadata.platformData?.['directory'] as string | undefined;
-      const dirResult = resolveDirectory(requestedDir);
-
-      if ('error' in dirResult) {
-        logError(`Directory error: ${dirResult.error}`);
-        sendToConnection(connectionId, createError('INVALID_DIRECTORY', dirResult.error));
-        return;
-      }
-
-      const workingDirectory = dirResult.resolved;
-      const sessionId = sessionRegistry.createSessionId();
-
-      log(`Creating new session ${sessionId} in ${workingDirectory}...`);
-
-      try {
-        await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-          const session = sessionRegistry.getSession(sid);
-          if (session?.activeConnectionId) {
-            sendToConnection(session.activeConnectionId, msg);
-          }
-        });
-
-        const result = sessionRegistry.attachConnection(sessionId, connectionId);
-
-        if (result.success) {
-          // Send updated hello_ack with real session ID
-          sendToConnection(
-            connectionId,
-            createHelloAck('1.0.0', sessionId, {
-              isResume: false,
-              replayCount: 0,
-              nextBulletId: 1,
-            }),
-          );
-          log(`Session ${sessionId} created and attached to connection ${connectionId}`);
-        } else {
-          logError(`Failed to attach connection: ${result.error}`);
-          sessionRegistry.closeSession(sessionId, 'forced');
-          sendToConnection(
-            connectionId,
-            createError('ATTACH_FAILED', result.error ?? 'Failed to attach connection'),
-          );
-        }
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        logError('Failed to create session:', errMsg);
-        sendToConnection(
-          connectionId,
-          createError('SESSION_CREATE_FAILED', `Failed to create session: ${errMsg}`),
-        );
-      }
+      log(`Connection ${connectionId} accepted in daemon mode (no auto-session)`);
     } else if (wrapperMode && primarySessionId) {
       // Wrapper mode: resume failed but session exists; send hello_ack
       // so the client can still send queries (ls, kill, etc.)
