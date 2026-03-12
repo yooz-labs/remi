@@ -1072,9 +1072,9 @@ if (cliSubcommand === 'attach') {
             // Run mDNS and VPN discovery in parallel
             const [daemons, vpnPeers] = await Promise.all([
               discoverDaemons({ timeoutMs: 3000 }),
-              discoverVpnPeers({ port: resolvedPort, probeTimeoutMs: 2000 }).catch((err) => {
+              discoverVpnPeers({ port: resolvedPort, probeTimeoutMs: 3000 }).catch((err) => {
                 const msg = err instanceof Error ? err.message : String(err);
-                log(`[Attach] VPN discovery failed: ${msg}`);
+                console.error(`\x1b[2m[attach] VPN discovery failed: ${msg}\x1b[0m`);
                 return [] as {
                   peer: import('./mdns/vpn-discovery.ts').VpnPeer;
                   host: string;
@@ -1082,6 +1082,20 @@ if (cliSubcommand === 'attach') {
                 }[];
               }),
             ]);
+
+            // Log discovery results for diagnostics
+            if (daemons.length > 0 || vpnPeers.length > 0) {
+              const mdnsHostnames = [
+                ...new Set(daemons.map((d: { hostname: string }) => d.hostname)),
+              ];
+              const vpnHostnames = [...new Set(vpnPeers.map((v) => v.peer.hostname))];
+              console.error(
+                `\x1b[2mFound ${daemons.length} mDNS, ${vpnPeers.length} VPN daemon(s); ` +
+                  `hosts: [${[...mdnsHostnames, ...vpnHostnames].join(', ')}]\x1b[0m`,
+              );
+            } else {
+              console.error('No daemons discovered (0 mDNS, 0 VPN). Is Tailscale running?');
+            }
 
             // Try mDNS first, fall back to VPN peers
             const mdnsMatch = daemons.find(
