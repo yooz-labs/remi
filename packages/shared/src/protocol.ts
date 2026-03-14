@@ -91,7 +91,9 @@ export type ProtocolMessage =
   | AuthResultMessage
   | KillSessionRequestMessage
   | KillSessionResponseMessage
-  | RawPtyOutputMessage;
+  | RawPtyOutputMessage
+  | SessionHistoryRequestMessage
+  | SessionHistoryResponseMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -441,6 +443,36 @@ export interface KillSessionResponseMessage {
   readonly requestId: UUID;
 }
 
+/** A recent project directory aggregated from session history */
+export interface RecentDirectory {
+  /** Absolute path */
+  readonly directory: string;
+  /** ISO timestamp of last use */
+  readonly lastUsed: Timestamp;
+  /** Number of sessions that used this directory */
+  readonly sessionCount: number;
+  /** basename(directory) for display */
+  readonly displayName: string;
+}
+
+/** Request session history (recent directories) */
+export interface SessionHistoryRequestMessage {
+  readonly type: 'session_history_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Max number of directories to return */
+  readonly limit?: number;
+}
+
+/** Response with recent directories */
+export interface SessionHistoryResponseMessage {
+  readonly type: 'session_history_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly directories: readonly RecentDirectory[];
+  readonly requestId: UUID;
+}
+
 /**
  * Serialize a protocol message to JSON string.
  * Throws if message is invalid.
@@ -512,6 +544,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'kill_session_request',
     'kill_session_response',
     'raw_pty_output',
+    'session_history_request',
+    'session_history_response',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -999,6 +1033,34 @@ export function createRawPtyOutput(data: string, sessionId: UUID): RawPtyOutputM
     timestamp: now(),
     data,
     sessionId,
+  };
+}
+
+/**
+ * Create a session history request.
+ */
+export function createSessionHistoryRequest(limit?: number): SessionHistoryRequestMessage {
+  return {
+    type: 'session_history_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(limit !== undefined && { limit }),
+  };
+}
+
+/**
+ * Create a session history response with recent directories.
+ */
+export function createSessionHistoryResponse(
+  directories: readonly RecentDirectory[],
+  requestId: UUID,
+): SessionHistoryResponseMessage {
+  return {
+    type: 'session_history_response',
+    id: generateId(),
+    timestamp: now(),
+    directories,
+    requestId,
   };
 }
 

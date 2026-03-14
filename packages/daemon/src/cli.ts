@@ -231,12 +231,19 @@ import {
   createKillSessionResponse,
   createRawPtyOutput,
   createReplayBatch,
+  createSessionHistoryResponse,
   createSessionListResponse,
   createTranscriptLoadComplete,
   generateId,
   now,
 } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import type {
+  AgentStatus,
+  ProtocolMessage,
+  RecentDirectory,
+  UUID,
+  UnlockedIdentity,
+} from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import {
   type AdapterMetadata,
@@ -340,6 +347,7 @@ let cliSubcommand:
   | 'new'
   | 'kill'
   | 'detach'
+  | 'recent'
   | 'start'
   | 'stop'
   | 'status'
@@ -359,6 +367,8 @@ let cliRemoveFingerprint: string | undefined;
 let cliNoMdns = false;
 let cliNetwork = false;
 let cliHost: string | undefined;
+let cliDir: string | undefined;
+let cliRecent = false;
 const claudeArgs: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -425,6 +435,19 @@ for (let i = 0; i < args.length; i++) {
     cliNoMdns = true;
   } else if (arg === '--network') {
     cliNetwork = true;
+  } else if (arg === '--dir' && nextArg) {
+    if (cliRecent) {
+      console.error('Error: --dir and --recent are mutually exclusive.');
+      process.exit(1);
+    }
+    cliDir = nextArg;
+    i++;
+  } else if (arg === '--recent') {
+    if (cliDir) {
+      console.error('Error: --dir and --recent are mutually exclusive.');
+      process.exit(1);
+    }
+    cliRecent = true;
   } else if (arg === '--host' && nextArg) {
     cliHost = nextArg;
     i++;
@@ -438,12 +461,16 @@ Remi - Claude Code with remote monitoring
 Usage:
   remi [claude-args...]          Start Claude with WebSocket monitoring
   remi new [-- claude-args...]   Explicit session creation (alias for remi [args])
+  remi new --dir <path>          Start session in a specific directory
+  remi new --recent              Pick from recent directories
+  remi new --host <ip>           Create session on remote daemon and attach
   remi kill <name>               Kill a session by name or ID
   remi detach [name]             Detach from current or named session
   remi start                     Start daemon in background
   remi stop                      Stop background daemon
   remi status                    Show daemon status
   remi logs                      Show recent daemon logs
+  remi recent                    Browse recent project directories
   remi ls                        List live sessions from running daemon
   remi ls --network              Discover and list sessions across the network
   remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
@@ -474,7 +501,9 @@ Options:
   --no-tofu                Reject unknown clients (disable Trust On First Use)
   --local                  Localhost-only mode (--bind localhost --no-mdns)
   --no-mdns                Disable mDNS network advertising
-  --host HOST              Connect to daemon at HOST (for ls/attach; default: localhost)
+  --host HOST              Connect to daemon at HOST (for ls/attach/new/recent; default: localhost)
+  --dir PATH               Working directory for new session (mutually exclusive with --recent)
+  --recent                 Pick from recent project directories (for new/recent subcommands)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
   --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
@@ -507,6 +536,7 @@ Any other arguments are passed through to Claude Code.
     arg === 'new' ||
     arg === 'kill' ||
     arg === 'detach' ||
+    arg === 'recent' ||
     arg === 'start' ||
     arg === 'stop' ||
     arg === 'status' ||
@@ -800,6 +830,33 @@ if (cliSubcommand === 'ls') {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
+  }
+  process.exit(0);
+}
+
+// Handle 'recent' subcommand: browse recent project directories
+if (cliSubcommand === 'recent') {
+  const explicitPort =
+    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined);
+
+  if (cliHost || explicitPort) {
+    // Remote mode: query a daemon via WebSocket
+    const { runRecentClient } = await import('./cli/recent-client.ts');
+    try {
+      await runRecentClient({
+        host: cliHost ?? 'localhost',
+        port: explicitPort ?? DEFAULT_BASE_PORT,
+      });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else {
+    // Local mode: read SessionStore directly
+    const store = new SessionStore();
+    const { renderRecentDirectories } = await import('./cli/recent-client.ts');
+    const directories = getRecentDirectories(store, 20);
+    renderRecentDirectories(directories);
   }
   process.exit(0);
 }
@@ -1234,6 +1291,86 @@ if (cliResume !== undefined) {
 }
 
 // ---------------------------------------------------------------------------
+// Handle 'new' subcommand enhancements: --host, --dir, --recent
+// ---------------------------------------------------------------------------
+
+// remi new --host: create session on remote daemon, then auto-attach
+if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
+  const resolvedPort =
+    cliPort ??
+    (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : DEFAULT_BASE_PORT);
+
+  let directory = cliDir;
+
+  // --recent: fetch remote recent dirs and pick one
+  if (cliRecent) {
+    const { fetchRecentDirectories } = await import('./cli/recent-client.ts');
+    const { pickDirectory } = await import('./cli/directory-picker.ts');
+    let dirs: Awaited<ReturnType<typeof fetchRecentDirectories>>;
+    try {
+      dirs = await fetchRecentDirectories(cliHost, resolvedPort);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    if (dirs.length === 0) {
+      console.error('No recent directories found on remote daemon.');
+      process.exit(1);
+    }
+    const picked = await pickDirectory(dirs);
+    if (!picked) {
+      process.exit(0);
+    }
+    directory = picked;
+  }
+
+  // Create session on remote daemon and auto-attach
+  const { runRemoteNew } = await import('./cli/remote-new-client.ts');
+  try {
+    const result = await runRemoteNew({
+      host: cliHost,
+      port: resolvedPort,
+      directory,
+    });
+    process.exit(result.exitCode);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+// remi new --recent (local): pick directory from recent, chdir, then fall through to wrapper
+if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliRecent && !cliHost) {
+  const store = new SessionStore();
+  const directories = getRecentDirectories(store, 20);
+  if (directories.length === 0) {
+    console.error('No recent directories found.');
+    process.exit(1);
+  }
+  const { pickDirectory } = await import('./cli/directory-picker.ts');
+  const picked = await pickDirectory(directories);
+  if (!picked) {
+    process.exit(0);
+  }
+  const dirResult = resolveDirectory(picked);
+  if ('error' in dirResult) {
+    console.error(dirResult.error);
+    process.exit(1);
+  }
+  process.chdir(dirResult.resolved);
+}
+
+// remi new --dir (local): chdir to specified directory, then fall through to wrapper
+if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHost) {
+  const dirResult = resolveDirectory(cliDir);
+  if ('error' in dirResult) {
+    console.error(dirResult.error);
+    process.exit(1);
+  }
+  process.chdir(dirResult.resolved);
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
@@ -1641,6 +1778,36 @@ const registry = new AdapterRegistry({
   },
 });
 
+function getRecentDirectories(store: SessionStore, limit: number): RecentDirectory[] {
+  const sessions = store.list();
+  const dirMap = new Map<string, { count: number; lastUsed: string }>();
+
+  for (const s of sessions) {
+    const dir = s.projectPath;
+    const existing = dirMap.get(dir);
+    if (existing) {
+      existing.count++;
+      if (s.startedAt > existing.lastUsed) {
+        existing.lastUsed = s.startedAt;
+      }
+    } else {
+      dirMap.set(dir, { count: 1, lastUsed: s.startedAt });
+    }
+  }
+
+  const entries = Array.from(dirMap.entries())
+    .map(([directory, { count, lastUsed }]) => ({
+      directory,
+      lastUsed,
+      sessionCount: count,
+      displayName: path.basename(directory),
+    }))
+    .sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1))
+    .slice(0, limit);
+
+  return entries;
+}
+
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): void => {
   registry.sendRaw(connectionId, message);
 };
@@ -1973,6 +2140,18 @@ const sharedEvents = {
     sessionRegistry.closeSession(sessionId, 'forced');
     sendToConnection(connectionId, createKillSessionResponse(true, requestId));
     log(`Session killed: ${sessionName}`);
+  },
+
+  onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => {
+    log(`Session history request from ${connectionId}, limit: ${limit ?? 'default'}`);
+    try {
+      const clampedLimit = Math.max(1, limit ?? 20);
+      const directories = getRecentDirectories(sessionStore, clampedLimit);
+      sendToConnection(connectionId, createSessionHistoryResponse(directories, requestId));
+    } catch (err) {
+      log(`Failed to get recent directories: ${err instanceof Error ? err.message : err}`);
+      sendToConnection(connectionId, createSessionHistoryResponse([], requestId));
+    }
   },
 
   onTerminalResize: (connectionId: UUID, cols: number, rows: number) => {

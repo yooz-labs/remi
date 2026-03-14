@@ -17,6 +17,8 @@ import {
   createPong,
   createQuestion,
   createReplayBatch,
+  createSessionHistoryRequest,
+  createSessionHistoryResponse,
   createSessionListRequest,
   createSessionListResponse,
   createSessionUpdate,
@@ -667,6 +669,74 @@ describe('Message factory functions', () => {
       const requestId = generateId();
       const msg = createSessionListResponse([], requestId);
       expect(msg.sessions.length).toBe(0);
+    });
+  });
+
+  describe('createSessionHistoryRequest()', () => {
+    test('creates request without limit', () => {
+      const msg = createSessionHistoryRequest();
+      expect(msg.type).toBe('session_history_request');
+      expect(msg.limit).toBeUndefined();
+    });
+
+    test('creates request with limit', () => {
+      const msg = createSessionHistoryRequest(10);
+      expect(msg.type).toBe('session_history_request');
+      expect(msg.limit).toBe(10);
+    });
+
+    test('serializes and deserializes', () => {
+      const msg = createSessionHistoryRequest(5);
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('session_history_request');
+    });
+  });
+
+  describe('createSessionHistoryResponse()', () => {
+    test('creates response with directories', () => {
+      const requestId = generateId();
+      const directories = [
+        {
+          directory: '/home/user/project',
+          lastUsed: now(),
+          sessionCount: 3,
+          displayName: 'project',
+        },
+      ];
+
+      const msg = createSessionHistoryResponse(directories, requestId);
+      expect(msg.type).toBe('session_history_response');
+      expect(msg.directories.length).toBe(1);
+      expect(msg.directories[0]?.directory).toBe('/home/user/project');
+      expect(msg.directories[0]?.sessionCount).toBe(3);
+      expect(msg.requestId).toBe(requestId);
+    });
+
+    test('creates response with empty directories', () => {
+      const requestId = generateId();
+      const msg = createSessionHistoryResponse([], requestId);
+      expect(msg.directories.length).toBe(0);
+    });
+
+    test('serializes and deserializes', () => {
+      const requestId = generateId();
+      const msg = createSessionHistoryResponse(
+        [
+          {
+            directory: '/tmp/test',
+            lastUsed: now(),
+            sessionCount: 1,
+            displayName: 'test',
+          },
+        ],
+        requestId,
+      );
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('session_history_response');
     });
   });
 
