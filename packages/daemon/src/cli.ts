@@ -1527,10 +1527,14 @@ async function createNewSession(
               // Terminal pipe broken (SSH disconnect, terminal closed, etc.)
               // Stop writing but keep daemon alive for remote clients.
               ptyStdoutFd = null;
-              if (!wrapperDetached) {
-                wrapperDetached = true;
-                logError(`Terminal write failed (${code}), detaching local terminal`);
-              }
+              wrapperDetached = true;
+              logError(`Terminal write failed (${code}), detaching local terminal`);
+            } else {
+              logError(
+                `Unexpected terminal write error (${code}):`,
+                err instanceof Error ? err.message : String(err),
+              );
+              ptyStdoutFd = null;
             }
           }
         }
@@ -1563,7 +1567,14 @@ async function createNewSession(
     },
   );
 
-  sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, messageApi, passThrough);
+  const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
+  sessionRegistry.registerSession(
+    sessionId,
+    workingDirectory,
+    ptySession,
+    messageApi,
+    locallyOwned,
+  );
   await ptySession.start();
 
   sessionStore.save({

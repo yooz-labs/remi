@@ -4,6 +4,7 @@
  * Key concepts:
  * - Sessions survive connection drops (orphaned state)
  * - Orphaned sessions timeout after configurable period (default 5 minutes)
+ * - Locally-owned sessions (wrapper mode) are exempt from orphan timeout
  * - Connections can resume existing sessions within timeout window
  * - Message history is tracked for replay on reconnect
  */
@@ -78,7 +79,7 @@ export interface ManagedSession {
   /** When session last had activity (message, status change) */
   lastActivityAt: Timestamp;
 
-  /** Currently attached connection ID (null if orphaned) */
+  /** Currently attached connection ID (null if no connection is attached) */
   activeConnectionId: UUID | null;
   /** When session was last disconnected (null if connected) */
   lastDisconnectedAt: Timestamp | null;
@@ -97,7 +98,7 @@ export interface ManagedSession {
 
   /** Whether this session is owned by the local process (wrapper mode).
    * Locally-owned sessions are never killed by orphan timeout. */
-  locallyOwned: boolean;
+  readonly locallyOwned: boolean;
 }
 
 /**
@@ -274,7 +275,8 @@ export class SessionRegistry {
 
   /**
    * Detach a connection from its session.
-   * The session becomes orphaned and starts the timeout countdown.
+   * Non-locally-owned sessions become orphaned and start the timeout countdown.
+   * Locally-owned sessions remain active without a timeout.
    */
   detachConnection(connectionId: UUID): void {
     const sessionId = this.connectionToSession.get(connectionId);
@@ -515,7 +517,7 @@ export class SessionRegistry {
   get orphanedCount(): number {
     let count = 0;
     for (const session of this.sessions.values()) {
-      if (session.activeConnectionId === null) {
+      if (session.activeConnectionId === null && !session.locallyOwned) {
         count++;
       }
     }

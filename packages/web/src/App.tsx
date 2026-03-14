@@ -141,8 +141,10 @@ function App() {
   const handleMessage = useCallback((message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        // Daemon mode sends empty sessionId; skip session creation
+        // Daemon mode sends empty sessionId on initial connect.
+        // No session is attached yet; user will select or create one from the session list.
         if (!message.sessionId) {
+          console.log('[hello_ack] Daemon mode: no default session, awaiting session list');
           setCreatingSession(false);
           break;
         }
