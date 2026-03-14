@@ -1085,13 +1085,15 @@ if (cliSubcommand === 'attach') {
 
             // Log discovery results for diagnostics
             if (daemons.length > 0 || vpnPeers.length > 0) {
-              const mdnsHostnames = [
-                ...new Set(daemons.map((d: { hostname: string }) => d.hostname)),
+              const hosts = [
+                ...new Set([
+                  ...daemons.map((d: { hostname: string }) => d.hostname),
+                  ...vpnPeers.map((v) => v.peer.hostname),
+                ]),
               ];
-              const vpnHostnames = [...new Set(vpnPeers.map((v) => v.peer.hostname))];
               console.error(
                 `\x1b[2mFound ${daemons.length} mDNS, ${vpnPeers.length} VPN daemon(s); ` +
-                  `hosts: [${[...mdnsHostnames, ...vpnHostnames].join(', ')}]\x1b[0m`,
+                  `hosts: [${hosts.join(', ')}]\x1b[0m`,
               );
             } else {
               console.error('No daemons discovered (0 mDNS, 0 VPN). Is Tailscale running?');
@@ -1364,7 +1366,12 @@ const sessionRegistry = new SessionRegistry(
       }
     },
     onSessionOrphaned: (sessionId) => {
-      log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+      const session = sessionRegistry.getSession(sessionId);
+      if (session?.locallyOwned) {
+        log(`Session detached: ${sessionId} (locally owned, no timeout)`);
+      } else {
+        log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+      }
     },
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
@@ -1541,10 +1548,27 @@ async function createNewSession(
             fs.writeSync(ptyStdoutFd, data);
           } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
+            ptyStdoutFd = null;
+            wrapperDetached = true;
             if (code === 'EPIPE' || code === 'EIO') {
-              logError(`Terminal write failed (${code}), initiating shutdown`);
-              cleanup().then(() => process.exit(1));
+              logError(`Terminal write failed (${code}), detaching local terminal`);
+            } else {
+              logError(
+                `Unexpected terminal write error (${code}):`,
+                err instanceof Error ? err.message : String(err),
+              );
             }
+            // Clean up stdin to avoid dangling raw-mode reader
+            if (process.stdin.isTTY) {
+              try {
+                process.stdin.setRawMode(false);
+              } catch {
+                // stdin may already be unusable
+              }
+            }
+            process.stdin.pause();
+            process.stdin.removeAllListeners('data');
+            process.stdin.unref();
           }
         }
 
@@ -1576,7 +1600,14 @@ async function createNewSession(
     },
   );
 
-  sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, messageApi);
+  const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
+  sessionRegistry.registerSession(
+    sessionId,
+    workingDirectory,
+    ptySession,
+    messageApi,
+    locallyOwned,
+  );
   await ptySession.start();
 
   sessionStore.save({

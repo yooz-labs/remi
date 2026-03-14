@@ -54,12 +54,9 @@ export function parseHostPort(
   if (!match) return null;
   const port = Number(match[2]);
   if (port <= 1024 || port > 65535) return null;
-  const result: { host: string; port: number; cleaned?: string } = {
-    host: match[1] as string,
-    port,
-  };
-  if (match[3]) result.cleaned = match[3];
-  return result;
+  const host = match[1] as string;
+  if (match[3]) return { host, port, cleaned: match[3] };
+  return { host, port };
 }
 
 export interface LsClientOptions {

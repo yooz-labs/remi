@@ -4,6 +4,7 @@
  * Key concepts:
  * - Sessions survive connection drops (orphaned state)
  * - Orphaned sessions timeout after configurable period (default 5 minutes)
+ * - Locally-owned sessions (wrapper mode) are exempt from orphan timeout
  * - Connections can resume existing sessions within timeout window
  * - Message history is tracked for replay on reconnect
  */
@@ -53,7 +54,8 @@ export interface SessionRegistryEvents {
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
   onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
-  /** Session became orphaned (connection detached) */
+  /** Connection detached from session. For non-locally-owned sessions,
+   * this means the session is now orphaned; locally-owned sessions remain active. */
   onSessionOrphaned?: (sessionId: UUID) => void;
   /** Session was resumed (connection reattached) */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
@@ -78,7 +80,7 @@ export interface ManagedSession {
   /** When session last had activity (message, status change) */
   lastActivityAt: Timestamp;
 
-  /** Currently attached connection ID (null if orphaned) */
+  /** Currently attached connection ID (null if no connection is attached) */
   activeConnectionId: UUID | null;
   /** When session was last disconnected (null if connected) */
   lastDisconnectedAt: Timestamp | null;
@@ -94,6 +96,10 @@ export interface ManagedSession {
   currentStatus: AgentStatus;
   /** Current pending question */
   currentQuestion: Question | null;
+
+  /** Whether this session is owned by the local process (wrapper mode).
+   * Locally-owned sessions are never killed by orphan timeout. */
+  readonly locallyOwned: boolean;
 }
 
 /**
@@ -118,14 +124,14 @@ export class SessionRegistry {
   }
 
   /**
-   * Register a new session with its PTY and processors.
-   * Called after spawning Claude Code.
+   * Register a new session with its PTY and message API.
    */
   registerSession(
     sessionId: UUID,
     workingDirectory: string,
     pty: PTYSession,
     messageApi: MessageAPI,
+    locallyOwned = false,
   ): void {
     const baseName = generateSessionName(workingDirectory);
     const existingNames = this.getExistingNames();
@@ -147,6 +153,7 @@ export class SessionRegistry {
       lastDeliveredIndex: -1,
       currentStatus: 'idle',
       currentQuestion: null,
+      locallyOwned,
     };
 
     this.sessions.set(sessionId, session);
@@ -155,7 +162,7 @@ export class SessionRegistry {
 
   /**
    * Create a new session ID for a fresh connection.
-   * The actual session components (PTY, processor, messageApi) must be
+   * The actual session components (PTY, messageApi) must be
    * registered separately via registerSession.
    */
   createSessionId(): UUID {
@@ -189,14 +196,14 @@ export class SessionRegistry {
 
   /**
    * Check if a session can be resumed.
-   * Returns true if session exists, is orphaned, and hasn't timed out.
+   * Returns true if session exists and has no active connection.
    */
   canResume(sessionId: UUID): boolean {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
       return false;
     }
-    // Can only resume orphaned sessions
+    // Can only resume sessions with no active connection
     return session.activeConnectionId === null;
   }
 
@@ -268,7 +275,8 @@ export class SessionRegistry {
 
   /**
    * Detach a connection from its session.
-   * The session becomes orphaned and starts the timeout countdown.
+   * Non-locally-owned sessions become orphaned and start the timeout countdown.
+   * Locally-owned sessions remain active without a timeout.
    */
   detachConnection(connectionId: UUID): void {
     const sessionId = this.connectionToSession.get(connectionId);
@@ -287,10 +295,13 @@ export class SessionRegistry {
     session.lastDisconnectedAt = now();
     this.connectionToSession.delete(connectionId);
 
-    // Start orphan timeout
-    session.orphanTimeoutId = setTimeout(() => {
-      this.closeSession(sessionId, 'timeout');
-    }, this.orphanTimeoutMs);
+    // Start orphan timeout (skip for locally-owned sessions; they stay alive
+    // until PTY exits, explicit kill, or daemon shutdown)
+    if (!session.locallyOwned) {
+      session.orphanTimeoutId = setTimeout(() => {
+        this.closeSession(sessionId, 'timeout');
+      }, this.orphanTimeoutMs);
+    }
 
     this.events.onSessionOrphaned?.(sessionId);
   }
@@ -358,10 +369,11 @@ export class SessionRegistry {
       this.connectionToSession.delete(session.activeConnectionId);
     }
 
-    // Close PTY if not already closed
+    // Close PTY unless the closure was triggered by PTY exit
     if (reason !== 'pty_exit') {
-      session.pty.close().catch(() => {
-        // Ignore close errors
+      session.pty.close().catch((err) => {
+        // Log but don't throw; we're already cleaning up
+        console.error(`Failed to close PTY for session ${sessionId}:`, err);
       });
     }
 
@@ -454,7 +466,7 @@ export class SessionRegistry {
    */
   private getDiscoverableStatus(session: ManagedSession): 'active' | 'idle' | 'orphaned' {
     if (session.activeConnectionId === null) {
-      return 'orphaned';
+      return session.locallyOwned ? 'active' : 'orphaned';
     }
     if (session.currentStatus === 'idle') {
       return 'idle';
@@ -506,7 +518,7 @@ export class SessionRegistry {
   get orphanedCount(): number {
     let count = 0;
     for (const session of this.sessions.values()) {
-      if (session.activeConnectionId === null) {
+      if (session.activeConnectionId === null && !session.locallyOwned) {
         count++;
       }
     }
