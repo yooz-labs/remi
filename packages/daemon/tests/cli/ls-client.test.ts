@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
   type DiscoverableSession,
+  createError,
   createHelloAck,
   createSessionListResponse,
   deserialize,
@@ -165,6 +166,113 @@ describe('fetchSessions', () => {
 
   test('rejects when server is unreachable', async () => {
     await expect(fetchSessions('localhost', 9876, 1000)).rejects.toThrow(/Cannot connect/);
+  });
+
+  test('ignores SESSION_CREATE_FAILED error and returns session list', async () => {
+    const sessions = [makeSession({ status: 'idle' })];
+
+    server = Bun.serve({
+      port: FETCH_PORT,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            const sessionId = generateId();
+            // Send error BEFORE hello_ack (tests guard removal)
+            ws.send(
+              serialize(
+                createError(
+                  'SESSION_CREATE_FAILED',
+                  'Failed to create session: Executable not found in $PATH: "claude"',
+                ),
+              ),
+            );
+            ws.send(serialize(createHelloAck('1.0.0', sessionId)));
+          } else if (msg.type === 'session_list_request') {
+            ws.send(serialize(createSessionListResponse(sessions, msg.id)));
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await fetchSessions('localhost', FETCH_PORT, 3000);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.status).toBe('idle');
+  });
+
+  test('ignores NO_SESSION error and returns session list', async () => {
+    const sessions = [makeSession({ status: 'active' })];
+
+    server = Bun.serve({
+      port: FETCH_PORT,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            // Send NO_SESSION error (wrapper mode with no primary session)
+            ws.send(serialize(createError('NO_SESSION', 'No active session available')));
+            // Then send hello_ack anyway
+            ws.send(serialize(createHelloAck('1.0.0', generateId())));
+          } else if (msg.type === 'session_list_request') {
+            ws.send(serialize(createSessionListResponse(sessions, msg.id)));
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await fetchSessions('localhost', FETCH_PORT, 3000);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.status).toBe('active');
+  });
+
+  test('ignores ATTACH_FAILED error after hello_ack', async () => {
+    const sessions = [makeSession({ status: 'idle' })];
+
+    server = Bun.serve({
+      port: FETCH_PORT,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', generateId())));
+          } else if (msg.type === 'session_list_request') {
+            // Send error after list request (daemon processing race)
+            ws.send(serialize(createError('ATTACH_FAILED', 'Session busy')));
+            ws.send(serialize(createSessionListResponse(sessions, msg.id)));
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await fetchSessions('localhost', FETCH_PORT, 3000);
+    expect(result).toHaveLength(1);
   });
 });
 
