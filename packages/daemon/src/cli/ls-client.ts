@@ -41,6 +41,27 @@ export function parseRemoteTarget(input: string, defaultPort: number): RemoteTar
   return { host: hostPort, port: defaultPort, sessionId };
 }
 
+/**
+ * Parse a host:port string, optionally stripping trailing alphabetic garbage
+ * from copy-paste (e.g., "100.79.39.98:18767idle").
+ * Returns null if the input doesn't look like host:port.
+ * Returns { host, port, cleaned } if matched; `cleaned` is the trailing text that was stripped, or undefined.
+ */
+export function parseHostPort(
+  input: string,
+): { host: string; port: number; cleaned?: string } | null {
+  const match = input.match(/^(.+):(\d+)([a-zA-Z]+)?$/);
+  if (!match) return null;
+  const port = Number(match[2]);
+  if (port <= 1024 || port > 65535) return null;
+  const result: { host: string; port: number; cleaned?: string } = {
+    host: match[1] as string,
+    port,
+  };
+  if (match[3]) result.cleaned = match[3];
+  return result;
+}
+
 export interface LsClientOptions {
   host: string;
   port: number;
@@ -359,7 +380,7 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       continue;
     }
 
-    const header = `  ${'NAME'.padEnd(28)}${'HOST'.padEnd(18)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    const header = `  ${'NAME'.padEnd(28)}${'HOST'.padEnd(24)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
     console.log(header);
     console.log(`  ${'-'.repeat(header.length - 2)}`);
 
@@ -371,7 +392,7 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `  ${name.padEnd(28)}${host.padEnd(18)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `  ${name.padEnd(28)}${host.padEnd(24)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
