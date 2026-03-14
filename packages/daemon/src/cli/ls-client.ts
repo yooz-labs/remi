@@ -100,6 +100,15 @@ export async function runHostLs(opts: HostLsOptions): Promise<void> {
     logLabel: 'ls',
   });
 
+  if (results.length === 0) {
+    // No port responded at all — host is unreachable or has no daemons
+    const lo = ports[0];
+    const hi = ports[ports.length - 1];
+    console.error(`Cannot reach any remi daemon on ${host} (ports ${lo}-${hi}).`);
+    console.error('Check that the host is reachable and a remi daemon is running.');
+    return;
+  }
+
   const allSessions = results.flatMap((r) => r.sessions);
   if (allSessions.length === 0) {
     console.log(`No active sessions on ${host}.`);

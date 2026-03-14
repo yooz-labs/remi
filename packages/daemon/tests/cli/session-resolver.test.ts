@@ -85,8 +85,8 @@ describe('classifyQueryError', () => {
     expect(classifyQueryError('Something went wrong')).toBe('unexpected');
   });
 
-  test('classifies timeout as connection error (suppressed)', () => {
-    expect(classifyQueryError('Timed out connecting to daemon')).toBe('connection');
+  test('classifies timeout as unexpected', () => {
+    expect(classifyQueryError('Timed out connecting to daemon')).toBe('unexpected');
   });
 
   test('classifies "Failed to create session" as expected', () => {
