@@ -54,7 +54,8 @@ export interface SessionRegistryEvents {
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
   onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
-  /** Session became orphaned (connection detached) */
+  /** Connection detached from session. For non-locally-owned sessions,
+   * this means the session is now orphaned; locally-owned sessions remain active. */
   onSessionOrphaned?: (sessionId: UUID) => void;
   /** Session was resumed (connection reattached) */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
@@ -196,14 +197,14 @@ export class SessionRegistry {
 
   /**
    * Check if a session can be resumed.
-   * Returns true if session exists, is orphaned, and hasn't timed out.
+   * Returns true if session exists and has no active connection.
    */
   canResume(sessionId: UUID): boolean {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
       return false;
     }
-    // Can only resume orphaned sessions
+    // Can only resume sessions with no active connection
     return session.activeConnectionId === null;
   }
 
@@ -371,8 +372,9 @@ export class SessionRegistry {
 
     // Close PTY if not already closed
     if (reason !== 'pty_exit') {
-      session.pty.close().catch(() => {
-        // Ignore close errors
+      session.pty.close().catch((err) => {
+        // Log but don't throw; we're already cleaning up
+        console.error(`Failed to close PTY for session ${sessionId}:`, err);
       });
     }
 

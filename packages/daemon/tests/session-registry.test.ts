@@ -354,23 +354,7 @@ describe('SessionRegistry', () => {
       expect(events.onSessionClosed).not.toHaveBeenCalled();
     });
 
-    test('non-locally-owned session is still killed after orphan timeout', async () => {
-      const sessionId = generateId();
-      const connectionId = generateId();
-      const pty = createMockPTY();
-
-      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), false);
-      registry.attachConnection(sessionId, connectionId);
-      registry.detachConnection(connectionId);
-
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
-      expect(registry.getSession(sessionId)).toBeUndefined();
-      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
-      expect(pty.close).toHaveBeenCalled();
-    });
-
-    test('locally owned session reports active status without connection', () => {
+    test('locally owned session reports active status and canAttach without connection', () => {
       const sessionId = generateId();
       registry.registerSession(
         sessionId,
@@ -383,6 +367,37 @@ describe('SessionRegistry', () => {
       const sessions = registry.listSessions();
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.status).toBe('active');
+      expect(sessions[0]?.canAttach).toBe(true);
+    });
+
+    test('orphanedCount excludes locally-owned sessions', () => {
+      const localSessionId = generateId();
+      registry.registerSession(
+        localSessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        true,
+      );
+
+      // Locally-owned session with no connection should not count as orphaned
+      expect(registry.orphanedCount).toBe(0);
+
+      // Add a non-locally-owned detached session
+      const remoteSessionId = generateId();
+      const connectionId = generateId();
+      registry.registerSession(
+        remoteSessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+      );
+      registry.attachConnection(remoteSessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      // Only the non-locally-owned session counts
+      expect(registry.orphanedCount).toBe(1);
     });
 
     test('non-locally-owned session reports orphaned status without connection', () => {

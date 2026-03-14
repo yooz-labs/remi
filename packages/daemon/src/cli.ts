@@ -1364,7 +1364,12 @@ const sessionRegistry = new SessionRegistry(
       }
     },
     onSessionOrphaned: (sessionId) => {
-      log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+      const session = sessionRegistry.getSession(sessionId);
+      if (session?.locallyOwned) {
+        log(`Session detached: ${sessionId} (locally owned, no timeout)`);
+      } else {
+        log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+      }
     },
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
@@ -1547,12 +1552,24 @@ async function createNewSession(
               ptyStdoutFd = null;
               wrapperDetached = true;
               logError(`Terminal write failed (${code}), detaching local terminal`);
+              // Clean up stdin to avoid dangling raw-mode reader
+              if (process.stdin.isTTY) {
+                try {
+                  process.stdin.setRawMode(false);
+                } catch {
+                  // stdin may already be unusable
+                }
+              }
+              process.stdin.pause();
+              process.stdin.removeAllListeners('data');
+              process.stdin.unref();
             } else {
               logError(
                 `Unexpected terminal write error (${code}):`,
                 err instanceof Error ? err.message : String(err),
               );
               ptyStdoutFd = null;
+              wrapperDetached = true;
             }
           }
         }
