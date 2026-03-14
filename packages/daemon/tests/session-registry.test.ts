@@ -334,6 +334,76 @@ describe('SessionRegistry', () => {
     });
   });
 
+  describe('locallyOwned sessions', () => {
+    test('locally owned session skips orphan timeout on detach', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), true);
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      // Wait well past the orphan timeout (100ms + buffer)
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Session should still exist (not killed by timeout)
+      expect(registry.getSession(sessionId)).toBeDefined();
+      expect(pty.close).not.toHaveBeenCalled();
+      expect(events.onSessionOrphaned).toHaveBeenCalledWith(sessionId);
+      expect(events.onSessionClosed).not.toHaveBeenCalled();
+    });
+
+    test('non-locally-owned session is still killed after orphan timeout', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), false);
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(registry.getSession(sessionId)).toBeUndefined();
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
+      expect(pty.close).toHaveBeenCalled();
+    });
+
+    test('locally owned session reports active status without connection', () => {
+      const sessionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        true,
+      );
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.status).toBe('active');
+    });
+
+    test('non-locally-owned session reports orphaned status without connection', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+      );
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.status).toBe('orphaned');
+    });
+  });
+
   describe('shutdown()', () => {
     test('closes all sessions', async () => {
       const pty1 = createMockPTY();

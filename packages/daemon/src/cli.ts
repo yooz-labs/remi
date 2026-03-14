@@ -1524,8 +1524,13 @@ async function createNewSession(
           } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
             if (code === 'EPIPE' || code === 'EIO') {
-              logError(`Terminal write failed (${code}), initiating shutdown`);
-              cleanup().then(() => process.exit(1));
+              // Terminal pipe broken (SSH disconnect, terminal closed, etc.)
+              // Stop writing but keep daemon alive for remote clients.
+              ptyStdoutFd = null;
+              if (!wrapperDetached) {
+                wrapperDetached = true;
+                logError(`Terminal write failed (${code}), detaching local terminal`);
+              }
             }
           }
         }
@@ -1558,7 +1563,7 @@ async function createNewSession(
     },
   );
 
-  sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, messageApi);
+  sessionRegistry.registerSession(sessionId, workingDirectory, ptySession, messageApi, passThrough);
   await ptySession.start();
 
   sessionStore.save({
@@ -1745,65 +1750,15 @@ const sharedEvents = {
       );
     }
 
-    // In daemon mode, create new session on connect
+    // In daemon mode, accept the connection without auto-creating a session.
+    // Sessions are created only via explicit create_session_request.
     if (!wrapperMode) {
-      // Send hello_ack immediately so utility clients (ls, kill, attach) can
-      // proceed with queries even if session creation fails later.
       sendToConnection(connectionId, createHelloAck('1.0.0', '' as UUID));
       log(`Connection ${connectionId} accepted in daemon mode`);
+      return;
+    }
 
-      const requestedDir = metadata.platformData?.['directory'] as string | undefined;
-      const dirResult = resolveDirectory(requestedDir);
-
-      if ('error' in dirResult) {
-        logError(`Directory error: ${dirResult.error}`);
-        sendToConnection(connectionId, createError('INVALID_DIRECTORY', dirResult.error));
-        return;
-      }
-
-      const workingDirectory = dirResult.resolved;
-      const sessionId = sessionRegistry.createSessionId();
-
-      log(`Creating new session ${sessionId} in ${workingDirectory}...`);
-
-      try {
-        await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-          const session = sessionRegistry.getSession(sid);
-          if (session?.activeConnectionId) {
-            sendToConnection(session.activeConnectionId, msg);
-          }
-        });
-
-        const result = sessionRegistry.attachConnection(sessionId, connectionId);
-
-        if (result.success) {
-          // Send updated hello_ack with real session ID
-          sendToConnection(
-            connectionId,
-            createHelloAck('1.0.0', sessionId, {
-              isResume: false,
-              replayCount: 0,
-              nextBulletId: 1,
-            }),
-          );
-          log(`Session ${sessionId} created and attached to connection ${connectionId}`);
-        } else {
-          logError(`Failed to attach connection: ${result.error}`);
-          sessionRegistry.closeSession(sessionId, 'forced');
-          sendToConnection(
-            connectionId,
-            createError('ATTACH_FAILED', result.error ?? 'Failed to attach connection'),
-          );
-        }
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        logError('Failed to create session:', errMsg);
-        sendToConnection(
-          connectionId,
-          createError('SESSION_CREATE_FAILED', `Failed to create session: ${errMsg}`),
-        );
-      }
-    } else if (wrapperMode && primarySessionId) {
+    if (wrapperMode && primarySessionId) {
       // Wrapper mode: resume failed but session exists; send hello_ack
       // so the client can still send queries (ls, kill, etc.)
       sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));

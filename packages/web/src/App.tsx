@@ -141,6 +141,11 @@ function App() {
   const handleMessage = useCallback((message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
+        // Daemon mode sends empty sessionId; skip session creation
+        if (!message.sessionId) {
+          setCreatingSession(false);
+          break;
+        }
         setSessions((prev) => {
           const exists = prev.some((s) => s.id === message.sessionId);
           if (exists) {
@@ -496,7 +501,6 @@ function App() {
     requestSessionList,
     requestTranscriptLoad,
     requestNewSession,
-    sessionId: wsSessionId,
     needsPassphrase,
     serverFingerprint,
     provideIdentity,
@@ -618,10 +622,10 @@ function App() {
 
   // Request session list after direct connection
   useEffect(() => {
-    if (connectionStatus === 'connected' && wsSessionId) {
+    if (connectionStatus === 'connected') {
       effectiveRequestSessionList(true);
     }
-  }, [connectionStatus, wsSessionId, effectiveRequestSessionList]);
+  }, [connectionStatus, effectiveRequestSessionList]);
 
   // Request session list after relay connection (hello_ack received)
   useEffect(() => {

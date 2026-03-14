@@ -94,6 +94,10 @@ export interface ManagedSession {
   currentStatus: AgentStatus;
   /** Current pending question */
   currentQuestion: Question | null;
+
+  /** Whether this session is owned by the local process (wrapper mode).
+   * Locally-owned sessions are never killed by orphan timeout. */
+  locallyOwned: boolean;
 }
 
 /**
@@ -126,6 +130,7 @@ export class SessionRegistry {
     workingDirectory: string,
     pty: PTYSession,
     messageApi: MessageAPI,
+    locallyOwned = false,
   ): void {
     const baseName = generateSessionName(workingDirectory);
     const existingNames = this.getExistingNames();
@@ -147,6 +152,7 @@ export class SessionRegistry {
       lastDeliveredIndex: -1,
       currentStatus: 'idle',
       currentQuestion: null,
+      locallyOwned,
     };
 
     this.sessions.set(sessionId, session);
@@ -287,10 +293,13 @@ export class SessionRegistry {
     session.lastDisconnectedAt = now();
     this.connectionToSession.delete(connectionId);
 
-    // Start orphan timeout
-    session.orphanTimeoutId = setTimeout(() => {
-      this.closeSession(sessionId, 'timeout');
-    }, this.orphanTimeoutMs);
+    // Start orphan timeout (skip for locally-owned sessions; they stay alive
+    // until PTY exits, explicit kill, or daemon shutdown)
+    if (!session.locallyOwned) {
+      session.orphanTimeoutId = setTimeout(() => {
+        this.closeSession(sessionId, 'timeout');
+      }, this.orphanTimeoutMs);
+    }
 
     this.events.onSessionOrphaned?.(sessionId);
   }
@@ -454,7 +463,7 @@ export class SessionRegistry {
    */
   private getDiscoverableStatus(session: ManagedSession): 'active' | 'idle' | 'orphaned' {
     if (session.activeConnectionId === null) {
-      return 'orphaned';
+      return session.locallyOwned ? 'active' : 'orphaned';
     }
     if (session.currentStatus === 'idle') {
       return 'idle';
