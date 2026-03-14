@@ -47,7 +47,9 @@ export function classifyQueryError(reason: string): QueryErrorClass {
   if (
     reason.includes('not found') ||
     reason.includes('ENOENT') ||
-    reason.includes('SESSION_CREATE_FAILED')
+    reason.includes('SESSION_CREATE_FAILED') ||
+    reason.includes('Failed to create session') ||
+    reason.includes('No active session')
   ) {
     return 'expected';
   }
@@ -106,7 +108,12 @@ export async function queryMultiplePorts(
       if (errorClass === 'expected') {
         console.error(`\x1b[2m[${logLabel}] ${host}:${ports[i]}: ${reason}\x1b[0m`);
       } else if (errorClass === 'unexpected') {
-        console.error(`[${logLabel}] Failed to query ${host}:${ports[i]}: ${reason}`);
+        // Suppress timeouts when probing multiple ports (most won't have daemons)
+        if (ports.length > 1 && reason.includes('Timed out')) {
+          // Normal: timeout on one of many probed ports
+        } else {
+          console.error(`[${logLabel}] Failed to query ${host}:${ports[i]}: ${reason}`);
+        }
       }
       // 'connection' errors are suppressed
     }

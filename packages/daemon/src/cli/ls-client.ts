@@ -76,6 +76,82 @@ export async function runLsClient(opts: LsClientOptions): Promise<void> {
   renderSessionList(sessions);
 }
 
+// ---------------------------------------------------------------------------
+// Host-based multi-port discovery (remi ls --host <addr>)
+// ---------------------------------------------------------------------------
+
+export interface HostLsOptions {
+  readonly host: string;
+  readonly ports: readonly number[];
+  readonly timeout?: number;
+}
+
+/**
+ * Query a specific host across a range of ports, rendering all discovered sessions.
+ * Used when --host is specified without --port.
+ */
+export async function runHostLs(opts: HostLsOptions): Promise<void> {
+  const { host, ports, timeout = FETCH_SESSIONS_TIMEOUT_MS } = opts;
+
+  const results = await queryMultiplePorts({
+    host,
+    ports,
+    timeoutMs: timeout,
+    logLabel: 'ls',
+  });
+
+  if (results.length === 0) {
+    // No port responded at all — host is unreachable or has no daemons
+    const lo = ports[0];
+    const hi = ports[ports.length - 1];
+    console.error(`Cannot reach any remi daemon on ${host} (ports ${lo}-${hi}).`);
+    console.error('Check that the host is reachable and a remi daemon is running.');
+    return;
+  }
+
+  const allSessions = results.flatMap((r) => r.sessions);
+  if (allSessions.length === 0) {
+    console.log(`No active sessions on ${host}.`);
+    return;
+  }
+
+  // Single port: render flat list (same as --host --port)
+  if (results.length === 1) {
+    renderSessionList(allSessions);
+    return;
+  }
+
+  // Multiple ports: show port column
+  const header = `${'NAME'.padEnd(28)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  console.log(header);
+  console.log('-'.repeat(header.length));
+
+  for (const r of results) {
+    for (const s of r.sessions) {
+      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+      const port = String(r.port);
+      const duration = formatDuration(s.createdAt);
+      const lastAct = formatAge(s.lastActivity);
+      const mark = s.canAttach ? ' *' : '';
+
+      console.log(
+        `${name.padEnd(28)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+      );
+    }
+  }
+
+  const attachable = results.flatMap((r) =>
+    r.sessions.filter((s) => s.canAttach).map((s) => ({ ...s, port: r.port })),
+  );
+  if (attachable.length > 0) {
+    console.log('');
+    for (const a of attachable) {
+      const name = a.name ?? a.sessionId.slice(0, 8);
+      console.log(`  * ${name}: remi attach ${host}:${a.port}/${name}`);
+    }
+  }
+}
+
 export async function fetchSessions(
   host: string,
   port: number,
@@ -123,12 +199,14 @@ export async function fetchSessions(
         resolve(msg.sessions as DiscoverableSession[]);
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
-        // After first hello_ack, ignore session-creation errors (we only care about the list)
+        // Ignore session-creation errors — ls only cares about the session list.
+        // These can arrive at any point (before or after hello_ack) depending on
+        // daemon timing, so we unconditionally ignore them.
         if (
-          sentListRequest &&
-          (msg.code === 'SESSION_CREATE_FAILED' ||
-            msg.code === 'ATTACH_FAILED' ||
-            msg.code === 'INVALID_DIRECTORY')
+          msg.code === 'SESSION_CREATE_FAILED' ||
+          msg.code === 'ATTACH_FAILED' ||
+          msg.code === 'INVALID_DIRECTORY' ||
+          msg.code === 'NO_SESSION'
         ) {
           return;
         }

@@ -89,6 +89,18 @@ describe('classifyQueryError', () => {
     expect(classifyQueryError('Timed out connecting to daemon')).toBe('unexpected');
   });
 
+  test('classifies "Failed to create session" as expected', () => {
+    expect(
+      classifyQueryError(
+        'Daemon error: Failed to create session: Executable not found in $PATH: "claude"',
+      ),
+    ).toBe('expected');
+  });
+
+  test('classifies "No active session" as expected', () => {
+    expect(classifyQueryError('Daemon error: No active session available')).toBe('expected');
+  });
+
   test('classifies empty string as unexpected', () => {
     expect(classifyQueryError('')).toBe('unexpected');
   });
