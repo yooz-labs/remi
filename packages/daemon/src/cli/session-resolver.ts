@@ -38,7 +38,8 @@ export function classifyQueryError(reason: string): QueryErrorClass {
     reason.includes('Cannot connect') ||
     reason.includes('closed unexpectedly') ||
     reason.includes('ECONNREFUSED') ||
-    reason.includes('ECONNRESET')
+    reason.includes('ECONNRESET') ||
+    reason.includes('Timed out')
   ) {
     return 'connection';
   }
@@ -47,7 +48,9 @@ export function classifyQueryError(reason: string): QueryErrorClass {
   if (
     reason.includes('not found') ||
     reason.includes('ENOENT') ||
-    reason.includes('SESSION_CREATE_FAILED')
+    reason.includes('SESSION_CREATE_FAILED') ||
+    reason.includes('Failed to create session') ||
+    reason.includes('No active session')
   ) {
     return 'expected';
   }

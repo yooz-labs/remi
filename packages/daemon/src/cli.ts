@@ -772,11 +772,30 @@ if (cliSubcommand === 'ls') {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
-  } else if (explicitPort || cliHost) {
-    // Explicit host/port: query single daemon (original behavior)
+  } else if (explicitPort && cliHost) {
+    // Explicit host + port: query single daemon
     const { runLsClient } = await import('./cli/ls-client.ts');
     try {
-      await runLsClient({ host: cliHost ?? 'localhost', port: explicitPort ?? DEFAULT_BASE_PORT });
+      await runLsClient({ host: cliHost, port: explicitPort });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else if (explicitPort) {
+    // Explicit port only: query localhost on that port
+    const { runLsClient } = await import('./cli/ls-client.ts');
+    try {
+      await runLsClient({ host: 'localhost', port: explicitPort });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else if (cliHost) {
+    // Host without port: probe the standard port range on that host
+    const { runHostLs } = await import('./cli/ls-client.ts');
+    try {
+      const ports = Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
+      await runHostLs({ host: cliHost, ports });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
