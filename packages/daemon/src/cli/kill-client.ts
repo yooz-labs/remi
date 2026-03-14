@@ -15,6 +15,7 @@ import {
 } from '@remi/shared';
 import type { DiscoverableSession, ProtocolMessage, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
+import { resolveSession as sharedResolveSession } from './session-resolver.ts';
 
 export interface KillClientOptions {
   readonly host: string;
@@ -63,41 +64,6 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
       ws.send(serialize(createHello(clientId, '1.0.0')));
     }
 
-    function resolveSession(
-      sessionList: DiscoverableSession[],
-      nameOrId: string,
-    ): DiscoverableSession | null {
-      // Exact name match
-      const byName = sessionList.filter((s) => s.name === nameOrId);
-      if (byName.length === 1) return byName[0] ?? null;
-
-      // Prefix name match
-      const byPrefix = sessionList.filter((s) => s.name?.startsWith(nameOrId));
-      if (byPrefix.length === 1) return byPrefix[0] ?? null;
-      if (byPrefix.length > 1) {
-        const names = byPrefix.map((s) => `  ${s.name ?? s.sessionId.slice(0, 8)}`).join('\n');
-        throw new Error(
-          `Ambiguous session name "${nameOrId}" matches ${byPrefix.length} sessions:\n${names}\nProvide a longer name to disambiguate.`,
-        );
-      }
-
-      // Exact ID match
-      const byId = sessionList.filter((s) => s.sessionId === nameOrId);
-      if (byId.length === 1) return byId[0] ?? null;
-
-      // Prefix ID match
-      const byIdPrefix = sessionList.filter((s) => s.sessionId.startsWith(nameOrId));
-      if (byIdPrefix.length === 1) return byIdPrefix[0] ?? null;
-      if (byIdPrefix.length > 1) {
-        const ids = byIdPrefix.map((s) => `  ${s.sessionId.slice(0, 8)}`).join('\n');
-        throw new Error(
-          `Ambiguous session ID "${nameOrId}" matches ${byIdPrefix.length} sessions:\n${ids}\nProvide a longer prefix to disambiguate.`,
-        );
-      }
-
-      return null;
-    }
-
     function handleMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
         // Request session list first to resolve the name
@@ -105,8 +71,8 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
       } else if (msg.type === 'session_list_response') {
         sessions = msg.sessions as DiscoverableSession[];
         try {
-          const session = resolveSession(sessions, target);
-          if (!session) {
+          const resolved = sharedResolveSession([{ host, port, sessions }], target);
+          if (!resolved) {
             done(
               new Error(
                 `No session found matching "${target}". Run \`remi ls\` to see live sessions.`,
@@ -115,7 +81,7 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
             return;
           }
           // Send kill request
-          ws.send(serialize(createKillSessionRequest(session.sessionId as UUID)));
+          ws.send(serialize(createKillSessionRequest(resolved.session.sessionId as UUID)));
         } catch (err) {
           done(err instanceof Error ? err : new Error(String(err)));
         }

@@ -10,6 +10,12 @@ import {
 import type { DiscoverableSession, ProtocolMessage, Timestamp } from '@remi/shared';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { performAuthHandshake } from './auth-helper.ts';
+import {
+  FETCH_SESSIONS_TIMEOUT_MS,
+  MDNS_BROWSE_TIMEOUT_MS,
+  discoverNetworkDaemons,
+  queryMultiplePorts,
+} from './session-resolver.ts';
 
 export interface RemoteTarget {
   readonly host: string;
@@ -207,56 +213,22 @@ interface DaemonSessions {
 }
 
 export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
-  const { localPort, fetchTimeoutMs: timeout = 5000, browseTimeoutMs: mdnsTimeout = 3000 } = opts;
+  const {
+    localPort,
+    fetchTimeoutMs: timeout = FETCH_SESSIONS_TIMEOUT_MS,
+    browseTimeoutMs: mdnsTimeout = MDNS_BROWSE_TIMEOUT_MS,
+  } = opts;
 
-  // Try all local daemons (multi-port support)
-  const allLocalPorts = new Set([localPort, ...(opts.localPorts ?? [])]);
-  const localSessions: DiscoverableSession[] = [];
-  const localResults = await Promise.allSettled(
-    [...allLocalPorts].map(async (port) => {
-      const sessions = await fetchSessions('localhost', port, timeout);
-      return { port, sessions };
-    }),
-  );
-  const localPortsArr = [...allLocalPorts];
-  for (let i = 0; i < localResults.length; i++) {
-    const result = localResults[i];
-    if (result?.status === 'fulfilled') {
-      localSessions.push(...result.value.sessions);
-    } else if (result?.status === 'rejected') {
-      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-        const isExpected =
-          reason.includes('not found') ||
-          reason.includes('ENOENT') ||
-          reason.includes('SESSION_CREATE_FAILED');
-        if (isExpected) {
-          console.error(`\x1b[2m[ls] local port ${localPortsArr[i]}: ${reason}\x1b[0m`);
-        } else {
-          console.error(`[ls] Failed to query local port ${localPortsArr[i]}: ${reason}`);
-        }
-      }
-    }
-  }
+  // Query all local daemons (multi-port support)
+  const allLocalPorts = [...new Set([localPort, ...(opts.localPorts ?? [])])];
+  const localResults = await queryMultiplePorts({
+    host: 'localhost',
+    ports: allLocalPorts,
+    timeoutMs: timeout,
+    logLabel: 'ls',
+  });
 
-  console.error('Scanning network for Remi daemons...');
-  const { discoverDaemons } = await import('../mdns/mdns-browser.ts');
-  const { discoverVpnPeers } = await import('../mdns/vpn-discovery.ts');
-
-  // Run mDNS and VPN discovery in parallel
-  const [daemons, vpnPeers] = await Promise.all([
-    discoverDaemons({ timeoutMs: mdnsTimeout }),
-    discoverVpnPeers({ port: localPort, probeTimeoutMs: timeout }).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[ls] VPN discovery failed: ${msg}`);
-      return [] as {
-        peer: import('../mdns/vpn-discovery.ts').VpnPeer;
-        host: string;
-        port: number;
-      }[];
-    }),
-  ]);
-
+  const localSessions: DiscoverableSession[] = localResults.flatMap((r) => r.sessions);
   const results: DaemonSessions[] = [];
   const myHostname = os.hostname();
 
@@ -267,96 +239,40 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     });
   }
 
-  // Query remote daemons (mDNS) in parallel, filtering out self
-  const localAddrs = getLocalAddresses(myHostname);
-  const remoteDaemons = daemons.filter((d) => !(d.port === localPort && localAddrs.has(d.host)));
+  console.error('Scanning network for Remi daemons...');
+  const discovery = await discoverNetworkDaemons({
+    defaultPort: localPort,
+    browseTimeoutMs: mdnsTimeout,
+    probeTimeoutMs: timeout,
+    logLabel: 'ls',
+  });
 
-  // Track hosts already discovered via mDNS to deduplicate VPN results
-  const discoveredHosts = new Set(remoteDaemons.map((d) => d.host));
-
-  const remoteResults = await Promise.allSettled(
-    remoteDaemons.map(async (daemon) => {
-      const sessions = await fetchSessions(daemon.host, daemon.port, timeout);
-      return {
+  // Query each discovered endpoint
+  for (const endpoint of discovery.endpoints) {
+    const portResults = await queryMultiplePorts({
+      host: endpoint.host,
+      ports: [endpoint.port],
+      timeoutMs: timeout,
+      logLabel: 'ls',
+    });
+    for (const r of portResults) {
+      results.push({
         daemon: {
-          name: daemon.name,
-          host: daemon.host,
-          port: daemon.port,
-          hostname: daemon.hostname,
+          name: endpoint.name ?? `${endpoint.source}:${endpoint.hostname}`,
+          host: endpoint.host,
+          port: endpoint.port,
+          hostname: endpoint.hostname,
         },
-        sessions,
-      } satisfies DaemonSessions;
-    }),
-  );
-
-  for (let i = 0; i < remoteResults.length; i++) {
-    const r = remoteResults[i];
-    if (r?.status === 'fulfilled') {
-      results.push(r.value);
-    } else if (r?.status === 'rejected') {
-      const daemon = remoteDaemons[i];
-      const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      const label = `${daemon?.name ?? 'unknown'} at ${daemon?.host ?? '?'}:${daemon?.port ?? '?'}`;
-      const isTimeout = reason.includes('Timed out') || reason.includes('timeout');
-      if (isTimeout) {
-        console.error(`\x1b[2m[ls] ${label}: ${reason}\x1b[0m`);
-      } else {
-        console.error(`[ls] Failed to query ${label}: ${reason}`);
-      }
-    }
-  }
-
-  // Query VPN peers not already found via mDNS
-  const newVpnPeers = vpnPeers.filter(
-    (v) => !localAddrs.has(v.host) && !discoveredHosts.has(v.host),
-  );
-  if (newVpnPeers.length > 0) {
-    const vpnResults = await Promise.allSettled(
-      newVpnPeers.map(async ({ peer, host, port }) => {
-        const sessions = await fetchSessions(host, port, timeout);
-        return {
-          daemon: {
-            name: `vpn:${peer.hostname}`,
-            host,
-            port,
-            hostname: peer.hostname,
-          },
-          sessions,
-        } satisfies DaemonSessions;
-      }),
-    );
-    for (let i = 0; i < vpnResults.length; i++) {
-      const r = vpnResults[i];
-      if (r?.status === 'fulfilled') {
-        results.push(r.value);
-      } else if (r?.status === 'rejected') {
-        // Connection refused is expected (peer has no remi); log other errors
-        const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-        if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-          const vpnPeer = newVpnPeers[i];
-          console.error(
-            `[ls] VPN peer ${vpnPeer?.peer.hostname ?? 'unknown'} at ${vpnPeer?.host ?? '?'}:${vpnPeer?.port ?? '?'}: ${reason}`,
-          );
-        }
-      }
+        sessions: r.sessions,
+      });
     }
   }
 
   renderNetworkSessionList(results);
 }
 
-export function getLocalAddresses(hostname: string): Set<string> {
-  const addrs = new Set(['127.0.0.1', '::1', 'localhost', hostname]);
-  const interfaces = os.networkInterfaces();
-  for (const ifaces of Object.values(interfaces)) {
-    if (ifaces) {
-      for (const iface of ifaces) {
-        addrs.add(iface.address);
-      }
-    }
-  }
-  return addrs;
-}
+// Re-export from session-resolver for backward compatibility
+export { getLocalAddresses } from './session-resolver.ts';
 
 function renderNetworkSessionList(results: DaemonSessions[]): void {
   if (results.length === 0) {
@@ -477,7 +393,7 @@ export interface MultiPortLsOptions {
  * and querying each unique port.
  */
 export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
-  const { registry, timeout = 5000 } = opts;
+  const { registry, timeout = FETCH_SESSIONS_TIMEOUT_MS } = opts;
 
   const ports = registry.getLivePorts();
 
@@ -486,36 +402,14 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
     return;
   }
 
-  // Query each port in parallel
-  const results = await Promise.allSettled(
-    ports.map(async (port) => {
-      const sessions = await fetchSessions('localhost', port, timeout);
-      return { port, sessions };
-    }),
-  );
+  const results = await queryMultiplePorts({
+    host: 'localhost',
+    ports,
+    timeoutMs: timeout,
+    logLabel: 'ls',
+  });
 
-  const allSessions: DiscoverableSession[] = [];
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    if (result?.status === 'fulfilled') {
-      allSessions.push(...result.value.sessions);
-    } else if (result?.status === 'rejected') {
-      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      // Connection refused is expected (process may have just exited); log others
-      if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-        const isExpected =
-          reason.includes('not found') ||
-          reason.includes('ENOENT') ||
-          reason.includes('SESSION_CREATE_FAILED');
-        if (isExpected) {
-          console.error(`\x1b[2m[ls] local port ${ports[i]}: ${reason}\x1b[0m`);
-        } else {
-          console.error(`[ls] Failed to query local port ${ports[i]}: ${reason}`);
-        }
-      }
-    }
-  }
-
+  const allSessions: DiscoverableSession[] = results.flatMap((r) => r.sessions);
   renderSessionList(allSessions);
 }
 
