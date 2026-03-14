@@ -1085,13 +1085,15 @@ if (cliSubcommand === 'attach') {
 
             // Log discovery results for diagnostics
             if (daemons.length > 0 || vpnPeers.length > 0) {
-              const mdnsHostnames = [
-                ...new Set(daemons.map((d: { hostname: string }) => d.hostname)),
+              const hosts = [
+                ...new Set([
+                  ...daemons.map((d: { hostname: string }) => d.hostname),
+                  ...vpnPeers.map((v) => v.peer.hostname),
+                ]),
               ];
-              const vpnHostnames = [...new Set(vpnPeers.map((v) => v.peer.hostname))];
               console.error(
                 `\x1b[2mFound ${daemons.length} mDNS, ${vpnPeers.length} VPN daemon(s); ` +
-                  `hosts: [${[...mdnsHostnames, ...vpnHostnames].join(', ')}]\x1b[0m`,
+                  `hosts: [${hosts.join(', ')}]\x1b[0m`,
               );
             } else {
               console.error('No daemons discovered (0 mDNS, 0 VPN). Is Tailscale running?');
@@ -1546,31 +1548,27 @@ async function createNewSession(
             fs.writeSync(ptyStdoutFd, data);
           } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
+            ptyStdoutFd = null;
+            wrapperDetached = true;
             if (code === 'EPIPE' || code === 'EIO') {
-              // Terminal pipe broken (SSH disconnect, terminal closed, etc.)
-              // Stop writing but keep daemon alive for remote clients.
-              ptyStdoutFd = null;
-              wrapperDetached = true;
               logError(`Terminal write failed (${code}), detaching local terminal`);
-              // Clean up stdin to avoid dangling raw-mode reader
-              if (process.stdin.isTTY) {
-                try {
-                  process.stdin.setRawMode(false);
-                } catch {
-                  // stdin may already be unusable
-                }
-              }
-              process.stdin.pause();
-              process.stdin.removeAllListeners('data');
-              process.stdin.unref();
             } else {
               logError(
                 `Unexpected terminal write error (${code}):`,
                 err instanceof Error ? err.message : String(err),
               );
-              ptyStdoutFd = null;
-              wrapperDetached = true;
             }
+            // Clean up stdin to avoid dangling raw-mode reader
+            if (process.stdin.isTTY) {
+              try {
+                process.stdin.setRawMode(false);
+              } catch {
+                // stdin may already be unusable
+              }
+            }
+            process.stdin.pause();
+            process.stdin.removeAllListeners('data');
+            process.stdin.unref();
           }
         }
 

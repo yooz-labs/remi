@@ -391,7 +391,6 @@ describe('SessionRegistry', () => {
         '/test/dir',
         createMockPTY(),
         createMockMessageAPI(),
-        false,
       );
       registry.attachConnection(remoteSessionId, connectionId);
       registry.detachConnection(connectionId);
@@ -403,13 +402,7 @@ describe('SessionRegistry', () => {
     test('non-locally-owned session reports orphaned status without connection', () => {
       const sessionId = generateId();
       const connectionId = generateId();
-      registry.registerSession(
-        sessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockMessageAPI(),
-        false,
-      );
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, connectionId);
       registry.detachConnection(connectionId);
 

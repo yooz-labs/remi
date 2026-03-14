@@ -124,8 +124,7 @@ export class SessionRegistry {
   }
 
   /**
-   * Register a new session with its PTY and processors.
-   * Called after spawning Claude Code.
+   * Register a new session with its PTY and message API.
    */
   registerSession(
     sessionId: UUID,
@@ -163,7 +162,7 @@ export class SessionRegistry {
 
   /**
    * Create a new session ID for a fresh connection.
-   * The actual session components (PTY, processor, messageApi) must be
+   * The actual session components (PTY, messageApi) must be
    * registered separately via registerSession.
    */
   createSessionId(): UUID {
@@ -370,7 +369,7 @@ export class SessionRegistry {
       this.connectionToSession.delete(session.activeConnectionId);
     }
 
-    // Close PTY if not already closed
+    // Close PTY unless the closure was triggered by PTY exit
     if (reason !== 'pty_exit') {
       session.pty.close().catch((err) => {
         // Log but don't throw; we're already cleaning up
