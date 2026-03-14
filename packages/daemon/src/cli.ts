@@ -236,13 +236,7 @@ import {
   generateId,
   now,
 } from '@remi/shared';
-import type {
-  AgentStatus,
-  DiscoverableSession,
-  ProtocolMessage,
-  UUID,
-  UnlockedIdentity,
-} from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import {
   type AdapterMetadata,
@@ -957,6 +951,15 @@ if (cliSubcommand === 'attach') {
     }
   } else {
     // Try name-based resolution: first check live registry for port, then query daemon(s)
+    const {
+      AmbiguousSessionError,
+      FETCH_SESSIONS_TIMEOUT_MS,
+      discoverNetworkDaemons,
+      findEndpointsByHostname,
+      queryMultiplePorts,
+      resolveSession,
+    } = await import('./cli/session-resolver.ts');
+
     let resolvedByName = false;
 
     // Check live registry for name match (fast, no network)
@@ -973,61 +976,27 @@ if (cliSubcommand === 'attach') {
     }
 
     try {
-      const { fetchSessions } = await import('./cli/ls-client.ts');
-      const allSessions: Array<{ session: DiscoverableSession; port: number }> = [];
+      const queryResults = await queryMultiplePorts({
+        host: resolvedHost,
+        ports: portsToQuery,
+        timeoutMs: FETCH_SESSIONS_TIMEOUT_MS,
+        logLabel: 'attach',
+      });
 
-      const results = await Promise.allSettled(
-        portsToQuery.map(async (port) => {
-          const sessions = await fetchSessions(resolvedHost, port, 3000);
-          return sessions.map((s) => ({ session: s, port }));
-        }),
-      );
-
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i];
-        if (result?.status === 'fulfilled') {
-          allSessions.push(...result.value);
-        } else if (result?.status === 'rejected') {
-          const reason =
-            result.reason instanceof Error ? result.reason.message : String(result.reason);
-          if (!reason.includes('Cannot connect') && !reason.includes('closed unexpectedly')) {
-            const isExpected =
-              reason.includes('not found') ||
-              reason.includes('ENOENT') ||
-              reason.includes('SESSION_CREATE_FAILED');
-            if (isExpected) {
-              console.error(`\x1b[2m[attach] local port ${portsToQuery[i]}: ${reason}\x1b[0m`);
-            } else {
-              console.error(`[attach] Failed to query port ${portsToQuery[i]}: ${reason}`);
-            }
-          }
-        }
-      }
-
-      const nameMatches = allSessions.filter(
-        (entry) =>
-          entry.session.name === targetSessionId ||
-          entry.session.name?.startsWith(targetSessionId as string),
-      );
-      if (nameMatches.length === 1) {
-        // biome-ignore lint/style/noNonNullAssertion: length checked above
-        const match = nameMatches[0]!;
-        targetSessionId = match.session.sessionId;
-        resolvedPort = cliPort ?? match.port;
+      const resolved = resolveSession(queryResults, targetSessionId as string);
+      if (resolved) {
+        targetSessionId = resolved.session.sessionId;
+        resolvedPort = cliPort ?? resolved.port;
         resolvedByName = true;
-      } else if (nameMatches.length > 1) {
-        console.error(
-          `Ambiguous session name "${targetSessionId}" matches ${nameMatches.length} sessions:`,
-        );
-        for (const m of nameMatches) {
-          console.error(`  ${m.session.name ?? m.session.sessionId.slice(0, 8)} (port ${m.port})`);
-        }
-        console.error('Provide a longer name to disambiguate.');
-        process.exit(1);
       }
     } catch (err) {
+      if (err instanceof AmbiguousSessionError) {
+        console.error(err.message);
+        process.exit(1);
+      }
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('connect') && !msg.includes('timeout') && !msg.includes('ECONNREFUSED')) {
+      const { classifyQueryError } = await import('./cli/session-resolver.ts');
+      if (classifyQueryError(msg) === 'unexpected') {
         log(`[Attach] Failed to query daemon for name resolution: ${msg}`);
       }
     }
@@ -1064,132 +1033,79 @@ if (cliSubcommand === 'attach') {
         if (nameColonIdx > 0) {
           const targetHostname = target.slice(0, nameColonIdx);
           try {
-            const { discoverDaemons } = await import('./mdns/mdns-browser.ts');
-            const { discoverVpnPeers } = await import('./mdns/vpn-discovery.ts');
-            const { fetchSessions } = await import('./cli/ls-client.ts');
             console.error(`Resolving "${target}" via network discovery...`);
 
-            // Run mDNS and VPN discovery in parallel
-            const [daemons, vpnPeers] = await Promise.all([
-              discoverDaemons({ timeoutMs: 3000 }),
-              discoverVpnPeers({ port: resolvedPort, probeTimeoutMs: 3000 }).catch((err) => {
-                const msg = err instanceof Error ? err.message : String(err);
-                console.error(`\x1b[2m[attach] VPN discovery failed: ${msg}\x1b[0m`);
-                return [] as {
-                  peer: import('./mdns/vpn-discovery.ts').VpnPeer;
-                  host: string;
-                  port: number;
-                }[];
-              }),
-            ]);
+            const discovery = await discoverNetworkDaemons({
+              defaultPort: resolvedPort,
+              logLabel: 'attach',
+            });
 
             // Log discovery results for diagnostics
-            if (daemons.length > 0 || vpnPeers.length > 0) {
-              const hosts = [
-                ...new Set([
-                  ...daemons.map((d: { hostname: string }) => d.hostname),
-                  ...vpnPeers.map((v) => v.peer.hostname),
-                ]),
-              ];
+            if (discovery.endpoints.length > 0) {
+              const hosts = [...new Set(discovery.endpoints.map((e) => e.hostname))];
               console.error(
-                `\x1b[2mFound ${daemons.length} mDNS, ${vpnPeers.length} VPN daemon(s); ` +
+                `\x1b[2mFound ${discovery.endpoints.length} daemon(s); ` +
                   `hosts: [${hosts.join(', ')}]\x1b[0m`,
               );
             } else {
               console.error('No daemons discovered (0 mDNS, 0 VPN). Is Tailscale running?');
             }
 
-            // Try mDNS first, fall back to VPN peers
-            const mdnsMatch = daemons.find(
-              (d: { hostname: string }) => d.hostname === targetHostname,
-            );
-            const vpnMatch = mdnsMatch
-              ? null
-              : vpnPeers.find((v) => v.peer.hostname === targetHostname);
+            const hostEndpoints = findEndpointsByHostname(discovery, targetHostname);
 
-            const resolvedDaemon = mdnsMatch
-              ? { host: mdnsMatch.host, port: mdnsMatch.port, hostname: mdnsMatch.hostname }
-              : vpnMatch
-                ? { host: vpnMatch.host, port: vpnMatch.port, hostname: vpnMatch.peer.hostname }
-                : null;
-
-            if (resolvedDaemon) {
+            if (hostEndpoints.length > 0) {
               // Query all ports on this host (the host may have multiple remi instances)
-              const hostPorts = vpnPeers
-                .filter((v) => v.host === resolvedDaemon.host)
-                .map((v) => v.port);
-              const mdnsPorts = daemons
-                .filter((d: { host: string }) => d.host === resolvedDaemon.host)
-                .map((d: { port: number }) => d.port);
-              const allHostPorts = [...new Set([...mdnsPorts, ...hostPorts])].sort((a, b) => a - b);
-              if (allHostPorts.length === 0) allHostPorts.push(resolvedDaemon.port);
-
-              // Fetch sessions from all ports on this host
-              const portResults = await Promise.allSettled(
-                allHostPorts.map(async (port) => {
-                  const sessions = await fetchSessions(resolvedDaemon.host, port, 3000);
-                  return { port, sessions };
-                }),
+              const allHostPorts = [...new Set(hostEndpoints.map((e) => e.port))].sort(
+                (a, b) => a - b,
               );
-              const allRemoteSessions: Array<{
-                session: DiscoverableSession;
-                port: number;
-              }> = [];
-              let remoteRejections = 0;
-              for (const r of portResults) {
-                if (r.status === 'fulfilled') {
-                  for (const s of r.value.sessions) {
-                    allRemoteSessions.push({ session: s, port: r.value.port });
-                  }
-                } else {
-                  remoteRejections++;
-                  const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-                  if (
-                    !reason.includes('Cannot connect') &&
-                    !reason.includes('closed unexpectedly')
-                  ) {
-                    log(`[attach] remote port query failed: ${reason}`);
-                  }
-                }
-              }
-              if (remoteRejections === portResults.length) {
+              const remoteHost = hostEndpoints[0]?.host ?? targetHostname;
+              const remoteHostname = hostEndpoints[0]?.hostname ?? targetHostname;
+
+              const portResults = await queryMultiplePorts({
+                host: remoteHost,
+                ports: allHostPorts,
+                timeoutMs: FETCH_SESSIONS_TIMEOUT_MS,
+                logLabel: 'attach',
+              });
+
+              if (portResults.length === 0) {
                 console.error(
-                  `Daemon found on ${resolvedDaemon.hostname} but could not query any port. Check connectivity to ${resolvedDaemon.host}.`,
+                  `Daemon found on ${remoteHostname} but could not query any port. Check connectivity to ${remoteHost}.`,
                 );
                 process.exit(1);
               }
 
-              const remoteMatches = allRemoteSessions.filter(
-                (entry) => entry.session.name === target || entry.session.name?.startsWith(target),
-              );
-              if (remoteMatches.length === 1) {
-                // biome-ignore lint/style/noNonNullAssertion: length checked above
-                const match = remoteMatches[0]!;
-                targetSessionId = match.session.sessionId;
-                resolvedHost = resolvedDaemon.host;
-                resolvedPort = match.port;
-                foundRemote = true;
-                console.error(
-                  `Found on ${resolvedDaemon.hostname} (${resolvedDaemon.host}:${match.port})`,
-                );
-              } else if (remoteMatches.length > 1) {
-                console.error(
-                  `Ambiguous: ${remoteMatches.length} sessions match on ${resolvedDaemon.hostname}`,
-                );
-                for (const m of remoteMatches) {
+              try {
+                const remoteResolved = resolveSession(portResults, target);
+                if (remoteResolved) {
+                  targetSessionId = remoteResolved.session.sessionId;
+                  resolvedHost = remoteResolved.host;
+                  resolvedPort = remoteResolved.port;
+                  foundRemote = true;
                   console.error(
-                    `  ${m.session.name ?? m.session.sessionId.slice(0, 8)} (port ${m.port})`,
+                    `Found on ${remoteHostname} (${remoteResolved.host}:${remoteResolved.port})`,
                   );
+                } else {
+                  console.error(
+                    `Daemon found on ${remoteHostname} but no session matches "${target}".`,
+                  );
+                  const available = portResults
+                    .flatMap((r) => r.sessions)
+                    .map((s) => s.name ?? s.sessionId.slice(0, 8))
+                    .join(', ');
+                  if (available) console.error(`  Available sessions: ${available}`);
                 }
-                process.exit(1);
-              } else {
-                console.error(
-                  `Daemon found on ${resolvedDaemon.hostname} but no session matches "${target}".`,
-                );
-                const available = allRemoteSessions
-                  .map((e) => e.session.name ?? e.session.sessionId.slice(0, 8))
-                  .join(', ');
-                if (available) console.error(`  Available sessions: ${available}`);
+              } catch (resolveErr) {
+                if (resolveErr instanceof AmbiguousSessionError) {
+                  console.error(
+                    `Ambiguous: ${resolveErr.matches.length} sessions match on ${remoteHostname}`,
+                  );
+                  for (const m of resolveErr.matches) {
+                    console.error(`  ${m.name} (port ${m.port})`);
+                  }
+                  process.exit(1);
+                }
+                throw resolveErr;
               }
             } else {
               console.error(
@@ -1197,6 +1113,9 @@ if (cliSubcommand === 'attach') {
               );
             }
           } catch (err) {
+            if (err instanceof AmbiguousSessionError) {
+              throw err; // Already handled above
+            }
             const reason = err instanceof Error ? err.message : String(err);
             log(`[Attach] Network discovery error for "${targetHostname}": ${reason}`);
             console.error(`Network discovery failed: ${reason}`);
