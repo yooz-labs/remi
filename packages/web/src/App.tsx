@@ -114,7 +114,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
   const [showSessionSwitcher, setShowSessionSwitcher] = useState(false);
-  const [recentDirectories, setRecentDirectories] = useState<RecentDirectory[]>([]);
+  const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
@@ -406,7 +406,7 @@ function App() {
       }
 
       case 'session_history_response': {
-        setRecentDirectories(message.directories as RecentDirectory[]);
+        setRecentDirectories([...message.directories]);
         break;
       }
 

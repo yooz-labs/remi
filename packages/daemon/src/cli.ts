@@ -436,9 +436,17 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === '--network') {
     cliNetwork = true;
   } else if (arg === '--dir' && nextArg) {
+    if (cliRecent) {
+      console.error('Error: --dir and --recent are mutually exclusive.');
+      process.exit(1);
+    }
     cliDir = nextArg;
     i++;
   } else if (arg === '--recent') {
+    if (cliDir) {
+      console.error('Error: --dir and --recent are mutually exclusive.');
+      process.exit(1);
+    }
     cliRecent = true;
   } else if (arg === '--host' && nextArg) {
     cliHost = nextArg;
@@ -493,9 +501,9 @@ Options:
   --no-tofu                Reject unknown clients (disable Trust On First Use)
   --local                  Localhost-only mode (--bind localhost --no-mdns)
   --no-mdns                Disable mDNS network advertising
-  --host HOST              Connect to daemon at HOST (for ls/attach/new; default: localhost)
-  --dir PATH               Working directory for new session
-  --recent                 Pick from recent project directories (new subcommand)
+  --host HOST              Connect to daemon at HOST (for ls/attach/new/recent; default: localhost)
+  --dir PATH               Working directory for new session (mutually exclusive with --recent)
+  --recent                 Pick from recent project directories (for new/recent subcommands)
   --label NAME             Label for authorized key (authorize)
   --public-only            Export only public key (export-key)
   --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
@@ -1298,7 +1306,13 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
   if (cliRecent) {
     const { fetchRecentDirectories } = await import('./cli/recent-client.ts');
     const { pickDirectory } = await import('./cli/directory-picker.ts');
-    const dirs = await fetchRecentDirectories(cliHost, resolvedPort);
+    let dirs: Awaited<ReturnType<typeof fetchRecentDirectories>>;
+    try {
+      dirs = await fetchRecentDirectories(cliHost, resolvedPort);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
     if (dirs.length === 0) {
       console.error('No recent directories found on remote daemon.');
       process.exit(1);
@@ -2130,8 +2144,14 @@ const sharedEvents = {
 
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => {
     log(`Session history request from ${connectionId}, limit: ${limit ?? 'default'}`);
-    const directories = getRecentDirectories(sessionStore, limit ?? 20);
-    sendToConnection(connectionId, createSessionHistoryResponse(directories, requestId));
+    try {
+      const clampedLimit = Math.max(1, limit ?? 20);
+      const directories = getRecentDirectories(sessionStore, clampedLimit);
+      sendToConnection(connectionId, createSessionHistoryResponse(directories, requestId));
+    } catch (err) {
+      log(`Failed to get recent directories: ${err instanceof Error ? err.message : err}`);
+      sendToConnection(connectionId, createSessionHistoryResponse([], requestId));
+    }
   },
 
   onTerminalResize: (connectionId: UUID, cols: number, rows: number) => {

@@ -41,8 +41,9 @@ async function createRemoteSession(
 
     try {
       ws = new WebSocket(url);
-    } catch {
-      reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }
 
@@ -79,8 +80,7 @@ async function createRemoteSession(
           done(undefined, new Error(`Failed to create session: ${msg.error ?? 'unknown error'}`));
         }
       } else if (msg.type === 'error') {
-        if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
-        if (msg.code === 'NO_SESSION') return;
+        if (msg.code === 'AUTH_REQUIRED') return;
         done(undefined, new Error(`Daemon error: ${msg.message}`));
       }
     }
@@ -95,6 +95,7 @@ async function createRemoteSession(
       if (!msg) return;
 
       if (msg.type === 'auth_challenge') {
+        if (authInProgress) return;
         authInProgress = true;
         performAuthHandshake(ws, msg)
           .then(() => {
@@ -111,8 +112,12 @@ async function createRemoteSession(
       handleMessage(msg);
     };
 
-    ws.onerror = () => {
-      done(undefined, new Error(`WebSocket error connecting to daemon at ${host}:${port}`));
+    ws.onerror = (event) => {
+      const detail = 'message' in event ? `: ${(event as ErrorEvent).message}` : '';
+      done(
+        undefined,
+        new Error(`WebSocket error connecting to daemon at ${host}:${port}${detail}`),
+      );
     };
 
     ws.onclose = () => {

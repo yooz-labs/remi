@@ -12,7 +12,8 @@ import { formatAge } from './ls-client.ts';
 
 /**
  * Display a numbered list of directories and prompt the user to pick one.
- * Returns the selected directory path, or null if the user cancels (empty input / EOF).
+ * Returns the selected directory path. Empty input defaults to the first item.
+ * Returns null if the user enters an invalid number or EOF/SIGINT occurs.
  */
 export async function pickDirectory(
   directories: readonly RecentDirectory[],
@@ -40,11 +41,19 @@ export async function pickDirectory(
   });
 
   try {
-    const answer = await new Promise<string>((resolve) => {
+    const answer = await new Promise<string>((resolve, reject) => {
       rl.question('Select directory [1]: ', (ans) => {
         resolve(ans.trim());
       });
-    });
+      // Handle EOF (Ctrl+D) or SIGINT (Ctrl+C) closing the interface
+      process.stdin.once('end', () => {
+        reject(new Error('EOF'));
+      });
+    }).catch(() => null);
+
+    if (answer === null) {
+      return null;
+    }
 
     if (answer === '') {
       return directories[0]?.directory ?? null;

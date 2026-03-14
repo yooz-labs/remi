@@ -29,7 +29,7 @@ export async function fetchRecentDirectories(
   host: string,
   port: number,
   timeout = 5000,
-  limit?: number,
+  limit?: number | undefined,
 ): Promise<RecentDirectory[]> {
   const url = `ws://${host}:${port}/ws`;
 
@@ -40,8 +40,9 @@ export async function fetchRecentDirectories(
 
     try {
       ws = new WebSocket(url);
-    } catch {
-      reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }
 
@@ -71,9 +72,9 @@ export async function fetchRecentDirectories(
       if (msg.type === 'hello_ack') {
         ws.send(serialize(createSessionHistoryRequest(limit)));
       } else if (msg.type === 'session_history_response') {
-        done(msg.directories as RecentDirectory[]);
+        done([...msg.directories]);
       } else if (msg.type === 'error') {
-        if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
+        if (msg.code === 'AUTH_REQUIRED') return;
         if (msg.code === 'NO_SESSION') return;
         done(undefined, new Error(`Daemon error: ${msg.message}`));
       }
@@ -89,6 +90,7 @@ export async function fetchRecentDirectories(
       if (!msg) return;
 
       if (msg.type === 'auth_challenge') {
+        if (authInProgress) return;
         authInProgress = true;
         performAuthHandshake(ws, msg)
           .then(() => {
@@ -105,8 +107,12 @@ export async function fetchRecentDirectories(
       handleMessage(msg);
     };
 
-    ws.onerror = () => {
-      done(undefined, new Error(`WebSocket error connecting to daemon at ${host}:${port}`));
+    ws.onerror = (event) => {
+      const detail = 'message' in event ? `: ${(event as ErrorEvent).message}` : '';
+      done(
+        undefined,
+        new Error(`WebSocket error connecting to daemon at ${host}:${port}${detail}`),
+      );
     };
 
     ws.onclose = () => {
