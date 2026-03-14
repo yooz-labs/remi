@@ -247,24 +247,32 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     logLabel: 'ls',
   });
 
-  // Query each discovered endpoint
-  for (const endpoint of discovery.endpoints) {
-    const portResults = await queryMultiplePorts({
-      host: endpoint.host,
-      ports: [endpoint.port],
-      timeoutMs: timeout,
-      logLabel: 'ls',
-    });
-    for (const r of portResults) {
-      results.push({
-        daemon: {
-          name: endpoint.name ?? `${endpoint.source}:${endpoint.hostname}`,
-          host: endpoint.host,
-          port: endpoint.port,
-          hostname: endpoint.hostname,
-        },
-        sessions: r.sessions,
+  // Query all discovered endpoints in parallel
+  const endpointResults = await Promise.allSettled(
+    discovery.endpoints.map(async (endpoint) => {
+      const portResults = await queryMultiplePorts({
+        host: endpoint.host,
+        ports: [endpoint.port],
+        timeoutMs: timeout,
+        logLabel: 'ls',
       });
+      return { endpoint, portResults };
+    }),
+  );
+  for (const er of endpointResults) {
+    if (er.status === 'fulfilled') {
+      for (const r of er.value.portResults) {
+        results.push({
+          daemon: {
+            name:
+              er.value.endpoint.name ?? `${er.value.endpoint.source}:${er.value.endpoint.hostname}`,
+            host: er.value.endpoint.host,
+            port: er.value.endpoint.port,
+            hostname: er.value.endpoint.hostname,
+          },
+          sessions: r.sessions,
+        });
+      }
     }
   }
 

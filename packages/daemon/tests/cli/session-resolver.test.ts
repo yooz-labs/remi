@@ -7,12 +7,15 @@ import type { DiscoverableSession } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import {
   AmbiguousSessionError,
+  type DiscoveredEndpoint,
+  type NetworkDiscoveryResult,
   type PortQueryResult,
   classifyQueryError,
+  findEndpointsByHostname,
   resolveSession,
 } from '../../src/cli/session-resolver.ts';
 
-function makeSession(name: string, id?: string): DiscoverableSession {
+function makeSession(name: string | undefined, id?: string): DiscoverableSession {
   return {
     sessionId: id ?? generateId(),
     name,
@@ -31,6 +34,18 @@ function makeQueryResult(
   sessions: DiscoverableSession[],
 ): PortQueryResult {
   return { host, port, sessions };
+}
+
+function makeEndpoint(
+  host: string,
+  port: number,
+  hostname: string,
+  source: 'mdns' | 'vpn',
+  name?: string,
+): DiscoveredEndpoint {
+  const base = { host, port, hostname, source };
+  if (name !== undefined) return { ...base, name };
+  return base;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +108,9 @@ describe('resolveSession', () => {
     ];
     const resolved = resolveSession(results, 'macbook/remi/main');
     expect(resolved).not.toBeNull();
-    expect(resolved!.session.name).toBe('macbook/remi/main');
-    expect(resolved!.port).toBe(18765);
-    expect(resolved!.host).toBe('localhost');
+    expect(resolved?.session.name).toBe('macbook/remi/main');
+    expect(resolved?.port).toBe(18765);
+    expect(resolved?.host).toBe('localhost');
   });
 
   test('resolves prefix name match (single)', () => {
@@ -107,7 +122,7 @@ describe('resolveSession', () => {
     ];
     const resolved = resolveSession(results, 'macbook/remi');
     expect(resolved).not.toBeNull();
-    expect(resolved!.session.name).toBe('macbook/remi/main');
+    expect(resolved?.session.name).toBe('macbook/remi/main');
   });
 
   test('throws AmbiguousSessionError on ambiguous name prefix', () => {
@@ -120,12 +135,20 @@ describe('resolveSession', () => {
     expect(() => resolveSession(results, 'macbook/remi')).toThrow(AmbiguousSessionError);
   });
 
+  test('throws AmbiguousSessionError on ambiguous exact name across ports', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [makeSession('my-session')]),
+      makeQueryResult('localhost', 18766, [makeSession('my-session')]),
+    ];
+    expect(() => resolveSession(results, 'my-session')).toThrow(AmbiguousSessionError);
+  });
+
   test('resolves exact ID match', () => {
     const id = 'abcdef12-3456-7890-abcd-ef1234567890';
     const results = [makeQueryResult('localhost', 18765, [makeSession('test-session', id)])];
     const resolved = resolveSession(results, id);
     expect(resolved).not.toBeNull();
-    expect(resolved!.session.sessionId).toBe(id);
+    expect(resolved?.session.sessionId).toBe(id);
   });
 
   test('resolves prefix ID match', () => {
@@ -133,7 +156,7 @@ describe('resolveSession', () => {
     const results = [makeQueryResult('localhost', 18765, [makeSession('test-session', id)])];
     const resolved = resolveSession(results, 'abcdef12');
     expect(resolved).not.toBeNull();
-    expect(resolved!.session.sessionId).toBe(id);
+    expect(resolved?.session.sessionId).toBe(id);
   });
 
   test('throws AmbiguousSessionError on ambiguous ID prefix', () => {
@@ -171,7 +194,7 @@ describe('resolveSession', () => {
     ];
     const resolved = resolveSession(results, id);
     expect(resolved).not.toBeNull();
-    expect(resolved!.port).toBe(18766);
+    expect(resolved?.port).toBe(18766);
   });
 
   test('prefers exact name over prefix name', () => {
@@ -180,7 +203,7 @@ describe('resolveSession', () => {
     ];
     const resolved = resolveSession(results, 'mac');
     expect(resolved).not.toBeNull();
-    expect(resolved!.session.name).toBe('mac');
+    expect(resolved?.session.name).toBe('mac');
   });
 
   test('prefers name match over ID match', () => {
@@ -193,7 +216,29 @@ describe('resolveSession', () => {
     ];
     const resolved = resolveSession(results, 'myproject');
     expect(resolved).not.toBeNull();
-    expect(resolved!.session.name).toBe('myproject');
+    expect(resolved?.session.name).toBe('myproject');
+  });
+
+  test('skips sessions with undefined name during name matching', () => {
+    const id = 'abcd1234-5678-9012-abcd-ef1234567890';
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession(undefined, id),
+        makeSession('named-session'),
+      ]),
+    ];
+    // Should not match the undefined-name session by name
+    const resolved = resolveSession(results, 'named-session');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('named-session');
+  });
+
+  test('resolves session with undefined name by ID', () => {
+    const id = 'abcd1234-5678-9012-abcd-ef1234567890';
+    const results = [makeQueryResult('localhost', 18765, [makeSession(undefined, id)])];
+    const resolved = resolveSession(results, id);
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.sessionId).toBe(id);
   });
 });
 
@@ -227,5 +272,49 @@ describe('AmbiguousSessionError', () => {
   test('includes disambiguation hint', () => {
     const err = new AmbiguousSessionError('test', [{ name: 'a', port: 1 }]);
     expect(err.message).toContain('disambiguate');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findEndpointsByHostname
+// ---------------------------------------------------------------------------
+
+describe('findEndpointsByHostname', () => {
+  const discovery: NetworkDiscoveryResult = {
+    endpoints: [
+      makeEndpoint('192.168.1.10', 18765, 'macbook', 'mdns', 'remi-macbook'),
+      makeEndpoint('192.168.1.10', 18766, 'macbook', 'mdns', 'remi-macbook-2'),
+      makeEndpoint('100.79.1.5', 18765, 'linux-server', 'vpn'),
+      makeEndpoint('192.168.1.20', 18765, 'desktop', 'mdns', 'remi-desktop'),
+    ],
+  };
+
+  test('returns matching endpoints by exact hostname', () => {
+    const matches = findEndpointsByHostname(discovery, 'macbook');
+    expect(matches).toHaveLength(2);
+    expect(matches[0]?.port).toBe(18765);
+    expect(matches[1]?.port).toBe(18766);
+  });
+
+  test('returns empty array for non-matching hostname', () => {
+    const matches = findEndpointsByHostname(discovery, 'nonexistent');
+    expect(matches).toHaveLength(0);
+  });
+
+  test('does not return partial hostname matches', () => {
+    const matches = findEndpointsByHostname(discovery, 'mac');
+    expect(matches).toHaveLength(0);
+  });
+
+  test('returns VPN endpoints', () => {
+    const matches = findEndpointsByHostname(discovery, 'linux-server');
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.source).toBe('vpn');
+  });
+
+  test('returns empty for empty discovery results', () => {
+    const empty: NetworkDiscoveryResult = { endpoints: [] };
+    const matches = findEndpointsByHostname(empty, 'macbook');
+    expect(matches).toHaveLength(0);
   });
 });

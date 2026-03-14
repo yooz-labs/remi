@@ -995,7 +995,8 @@ if (cliSubcommand === 'attach') {
         process.exit(1);
       }
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('connect') && !msg.includes('timeout') && !msg.includes('ECONNREFUSED')) {
+      const { classifyQueryError } = await import('./cli/session-resolver.ts');
+      if (classifyQueryError(msg) === 'unexpected') {
         log(`[Attach] Failed to query daemon for name resolution: ${msg}`);
       }
     }

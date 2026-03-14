@@ -62,7 +62,7 @@ export function classifyQueryError(reason: string): QueryErrorClass {
 export interface PortQueryResult {
   readonly port: number;
   readonly host: string;
-  readonly sessions: DiscoverableSession[];
+  readonly sessions: readonly DiscoverableSession[];
 }
 
 export interface QueryMultiplePortsOptions {
@@ -142,7 +142,9 @@ export class AmbiguousSessionError extends Error {
  * Resolve a session by name or ID from query results.
  *
  * Resolution order: exact name -> prefix name -> exact ID -> prefix ID.
- * Throws `AmbiguousSessionError` if multiple prefix matches exist.
+ * Throws `AmbiguousSessionError` if multiple matches exist at any resolution
+ * level (exact name, prefix name, or prefix ID). Multiple exact ID matches
+ * fall through to prefix ID matching (UUID collisions are near-impossible).
  * Returns null if no match found.
  */
 export function resolveSession(
@@ -218,8 +220,10 @@ export function resolveSession(
 // ---------------------------------------------------------------------------
 
 export interface DiscoveredEndpoint {
+  /** IP address or resolvable network address */
   readonly host: string;
   readonly port: number;
+  /** Human-readable machine name (e.g., OS hostname) */
   readonly hostname: string;
   readonly source: 'mdns' | 'vpn';
   readonly name?: string;
@@ -227,8 +231,6 @@ export interface DiscoveredEndpoint {
 
 export interface NetworkDiscoveryResult {
   readonly endpoints: readonly DiscoveredEndpoint[];
-  /** Hosts found via mDNS (for dedup) */
-  readonly mdnsHosts: ReadonlySet<string>;
 }
 
 export interface NetworkDiscoveryOptions {
@@ -257,7 +259,11 @@ export async function discoverNetworkDaemons(
   const { discoverVpnPeers } = await import('../mdns/vpn-discovery.ts');
 
   const [daemons, vpnPeers] = await Promise.all([
-    discoverDaemons({ timeoutMs: browseTimeoutMs }),
+    discoverDaemons({ timeoutMs: browseTimeoutMs }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[${logLabel}] mDNS discovery failed: ${msg}`);
+      return [] as import('../mdns/mdns-browser.ts').DiscoveredDaemon[];
+    }),
     discoverVpnPeers({ port: defaultPort, probeTimeoutMs }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[${logLabel}] VPN discovery failed: ${msg}`);
@@ -297,13 +303,11 @@ export async function discoverNetworkDaemons(
 
   return {
     endpoints: [...mdnsEndpoints, ...vpnEndpoints],
-    mdnsHosts,
   };
 }
 
 /**
- * Find all endpoints matching a given hostname from discovery results.
- * Collects all unique ports across mDNS and VPN for the matched host.
+ * Filter endpoints matching a given hostname from discovery results.
  */
 export function findEndpointsByHostname(
   result: NetworkDiscoveryResult,
