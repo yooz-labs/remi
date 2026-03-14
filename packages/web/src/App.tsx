@@ -23,11 +23,12 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
   createCreateSessionRequest,
   createHello,
+  createSessionHistoryRequest,
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
@@ -113,6 +114,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
   const [showSessionSwitcher, setShowSessionSwitcher] = useState(false);
+  const [recentDirectories, setRecentDirectories] = useState<RecentDirectory[]>([]);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
@@ -403,6 +405,11 @@ function App() {
         break;
       }
 
+      case 'session_history_response': {
+        setRecentDirectories(message.directories as RecentDirectory[]);
+        break;
+      }
+
       case 'bullet_expand_response': {
         const { bulletId, fullContent } = message;
         setMessages((prev) =>
@@ -502,6 +509,7 @@ function App() {
     requestSessionList,
     requestTranscriptLoad,
     requestNewSession,
+    requestSessionHistory,
     needsPassphrase,
     serverFingerprint,
     provideIdentity,
@@ -590,6 +598,14 @@ function App() {
     [connectionMode, relaySend, requestNewSession],
   );
 
+  const effectiveRequestSessionHistory = useCallback(
+    (limit?: number): boolean => {
+      if (connectionMode === 'relay') return relaySend(createSessionHistoryRequest(limit));
+      return requestSessionHistory(limit);
+    },
+    [connectionMode, relaySend, requestSessionHistory],
+  );
+
   // Close modal and store URL on successful connect
   useEffect(() => {
     if (connectionStatus === 'connected') {
@@ -621,19 +637,27 @@ function App() {
     }
   }, [effectiveStatus, activeSessionId]);
 
-  // Request session list after direct connection
+  // Request session list and history after direct connection
   useEffect(() => {
     if (connectionStatus === 'connected') {
       effectiveRequestSessionList(true);
+      effectiveRequestSessionHistory();
     }
-  }, [connectionStatus, effectiveRequestSessionList]);
+  }, [connectionStatus, effectiveRequestSessionList, effectiveRequestSessionHistory]);
 
-  // Request session list after relay connection (hello_ack received)
+  // Request session list and history after relay connection (hello_ack received)
   useEffect(() => {
     if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
       effectiveRequestSessionList(true);
+      effectiveRequestSessionHistory();
     }
-  }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
+  }, [
+    connectionMode,
+    relayStatus,
+    activeSessionId,
+    effectiveRequestSessionList,
+    effectiveRequestSessionHistory,
+  ]);
 
   // Auto-connect from localStorage on mount (run once)
   const connectRef = useRef(connect);
@@ -942,11 +966,14 @@ function App() {
     [activeSessionId, effectiveRequestBulletExpand],
   );
 
-  const handleNewSession = useCallback(() => {
-    if (creatingSession) return;
-    setCreatingSession(true);
-    effectiveRequestNewSession();
-  }, [effectiveRequestNewSession, creatingSession]);
+  const handleNewSession = useCallback(
+    (directory?: string) => {
+      if (creatingSession) return;
+      setCreatingSession(true);
+      effectiveRequestNewSession(directory);
+    },
+    [effectiveRequestNewSession, creatingSession],
+  );
 
   // Menu actions
   const handleCopyConversation = useCallback(() => {
@@ -985,6 +1012,7 @@ function App() {
       onNewSession={canCreateSession ? handleNewSession : undefined}
       onConnect={() => setShowConnectModal(true)}
       onSettings={() => setShowSettings(true)}
+      recentDirectories={recentDirectories}
     />
   );
 

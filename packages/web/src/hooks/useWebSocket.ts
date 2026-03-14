@@ -28,6 +28,7 @@ import {
   createCreateSessionRequest,
   createHello,
   createPing,
+  createSessionHistoryRequest,
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
@@ -61,6 +62,8 @@ export interface UseWebSocketReturn {
   requestTranscriptLoad: (sessionId: string) => boolean;
   /** Request creation of a new Claude Code session */
   requestNewSession: (directory?: string) => boolean;
+  /** Request recent directories from session history */
+  requestSessionHistory: (limit?: number) => boolean;
   /** Current session ID (after hello_ack) */
   sessionId: UUID | null;
   /** Whether the daemon requires authentication */
@@ -438,6 +441,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     return clientRef.current.send(createCreateSessionRequest(directory));
   }, []);
 
+  // Request recent directories from session history
+  const requestSessionHistory = useCallback((limit?: number): boolean => {
+    if (!clientRef.current) return false;
+    return clientRef.current.send(createSessionHistoryRequest(limit));
+  }, []);
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
@@ -468,6 +477,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     requestSessionList,
     requestTranscriptLoad,
     requestNewSession,
+    requestSessionHistory,
     sessionId,
     authRequired,
     serverFingerprint,

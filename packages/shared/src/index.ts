@@ -67,6 +67,9 @@ export type {
   KillSessionRequestMessage,
   KillSessionResponseMessage,
   RawPtyOutputMessage,
+  RecentDirectory,
+  SessionHistoryRequestMessage,
+  SessionHistoryResponseMessage,
 } from './protocol.ts';
 
 export {
@@ -103,6 +106,8 @@ export {
   createKillSessionRequest,
   createKillSessionResponse,
   createRawPtyOutput,
+  createSessionHistoryRequest,
+  createSessionHistoryResponse,
   MessageIdTracker,
 } from './protocol.ts';
 
