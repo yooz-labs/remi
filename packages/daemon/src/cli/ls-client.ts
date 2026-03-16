@@ -367,37 +367,65 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
     return;
   }
 
-  for (const { daemon, sessions } of results) {
-    const label =
-      daemon.host === 'localhost'
-        ? `local (port ${daemon.port})`
-        : `${daemon.hostname} (${daemon.host}:${daemon.port})`;
-    console.log(`\n== ${label} ==`);
-
-    if (sessions.length === 0) {
-      console.log('  No active sessions');
-      continue;
+  // Group by machine hostname so multiple daemons on the same host share one table
+  const machineGroups = new Map<
+    string,
+    {
+      label: string;
+      host: string;
+      entries: Array<{ daemon: DaemonSessions['daemon']; session: DiscoverableSession }>;
     }
+  >();
 
-    const header = `  ${'NAME'.padEnd(28)}${'HOST'.padEnd(24)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  for (const { daemon, sessions } of results) {
+    const hostname = daemon.hostname || daemon.host;
+    // Group by hostname+host to avoid merging different machines with the same hostname
+    const key = daemon.host === 'localhost' ? 'localhost' : `${hostname}@${daemon.host}`;
+    let group = machineGroups.get(key);
+    if (!group) {
+      const label = daemon.host === 'localhost' ? 'local' : `${hostname} (${daemon.host})`;
+      group = { label, host: daemon.host, entries: [] };
+      machineGroups.set(key, group);
+    }
+    for (const s of sessions) {
+      group.entries.push({ daemon, session: s });
+    }
+  }
+
+  let totalSessions = 0;
+  const machineCount = machineGroups.size;
+
+  for (const [, group] of machineGroups) {
+    console.log(`\n== ${group.label} ==`);
+
+    totalSessions += group.entries.length;
+
+    const header = `  ${'NAME'.padEnd(28)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
     console.log(header);
     console.log(`  ${'-'.repeat(header.length - 2)}`);
 
-    for (const s of sessions) {
+    for (const { daemon, session: s } of group.entries) {
       const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
-      const host = `${daemon.host}:${daemon.port}`;
+      const port = String(daemon.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `  ${name.padEnd(28)}${host.padEnd(24)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `  ${name.padEnd(28)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
 
-  const totalSessions = results.reduce((sum, r) => sum + r.sessions.length, 0);
-  console.log(`\n${totalSessions} session(s) across ${results.length} daemon(s)`);
+  const daemonCount = results.length;
+  if (machineCount === 1) {
+    const machineName = machineGroups.values().next().value?.label ?? 'unknown';
+    console.log(`\n${totalSessions} session(s) on ${machineName}`);
+  } else {
+    console.log(
+      `\n${totalSessions} session(s) across ${daemonCount} daemon(s) on ${machineCount} machine(s)`,
+    );
+  }
 
   const attachable = results.flatMap((r) =>
     r.sessions.filter((s) => s.canAttach).map((s) => ({ ...s, daemon: r.daemon })),

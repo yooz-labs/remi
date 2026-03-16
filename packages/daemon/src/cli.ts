@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.3.16'; // REMI_COMPILED_VERSION
+      return '0.4.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.3.16'; // REMI_COMPILED_VERSION
+    return '0.4.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -324,138 +324,20 @@ function resolveDirectory(
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
-const args = process.argv.slice(2);
-let cliPort: number | undefined;
-let cliNoTelegram = false;
-let cliMaxBulletLength: number | undefined;
-let cliDaemonMode = false;
-let cliSignalingUrl: string | undefined;
-let cliNoRelay = false;
-let cliResume: string | true | undefined; // true = resume most recent, string = session ID
-let cliShowSessions = false;
-let cliInstall = false;
-let cliUninstall = false;
-let cliSubcommand:
-  | 'ls'
-  | 'attach'
-  | 'code'
-  | 'keygen'
-  | 'export-key'
-  | 'import-key'
-  | 'authorize'
-  | 'keys'
-  | 'new'
-  | 'kill'
-  | 'detach'
-  | 'recent'
-  | 'start'
-  | 'stop'
-  | 'status'
-  | 'logs'
-  | undefined;
-let cliSubcommandArg: string | undefined;
-let cliCodeRefresh = false;
-let cliPermanentCode = false;
-let cliForce = false;
-let cliUsePassphrase = false;
-let cliNoTofu = false;
-let cliAuth: boolean | undefined; // undefined = auto (auth when bind != localhost)
-let cliLabel: string | undefined;
-let cliPublicOnly = false;
-let cliBindHost: string | undefined;
-let cliRemoveFingerprint: string | undefined;
-let cliNoMdns = false;
-let cliNetwork = false;
-let cliHost: string | undefined;
-let cliDir: string | undefined;
-let cliRecent = false;
-const claudeArgs: string[] = [];
+import { parseArgs } from './cli/arg-parser.ts';
 
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  const nextArg = args[i + 1];
+const parsedArgs = parseArgs(process.argv.slice(2));
 
-  if (arg === '--daemon') {
-    cliDaemonMode = true;
-    wrapperMode = false;
-  } else if (arg === '--resume') {
-    if (nextArg && !nextArg.startsWith('-')) {
-      cliResume = nextArg;
-      i++;
-    } else {
-      cliResume = true;
-    }
-  } else if (arg === '--sessions') {
-    cliShowSessions = true;
-  } else if (arg === '--port' && nextArg) {
-    cliPort = Number.parseInt(nextArg);
-    i++;
-  } else if (arg === '--max-bullet-length' && nextArg) {
-    cliMaxBulletLength = Number.parseInt(nextArg);
-    i++;
-  } else if (arg === '--no-telegram') {
-    cliNoTelegram = true;
-  } else if (arg === '--no-relay') {
-    cliNoRelay = true;
-  } else if (arg === '--permanent-code') {
-    cliPermanentCode = true;
-  } else if (arg === '--signaling-url' && nextArg) {
-    cliSignalingUrl = nextArg;
-    i++;
-  } else if (arg === '--install') {
-    cliInstall = true;
-  } else if (arg === '--uninstall') {
-    cliUninstall = true;
-  } else if (arg === '--force') {
-    cliForce = true;
-  } else if (arg === '--passphrase') {
-    cliUsePassphrase = true;
-  } else if (arg === '--no-tofu') {
-    cliNoTofu = true;
-  } else if (arg === '--auth') {
-    cliAuth = true;
-  } else if (arg === '--no-auth') {
-    cliAuth = false;
-  } else if (arg === '--label' && nextArg) {
-    cliLabel = nextArg;
-    i++;
-  } else if (arg === '--public-only') {
-    cliPublicOnly = true;
-  } else if (arg === '--bind' && nextArg) {
-    cliBindHost = nextArg;
-    i++;
-  } else if (arg === '--remove' && nextArg) {
-    cliRemoveFingerprint = nextArg;
-    i++;
-  } else if (arg === '--local') {
-    cliBindHost = 'localhost';
-    // Don't set cliAuth; auto-detection disables auth for localhost already
-    cliNoMdns = true;
-  } else if (arg === '--no-mdns') {
-    cliNoMdns = true;
-  } else if (arg === '--network') {
-    cliNetwork = true;
-  } else if (arg === '--dir' && nextArg) {
-    if (cliRecent) {
-      console.error('Error: --dir and --recent are mutually exclusive.');
-      process.exit(1);
-    }
-    cliDir = nextArg;
-    i++;
-  } else if (arg === '--recent') {
-    if (cliDir) {
-      console.error('Error: --dir and --recent are mutually exclusive.');
-      process.exit(1);
-    }
-    cliRecent = true;
-  } else if (arg === '--host' && nextArg) {
-    cliHost = nextArg;
-    i++;
-  } else if (arg === '--version' || arg === '-v') {
-    console.log(`remi ${REMI_VERSION}`);
-    process.exit(0);
-  } else if (arg === '--help' || arg === '-h') {
-    console.log(`
+if (parsedArgs.error) {
+  console.error(parsedArgs.error);
+  process.exit(1);
+}
+if (parsedArgs.showVersion) {
+  console.log(`remi ${REMI_VERSION}`);
+  process.exit(0);
+}
+if (parsedArgs.showHelp) {
+  console.log(`
 Remi - Claude Code with remote monitoring
 
 Usage:
@@ -523,68 +405,41 @@ Environment:
 
 Any other arguments are passed through to Claude Code.
 `);
-    process.exit(0);
-  } else if (
-    arg === 'ls' ||
-    arg === 'attach' ||
-    arg === 'code' ||
-    arg === 'keygen' ||
-    arg === 'export-key' ||
-    arg === 'import-key' ||
-    arg === 'authorize' ||
-    arg === 'keys' ||
-    arg === 'new' ||
-    arg === 'kill' ||
-    arg === 'detach' ||
-    arg === 'recent' ||
-    arg === 'start' ||
-    arg === 'stop' ||
-    arg === 'status' ||
-    arg === 'logs'
-  ) {
-    cliSubcommand = arg;
-    if (
-      (arg === 'attach' ||
-        arg === 'import-key' ||
-        arg === 'authorize' ||
-        arg === 'kill' ||
-        arg === 'detach') &&
-      nextArg &&
-      !nextArg.startsWith('-')
-    ) {
-      cliSubcommandArg = nextArg;
-      i++;
-    }
-    if (arg === 'code' && nextArg === '--refresh') {
-      cliCodeRefresh = true;
-      i++;
-    }
-    // For 'new', collect remaining args after '--' as claude args
-    if (arg === 'new') {
-      for (let j = i + 1; j < args.length; j++) {
-        const nextA = args[j];
-        if (nextA === '--') continue; // skip bare '--'
-        if (nextA) claudeArgs.push(nextA);
-      }
-      break; // stop processing args
-    }
-  } else if (
-    cliSubcommand &&
-    (cliSubcommand === 'import-key' ||
-      cliSubcommand === 'authorize' ||
-      cliSubcommand === 'attach' ||
-      cliSubcommand === 'kill' ||
-      cliSubcommand === 'detach') &&
-    !cliSubcommandArg &&
-    arg &&
-    !arg.startsWith('-')
-  ) {
-    // Positional arg for subcommand (supports flags before or after)
-    cliSubcommandArg = arg;
-  } else {
-    // Pass through to Claude
-    if (arg) claudeArgs.push(arg);
-  }
+  process.exit(0);
+}
+
+// Destructure into existing variable names for zero downstream changes
+const cliPort = parsedArgs.port;
+const cliNoTelegram = parsedArgs.noTelegram;
+const cliMaxBulletLength = parsedArgs.maxBulletLength;
+const cliDaemonMode = parsedArgs.daemonMode;
+const cliSignalingUrl = parsedArgs.signalingUrl;
+const cliNoRelay = parsedArgs.noRelay;
+const cliResume = parsedArgs.resume;
+const cliShowSessions = parsedArgs.showSessions;
+const cliInstall = parsedArgs.install;
+const cliUninstall = parsedArgs.uninstall;
+const cliSubcommand = parsedArgs.subcommand;
+const cliSubcommandArg = parsedArgs.subcommandArg;
+const cliCodeRefresh = parsedArgs.codeRefresh;
+const cliPermanentCode = parsedArgs.permanentCode;
+const cliForce = parsedArgs.force;
+const cliUsePassphrase = parsedArgs.usePassphrase;
+const cliNoTofu = parsedArgs.noTofu;
+const cliAuth = parsedArgs.auth;
+const cliLabel = parsedArgs.label;
+const cliPublicOnly = parsedArgs.publicOnly;
+const cliBindHost = parsedArgs.bindHost;
+const cliRemoveFingerprint = parsedArgs.removeFingerprint;
+const cliNoMdns = parsedArgs.noMdns;
+const cliNetwork = parsedArgs.network;
+const cliHost = parsedArgs.host;
+const cliDir = parsedArgs.dir;
+const cliRecent = parsedArgs.recent;
+const claudeArgs = [...parsedArgs.claudeArgs];
+
+if (cliDaemonMode) {
+  wrapperMode = false;
 }
 
 // Handle --install / --uninstall

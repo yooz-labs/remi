@@ -93,11 +93,32 @@ Use **Serena MCP** for efficient code navigation instead of reading entire files
 | `search_for_pattern` | Regex search across codebase |
 | `replace_symbol_body` | Edit entire function/method bodies |
 
+## Branch Strategy
+
+```
+main        Stable release branch; users install from here
+develop     Integration branch; features land here first via PRs
+feature/*   Short-lived branches off develop
+```
+
+- **Feature work**: branch off `develop`, PR back into `develop`
+- **Releases**: when `develop` is stable, merge to `main` and tag
+- **Hotfixes**: branch off `main`, PR to both `main` and `develop`
+- Never push directly to `main` or `develop`
+
 ## Releasing
 
 **Always use the bump-version script for releases.** Never manually edit version numbers.
 
 ```bash
+# Bump on develop (pre-release testing)
+git checkout develop
+./scripts/bump-version.sh minor
+git push origin develop && git push origin v0.4.0
+
+# Promote to main when stable
+git checkout main && git merge develop && git push origin main
+
 # Bump and release (triggers CI: build, npm publish, GitHub release, Homebrew update)
 ./scripts/bump-version.sh --push patch   # 0.3.9 -> 0.3.10
 ./scripts/bump-version.sh --push minor   # 0.3.9 -> 0.4.0

@@ -1,0 +1,45 @@
+services:
+  daemon1:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile
+    container_name: remi-test-daemon1
+    ports:
+      - "19765:18765"
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+    networks:
+      remi-test:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "bun", "run", "packages/daemon/src/cli.ts", "ls"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  daemon2:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile
+    container_name: remi-test-daemon2
+    ports:
+      - "19766:18765"
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+    networks:
+      remi-test:
+        ipv4_address: 172.28.0.11
+    healthcheck:
+      test: ["CMD", "bun", "run", "packages/daemon/src/cli.ts", "ls"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+networks:
+  remi-test:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
