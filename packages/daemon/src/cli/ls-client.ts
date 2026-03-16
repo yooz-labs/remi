@@ -378,10 +378,11 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
   >();
 
   for (const { daemon, sessions } of results) {
-    const key = daemon.host === 'localhost' ? 'localhost' : daemon.hostname;
+    const hostname = daemon.hostname || daemon.host;
+    const key = daemon.host === 'localhost' ? 'localhost' : hostname;
     let group = machineGroups.get(key);
     if (!group) {
-      const label = daemon.host === 'localhost' ? 'local' : `${daemon.hostname} (${daemon.host})`;
+      const label = daemon.host === 'localhost' ? 'local' : `${hostname} (${daemon.host})`;
       group = { label, host: daemon.host, entries: [] };
       machineGroups.set(key, group);
     }
@@ -395,11 +396,6 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 
   for (const [, group] of machineGroups) {
     console.log(`\n== ${group.label} ==`);
-
-    if (group.entries.length === 0) {
-      console.log('  No active sessions');
-      continue;
-    }
 
     totalSessions += group.entries.length;
 
