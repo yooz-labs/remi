@@ -372,4 +372,128 @@ describe('parseArgs', () => {
       expect(r.claudeArgs).toEqual(['--model', 'opus']);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Input validation (from review findings)
+  // -------------------------------------------------------------------------
+  describe('input validation', () => {
+    test('--port without value produces error', () => {
+      const r = parseArgs(['--port']);
+      expect(r.error).toBeDefined();
+      expect(r.port).toBeUndefined();
+    });
+
+    test('--port abc produces error', () => {
+      const r = parseArgs(['--port', 'abc']);
+      expect(r.error).toBeDefined();
+      expect(r.port).toBeUndefined();
+    });
+
+    test('--port 0 produces error (below range)', () => {
+      const r = parseArgs(['--port', '0']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--port 99999 produces error (above range)', () => {
+      const r = parseArgs(['--port', '99999']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--host without value produces error', () => {
+      const r = parseArgs(['--host']);
+      expect(r.error).toBeDefined();
+      expect(r.host).toBeUndefined();
+    });
+
+    test('--dir without value produces error', () => {
+      const r = parseArgs(['--dir']);
+      expect(r.error).toBeDefined();
+      expect(r.dir).toBeUndefined();
+    });
+
+    test('--max-bullet-length abc produces error', () => {
+      const r = parseArgs(['--max-bullet-length', 'abc']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--max-bullet-length 0 is valid (disables truncation)', () => {
+      const r = parseArgs(['--max-bullet-length', '0']);
+      expect(r.error).toBeUndefined();
+      expect(r.maxBulletLength).toBe(0);
+    });
+
+    test('--install and --uninstall are mutually exclusive', () => {
+      const r = parseArgs(['--install', '--uninstall']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--signaling-url without value produces error', () => {
+      const r = parseArgs(['--signaling-url']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--label without value produces error', () => {
+      const r = parseArgs(['--label']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--bind without value produces error', () => {
+      const r = parseArgs(['--bind']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--remove without value produces error', () => {
+      const r = parseArgs(['--remove']);
+      expect(r.error).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Previously untested flags (from review findings)
+  // -------------------------------------------------------------------------
+  describe('remaining flags', () => {
+    test('--no-telegram', () => {
+      expect(parseArgs(['--no-telegram']).noTelegram).toBe(true);
+    });
+
+    test('--max-bullet-length 200', () => {
+      expect(parseArgs(['--max-bullet-length', '200']).maxBulletLength).toBe(200);
+    });
+
+    test('--signaling-url URL', () => {
+      expect(parseArgs(['--signaling-url', 'wss://example.com']).signalingUrl).toBe(
+        'wss://example.com',
+      );
+    });
+
+    test('--passphrase', () => {
+      expect(parseArgs(['--passphrase']).usePassphrase).toBe(true);
+    });
+
+    test('--no-tofu', () => {
+      expect(parseArgs(['--no-tofu']).noTofu).toBe(true);
+    });
+
+    test('--label NAME', () => {
+      expect(parseArgs(['--label', 'My Phone']).label).toBe('My Phone');
+    });
+
+    test('--public-only', () => {
+      expect(parseArgs(['--public-only']).publicOnly).toBe(true);
+    });
+
+    test('--remove FINGERPRINT', () => {
+      expect(parseArgs(['--remove', 'abc123']).removeFingerprint).toBe('abc123');
+    });
+
+    test('--no-mdns standalone', () => {
+      expect(parseArgs(['--no-mdns']).noMdns).toBe(true);
+    });
+
+    test('--resume followed by a flag does not consume the flag', () => {
+      const r = parseArgs(['--resume', '--daemon']);
+      expect(r.resume).toBe(true);
+      expect(r.daemonMode).toBe(true);
+    });
+  });
 });

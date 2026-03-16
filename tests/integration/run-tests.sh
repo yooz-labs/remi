@@ -22,6 +22,7 @@ cd "$PROJECT_ROOT"
 remi_cli() {
   bun run packages/daemon/src/cli.ts "$@"
 }
+export -f remi_cli
 
 # Use non-standard ports to avoid conflicts with local daemons
 D1_PORT=19765
@@ -117,7 +118,7 @@ run_test "new --host --port --dir connects" \
 
 # Verify --recent flag is parsed (may show "no recent dirs" which is expected on fresh container)
 run_test "new --host --port --recent parsed" \
-  bash -c "remi_cli new --host $HOST --port $D1_PORT --recent 2>&1 | grep -q 'No recent\|Creating session\|Select directory'; exit 0"
+  bash -c "remi_cli new --host $HOST --port $D1_PORT --recent 2>&1 | grep -q 'No recent\|Creating session\|Select directory'"
 
 # ---- Test Group 4: flags before subcommand (backward compat) ----
 echo ""
