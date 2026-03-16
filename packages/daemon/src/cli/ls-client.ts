@@ -379,7 +379,8 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 
   for (const { daemon, sessions } of results) {
     const hostname = daemon.hostname || daemon.host;
-    const key = daemon.host === 'localhost' ? 'localhost' : hostname;
+    // Group by hostname+host to avoid merging different machines with the same hostname
+    const key = daemon.host === 'localhost' ? 'localhost' : `${hostname}@${daemon.host}`;
     let group = machineGroups.get(key);
     if (!group) {
       const label = daemon.host === 'localhost' ? 'local' : `${hostname} (${daemon.host})`;
