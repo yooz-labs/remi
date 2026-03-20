@@ -42,6 +42,17 @@ export function isSubcommand(s: string): s is Subcommand {
   return SUBCOMMANDS.has(s);
 }
 
+/** Check if a string looks like a filesystem path (for `remi new /path` support). */
+export function isPathLike(s: string): boolean {
+  return (
+    s === '.' ||
+    s.startsWith('/') ||
+    s.startsWith('~/') ||
+    s.startsWith('./') ||
+    s.startsWith('../')
+  );
+}
+
 export interface ParsedArgs {
   readonly port: number | undefined;
   readonly noTelegram: boolean;
@@ -251,6 +262,18 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       subcommand = arg as Subcommand;
       if (SUBCOMMANDS_WITH_POSITIONAL_ARG.has(subcommand) && nextArg && !nextArg.startsWith('-')) {
         subcommandArg = nextArg;
+        i++;
+      } else if (
+        subcommand === 'new' &&
+        nextArg &&
+        !nextArg.startsWith('-') &&
+        isPathLike(nextArg)
+      ) {
+        // remi new /path → treat as --dir
+        if (recent) {
+          error = 'Error: --dir and --recent are mutually exclusive.';
+        }
+        dir = nextArg;
         i++;
       }
       if (arg === 'code' && nextArg === '--refresh') {
