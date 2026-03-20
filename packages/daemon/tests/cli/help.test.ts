@@ -6,7 +6,8 @@ describe('formatHelp', () => {
 
   afterEach(() => {
     if (originalEnv === undefined) {
-      process.env['NO_COLOR'] = undefined as unknown as string;
+      // biome-ignore lint/performance/noDelete: must truly remove env var, not set to "undefined"
+      delete process.env['NO_COLOR'];
     } else {
       process.env['NO_COLOR'] = originalEnv;
     }
