@@ -2,15 +2,19 @@
 
 All notable changes to Remi are documented here.
 
-## [Unreleased] (develop)
+## [0.4.4] - 2026-03-20
 
 ### Added
 - Per-command help: `remi ls --help`, `remi kill --help`, etc. show subcommand-specific usage (#115)
-- Deduplicate sessions from LAN and VPN IPs in `remi ls --network` (#110)
+- `--orphan-timeout SECS` flag for configurable session cleanup; 0 disables automatic cleanup (#120)
+- `SESSION_BUSY` error with clear message when attaching to a session already in use (#119, #121)
 
 ### Fixed
 - `remi start` fails with EADDRINUSE when wrapper sessions are running (#114)
 - Only retry WebSocket adapter on port conflict, not all adapters
+- Deduplicate sessions from LAN and VPN IPs in `remi ls --network` (#118)
+- SESSION_BUSY check moved before canResume guard (was unreachable) (#121)
+- Kill session with active client now notifies the attached client before disconnect (#119)
 
 ## [0.4.4-dev.3] - 2026-03-20
 
