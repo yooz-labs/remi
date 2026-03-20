@@ -17,6 +17,14 @@ import {
   queryMultiplePorts,
 } from './session-resolver.ts';
 
+/** Return the terminal width, defaulting to 100 when stdout is not a TTY (e.g. piped). */
+function getTerminalWidth(): number {
+  return process.stdout.columns ?? 100;
+}
+
+/** Minimum name column width to keep output readable even on very narrow terminals. */
+const MIN_NAME_WIDTH = 20;
+
 export interface RemoteTarget {
   readonly host: string;
   readonly port: number;
@@ -122,20 +130,23 @@ export async function runHostLs(opts: HostLsOptions): Promise<void> {
   }
 
   // Multiple ports: show port column
-  const header = `${'NAME'.padEnd(28)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  // Fixed columns: PORT(8) + STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 46
+  const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 46);
+  const header = `${'NAME'.padEnd(nameCol)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
   console.log(header);
   console.log('-'.repeat(header.length));
 
   for (const r of results) {
     for (const s of r.sessions) {
-      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+      const rawName = s.name ?? path.basename(s.projectPath);
+      const name = rawName.slice(0, nameCol - 2);
       const port = String(r.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `${name.padEnd(28)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `${name.padEnd(nameCol)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
@@ -400,19 +411,22 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 
     totalSessions += group.entries.length;
 
-    const header = `  ${'NAME'.padEnd(28)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    // Fixed columns: indent(2) + PORT(8) + STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 48
+    const netNameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 48);
+    const header = `  ${'NAME'.padEnd(netNameCol)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
     console.log(header);
     console.log(`  ${'-'.repeat(header.length - 2)}`);
 
     for (const { daemon, session: s } of group.entries) {
-      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+      const rawName = s.name ?? path.basename(s.projectPath);
+      const name = rawName.slice(0, netNameCol - 2);
       const port = String(daemon.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `  ${name.padEnd(28)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `  ${name.padEnd(netNameCol)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
@@ -453,18 +467,21 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
     return;
   }
 
-  const header = `${'NAME'.padEnd(28)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  // Fixed columns: STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 38
+  const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 38);
+  const header = `${'NAME'.padEnd(nameCol)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
   console.log(header);
   console.log('-'.repeat(header.length));
 
   for (const s of sessions) {
-    const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+    const rawName = s.name ?? path.basename(s.projectPath);
+    const name = rawName.slice(0, nameCol - 2);
     const duration = formatDuration(s.createdAt);
     const lastAct = formatAge(s.lastActivity);
     const mark = s.canAttach ? ' *' : '';
 
     console.log(
-      `${name.padEnd(28)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+      `${name.padEnd(nameCol)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
     );
   }
 
