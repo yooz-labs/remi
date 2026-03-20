@@ -155,7 +155,7 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
   let daemonPort = opts?.port;
   if (!daemonPort) {
     const freePort = await findFreePort();
-    if (!freePort) {
+    if (freePort === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
       );

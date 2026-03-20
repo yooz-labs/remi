@@ -2167,44 +2167,15 @@ if (cliDaemonMode) {
   // Daemon mode: headless server, spawns Claude on WebSocket connect
   console.log('Starting Remi daemon...');
 
-  // Retry on EADDRINUSE (port may be grabbed by a wrapper starting at the same time)
-  let daemonStarted = false;
-  const maxRetries = portExplicitlySet ? 1 : 3;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      await registry.startAll();
-      daemonStarted = true;
-      break;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
+  // Start all adapters. On EADDRINUSE, retry only the WebSocket adapter with next port.
+  // Other adapters (Telegram, Relay) start once and stay running across retries.
+  try {
+    await registry.startAll();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
 
-      if (isAddrInUse && !portExplicitlySet && attempt < maxRetries - 1) {
-        const nextPort = liveSessionsRegistry.findAvailablePort(
-          PORT + 1,
-          DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
-        );
-        if (nextPort !== null) {
-          console.log(`Port ${PORT} in use, trying ${nextPort}...`);
-          try {
-            await registry.unregister('websocket');
-          } catch (teardownErr) {
-            const teardownMsg =
-              teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
-            console.error(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
-          }
-          PORT = nextPort;
-          STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
-          HOOK_PORT = PORT + 100;
-          const retryWsAdapter = new WebSocketAdapter(
-            { port: PORT, host: bindHost, authenticator },
-            sharedEvents,
-          );
-          registry.register(retryWsAdapter);
-          continue;
-        }
-      }
-
+    if (!isAddrInUse || portExplicitlySet) {
       if (isAddrInUse) {
         console.error(`Port ${PORT} is already in use.`);
         console.error('Use --port to specify a different port, or stop existing sessions.');
@@ -2213,11 +2184,51 @@ if (cliDaemonMode) {
       }
       process.exit(1);
     }
-  }
 
-  if (!daemonStarted) {
-    console.error('Failed to start daemon after retrying available ports.');
-    process.exit(1);
+    // EADDRINUSE with auto-port: retry WebSocket adapter on next available port
+    let wsStarted = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const nextPort = liveSessionsRegistry.findAvailablePort(
+        PORT + 1,
+        DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
+      );
+      if (nextPort === null) break;
+
+      console.log(`Port ${PORT} in use, trying ${nextPort}...`);
+      try {
+        await registry.unregister('websocket');
+      } catch (teardownErr) {
+        const teardownMsg =
+          teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        console.error(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
+      }
+      PORT = nextPort;
+      STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+      HOOK_PORT = PORT + 100;
+      const retryWsAdapter = new WebSocketAdapter(
+        { port: PORT, host: bindHost, authenticator },
+        sharedEvents,
+      );
+      registry.register(retryWsAdapter);
+
+      try {
+        await retryWsAdapter.start();
+        wsStarted = true;
+        break;
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        if (!retryMsg.includes('EADDRINUSE') && !retryMsg.includes('in use')) {
+          console.error(`Failed to start daemon: ${retryMsg}`);
+          process.exit(1);
+        }
+      }
+    }
+
+    if (!wsStarted) {
+      console.error('All ports in range are in use.');
+      console.error('Use --port to specify a different port, or stop existing sessions.');
+      process.exit(1);
+    }
   }
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
