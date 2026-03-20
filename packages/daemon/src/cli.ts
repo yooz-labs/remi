@@ -325,6 +325,7 @@ function resolveDirectory(
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
 import { parseArgs } from './cli/arg-parser.ts';
+import { formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
 
@@ -337,74 +338,7 @@ if (parsedArgs.showVersion) {
   process.exit(0);
 }
 if (parsedArgs.showHelp) {
-  console.log(`
-Remi - Claude Code with remote monitoring
-
-Usage:
-  remi [claude-args...]          Start Claude with WebSocket monitoring
-  remi new [-- claude-args...]   Explicit session creation (alias for remi [args])
-  remi new --dir <path>          Start session in a specific directory
-  remi new --recent              Pick from recent directories
-  remi new --host <ip>           Create session on remote daemon and attach
-  remi kill <name>               Kill a session by name or ID
-  remi detach [name]             Detach from current or named session
-  remi start                     Start daemon in background
-  remi stop                      Stop background daemon
-  remi status                    Show daemon status
-  remi logs                      Show recent daemon logs
-  remi recent                    Browse recent project directories
-  remi ls                        List live sessions from running daemon
-  remi ls --network              Discover and list sessions across the network
-  remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
-  remi attach host:port/id       Attach to a remote session
-  remi code                      Show remote access connection code
-  remi code --refresh            Generate a new connection code
-  remi keygen                    Generate Ed25519 identity keypair
-  remi export-key                Export identity JSON (for sharing across devices)
-  remi import-key [file]         Import identity from file or stdin
-  remi authorize <key-file>      Add a client's public key to authorized keys
-  remi keys                      List authorized keys
-  remi --resume [session-id]     Resume a previous session
-  remi --sessions                List stored sessions
-  remi --daemon                  Daemon mode (headless server, prefer remi start)
-
-Options:
-  --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
-  --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
-  --no-telegram            Disable Telegram adapter
-  --no-relay               Disable signaling relay (no remote access via connection code)
-  --permanent-code         Use a persistent connection code (requires Ed25519 auth over relay)
-  --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
-  --bind HOST              Bind WebSocket to HOST (default: 0.0.0.0; use --local for localhost-only)
-  --force                  Overwrite existing identity (keygen/import-key)
-  --passphrase             Encrypt identity with a passphrase (keygen)
-  --auth                   Force enable authentication (default: auto based on --bind)
-  --no-auth                Disable authentication (even when binding to all interfaces)
-  --no-tofu                Reject unknown clients (disable Trust On First Use)
-  --local                  Localhost-only mode (--bind localhost --no-mdns)
-  --no-mdns                Disable mDNS network advertising
-  --host HOST              Connect to daemon at HOST (for ls/attach/new/recent; default: localhost)
-  --dir PATH               Working directory for new session (mutually exclusive with --recent)
-  --recent                 Pick from recent project directories (for new/recent subcommands)
-  --label NAME             Label for authorized key (authorize)
-  --public-only            Export only public key (export-key)
-  --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
-  --install                Install as autostart service
-  --uninstall              Remove autostart service
-  --version, -v            Show version
-  --help, -h               Show this help
-
-Environment:
-  REMI_PORT                WebSocket port
-  REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
-  TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
-  REMI_PASSPHRASE              Passphrase for identity operations (avoids interactive prompt)
-  TELEGRAM_ENABLED              Set to 'false' to disable Telegram
-  TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
-  TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
-
-Any other arguments are passed through to Claude Code.
-`);
+  console.log(formatHelp(REMI_VERSION));
   process.exit(0);
 }
 
