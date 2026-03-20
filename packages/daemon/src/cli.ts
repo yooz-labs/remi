@@ -442,6 +442,37 @@ if (cliDaemonMode) {
   wrapperMode = false;
 }
 
+// ---------------------------------------------------------------------------
+// Resolve remote target from positional arg (host:port/session format)
+// Runs once for subcommands that accept session targets (attach, kill, detach)
+// ---------------------------------------------------------------------------
+import { type ResolvedTarget, TargetParseError, resolveTarget } from './cli/target-resolver.ts';
+
+let resolved: ResolvedTarget = {
+  host: cliHost ?? 'localhost',
+  port: DEFAULT_BASE_PORT,
+  targetId: cliSubcommandArg,
+};
+if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 'detach') {
+  try {
+    resolved = resolveTarget({
+      subcommandArg: cliSubcommandArg,
+      cliHost,
+      cliPort,
+      defaultPort: DEFAULT_BASE_PORT,
+    });
+  } catch (err) {
+    if (err instanceof TargetParseError) {
+      console.error(err.message);
+      if (err.suggestion) {
+        console.error(`  Run: remi ${cliSubcommand} ${err.suggestion}`);
+      }
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
 // Handle --install / --uninstall
 if (cliInstall || cliUninstall) {
   const platform = process.platform;
@@ -718,21 +749,21 @@ if (cliSubcommand === 'recent') {
 
 // Handle 'kill' subcommand: kill a session by name or ID
 if (cliSubcommand === 'kill') {
-  if (!cliSubcommandArg) {
+  if (!resolved.targetId) {
     console.error('Usage: remi kill <session-name-or-id>');
+    console.error('  Examples: remi kill my-session');
+    console.error('            remi kill host:port/session-name');
+    console.error('            remi kill my-session --host 192.168.1.1');
     console.error('Run `remi ls` to see live sessions.');
     process.exit(1);
   }
-  let resolvedPort =
-    cliPort ??
-    (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : DEFAULT_BASE_PORT);
-  const resolvedHost = cliHost ?? 'localhost';
+  let resolvedPort = resolved.port;
 
-  // Resolve port from live registry if target matches a known session
-  if (!cliPort && !cliHost) {
+  // Resolve port from live registry if target matches a known local session
+  if (!cliPort && resolved.host === 'localhost') {
     const liveMatch =
-      liveSessionsRegistry.findByName(cliSubcommandArg) ??
-      liveSessionsRegistry.findBySessionId(cliSubcommandArg);
+      liveSessionsRegistry.findByName(resolved.targetId) ??
+      liveSessionsRegistry.findBySessionId(resolved.targetId);
     if (liveMatch) {
       resolvedPort = liveMatch.wsPort;
     }
@@ -741,9 +772,9 @@ if (cliSubcommand === 'kill') {
   const { runKillClient } = await import('./cli/kill-client.ts');
   try {
     await runKillClient({
-      host: resolvedHost,
+      host: resolved.host,
       port: resolvedPort,
-      target: cliSubcommandArg,
+      target: resolved.targetId,
     });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -770,52 +801,12 @@ if (cliSubcommand === 'detach') {
 // Handle 'attach' subcommand: attach terminal to an orphaned session
 if (cliSubcommand === 'attach') {
   const store = new SessionStore();
-  let targetSessionId = cliSubcommandArg;
-  let resolvedPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
-  let resolvedHost = cliHost ?? 'localhost';
+  let targetSessionId = resolved.targetId;
+  let resolvedPort = resolved.port;
+  let resolvedHost = resolved.host;
 
-  // Check for remote attach formats:
-  //   host:port/session-id  (e.g., 192.168.0.83:18765/name)
-  //   host:port             (e.g., 192.168.0.83:18767 - auto-attach to session on that port)
-  // Remote targets have a numeric port between the last colon and first slash (or end of string).
-  // Session names (hostname:dir/branch) have a non-numeric directory segment there.
-  // Note: a purely numeric directory name (e.g., "8765") would be misidentified as a port.
-  const firstSlash = targetSessionId?.indexOf('/') ?? -1;
-  const colonIdx = firstSlash > 0 ? targetSessionId?.lastIndexOf(':', firstSlash - 1) : -1;
-  const hasRemoteFormat =
-    colonIdx != null &&
-    colonIdx > 0 &&
-    /^\d+$/.test(targetSessionId?.slice(colonIdx + 1, firstSlash) ?? '');
-
-  // Also check for host:port without slash (e.g., 100.79.39.98:18767)
-  // Detect trailing copy-paste garbage (e.g., 100.79.39.98:18767idle) and suggest correction
-  const { parseHostPort } = await import('./cli/ls-client.ts');
-  const hostPortParsed = targetSessionId ? parseHostPort(targetSessionId) : null;
-  if (hostPortParsed?.cleaned && targetSessionId) {
-    const corrected = `${hostPortParsed.host}:${hostPortParsed.port}`;
-    console.error(`Invalid target "${targetSessionId}". Did you mean "${corrected}"?`);
-    console.error(`  Run: remi attach ${corrected}`);
-    process.exit(1);
-  }
-  const isHostPort = !hasRemoteFormat && hostPortParsed != null && !hostPortParsed.cleaned;
-
-  if (targetSessionId && hasRemoteFormat) {
-    try {
-      const { parseRemoteTarget } = await import('./cli/ls-client.ts');
-      const remote = parseRemoteTarget(targetSessionId, resolvedPort);
-      resolvedHost = remote.host;
-      resolvedPort = remote.port;
-      targetSessionId = remote.sessionId;
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else if (targetSessionId && isHostPort && hostPortParsed) {
-    // Direct host:port attach - auto-attach to the session on that specific port
-    resolvedHost = hostPortParsed.host;
-    resolvedPort = hostPortParsed.port;
-    targetSessionId = undefined; // will be resolved by fetching sessions from that port
+  if (!targetSessionId && resolvedHost !== 'localhost') {
+    // host:port without session ID (auto-attach to session on that port)
     try {
       const { fetchSessions } = await import('./cli/ls-client.ts');
       const sessions = await fetchSessions(resolvedHost, resolvedPort, 5000);

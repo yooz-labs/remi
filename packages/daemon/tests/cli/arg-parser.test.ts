@@ -496,4 +496,73 @@ describe('parseArgs', () => {
       expect(r.daemonMode).toBe(true);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // remi new /path (positional directory arg)
+  // -------------------------------------------------------------------------
+  describe('remi new with positional path', () => {
+    test('remi new /absolute/path sets dir', () => {
+      const r = parseArgs(['new', '/tmp/project']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBe('/tmp/project');
+      expect(r.claudeArgs).toEqual([]);
+    });
+
+    test('remi new ~/home/path sets dir', () => {
+      const r = parseArgs(['new', '~/Documents/git/remi']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBe('~/Documents/git/remi');
+    });
+
+    test('remi new ./relative sets dir', () => {
+      const r = parseArgs(['new', './my-project']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBe('./my-project');
+    });
+
+    test('remi new ../parent sets dir', () => {
+      const r = parseArgs(['new', '../other-project']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBe('../other-project');
+    });
+
+    test('remi new . sets dir to current dir', () => {
+      const r = parseArgs(['new', '.']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBe('.');
+    });
+
+    test('remi new non-path-string goes to claudeArgs', () => {
+      const r = parseArgs(['new', 'some-claude-arg']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBeUndefined();
+      expect(r.claudeArgs).toEqual(['some-claude-arg']);
+    });
+
+    test('remi new /path --host X sets both dir and host', () => {
+      const r = parseArgs(['new', '/tmp/project', '--host', '10.0.0.1']);
+      expect(r.subcommand).toBe('new');
+      expect(r.dir).toBe('/tmp/project');
+      expect(r.host).toBe('10.0.0.1');
+    });
+
+    test('remi new /path conflicts with --recent', () => {
+      const r = parseArgs(['new', '--recent', '/tmp/project']);
+      // --recent is parsed first, then /path would conflict
+      // But /path comes after --recent which was already parsed by the flag handler
+      // The path won't be detected because it's after --recent was consumed
+      // Actually: --recent is at position 1, parsed in the flag handler.
+      // /tmp/project is at position 2, not consumed by new's path detection
+      // (new only checks nextArg, i.e., position 1)
+      // So /tmp/project falls to claudeArgs
+      expect(r.recent).toBe(true);
+    });
+
+    test('remi new --dir /a conflicts with positional path', () => {
+      // --dir is parsed first, then remi new /b would also try to set dir
+      // But the positional path detection only fires for the arg immediately after 'new'
+      const r = parseArgs(['new', '--dir', '/a']);
+      expect(r.dir).toBe('/a');
+    });
+  });
 });
