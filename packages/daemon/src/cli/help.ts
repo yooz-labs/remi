@@ -38,7 +38,9 @@ function entry(cmd: string, desc: string, width = 30): string {
 // Per-command help
 // ---------------------------------------------------------------------------
 
-const commandHelp: Record<string, string[]> = {
+import type { Subcommand } from './arg-parser.ts';
+
+const commandHelp: Record<Subcommand, string[]> = {
   ls: [
     'List running sessions from a Remi daemon.',
     '',
@@ -128,7 +130,7 @@ const commandHelp: Record<string, string[]> = {
     bold('Options:'),
     entry('--port PORT', 'WebSocket port'),
     entry('--bind HOST', 'Bind address (default: 0.0.0.0)'),
-    entry('--no-auth', 'Disable authentication'),
+    entry('--auth / --no-auth', 'Authentication control'),
     entry('--no-relay', 'Disable signaling relay'),
     entry('--no-mdns', 'Disable mDNS advertising'),
     '',
@@ -203,10 +205,10 @@ const commandHelp: Record<string, string[]> = {
 };
 
 export function formatCommandHelp(command: string): string {
-  const lines = commandHelp[command];
-  if (!lines) {
+  if (!(command in commandHelp)) {
     return `No help available for '${command}'. Run 'remi --help' for all commands.`;
   }
+  const lines = commandHelp[command as Subcommand];
   return ['', bold(`remi ${command}`), '', ...lines, ''].join('\n');
 }
 
