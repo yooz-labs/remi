@@ -374,6 +374,7 @@ const cliNetwork = parsedArgs.network;
 const cliHost = parsedArgs.host;
 const cliDir = parsedArgs.dir;
 const cliRecent = parsedArgs.recent;
+const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
 if (cliDaemonMode) {
@@ -595,6 +596,8 @@ if (
     if (cliNoTelegram) extraArgs.push('--no-telegram');
     if (cliPermanentCode) extraArgs.push('--permanent-code');
     if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
+    if (cliOrphanTimeout !== undefined)
+      extraArgs.push('--orphan-timeout', String(cliOrphanTimeout));
     await dm.startDaemon({ port: explicitPort, extraArgs });
   } else if (cliSubcommand === 'stop') {
     dm.stopDaemon();
@@ -1201,9 +1204,10 @@ const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const sessionStore = new SessionStore();
 
+const orphanTimeoutMs = cliOrphanTimeout !== undefined ? cliOrphanTimeout * 1000 : 5 * 60 * 1000;
 const sessionRegistry = new SessionRegistry(
   {
-    orphanTimeoutMs: 5 * 60 * 1000,
+    orphanTimeoutMs,
     maxReplayHistory: 1000,
   },
   {

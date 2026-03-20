@@ -81,6 +81,7 @@ export interface ParsedArgs {
   readonly host: string | undefined;
   readonly dir: string | undefined;
   readonly recent: boolean;
+  readonly orphanTimeout: number | undefined;
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
   readonly showHelp: boolean;
@@ -99,6 +100,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let showSessions = false;
   let install = false;
   let uninstall = false;
+  let orphanTimeout: number | undefined;
   let subcommand: Subcommand | undefined;
   let subcommandArg: string | undefined;
   let codeRefresh = false;
@@ -166,6 +168,18 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
           error = `Error: Invalid max-bullet-length "${nextArg}". Must be a non-negative integer.`;
         } else {
           maxBulletLength = parsed;
+        }
+        i++;
+      }
+    } else if (arg === '--orphan-timeout') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --orphan-timeout requires a value in seconds.';
+      } else {
+        const parsed = Number.parseInt(nextArg);
+        if (Number.isNaN(parsed) || parsed < 0) {
+          error = `Error: Invalid orphan-timeout "${nextArg}". Must be a non-negative integer (seconds).`;
+        } else {
+          orphanTimeout = parsed;
         }
         i++;
       }
@@ -321,6 +335,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     host,
     dir,
     recent,
+    orphanTimeout,
     claudeArgs,
     showVersion,
     showHelp,

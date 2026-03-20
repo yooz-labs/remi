@@ -495,6 +495,22 @@ describe('parseArgs', () => {
       expect(r.resume).toBe(true);
       expect(r.daemonMode).toBe(true);
     });
+
+    test('--orphan-timeout 60', () => {
+      expect(parseArgs(['--orphan-timeout', '60']).orphanTimeout).toBe(60);
+    });
+
+    test('--orphan-timeout 0 disables timeout', () => {
+      expect(parseArgs(['--orphan-timeout', '0']).orphanTimeout).toBe(0);
+    });
+
+    test('--orphan-timeout without value produces error', () => {
+      expect(parseArgs(['--orphan-timeout']).error).toBeDefined();
+    });
+
+    test('--orphan-timeout abc produces error', () => {
+      expect(parseArgs(['--orphan-timeout', 'abc']).error).toBeDefined();
+    });
   });
 
   // -------------------------------------------------------------------------
