@@ -448,9 +448,10 @@ if (cliDaemonMode) {
 // ---------------------------------------------------------------------------
 import { type ResolvedTarget, TargetParseError, resolveTarget } from './cli/target-resolver.ts';
 
+const envPort = process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined;
 let resolved: ResolvedTarget = {
   host: cliHost ?? 'localhost',
-  port: DEFAULT_BASE_PORT,
+  port: cliPort ?? envPort ?? DEFAULT_BASE_PORT,
   targetId: cliSubcommandArg,
 };
 if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 'detach') {
@@ -458,18 +459,15 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
     resolved = resolveTarget({
       subcommandArg: cliSubcommandArg,
       cliHost,
-      cliPort,
+      cliPort: cliPort ?? envPort,
       defaultPort: DEFAULT_BASE_PORT,
     });
   } catch (err) {
-    if (err instanceof TargetParseError) {
-      console.error(err.message);
-      if (err.suggestion) {
-        console.error(`  Run: remi ${cliSubcommand} ${err.suggestion}`);
-      }
-      process.exit(1);
+    console.error(err instanceof Error ? err.message : String(err));
+    if (err instanceof TargetParseError && err.suggestion) {
+      console.error(`  Run: remi ${cliSubcommand} ${err.suggestion}`);
     }
-    throw err;
+    process.exit(1);
   }
 }
 
@@ -787,7 +785,7 @@ if (cliSubcommand === 'kill') {
 if (cliSubcommand === 'detach') {
   // Without args: not meaningful from CLI (Ctrl+B d handles interactive detach)
   // With name: informational only; there's no remote detach protocol yet
-  if (!cliSubcommandArg) {
+  if (!resolved.targetId) {
     console.log('To detach from a session interactively, press Ctrl+B d.');
     console.log('To detach a specific session by name: remi detach <session-name>');
     console.log('(Remote detach is not yet implemented; use Ctrl+B d in the attached terminal.)');
