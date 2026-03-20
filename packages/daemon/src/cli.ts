@@ -578,8 +578,10 @@ if (
   const dm = await import('./cli/daemon-manager.ts');
 
   if (cliSubcommand === 'start') {
-    const resolvedPort =
-      cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+    // Only pass port if user explicitly set --port flag.
+    // Do NOT inherit REMI_PORT from env (it's set by wrapper sessions and
+    // would conflict). The daemon finds its own free port.
+    const explicitPort = cliPort;
     const extraArgs: string[] = [];
     if (cliBindHost) extraArgs.push('--bind', cliBindHost);
     if (cliAuth === true) extraArgs.push('--auth');
@@ -589,7 +591,7 @@ if (
     if (cliNoTelegram) extraArgs.push('--no-telegram');
     if (cliPermanentCode) extraArgs.push('--permanent-code');
     if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
-    dm.startDaemon({ port: resolvedPort, extraArgs });
+    await dm.startDaemon({ port: explicitPort, extraArgs });
   } else if (cliSubcommand === 'stop') {
     dm.stopDaemon();
   } else if (cliSubcommand === 'status') {
@@ -2164,11 +2166,63 @@ async function cleanup(): Promise<void> {
 if (cliDaemonMode) {
   // Daemon mode: headless server, spawns Claude on WebSocket connect
   console.log('Starting Remi daemon...');
-  await registry.startAll();
+
+  // Retry on EADDRINUSE (port may be grabbed by a wrapper starting at the same time)
+  let daemonStarted = false;
+  const maxRetries = portExplicitlySet ? 1 : 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      await registry.startAll();
+      daemonStarted = true;
+      break;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
+
+      if (isAddrInUse && !portExplicitlySet && attempt < maxRetries - 1) {
+        const nextPort = liveSessionsRegistry.findAvailablePort(
+          PORT + 1,
+          DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
+        );
+        if (nextPort !== null) {
+          console.log(`Port ${PORT} in use, trying ${nextPort}...`);
+          try {
+            await registry.unregister('websocket');
+          } catch (teardownErr) {
+            const teardownMsg =
+              teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+            console.error(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
+          }
+          PORT = nextPort;
+          STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+          HOOK_PORT = PORT + 100;
+          const retryWsAdapter = new WebSocketAdapter(
+            { port: PORT, host: bindHost, authenticator },
+            sharedEvents,
+          );
+          registry.register(retryWsAdapter);
+          continue;
+        }
+      }
+
+      if (isAddrInUse) {
+        console.error(`Port ${PORT} is already in use.`);
+        console.error('Use --port to specify a different port, or stop existing sessions.');
+      } else {
+        console.error(`Failed to start daemon: ${msg}`);
+      }
+      process.exit(1);
+    }
+  }
+
+  if (!daemonStarted) {
+    console.error('Failed to start daemon after retrying available ports.');
+    process.exit(1);
+  }
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Write status.json so remi status/start can detect running daemon
+  // Write status so remi status/start can detect running daemon
   updateRemiStatus({ wsPort: PORT, sessionStatus: 'starting' });
 
   console.log('');

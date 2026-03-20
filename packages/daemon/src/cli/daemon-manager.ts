@@ -95,16 +95,52 @@ function resolveRemiCommand(): { command: string; baseArgs: string[] } {
 
 export interface StartOptions {
   /** Port for WebSocket server */
-  port?: number;
+  port?: number | undefined;
   /** Extra args to pass to the daemon */
-  extraArgs?: string[];
+  extraArgs?: string[] | undefined;
+}
+
+const DEFAULT_BASE_PORT = 18765;
+const DEFAULT_PORT_RANGE = 10;
+
+/** Check if a port is available by attempting to connect (if connection refused, port is free). */
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new (require('node:net').Socket)();
+    socket.setTimeout(500);
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve(false); // Something is listening, port in use
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(true); // Nothing responded, port likely free
+    });
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      socket.destroy();
+      // ECONNREFUSED = nothing listening = port free
+      // ECONNRESET = connection dropped = nothing stable listening
+      resolve(err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET');
+    });
+    socket.connect(port, '127.0.0.1');
+  });
+}
+
+/** Find an available port in the default range. */
+async function findFreePort(): Promise<number | null> {
+  for (let port = DEFAULT_BASE_PORT; port < DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE; port++) {
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+  return null;
 }
 
 /**
  * Start the remi daemon in the background.
  * Returns the PID of the spawned process.
  */
-export function startDaemon(opts?: StartOptions): number {
+export async function startDaemon(opts?: StartOptions): Promise<number> {
   ensureRemiDir();
   const existingPid = getRunningDaemonPid();
   if (existingPid) {
@@ -115,11 +151,22 @@ export function startDaemon(opts?: StartOptions): number {
     process.exit(1);
   }
 
-  const { command, baseArgs } = resolveRemiCommand();
-  const spawnArgs = [...baseArgs, '--daemon'];
-  if (opts?.port !== undefined) {
-    spawnArgs.push('--port', String(opts.port));
+  // Find a free port before spawning the daemon to avoid EADDRINUSE
+  let daemonPort = opts?.port;
+  if (!daemonPort) {
+    const freePort = await findFreePort();
+    if (!freePort) {
+      console.error(
+        `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+      );
+      console.error('Use --port to specify a different port, or stop an existing remi session.');
+      process.exit(1);
+    }
+    daemonPort = freePort;
   }
+
+  const { command, baseArgs } = resolveRemiCommand();
+  const spawnArgs = [...baseArgs, '--daemon', '--port', String(daemonPort)];
   if (opts?.extraArgs) {
     spawnArgs.push(...opts.extraArgs);
   }
@@ -127,9 +174,18 @@ export function startDaemon(opts?: StartOptions): number {
   const logFd = fs.openSync(LOG_FILE, 'a');
   fs.writeSync(logFd, `\n--- Daemon starting at ${new Date().toISOString()} ---\n`);
 
+  // Strip inherited REMI_PORT so the daemon auto-selects a free port
+  // (unless the user explicitly passed --port, which is in spawnArgs)
+  const childEnv = { ...process.env };
+  if (!opts?.port) {
+    // biome-ignore lint/performance/noDelete: must truly remove env var from child process
+    delete childEnv['REMI_PORT'];
+  }
+
   const child = spawn(command, spawnArgs, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
+    env: childEnv,
   });
 
   const pid = child.pid;
