@@ -1667,6 +1667,18 @@ const sharedEvents = {
         return;
       }
 
+      if (result.error === 'Session already has active connection') {
+        log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
+        sendToConnection(
+          connectionId,
+          createError(
+            'SESSION_BUSY',
+            `Session is already attached by another client. Wait for them to detach (Ctrl+B d) or use 'remi kill' to force disconnect.`,
+          ),
+        );
+        return;
+      }
+
       log(`Resume failed: ${result.error}, creating new session`);
       sendToConnection(
         connectionId,
@@ -1924,9 +1936,15 @@ const sharedEvents = {
       );
     }
 
+    const hadActiveClient =
+      session.activeConnectionId !== null && session.activeConnectionId !== connectionId;
     sessionRegistry.closeSession(sessionId, 'forced');
     sendToConnection(connectionId, createKillSessionResponse(true, requestId));
-    log(`Session killed: ${sessionName}`);
+    if (hadActiveClient) {
+      log(`Session killed: ${sessionName} (disconnected attached client)`);
+    } else {
+      log(`Session killed: ${sessionName}`);
+    }
   },
 
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => {
