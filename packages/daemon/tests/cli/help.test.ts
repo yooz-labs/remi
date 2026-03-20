@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { formatHelp } from '../../src/cli/help.ts';
+import { formatCommandHelp, formatHelp } from '../../src/cli/help.ts';
 
 describe('formatHelp', () => {
   const originalEnv = process.env['NO_COLOR'];
@@ -55,5 +55,87 @@ describe('formatHelp', () => {
     const output = formatHelp('0.0.0');
     expect(typeof output).toBe('string');
     expect(output.length).toBeGreaterThan(100);
+  });
+});
+
+describe('formatCommandHelp', () => {
+  test('ls help includes usage and options', () => {
+    const output = formatCommandHelp('ls');
+    expect(output).toContain('remi ls');
+    expect(output).toContain('--host');
+    expect(output).toContain('--network');
+  });
+
+  test('attach help includes detach hint', () => {
+    const output = formatCommandHelp('attach');
+    expect(output).toContain('Ctrl+B d');
+    expect(output).toContain('host:port/name');
+  });
+
+  test('kill help includes remote format', () => {
+    const output = formatCommandHelp('kill');
+    expect(output).toContain('host:port/name');
+    expect(output).toContain('--host');
+  });
+
+  test('new help includes all creation modes', () => {
+    const output = formatCommandHelp('new');
+    expect(output).toContain('--dir');
+    expect(output).toContain('--recent');
+    expect(output).toContain('--host');
+    expect(output).toContain('/path');
+  });
+
+  test('recent help includes remote option', () => {
+    const output = formatCommandHelp('recent');
+    expect(output).toContain('--host');
+  });
+
+  test('code help includes refresh', () => {
+    const output = formatCommandHelp('code');
+    expect(output).toContain('--refresh');
+  });
+
+  test('start help includes port and bind', () => {
+    const output = formatCommandHelp('start');
+    expect(output).toContain('--port');
+    expect(output).toContain('--bind');
+  });
+
+  test('keygen help includes force and passphrase', () => {
+    const output = formatCommandHelp('keygen');
+    expect(output).toContain('--force');
+    expect(output).toContain('--passphrase');
+  });
+
+  test('all subcommands have help entries', () => {
+    const commands = [
+      'ls',
+      'attach',
+      'kill',
+      'new',
+      'recent',
+      'code',
+      'start',
+      'stop',
+      'status',
+      'logs',
+      'keygen',
+      'authorize',
+      'keys',
+      'export-key',
+      'import-key',
+      'detach',
+    ];
+    for (const cmd of commands) {
+      const output = formatCommandHelp(cmd);
+      expect(output).toContain(`remi ${cmd}`);
+    }
+  });
+
+  test('unknown command returns fallback message', () => {
+    const output = formatCommandHelp('nonexistent');
+    expect(output).toContain('No help available');
+    expect(output).toContain('remi --help');
   });
 });
