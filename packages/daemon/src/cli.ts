@@ -803,7 +803,10 @@ if (cliSubcommand === 'attach') {
   let resolvedPort = resolved.port;
   let resolvedHost = resolved.host;
 
-  if (!targetSessionId && resolvedHost !== 'localhost') {
+  const hasExplicitRemoteTarget =
+    resolvedHost !== 'localhost' ||
+    (resolvedHost === 'localhost' && cliSubcommandArg?.includes(':'));
+  if (!targetSessionId && hasExplicitRemoteTarget) {
     // host:port without session ID (auto-attach to session on that port)
     try {
       const { fetchSessions } = await import('./cli/ls-client.ts');

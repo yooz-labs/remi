@@ -58,10 +58,12 @@ export function resolveTarget(input: ResolveTargetInput): ResolvedTarget {
   // Heuristic: if there's a slash, and the segment between the last colon
   // before the slash and the slash itself is all digits, it's a remote target.
   // Session names like "hostname:dir/branch" have non-numeric dir segments.
+  // Known limitation: a purely numeric directory name (e.g., "8765") would be
+  // misidentified as a port number.
   const firstSlash = subcommandArg.indexOf('/');
   const colonIdx = firstSlash > 0 ? subcommandArg.lastIndexOf(':', firstSlash - 1) : -1;
   const hasRemoteFormat =
-    colonIdx != null && colonIdx > 0 && /^\d+$/.test(subcommandArg.slice(colonIdx + 1, firstSlash));
+    colonIdx > 0 && /^\d+$/.test(subcommandArg.slice(colonIdx + 1, firstSlash));
 
   if (hasRemoteFormat) {
     const remote = parseRemoteTarget(subcommandArg, port);
