@@ -142,7 +142,18 @@ echo "== new /path tests =="
 run_test "new --host /tmp parsed as dir" \
   bash -c "remi_cli new /tmp --host $HOST --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0"
 
-# ---- Test Group 7: -- separator ----
+# ---- Test Group 7: SESSION_BUSY detection ----
+echo ""
+echo "== session busy tests =="
+# Create a session, keep it attached, try to attach from a second client
+run_test "session busy: create and hold session" \
+  bash -c "remi_cli new --host $HOST --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; \
+    SESSION=\$(remi_cli ls --host $HOST --port $D1_PORT 2>&1 | grep -v '^NAME\|^---' | awk '{print \$1}' | head -1); \
+    OUTPUT=\$(remi_cli attach \"\$SESSION\" --host $HOST --port $D1_PORT 2>&1); \
+    kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; \
+    echo \"\$OUTPUT\" | grep -q 'already attached'"
+
+# ---- Test Group 8: -- separator ----
 echo ""
 echo "== -- separator tests =="
 # Verify that -- stops remi flag parsing. --weird-flag should NOT cause a remi error.
