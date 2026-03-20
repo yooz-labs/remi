@@ -291,7 +291,7 @@ export interface NetworkLsOptions {
   readonly browseTimeoutMs?: number | undefined;
 }
 
-interface DaemonSessions {
+export interface DaemonSessions {
   readonly daemon: {
     readonly name: string;
     readonly host: string;
@@ -371,43 +371,54 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
 // Re-export from session-resolver for backward compatibility
 export { getLocalAddresses } from './session-resolver.ts';
 
-function renderNetworkSessionList(results: DaemonSessions[]): void {
+export function renderNetworkSessionList(results: DaemonSessions[]): void {
   if (results.length === 0) {
     console.log('No daemons found on the network.');
     console.log('Tip: run `remi ls` for local sessions, or ensure a remi daemon is running');
     return;
   }
 
-  // Group by machine hostname so multiple daemons on the same host share one table
+  // Group by machine hostname so multiple daemons on the same host share one table.
+  // When the same hostname is reachable via multiple IPs (e.g. LAN + VPN/Tailscale),
+  // merge those groups and deduplicate sessions by sessionId.
   const machineGroups = new Map<
     string,
     {
-      label: string;
-      host: string;
+      hosts: string[];
       entries: Array<{ daemon: DaemonSessions['daemon']; session: DiscoverableSession }>;
     }
   >();
 
   for (const { daemon, sessions } of results) {
     const hostname = daemon.hostname || daemon.host;
-    // Group by hostname+host to avoid merging different machines with the same hostname
-    const key = daemon.host === 'localhost' ? 'localhost' : `${hostname}@${daemon.host}`;
+    // Group by hostname alone so the same machine with multiple IPs is merged.
+    // Localhost stays separate to avoid merging local with network views.
+    const key = daemon.host === 'localhost' ? 'localhost' : hostname;
     let group = machineGroups.get(key);
     if (!group) {
-      const label = daemon.host === 'localhost' ? 'local' : `${hostname} (${daemon.host})`;
-      group = { label, host: daemon.host, entries: [] };
+      group = { hosts: [], entries: [] };
       machineGroups.set(key, group);
     }
+    // Track unique host IPs for this hostname
+    if (!group.hosts.includes(daemon.host)) {
+      group.hosts.push(daemon.host);
+    }
     for (const s of sessions) {
-      group.entries.push({ daemon, session: s });
+      // Deduplicate: skip if this sessionId is already in the group
+      const isDuplicate = group.entries.some((e) => e.session.sessionId === s.sessionId);
+      if (!isDuplicate) {
+        group.entries.push({ daemon, session: s });
+      }
     }
   }
 
   let totalSessions = 0;
   const machineCount = machineGroups.size;
 
-  for (const [, group] of machineGroups) {
-    console.log(`\n== ${group.label} ==`);
+  for (const [key, group] of machineGroups) {
+    // Build label: "local" for localhost, "hostname (ip1, ip2)" for remote
+    const label = key === 'localhost' ? 'local' : `${key} (${group.hosts.join(', ')})`;
+    console.log(`\n== ${label} ==`);
 
     totalSessions += group.entries.length;
 
@@ -433,7 +444,12 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 
   const daemonCount = results.length;
   if (machineCount === 1) {
-    const machineName = machineGroups.values().next().value?.label ?? 'unknown';
+    const firstGroup = machineGroups.entries().next().value;
+    const machineName = firstGroup
+      ? firstGroup[0] === 'localhost'
+        ? 'local'
+        : `${firstGroup[0]} (${firstGroup[1].hosts.join(', ')})`
+      : 'unknown';
     console.log(`\n${totalSessions} session(s) on ${machineName}`);
   } else {
     console.log(
@@ -441,17 +457,29 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
     );
   }
 
-  const attachable = results.flatMap((r) =>
-    r.sessions.filter((s) => s.canAttach).map((s) => ({ ...s, daemon: r.daemon })),
-  );
+  // Build attachable list from merged groups to avoid duplicates
+  const seenAttachable = new Set<string>();
+  const attachable: Array<{
+    name: string;
+    sessionId: string;
+    daemon: DaemonSessions['daemon'];
+  }> = [];
+  for (const group of machineGroups.values()) {
+    for (const { daemon, session: s } of group.entries) {
+      if (s.canAttach && !seenAttachable.has(s.sessionId)) {
+        seenAttachable.add(s.sessionId);
+        const name = s.name ?? s.sessionId.slice(0, 8);
+        attachable.push({ name, sessionId: s.sessionId, daemon });
+      }
+    }
+  }
   if (attachable.length > 0) {
     console.log('');
     for (const a of attachable) {
-      const name = a.name ?? a.sessionId.slice(0, 8);
       if (a.daemon.host === 'localhost') {
-        console.log(`  * ${name}: remi attach ${name}`);
+        console.log(`  * ${a.name}: remi attach ${a.name}`);
       } else {
-        console.log(`  * ${name}: remi attach ${a.daemon.host}:${a.daemon.port}/${name}`);
+        console.log(`  * ${a.name}: remi attach ${a.daemon.host}:${a.daemon.port}/${a.name}`);
       }
     }
   }

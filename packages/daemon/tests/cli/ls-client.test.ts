@@ -10,12 +10,14 @@ import {
   serialize,
 } from '@remi/shared';
 import {
+  type DaemonSessions,
   fetchSessions,
   formatAge,
   formatDuration,
   getLocalAddresses,
   parseHostPort,
   parseRemoteTarget,
+  renderNetworkSessionList,
   runLsClient,
 } from '../../src/cli/ls-client.ts';
 
@@ -441,5 +443,145 @@ describe('formatDuration', () => {
   test('formats exact days without hours', () => {
     const ts = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     expect(formatDuration(ts)).toBe('2d');
+  });
+});
+
+describe('renderNetworkSessionList', () => {
+  function makeDaemonSessions(
+    hostname: string,
+    host: string,
+    port: number,
+    sessions: DiscoverableSession[],
+  ): DaemonSessions {
+    return {
+      daemon: { name: hostname, host, port, hostname },
+      sessions,
+    };
+  }
+
+  test('deduplicates sessions from same hostname with different IPs', () => {
+    const sharedSessionId = 'shared-session-123';
+    const session = makeSession({
+      sessionId: sharedSessionId,
+      name: 'test-project',
+      status: 'active',
+    });
+
+    const results: DaemonSessions[] = [
+      makeDaemonSessions('yahyas-mcm', '192.168.0.83', 18765, [session]),
+      makeDaemonSessions('yahyas-mcm', '100.79.39.98', 18765, [session]),
+    ];
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(' '));
+    try {
+      renderNetworkSessionList(results);
+    } finally {
+      console.log = origLog;
+    }
+
+    // Should show only one group header with both IPs
+    const headers = lines.filter((l) => l.startsWith('\n=='));
+    expect(headers).toHaveLength(1);
+    expect(headers[0]).toContain('192.168.0.83');
+    expect(headers[0]).toContain('100.79.39.98');
+
+    // Session should appear only once (deduplicated by sessionId)
+    const sessionLines = lines.filter((l) => l.includes('test-project'));
+    expect(sessionLines).toHaveLength(1);
+
+    // Summary should show 1 session
+    const summary = lines.find((l) => l.includes('session(s) on'));
+    expect(summary).toContain('1 session(s)');
+  });
+
+  test('keeps sessions from different hostnames separate', () => {
+    const session1 = makeSession({ sessionId: 'sess-1', name: 'project-a' });
+    const session2 = makeSession({ sessionId: 'sess-2', name: 'project-b' });
+
+    const results: DaemonSessions[] = [
+      makeDaemonSessions('machine-a', '192.168.0.1', 18765, [session1]),
+      makeDaemonSessions('machine-b', '192.168.0.2', 18765, [session2]),
+    ];
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(' '));
+    try {
+      renderNetworkSessionList(results);
+    } finally {
+      console.log = origLog;
+    }
+
+    // Should have two group headers
+    const headers = lines.filter((l) => l.startsWith('\n=='));
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toContain('machine-a');
+    expect(headers[1]).toContain('machine-b');
+  });
+
+  test('merges multiple IPs for same hostname and deduplicates attach hints', () => {
+    const session = makeSession({
+      sessionId: 'attachable-sess',
+      name: 'my-project',
+      canAttach: true,
+    });
+
+    const results: DaemonSessions[] = [
+      makeDaemonSessions('my-host', '10.0.0.1', 18765, [session]),
+      makeDaemonSessions('my-host', '100.1.2.3', 18765, [session]),
+    ];
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(' '));
+    try {
+      renderNetworkSessionList(results);
+    } finally {
+      console.log = origLog;
+    }
+
+    // Attach hint should appear only once
+    const attachHints = lines.filter((l) => l.includes('remi attach'));
+    expect(attachHints).toHaveLength(1);
+  });
+
+  test('localhost group stays separate from network groups', () => {
+    const localSession = makeSession({ sessionId: 'local-1', name: 'local-proj' });
+    const remoteSession = makeSession({ sessionId: 'remote-1', name: 'remote-proj' });
+
+    const results: DaemonSessions[] = [
+      makeDaemonSessions('my-host', 'localhost', 18765, [localSession]),
+      makeDaemonSessions('my-host', '192.168.0.5', 18765, [remoteSession]),
+    ];
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(' '));
+    try {
+      renderNetworkSessionList(results);
+    } finally {
+      console.log = origLog;
+    }
+
+    // Should have two groups: local and remote
+    const headers = lines.filter((l) => l.startsWith('\n=='));
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toContain('local');
+    expect(headers[1]).toContain('my-host');
+  });
+
+  test('shows empty state when no results', () => {
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(' '));
+    try {
+      renderNetworkSessionList([]);
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(lines[0]).toContain('No daemons found');
   });
 });
