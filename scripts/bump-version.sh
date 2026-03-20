@@ -5,8 +5,10 @@
 #   ./scripts/bump-version.sh patch          # 0.2.3 -> 0.2.4
 #   ./scripts/bump-version.sh minor          # 0.2.3 -> 0.3.0
 #   ./scripts/bump-version.sh major          # 0.2.3 -> 1.0.0
+#   ./scripts/bump-version.sh dev            # 0.2.3 -> 0.2.4-dev.1 (or -dev.N+1)
 #   ./scripts/bump-version.sh set 1.0.0      # Set specific version
 #   ./scripts/bump-version.sh --push patch   # Bump and push (triggers release)
+#   ./scripts/bump-version.sh --push dev     # Bump dev and push (triggers dev release)
 
 set -euo pipefail
 
@@ -30,7 +32,7 @@ done
 
 BUMP_TYPE="${1:-}"
 if [[ -z "$BUMP_TYPE" ]]; then
-  echo "Usage: $0 [--push] <patch|minor|major|set <version>>" >&2
+  echo "Usage: $0 [--push] <patch|minor|major|dev|set <version>>" >&2
   exit 1
 fi
 
@@ -38,21 +40,40 @@ fi
 CURRENT_VERSION=$(node -e "process.stdout.write(require('$PKG_JSON').version)")
 echo "Current: v$CURRENT_VERSION"
 
-# Parse version components
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+# Extract base version and any prerelease suffix
+BASE_VERSION="${CURRENT_VERSION%%-*}"
+PRERELEASE="${CURRENT_VERSION#"$BASE_VERSION"}"
+
+# Parse base version components
+IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
 case "$BUMP_TYPE" in
   major)
     MAJOR=$((MAJOR + 1))
     MINOR=0
     PATCH=0
+    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
     ;;
   minor)
     MINOR=$((MINOR + 1))
     PATCH=0
+    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
     ;;
   patch)
     PATCH=$((PATCH + 1))
+    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    ;;
+  dev)
+    if [[ "$PRERELEASE" =~ ^-dev\.([0-9]+)$ ]]; then
+      # Already a dev version; increment dev number
+      DEV_NUM="${BASH_REMATCH[1]}"
+      DEV_NUM=$((DEV_NUM + 1))
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.$DEV_NUM"
+    else
+      # Stable version; bump patch and start dev.1
+      PATCH=$((PATCH + 1))
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
+    fi
     ;;
   set)
     NEW_VER="${2:-}"
@@ -65,15 +86,13 @@ case "$BUMP_TYPE" in
       echo "Error: version must be semver (e.g. 1.0.0), got: $NEW_VER" >&2
       exit 1
     fi
-    IFS='.' read -r MAJOR MINOR PATCH <<< "$NEW_VER"
+    NEW_VERSION="$NEW_VER"
     ;;
   *)
-    echo "Usage: $0 [--push] <patch|minor|major|set <version>>" >&2
+    echo "Usage: $0 [--push] <patch|minor|major|dev|set <version>>" >&2
     exit 1
     ;;
 esac
-
-NEW_VERSION="$MAJOR.$MINOR.$PATCH"
 
 if [[ "$NEW_VERSION" == "$CURRENT_VERSION" ]]; then
   echo "Version is already $CURRENT_VERSION, nothing to do." >&2
@@ -101,10 +120,11 @@ if [[ -f "$CLI_TS" ]]; then
     exit 1
   fi
   # Portable sed in-place: macOS uses -i '', GNU uses -i without arg
+  # Pattern matches stable (0.4.3) and prerelease (0.4.4-dev.1) versions
   if [[ "$(uname)" == "Darwin" ]]; then
-    sed -i '' "s/return '[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
+    sed -i '' "s/return '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*[^']*'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
   else
-    sed -i "s/return '[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
+    sed -i "s/return '[0-9]\+\.[0-9]\+\.[0-9]\+[^']*'; \/\/ REMI_COMPILED_VERSION/return '$NEW_VERSION'; \/\/ REMI_COMPILED_VERSION/" "$CLI_TS"
   fi
   if ! grep -q "return '$NEW_VERSION'; // REMI_COMPILED_VERSION" "$CLI_TS"; then
     echo "Error: sed substitution failed; cli.ts version not updated." >&2
