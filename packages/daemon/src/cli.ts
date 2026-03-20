@@ -325,7 +325,7 @@ function resolveDirectory(
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
 import { parseArgs } from './cli/arg-parser.ts';
-import { formatHelp } from './cli/help.ts';
+import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
 
@@ -338,7 +338,11 @@ if (parsedArgs.showVersion) {
   process.exit(0);
 }
 if (parsedArgs.showHelp) {
-  console.log(formatHelp(REMI_VERSION));
+  if (parsedArgs.subcommand) {
+    console.log(formatCommandHelp(parsedArgs.subcommand));
+  } else {
+    console.log(formatHelp(REMI_VERSION));
+  }
   process.exit(0);
 }
 
