@@ -2188,11 +2188,14 @@ if (cliDaemonMode) {
           console.log(`Port ${PORT} in use, trying ${nextPort}...`);
           try {
             await registry.unregister('websocket');
-          } catch {
-            // Adapter may not have started
+          } catch (teardownErr) {
+            const teardownMsg =
+              teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+            console.error(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
           }
           PORT = nextPort;
           STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+          HOOK_PORT = PORT + 100;
           const retryWsAdapter = new WebSocketAdapter(
             { port: PORT, host: bindHost, authenticator },
             sharedEvents,

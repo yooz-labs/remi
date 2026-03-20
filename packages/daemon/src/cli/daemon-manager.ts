@@ -118,7 +118,9 @@ function isPortAvailable(port: number): Promise<boolean> {
     });
     socket.on('error', (err: NodeJS.ErrnoException) => {
       socket.destroy();
-      resolve(err.code === 'ECONNREFUSED'); // Refused = nothing listening = free
+      // ECONNREFUSED = nothing listening = port free
+      // ECONNRESET = connection dropped = nothing stable listening
+      resolve(err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET');
     });
     socket.connect(port, '127.0.0.1');
   });
@@ -176,7 +178,8 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
   // (unless the user explicitly passed --port, which is in spawnArgs)
   const childEnv = { ...process.env };
   if (!opts?.port) {
-    childEnv['REMI_PORT'] = undefined;
+    // biome-ignore lint/performance/noDelete: must truly remove env var from child process
+    delete childEnv['REMI_PORT'];
   }
 
   const child = spawn(command, spawnArgs, {
