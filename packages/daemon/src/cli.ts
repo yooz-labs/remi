@@ -1644,6 +1644,22 @@ const sharedEvents = {
       return;
     }
 
+    // Check if resume target exists but is busy (another client attached)
+    if (resumeSessionId) {
+      const resumeTarget = sessionRegistry.getSession(resumeSessionId);
+      if (resumeTarget && resumeTarget.activeConnectionId !== null) {
+        log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
+        sendToConnection(
+          connectionId,
+          createError(
+            'SESSION_BUSY',
+            "Session is already attached by another client. Wait for them to detach (Ctrl+B d) or use 'remi kill' to force disconnect.",
+          ),
+        );
+        return;
+      }
+    }
+
     if (resumeSessionId && sessionRegistry.canResume(resumeSessionId)) {
       log(`Resuming session ${resumeSessionId}...`);
       const result = sessionRegistry.attachConnection(resumeSessionId, connectionId);
@@ -1667,18 +1683,6 @@ const sharedEvents = {
 
         log(
           `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
-        );
-        return;
-      }
-
-      if (result.error === 'Session already has active connection') {
-        log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
-        sendToConnection(
-          connectionId,
-          createError(
-            'SESSION_BUSY',
-            `Session is already attached by another client. Wait for them to detach (Ctrl+B d) or use 'remi kill' to force disconnect.`,
-          ),
         );
         return;
       }
