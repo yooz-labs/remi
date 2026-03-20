@@ -41,7 +41,7 @@ describe('formatHelp', () => {
 
   test('includes footer hint', () => {
     const output = formatHelp('0.0.0');
-    expect(output).toContain('remi <command> --help');
+    expect(output).toContain('passed through to Claude Code');
   });
 
   test('contains no ANSI escapes when NO_COLOR is set', () => {

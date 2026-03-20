@@ -51,6 +51,7 @@ export function formatHelp(version: string): string {
     entry('remi attach host:port/name', 'Attach to remote session'),
     entry('remi kill host:port/name', 'Kill a remote session'),
     entry('remi code', 'Show connection code for phone/browser'),
+    entry('remi code --refresh', 'Generate a new connection code'),
     '',
     bold('Session Management:'),
     entry('remi new --dir <path>', 'Start session in directory'),
@@ -58,6 +59,7 @@ export function formatHelp(version: string): string {
     entry('remi new --recent', 'Pick from recent directories'),
     entry('remi recent', 'Browse recent project directories'),
     entry('remi kill <name>', 'Kill a session'),
+    entry('remi detach [name]', 'Detach from session'),
     entry('remi --resume [id]', 'Resume a previous session'),
     entry('remi --sessions', 'List stored sessions'),
     '',
@@ -85,7 +87,11 @@ export function formatHelp(version: string): string {
     entry('--no-relay', 'Disable relay'),
     entry('--permanent-code', 'Persistent connection code'),
     '',
-    dim("Run 'remi <command> --help' for more details."),
+    entry('--version, -v', 'Show version'),
+    entry('--help, -h', 'Show this help'),
+    '',
+    dim('  Pass -- to separate remi flags from Claude Code arguments.'),
+    dim('  Unrecognized flags are passed through to Claude Code.'),
     '',
   ];
 
