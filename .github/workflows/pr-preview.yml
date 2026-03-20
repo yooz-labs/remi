@@ -1,0 +1,102 @@
+name: PR Preview
+
+# Builds platform binaries for each PR push and posts a comment with
+# download links. Does NOT publish to npm (OIDC trust is scoped to
+# the release workflow). Use `bump-version.sh --push dev` on develop
+# for npm @dev releases.
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: bun-darwin-arm64
+            artifact: remi-darwin-arm64
+            os: macos-latest
+          - target: bun-linux-x64
+            artifact: remi-linux-x64
+            os: ubuntu-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binary
+        run: bun build --compile --target=${{ matrix.target }} --outfile=dist/${{ matrix.artifact }} packages/daemon/src/cli.ts
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 7
+
+  comment:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          SHORT_SHA="${HEAD_SHA:0:7}"
+          MARKER="<!-- remi-pr-preview -->"
+          ARTIFACTS_URL="https://github.com/${REPO}/actions/runs/${RUN_ID}"
+
+          COMMENT_BODY="${MARKER}
+          ## Build Preview
+
+          Binaries for this PR are ready to test. **Commit:** \`${SHORT_SHA}\`
+
+          **Install (macOS Apple Silicon):**
+          \`\`\`bash
+          cd /tmp && curl -L \"${ARTIFACTS_URL}\" -o remi-preview.zip
+          # Or: go to the link below, download remi-darwin-arm64, then:
+          unzip remi-darwin-arm64.zip && chmod +x remi-darwin-arm64
+          sudo cp remi-darwin-arm64 /usr/local/bin/remi
+          \`\`\`
+
+          **Download artifacts:** [Actions run #${RUN_ID}](${ARTIFACTS_URL}) (scroll to Artifacts section)
+
+          | Platform | Artifact |
+          |----------|----------|
+          | macOS (Apple Silicon) | remi-darwin-arm64 |
+          | Linux (x64) | remi-linux-x64 |
+
+          ---
+          <sub>Updated on each push. Artifacts expire after 7 days.</sub>"
+
+          # Find existing comment with our marker
+          COMMENT_ID=$(gh api "/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api --method PATCH "/repos/${REPO}/issues/comments/${COMMENT_ID}" \
+              -f body="$COMMENT_BODY"
+            echo "Updated existing PR comment (ID: $COMMENT_ID)"
+          else
+            gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY"
+            echo "Created new PR comment"
+          fi
