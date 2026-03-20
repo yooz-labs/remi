@@ -111,16 +111,16 @@ feature/*   Short-lived branches off develop
 **Always use the bump-version script for releases.** Never manually edit version numbers.
 
 ```bash
-# Bump on develop (pre-release testing)
+# Dev release on develop (publishes to npm with @dev tag, GitHub prerelease)
 git checkout develop
-./scripts/bump-version.sh minor
-git push origin develop && git push origin v0.4.0
+./scripts/bump-version.sh --push dev     # 0.4.3 -> 0.4.4-dev.1
+./scripts/bump-version.sh --push dev     # 0.4.4-dev.1 -> 0.4.4-dev.2
 
 # Promote to main when stable
 git checkout main && git merge develop && git push origin main
 
-# Bump and release (triggers CI: build, npm publish, GitHub release, Homebrew update)
-./scripts/bump-version.sh --push patch   # 0.3.9 -> 0.3.10
+# Stable release (triggers CI: build, npm publish @latest, GitHub release, Homebrew update)
+./scripts/bump-version.sh --push patch   # 0.4.4-dev.2 -> 0.4.4
 ./scripts/bump-version.sh --push minor   # 0.3.9 -> 0.4.0
 ./scripts/bump-version.sh --push major   # 0.3.9 -> 1.0.0
 ./scripts/bump-version.sh --push set 1.0.0  # Explicit version
