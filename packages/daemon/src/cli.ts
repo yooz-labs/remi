@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.7'; // REMI_COMPILED_VERSION
+      return '0.4.8'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.7'; // REMI_COMPILED_VERSION
+    return '0.4.8'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -382,6 +382,12 @@ if (parsedArgs.error) {
 }
 if (parsedArgs.showVersion) {
   console.log(`remi ${REMI_VERSION}`);
+  // Show binary location to help diagnose PATH conflicts (e.g., old binary shadowing new install).
+  // In compiled binaries, argv[0] is the binary itself. When running from source via
+  // `bun packages/daemon/src/cli.ts`, argv[0] is the bun runtime and argv[1] is the script.
+  const binaryPath =
+    typeof Bun !== 'undefined' ? Bun.argv[0] : (process.argv[1] ?? process.argv[0]);
+  console.log(`binary: ${binaryPath}`);
   process.exit(0);
 }
 if (parsedArgs.showHelp) {

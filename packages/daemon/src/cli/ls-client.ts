@@ -8,7 +8,11 @@ import {
   serialize,
 } from '@remi/shared';
 import type { DiscoverableSession, ProtocolMessage, Timestamp } from '@remi/shared';
-import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+import {
+  DEFAULT_BASE_PORT,
+  DEFAULT_PORT_RANGE,
+  type SessionRegistryFile,
+} from '../session/session-registry-file.ts';
 import { performAuthHandshake } from './auth-helper.ts';
 import {
   FETCH_SESSIONS_TIMEOUT_MS,
@@ -20,6 +24,11 @@ import {
 /** Return the terminal width, defaulting to 100 when stdout is not a TTY (e.g. piped). */
 function getTerminalWidth(): number {
   return process.stdout.columns ?? 100;
+}
+
+/** Generate the default port range array (18765-18774). */
+function getDefaultPortRange(): number[] {
+  return Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
 }
 
 /** Minimum name column width to keep output readable even on very narrow terminals. */
@@ -308,8 +317,11 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     browseTimeoutMs: mdnsTimeout = MDNS_BROWSE_TIMEOUT_MS,
   } = opts;
 
-  // Query all local daemons (multi-port support)
-  const allLocalPorts = [...new Set([localPort, ...(opts.localPorts ?? [])])];
+  // Query all local daemons. If the registry has no live entries, include the default
+  // port range so daemons are discoverable even when live-sessions files were cleaned up.
+  const registryPorts = opts.localPorts ?? [];
+  const extraPorts = registryPorts.length === 0 ? getDefaultPortRange() : [];
+  const allLocalPorts = [...new Set([localPort, ...registryPorts, ...extraPorts])];
   const localResults = await queryMultiplePorts({
     host: 'localhost',
     ports: allLocalPorts,
@@ -561,13 +573,33 @@ export interface MultiPortLsOptions {
 /**
  * Discover all local remi sessions by reading the live sessions registry
  * and querying each unique port.
+ *
+ * If the registry has no live entries (e.g. stale files were cleaned up),
+ * falls back to probing the default port range on localhost so that
+ * running daemons are still discoverable.
  */
 export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
   const { registry, timeout = FETCH_SESSIONS_TIMEOUT_MS } = opts;
 
   const ports = registry.getLivePorts();
 
+  // Fallback: probe the default port range when the registry is empty.
+  // This handles cases where live-sessions files were cleaned up (PID died,
+  // SIGHUP timeout expired) but a daemon is still reachable on a default port.
   if (ports.length === 0) {
+    console.error('No live session files found, probing default ports...');
+    const fallbackPorts = getDefaultPortRange();
+    const fallbackResults = await queryMultiplePorts({
+      host: 'localhost',
+      ports: fallbackPorts,
+      timeoutMs: timeout,
+      logLabel: 'ls',
+    });
+    const fallbackSessions = fallbackResults.flatMap((r) => r.sessions);
+    if (fallbackSessions.length > 0) {
+      renderSessionList(fallbackSessions);
+      return;
+    }
     console.log('No active sessions. Start one with: remi [claude-args...]');
     return;
   }
