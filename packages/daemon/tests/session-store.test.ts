@@ -16,6 +16,7 @@ function makeSession(overrides: Partial<StoredSession> = {}): StoredSession {
     claudeSessionId: null,
     projectPath: '/tmp/project',
     port: 18765,
+    pid: process.pid,
     startedAt: new Date().toISOString(),
     exitedAt: null,
     exitCode: null,
@@ -146,11 +147,13 @@ describe('SessionStore', () => {
   test('trims oldest exited sessions when over limit', () => {
     // Create a store that uses the default MAX_SESSIONS (100)
     // We test with a smaller set by filling 101 sessions
+    // Use recent dates so purgeStale doesn't remove them as old
+    const now = Date.now();
     const sessions: StoredSession[] = [];
     for (let i = 0; i < 101; i++) {
       const s = makeSession({
-        startedAt: new Date(2025, 0, 1 + i).toISOString(),
-        exitedAt: i < 50 ? new Date(2025, 0, 2 + i).toISOString() : null,
+        startedAt: new Date(now - (101 - i) * 60_000).toISOString(),
+        exitedAt: i < 50 ? new Date(now - (100 - i) * 60_000).toISOString() : null,
         exitCode: i < 50 ? 0 : null,
       });
       sessions.push(s);
@@ -160,5 +163,83 @@ describe('SessionStore', () => {
     }
     const result = store.list();
     expect(result.length).toBe(100);
+  });
+
+  test('purgeStale marks sessions with dead PIDs as exited', () => {
+    // PID 999999 is almost certainly not running
+    const stale = makeSession({ pid: 999999 });
+    store.save(stale);
+    const changed = store.purgeStale();
+    expect(changed).toBe(true);
+    const found = store.findByRemiSessionId(stale.remiSessionId);
+    expect(found?.exitedAt).not.toBeNull();
+    expect(found?.exitCode).toBeNull();
+  });
+
+  test('purgeStale marks sessions with null PID (legacy) as exited', () => {
+    const legacy = makeSession({ pid: null });
+    store.save(legacy);
+    const changed = store.purgeStale();
+    expect(changed).toBe(true);
+    const found = store.findByRemiSessionId(legacy.remiSessionId);
+    expect(found?.exitedAt).not.toBeNull();
+  });
+
+  test('purgeStale does not touch sessions with alive PIDs', () => {
+    // process.pid is always alive
+    const alive = makeSession({ pid: process.pid });
+    store.save(alive);
+    const changed = store.purgeStale();
+    expect(changed).toBe(false);
+    const found = store.findByRemiSessionId(alive.remiSessionId);
+    expect(found?.exitedAt).toBeNull();
+  });
+
+  test('purgeStale does not touch already-exited sessions', () => {
+    const exited = makeSession({
+      pid: 999999,
+      exitedAt: new Date().toISOString(),
+      exitCode: 0,
+    });
+    store.save(exited);
+    const changed = store.purgeStale();
+    expect(changed).toBe(false);
+  });
+
+  test('purgeStale removes exited sessions older than 7 days', () => {
+    const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const old = makeSession({
+      exitedAt: oldDate,
+      exitCode: 0,
+    });
+    store.save(old);
+    const changed = store.purgeStale();
+    expect(changed).toBe(true);
+    expect(store.findByRemiSessionId(old.remiSessionId)).toBeNull();
+  });
+
+  test('purgeStale keeps recent exited sessions', () => {
+    const recent = makeSession({
+      exitedAt: new Date().toISOString(),
+      exitCode: 0,
+    });
+    store.save(recent);
+    const changed = store.purgeStale();
+    expect(changed).toBe(false);
+    expect(store.findByRemiSessionId(recent.remiSessionId)).not.toBeNull();
+  });
+
+  test('list auto-purges stale sessions', () => {
+    const stale = makeSession({ pid: 999999 });
+    const alive = makeSession({ pid: process.pid });
+    store.save(stale);
+    store.save(alive);
+    const sessions = store.list();
+    // Both still in list, but stale one is now marked exited
+    expect(sessions).toHaveLength(2);
+    const staleSession = sessions.find((s) => s.remiSessionId === stale.remiSessionId);
+    const aliveSession = sessions.find((s) => s.remiSessionId === alive.remiSessionId);
+    expect(staleSession?.exitedAt).not.toBeNull();
+    expect(aliveSession?.exitedAt).toBeNull();
   });
 });

@@ -3,6 +3,9 @@
  *
  * Stores session records at ~/.remi/sessions.json so that
  * `remi --resume` can look up Claude session IDs across process restarts.
+ *
+ * Sessions track the remi wrapper PID so that stale "running" entries
+ * (from crashed/killed processes) can be detected and auto-cleaned.
  */
 
 import * as fs from 'node:fs';
@@ -15,6 +18,7 @@ export interface StoredSession {
   claudeSessionId: string | null;
   projectPath: string;
   port: number;
+  pid: number | null;
   startedAt: string;
   exitedAt: string | null;
   exitCode: number | null;
@@ -28,6 +32,7 @@ interface SessionsFile {
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const SESSIONS_FILE = path.join(REMI_DIR, 'sessions.json');
 const MAX_SESSIONS = 100;
+const STALE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export class SessionStore {
   private filePath: string;
@@ -86,8 +91,43 @@ export class SessionStore {
     this.write(sessions);
   }
 
-  /** List all stored sessions, most recent first. */
+  /**
+   * Purge stale sessions: mark dead "running" sessions as exited,
+   * and remove exited sessions older than STALE_AGE_MS.
+   * Returns true if any changes were written.
+   */
+  purgeStale(): boolean {
+    const sessions = this.read();
+    let changed = false;
+    const now = Date.now();
+
+    for (const s of sessions) {
+      if (s.exitedAt !== null) continue;
+      // No PID stored (legacy entry) or PID is dead: mark as exited
+      if (s.pid === null || s.pid === undefined || !isProcessAlive(s.pid)) {
+        s.exitedAt = new Date().toISOString();
+        s.exitCode = null;
+        changed = true;
+      }
+    }
+
+    // Remove exited sessions older than 7 days
+    const before = sessions.length;
+    const kept = sessions.filter((s) => {
+      if (s.exitedAt === null) return true;
+      const exitedAge = now - new Date(s.exitedAt).getTime();
+      return exitedAge < STALE_AGE_MS;
+    });
+
+    if (kept.length !== before) changed = true;
+
+    if (changed) this.write(kept);
+    return changed;
+  }
+
+  /** List all stored sessions, most recent first. Purges stale entries first. */
   list(): StoredSession[] {
+    this.purgeStale();
     return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
   }
 
@@ -128,5 +168,19 @@ export class SessionStore {
       session.claudeSessionId = claudeSessionId;
       this.write(sessions);
     }
+  }
+}
+
+/**
+ * Check if a process is alive by sending signal 0.
+ * EPERM means the process exists but is owned by a different user.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
+    return false;
   }
 }

@@ -1472,6 +1472,7 @@ async function createNewSession(
     claudeSessionId: null,
     projectPath: workingDirectory,
     port: PORT,
+    pid: process.pid,
     startedAt: new Date().toISOString(),
     exitedAt: null,
     exitCode: null,
