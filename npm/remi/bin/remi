@@ -23,10 +23,39 @@ if (!pkg) {
   process.exit(1);
 }
 
+/**
+ * Auto-upgrade the platform binary when the wrapper version doesn't match.
+ * This handles package managers (e.g. bun --force) that upgrade the main
+ * package but skip optionalDependencies.
+ */
+function autoUpgradePlatformBinary(wrapperVersion) {
+  console.error(`[remi] Binary outdated, upgrading ${pkg} to ${wrapperVersion}...`);
+
+  // Try npm first (most reliable for global installs), then bun
+  const managers = [
+    { cmd: "npm", args: ["install", "-g", `${pkg}@${wrapperVersion}`] },
+    { cmd: "bun", args: ["install", "-g", `${pkg}@${wrapperVersion}`] },
+  ];
+
+  for (const { cmd, args } of managers) {
+    try {
+      const r = spawnSync(cmd, args, { stdio: "pipe", timeout: 30000 });
+      if (r.status === 0) {
+        console.error(`[remi] Upgraded ${pkg} to ${wrapperVersion} via ${cmd}`);
+        return true;
+      }
+    } catch (_) {
+      // Try next manager
+    }
+  }
+  return false;
+}
+
 let binPath;
+let platPkgDir;
 try {
-  const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
-  binPath = path.join(pkgDir, "bin", "remi");
+  platPkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
+  binPath = path.join(platPkgDir, "bin", "remi");
 } catch (err) {
   if (err.code === "MODULE_NOT_FOUND") {
     console.error(`Platform package ${pkg} is not installed.`);
@@ -41,6 +70,34 @@ if (!fs.existsSync(binPath)) {
   console.error(`Remi binary not found at: ${binPath}`);
   console.error("Try reinstalling: npm install -g @yooz-labs/remi");
   process.exit(1);
+}
+
+// Check if the platform binary version matches the wrapper package version.
+// If mismatched, attempt an automatic upgrade before falling through to the
+// (possibly stale) binary so the user isn't stuck.
+try {
+  const wrapperPkg = require(path.resolve(__dirname, "..", "package.json"));
+  const platPkg = require(path.join(platPkgDir, "package.json"));
+  if (wrapperPkg.version && platPkg.version && wrapperPkg.version !== platPkg.version) {
+    if (autoUpgradePlatformBinary(wrapperPkg.version)) {
+      // Re-resolve after upgrade
+      try {
+        delete require.cache[require.resolve(`${pkg}/package.json`)];
+        platPkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
+        binPath = path.join(platPkgDir, "bin", "remi");
+      } catch (_) {
+        // Fall through to original binPath
+      }
+    } else {
+      console.error(
+        `[remi] Version mismatch: wrapper is ${wrapperPkg.version} but binary is ${platPkg.version}.`
+      );
+      console.error(`[remi] Auto-upgrade failed. Fix manually:`);
+      console.error(`[remi]   npm install -g @yooz-labs/remi@${wrapperPkg.version}`);
+    }
+  }
+} catch (_) {
+  // Non-fatal; skip version check if package.json is unreadable
 }
 
 const result = spawnSync(binPath, process.argv.slice(2), {

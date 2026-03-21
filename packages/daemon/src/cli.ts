@@ -345,6 +345,8 @@ if (parsedArgs.error) {
 }
 if (parsedArgs.showVersion) {
   console.log(`remi ${REMI_VERSION}`);
+  // Show binary location to help diagnose PATH conflicts (e.g., old binary shadowing new install)
+  console.log(`binary: ${process.argv[0]}`);
   process.exit(0);
 }
 if (parsedArgs.showHelp) {
