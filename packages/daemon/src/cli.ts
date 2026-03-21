@@ -1458,7 +1458,10 @@ async function createNewSession(
         if (passThrough) {
           cleanup()
             .then(() => process.exit(code ?? 0))
-            .catch(() => process.exit(1));
+            .catch((err) => {
+              logError(`[PTY] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+              process.exit(1);
+            });
         }
       },
       onError: (error: Error) => {
@@ -2594,7 +2597,10 @@ if (cliDaemonMode) {
       log('Ctrl+B d pressed, shutting down');
       cleanup()
         .then(() => process.exit(0))
-        .catch(() => process.exit(1));
+        .catch((err) => {
+          logError(`[Detach] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        });
     }
   }
 
@@ -2623,10 +2629,14 @@ if (cliDaemonMode) {
       try {
         ptySession.signal('SIGTERM');
       } catch {
-        // ignore
+        // PTY may have exited
       }
     }
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (err) {
+      logError(`[SIGTERM] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     process.exit(0);
   });
 }
