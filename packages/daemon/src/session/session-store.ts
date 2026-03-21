@@ -66,8 +66,12 @@ export class SessionStore {
         s.pid ??= null;
       }
       return data.sessions;
-    } catch {
-      // JSON parse failure: corrupt file, treat as empty
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) {
+        console.warn(
+          `[sessions] Unexpected error reading sessions: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       return [];
     }
   }
@@ -132,8 +136,9 @@ export class SessionStore {
     const before = sessions.length;
     const kept = sessions.filter((s) => {
       if (s.exitedAt === null) return true;
-      const exitedAge = now - new Date(s.exitedAt).getTime();
-      return exitedAge < STALE_AGE_MS;
+      const exitedTime = new Date(s.exitedAt).getTime();
+      if (Number.isNaN(exitedTime)) return true; // keep entries with invalid dates
+      return now - exitedTime < STALE_AGE_MS;
     });
 
     if (kept.length !== before) changed = true;
@@ -152,9 +157,15 @@ export class SessionStore {
     try {
       const { sessions } = this.doPurge();
       return sessions.sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
-    } catch {
-      // Purge failed (I/O error); fall back to raw read
-      return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    } catch (purgeErr) {
+      console.warn(
+        `[sessions] Purge failed: ${purgeErr instanceof Error ? purgeErr.message : String(purgeErr)}`,
+      );
+      try {
+        return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+      } catch {
+        return [];
+      }
     }
   }
 
