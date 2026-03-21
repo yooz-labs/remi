@@ -56,6 +56,10 @@ export class SessionStore {
       const raw = fs.readFileSync(this.filePath, 'utf-8');
       const data = JSON.parse(raw) as SessionsFile;
       if (data.version !== 1 || !Array.isArray(data.sessions)) return [];
+      // Normalize legacy entries that lack the pid field
+      for (const s of data.sessions) {
+        s.pid ??= null;
+      }
       return data.sessions;
     } catch {
       return [];
@@ -94,9 +98,14 @@ export class SessionStore {
   /**
    * Purge stale sessions: mark dead "running" sessions as exited,
    * and remove exited sessions older than STALE_AGE_MS.
-   * Returns true if any changes were written.
+   * Returns whether changes were written and the (possibly updated) session list.
+   *
+   * Note: PID recycling could cause a false "alive" result for a stale session
+   * whose PID was reused by an unrelated process. This is acceptable because
+   * the 7-day age pruning will eventually clean it, and PID collisions for
+   * short-lived CLI processes are rare in practice.
    */
-  purgeStale(): boolean {
+  private doPurge(): { changed: boolean; sessions: StoredSession[] } {
     const sessions = this.read();
     let changed = false;
     const now = Date.now();
@@ -104,7 +113,7 @@ export class SessionStore {
     for (const s of sessions) {
       if (s.exitedAt !== null) continue;
       // No PID stored (legacy entry) or PID is dead: mark as exited
-      if (s.pid === null || s.pid === undefined || !isProcessAlive(s.pid)) {
+      if (s.pid === null || !isProcessAlive(s.pid)) {
         s.exitedAt = new Date().toISOString();
         s.exitCode = null;
         changed = true;
@@ -122,13 +131,18 @@ export class SessionStore {
     if (kept.length !== before) changed = true;
 
     if (changed) this.write(kept);
-    return changed;
+    return { changed, sessions: kept };
+  }
+
+  /** Purge stale sessions. Returns true if any changes were written. */
+  purgeStale(): boolean {
+    return this.doPurge().changed;
   }
 
   /** List all stored sessions, most recent first. Purges stale entries first. */
   list(): StoredSession[] {
-    this.purgeStale();
-    return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    const { sessions } = this.doPurge();
+    return sessions.sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
   }
 
   /** Find a session by its Claude session ID. */
