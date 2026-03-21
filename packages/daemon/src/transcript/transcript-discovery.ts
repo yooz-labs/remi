@@ -250,6 +250,7 @@ export class TranscriptDiscovery {
       lastMessage: tailInfo.lastMessage,
       source: 'transcript',
       canAttach: false, // External sessions can't be attached to via daemon
+      canResume: status !== 'active', // Only offer resume for idle/completed sessions, not actively running ones
     };
   }
 

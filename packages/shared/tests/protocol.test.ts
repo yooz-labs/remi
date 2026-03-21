@@ -17,6 +17,8 @@ import {
   createPong,
   createQuestion,
   createReplayBatch,
+  createResumeSessionRequest,
+  createResumeSessionResponse,
   createSessionHistoryRequest,
   createSessionHistoryResponse,
   createSessionListRequest,
@@ -654,6 +656,7 @@ describe('Message factory functions', () => {
           lastActivity: now(),
           messageCount: 5,
           canAttach: true,
+          canResume: false,
           source: 'daemon' as const,
         },
       ];
@@ -737,6 +740,56 @@ describe('Message factory functions', () => {
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('session_history_response');
+    });
+  });
+
+  describe('createResumeSessionRequest()', () => {
+    test('creates request with session ID', () => {
+      const msg = createResumeSessionRequest('session-abc-123');
+      expect(msg.type).toBe('resume_session_request');
+      expect(msg.sessionId).toBe('session-abc-123');
+      expect(msg.id).toBeDefined();
+      expect(msg.timestamp).toBeDefined();
+    });
+
+    test('serializes and deserializes', () => {
+      const msg = createResumeSessionRequest('session-abc-123');
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('resume_session_request');
+    });
+  });
+
+  describe('createResumeSessionResponse()', () => {
+    test('creates successful response with new session ID', () => {
+      const requestId = generateId();
+      const newSessionId = generateId();
+      const msg = createResumeSessionResponse(true, requestId, newSessionId);
+      expect(msg.type).toBe('resume_session_response');
+      expect(msg.success).toBe(true);
+      expect(msg.sessionId).toBe(newSessionId);
+      expect(msg.requestId).toBe(requestId);
+      expect(msg.error).toBeUndefined();
+    });
+
+    test('creates failed response with error', () => {
+      const requestId = generateId();
+      const msg = createResumeSessionResponse(false, requestId, undefined, 'Session not found');
+      expect(msg.type).toBe('resume_session_response');
+      expect(msg.success).toBe(false);
+      expect(msg.sessionId).toBeUndefined();
+      expect(msg.error).toBe('Session not found');
+      expect(msg.requestId).toBe(requestId);
+    });
+
+    test('serializes and deserializes', () => {
+      const requestId = generateId();
+      const msg = createResumeSessionResponse(true, requestId, generateId());
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('resume_session_response');
     });
   });
 

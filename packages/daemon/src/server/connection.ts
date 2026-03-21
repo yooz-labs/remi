@@ -36,6 +36,7 @@ import type {
   KillSessionRequestMessage,
   PingMessage,
   ProtocolMessage,
+  ResumeSessionRequestMessage,
   SessionHistoryRequestMessage,
   SessionListRequestMessage,
   TerminalResizeMessage,
@@ -79,6 +80,9 @@ export interface ConnectionEvents {
 
   /** Kill session request received */
   onKillSessionRequest: (sessionId: UUID, requestId: UUID) => void;
+
+  /** Resume session request received */
+  onResumeSessionRequest: (sessionId: string, requestId: UUID) => void;
 
   /** Session history request received */
   onSessionHistoryRequest: (requestId: UUID, limit: number | undefined) => void;
@@ -261,6 +265,9 @@ export class Connection {
       case 'kill_session_request':
         this.handleKillSessionRequest(message);
         break;
+      case 'resume_session_request':
+        this.handleResumeSessionRequest(message);
+        break;
       case 'session_history_request':
         this.handleSessionHistoryRequest(message);
         break;
@@ -430,6 +437,11 @@ export class Connection {
   private handleKillSessionRequest(message: KillSessionRequestMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onKillSessionRequest?.(message.sessionId, message.id);
+  }
+
+  private handleResumeSessionRequest(message: ResumeSessionRequestMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onResumeSessionRequest?.(message.sessionId, message.id);
   }
 
   private handleSessionHistoryRequest(message: SessionHistoryRequestMessage): void {

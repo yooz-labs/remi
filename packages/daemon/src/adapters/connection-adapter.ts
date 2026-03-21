@@ -60,6 +60,9 @@ export interface AdapterEvents {
   /** Kill session request received */
   onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
 
+  /** Resume session request received */
+  onResumeSessionRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
+
   /** Session history request received */
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
 

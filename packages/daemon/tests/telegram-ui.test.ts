@@ -220,6 +220,7 @@ describe('formatSessionList', () => {
       messageCount: 42,
       source: 'daemon',
       canAttach: true,
+      canResume: false,
       ...overrides,
     };
   }

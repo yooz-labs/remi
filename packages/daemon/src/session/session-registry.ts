@@ -456,6 +456,7 @@ export class SessionRegistry {
         lastMessage,
         source: 'daemon',
         canAttach: session.activeConnectionId === null,
+        canResume: false, // Daemon-managed sessions are alive; use canAttach instead
       });
     }
 

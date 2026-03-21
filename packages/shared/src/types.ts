@@ -279,4 +279,7 @@ export interface DiscoverableSession {
 
   /** Whether this session can be attached to (daemon-managed only) */
   readonly canAttach: boolean;
+
+  /** Whether this dead session can be resumed via Claude Code --resume */
+  readonly canResume: boolean;
 }

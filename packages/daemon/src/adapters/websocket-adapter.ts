@@ -140,6 +140,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onKillSessionRequest?.(connectionId, sessionId, requestId);
       },
 
+      onResumeSessionRequest: (connectionId, sessionId, requestId) => {
+        this.events.onResumeSessionRequest?.(connectionId, sessionId, requestId);
+      },
+
       onSessionHistoryRequest: (connectionId, requestId, limit) => {
         this.events.onSessionHistoryRequest?.(connectionId, requestId, limit);
       },

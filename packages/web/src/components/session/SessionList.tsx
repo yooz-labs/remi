@@ -17,6 +17,8 @@ interface SessionListProps {
   readonly activeSessionId: UUID | null;
   readonly onSelectSession: (id: UUID) => void;
   readonly onNewSession?: ((directory?: string) => void) | undefined;
+  readonly onResumeSession?: ((sessionId: string) => void) | undefined;
+  readonly resumingSessionId?: string | null;
   readonly onConnect?: () => void;
   readonly onSettings?: () => void;
   readonly className?: string;
@@ -28,6 +30,8 @@ export function SessionList({
   activeSessionId,
   onSelectSession,
   onNewSession,
+  onResumeSession,
+  resumingSessionId,
   onConnect,
   onSettings,
   className,
@@ -89,6 +93,8 @@ export function SessionList({
                 session={session}
                 isActive={session.id === activeSessionId}
                 onClick={() => onSelectSession(session.id)}
+                onResume={onResumeSession}
+                isResuming={resumingSessionId === session.id}
               />
             ))}
           </div>
