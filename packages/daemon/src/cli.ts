@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.6-dev.1'; // REMI_COMPILED_VERSION
+      return '0.4.9-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.6-dev.1'; // REMI_COMPILED_VERSION
+    return '0.4.9-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -278,6 +278,16 @@ import type { AssistantEntry } from './transcript/index.ts';
 // ---------------------------------------------------------------------------
 let wrapperMode = true; // Default to wrapper mode
 let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
+let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
+
+/** Cancel the SIGHUP orphan timeout when a remote client attaches. */
+function cancelOrphanTimeout(): void {
+  if (sighupTimeoutId !== null) {
+    clearTimeout(sighupTimeoutId);
+    sighupTimeoutId = null;
+    log('[SIGHUP] Orphan timeout cancelled: remote client attached');
+  }
+}
 
 function log(...args: unknown[]): void {
   if (wrapperMode) {
@@ -292,6 +302,43 @@ function logError(...args: unknown[]): void {
     writeToLog(`[error] ${args.map(String).join(' ')}`);
   } else {
     console.error(...args);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shell PATH resolution (for LaunchAgent/systemd where PATH is minimal)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the user's full PATH from their login shell.
+ * LaunchAgents and systemd services inherit a minimal PATH that doesn't
+ * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
+ * This runs the login shell to get the real PATH and replaces process.env.PATH with it.
+ */
+function resolveShellPath(): void {
+  try {
+    const shell = process.env['SHELL'] || '/bin/zsh';
+    const result = Bun.spawnSync([shell, '-l', '-c', 'echo $PATH'], {
+      env: process.env,
+      timeout: 5000,
+    });
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr?.toString().trim() || '(no stderr)';
+      logError(`[PATH] Shell '${shell}' exited with code ${result.exitCode}: ${stderr}`);
+      return;
+    }
+    const shellPath = result.stdout?.toString().trim();
+    if (!shellPath) {
+      logError(`[PATH] Shell '${shell}' returned empty PATH`);
+      return;
+    }
+    // Replace with shell's PATH entirely; it's the authoritative source
+    // and preserves the user's intended priority order
+    process.env['PATH'] = shellPath;
+  } catch (err) {
+    logError(
+      `[PATH] Failed to resolve shell PATH: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -325,7 +372,7 @@ function resolveDirectory(
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
-import { parseArgs } from './cli/arg-parser.ts';
+import { parseArgs, parseHostPath } from './cli/arg-parser.ts';
 import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
@@ -336,6 +383,12 @@ if (parsedArgs.error) {
 }
 if (parsedArgs.showVersion) {
   console.log(`remi ${REMI_VERSION}`);
+  // Show binary location to help diagnose PATH conflicts (e.g., old binary shadowing new install).
+  // In compiled binaries, argv[0] is the binary itself. When running from source via
+  // `bun packages/daemon/src/cli.ts`, argv[0] is the bun runtime and argv[1] is the script.
+  const binaryPath =
+    typeof Bun !== 'undefined' ? Bun.argv[0] : (process.argv[1] ?? process.argv[0]);
+  console.log(`binary: ${binaryPath}`);
   process.exit(0);
 }
 if (parsedArgs.showHelp) {
@@ -1016,17 +1069,37 @@ if (cliSubcommand === 'attach') {
 // Handle --sessions quickly
 if (cliShowSessions) {
   const store = new SessionStore();
-  const sessions = store.list();
+  const allSessions = store.list();
+  const filter = cliShowSessions; // 'running' | 'all' | 'exited'
+  const sessions = allSessions.filter((s) => {
+    if (filter === 'all') return true;
+    if (filter === 'exited') return s.exitedAt !== null;
+    return s.exitedAt === null; // 'running'
+  });
+
   if (sessions.length === 0) {
-    console.log('No stored sessions.');
+    if (filter === 'running') {
+      console.log('No running sessions.');
+      const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
+      if (exitedCount > 0) {
+        console.log(`  ${exitedCount} exited session(s). Use --sessions all to show.`);
+      }
+    } else {
+      console.log('No stored sessions.');
+    }
   } else {
-    console.log('Stored sessions:');
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
       const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
       console.log(
         `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
       );
+    }
+    if (filter === 'running') {
+      const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
+      if (exitedCount > 0) {
+        console.log(`\n  ${exitedCount} exited session(s) hidden. Use --sessions all to show.`);
+      }
     }
   }
   process.exit(0);
@@ -1087,11 +1160,14 @@ if (cliResume !== undefined) {
 
 // remi new --host: create session on remote daemon, then auto-attach
 if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
+  // Support host:path syntax (e.g. yahyas-mcm:~/Documents/git/project)
+  const { host: effectiveHost, directory: hostDir } = parseHostPath(cliHost);
+
   const resolvedPort =
     cliPort ??
     (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : DEFAULT_BASE_PORT);
 
-  let directory = cliDir;
+  let directory = cliDir ?? hostDir;
 
   // --recent: fetch remote recent dirs and pick one
   if (cliRecent) {
@@ -1099,7 +1175,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
     const { pickDirectory } = await import('./cli/directory-picker.ts');
     let dirs: Awaited<ReturnType<typeof fetchRecentDirectories>>;
     try {
-      dirs = await fetchRecentDirectories(cliHost, resolvedPort);
+      dirs = await fetchRecentDirectories(effectiveHost, resolvedPort);
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -1119,7 +1195,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
   const { runRemoteNew } = await import('./cli/remote-new-client.ts');
   try {
     const result = await runRemoteNew({
-      host: cliHost,
+      host: effectiveHost,
       port: resolvedPort,
       directory,
     });
@@ -1447,9 +1523,12 @@ async function createNewSession(
         sessionStore.markExited(sessionId, code);
 
         if (passThrough) {
-          cleanup().then(() => {
-            process.exit(code ?? 0);
-          });
+          cleanup()
+            .then(() => process.exit(code ?? 0))
+            .catch((err) => {
+              logError(`[PTY] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+              process.exit(1);
+            });
         }
       },
       onError: (error: Error) => {
@@ -1473,6 +1552,7 @@ async function createNewSession(
     claudeSessionId: null,
     projectPath: workingDirectory,
     port: PORT,
+    pid: process.pid,
     startedAt: new Date().toISOString(),
     exitedAt: null,
     exitCode: null,
@@ -1633,6 +1713,7 @@ const sharedEvents = {
               createReplayBatch(primarySessionId, result.replayMessages, true),
             );
           }
+          cancelOrphanTimeout();
           log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
           return;
         }
@@ -1682,6 +1763,7 @@ const sharedEvents = {
           );
         }
 
+        cancelOrphanTimeout();
         log(
           `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
         );
@@ -2288,7 +2370,13 @@ if (!cliNoRelay) {
 // ---------------------------------------------------------------------------
 // Cleanup helper
 // ---------------------------------------------------------------------------
+let cleanupRunning = false;
 async function cleanup(): Promise<void> {
+  if (cleanupRunning) return;
+  cleanupRunning = true;
+
+  cancelOrphanTimeout();
+
   // Restore terminal state before shutting down
   if (process.stdin.isTTY) {
     try {
@@ -2344,6 +2432,8 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 if (cliDaemonMode) {
   // Daemon mode: headless server, spawns Claude on WebSocket connect
+  // Resolve user's login shell PATH so spawned sessions can find tools like `claude`
+  resolveShellPath();
   console.log('Starting Remi daemon...');
 
   // Start all adapters. On EADDRINUSE, retry only the WebSocket adapter with next port.
@@ -2676,8 +2766,10 @@ if (cliDaemonMode) {
   });
 
   // Detach local terminal.
-  // SIGHUP (terminal closed): keep PTY + WebSocket alive as background daemon.
+  // SIGHUP (terminal closed): keep PTY + WebSocket alive for 30 minutes, then shut down.
   // Ctrl+B d (keybinding): cleanly exit and return the shell to the user.
+  const SIGHUP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
     if (wrapperDetached) return;
     wrapperDetached = true;
@@ -2696,14 +2788,36 @@ if (cliDaemonMode) {
     process.stdin.removeAllListeners('data');
 
     if (reason === 'sighup') {
-      // Terminal closed: keep running as orphaned process
+      // Terminal closed: keep running for 30 minutes so remote clients can attach.
+      // After the timeout, shut down to avoid accumulating orphaned sessions.
       process.stdin.unref();
       ptyStdoutFd = null;
-      log('Local terminal detached (SIGHUP), PTY and WebSocket server still running');
+      sighupTimeoutId = setTimeout(() => {
+        log('[SIGHUP] Orphan timeout reached (30m), shutting down');
+        cleanup()
+          .then(() => process.exit(0))
+          .catch((err) => {
+            logError(
+              `[SIGHUP] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            process.exit(1);
+          });
+      }, SIGHUP_TIMEOUT_MS);
+      // unref() so this timer alone won't keep the process alive if PTY + servers
+      // are already stopped (the process should exit naturally in that case).
+      sighupTimeoutId.unref();
+      log(
+        `Local terminal detached (SIGHUP), PTY and WebSocket server running for ${SIGHUP_TIMEOUT_MS / 60_000}m`,
+      );
     } else {
       // Ctrl+B d: cleanly shut down and return shell to user
       log('Ctrl+B d pressed, shutting down');
-      cleanup().then(() => process.exit(0));
+      cleanup()
+        .then(() => process.exit(0))
+        .catch((err) => {
+          logError(`[Detach] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        });
     }
   }
 
@@ -2732,10 +2846,14 @@ if (cliDaemonMode) {
       try {
         ptySession.signal('SIGTERM');
       } catch {
-        // ignore
+        // PTY may have exited
       }
     }
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (err) {
+      logError(`[SIGTERM] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     process.exit(0);
   });
 }

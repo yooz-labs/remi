@@ -61,7 +61,7 @@ export interface ParsedArgs {
   readonly signalingUrl: string | undefined;
   readonly noRelay: boolean;
   readonly resume: string | true | undefined;
-  readonly showSessions: boolean;
+  readonly showSessions: 'running' | 'all' | 'exited' | false;
   readonly install: boolean;
   readonly uninstall: boolean;
   readonly subcommand: Subcommand | undefined;
@@ -97,7 +97,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let signalingUrl: string | undefined;
   let noRelay = false;
   let resume: string | true | undefined;
-  let showSessions = false;
+  let showSessions: 'running' | 'all' | 'exited' | false = false;
   let install = false;
   let uninstall = false;
   let orphanTimeout: number | undefined;
@@ -146,7 +146,15 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         resume = true;
       }
     } else if (arg === '--sessions') {
-      showSessions = true;
+      if (nextArg === '--all' || nextArg === 'all') {
+        showSessions = 'all';
+        i++;
+      } else if (nextArg === '--exited' || nextArg === 'exited') {
+        showSessions = 'exited';
+        i++;
+      } else {
+        showSessions = 'running';
+      }
     } else if (arg === '--port') {
       if (!nextArg || nextArg.startsWith('-')) {
         error = 'Error: --port requires a value.';
@@ -341,4 +349,34 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     showHelp,
     error,
   };
+}
+
+/**
+ * Parse host:path syntax for the `new` command.
+ * Supports `host:~/path` and `host:/absolute/path` but not `host:port`.
+ * Handles bracketed IPv6: `[::1]:~/path`.
+ *
+ * Returns { host, directory } where directory is set only if path was found.
+ */
+export function parseHostPath(raw: string): { host: string; directory?: string } {
+  // Bracketed IPv6: [::1]:~/path or [fe80::1]:~/path
+  if (raw.startsWith('[')) {
+    const closeBracket = raw.indexOf(']');
+    if (closeBracket > 0 && raw[closeBracket + 1] === ':') {
+      const afterColon = raw.slice(closeBracket + 2);
+      if (afterColon.startsWith('/') || afterColon.startsWith('~')) {
+        return { host: raw.slice(0, closeBracket + 1), directory: afterColon };
+      }
+    }
+    return { host: raw };
+  }
+
+  const colonIdx = raw.indexOf(':');
+  if (colonIdx > 0) {
+    const afterColon = raw.slice(colonIdx + 1);
+    if (afterColon.startsWith('/') || afterColon.startsWith('~')) {
+      return { host: raw.slice(0, colonIdx), directory: afterColon };
+    }
+  }
+  return { host: raw };
 }

@@ -3,18 +3,23 @@
  *
  * Stores session records at ~/.remi/sessions.json so that
  * `remi --resume` can look up Claude session IDs across process restarts.
+ *
+ * Sessions track the remi wrapper PID so that stale "running" entries
+ * (from crashed/killed processes) can be detected and auto-cleaned.
  */
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
+import { isProcessAlive } from './process-alive.ts';
 
 export interface StoredSession {
   remiSessionId: UUID;
   claudeSessionId: string | null;
   projectPath: string;
   port: number;
+  pid: number | null;
   startedAt: string;
   exitedAt: string | null;
   exitCode: number | null;
@@ -28,6 +33,7 @@ interface SessionsFile {
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const SESSIONS_FILE = path.join(REMI_DIR, 'sessions.json');
 const MAX_SESSIONS = 100;
+const STALE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export class SessionStore {
   private filePath: string;
@@ -44,24 +50,39 @@ export class SessionStore {
     }
   }
 
-  /** Read sessions file, returning empty list if missing or corrupt. */
+  /**
+   * Read sessions file, returning empty list if missing or corrupt.
+   * I/O errors (permissions, disk) are propagated so callers that
+   * write back (purgeStale, save) do not overwrite with empty data.
+   */
   private read(): StoredSession[] {
+    if (!fs.existsSync(this.filePath)) return [];
+    const raw = fs.readFileSync(this.filePath, 'utf-8');
     try {
-      if (!fs.existsSync(this.filePath)) return [];
-      const raw = fs.readFileSync(this.filePath, 'utf-8');
       const data = JSON.parse(raw) as SessionsFile;
       if (data.version !== 1 || !Array.isArray(data.sessions)) return [];
+      // Normalize legacy entries that lack the pid field
+      for (const s of data.sessions) {
+        s.pid ??= null;
+      }
       return data.sessions;
-    } catch {
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) {
+        console.warn(
+          `[sessions] Unexpected error reading sessions: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       return [];
     }
   }
 
-  /** Write sessions to file. */
+  /** Write sessions to file (atomic via tmp + rename). */
   private write(sessions: StoredSession[]): void {
     this.ensureDir();
     const data: SessionsFile = { version: 1, sessions };
-    fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+    const tmpPath = `${this.filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, this.filePath);
   }
 
   /** Save or update a session record. Trims to MAX_SESSIONS. */
@@ -86,9 +107,66 @@ export class SessionStore {
     this.write(sessions);
   }
 
-  /** List all stored sessions, most recent first. */
+  /**
+   * Purge stale sessions: mark dead "running" sessions as exited,
+   * and remove exited sessions older than STALE_AGE_MS.
+   * Returns whether changes were written and the (possibly updated) session list.
+   *
+   * Note: PID recycling could cause a false "alive" result for a stale session
+   * whose PID was reused by an unrelated process. This is acceptable because
+   * the 7-day age pruning will eventually clean it, and PID collisions for
+   * short-lived CLI processes are rare in practice.
+   */
+  private doPurge(): { changed: boolean; sessions: StoredSession[] } {
+    const sessions = this.read();
+    let changed = false;
+    const now = Date.now();
+
+    for (const s of sessions) {
+      if (s.exitedAt !== null) continue;
+      // No PID stored (legacy entry) or PID is dead: mark as exited
+      if (s.pid === null || !isProcessAlive(s.pid)) {
+        s.exitedAt = new Date().toISOString();
+        s.exitCode = null;
+        changed = true;
+      }
+    }
+
+    // Remove exited sessions older than 7 days
+    const before = sessions.length;
+    const kept = sessions.filter((s) => {
+      if (s.exitedAt === null) return true;
+      const exitedTime = new Date(s.exitedAt).getTime();
+      if (Number.isNaN(exitedTime)) return true; // keep entries with invalid dates
+      return now - exitedTime < STALE_AGE_MS;
+    });
+
+    if (kept.length !== before) changed = true;
+
+    if (changed) this.write(kept);
+    return { changed, sessions: kept };
+  }
+
+  /** Purge stale sessions. Returns true if any changes were written. */
+  purgeStale(): boolean {
+    return this.doPurge().changed;
+  }
+
+  /** List all stored sessions, most recent first. Best-effort purge of stale entries. */
   list(): StoredSession[] {
-    return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    try {
+      const { sessions } = this.doPurge();
+      return sessions.sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    } catch (purgeErr) {
+      console.warn(
+        `[sessions] Purge failed: ${purgeErr instanceof Error ? purgeErr.message : String(purgeErr)}`,
+      );
+      try {
+        return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+      } catch {
+        return [];
+      }
+    }
   }
 
   /** Find a session by its Claude session ID. */
