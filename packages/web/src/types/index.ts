@@ -92,6 +92,8 @@ export interface UISession {
   readonly isLoadingTranscript?: boolean;
   /** Whether the session has a pending question requiring user input */
   readonly questionPending?: boolean;
+  /** Whether this dead session can be resumed via Claude Code --resume */
+  readonly canResume?: boolean;
 }
 
 /** Structured option for a question */

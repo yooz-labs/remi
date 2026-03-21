@@ -28,6 +28,7 @@ import {
   createCreateSessionRequest,
   createHello,
   createPing,
+  createResumeSessionRequest,
   createSessionHistoryRequest,
   createSessionListRequest,
   createTranscriptLoadRequest,
@@ -62,6 +63,8 @@ export interface UseWebSocketReturn {
   requestTranscriptLoad: (sessionId: string) => boolean;
   /** Request creation of a new Claude Code session */
   requestNewSession: (directory?: string) => boolean;
+  /** Request resume of a dead Claude Code session */
+  requestResumeSession: (sessionId: string) => boolean;
   /** Request recent directories from session history */
   requestSessionHistory: (limit?: number) => boolean;
   /** Current session ID (after hello_ack) */
@@ -441,6 +444,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     return clientRef.current.send(createCreateSessionRequest(directory));
   }, []);
 
+  // Request resume of a dead Claude Code session
+  const requestResumeSession = useCallback((sessionId: string): boolean => {
+    if (!clientRef.current) return false;
+    return clientRef.current.send(createResumeSessionRequest(sessionId));
+  }, []);
+
   // Request recent directories from session history
   const requestSessionHistory = useCallback((limit?: number): boolean => {
     if (!clientRef.current) return false;
@@ -477,6 +486,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     requestSessionList,
     requestTranscriptLoad,
     requestNewSession,
+    requestResumeSession,
     requestSessionHistory,
     sessionId,
     authRequired,

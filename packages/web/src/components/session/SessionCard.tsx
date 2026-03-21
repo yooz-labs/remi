@@ -8,11 +8,14 @@
 import { formatRelativeTime } from '@/lib/format-time';
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 import { clsx } from 'clsx';
+import { RotateCcw } from 'lucide-react';
 
 interface SessionCardProps {
   readonly session: UISession;
   readonly isActive: boolean;
   readonly onClick: () => void;
+  readonly onResume?: ((sessionId: string) => void) | undefined;
+  readonly isResuming?: boolean;
 }
 
 /** Status dot with color and animation */
@@ -47,7 +50,18 @@ function StatusDot({
   }
 }
 
-export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
+export function SessionCard({
+  session,
+  isActive,
+  onClick,
+  onResume,
+  isResuming,
+}: SessionCardProps) {
+  const showResume =
+    onResume &&
+    session.canResume &&
+    session.connectionStatus === 'disconnected';
+
   return (
     <button
       onClick={onClick}
@@ -82,6 +96,27 @@ export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
           {/* CWD if available */}
           {session.cwd && (
             <p className="mt-1 truncate text-xs text-[--color-text-muted]">{session.cwd}</p>
+          )}
+
+          {/* Resume button for dead sessions */}
+          {showResume && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onResume(session.id);
+              }}
+              disabled={isResuming}
+              className={clsx(
+                'mt-2 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+                isResuming
+                  ? 'bg-[--color-surface-light] text-[--color-text-muted] cursor-wait'
+                  : 'bg-[--color-primary]/10 text-[--color-primary] hover:bg-[--color-primary]/20',
+              )}
+            >
+              <RotateCcw className={clsx('size-3', isResuming && 'animate-spin')} />
+              {isResuming ? 'Resuming...' : 'Resume'}
+            </button>
           )}
         </div>
 

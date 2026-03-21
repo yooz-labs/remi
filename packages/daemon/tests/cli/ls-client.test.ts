@@ -30,6 +30,7 @@ function makeSession(overrides: Partial<DiscoverableSession> = {}): Discoverable
     messageCount: 10,
     source: 'daemon',
     canAttach: false,
+    canResume: false,
     ...overrides,
   };
 }

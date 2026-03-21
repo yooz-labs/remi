@@ -20,6 +20,7 @@ function makeSession(name: string, id?: string): DiscoverableSession {
     messageCount: 0,
     source: 'daemon',
     canAttach: true,
+    canResume: false,
   };
 }
 
