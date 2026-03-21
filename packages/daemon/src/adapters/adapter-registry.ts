@@ -81,7 +81,7 @@ export class AdapterRegistry {
   }
 
   /**
-   * Start all registered adapters.
+   * Start all registered adapters in parallel.
    */
   async startAll(): Promise<void> {
     const startPromises = Array.from(this.adapters.entries()).map(async ([type, adapter]) => {
@@ -93,6 +93,41 @@ export class AdapterRegistry {
         throw error;
       }
     });
+
+    await Promise.all(startPromises);
+  }
+
+  /**
+   * Start a single adapter by type.
+   * Throws if the adapter is not registered or fails to start.
+   */
+  async startAdapter(adapterType: string): Promise<void> {
+    const adapter = this.adapters.get(adapterType);
+    if (!adapter) {
+      throw new Error(`Adapter type '${adapterType}' not registered`);
+    }
+    await adapter.start();
+    this.events.onAdapterStart?.(adapterType);
+  }
+
+  /**
+   * Start all adapters except the specified types.
+   * Used to start non-port-binding adapters (Relay, Telegram) before
+   * port selection, so they are started exactly once.
+   */
+  async startAllExcept(excludeTypes: readonly string[]): Promise<void> {
+    const exclude = new Set(excludeTypes);
+    const startPromises = Array.from(this.adapters.entries())
+      .filter(([type]) => !exclude.has(type))
+      .map(async ([type, adapter]) => {
+        try {
+          await adapter.start();
+          this.events.onAdapterStart?.(type);
+        } catch (error) {
+          console.error(`Failed to start adapter '${type}':`, error);
+          throw error;
+        }
+      });
 
     await Promise.all(startPromises);
   }

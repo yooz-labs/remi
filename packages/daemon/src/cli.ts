@@ -266,6 +266,7 @@ import {
   SessionStore,
   type StoredSession,
 } from './session/index.ts';
+import { findAvailableTcpPort } from './session/port-utils.ts';
 import {
   TranscriptDiscovery,
   TranscriptMessageBridge,
@@ -1299,7 +1300,10 @@ let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['R
 
 // Auto-select port if not explicitly set
 if (!portExplicitlySet) {
-  const autoPort = liveSessionsRegistry.findAvailablePort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE);
+  const autoPort = await liveSessionsRegistry.findAvailablePort(
+    DEFAULT_BASE_PORT,
+    DEFAULT_PORT_RANGE,
+  );
   if (autoPort === null) {
     console.error(
       `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
@@ -1371,7 +1375,7 @@ const sessionRegistry = new SessionRegistry(
 let primarySessionId: UUID | null = null;
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
-let HOOK_PORT = PORT + 100; // Offset by 100 to avoid collisions with other remi WS ports
+let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
 
@@ -2510,68 +2514,47 @@ resolveShellPath();
 if (cliDaemonMode) {
   console.log('Starting Remi daemon...');
 
-  // Start all adapters. On EADDRINUSE, retry only the WebSocket adapter with next port.
-  // Other adapters (Telegram, Relay) start once and stay running across retries.
+  // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {
-    await registry.startAll();
+    await registry.startAllExcept(['websocket']);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
+    console.error(`Failed to start adapters: ${msg}`);
+    process.exit(1);
+  }
 
-    if (!isAddrInUse || portExplicitlySet) {
-      if (isAddrInUse) {
-        console.error(`Port ${PORT} is already in use.`);
-        console.error('Use --port to specify a different port, or stop existing sessions.');
-      } else {
-        console.error(`Failed to start daemon: ${msg}`);
-      }
+  // Phase 2: Probe for available WebSocket port, then start
+  if (!portExplicitlySet) {
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE);
+    if (probed === null) {
+      console.error(
+        `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+      );
+      console.error('Use --port to specify a different port, or stop existing sessions.');
+      await registry.stopAll();
       process.exit(1);
     }
-
-    // EADDRINUSE with auto-port: retry WebSocket adapter on next available port
-    let wsStarted = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const nextPort = liveSessionsRegistry.findAvailablePort(
-        PORT + 1,
-        DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
-      );
-      if (nextPort === null) break;
-
-      console.log(`Port ${PORT} in use, trying ${nextPort}...`);
-      try {
-        await registry.unregister('websocket');
-      } catch (teardownErr) {
-        const teardownMsg =
-          teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
-        console.error(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
-      }
-      PORT = nextPort;
+    if (probed !== PORT) {
+      console.log(`Port ${PORT} in use, using ${probed}`);
+      await registry.unregister('websocket');
+      PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
-      HOOK_PORT = PORT + 100;
-      const retryWsAdapter = new WebSocketAdapter(
+      const newWsAdapter = new WebSocketAdapter(
         { port: PORT, host: bindHost, authenticator },
         sharedEvents,
       );
-      registry.register(retryWsAdapter);
-
-      try {
-        await retryWsAdapter.start();
-        wsStarted = true;
-        break;
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        if (!retryMsg.includes('EADDRINUSE') && !retryMsg.includes('in use')) {
-          console.error(`Failed to start daemon: ${retryMsg}`);
-          process.exit(1);
-        }
-      }
+      registry.register(newWsAdapter);
     }
+  }
 
-    if (!wsStarted) {
-      console.error('All ports in range are in use.');
-      console.error('Use --port to specify a different port, or stop existing sessions.');
-      process.exit(1);
-    }
+  try {
+    await registry.startAdapter('websocket');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to start WebSocket on port ${PORT}: ${msg}`);
+    console.error('Use --port to specify a different port, or stop existing sessions.');
+    await registry.stopAll();
+    process.exit(1);
   }
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
@@ -2674,58 +2657,43 @@ if (cliDaemonMode) {
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
-  // Start WebSocket server silently in the background
-  // With auto-port: retry on EADDRINUSE (race condition with another remi starting simultaneously)
+  // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
+  try {
+    await registry.startAllExcept(['websocket']);
+  } catch (err) {
+    logError(
+      `Failed to start background adapters: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // Phase 2: Probe for available WebSocket port, then start
   let wsStarted = false;
-  const maxPortRetries = portExplicitlySet ? 1 : 3;
-  for (let attempt = 0; attempt < maxPortRetries; attempt++) {
+  if (!portExplicitlySet) {
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE);
+    if (probed !== null && probed !== PORT) {
+      log(`Port ${PORT} in use, using ${probed}`);
+      await registry.unregister('websocket');
+      PORT = probed;
+      STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+      const newWsAdapter = new WebSocketAdapter(
+        { port: PORT, host: bindHost, authenticator },
+        sharedEvents,
+      );
+      registry.register(newWsAdapter);
+    } else if (probed === null) {
+      logError('All ports in range are in use. Remote monitoring disabled.');
+    }
+  }
+
+  if (PORT > 0) {
     try {
-      await registry.startAll();
+      await registry.startAdapter('websocket');
       log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;
-      break;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
-
-      if (isAddrInUse && !portExplicitlySet && attempt < maxPortRetries - 1) {
-        // Auto-port race: another remi grabbed this port. Try next available.
-        const nextPort = liveSessionsRegistry.findAvailablePort(
-          PORT + 1,
-          DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
-        );
-        if (nextPort !== null) {
-          log(`Port ${PORT} taken, retrying with ${nextPort}`);
-          // Tear down old adapter before rebinding
-          try {
-            await registry.unregister('websocket');
-          } catch (teardownErr) {
-            const teardownMsg =
-              teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
-            logError(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
-          }
-          PORT = nextPort;
-          STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
-          HOOK_PORT = PORT + 100;
-          // Create new WS adapter with updated port
-          const retryWsAdapter = new WebSocketAdapter(
-            { port: PORT, host: bindHost, authenticator },
-            sharedEvents,
-          );
-          registry.register(retryWsAdapter);
-          continue;
-        }
-      }
-
-      if (isAddrInUse) {
-        logError(
-          `Port ${PORT} is in use. Remote monitoring disabled. Use --port to specify a different port.`,
-        );
-      } else {
-        logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
-      }
-      break;
+      logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
     }
   }
 
@@ -2743,16 +2711,17 @@ if (cliDaemonMode) {
     });
   }
 
-  // Start hook server for Claude Code event detection
+  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
   try {
     hookServer = new HookServer(
-      { port: HOOK_PORT },
+      { port: 0 },
       {
         onError: (err) => logError(`[HookServer] ${err.message}`),
       },
     );
     hookServer.start();
-    log(`Hook server listening on ${hookServer.url}`);
+    HOOK_PORT = hookServer.port;
+    log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
     // Configure Claude Code hooks to POST to our server
     hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);

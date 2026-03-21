@@ -11,6 +11,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { findAvailableTcpPort } from './port-utils.ts';
 import { isProcessAlive } from './process-alive.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
@@ -165,24 +166,17 @@ export class SessionRegistryFile {
 
   /**
    * Find the first available port in the given range.
-   * Checks live entries to avoid conflicts.
+   * Combines file-registry check (skip known sessions) with real TCP
+   * bind-probe (detect ports occupied by non-remi processes).
    * Returns null if all ports are exhausted.
    */
-  findAvailablePort(
+  async findAvailablePort(
     basePort: number = DEFAULT_BASE_PORT,
     range: number = DEFAULT_PORT_RANGE,
-  ): number | null {
+  ): Promise<number | null> {
     const live = this.listLive();
     const usedPorts = new Set(live.map((e) => e.wsPort));
-
-    for (let offset = 0; offset < range; offset++) {
-      const candidate = basePort + offset;
-      if (!usedPorts.has(candidate)) {
-        return candidate;
-      }
-    }
-
-    return null;
+    return findAvailableTcpPort(basePort, range, usedPorts);
   }
 
   /** Find a live session by session ID. */
