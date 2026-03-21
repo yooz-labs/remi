@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.9'; // REMI_COMPILED_VERSION
+      return '0.4.10-dev.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.9'; // REMI_COMPILED_VERSION
+    return '0.4.10-dev.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -315,21 +315,25 @@ function logError(...args: unknown[]): void {
  * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
  *
  * Strategy:
- * 1. Run login shell (`zsh -l -c`) which sources .zprofile
- * 2. If that returns a suspiciously short PATH (missing Homebrew/bun),
- *    try interactive login shell (`zsh -l -i -c`) which also sources .zshrc
+ * 1. Run both login shell (`zsh -l`) and interactive login shell (`zsh -l -i`)
+ * 2. Merge all discovered entries (login shell may have .zprofile paths,
+ *    interactive may have .zshrc paths like Homebrew or nvm)
  * 3. Merge well-known tool directories as a final fallback
+ * 4. Verify `claude` is findable; warn if not
  */
 function resolveShellPath(): void {
   const shell = process.env['SHELL'] || '/bin/zsh';
-  const currentPath = process.env['PATH'] || '';
+  const currentEntries = (process.env['PATH'] || '').split(':').filter(Boolean);
+  const allEntries = new Set(currentEntries);
 
-  // Try login shell first, then interactive login shell
+  // Run both shells and merge all discovered PATH entries.
+  // Login shell sources .zprofile; interactive login shell also sources .zshrc.
   const attempts: Array<{ flags: string[]; label: string }> = [
     { flags: ['-l', '-c', 'echo $PATH'], label: 'login' },
     { flags: ['-l', '-i', '-c', 'echo $PATH'], label: 'interactive login' },
   ];
 
+  let anyShellSucceeded = false;
   for (const { flags, label } of attempts) {
     try {
       const result = Bun.spawnSync([shell, ...flags], {
@@ -347,45 +351,48 @@ function resolveShellPath(): void {
         continue;
       }
 
-      // Merge: use the shell PATH as the base, then append any entries from the
-      // current PATH that the shell didn't include (e.g., tool-injected directories).
-      // This ensures we never lose entries that were already available.
-      const shellEntries = shellPath.split(':');
-      const shellSet = new Set(shellEntries);
-      const extraFromCurrent = currentPath.split(':').filter((e) => e && !shellSet.has(e));
-      const merged = [...shellEntries, ...extraFromCurrent].join(':');
-      if (merged === currentPath) {
-        log(`[PATH] ${label} shell returned no new entries`);
-        continue;
+      anyShellSucceeded = true;
+      for (const entry of shellPath.split(':')) {
+        if (entry) allEntries.add(entry);
       }
-
-      process.env['PATH'] = merged;
-      log(
-        `[PATH] Resolved via ${label} shell (${shellEntries.length} shell + ${extraFromCurrent.length} existing)`,
-      );
-      return;
     } catch (err) {
       logError(`[PATH] ${label} shell failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  // Fallback: merge well-known directories into the current PATH
-  const home = os.homedir();
-  const wellKnownDirs = [
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-    `${home}/.bun/bin`,
-    `${home}/.local/bin`,
-    '/usr/local/bin',
-  ];
+  // Fallback: merge well-known directories if no shell succeeded
+  if (!anyShellSucceeded) {
+    const home = os.homedir();
+    const wellKnownDirs = [
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      `${home}/.bun/bin`,
+      `${home}/.local/bin`,
+      '/usr/local/bin',
+    ];
+    for (const d of wellKnownDirs) {
+      if (!allEntries.has(d) && fs.existsSync(d)) allEntries.add(d);
+    }
+    log('[PATH] Shell resolution failed, merged well-known directories');
+  }
 
-  const pathSet = new Set(currentPath.split(':'));
-  const missing = wellKnownDirs.filter((d) => !pathSet.has(d) && fs.existsSync(d));
-  if (missing.length > 0) {
-    process.env['PATH'] = [...missing, currentPath].join(':');
-    log(`[PATH] Shell resolution failed, merged ${missing.length} well-known directories`);
-  } else {
-    logError('[PATH] Shell resolution failed and no well-known directories to add');
+  const merged = [...allEntries].join(':');
+  if (merged !== (process.env['PATH'] || '')) {
+    process.env['PATH'] = merged;
+    log(`[PATH] Resolved ${allEntries.size} entries (was ${currentEntries.length})`);
+  }
+
+  // Verify claude is findable after PATH resolution
+  try {
+    const which = Bun.spawnSync(['which', 'claude'], { env: process.env, timeout: 2000 });
+    if (which.exitCode !== 0) {
+      logError(
+        '[PATH] WARNING: "claude" not found in PATH after resolution. ' +
+          'Session creation will fail. Ensure claude is installed and in PATH.',
+      );
+    }
+  } catch {
+    // which command itself failed; non-fatal
   }
 }
 
@@ -2611,8 +2618,20 @@ if (cliDaemonMode) {
 
   try {
     logFd = openLogFile();
-  } catch {
-    // Cannot open log file; all output will be silently dropped
+  } catch (logErr) {
+    // Fall back to a temp file so diagnostics are not completely lost
+    try {
+      const tmpLog = path.join(os.tmpdir(), `remi-${process.pid}.log`);
+      logFd = fs.openSync(tmpLog, 'a');
+      fs.writeSync(
+        logFd,
+        `[remi] Primary log file failed: ${logErr instanceof Error ? logErr.message : String(logErr)}\n`,
+      );
+      fs.writeSync(2, `[remi] Logging to ${tmpLog} (primary log unavailable)\n`);
+    } catch {
+      // Last resort: write one message to stderr before it gets overridden
+      fs.writeSync(2, '[remi] WARNING: All logging disabled (cannot open any log file)\n');
+    }
   }
 
   // Layer 1: Override console methods (catches Bun's native console path)

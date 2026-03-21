@@ -115,7 +115,15 @@ export class SessionRegistryFile {
         const raw = fs.readFileSync(filePath, 'utf-8');
         const data: unknown = JSON.parse(raw);
 
-        if (!isValidEntry(data)) continue;
+        if (!isValidEntry(data)) {
+          console.error(`[live-sessions] Invalid entry in ${fileName}, removing`);
+          try {
+            fs.unlinkSync(filePath);
+          } catch {
+            // best-effort cleanup
+          }
+          continue;
+        }
 
         if (isProcessAlive(data.pid)) {
           entries.push(data);
@@ -133,13 +141,21 @@ export class SessionRegistryFile {
           }
         }
       } catch (err) {
-        // Only silence ENOENT (file removed between readdir and read) and JSON parse errors
         const code = (err as NodeJS.ErrnoException).code;
-        if (code && code !== 'ENOENT') {
-          console.error(
-            `[live-sessions] Failed to read ${fileName}: ${err instanceof Error ? err.message : String(err)}`,
-          );
+        if (code === 'ENOENT') continue; // file removed between readdir and read
+        if (err instanceof SyntaxError) {
+          // Corrupt JSON; remove the invalid file
+          console.error(`[live-sessions] Corrupt JSON in ${fileName}, removing`);
+          try {
+            fs.unlinkSync(filePath);
+          } catch {
+            // best-effort cleanup
+          }
+          continue;
         }
+        console.error(
+          `[live-sessions] Failed to read ${fileName}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
