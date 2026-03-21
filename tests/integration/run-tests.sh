@@ -142,6 +142,23 @@ echo "== new /path tests =="
 run_test "new --host /tmp parsed as dir" \
   bash -c "remi_cli new /tmp --host $HOST --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0"
 
+# ---- Test Group 6b: host:path syntax ----
+echo ""
+echo "== host:path syntax tests =="
+# Test that host:~/path is parsed and connects (session shows up in ls)
+run_test "new host:~/path connects and sets directory" \
+  bash -c "remi_cli new --host $HOST:~/tmp --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; \
+    OUTPUT=\$(remi_cli ls --host $HOST --port $D1_PORT 2>&1); \
+    kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; \
+    echo \"\$OUTPUT\" | grep -q 'session'"
+
+# Test that host:/absolute/path is parsed and connects
+run_test "new host:/path connects and sets directory" \
+  bash -c "remi_cli new --host $HOST:/tmp --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; \
+    OUTPUT=\$(remi_cli ls --host $HOST --port $D1_PORT 2>&1); \
+    kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; \
+    echo \"\$OUTPUT\" | grep -q 'session'"
+
 # ---- Test Group 7: SESSION_BUSY detection ----
 echo ""
 echo "== session busy tests =="

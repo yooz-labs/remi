@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseArgs } from '../../src/cli/arg-parser.ts';
+import { parseArgs, parseHostPath } from '../../src/cli/arg-parser.ts';
 
 describe('parseArgs', () => {
   // -------------------------------------------------------------------------
@@ -588,5 +588,74 @@ describe('parseArgs', () => {
       const r = parseArgs(['new', '--dir', '/a']);
       expect(r.dir).toBe('/a');
     });
+  });
+});
+
+describe('parseHostPath', () => {
+  test('plain hostname returns host only', () => {
+    expect(parseHostPath('myhost')).toEqual({ host: 'myhost' });
+  });
+
+  test('hostname with tilde path returns host and directory', () => {
+    expect(parseHostPath('myhost:~/Documents/project')).toEqual({
+      host: 'myhost',
+      directory: '~/Documents/project',
+    });
+  });
+
+  test('hostname with absolute path returns host and directory', () => {
+    expect(parseHostPath('myhost:/home/user/project')).toEqual({
+      host: 'myhost',
+      directory: '/home/user/project',
+    });
+  });
+
+  test('hostname with port (numeric) returns host only', () => {
+    // host:9000 should NOT be parsed as host:path
+    expect(parseHostPath('myhost:9000')).toEqual({ host: 'myhost:9000' });
+  });
+
+  test('IP address is returned as host', () => {
+    expect(parseHostPath('192.168.1.1')).toEqual({ host: '192.168.1.1' });
+  });
+
+  test('IP with tilde path works', () => {
+    expect(parseHostPath('192.168.1.1:~/project')).toEqual({
+      host: '192.168.1.1',
+      directory: '~/project',
+    });
+  });
+
+  test('empty string returns host only', () => {
+    expect(parseHostPath('')).toEqual({ host: '' });
+  });
+
+  test('host with just tilde expands correctly', () => {
+    expect(parseHostPath('myhost:~')).toEqual({
+      host: 'myhost',
+      directory: '~',
+    });
+  });
+
+  test('bracketed IPv6 with path returns host and directory', () => {
+    expect(parseHostPath('[::1]:~/project')).toEqual({
+      host: '[::1]',
+      directory: '~/project',
+    });
+  });
+
+  test('bracketed IPv6 with absolute path returns host and directory', () => {
+    expect(parseHostPath('[fe80::1]:/home/user/project')).toEqual({
+      host: '[fe80::1]',
+      directory: '/home/user/project',
+    });
+  });
+
+  test('bracketed IPv6 with port returns host only', () => {
+    expect(parseHostPath('[::1]:9000')).toEqual({ host: '[::1]:9000' });
+  });
+
+  test('bracketed IPv6 without path returns host only', () => {
+    expect(parseHostPath('[::1]')).toEqual({ host: '[::1]' });
   });
 });
