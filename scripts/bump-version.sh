@@ -6,6 +6,7 @@
 #   ./scripts/bump-version.sh minor          # 0.2.3 -> 0.3.0
 #   ./scripts/bump-version.sh major          # 0.2.3 -> 1.0.0
 #   ./scripts/bump-version.sh dev            # 0.2.3 -> 0.2.4-dev.1 (or -dev.N+1)
+#   ./scripts/bump-version.sh stable         # 0.2.4-dev.6 -> 0.2.4 (strip dev suffix)
 #   ./scripts/bump-version.sh set 1.0.0      # Set specific version
 #   ./scripts/bump-version.sh --push patch   # Bump and push (triggers release)
 #   ./scripts/bump-version.sh --push dev     # Bump dev and push (triggers dev release)
@@ -32,7 +33,7 @@ done
 
 BUMP_TYPE="${1:-}"
 if [[ -z "$BUMP_TYPE" ]]; then
-  echo "Usage: $0 [--push] <patch|minor|major|dev|set <version>>" >&2
+  echo "Usage: $0 [--push] <patch|minor|major|dev|stable|set <version>>" >&2
   exit 1
 fi
 
@@ -63,6 +64,14 @@ case "$BUMP_TYPE" in
     PATCH=$((PATCH + 1))
     NEW_VERSION="$MAJOR.$MINOR.$PATCH"
     ;;
+  stable)
+    # Strip prerelease suffix: 0.4.4-dev.6 -> 0.4.4
+    if [[ -z "$PRERELEASE" ]]; then
+      echo "Already a stable version ($CURRENT_VERSION). Nothing to do." >&2
+      exit 0
+    fi
+    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    ;;
   dev)
     if [[ "$PRERELEASE" =~ ^-dev\.([0-9]+)$ ]]; then
       # Already a dev version; increment dev number
@@ -89,7 +98,7 @@ case "$BUMP_TYPE" in
     NEW_VERSION="$NEW_VER"
     ;;
   *)
-    echo "Usage: $0 [--push] <patch|minor|major|dev|set <version>>" >&2
+    echo "Usage: $0 [--push] <patch|minor|major|dev|stable|set <version>>" >&2
     exit 1
     ;;
 esac

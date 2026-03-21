@@ -55,3 +55,42 @@ jobs:
             echo "Coverage ${COVERAGE}% is below 60% threshold"
             exit 1
           fi
+
+  auto-release:
+    name: Auto Release
+    needs: [spelling, lint, typecheck, test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Check for dev version on main
+        id: check
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          if [[ "$VERSION" == *"-dev"* ]]; then
+            STABLE="${VERSION%%-*}"
+            echo "is_dev=true" >> "$GITHUB_OUTPUT"
+            echo "stable_version=$STABLE" >> "$GITHUB_OUTPUT"
+            echo "Detected dev version $VERSION on main, will release as $STABLE"
+          else
+            echo "is_dev=false" >> "$GITHUB_OUTPUT"
+            echo "Version $VERSION is already stable, no auto-release needed"
+          fi
+
+      - name: Strip dev suffix and release
+        if: steps.check.outputs.is_dev == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bun install --frozen-lockfile
+          ./scripts/bump-version.sh --push stable

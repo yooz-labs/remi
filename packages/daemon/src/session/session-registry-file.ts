@@ -11,6 +11,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { isProcessAlive } from './process-alive.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const LIVE_SESSIONS_DIR = path.join(REMI_DIR, 'live-sessions');
@@ -193,20 +194,5 @@ export class SessionRegistryFile {
   getLivePorts(): number[] {
     const live = this.listLive();
     return [...new Set(live.map((e) => e.wsPort))];
-  }
-}
-
-/**
- * Check if a process is alive by sending signal 0.
- * EPERM means the process exists but is owned by a different user.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // EPERM: process exists but we lack permission to signal it
-    if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
-    return false;
   }
 }
