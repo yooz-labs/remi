@@ -524,5 +524,47 @@ describe('AdapterRegistry', () => {
       expect(tg.isRunning).toBe(false);
       expect(relay.isRunning).toBe(true);
     });
+
+    test('propagates error when a non-excluded adapter fails', async () => {
+      const registry = new AdapterRegistry();
+      const good = new TestAdapter('relay');
+      const bad = new TestAdapter('telegram');
+      // Override start to throw
+      bad.start = async () => {
+        throw new Error('Simulated telegram start failure');
+      };
+      registry.register(good);
+      registry.register(bad);
+
+      await expect(registry.startAllExcept(['ws'])).rejects.toThrow(
+        'Simulated telegram start failure',
+      );
+    });
+  });
+
+  describe('startAdapter() error propagation', () => {
+    test('propagates error from adapter.start()', async () => {
+      const registry = new AdapterRegistry();
+      const adapter = new TestAdapter('ws');
+      adapter.start = async () => {
+        throw new Error('listen EADDRINUSE :::18765');
+      };
+      registry.register(adapter);
+
+      await expect(registry.startAdapter('ws')).rejects.toThrow('EADDRINUSE');
+    });
+
+    test('does not emit onAdapterStart when start fails', async () => {
+      const started: string[] = [];
+      const registry = new AdapterRegistry({ onAdapterStart: (t) => started.push(t) });
+      const adapter = new TestAdapter('ws');
+      adapter.start = async () => {
+        throw new Error('start failure');
+      };
+      registry.register(adapter);
+
+      await expect(registry.startAdapter('ws')).rejects.toThrow();
+      expect(started).toEqual([]);
+    });
   });
 });

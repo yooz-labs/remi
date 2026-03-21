@@ -16,8 +16,9 @@ export function isPortAvailable(port: number, hostname = '0.0.0.0'): Promise<boo
   const net = require('node:net') as any;
   return new Promise<boolean>((resolve) => {
     const srv = net.createServer();
-    srv.once('error', (err: NodeJS.ErrnoException) => {
-      resolve(err.code !== 'EADDRINUSE');
+    srv.once('error', () => {
+      // Any bind error means the port is not usable (EADDRINUSE, EACCES, etc.)
+      resolve(false);
     });
     srv.listen({ port, host: hostname, exclusive: true }, () => {
       srv.close(() => resolve(true));

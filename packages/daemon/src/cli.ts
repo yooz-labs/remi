@@ -2520,12 +2520,14 @@ if (cliDaemonMode) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Failed to start adapters: ${msg}`);
+    await registry.stopAll();
     process.exit(1);
   }
 
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE);
+    const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
     if (probed === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
@@ -2668,11 +2670,19 @@ if (cliDaemonMode) {
 
   // Phase 2: Probe for available WebSocket port, then start
   let wsStarted = false;
+  let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE);
+    const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
     if (probed !== null && probed !== PORT) {
       log(`Port ${PORT} in use, using ${probed}`);
-      await registry.unregister('websocket');
+      try {
+        await registry.unregister('websocket');
+      } catch (teardownErr) {
+        logError(
+          `Failed to tear down WebSocket adapter: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}`,
+        );
+      }
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
       const newWsAdapter = new WebSocketAdapter(
@@ -2682,10 +2692,11 @@ if (cliDaemonMode) {
       registry.register(newWsAdapter);
     } else if (probed === null) {
       logError('All ports in range are in use. Remote monitoring disabled.');
+      wsProbeSucceeded = false;
     }
   }
 
-  if (PORT > 0) {
+  if (wsProbeSucceeded) {
     try {
       await registry.startAdapter('websocket');
       log(`WebSocket server listening on ws://${bindHost}:${PORT}/ws`);
@@ -2697,18 +2708,9 @@ if (cliDaemonMode) {
     }
   }
 
-  // After port retry, update status with finalized port values
+  // Update status with finalized WS port
   if (wsStarted) {
     updateRemiStatus({ wsPort: PORT });
-    liveSessionsRegistry.register({
-      sessionId,
-      pid: process.pid,
-      wsPort: PORT,
-      hookPort: HOOK_PORT,
-      projectPath: workingDirectory,
-      name: path.basename(workingDirectory),
-      startedAt: new Date().toISOString(),
-    });
   }
 
   // Start hook server for Claude Code event detection (port 0 = OS-assigned)
@@ -2730,10 +2732,23 @@ if (cliDaemonMode) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logError(
-      `Hook server failed to start on port ${HOOK_PORT}: ${msg}. Status detection and question forwarding disabled.`,
+      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
     );
     hookServer = null;
     hookConfigManager = null;
+  }
+
+  // Register in live-sessions AFTER hook server starts so hookPort has real value
+  if (wsStarted) {
+    liveSessionsRegistry.register({
+      sessionId,
+      pid: process.pid,
+      wsPort: PORT,
+      hookPort: HOOK_PORT,
+      projectPath: workingDirectory,
+      name: path.basename(workingDirectory),
+      startedAt: new Date().toISOString(),
+    });
   }
 
   // Create and start the primary PTY session
