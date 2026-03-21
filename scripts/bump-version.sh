@@ -1,15 +1,21 @@
 #!/bin/bash
 # bump-version.sh - Bump version, commit, tag, and optionally push to trigger release
 #
+# Versioning rules:
+#   - develop branch always has -dev.N versions (never stable)
+#   - main branch has stable versions (CI auto-strips dev suffix on merge)
+#   - patch/minor/major on develop: bump + reset to -dev.1
+#   - dev on develop: increment dev counter (dev.1 -> dev.2)
+#   - stable: only allowed on main (CI use) or with --force
+#
 # Usage:
-#   ./scripts/bump-version.sh patch          # 0.2.3 -> 0.2.4
-#   ./scripts/bump-version.sh minor          # 0.2.3 -> 0.3.0
-#   ./scripts/bump-version.sh major          # 0.2.3 -> 1.0.0
-#   ./scripts/bump-version.sh dev            # 0.2.3 -> 0.2.4-dev.1 (or -dev.N+1)
-#   ./scripts/bump-version.sh stable         # 0.2.4-dev.6 -> 0.2.4 (strip dev suffix)
+#   ./scripts/bump-version.sh dev            # 0.4.9-dev.1 -> 0.4.9-dev.2
+#   ./scripts/bump-version.sh patch          # 0.4.9-dev.3 -> 0.4.10-dev.1 (on develop)
+#   ./scripts/bump-version.sh minor          # 0.4.9-dev.3 -> 0.5.0-dev.1  (on develop)
+#   ./scripts/bump-version.sh major          # 0.4.9-dev.3 -> 1.0.0-dev.1  (on develop)
+#   ./scripts/bump-version.sh stable         # 0.4.10-dev.1 -> 0.4.10 (main/CI only)
 #   ./scripts/bump-version.sh set 1.0.0      # Set specific version
 #   ./scripts/bump-version.sh --push patch   # Bump and push (triggers release)
-#   ./scripts/bump-version.sh --push dev     # Bump dev and push (triggers dev release)
 
 set -euo pipefail
 
@@ -24,22 +30,29 @@ fi
 
 # Parse flags
 PUSH=false
+FORCE=false
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --push) PUSH=true; shift ;;
+    --force) FORCE=true; shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
 
 BUMP_TYPE="${1:-}"
 if [[ -z "$BUMP_TYPE" ]]; then
-  echo "Usage: $0 [--push] <patch|minor|major|dev|stable|set <version>>" >&2
+  echo "Usage: $0 [--push] [--force] <patch|minor|major|dev|stable|set <version>>" >&2
   exit 1
 fi
 
+# Detect current branch
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+IS_DEVELOP=$([[ "$CURRENT_BRANCH" == "develop" ]] && echo true || echo false)
+IS_MAIN=$([[ "$CURRENT_BRANCH" == "main" ]] && echo true || echo false)
+
 # Read current version from package.json
 CURRENT_VERSION=$(node -e "process.stdout.write(require('$PKG_JSON').version)")
-echo "Current: v$CURRENT_VERSION"
+echo "Current: v$CURRENT_VERSION (branch: $CURRENT_BRANCH)"
 
 # Extract base version and any prerelease suffix
 BASE_VERSION="${CURRENT_VERSION%%-*}"
@@ -53,22 +66,50 @@ case "$BUMP_TYPE" in
     MAJOR=$((MAJOR + 1))
     MINOR=0
     PATCH=0
-    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    if [[ "$IS_DEVELOP" == true ]]; then
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
+    else
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    fi
     ;;
   minor)
     MINOR=$((MINOR + 1))
     PATCH=0
-    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    if [[ "$IS_DEVELOP" == true ]]; then
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
+    else
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    fi
     ;;
   patch)
-    PATCH=$((PATCH + 1))
-    NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    # On develop with a dev version: bump patch, reset to dev.1
+    # On develop with a stable version: bump patch, add dev.1
+    # On main or other: just bump patch (stable)
+    if [[ "$IS_DEVELOP" == true ]]; then
+      if [[ -n "$PRERELEASE" ]]; then
+        # 0.4.9-dev.3 -> 0.4.10-dev.1
+        PATCH=$((PATCH + 1))
+      else
+        # 0.4.9 -> 0.4.10-dev.1 (shouldn't happen but handle gracefully)
+        PATCH=$((PATCH + 1))
+      fi
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
+    else
+      PATCH=$((PATCH + 1))
+      NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+    fi
     ;;
   stable)
-    # Strip prerelease suffix: 0.4.4-dev.6 -> 0.4.4
+    # Strip prerelease suffix: 0.4.10-dev.1 -> 0.4.10
     if [[ -z "$PRERELEASE" ]]; then
       echo "Already a stable version ($CURRENT_VERSION). Nothing to do." >&2
       exit 0
+    fi
+    if [[ "$IS_DEVELOP" == true && "$FORCE" == false ]]; then
+      echo "Error: 'stable' is not allowed on the develop branch." >&2
+      echo "Stable versions are created by CI when develop merges into main." >&2
+      echo "Use --force to override (not recommended)." >&2
+      exit 1
     fi
     NEW_VERSION="$MAJOR.$MINOR.$PATCH"
     ;;
@@ -98,7 +139,7 @@ case "$BUMP_TYPE" in
     NEW_VERSION="$NEW_VER"
     ;;
   *)
-    echo "Usage: $0 [--push] <patch|minor|major|dev|stable|set <version>>" >&2
+    echo "Usage: $0 [--push] [--force] <patch|minor|major|dev|stable|set <version>>" >&2
     exit 1
     ;;
 esac
