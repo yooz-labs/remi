@@ -142,6 +142,17 @@ echo "== new /path tests =="
 run_test "new --host /tmp parsed as dir" \
   bash -c "remi_cli new /tmp --host $HOST --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0"
 
+# ---- Test Group 6b: host:path syntax ----
+echo ""
+echo "== host:path syntax tests =="
+# Test that host:~/path is parsed into host + directory
+run_test "new host:~/path parsed correctly" \
+  bash -c "remi_cli new --host $HOST:~/tmp --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0"
+
+# Test that host:/absolute/path is parsed correctly
+run_test "new host:/path parsed correctly" \
+  bash -c "remi_cli new --host $HOST:/tmp --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0"
+
 # ---- Test Group 7: SESSION_BUSY detection ----
 echo ""
 echo "== session busy tests =="

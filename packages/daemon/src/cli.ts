@@ -305,6 +305,46 @@ function logError(...args: unknown[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Shell PATH resolution (for LaunchAgent/systemd where PATH is minimal)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the user's full PATH from their login shell.
+ * LaunchAgents and systemd services inherit a minimal PATH that doesn't
+ * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
+ * This runs the login shell to get the real PATH and merges it into process.env.
+ */
+function resolveShellPath(): void {
+  try {
+    const shell = process.env['SHELL'] || '/bin/zsh';
+    const result = Bun.spawnSync([shell, '-l', '-c', 'echo $PATH'], {
+      env: process.env,
+      timeout: 5000,
+    });
+    const shellPath = result.stdout?.toString().trim();
+    if (shellPath && result.exitCode === 0) {
+      const currentPath = process.env['PATH'] || '';
+      // Merge: add any paths from the login shell that aren't already present
+      const currentParts = new Set(currentPath.split(':').filter(Boolean));
+      const shellParts = shellPath.split(':').filter(Boolean);
+      const newParts: string[] = [];
+      for (const p of shellParts) {
+        if (!currentParts.has(p)) {
+          newParts.push(p);
+        }
+      }
+      if (newParts.length > 0) {
+        process.env['PATH'] = currentPath
+          ? `${currentPath}:${newParts.join(':')}`
+          : newParts.join(':');
+      }
+    }
+  } catch {
+    // Non-fatal: if shell resolution fails, continue with existing PATH
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Resolve directory helper
 // ---------------------------------------------------------------------------
 function resolveDirectory(
@@ -334,7 +374,7 @@ function resolveDirectory(
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
-import { parseArgs } from './cli/arg-parser.ts';
+import { parseArgs, parseHostPath } from './cli/arg-parser.ts';
 import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
@@ -1116,11 +1156,14 @@ if (cliResume !== undefined) {
 
 // remi new --host: create session on remote daemon, then auto-attach
 if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
+  // Support host:path syntax (e.g. yahyas-mcm:~/Documents/git/project)
+  const { host: effectiveHost, directory: hostDir } = parseHostPath(cliHost);
+
   const resolvedPort =
     cliPort ??
     (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : DEFAULT_BASE_PORT);
 
-  let directory = cliDir;
+  let directory = cliDir ?? hostDir;
 
   // --recent: fetch remote recent dirs and pick one
   if (cliRecent) {
@@ -1128,7 +1171,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
     const { pickDirectory } = await import('./cli/directory-picker.ts');
     let dirs: Awaited<ReturnType<typeof fetchRecentDirectories>>;
     try {
-      dirs = await fetchRecentDirectories(cliHost, resolvedPort);
+      dirs = await fetchRecentDirectories(effectiveHost, resolvedPort);
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -1148,7 +1191,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
   const { runRemoteNew } = await import('./cli/remote-new-client.ts');
   try {
     const result = await runRemoteNew({
-      host: cliHost,
+      host: effectiveHost,
       port: resolvedPort,
       directory,
     });
@@ -2237,6 +2280,8 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 if (cliDaemonMode) {
   // Daemon mode: headless server, spawns Claude on WebSocket connect
+  // Resolve user's login shell PATH so spawned sessions can find tools like `claude`
+  resolveShellPath();
   console.log('Starting Remi daemon...');
 
   // Start all adapters. On EADDRINUSE, retry only the WebSocket adapter with next port.
