@@ -17,6 +17,14 @@ import {
   queryMultiplePorts,
 } from './session-resolver.ts';
 
+/** Return the terminal width, defaulting to 100 when stdout is not a TTY (e.g. piped). */
+function getTerminalWidth(): number {
+  return process.stdout.columns ?? 100;
+}
+
+/** Minimum name column width to keep output readable even on very narrow terminals. */
+const MIN_NAME_WIDTH = 20;
+
 export interface RemoteTarget {
   readonly host: string;
   readonly port: number;
@@ -122,20 +130,23 @@ export async function runHostLs(opts: HostLsOptions): Promise<void> {
   }
 
   // Multiple ports: show port column
-  const header = `${'NAME'.padEnd(28)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  // Fixed columns: PORT(8) + STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 46
+  const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 46);
+  const header = `${'NAME'.padEnd(nameCol)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
   console.log(header);
   console.log('-'.repeat(header.length));
 
   for (const r of results) {
     for (const s of r.sessions) {
-      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+      const rawName = s.name ?? path.basename(s.projectPath);
+      const name = rawName.slice(0, nameCol - 2);
       const port = String(r.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `${name.padEnd(28)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `${name.padEnd(nameCol)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
@@ -367,59 +378,94 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
     return;
   }
 
-  // Group by machine hostname so multiple daemons on the same host share one table
-  const machineGroups = new Map<
-    string,
-    {
-      label: string;
-      host: string;
-      entries: Array<{ daemon: DaemonSessions['daemon']; session: DiscoverableSession }>;
-    }
-  >();
+  type GroupEntry = { daemon: DaemonSessions['daemon']; session: DiscoverableSession };
+  type MachineGroup = { label: string; hostname: string; hosts: string[]; entries: GroupEntry[] };
+
+  // Step 1: Group by hostname@host (preserves different-machine separation)
+  const rawGroups = new Map<string, MachineGroup>();
 
   for (const { daemon, sessions } of results) {
     const hostname = daemon.hostname || daemon.host;
-    // Group by hostname+host to avoid merging different machines with the same hostname
     const key = daemon.host === 'localhost' ? 'localhost' : `${hostname}@${daemon.host}`;
-    let group = machineGroups.get(key);
+    let group = rawGroups.get(key);
     if (!group) {
       const label = daemon.host === 'localhost' ? 'local' : `${hostname} (${daemon.host})`;
-      group = { label, host: daemon.host, entries: [] };
-      machineGroups.set(key, group);
+      group = { label, hostname, hosts: [daemon.host], entries: [] };
+      rawGroups.set(key, group);
     }
     for (const s of sessions) {
       group.entries.push({ daemon, session: s });
     }
   }
 
-  let totalSessions = 0;
-  const machineCount = machineGroups.size;
+  // Step 2: Merge groups that share the same hostname AND have overlapping
+  // sessionIds (same machine reachable via multiple IPs, e.g., LAN + VPN).
+  // Groups with same hostname but NO overlapping sessions stay separate
+  // (different machines that happen to share a hostname).
+  const mergedGroups: MachineGroup[] = [];
 
-  for (const [, group] of machineGroups) {
+  for (const [, group] of rawGroups) {
+    let merged = false;
+
+    if (group.hostname !== 'localhost') {
+      for (const existing of mergedGroups) {
+        if (existing.hostname !== group.hostname) continue;
+
+        const existingIds = new Set(existing.entries.map((e) => e.session.sessionId));
+        const hasOverlap = group.entries.some((e) => existingIds.has(e.session.sessionId));
+        if (!hasOverlap) continue;
+
+        // Same machine via different IP - merge
+        for (const h of group.hosts) {
+          if (!existing.hosts.includes(h)) existing.hosts.push(h);
+        }
+        for (const entry of group.entries) {
+          if (!existingIds.has(entry.session.sessionId)) {
+            existing.entries.push(entry);
+          }
+        }
+        existing.label = `${group.hostname} (${existing.hosts.join(', ')})`;
+        merged = true;
+        break;
+      }
+    }
+
+    if (!merged) {
+      mergedGroups.push(group);
+    }
+  }
+
+  let totalSessions = 0;
+  const machineCount = mergedGroups.length;
+
+  for (const group of mergedGroups) {
     console.log(`\n== ${group.label} ==`);
 
     totalSessions += group.entries.length;
 
-    const header = `  ${'NAME'.padEnd(28)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    // Fixed columns: indent(2) + PORT(8) + STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 48
+    const netNameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 48);
+    const header = `  ${'NAME'.padEnd(netNameCol)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
     console.log(header);
     console.log(`  ${'-'.repeat(header.length - 2)}`);
 
     for (const { daemon, session: s } of group.entries) {
-      const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+      const rawName = s.name ?? path.basename(s.projectPath);
+      const name = rawName.slice(0, netNameCol - 2);
       const port = String(daemon.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
       const mark = s.canAttach ? ' *' : '';
 
       console.log(
-        `  ${name.padEnd(28)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+        `  ${name.padEnd(netNameCol)}${port.padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
       );
     }
   }
 
   const daemonCount = results.length;
   if (machineCount === 1) {
-    const machineName = machineGroups.values().next().value?.label ?? 'unknown';
+    const machineName = mergedGroups[0]?.label ?? 'unknown';
     console.log(`\n${totalSessions} session(s) on ${machineName}`);
   } else {
     console.log(
@@ -427,8 +473,15 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
     );
   }
 
+  // Deduplicate attachable sessions (same session may appear from multiple IPs)
+  const seenAttachable = new Set<string>();
   const attachable = results.flatMap((r) =>
-    r.sessions.filter((s) => s.canAttach).map((s) => ({ ...s, daemon: r.daemon })),
+    r.sessions
+      .filter((s) => s.canAttach && !seenAttachable.has(s.sessionId))
+      .map((s) => {
+        seenAttachable.add(s.sessionId);
+        return { ...s, daemon: r.daemon };
+      }),
   );
   if (attachable.length > 0) {
     console.log('');
@@ -453,18 +506,21 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
     return;
   }
 
-  const header = `${'NAME'.padEnd(28)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+  // Fixed columns: STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 38
+  const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 38);
+  const header = `${'NAME'.padEnd(nameCol)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
   console.log(header);
   console.log('-'.repeat(header.length));
 
   for (const s of sessions) {
-    const name = (s.name ?? path.basename(s.projectPath)).slice(0, 26);
+    const rawName = s.name ?? path.basename(s.projectPath);
+    const name = rawName.slice(0, nameCol - 2);
     const duration = formatDuration(s.createdAt);
     const lastAct = formatAge(s.lastActivity);
     const mark = s.canAttach ? ' *' : '';
 
     console.log(
-      `${name.padEnd(28)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+      `${name.padEnd(nameCol)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
     );
   }
 

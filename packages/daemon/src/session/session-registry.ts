@@ -296,8 +296,9 @@ export class SessionRegistry {
     this.connectionToSession.delete(connectionId);
 
     // Start orphan timeout (skip for locally-owned sessions; they stay alive
-    // until PTY exits, explicit kill, or daemon shutdown)
-    if (!session.locallyOwned) {
+    // until PTY exits, explicit kill, or daemon shutdown).
+    // orphanTimeoutMs === 0 disables automatic cleanup.
+    if (!session.locallyOwned && this.orphanTimeoutMs > 0) {
       session.orphanTimeoutId = setTimeout(() => {
         this.closeSession(sessionId, 'timeout');
       }, this.orphanTimeoutMs);

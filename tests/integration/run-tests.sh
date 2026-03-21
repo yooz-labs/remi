@@ -128,10 +128,32 @@ run_test "flags before: --host X ls" remi_cli --host $HOST --port $D1_PORT ls
 # ---- Test Group 5: remi kill ----
 echo ""
 echo "== kill tests =="
-run_test_expect_fail "kill nonexistent session" \
+run_test_expect_fail "kill nonexistent (--host flag)" \
   remi_cli kill nonexistent --host $HOST --port $D1_PORT
 
-# ---- Test Group 6: -- separator ----
+# Test universal resolver: kill with host:port/session format
+run_test_expect_fail "kill host:port/nonexistent (universal resolver)" \
+  remi_cli kill $HOST:$D1_PORT/nonexistent
+
+# ---- Test Group 6: remi new /path ----
+echo ""
+echo "== new /path tests =="
+# Test positional directory argument
+run_test "new --host /tmp parsed as dir" \
+  bash -c "remi_cli new /tmp --host $HOST --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0"
+
+# ---- Test Group 7: SESSION_BUSY detection ----
+echo ""
+echo "== session busy tests =="
+# Create a session, keep it attached, try to attach from a second client
+run_test "session busy: create and hold session" \
+  bash -c "remi_cli new --host $HOST --port $D1_PORT &>/dev/null & PID=\$!; sleep 5; \
+    SESSION=\$(remi_cli ls --host $HOST --port $D1_PORT 2>&1 | grep -v '^NAME\|^---' | awk '{print \$1}' | head -1); \
+    OUTPUT=\$(remi_cli attach \"\$SESSION\" --host $HOST --port $D1_PORT 2>&1); \
+    kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; \
+    echo \"\$OUTPUT\" | grep -q 'already attached'"
+
+# ---- Test Group 8: -- separator ----
 echo ""
 echo "== -- separator tests =="
 # Verify that -- stops remi flag parsing. --weird-flag should NOT cause a remi error.

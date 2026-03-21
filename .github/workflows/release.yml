@@ -52,6 +52,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Detect release type
+        id: release-type
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *"-dev"* ]]; then
+            echo "is_dev=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_dev=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -60,6 +71,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ steps.release-type.outputs.is_dev == 'true' }}
           generate_release_notes: true
           files: |
             artifacts/remi-darwin-arm64/remi-darwin-arm64
@@ -67,8 +79,12 @@ jobs:
             artifacts/remi-linux-x64/remi-linux-x64
             artifacts/remi-linux-arm64/remi-linux-arm64
 
+    outputs:
+      is_dev: ${{ steps.release-type.outputs.is_dev }}
+      npm_tag: ${{ steps.release-type.outputs.npm_tag }}
+
   publish-npm:
-    needs: build
+    needs: [build, release]
     runs-on: ubuntu-latest
 
     steps:
@@ -97,7 +113,7 @@ jobs:
             echo "ERROR: Invalid version from tag: '${GITHUB_REF_NAME}'" >&2
             exit 1
           fi
-          echo "Publishing version: $VERSION"
+          echo "Publishing version: $VERSION (tag: ${{ needs.release.outputs.npm_tag }})"
           REPO_ROOT="$(pwd)"
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             mkdir -p npm/remi-$PLAT/bin
@@ -124,18 +140,21 @@ jobs:
         run: |
           set -euo pipefail
           REPO_ROOT="$(pwd)"
+          NPM_TAG="${{ needs.release.outputs.npm_tag }}"
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            echo "Publishing @yooz-labs/remi-$PLAT..."
-            (cd "$REPO_ROOT/npm/remi-$PLAT" && npm publish --access public)
+            echo "Publishing @yooz-labs/remi-$PLAT (tag: $NPM_TAG)..."
+            (cd "$REPO_ROOT/npm/remi-$PLAT" && npm publish --access public --tag "$NPM_TAG")
           done
 
       - name: Publish main package
         run: |
           cd npm/remi
-          npm publish --access public
+          npm publish --access public --tag "${{ needs.release.outputs.npm_tag }}"
 
   update-homebrew:
-    needs: publish-npm
+    needs: [publish-npm, release]
+    # Only update Homebrew for stable releases
+    if: needs.release.outputs.is_dev == 'false'
     runs-on: ubuntu-latest
 
     steps:

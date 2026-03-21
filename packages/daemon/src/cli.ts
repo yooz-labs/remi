@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.2'; // REMI_COMPILED_VERSION
+      return '0.4.4-dev.6'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.2'; // REMI_COMPILED_VERSION
+    return '0.4.4-dev.6'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -325,6 +325,7 @@ function resolveDirectory(
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
 import { parseArgs } from './cli/arg-parser.ts';
+import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
 
@@ -337,74 +338,11 @@ if (parsedArgs.showVersion) {
   process.exit(0);
 }
 if (parsedArgs.showHelp) {
-  console.log(`
-Remi - Claude Code with remote monitoring
-
-Usage:
-  remi [claude-args...]          Start Claude with WebSocket monitoring
-  remi new [-- claude-args...]   Explicit session creation (alias for remi [args])
-  remi new --dir <path>          Start session in a specific directory
-  remi new --recent              Pick from recent directories
-  remi new --host <ip>           Create session on remote daemon and attach
-  remi kill <name>               Kill a session by name or ID
-  remi detach [name]             Detach from current or named session
-  remi start                     Start daemon in background
-  remi stop                      Stop background daemon
-  remi status                    Show daemon status
-  remi logs                      Show recent daemon logs
-  remi recent                    Browse recent project directories
-  remi ls                        List live sessions from running daemon
-  remi ls --network              Discover and list sessions across the network
-  remi attach [session-id]       Attach to a session (detach: Ctrl+B d)
-  remi attach host:port/id       Attach to a remote session
-  remi code                      Show remote access connection code
-  remi code --refresh            Generate a new connection code
-  remi keygen                    Generate Ed25519 identity keypair
-  remi export-key                Export identity JSON (for sharing across devices)
-  remi import-key [file]         Import identity from file or stdin
-  remi authorize <key-file>      Add a client's public key to authorized keys
-  remi keys                      List authorized keys
-  remi --resume [session-id]     Resume a previous session
-  remi --sessions                List stored sessions
-  remi --daemon                  Daemon mode (headless server, prefer remi start)
-
-Options:
-  --port PORT              WebSocket port (default: 18765, env: REMI_PORT)
-  --max-bullet-length N    Truncate bullets longer than N chars (default: 500, 0=disabled)
-  --no-telegram            Disable Telegram adapter
-  --no-relay               Disable signaling relay (no remote access via connection code)
-  --permanent-code         Use a persistent connection code (requires Ed25519 auth over relay)
-  --signaling-url URL      Signaling server URL (default: wss://remi-signaling.dev-941.workers.dev/connect)
-  --bind HOST              Bind WebSocket to HOST (default: 0.0.0.0; use --local for localhost-only)
-  --force                  Overwrite existing identity (keygen/import-key)
-  --passphrase             Encrypt identity with a passphrase (keygen)
-  --auth                   Force enable authentication (default: auto based on --bind)
-  --no-auth                Disable authentication (even when binding to all interfaces)
-  --no-tofu                Reject unknown clients (disable Trust On First Use)
-  --local                  Localhost-only mode (--bind localhost --no-mdns)
-  --no-mdns                Disable mDNS network advertising
-  --host HOST              Connect to daemon at HOST (for ls/attach/new/recent; default: localhost)
-  --dir PATH               Working directory for new session (mutually exclusive with --recent)
-  --recent                 Pick from recent project directories (for new/recent subcommands)
-  --label NAME             Label for authorized key (authorize)
-  --public-only            Export only public key (export-key)
-  --remove FINGERPRINT     Remove authorized key by fingerprint (authorize)
-  --install                Install as autostart service
-  --uninstall              Remove autostart service
-  --version, -v            Show version
-  --help, -h               Show this help
-
-Environment:
-  REMI_PORT                WebSocket port
-  REMI_MAX_BULLET_LENGTH   Max bullet length before truncation (default: 500, 0=disabled)
-  TELEGRAM_BOT_TOKEN       Telegram bot token (enables Telegram adapter)
-  REMI_PASSPHRASE              Passphrase for identity operations (avoids interactive prompt)
-  TELEGRAM_ENABLED              Set to 'false' to disable Telegram
-  TELEGRAM_AUTHORIZED_CHAT_IDS  Comma-separated authorized chat IDs
-  TELEGRAM_AUTHORIZED_USER_IDS  Comma-separated authorized user IDs
-
-Any other arguments are passed through to Claude Code.
-`);
+  if (parsedArgs.subcommand) {
+    console.log(formatCommandHelp(parsedArgs.subcommand));
+  } else {
+    console.log(formatHelp(REMI_VERSION));
+  }
   process.exit(0);
 }
 
@@ -436,10 +374,40 @@ const cliNetwork = parsedArgs.network;
 const cliHost = parsedArgs.host;
 const cliDir = parsedArgs.dir;
 const cliRecent = parsedArgs.recent;
+const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
 if (cliDaemonMode) {
   wrapperMode = false;
+}
+
+// ---------------------------------------------------------------------------
+// Resolve remote target from positional arg (host:port/session format)
+// Runs once for subcommands that accept session targets (attach, kill, detach)
+// ---------------------------------------------------------------------------
+import { type ResolvedTarget, TargetParseError, resolveTarget } from './cli/target-resolver.ts';
+
+const envPort = process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined;
+let resolved: ResolvedTarget = {
+  host: cliHost ?? 'localhost',
+  port: cliPort ?? envPort ?? DEFAULT_BASE_PORT,
+  targetId: cliSubcommandArg,
+};
+if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 'detach') {
+  try {
+    resolved = resolveTarget({
+      subcommandArg: cliSubcommandArg,
+      cliHost,
+      cliPort: cliPort ?? envPort,
+      defaultPort: DEFAULT_BASE_PORT,
+    });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    if (err instanceof TargetParseError && err.suggestion) {
+      console.error(`  Run: remi ${cliSubcommand} ${err.suggestion}`);
+    }
+    process.exit(1);
+  }
 }
 
 // Handle --install / --uninstall
@@ -615,8 +583,10 @@ if (
   const dm = await import('./cli/daemon-manager.ts');
 
   if (cliSubcommand === 'start') {
-    const resolvedPort =
-      cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
+    // Only pass port if user explicitly set --port flag.
+    // Do NOT inherit REMI_PORT from env (it's set by wrapper sessions and
+    // would conflict). The daemon finds its own free port.
+    const explicitPort = cliPort;
     const extraArgs: string[] = [];
     if (cliBindHost) extraArgs.push('--bind', cliBindHost);
     if (cliAuth === true) extraArgs.push('--auth');
@@ -626,7 +596,9 @@ if (
     if (cliNoTelegram) extraArgs.push('--no-telegram');
     if (cliPermanentCode) extraArgs.push('--permanent-code');
     if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
-    dm.startDaemon({ port: resolvedPort, extraArgs });
+    if (cliOrphanTimeout !== undefined)
+      extraArgs.push('--orphan-timeout', String(cliOrphanTimeout));
+    await dm.startDaemon({ port: explicitPort, extraArgs });
   } else if (cliSubcommand === 'stop') {
     dm.stopDaemon();
   } else if (cliSubcommand === 'status') {
@@ -718,21 +690,21 @@ if (cliSubcommand === 'recent') {
 
 // Handle 'kill' subcommand: kill a session by name or ID
 if (cliSubcommand === 'kill') {
-  if (!cliSubcommandArg) {
+  if (!resolved.targetId) {
     console.error('Usage: remi kill <session-name-or-id>');
+    console.error('  Examples: remi kill my-session');
+    console.error('            remi kill host:port/session-name');
+    console.error('            remi kill my-session --host 192.168.1.1');
     console.error('Run `remi ls` to see live sessions.');
     process.exit(1);
   }
-  let resolvedPort =
-    cliPort ??
-    (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : DEFAULT_BASE_PORT);
-  const resolvedHost = cliHost ?? 'localhost';
+  let resolvedPort = resolved.port;
 
-  // Resolve port from live registry if target matches a known session
-  if (!cliPort && !cliHost) {
+  // Resolve port from live registry if target matches a known local session
+  if (!cliPort && resolved.host === 'localhost') {
     const liveMatch =
-      liveSessionsRegistry.findByName(cliSubcommandArg) ??
-      liveSessionsRegistry.findBySessionId(cliSubcommandArg);
+      liveSessionsRegistry.findByName(resolved.targetId) ??
+      liveSessionsRegistry.findBySessionId(resolved.targetId);
     if (liveMatch) {
       resolvedPort = liveMatch.wsPort;
     }
@@ -741,9 +713,9 @@ if (cliSubcommand === 'kill') {
   const { runKillClient } = await import('./cli/kill-client.ts');
   try {
     await runKillClient({
-      host: resolvedHost,
+      host: resolved.host,
       port: resolvedPort,
-      target: cliSubcommandArg,
+      target: resolved.targetId,
     });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -756,7 +728,7 @@ if (cliSubcommand === 'kill') {
 if (cliSubcommand === 'detach') {
   // Without args: not meaningful from CLI (Ctrl+B d handles interactive detach)
   // With name: informational only; there's no remote detach protocol yet
-  if (!cliSubcommandArg) {
+  if (!resolved.targetId) {
     console.log('To detach from a session interactively, press Ctrl+B d.');
     console.log('To detach a specific session by name: remi detach <session-name>');
     console.log('(Remote detach is not yet implemented; use Ctrl+B d in the attached terminal.)');
@@ -770,52 +742,15 @@ if (cliSubcommand === 'detach') {
 // Handle 'attach' subcommand: attach terminal to an orphaned session
 if (cliSubcommand === 'attach') {
   const store = new SessionStore();
-  let targetSessionId = cliSubcommandArg;
-  let resolvedPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 18765);
-  let resolvedHost = cliHost ?? 'localhost';
+  let targetSessionId = resolved.targetId;
+  let resolvedPort = resolved.port;
+  let resolvedHost = resolved.host;
 
-  // Check for remote attach formats:
-  //   host:port/session-id  (e.g., 192.168.0.83:18765/name)
-  //   host:port             (e.g., 192.168.0.83:18767 - auto-attach to session on that port)
-  // Remote targets have a numeric port between the last colon and first slash (or end of string).
-  // Session names (hostname:dir/branch) have a non-numeric directory segment there.
-  // Note: a purely numeric directory name (e.g., "8765") would be misidentified as a port.
-  const firstSlash = targetSessionId?.indexOf('/') ?? -1;
-  const colonIdx = firstSlash > 0 ? targetSessionId?.lastIndexOf(':', firstSlash - 1) : -1;
-  const hasRemoteFormat =
-    colonIdx != null &&
-    colonIdx > 0 &&
-    /^\d+$/.test(targetSessionId?.slice(colonIdx + 1, firstSlash) ?? '');
-
-  // Also check for host:port without slash (e.g., 100.79.39.98:18767)
-  // Detect trailing copy-paste garbage (e.g., 100.79.39.98:18767idle) and suggest correction
-  const { parseHostPort } = await import('./cli/ls-client.ts');
-  const hostPortParsed = targetSessionId ? parseHostPort(targetSessionId) : null;
-  if (hostPortParsed?.cleaned && targetSessionId) {
-    const corrected = `${hostPortParsed.host}:${hostPortParsed.port}`;
-    console.error(`Invalid target "${targetSessionId}". Did you mean "${corrected}"?`);
-    console.error(`  Run: remi attach ${corrected}`);
-    process.exit(1);
-  }
-  const isHostPort = !hasRemoteFormat && hostPortParsed != null && !hostPortParsed.cleaned;
-
-  if (targetSessionId && hasRemoteFormat) {
-    try {
-      const { parseRemoteTarget } = await import('./cli/ls-client.ts');
-      const remote = parseRemoteTarget(targetSessionId, resolvedPort);
-      resolvedHost = remote.host;
-      resolvedPort = remote.port;
-      targetSessionId = remote.sessionId;
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else if (targetSessionId && isHostPort && hostPortParsed) {
-    // Direct host:port attach - auto-attach to the session on that specific port
-    resolvedHost = hostPortParsed.host;
-    resolvedPort = hostPortParsed.port;
-    targetSessionId = undefined; // will be resolved by fetching sessions from that port
+  const hasExplicitRemoteTarget =
+    resolvedHost !== 'localhost' ||
+    (resolvedHost === 'localhost' && cliSubcommandArg?.includes(':'));
+  if (!targetSessionId && hasExplicitRemoteTarget) {
+    // host:port without session ID (auto-attach to session on that port)
     try {
       const { fetchSessions } = await import('./cli/ls-client.ts');
       const sessions = await fetchSessions(resolvedHost, resolvedPort, 5000);
@@ -1269,9 +1204,10 @@ const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const sessionStore = new SessionStore();
 
+const orphanTimeoutMs = cliOrphanTimeout !== undefined ? cliOrphanTimeout * 1000 : 5 * 60 * 1000;
 const sessionRegistry = new SessionRegistry(
   {
-    orphanTimeoutMs: 5 * 60 * 1000,
+    orphanTimeoutMs,
     maxReplayHistory: 1000,
   },
   {
@@ -1708,6 +1644,22 @@ const sharedEvents = {
       return;
     }
 
+    // Check if resume target exists but is busy (another client attached)
+    if (resumeSessionId) {
+      const resumeTarget = sessionRegistry.getSession(resumeSessionId);
+      if (resumeTarget && resumeTarget.activeConnectionId !== null) {
+        log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
+        sendToConnection(
+          connectionId,
+          createError(
+            'SESSION_BUSY',
+            "Session is already attached by another client. Wait for them to detach (Ctrl+B d) or use 'remi kill' to force disconnect.",
+          ),
+        );
+        return;
+      }
+    }
+
     if (resumeSessionId && sessionRegistry.canResume(resumeSessionId)) {
       log(`Resuming session ${resumeSessionId}...`);
       const result = sessionRegistry.attachConnection(resumeSessionId, connectionId);
@@ -1992,9 +1944,15 @@ const sharedEvents = {
       );
     }
 
+    const hadActiveClient =
+      session.activeConnectionId !== null && session.activeConnectionId !== connectionId;
     sessionRegistry.closeSession(sessionId, 'forced');
     sendToConnection(connectionId, createKillSessionResponse(true, requestId));
-    log(`Session killed: ${sessionName}`);
+    if (hadActiveClient) {
+      log(`Session killed: ${sessionName} (disconnected attached client)`);
+    } else {
+      log(`Session killed: ${sessionName}`);
+    }
   },
 
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => {
@@ -2238,11 +2196,74 @@ async function cleanup(): Promise<void> {
 if (cliDaemonMode) {
   // Daemon mode: headless server, spawns Claude on WebSocket connect
   console.log('Starting Remi daemon...');
-  await registry.startAll();
+
+  // Start all adapters. On EADDRINUSE, retry only the WebSocket adapter with next port.
+  // Other adapters (Telegram, Relay) start once and stay running across retries.
+  try {
+    await registry.startAll();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isAddrInUse = msg.includes('EADDRINUSE') || msg.includes('in use');
+
+    if (!isAddrInUse || portExplicitlySet) {
+      if (isAddrInUse) {
+        console.error(`Port ${PORT} is already in use.`);
+        console.error('Use --port to specify a different port, or stop existing sessions.');
+      } else {
+        console.error(`Failed to start daemon: ${msg}`);
+      }
+      process.exit(1);
+    }
+
+    // EADDRINUSE with auto-port: retry WebSocket adapter on next available port
+    let wsStarted = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const nextPort = liveSessionsRegistry.findAvailablePort(
+        PORT + 1,
+        DEFAULT_PORT_RANGE - (PORT - DEFAULT_BASE_PORT + 1),
+      );
+      if (nextPort === null) break;
+
+      console.log(`Port ${PORT} in use, trying ${nextPort}...`);
+      try {
+        await registry.unregister('websocket');
+      } catch (teardownErr) {
+        const teardownMsg =
+          teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        console.error(`Failed to tear down WebSocket adapter on port ${PORT}: ${teardownMsg}`);
+      }
+      PORT = nextPort;
+      STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+      HOOK_PORT = PORT + 100;
+      const retryWsAdapter = new WebSocketAdapter(
+        { port: PORT, host: bindHost, authenticator },
+        sharedEvents,
+      );
+      registry.register(retryWsAdapter);
+
+      try {
+        await retryWsAdapter.start();
+        wsStarted = true;
+        break;
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        if (!retryMsg.includes('EADDRINUSE') && !retryMsg.includes('in use')) {
+          console.error(`Failed to start daemon: ${retryMsg}`);
+          process.exit(1);
+        }
+      }
+    }
+
+    if (!wsStarted) {
+      console.error('All ports in range are in use.');
+      console.error('Use --port to specify a different port, or stop existing sessions.');
+      process.exit(1);
+    }
+  }
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Write status.json so remi status/start can detect running daemon
+  // Write status so remi status/start can detect running daemon
   updateRemiStatus({ wsPort: PORT, sessionStatus: 'starting' });
 
   console.log('');

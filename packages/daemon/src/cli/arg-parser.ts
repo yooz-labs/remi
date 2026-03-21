@@ -42,6 +42,17 @@ export function isSubcommand(s: string): s is Subcommand {
   return SUBCOMMANDS.has(s);
 }
 
+/** Check if a string looks like a filesystem path (for `remi new /path` support). */
+export function isPathLike(s: string): boolean {
+  return (
+    s === '.' ||
+    s.startsWith('/') ||
+    s.startsWith('~/') ||
+    s.startsWith('./') ||
+    s.startsWith('../')
+  );
+}
+
 export interface ParsedArgs {
   readonly port: number | undefined;
   readonly noTelegram: boolean;
@@ -70,6 +81,7 @@ export interface ParsedArgs {
   readonly host: string | undefined;
   readonly dir: string | undefined;
   readonly recent: boolean;
+  readonly orphanTimeout: number | undefined;
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
   readonly showHelp: boolean;
@@ -88,6 +100,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let showSessions = false;
   let install = false;
   let uninstall = false;
+  let orphanTimeout: number | undefined;
   let subcommand: Subcommand | undefined;
   let subcommandArg: string | undefined;
   let codeRefresh = false;
@@ -155,6 +168,18 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
           error = `Error: Invalid max-bullet-length "${nextArg}". Must be a non-negative integer.`;
         } else {
           maxBulletLength = parsed;
+        }
+        i++;
+      }
+    } else if (arg === '--orphan-timeout') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --orphan-timeout requires a value in seconds.';
+      } else {
+        const parsed = Number.parseInt(nextArg);
+        if (Number.isNaN(parsed) || parsed < 0) {
+          error = `Error: Invalid orphan-timeout "${nextArg}". Must be a non-negative integer (seconds).`;
+        } else {
+          orphanTimeout = parsed;
         }
         i++;
       }
@@ -252,6 +277,18 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       if (SUBCOMMANDS_WITH_POSITIONAL_ARG.has(subcommand) && nextArg && !nextArg.startsWith('-')) {
         subcommandArg = nextArg;
         i++;
+      } else if (
+        subcommand === 'new' &&
+        nextArg &&
+        !nextArg.startsWith('-') &&
+        isPathLike(nextArg)
+      ) {
+        // remi new /path → treat as --dir
+        if (recent) {
+          error = 'Error: --dir and --recent are mutually exclusive.';
+        }
+        dir = nextArg;
+        i++;
       }
       if (arg === 'code' && nextArg === '--refresh') {
         codeRefresh = true;
@@ -298,6 +335,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     host,
     dir,
     recent,
+    orphanTimeout,
     claudeArgs,
     showVersion,
     showHelp,

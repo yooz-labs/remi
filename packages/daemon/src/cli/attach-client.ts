@@ -261,6 +261,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         return;
       }
 
+      if (msg.type === 'error' && msg.code === 'SESSION_BUSY') {
+        writeOutput(`\n${msg.message}\n`);
+        finish({ exitCode: 1, reason: 'error' });
+        return;
+      }
+
       renderMessage(msg);
     }
 
