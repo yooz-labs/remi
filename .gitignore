@@ -75,3 +75,5 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+test-results/
+playwright-report/
