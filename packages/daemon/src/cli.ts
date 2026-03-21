@@ -313,32 +313,79 @@ function logError(...args: unknown[]): void {
  * Resolve the user's full PATH from their login shell.
  * LaunchAgents and systemd services inherit a minimal PATH that doesn't
  * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
- * This runs the login shell to get the real PATH and replaces process.env.PATH with it.
+ *
+ * Strategy:
+ * 1. Run login shell (`zsh -l -c`) which sources .zprofile
+ * 2. If that returns a suspiciously short PATH (missing Homebrew/bun),
+ *    try interactive login shell (`zsh -l -i -c`) which also sources .zshrc
+ * 3. Merge well-known tool directories as a final fallback
  */
 function resolveShellPath(): void {
-  try {
-    const shell = process.env['SHELL'] || '/bin/zsh';
-    const result = Bun.spawnSync([shell, '-l', '-c', 'echo $PATH'], {
-      env: process.env,
-      timeout: 5000,
-    });
-    if (result.exitCode !== 0) {
-      const stderr = result.stderr?.toString().trim() || '(no stderr)';
-      logError(`[PATH] Shell '${shell}' exited with code ${result.exitCode}: ${stderr}`);
+  const shell = process.env['SHELL'] || '/bin/zsh';
+  const currentPath = process.env['PATH'] || '';
+
+  // Try login shell first, then interactive login shell
+  const attempts: Array<{ flags: string[]; label: string }> = [
+    { flags: ['-l', '-c', 'echo $PATH'], label: 'login' },
+    { flags: ['-l', '-i', '-c', 'echo $PATH'], label: 'interactive login' },
+  ];
+
+  for (const { flags, label } of attempts) {
+    try {
+      const result = Bun.spawnSync([shell, ...flags], {
+        env: process.env,
+        timeout: 5000,
+      });
+      if (result.exitCode !== 0) {
+        const stderr = result.stderr?.toString().trim() || '(no stderr)';
+        log(`[PATH] ${label} shell exited with code ${result.exitCode}: ${stderr}`);
+        continue;
+      }
+      const shellPath = result.stdout?.toString().trim();
+      if (!shellPath) {
+        log(`[PATH] ${label} shell returned empty PATH`);
+        continue;
+      }
+
+      // Merge: use the shell PATH as the base, then append any entries from the
+      // current PATH that the shell didn't include (e.g., tool-injected directories).
+      // This ensures we never lose entries that were already available.
+      const shellEntries = shellPath.split(':');
+      const shellSet = new Set(shellEntries);
+      const extraFromCurrent = currentPath.split(':').filter((e) => e && !shellSet.has(e));
+      const merged = [...shellEntries, ...extraFromCurrent].join(':');
+      if (merged === currentPath) {
+        log(`[PATH] ${label} shell returned no new entries`);
+        continue;
+      }
+
+      process.env['PATH'] = merged;
+      log(
+        `[PATH] Resolved via ${label} shell (${shellEntries.length} shell + ${extraFromCurrent.length} existing)`,
+      );
       return;
+    } catch (err) {
+      logError(`[PATH] ${label} shell failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    const shellPath = result.stdout?.toString().trim();
-    if (!shellPath) {
-      logError(`[PATH] Shell '${shell}' returned empty PATH`);
-      return;
-    }
-    // Replace with shell's PATH entirely; it's the authoritative source
-    // and preserves the user's intended priority order
-    process.env['PATH'] = shellPath;
-  } catch (err) {
-    logError(
-      `[PATH] Failed to resolve shell PATH: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  }
+
+  // Fallback: merge well-known directories into the current PATH
+  const home = os.homedir();
+  const wellKnownDirs = [
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    `${home}/.bun/bin`,
+    `${home}/.local/bin`,
+    '/usr/local/bin',
+  ];
+
+  const pathSet = new Set(currentPath.split(':'));
+  const missing = wellKnownDirs.filter((d) => !pathSet.has(d) && fs.existsSync(d));
+  if (missing.length > 0) {
+    process.env['PATH'] = [...missing, currentPath].join(':');
+    log(`[PATH] Shell resolution failed, merged ${missing.length} well-known directories`);
+  } else {
+    logError('[PATH] Shell resolution failed and no well-known directories to add');
   }
 }
 
@@ -2446,10 +2493,14 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Main: Start in wrapper or daemon mode
 // ---------------------------------------------------------------------------
+// Ensure PATH includes user-installed tools (claude, bun, etc.).
+// In daemon mode this is critical (LaunchAgent/systemd have minimal PATH).
+// In wrapper mode the terminal provides the PATH, but resolveShellPath
+// merges (never drops existing entries) so it's safe to call, and ensures
+// remote session creation works even after the terminal is detached (SIGHUP).
+resolveShellPath();
+
 if (cliDaemonMode) {
-  // Daemon mode: headless server, spawns Claude on WebSocket connect
-  // Resolve user's login shell PATH so spawned sessions can find tools like `claude`
-  resolveShellPath();
   console.log('Starting Remi daemon...');
 
   // Start all adapters. On EADDRINUSE, retry only the WebSocket adapter with next port.
