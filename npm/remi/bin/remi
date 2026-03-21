@@ -109,8 +109,8 @@ try {
       try {
         const cacheKey = require.resolve(`${pkg}/package.json`);
         delete require.cache[cacheKey];
-      } catch (_) {
-        // cache entry may not exist
+      } catch (cacheErr) {
+        console.error(`[remi] Cache clear failed: ${cacheErr.message}`);
       }
       try {
         platPkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
@@ -122,6 +122,7 @@ try {
             `[remi] Upgrade ran but binary is still ${newPlatPkg.version} (expected ${wrapperPkg.version})`
           );
           console.error(`[remi] Fix: bun install -g ${pkg}@${wrapperPkg.version}`);
+          console.error(`[remi] Continuing with outdated binary...`);
         }
       } catch (resolveErr) {
         console.error(
@@ -138,7 +139,7 @@ try {
     }
   }
 } catch (err) {
-  console.error(`[remi] Version check skipped: ${err.message}`);
+  console.error(`[remi] Version check/upgrade failed: ${err.message}`);
 }
 
 const result = spawnSync(binPath, process.argv.slice(2), {

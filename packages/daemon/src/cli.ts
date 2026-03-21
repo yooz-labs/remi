@@ -336,9 +336,16 @@ function resolveShellPath(): void {
         env: process.env,
         timeout: 5000,
       });
-      if (result.exitCode !== 0) continue;
+      if (result.exitCode !== 0) {
+        const stderr = result.stderr?.toString().trim() || '(no stderr)';
+        log(`[PATH] ${label} shell exited with code ${result.exitCode}: ${stderr}`);
+        continue;
+      }
       const shellPath = result.stdout?.toString().trim();
-      if (!shellPath) continue;
+      if (!shellPath) {
+        log(`[PATH] ${label} shell returned empty PATH`);
+        continue;
+      }
 
       // Merge: use the shell PATH as the base, then append any entries from the
       // current PATH that the shell didn't include (e.g., tool-injected directories).
@@ -347,15 +354,18 @@ function resolveShellPath(): void {
       const shellSet = new Set(shellEntries);
       const extraFromCurrent = currentPath.split(':').filter((e) => e && !shellSet.has(e));
       const merged = [...shellEntries, ...extraFromCurrent].join(':');
-      if (merged === currentPath) continue; // no improvement
+      if (merged === currentPath) {
+        log(`[PATH] ${label} shell returned no new entries`);
+        continue;
+      }
 
       process.env['PATH'] = merged;
       log(
         `[PATH] Resolved via ${label} shell (${shellEntries.length} shell + ${extraFromCurrent.length} existing)`,
       );
       return;
-    } catch {
-      // Try next attempt
+    } catch (err) {
+      logError(`[PATH] ${label} shell failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
