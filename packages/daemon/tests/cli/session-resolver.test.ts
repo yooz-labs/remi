@@ -25,6 +25,7 @@ function makeSession(name: string | undefined, id?: string): DiscoverableSession
     messageCount: 0,
     source: 'daemon',
     canAttach: true,
+    canResume: false,
   };
 }
 

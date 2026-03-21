@@ -93,7 +93,9 @@ export type ProtocolMessage =
   | KillSessionResponseMessage
   | RawPtyOutputMessage
   | SessionHistoryRequestMessage
-  | SessionHistoryResponseMessage;
+  | SessionHistoryResponseMessage
+  | ResumeSessionRequestMessage
+  | ResumeSessionResponseMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -371,6 +373,30 @@ export interface CreateSessionResponseMessage {
   readonly requestId: UUID;
 }
 
+/** Request to resume a dead/ended Claude Code session */
+export interface ResumeSessionRequestMessage {
+  readonly type: 'resume_session_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Remi session ID or Claude session ID of the session to resume */
+  readonly sessionId: string;
+}
+
+/** Response after attempting to resume a session */
+export interface ResumeSessionResponseMessage {
+  readonly type: 'resume_session_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** New session ID of the resumed session (present on success) */
+  readonly sessionId?: UUID;
+  /** Whether resume succeeded */
+  readonly success: boolean;
+  /** Error message if resume failed */
+  readonly error?: string;
+  /** ID of the original request */
+  readonly requestId: UUID;
+}
+
 /** Authentication challenge from server to client */
 export interface AuthChallengeMessage {
   readonly type: 'auth_challenge';
@@ -546,6 +572,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'raw_pty_output',
     'session_history_request',
     'session_history_response',
+    'resume_session_request',
+    'resume_session_response',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1061,6 +1089,38 @@ export function createSessionHistoryResponse(
     timestamp: now(),
     directories,
     requestId,
+  };
+}
+
+/**
+ * Create a request to resume a dead/ended Claude Code session.
+ */
+export function createResumeSessionRequest(sessionId: string): ResumeSessionRequestMessage {
+  return {
+    type: 'resume_session_request',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+  };
+}
+
+/**
+ * Create a response for a resume session request.
+ */
+export function createResumeSessionResponse(
+  success: boolean,
+  requestId: UUID,
+  sessionId?: UUID,
+  error?: string,
+): ResumeSessionResponseMessage {
+  return {
+    type: 'resume_session_response',
+    id: generateId(),
+    timestamp: now(),
+    success,
+    requestId,
+    ...(sessionId !== undefined && { sessionId }),
+    ...(error !== undefined && { error }),
   };
 }
 

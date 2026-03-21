@@ -70,6 +70,8 @@ export type {
   RecentDirectory,
   SessionHistoryRequestMessage,
   SessionHistoryResponseMessage,
+  ResumeSessionRequestMessage,
+  ResumeSessionResponseMessage,
 } from './protocol.ts';
 
 export {
@@ -108,6 +110,8 @@ export {
   createRawPtyOutput,
   createSessionHistoryRequest,
   createSessionHistoryResponse,
+  createResumeSessionRequest,
+  createResumeSessionResponse,
   MessageIdTracker,
 } from './protocol.ts';
 

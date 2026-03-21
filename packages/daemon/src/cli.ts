@@ -231,6 +231,7 @@ import {
   createKillSessionResponse,
   createRawPtyOutput,
   createReplayBatch,
+  createResumeSessionResponse,
   createSessionHistoryResponse,
   createSessionListResponse,
   createTranscriptLoadComplete,
@@ -1952,6 +1953,146 @@ const sharedEvents = {
       log(`Session killed: ${sessionName} (disconnected attached client)`);
     } else {
       log(`Session killed: ${sessionName}`);
+    }
+  },
+
+  onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
+    log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
+
+    // Check if this session is still alive in the registry
+    const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
+    if (existingSession) {
+      const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
+      if (result.success) {
+        sendToConnection(
+          connectionId,
+          createResumeSessionResponse(true, requestId, targetSessionId as UUID),
+        );
+        sendToConnection(
+          connectionId,
+          createHelloAck('1.0.0', targetSessionId as UUID, {
+            isResume: true,
+            replayCount: result.replayMessages.length,
+            nextBulletId: result.nextBulletId,
+          }),
+        );
+        if (result.replayMessages.length > 0) {
+          sendToConnection(
+            connectionId,
+            createReplayBatch(targetSessionId as UUID, result.replayMessages, true),
+          );
+        }
+        log(`Session ${targetSessionId} still alive; attached connection`);
+        return;
+      }
+      sendToConnection(
+        connectionId,
+        createResumeSessionResponse(false, requestId, undefined, result.error),
+      );
+      return;
+    }
+
+    // Look up Claude session ID from SessionStore
+    let claudeSessionId: string | null = null;
+    let projectPath: string | null = null;
+
+    const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
+    if (storedByRemi) {
+      claudeSessionId = storedByRemi.claudeSessionId;
+      projectPath = storedByRemi.projectPath;
+    }
+
+    if (!claudeSessionId) {
+      const storedByClaude = sessionStore.findByClaudeSessionId(targetSessionId);
+      if (storedByClaude) {
+        claudeSessionId = storedByClaude.claudeSessionId;
+        projectPath = storedByClaude.projectPath;
+      }
+    }
+
+    // For transcript-only sessions: the sessionId IS the Claude session ID
+    if (!claudeSessionId) {
+      const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
+      if (transcriptPath) {
+        claudeSessionId = targetSessionId;
+        // Decode project path from transcript directory name
+        const dirName = path.basename(path.dirname(transcriptPath));
+        projectPath = dirName.replace(/-/g, '/');
+      }
+    }
+
+    if (!claudeSessionId) {
+      sendToConnection(
+        connectionId,
+        createResumeSessionResponse(
+          false,
+          requestId,
+          undefined,
+          `Session ${targetSessionId} not found. No Claude session ID available for resume.`,
+        ),
+      );
+      return;
+    }
+
+    // Validate project path exists
+    const dirResult = resolveDirectory(projectPath);
+    if ('error' in dirResult) {
+      sendToConnection(
+        connectionId,
+        createResumeSessionResponse(
+          false,
+          requestId,
+          undefined,
+          `Project directory no longer exists: ${projectPath}`,
+        ),
+      );
+      return;
+    }
+    const workingDirectory = dirResult.resolved;
+
+    // Spawn new PTY with --resume
+    const newSessionId = sessionRegistry.createSessionId();
+    log(
+      `Resuming Claude session ${claudeSessionId} as new Remi session ${newSessionId} in ${workingDirectory}`,
+    );
+
+    try {
+      await createNewSession(
+        newSessionId,
+        workingDirectory,
+        (sid, msg) => {
+          const session = sessionRegistry.getSession(sid);
+          if (session?.activeConnectionId) {
+            sendToConnection(session.activeConnectionId, msg);
+          }
+        },
+        ['--resume', claudeSessionId],
+      );
+
+      const result = sessionRegistry.attachConnection(newSessionId, connectionId);
+
+      if (result.success) {
+        sendToConnection(connectionId, createResumeSessionResponse(true, requestId, newSessionId));
+        sendToConnection(
+          connectionId,
+          createHelloAck('1.0.0', newSessionId, {
+            isResume: false,
+            replayCount: 0,
+            nextBulletId: 1,
+          }),
+        );
+        log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);
+      } else {
+        sessionRegistry.closeSession(newSessionId, 'forced');
+        sendToConnection(
+          connectionId,
+          createResumeSessionResponse(false, requestId, undefined, result.error),
+        );
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logError('Failed to resume session:', msg);
+      sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
     }
   },
 

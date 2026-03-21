@@ -28,6 +28,7 @@ import {
   createBulletExpandRequest,
   createCreateSessionRequest,
   createHello,
+  createResumeSessionRequest,
   createSessionHistoryRequest,
   createSessionListRequest,
   createTranscriptLoadRequest,
@@ -110,6 +111,7 @@ function App() {
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
+  const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
@@ -394,6 +396,7 @@ function App() {
           cwd: ds.projectPath,
           preview: ds.lastMessage || `${ds.messageCount} messages`,
           source: ds.source,
+          canResume: !ds.canAttach && ds.canResume,
         }));
 
         setSessions((prev) => {
@@ -456,6 +459,26 @@ function App() {
         break;
       }
 
+      case 'resume_session_response': {
+        setResumingSession(null);
+        if (message.success && message.sessionId) {
+          setActiveSessionId(message.sessionId);
+        } else {
+          console.error(`Failed to resume session: ${message.error}`);
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            sender: 'system',
+            content: `Failed to resume session: ${message.error ?? 'Unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        }
+        break;
+      }
+
       case 'error':
         console.error('Daemon error:', message);
         break;
@@ -509,6 +532,7 @@ function App() {
     requestSessionList,
     requestTranscriptLoad,
     requestNewSession,
+    requestResumeSession,
     requestSessionHistory,
     needsPassphrase,
     serverFingerprint,
@@ -596,6 +620,14 @@ function App() {
       return requestNewSession(directory);
     },
     [connectionMode, relaySend, requestNewSession],
+  );
+
+  const effectiveRequestResumeSession = useCallback(
+    (sessionId: string): boolean => {
+      if (connectionMode === 'relay') return relaySend(createResumeSessionRequest(sessionId));
+      return requestResumeSession(sessionId);
+    },
+    [connectionMode, relaySend, requestResumeSession],
   );
 
   const effectiveRequestSessionHistory = useCallback(
@@ -975,6 +1007,15 @@ function App() {
     [effectiveRequestNewSession, creatingSession],
   );
 
+  const handleResumeSession = useCallback(
+    (sessionId: string) => {
+      if (resumingSession) return;
+      setResumingSession(sessionId);
+      effectiveRequestResumeSession(sessionId);
+    },
+    [effectiveRequestResumeSession, resumingSession],
+  );
+
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
@@ -1010,6 +1051,8 @@ function App() {
       activeSessionId={activeSessionId}
       onSelectSession={handleSelectSession}
       onNewSession={canCreateSession ? handleNewSession : undefined}
+      onResumeSession={effectiveStatus === 'connected' ? handleResumeSession : undefined}
+      resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
       onSettings={() => setShowSettings(true)}
       recentDirectories={recentDirectories}

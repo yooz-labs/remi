@@ -74,6 +74,9 @@ export interface ServerEvents {
   /** Kill session request from client */
   onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
 
+  /** Resume session request from client */
+  onResumeSessionRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
+
   /** Session history request from client */
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
 
@@ -318,6 +321,10 @@ export class WebSocketServer {
 
       onKillSessionRequest: (sessionId, requestId) => {
         this.events.onKillSessionRequest?.(ws.data.connectionId, sessionId, requestId);
+      },
+
+      onResumeSessionRequest: (sessionId, requestId) => {
+        this.events.onResumeSessionRequest?.(ws.data.connectionId, sessionId, requestId);
       },
 
       onSessionHistoryRequest: (requestId, limit) => {

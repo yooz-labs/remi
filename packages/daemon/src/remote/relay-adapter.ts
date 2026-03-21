@@ -289,6 +289,13 @@ export class RelayAdapter implements ConnectionAdapter {
           msg['id'],
         );
         break;
+      case 'resume_session_request':
+        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
+          console.warn('Invalid resume_session_request payload: missing sessionId or id');
+          return;
+        }
+        this.events.onResumeSessionRequest?.(connectionId, msg['sessionId'], msg['id']);
+        break;
       case 'bullet_expand_request':
         if (
           typeof msg['sessionId'] !== 'string' ||
