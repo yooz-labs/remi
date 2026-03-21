@@ -277,6 +277,16 @@ import type { AssistantEntry } from './transcript/index.ts';
 // ---------------------------------------------------------------------------
 let wrapperMode = true; // Default to wrapper mode
 let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
+let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
+
+/** Cancel the SIGHUP orphan timeout when a remote client attaches. */
+function cancelOrphanTimeout(): void {
+  if (sighupTimeoutId !== null) {
+    clearTimeout(sighupTimeoutId);
+    sighupTimeoutId = null;
+    log('[SIGHUP] Orphan timeout cancelled: remote client attached');
+  }
+}
 
 function log(...args: unknown[]): void {
   if (wrapperMode) {
@@ -1015,17 +1025,37 @@ if (cliSubcommand === 'attach') {
 // Handle --sessions quickly
 if (cliShowSessions) {
   const store = new SessionStore();
-  const sessions = store.list();
+  const allSessions = store.list();
+  const filter = cliShowSessions; // 'running' | 'all' | 'exited'
+  const sessions = allSessions.filter((s) => {
+    if (filter === 'all') return true;
+    if (filter === 'exited') return s.exitedAt !== null;
+    return s.exitedAt === null; // 'running'
+  });
+
   if (sessions.length === 0) {
-    console.log('No stored sessions.');
+    if (filter === 'running') {
+      console.log('No running sessions.');
+      const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
+      if (exitedCount > 0) {
+        console.log(`  ${exitedCount} exited session(s). Use --sessions all to show.`);
+      }
+    } else {
+      console.log('No stored sessions.');
+    }
   } else {
-    console.log('Stored sessions:');
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
       const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
       console.log(
         `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
       );
+    }
+    if (filter === 'running') {
+      const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
+      if (exitedCount > 0) {
+        console.log(`\n  ${exitedCount} exited session(s) hidden. Use --sessions all to show.`);
+      }
     }
   }
   process.exit(0);
@@ -1446,9 +1476,12 @@ async function createNewSession(
         sessionStore.markExited(sessionId, code);
 
         if (passThrough) {
-          cleanup().then(() => {
-            process.exit(code ?? 0);
-          });
+          cleanup()
+            .then(() => process.exit(code ?? 0))
+            .catch((err) => {
+              logError(`[PTY] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+              process.exit(1);
+            });
         }
       },
       onError: (error: Error) => {
@@ -1472,6 +1505,7 @@ async function createNewSession(
     claudeSessionId: null,
     projectPath: workingDirectory,
     port: PORT,
+    pid: process.pid,
     startedAt: new Date().toISOString(),
     exitedAt: null,
     exitCode: null,
@@ -1632,6 +1666,7 @@ const sharedEvents = {
               createReplayBatch(primarySessionId, result.replayMessages, true),
             );
           }
+          cancelOrphanTimeout();
           log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
           return;
         }
@@ -1681,6 +1716,7 @@ const sharedEvents = {
           );
         }
 
+        cancelOrphanTimeout();
         log(
           `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
         );
@@ -2139,7 +2175,13 @@ if (!cliNoRelay) {
 // ---------------------------------------------------------------------------
 // Cleanup helper
 // ---------------------------------------------------------------------------
+let cleanupRunning = false;
 async function cleanup(): Promise<void> {
+  if (cleanupRunning) return;
+  cleanupRunning = true;
+
+  cancelOrphanTimeout();
+
   // Restore terminal state before shutting down
   if (process.stdin.isTTY) {
     try {
@@ -2527,8 +2569,10 @@ if (cliDaemonMode) {
   });
 
   // Detach local terminal.
-  // SIGHUP (terminal closed): keep PTY + WebSocket alive as background daemon.
+  // SIGHUP (terminal closed): keep PTY + WebSocket alive for 30 minutes, then shut down.
   // Ctrl+B d (keybinding): cleanly exit and return the shell to the user.
+  const SIGHUP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
     if (wrapperDetached) return;
     wrapperDetached = true;
@@ -2547,14 +2591,36 @@ if (cliDaemonMode) {
     process.stdin.removeAllListeners('data');
 
     if (reason === 'sighup') {
-      // Terminal closed: keep running as orphaned process
+      // Terminal closed: keep running for 30 minutes so remote clients can attach.
+      // After the timeout, shut down to avoid accumulating orphaned sessions.
       process.stdin.unref();
       ptyStdoutFd = null;
-      log('Local terminal detached (SIGHUP), PTY and WebSocket server still running');
+      sighupTimeoutId = setTimeout(() => {
+        log('[SIGHUP] Orphan timeout reached (30m), shutting down');
+        cleanup()
+          .then(() => process.exit(0))
+          .catch((err) => {
+            logError(
+              `[SIGHUP] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            process.exit(1);
+          });
+      }, SIGHUP_TIMEOUT_MS);
+      // unref() so this timer alone won't keep the process alive if PTY + servers
+      // are already stopped (the process should exit naturally in that case).
+      sighupTimeoutId.unref();
+      log(
+        `Local terminal detached (SIGHUP), PTY and WebSocket server running for ${SIGHUP_TIMEOUT_MS / 60_000}m`,
+      );
     } else {
       // Ctrl+B d: cleanly shut down and return shell to user
       log('Ctrl+B d pressed, shutting down');
-      cleanup().then(() => process.exit(0));
+      cleanup()
+        .then(() => process.exit(0))
+        .catch((err) => {
+          logError(`[Detach] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        });
     }
   }
 
@@ -2583,10 +2649,14 @@ if (cliDaemonMode) {
       try {
         ptySession.signal('SIGTERM');
       } catch {
-        // ignore
+        // PTY may have exited
       }
     }
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (err) {
+      logError(`[SIGTERM] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     process.exit(0);
   });
 }

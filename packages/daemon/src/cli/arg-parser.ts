@@ -61,7 +61,7 @@ export interface ParsedArgs {
   readonly signalingUrl: string | undefined;
   readonly noRelay: boolean;
   readonly resume: string | true | undefined;
-  readonly showSessions: boolean;
+  readonly showSessions: 'running' | 'all' | 'exited' | false;
   readonly install: boolean;
   readonly uninstall: boolean;
   readonly subcommand: Subcommand | undefined;
@@ -97,7 +97,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let signalingUrl: string | undefined;
   let noRelay = false;
   let resume: string | true | undefined;
-  let showSessions = false;
+  let showSessions: 'running' | 'all' | 'exited' | false = false;
   let install = false;
   let uninstall = false;
   let orphanTimeout: number | undefined;
@@ -146,7 +146,15 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         resume = true;
       }
     } else if (arg === '--sessions') {
-      showSessions = true;
+      if (nextArg === '--all' || nextArg === 'all') {
+        showSessions = 'all';
+        i++;
+      } else if (nextArg === '--exited' || nextArg === 'exited') {
+        showSessions = 'exited';
+        i++;
+      } else {
+        showSessions = 'running';
+      }
     } else if (arg === '--port') {
       if (!nextArg || nextArg.startsWith('-')) {
         error = 'Error: --port requires a value.';
