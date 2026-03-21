@@ -587,6 +587,7 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
   // This handles cases where live-sessions files were cleaned up (PID died,
   // SIGHUP timeout expired) but a daemon is still reachable on a default port.
   if (ports.length === 0) {
+    console.error('No live session files found, probing default ports...');
     const fallbackPorts = getDefaultPortRange();
     const fallbackResults = await queryMultiplePorts({
       host: 'localhost',

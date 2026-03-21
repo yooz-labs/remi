@@ -44,8 +44,15 @@ function autoUpgradePlatformBinary(wrapperVersion) {
         console.error(`[remi] Upgraded ${pkg} to ${wrapperVersion} via ${cmd}`);
         return true;
       }
-    } catch (_) {
-      // Try next manager
+      const stderr = r.stderr?.toString().trim();
+      if (stderr) {
+        console.error(`[remi] ${cmd} upgrade failed (exit ${r.status}): ${stderr.split("\n")[0]}`);
+      }
+    } catch (err) {
+      // ENOENT = command not found (expected if npm/bun not installed); log anything else
+      if (err.code !== "ENOENT") {
+        console.error(`[remi] ${cmd} upgrade error: ${err.message}`);
+      }
     }
   }
   return false;
@@ -80,13 +87,16 @@ try {
   const platPkg = require(path.join(platPkgDir, "package.json"));
   if (wrapperPkg.version && platPkg.version && wrapperPkg.version !== platPkg.version) {
     if (autoUpgradePlatformBinary(wrapperPkg.version)) {
-      // Re-resolve after upgrade
+      // Re-resolve after upgrade to use the new binary
       try {
         delete require.cache[require.resolve(`${pkg}/package.json`)];
         platPkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
         binPath = path.join(platPkgDir, "bin", "remi");
-      } catch (_) {
-        // Fall through to original binPath
+      } catch (resolveErr) {
+        console.error(
+          `[remi] Upgrade succeeded but failed to resolve new binary: ${resolveErr.message}`
+        );
+        console.error(`[remi] Running previously resolved binary at: ${binPath}`);
       }
     } else {
       console.error(
@@ -96,8 +106,8 @@ try {
       console.error(`[remi]   npm install -g @yooz-labs/remi@${wrapperPkg.version}`);
     }
   }
-} catch (_) {
-  // Non-fatal; skip version check if package.json is unreadable
+} catch (err) {
+  console.error(`[remi] Version check skipped: ${err.message}`);
 }
 
 const result = spawnSync(binPath, process.argv.slice(2), {
