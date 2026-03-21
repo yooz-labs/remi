@@ -321,14 +321,23 @@ function resolveShellPath(): void {
       env: process.env,
       timeout: 5000,
     });
-    const shellPath = result.stdout?.toString().trim();
-    if (shellPath && result.exitCode === 0) {
-      // Replace with shell's PATH entirely; it's the authoritative source
-      // and preserves the user's intended priority order
-      process.env['PATH'] = shellPath;
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr?.toString().trim() || '(no stderr)';
+      console.warn(`[PATH] Shell '${shell}' exited with code ${result.exitCode}: ${stderr}`);
+      return;
     }
-  } catch {
-    // Non-fatal: if shell resolution fails, continue with existing PATH
+    const shellPath = result.stdout?.toString().trim();
+    if (!shellPath) {
+      console.warn(`[PATH] Shell '${shell}' returned empty PATH`);
+      return;
+    }
+    // Replace with shell's PATH entirely; it's the authoritative source
+    // and preserves the user's intended priority order
+    process.env['PATH'] = shellPath;
+  } catch (err) {
+    console.warn(
+      `[PATH] Failed to resolve shell PATH: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
