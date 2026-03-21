@@ -1025,17 +1025,37 @@ if (cliSubcommand === 'attach') {
 // Handle --sessions quickly
 if (cliShowSessions) {
   const store = new SessionStore();
-  const sessions = store.list();
+  const allSessions = store.list();
+  const filter = cliShowSessions; // 'running' | 'all' | 'exited'
+  const sessions = allSessions.filter((s) => {
+    if (filter === 'all') return true;
+    if (filter === 'exited') return s.exitedAt !== null;
+    return s.exitedAt === null; // 'running'
+  });
+
   if (sessions.length === 0) {
-    console.log('No stored sessions.');
+    if (filter === 'running') {
+      console.log('No running sessions.');
+      const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
+      if (exitedCount > 0) {
+        console.log(`  ${exitedCount} exited session(s). Use --sessions all to show.`);
+      }
+    } else {
+      console.log('No stored sessions.');
+    }
   } else {
-    console.log('Stored sessions:');
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
       const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
       console.log(
         `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
       );
+    }
+    if (filter === 'running') {
+      const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
+      if (exitedCount > 0) {
+        console.log(`\n  ${exitedCount} exited session(s) hidden. Use --sessions all to show.`);
+      }
     }
   }
   process.exit(0);

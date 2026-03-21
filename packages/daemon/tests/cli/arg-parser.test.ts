@@ -282,8 +282,16 @@ describe('parseArgs', () => {
       expect(parseArgs(['--resume', 'abc123']).resume).toBe('abc123');
     });
 
-    test('--sessions', () => {
-      expect(parseArgs(['--sessions']).showSessions).toBe(true);
+    test('--sessions defaults to running filter', () => {
+      expect(parseArgs(['--sessions']).showSessions).toBe('running');
+    });
+
+    test('--sessions all shows all', () => {
+      expect(parseArgs(['--sessions', 'all']).showSessions).toBe('all');
+    });
+
+    test('--sessions exited shows exited only', () => {
+      expect(parseArgs(['--sessions', 'exited']).showSessions).toBe('exited');
     });
 
     test('--version', () => {
