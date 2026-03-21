@@ -69,6 +69,44 @@ jobs:
       - run: bunx playwright install chromium --with-deps
       - run: bun run test:e2e
 
+  # Auto-bump dev version on every push to develop.
+  # Skips version-bump commits to avoid infinite loops.
+  auto-bump-dev:
+    name: Auto Bump Dev
+    needs: [spelling, lint, typecheck, test, e2e]
+    if: >-
+      github.ref == 'refs/heads/develop'
+      && github.event_name == 'push'
+      && !startsWith(github.event.head_commit.message, 'chore: bump version')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Bump dev version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bun install --frozen-lockfile
+          ./scripts/bump-version.sh --push dev
+
+  # Auto-release stable version when develop merges into main.
+  # Strips -dev suffix, commits, tags, and pushes to trigger release.yml.
   auto-release:
     name: Auto Release
     needs: [spelling, lint, typecheck, test, e2e]
@@ -77,8 +115,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Generate a GitHub App token so the tag push triggers release.yml.
-      # GITHUB_TOKEN pushes cannot trigger downstream workflows (GitHub security policy).
       - name: Generate App Token
         id: app-token
         uses: actions/create-github-app-token@v1
@@ -115,4 +151,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bun install --frozen-lockfile
-          ./scripts/bump-version.sh --push stable
+          ./scripts/bump-version.sh --push --force stable
