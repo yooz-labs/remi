@@ -77,3 +77,4 @@ logs/
 *.sqlite3
 test-results/
 playwright-report/
+.serena/
