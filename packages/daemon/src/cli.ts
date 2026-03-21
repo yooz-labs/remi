@@ -1456,9 +1456,9 @@ async function createNewSession(
         sessionStore.markExited(sessionId, code);
 
         if (passThrough) {
-          cleanup().then(() => {
-            process.exit(code ?? 0);
-          });
+          cleanup()
+            .then(() => process.exit(code ?? 0))
+            .catch(() => process.exit(1));
         }
       },
       onError: (error: Error) => {
@@ -2152,7 +2152,11 @@ if (!cliNoRelay) {
 // ---------------------------------------------------------------------------
 // Cleanup helper
 // ---------------------------------------------------------------------------
+let cleanupRunning = false;
 async function cleanup(): Promise<void> {
+  if (cleanupRunning) return;
+  cleanupRunning = true;
+
   cancelOrphanTimeout();
 
   // Restore terminal state before shutting down
@@ -2570,8 +2574,17 @@ if (cliDaemonMode) {
       ptyStdoutFd = null;
       sighupTimeoutId = setTimeout(() => {
         log('[SIGHUP] Orphan timeout reached (30m), shutting down');
-        cleanup().then(() => process.exit(0));
+        cleanup()
+          .then(() => process.exit(0))
+          .catch((err) => {
+            logError(
+              `[SIGHUP] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            process.exit(1);
+          });
       }, SIGHUP_TIMEOUT_MS);
+      // unref() so this timer alone won't keep the process alive if PTY + servers
+      // are already stopped (the process should exit naturally in that case).
       sighupTimeoutId.unref();
       log(
         `Local terminal detached (SIGHUP), PTY and WebSocket server running for ${SIGHUP_TIMEOUT_MS / 60_000}m`,
@@ -2579,7 +2592,9 @@ if (cliDaemonMode) {
     } else {
       // Ctrl+B d: cleanly shut down and return shell to user
       log('Ctrl+B d pressed, shutting down');
-      cleanup().then(() => process.exit(0));
+      cleanup()
+        .then(() => process.exit(0))
+        .catch(() => process.exit(1));
     }
   }
 
