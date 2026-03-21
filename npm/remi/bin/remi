@@ -24,18 +24,34 @@ if (!pkg) {
 }
 
 /**
+ * Detect which package manager owns the current installation by checking
+ * if the resolved platform package lives under bun's or npm's global prefix.
+ */
+function detectPackageManager(resolvedPkgDir) {
+  const bunGlobal = path.join(os.homedir(), ".bun");
+  if (resolvedPkgDir.startsWith(bunGlobal)) return "bun";
+  return "npm";
+}
+
+/**
  * Auto-upgrade the platform binary when the wrapper version doesn't match.
  * This handles package managers (e.g. bun --force) that upgrade the main
  * package but skip optionalDependencies.
+ *
+ * Tries the detected installer first, then falls back to the other manager,
+ * since npm and bun use different global directories.
  */
-function autoUpgradePlatformBinary(wrapperVersion) {
+function autoUpgradePlatformBinary(wrapperVersion, installedVia) {
   console.error(`[remi] Binary outdated, upgrading ${pkg} to ${wrapperVersion}...`);
 
-  // Try npm first (most reliable for global installs), then bun
-  const managers = [
-    { cmd: "npm", args: ["install", "-g", `${pkg}@${wrapperVersion}`] },
+  // Try the detected installer first so the upgrade lands in the same directory
+  const allManagers = [
     { cmd: "bun", args: ["install", "-g", `${pkg}@${wrapperVersion}`] },
+    { cmd: "npm", args: ["install", "-g", `${pkg}@${wrapperVersion}`] },
   ];
+  const managers = installedVia === "npm"
+    ? allManagers.reverse()
+    : allManagers;
 
   for (const { cmd, args } of managers) {
     try {
@@ -86,12 +102,27 @@ try {
   const wrapperPkg = require(path.resolve(__dirname, "..", "package.json"));
   const platPkg = require(path.join(platPkgDir, "package.json"));
   if (wrapperPkg.version && platPkg.version && wrapperPkg.version !== platPkg.version) {
-    if (autoUpgradePlatformBinary(wrapperPkg.version)) {
-      // Re-resolve after upgrade to use the new binary
+    const installedVia = detectPackageManager(platPkgDir);
+    if (autoUpgradePlatformBinary(wrapperPkg.version, installedVia)) {
+      // Re-resolve after upgrade to use the new binary.
+      // Clear require cache so we get the freshly installed package.
       try {
-        delete require.cache[require.resolve(`${pkg}/package.json`)];
+        const cacheKey = require.resolve(`${pkg}/package.json`);
+        delete require.cache[cacheKey];
+      } catch (_) {
+        // cache entry may not exist
+      }
+      try {
         platPkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
         binPath = path.join(platPkgDir, "bin", "remi");
+        // Verify the upgrade actually took effect at this path
+        const newPlatPkg = JSON.parse(fs.readFileSync(path.join(platPkgDir, "package.json"), "utf8"));
+        if (newPlatPkg.version !== wrapperPkg.version) {
+          console.error(
+            `[remi] Upgrade ran but binary is still ${newPlatPkg.version} (expected ${wrapperPkg.version})`
+          );
+          console.error(`[remi] Fix: bun install -g ${pkg}@${wrapperPkg.version}`);
+        }
       } catch (resolveErr) {
         console.error(
           `[remi] Upgrade succeeded but failed to resolve new binary: ${resolveErr.message}`
@@ -103,7 +134,7 @@ try {
         `[remi] Version mismatch: wrapper is ${wrapperPkg.version} but binary is ${platPkg.version}.`
       );
       console.error(`[remi] Auto-upgrade failed. Fix manually:`);
-      console.error(`[remi]   npm install -g @yooz-labs/remi@${wrapperPkg.version}`);
+      console.error(`[remi]   bun install -g ${pkg}@${wrapperPkg.version}`);
     }
   }
 } catch (err) {
