@@ -277,6 +277,7 @@ import type { AssistantEntry } from './transcript/index.ts';
 // ---------------------------------------------------------------------------
 let wrapperMode = true; // Default to wrapper mode
 let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
+let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
 
 function log(...args: unknown[]): void {
   if (wrapperMode) {
@@ -1633,6 +1634,12 @@ const sharedEvents = {
               createReplayBatch(primarySessionId, result.replayMessages, true),
             );
           }
+          // Cancel SIGHUP orphan timeout: a remote client took over
+          if (sighupTimeoutId !== null) {
+            clearTimeout(sighupTimeoutId);
+            sighupTimeoutId = null;
+            log('[SIGHUP] Orphan timeout cancelled: remote client attached');
+          }
           log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
           return;
         }
@@ -2141,6 +2148,12 @@ if (!cliNoRelay) {
 // Cleanup helper
 // ---------------------------------------------------------------------------
 async function cleanup(): Promise<void> {
+  // Cancel SIGHUP orphan timeout if active
+  if (sighupTimeoutId !== null) {
+    clearTimeout(sighupTimeoutId);
+    sighupTimeoutId = null;
+  }
+
   // Restore terminal state before shutting down
   if (process.stdin.isTTY) {
     try {
@@ -2528,8 +2541,10 @@ if (cliDaemonMode) {
   });
 
   // Detach local terminal.
-  // SIGHUP (terminal closed): keep PTY + WebSocket alive as background daemon.
+  // SIGHUP (terminal closed): keep PTY + WebSocket alive for 30 minutes, then shut down.
   // Ctrl+B d (keybinding): cleanly exit and return the shell to the user.
+  const SIGHUP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
     if (wrapperDetached) return;
     wrapperDetached = true;
@@ -2548,10 +2563,18 @@ if (cliDaemonMode) {
     process.stdin.removeAllListeners('data');
 
     if (reason === 'sighup') {
-      // Terminal closed: keep running as orphaned process
+      // Terminal closed: keep running for 30 minutes so remote clients can attach.
+      // After the timeout, shut down to avoid accumulating orphaned sessions.
       process.stdin.unref();
       ptyStdoutFd = null;
-      log('Local terminal detached (SIGHUP), PTY and WebSocket server still running');
+      sighupTimeoutId = setTimeout(() => {
+        log('[SIGHUP] Orphan timeout reached (30m), shutting down');
+        cleanup().then(() => process.exit(0));
+      }, SIGHUP_TIMEOUT_MS);
+      sighupTimeoutId.unref();
+      log(
+        `Local terminal detached (SIGHUP), PTY and WebSocket server running for ${SIGHUP_TIMEOUT_MS / 60_000}m`,
+      );
     } else {
       // Ctrl+B d: cleanly shut down and return shell to user
       log('Ctrl+B d pressed, shutting down');
