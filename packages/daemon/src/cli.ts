@@ -312,7 +312,7 @@ function logError(...args: unknown[]): void {
  * Resolve the user's full PATH from their login shell.
  * LaunchAgents and systemd services inherit a minimal PATH that doesn't
  * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
- * This runs the login shell to get the real PATH and merges it into process.env.
+ * This runs the login shell to get the real PATH and replaces process.env.PATH with it.
  */
 function resolveShellPath(): void {
   try {
@@ -323,19 +323,19 @@ function resolveShellPath(): void {
     });
     if (result.exitCode !== 0) {
       const stderr = result.stderr?.toString().trim() || '(no stderr)';
-      console.warn(`[PATH] Shell '${shell}' exited with code ${result.exitCode}: ${stderr}`);
+      logError(`[PATH] Shell '${shell}' exited with code ${result.exitCode}: ${stderr}`);
       return;
     }
     const shellPath = result.stdout?.toString().trim();
     if (!shellPath) {
-      console.warn(`[PATH] Shell '${shell}' returned empty PATH`);
+      logError(`[PATH] Shell '${shell}' returned empty PATH`);
       return;
     }
     // Replace with shell's PATH entirely; it's the authoritative source
     // and preserves the user's intended priority order
     process.env['PATH'] = shellPath;
   } catch (err) {
-    console.warn(
+    logError(
       `[PATH] Failed to resolve shell PATH: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
