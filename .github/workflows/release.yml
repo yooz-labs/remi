@@ -141,8 +141,15 @@ jobs:
           set -euo pipefail
           REPO_ROOT="$(pwd)"
           NPM_TAG="${{ needs.release.outputs.npm_tag }}"
+          VERSION="${GITHUB_REF_NAME#v}"
           for PLAT in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            echo "Publishing @yooz-labs/remi-$PLAT (tag: $NPM_TAG)..."
+            PKG_NAME="@yooz-labs/remi-$PLAT"
+            # Skip if this version is already published (idempotent for re-runs)
+            if npm view "${PKG_NAME}@${VERSION}" version >/dev/null 2>&1; then
+              echo "Skipping ${PKG_NAME}@${VERSION} (already published)"
+              continue
+            fi
+            echo "Publishing ${PKG_NAME} (tag: $NPM_TAG)..."
             (cd "$REPO_ROOT/npm/remi-$PLAT" && npm publish --access public --tag "$NPM_TAG")
           done
 
