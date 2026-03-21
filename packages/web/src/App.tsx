@@ -667,6 +667,8 @@ function App() {
         ),
       );
       setQuestion(null);
+      setResumingSession(null);
+      setCreatingSession(false);
     } else if (effectiveStatus === 'connected') {
       // Restore connected status for active session
       if (activeSessionId) {

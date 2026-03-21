@@ -13,9 +13,10 @@ export default async function globalSetup() {
       timeout: 120_000,
       env: { ...process.env },
     });
-  } catch {
-    console.error('Failed to start Docker daemons. Is Docker running?');
-    throw new Error('Docker compose up failed');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to start Docker daemons: ${detail}`);
+    throw new Error(`Docker compose up failed: ${detail}`);
   }
 
   console.log('Docker daemons ready.');

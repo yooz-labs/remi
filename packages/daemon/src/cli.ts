@@ -2119,6 +2119,20 @@ const sharedEvents = {
       return;
     }
 
+    // Ensure we have a project path before attempting resume
+    if (!projectPath) {
+      sendToConnection(
+        connectionId,
+        createResumeSessionResponse(
+          false,
+          requestId,
+          undefined,
+          'Cannot resume: original project path is unknown.',
+        ),
+      );
+      return;
+    }
+
     // Validate project path exists
     const dirResult = resolveDirectory(projectPath);
     if ('error' in dirResult) {
@@ -2182,6 +2196,8 @@ const sharedEvents = {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError('Failed to resume session:', msg);
+      // Clean up any partially-registered session to avoid zombies
+      sessionRegistry.closeSession(newSessionId, 'forced');
       sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
     }
   },

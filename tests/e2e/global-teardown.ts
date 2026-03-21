@@ -11,8 +11,9 @@ export default async function globalTeardown() {
       stdio: 'inherit',
       timeout: 30_000,
     });
-  } catch {
-    console.warn('Failed to stop Docker daemons cleanly.');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`Failed to stop Docker daemons cleanly: ${detail}`);
   }
 
   console.log('Docker daemons stopped.');
