@@ -64,10 +64,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Generate a GitHub App token so the tag push triggers release.yml.
+      # GITHUB_TOKEN pushes cannot trigger downstream workflows (GitHub security policy).
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: oven-sh/setup-bun@v2
         with:
