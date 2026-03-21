@@ -19,23 +19,26 @@ export async function connectToDaemon(page: Page, port: number = DAEMON1_PORT): 
   await urlInput.clear();
   await urlInput.fill(`ws://localhost:${port}/ws`);
 
-  // The app may auto-connect when URL changes, or we need to click Connect
-  // Try clicking Connect if the button is enabled
+  // Click the Connect button in the modal footer if it's enabled.
+  // The app may auto-connect when the URL changes (if previously connected),
+  // in which case the button is already disabled and "Connected!" is shown.
   const connectButton = page.locator('button:has-text("Connect")').last();
-  try {
-    await connectButton.click({ timeout: 1_000 });
-  } catch {
-    // Button may be disabled because auto-connect already happened
+  const isEnabled = await connectButton.isEnabled().catch(() => false);
+  if (isEnabled) {
+    await connectButton.click();
   }
 
-  // Wait for the modal to close (connection success auto-closes it)
-  // OR close it manually if it shows "Connected!" but stays open
-  try {
-    await page.waitForSelector('text=Connect to Daemon', { state: 'hidden', timeout: 5_000 });
-  } catch {
-    // Modal still open -- close it manually (it may show "Connected!" status)
-    const closeButton = page.locator('[aria-label="Close"]').first();
-    await closeButton.click();
+  // Wait for the modal to close (auto-closes on first connection)
+  // or wait for "Connected!" and close manually (when switching daemons)
+  const modalClosed = await page
+    .waitForSelector('text=Connect to Daemon', { state: 'hidden', timeout: 3_000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (!modalClosed) {
+    // Modal still open; should show "Connected!" status
+    await page.waitForSelector('text=Connected!', { timeout: 5_000 });
+    await page.locator('[aria-label="Close"]').first().click();
     await page.waitForSelector('text=Connect to Daemon', { state: 'hidden', timeout: 3_000 });
   }
 }

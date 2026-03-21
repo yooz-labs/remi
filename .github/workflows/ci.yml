@@ -71,7 +71,7 @@ jobs:
 
   auto-release:
     name: Auto Release
-    needs: [spelling, lint, typecheck, test]
+    needs: [spelling, lint, typecheck, test, e2e]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
