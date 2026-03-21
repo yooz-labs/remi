@@ -116,8 +116,13 @@ git checkout develop
 ./scripts/bump-version.sh --push dev     # 0.4.3 -> 0.4.4-dev.1
 ./scripts/bump-version.sh --push dev     # 0.4.4-dev.1 -> 0.4.4-dev.2
 
-# Promote to main when stable
+# Promote to main when stable (CI auto-strips dev suffix and releases)
 git checkout main && git merge develop && git push origin main
+# CI runs auto-release: 0.4.4-dev.6 -> 0.4.4 (tag + npm publish + Homebrew)
+
+# After release: sync develop and start next dev cycle
+git checkout develop && git merge origin/main && git push origin develop
+./scripts/bump-version.sh --push dev     # 0.4.4 -> 0.4.5-dev.1
 
 # Stable release (triggers CI: build, npm publish @latest, GitHub release, Homebrew update)
 ./scripts/bump-version.sh --push patch   # 0.4.4-dev.2 -> 0.4.4
