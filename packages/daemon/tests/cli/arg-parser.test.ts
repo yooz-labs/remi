@@ -636,4 +636,26 @@ describe('parseHostPath', () => {
       directory: '~',
     });
   });
+
+  test('bracketed IPv6 with path returns host and directory', () => {
+    expect(parseHostPath('[::1]:~/project')).toEqual({
+      host: '[::1]',
+      directory: '~/project',
+    });
+  });
+
+  test('bracketed IPv6 with absolute path returns host and directory', () => {
+    expect(parseHostPath('[fe80::1]:/home/user/project')).toEqual({
+      host: '[fe80::1]',
+      directory: '/home/user/project',
+    });
+  });
+
+  test('bracketed IPv6 with port returns host only', () => {
+    expect(parseHostPath('[::1]:9000')).toEqual({ host: '[::1]:9000' });
+  });
+
+  test('bracketed IPv6 without path returns host only', () => {
+    expect(parseHostPath('[::1]')).toEqual({ host: '[::1]' });
+  });
 });

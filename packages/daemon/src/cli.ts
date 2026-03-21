@@ -323,21 +323,9 @@ function resolveShellPath(): void {
     });
     const shellPath = result.stdout?.toString().trim();
     if (shellPath && result.exitCode === 0) {
-      const currentPath = process.env['PATH'] || '';
-      // Merge: add any paths from the login shell that aren't already present
-      const currentParts = new Set(currentPath.split(':').filter(Boolean));
-      const shellParts = shellPath.split(':').filter(Boolean);
-      const newParts: string[] = [];
-      for (const p of shellParts) {
-        if (!currentParts.has(p)) {
-          newParts.push(p);
-        }
-      }
-      if (newParts.length > 0) {
-        process.env['PATH'] = currentPath
-          ? `${currentPath}:${newParts.join(':')}`
-          : newParts.join(':');
-      }
+      // Replace with shell's PATH entirely; it's the authoritative source
+      // and preserves the user's intended priority order
+      process.env['PATH'] = shellPath;
     }
   } catch {
     // Non-fatal: if shell resolution fails, continue with existing PATH
