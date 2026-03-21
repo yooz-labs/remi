@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
+import { isProcessAlive } from './process-alive.ts';
 
 export interface StoredSession {
   remiSessionId: UUID;
@@ -49,11 +50,15 @@ export class SessionStore {
     }
   }
 
-  /** Read sessions file, returning empty list if missing or corrupt. */
+  /**
+   * Read sessions file, returning empty list if missing or corrupt.
+   * I/O errors (permissions, disk) are propagated so callers that
+   * write back (purgeStale, save) do not overwrite with empty data.
+   */
   private read(): StoredSession[] {
+    if (!fs.existsSync(this.filePath)) return [];
+    const raw = fs.readFileSync(this.filePath, 'utf-8');
     try {
-      if (!fs.existsSync(this.filePath)) return [];
-      const raw = fs.readFileSync(this.filePath, 'utf-8');
       const data = JSON.parse(raw) as SessionsFile;
       if (data.version !== 1 || !Array.isArray(data.sessions)) return [];
       // Normalize legacy entries that lack the pid field
@@ -62,15 +67,18 @@ export class SessionStore {
       }
       return data.sessions;
     } catch {
+      // JSON parse failure: corrupt file, treat as empty
       return [];
     }
   }
 
-  /** Write sessions to file. */
+  /** Write sessions to file (atomic via tmp + rename). */
   private write(sessions: StoredSession[]): void {
     this.ensureDir();
     const data: SessionsFile = { version: 1, sessions };
-    fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+    const tmpPath = `${this.filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, this.filePath);
   }
 
   /** Save or update a session record. Trims to MAX_SESSIONS. */
@@ -139,10 +147,15 @@ export class SessionStore {
     return this.doPurge().changed;
   }
 
-  /** List all stored sessions, most recent first. Purges stale entries first. */
+  /** List all stored sessions, most recent first. Best-effort purge of stale entries. */
   list(): StoredSession[] {
-    const { sessions } = this.doPurge();
-    return sessions.sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    try {
+      const { sessions } = this.doPurge();
+      return sessions.sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    } catch {
+      // Purge failed (I/O error); fall back to raw read
+      return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
+    }
   }
 
   /** Find a session by its Claude session ID. */
@@ -182,19 +195,5 @@ export class SessionStore {
       session.claudeSessionId = claudeSessionId;
       this.write(sessions);
     }
-  }
-}
-
-/**
- * Check if a process is alive by sending signal 0.
- * EPERM means the process exists but is owned by a different user.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
-    return false;
   }
 }
