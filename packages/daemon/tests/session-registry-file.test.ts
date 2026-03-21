@@ -138,34 +138,36 @@ describe('SessionRegistryFile', () => {
     expect(nonExistent.listLive()).toEqual([]);
   });
 
-  test('findAvailablePort returns first port when no sessions', () => {
-    const port = registry.findAvailablePort(18765, 10);
-    expect(port).toBe(18765);
+  // Use high test ports to avoid conflicts with running remi instances
+  const TEST_PORT_BASE = 44000 + Math.floor(Math.random() * 1000);
+
+  test('findAvailablePort returns first port when no sessions', async () => {
+    const port = await registry.findAvailablePort(TEST_PORT_BASE, 10);
+    expect(port).toBe(TEST_PORT_BASE);
   });
 
-  test('findAvailablePort skips used ports', () => {
-    registry.register(makeEntry({ sessionId: 'a', wsPort: 18765 }));
-    registry.register(makeEntry({ sessionId: 'b', wsPort: 18766 }));
+  test('findAvailablePort skips used ports', async () => {
+    registry.register(makeEntry({ sessionId: 'a', wsPort: TEST_PORT_BASE }));
+    registry.register(makeEntry({ sessionId: 'b', wsPort: TEST_PORT_BASE + 1 }));
 
-    const port = registry.findAvailablePort(18765, 10);
-    expect(port).toBe(18767);
+    const port = await registry.findAvailablePort(TEST_PORT_BASE, 10);
+    expect(port).toBe(TEST_PORT_BASE + 2);
   });
 
-  test('findAvailablePort fills non-contiguous gaps', () => {
-    // Use ports 18765 and 18767, leaving 18766 as a gap
-    registry.register(makeEntry({ sessionId: 'a', wsPort: 18765 }));
-    registry.register(makeEntry({ sessionId: 'b', wsPort: 18767 }));
+  test('findAvailablePort fills non-contiguous gaps', async () => {
+    registry.register(makeEntry({ sessionId: 'a', wsPort: TEST_PORT_BASE }));
+    registry.register(makeEntry({ sessionId: 'b', wsPort: TEST_PORT_BASE + 2 }));
 
-    const port = registry.findAvailablePort(18765, 10);
-    expect(port).toBe(18766);
+    const port = await registry.findAvailablePort(TEST_PORT_BASE, 10);
+    expect(port).toBe(TEST_PORT_BASE + 1);
   });
 
-  test('findAvailablePort returns null when all ports exhausted', () => {
+  test('findAvailablePort returns null when all ports exhausted', async () => {
     for (let i = 0; i < 3; i++) {
-      registry.register(makeEntry({ sessionId: `s-${i}`, wsPort: 18765 + i }));
+      registry.register(makeEntry({ sessionId: `s-${i}`, wsPort: TEST_PORT_BASE + i }));
     }
 
-    const port = registry.findAvailablePort(18765, 3);
+    const port = await registry.findAvailablePort(TEST_PORT_BASE, 3);
     expect(port).toBeNull();
   });
 

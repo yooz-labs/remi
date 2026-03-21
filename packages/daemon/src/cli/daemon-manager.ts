@@ -100,41 +100,10 @@ export interface StartOptions {
   extraArgs?: string[] | undefined;
 }
 
+import { findAvailableTcpPort } from '../session/port-utils.ts';
+
 const DEFAULT_BASE_PORT = 18765;
 const DEFAULT_PORT_RANGE = 10;
-
-/** Check if a port is available by attempting to connect (if connection refused, port is free). */
-function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new (require('node:net').Socket)();
-    socket.setTimeout(500);
-    socket.on('connect', () => {
-      socket.destroy();
-      resolve(false); // Something is listening, port in use
-    });
-    socket.on('timeout', () => {
-      socket.destroy();
-      resolve(true); // Nothing responded, port likely free
-    });
-    socket.on('error', (err: NodeJS.ErrnoException) => {
-      socket.destroy();
-      // ECONNREFUSED = nothing listening = port free
-      // ECONNRESET = connection dropped = nothing stable listening
-      resolve(err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET');
-    });
-    socket.connect(port, '127.0.0.1');
-  });
-}
-
-/** Find an available port in the default range. */
-async function findFreePort(): Promise<number | null> {
-  for (let port = DEFAULT_BASE_PORT; port < DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE; port++) {
-    if (await isPortAvailable(port)) {
-      return port;
-    }
-  }
-  return null;
-}
 
 /**
  * Start the remi daemon in the background.
@@ -154,7 +123,7 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
   // Find a free port before spawning the daemon to avoid EADDRINUSE
   let daemonPort = opts?.port;
   if (!daemonPort) {
-    const freePort = await findFreePort();
+    const freePort = await findAvailableTcpPort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE);
     if (freePort === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
