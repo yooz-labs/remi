@@ -338,10 +338,21 @@ function resolveShellPath(): void {
       });
       if (result.exitCode !== 0) continue;
       const shellPath = result.stdout?.toString().trim();
-      if (!shellPath || shellPath.split(':').length <= currentPath.split(':').length) continue;
+      if (!shellPath) continue;
 
-      process.env['PATH'] = shellPath;
-      log(`[PATH] Resolved via ${label} shell (${shellPath.split(':').length} entries)`);
+      // Merge: use the shell PATH as the base, then append any entries from the
+      // current PATH that the shell didn't include (e.g., tool-injected directories).
+      // This ensures we never lose entries that were already available.
+      const shellEntries = shellPath.split(':');
+      const shellSet = new Set(shellEntries);
+      const extraFromCurrent = currentPath.split(':').filter((e) => e && !shellSet.has(e));
+      const merged = [...shellEntries, ...extraFromCurrent].join(':');
+      if (merged === currentPath) continue; // no improvement
+
+      process.env['PATH'] = merged;
+      log(
+        `[PATH] Resolved via ${label} shell (${shellEntries.length} shell + ${extraFromCurrent.length} existing)`,
+      );
       return;
     } catch {
       // Try next attempt
@@ -2474,8 +2485,8 @@ async function cleanup(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Ensure PATH includes user-installed tools (claude, bun, etc.).
 // In daemon mode this is critical (LaunchAgent/systemd have minimal PATH).
-// In wrapper mode the terminal provides the PATH, but resolveShellPath is
-// safe to call (it only upgrades, never downgrades the PATH) and ensures
+// In wrapper mode the terminal provides the PATH, but resolveShellPath
+// merges (never drops existing entries) so it's safe to call, and ensures
 // remote session creation works even after the terminal is detached (SIGHUP).
 resolveShellPath();
 
