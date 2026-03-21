@@ -387,7 +387,7 @@ export interface ResumeSessionResponseMessage {
   readonly type: 'resume_session_response';
   readonly id: UUID;
   readonly timestamp: Timestamp;
-  /** New session ID of the resumed session (present on success) */
+  /** Session ID to use (existing if still alive, or newly created). Present on success. */
   readonly sessionId?: UUID;
   /** Whether resume succeeded */
   readonly success: boolean;

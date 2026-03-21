@@ -2010,12 +2010,15 @@ const sharedEvents = {
       }
     }
 
-    // For transcript-only sessions: the sessionId IS the Claude session ID
+    // For transcript-only sessions: the sessionId IS the Claude session ID.
+    // The project path is decoded from the transcript directory name, but this
+    // encoding is lossy (Claude Code replaces "/" with "-", so paths containing
+    // dashes like "/Users/dev/my-project" become indistinguishable from
+    // "/Users/dev/my/project"). The decoded path may be wrong.
     if (!claudeSessionId) {
       const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
       if (transcriptPath) {
         claudeSessionId = targetSessionId;
-        // Decode project path from transcript directory name
         const dirName = path.basename(path.dirname(transcriptPath));
         projectPath = dirName.replace(/-/g, '/');
       }
@@ -2037,13 +2040,18 @@ const sharedEvents = {
     // Validate project path exists
     const dirResult = resolveDirectory(projectPath);
     if ('error' in dirResult) {
+      // For transcript-only sessions, the decoded path may be wrong due to
+      // lossy encoding (dashes in paths are indistinguishable from separators).
+      const hint = projectPath?.includes('/')
+        ? ' Path may be inaccurate for projects with dashes in their name.'
+        : '';
       sendToConnection(
         connectionId,
         createResumeSessionResponse(
           false,
           requestId,
           undefined,
-          `Project directory no longer exists: ${projectPath}`,
+          `Project directory not found: ${projectPath}.${hint}`,
         ),
       );
       return;

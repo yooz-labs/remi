@@ -121,6 +121,7 @@ function App() {
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
   const activeSessionIdRef = useRef<UUID | null>(null);
+  const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const unlockedIdentityRef = useRef<UnlockedIdentity | null>(null);
 
@@ -460,14 +461,19 @@ function App() {
       }
 
       case 'resume_session_response': {
+        const targetSessionId = resumingSessionRef.current;
         setResumingSession(null);
         if (message.success && message.sessionId) {
           setActiveSessionId(message.sessionId);
         } else {
           console.error(`Failed to resume session: ${message.error}`);
+          // Use the target session ID so the error appears in the right session's chat
+          const errorSessionId = (targetSessionId ??
+            activeSessionIdRef.current ??
+            '') as UUID;
           const errorMsg: UIMessage = {
             id: generateId(),
-            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            sessionId: errorSessionId,
             sender: 'system',
             content: `Failed to resume session: ${message.error ?? 'Unknown error'}`,
             timestamp: new Date().toISOString(),
@@ -493,6 +499,10 @@ function App() {
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    resumingSessionRef.current = resumingSession;
+  }, [resumingSession]);
 
   useEffect(() => {
     unlockedIdentityRef.current = unlockedIdentity;
@@ -1011,7 +1021,10 @@ function App() {
     (sessionId: string) => {
       if (resumingSession) return;
       setResumingSession(sessionId);
-      effectiveRequestResumeSession(sessionId);
+      const sent = effectiveRequestResumeSession(sessionId);
+      if (!sent) {
+        setResumingSession(null);
+      }
     },
     [effectiveRequestResumeSession, resumingSession],
   );

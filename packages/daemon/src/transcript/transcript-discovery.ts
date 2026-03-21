@@ -250,7 +250,7 @@ export class TranscriptDiscovery {
       lastMessage: tailInfo.lastMessage,
       source: 'transcript',
       canAttach: false, // External sessions can't be attached to via daemon
-      canResume: true, // Transcript sessions always have a Claude session ID
+      canResume: status !== 'active', // Only offer resume for idle/completed sessions, not actively running ones
     };
   }
 
