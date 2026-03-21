@@ -86,13 +86,8 @@ case "$BUMP_TYPE" in
     # On develop with a stable version: bump patch, add dev.1
     # On main or other: just bump patch (stable)
     if [[ "$IS_DEVELOP" == true ]]; then
-      if [[ -n "$PRERELEASE" ]]; then
-        # 0.4.9-dev.3 -> 0.4.10-dev.1
-        PATCH=$((PATCH + 1))
-      else
-        # 0.4.9 -> 0.4.10-dev.1 (shouldn't happen but handle gracefully)
-        PATCH=$((PATCH + 1))
-      fi
+      # 0.4.9-dev.3 -> 0.4.10-dev.1 (or 0.4.9 -> 0.4.10-dev.1 if stable on develop)
+      PATCH=$((PATCH + 1))
       NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
     else
       PATCH=$((PATCH + 1))
