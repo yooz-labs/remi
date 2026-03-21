@@ -279,6 +279,15 @@ let wrapperMode = true; // Default to wrapper mode
 let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
 let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
 
+/** Cancel the SIGHUP orphan timeout when a remote client attaches. */
+function cancelOrphanTimeout(): void {
+  if (sighupTimeoutId !== null) {
+    clearTimeout(sighupTimeoutId);
+    sighupTimeoutId = null;
+    log('[SIGHUP] Orphan timeout cancelled: remote client attached');
+  }
+}
+
 function log(...args: unknown[]): void {
   if (wrapperMode) {
     writeToLog(args.map(String).join(' '));
@@ -1634,12 +1643,7 @@ const sharedEvents = {
               createReplayBatch(primarySessionId, result.replayMessages, true),
             );
           }
-          // Cancel SIGHUP orphan timeout: a remote client took over
-          if (sighupTimeoutId !== null) {
-            clearTimeout(sighupTimeoutId);
-            sighupTimeoutId = null;
-            log('[SIGHUP] Orphan timeout cancelled: remote client attached');
-          }
+          cancelOrphanTimeout();
           log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
           return;
         }
@@ -1689,6 +1693,7 @@ const sharedEvents = {
           );
         }
 
+        cancelOrphanTimeout();
         log(
           `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
         );
@@ -2148,11 +2153,7 @@ if (!cliNoRelay) {
 // Cleanup helper
 // ---------------------------------------------------------------------------
 async function cleanup(): Promise<void> {
-  // Cancel SIGHUP orphan timeout if active
-  if (sighupTimeoutId !== null) {
-    clearTimeout(sighupTimeoutId);
-    sighupTimeoutId = null;
-  }
+  cancelOrphanTimeout();
 
   // Restore terminal state before shutting down
   if (process.stdin.isTTY) {
