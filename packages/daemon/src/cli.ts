@@ -345,8 +345,12 @@ if (parsedArgs.error) {
 }
 if (parsedArgs.showVersion) {
   console.log(`remi ${REMI_VERSION}`);
-  // Show binary location to help diagnose PATH conflicts (e.g., old binary shadowing new install)
-  console.log(`binary: ${process.argv[0]}`);
+  // Show binary location to help diagnose PATH conflicts (e.g., old binary shadowing new install).
+  // In compiled binaries, argv[0] is the binary itself. When running from source via
+  // `bun packages/daemon/src/cli.ts`, argv[0] is the bun runtime and argv[1] is the script.
+  const binaryPath =
+    typeof Bun !== 'undefined' ? Bun.argv[0] : (process.argv[1] ?? process.argv[0]);
+  console.log(`binary: ${binaryPath}`);
   process.exit(0);
 }
 if (parsedArgs.showHelp) {

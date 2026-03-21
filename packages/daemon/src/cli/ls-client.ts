@@ -26,6 +26,11 @@ function getTerminalWidth(): number {
   return process.stdout.columns ?? 100;
 }
 
+/** Generate the default port range array (18765-18774). */
+function getDefaultPortRange(): number[] {
+  return Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
+}
+
 /** Minimum name column width to keep output readable even on very narrow terminals. */
 const MIN_NAME_WIDTH = 20;
 
@@ -312,10 +317,11 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     browseTimeoutMs: mdnsTimeout = MDNS_BROWSE_TIMEOUT_MS,
   } = opts;
 
-  // Query all local daemons: combine live registry ports with the default port range
-  // so that daemons are discoverable even if their live-sessions files were cleaned up.
-  const defaultRange = Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
-  const allLocalPorts = [...new Set([localPort, ...(opts.localPorts ?? []), ...defaultRange])];
+  // Query all local daemons. If the registry has no live entries, include the default
+  // port range so daemons are discoverable even when live-sessions files were cleaned up.
+  const registryPorts = opts.localPorts ?? [];
+  const extraPorts = registryPorts.length === 0 ? getDefaultPortRange() : [];
+  const allLocalPorts = [...new Set([localPort, ...registryPorts, ...extraPorts])];
   const localResults = await queryMultiplePorts({
     host: 'localhost',
     ports: allLocalPorts,
@@ -581,10 +587,7 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
   // This handles cases where live-sessions files were cleaned up (PID died,
   // SIGHUP timeout expired) but a daemon is still reachable on a default port.
   if (ports.length === 0) {
-    const fallbackPorts = Array.from(
-      { length: DEFAULT_PORT_RANGE },
-      (_, i) => DEFAULT_BASE_PORT + i,
-    );
+    const fallbackPorts = getDefaultPortRange();
     const fallbackResults = await queryMultiplePorts({
       host: 'localhost',
       ports: fallbackPorts,
