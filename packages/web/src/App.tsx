@@ -848,7 +848,7 @@ function App() {
         setRelayError(null);
         pendingRelayChallengeRef.current = null;
 
-        const signalingUrl = 'wss://remi-signaling.dev-941.workers.dev/connect';
+        const signalingUrl = 'wss://remi-signaling.yooz.workers.dev/connect';
         const client = new WebSignalingClient({
           onStateChange: (state) => {
             if (state === 'connected') {
