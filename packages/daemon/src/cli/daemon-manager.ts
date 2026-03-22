@@ -320,6 +320,7 @@ export async function spawnRemiDaemon(
   extraArgs: string[] = [],
   timeoutMs = 10000,
 ): Promise<SpawnResult> {
+  ensureRemiDir();
   const { SessionRegistryFile } = await import('../session/session-registry-file.ts');
   const liveRegistry = new SessionRegistryFile();
 

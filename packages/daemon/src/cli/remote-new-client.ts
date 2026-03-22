@@ -36,7 +36,7 @@ async function createRemoteSession(
   host: string,
   port: number,
   directory?: string,
-  timeout = 15000,
+  timeout = 30000,
 ): Promise<RemoteSessionResult> {
   const url = `ws://${host}:${port}/ws`;
 
