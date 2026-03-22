@@ -176,6 +176,40 @@ echo "== -- separator tests =="
 # Verify that -- stops remi flag parsing. --weird-flag should NOT cause a remi error.
 run_test "ls with -- separator" remi_cli ls --port $D1_PORT -- --weird-flag
 
+# ---- Test Group 9: Remote daemon spawning (remi new --host) ----
+echo ""
+echo "== remote daemon spawning tests =="
+
+# Helper to run remi CLI inside a Docker container
+docker_remi() {
+  local container="$1"
+  shift
+  docker exec "$container" bun run packages/daemon/src/cli.ts "$@"
+}
+
+# daemon1 (172.28.0.10) asks daemon2 (172.28.0.11) to spawn a new session.
+# daemon2 spawns a new daemon on a free port and returns port + sessionId.
+# We verify by listing sessions on daemon2's network and checking for 2 sessions.
+
+D2_DOCKER_IP=172.28.0.11
+
+# Test: remi new --host from daemon1 to daemon2 spawns new daemon
+run_test "remote spawn: new --host triggers daemon spawn" \
+  bash -c "docker exec remi-test-daemon1 bun run packages/daemon/src/cli.ts \
+    new --host $D2_DOCKER_IP --port 18765 --dir /tmp &>/dev/null & PID=\$!; \
+    sleep 8; \
+    kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; \
+    OUTPUT=\$(docker exec remi-test-daemon2 bun run packages/daemon/src/cli.ts ls 2>&1); \
+    echo \"\$OUTPUT\"; \
+    echo \"\$OUTPUT\" | grep -c 'session' | grep -q '[2-9]'"
+
+# Test: remi ls on daemon2 shows multiple ports after spawn
+run_test "remote spawn: ls shows sessions on different ports" \
+  bash -c "OUTPUT=\$(docker exec remi-test-daemon2 bun run packages/daemon/src/cli.ts ls 2>&1); \
+    echo \"\$OUTPUT\"; \
+    PORTS=\$(echo \"\$OUTPUT\" | grep -v '^NAME\|^---\|^$\|session' | awk '{print \$2}' | sort -u | wc -l); \
+    [ \"\$PORTS\" -ge 2 ]"
+
 # ---- Results ----
 echo ""
 echo "==============================="
