@@ -1949,20 +1949,52 @@ const sharedEvents = {
 
   onCreateSessionRequest: async (
     connectionId: UUID,
-    _directory: string | undefined,
+    directory: string | undefined,
     requestId: UUID,
   ) => {
-    // One session per daemon. Reject session creation requests.
-    log(`Create session request from ${connectionId} rejected (one session per daemon)`);
-    sendToConnection(
-      connectionId,
-      createCreateSessionResponse(
-        false,
-        requestId,
-        undefined,
-        "This daemon already has an active session. Start a new daemon with 'remi new'.",
-      ),
-    );
+    // One session per daemon. Spawn a new daemon process for the new session.
+    log(`Create session request from ${connectionId}, spawning new daemon`);
+
+    try {
+      const { spawnRemiDaemon } = await import('./cli/daemon-manager.ts');
+      const { findAvailableTcpPort } = await import('./session/port-utils.ts');
+
+      const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
+      const freePort = await findAvailableTcpPort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE, liveUsed);
+      if (freePort === null) {
+        sendToConnection(
+          connectionId,
+          createCreateSessionResponse(
+            false,
+            requestId,
+            undefined,
+            `All ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+          ),
+        );
+        return;
+      }
+
+      log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
+      const result = await spawnRemiDaemon(freePort, directory);
+
+      sendToConnection(
+        connectionId,
+        createCreateSessionResponse(
+          true,
+          requestId,
+          result.sessionId as UUID,
+          undefined,
+          result.port,
+        ),
+      );
+      log(
+        `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`Failed to spawn daemon: ${msg}`);
+      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
+    }
   },
 
   onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => {

@@ -1,11 +1,12 @@
 /**
- * Remote New Client - Creates a session on a remote daemon and auto-attaches.
+ * Remote New Client - Spawns a new daemon on a remote machine and auto-attaches.
  *
  * Flow:
- * 1. Open temporary WebSocket, authenticate, send create_session_request
- * 2. Wait for create_session_response with sessionId
- * 3. Close temporary WebSocket
- * 4. Call runAttachClient for the full attach lifecycle
+ * 1. Open temporary WebSocket to existing daemon, authenticate, send create_session_request
+ * 2. Remote daemon spawns a new daemon process on a free port
+ * 3. Wait for create_session_response with sessionId and port
+ * 4. Close temporary WebSocket
+ * 5. Call runAttachClient to connect to the NEW daemon's port
  */
 
 import {
@@ -26,15 +27,20 @@ export interface RemoteNewOptions {
   readonly timeout?: number;
 }
 
+interface RemoteSessionResult {
+  readonly sessionId: UUID;
+  readonly port: number;
+}
+
 async function createRemoteSession(
   host: string,
   port: number,
   directory?: string,
-  timeout = 10000,
-): Promise<UUID> {
+  timeout = 15000,
+): Promise<RemoteSessionResult> {
   const url = `ws://${host}:${port}/ws`;
 
-  return new Promise<UUID>((resolve, reject) => {
+  return new Promise<RemoteSessionResult>((resolve, reject) => {
     let settled = false;
     let authInProgress = false;
     let ws: WebSocket;
@@ -55,13 +61,13 @@ async function createRemoteSession(
       }
     }, timeout);
 
-    function done(sessionId?: UUID, err?: Error): void {
+    function done(result?: RemoteSessionResult, err?: Error): void {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       ws.close();
       if (err) reject(err);
-      else if (sessionId) resolve(sessionId);
+      else if (result) resolve(result);
       else reject(new Error('No session ID returned'));
     }
 
@@ -75,7 +81,8 @@ async function createRemoteSession(
         ws.send(serialize(createCreateSessionRequest(directory)));
       } else if (msg.type === 'create_session_response') {
         if (msg.success && msg.sessionId) {
-          done(msg.sessionId);
+          // The daemon spawned a new daemon; use the returned port (or original if not present)
+          done({ sessionId: msg.sessionId, port: msg.port ?? port });
         } else {
           done(undefined, new Error(`Failed to create session: ${msg.error ?? 'unknown error'}`));
         }
@@ -132,9 +139,13 @@ export async function runRemoteNew(opts: RemoteNewOptions): Promise<{ exitCode: 
   const { host, port, directory, timeout } = opts;
 
   console.error(`Creating session on ${host}:${port}...`);
-  const sessionId = await createRemoteSession(host, port, directory, timeout);
-  console.error(`Session created: ${sessionId.slice(0, 8)}`);
+  const result = await createRemoteSession(host, port, directory, timeout);
+
+  if (result.port !== port) {
+    console.error(`New daemon spawned on port ${result.port}`);
+  }
+  console.error(`Session created: ${result.sessionId.slice(0, 8)}`);
   console.error('Attaching...');
 
-  return runAttachClient({ host, port, sessionId });
+  return runAttachClient({ host, port: result.port, sessionId: result.sessionId });
 }

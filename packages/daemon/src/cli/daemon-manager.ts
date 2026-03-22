@@ -75,7 +75,7 @@ function readStatus(): Record<string, unknown> | null {
  * Resolve the command and args to invoke remi.
  * Handles both compiled binary and bun/node script execution.
  */
-function resolveRemiCommand(): { command: string; baseArgs: string[] } {
+export function resolveRemiCommand(): { command: string; baseArgs: string[] } {
   const argv0 = process.argv[0] ?? '';
   const argv1 = process.argv[1] ?? '';
 
@@ -301,6 +301,75 @@ export function showDaemonLogs(lines = 50): void {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Failed to read daemon log: ${msg}`);
   }
+}
+
+export interface SpawnResult {
+  readonly pid: number;
+  readonly port: number;
+  readonly sessionId: string;
+}
+
+/**
+ * Spawn a new remi daemon process on a specific port.
+ * Unlike startDaemon(), this does not check for existing daemons or write PID files.
+ * Polls the live-sessions registry until the new daemon registers.
+ */
+export async function spawnRemiDaemon(
+  port: number,
+  directory?: string,
+  timeoutMs = 10000,
+): Promise<SpawnResult> {
+  const { SessionRegistryFile } = await import('../session/session-registry-file.ts');
+  const liveRegistry = new SessionRegistryFile();
+
+  const { command, baseArgs } = resolveRemiCommand();
+  const spawnArgs = [...baseArgs, '--daemon', '--port', String(port)];
+  if (directory) {
+    spawnArgs.push('--dir', directory);
+  }
+
+  const logFd = fs.openSync(LOG_FILE, 'a');
+  fs.writeSync(logFd, `\n--- Spawning daemon on port ${port} at ${new Date().toISOString()} ---\n`);
+
+  const childEnv = { ...process.env };
+  // biome-ignore lint/performance/noDelete: must truly remove env var from child process
+  delete childEnv['REMI_PORT'];
+
+  const child = spawn(command, spawnArgs, {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: childEnv,
+  });
+
+  const pid = child.pid;
+  if (!pid) {
+    fs.closeSync(logFd);
+    throw new Error('Failed to start daemon process');
+  }
+
+  child.unref();
+  fs.closeSync(logFd);
+
+  // Poll live-sessions registry until the new daemon registers
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    const entries = liveRegistry.listLive();
+    const entry = entries.find((e) => e.wsPort === port && e.pid === pid);
+    if (entry) {
+      return { pid, port, sessionId: entry.sessionId };
+    }
+
+    // Check if process is still alive
+    try {
+      process.kill(pid, 0);
+    } catch {
+      throw new Error(`Daemon process exited unexpectedly. Check logs: ${LOG_FILE}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw new Error(`Daemon did not register within ${timeoutMs / 1000}s. Check logs: ${LOG_FILE}`);
 }
 
 function cleanupFiles(): void {
