@@ -502,7 +502,11 @@ export class SessionRegistry {
       if (this.session.orphanTimeoutId !== null) {
         clearTimeout(this.session.orphanTimeoutId);
       }
-      await this.session.pty.close();
+      try {
+        await this.session.pty.close();
+      } catch (err) {
+        console.error('Failed to close PTY during shutdown:', err);
+      }
       this.session = null;
     }
   }

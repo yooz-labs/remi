@@ -1754,23 +1754,20 @@ const sharedEvents = {
     // Unified connection flow: one session per daemon, both modes behave the same.
     // If a resumeSessionId is provided, validate it matches our session.
     if (resumeSessionId && primarySessionId && resumeSessionId !== primarySessionId) {
-      const resumeTarget = sessionRegistry.getSession(resumeSessionId);
-      if (resumeTarget && resumeTarget.activeConnectionId !== null) {
-        log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
-        sendToConnection(
-          connectionId,
-          createError(
-            'SESSION_BUSY',
-            "Session is already attached by another client. Wait for them to detach (Ctrl+B d) or use 'remi kill' to force disconnect.",
-          ),
-        );
-        return;
-      }
+      log(`Resume ID mismatch: requested ${resumeSessionId}, daemon has ${primarySessionId}`);
+      sendToConnection(
+        connectionId,
+        createError(
+          'SESSION_NOT_FOUND',
+          `Session ${resumeSessionId} not found on this daemon. Active session: ${primarySessionId}.`,
+        ),
+      );
+      return;
     }
 
     // Try to attach to the primary (only) session
     if (primarySessionId) {
-      const targetSession = resumeSessionId || primarySessionId;
+      const targetSession = primarySessionId;
       const result = sessionRegistry.attachConnection(targetSession, connectionId);
       if (result.success) {
         sendToConnection(
@@ -2489,16 +2486,23 @@ if (cliDaemonMode) {
     hookServer.start();
     HOOK_PORT = hookServer.port;
     console.log(`  Hook server listening on port ${HOOK_PORT}`);
-
-    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
-    hookConfigManager.install();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
       `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
     );
     hookServer = null;
-    hookConfigManager = null;
+  }
+
+  if (hookServer) {
+    try {
+      hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+      hookConfigManager.install();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
+      hookConfigManager = null;
+    }
   }
 
   // Register in live-sessions so remi ls can discover this daemon
@@ -2526,6 +2530,7 @@ if (cliDaemonMode) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Failed to create session: ${msg}`);
+    liveSessionsRegistry.unregister(sessionId);
     await registry.stopAll();
     process.exit(1);
   }
