@@ -1751,41 +1751,9 @@ const sharedEvents = {
 
     const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
 
-    // In wrapper mode, try to attach to the primary session first
-    if (wrapperMode && primarySessionId && !resumeSessionId) {
-      const session = sessionRegistry.getSession(primarySessionId);
-      if (session) {
-        const result = sessionRegistry.attachConnection(primarySessionId, connectionId);
-        if (result.success) {
-          sendToConnection(
-            connectionId,
-            createHelloAck('1.0.0', primarySessionId, {
-              isResume: result.replayMessages.length > 0,
-              replayCount: result.replayMessages.length,
-              nextBulletId: result.nextBulletId,
-            }),
-          );
-          if (result.replayMessages.length > 0) {
-            sendToConnection(
-              connectionId,
-              createReplayBatch(primarySessionId, result.replayMessages, true),
-            );
-          }
-          cancelOrphanTimeout();
-          log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
-          return;
-        }
-      }
-
-      // Auto-attach failed (session busy or missing); send hello_ack anyway
-      // so utility clients (ls, kill) can proceed with requests
-      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
-      log(`Connection ${connectionId} connected without attach (session busy or query client)`);
-      return;
-    }
-
-    // Check if resume target exists but is busy (another client attached)
-    if (resumeSessionId) {
+    // Unified connection flow: one session per daemon, both modes behave the same.
+    // If a resumeSessionId is provided, validate it matches our session.
+    if (resumeSessionId && primarySessionId && resumeSessionId !== primarySessionId) {
       const resumeTarget = sessionRegistry.getSession(resumeSessionId);
       if (resumeTarget && resumeTarget.activeConnectionId !== null) {
         log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
@@ -1800,59 +1768,39 @@ const sharedEvents = {
       }
     }
 
-    if (resumeSessionId && sessionRegistry.canResume(resumeSessionId)) {
-      log(`Resuming session ${resumeSessionId}...`);
-      const result = sessionRegistry.attachConnection(resumeSessionId, connectionId);
-
+    // Try to attach to the primary (only) session
+    if (primarySessionId) {
+      const targetSession = resumeSessionId || primarySessionId;
+      const result = sessionRegistry.attachConnection(targetSession, connectionId);
       if (result.success) {
         sendToConnection(
           connectionId,
-          createHelloAck('1.0.0', resumeSessionId, {
-            isResume: true,
+          createHelloAck('1.0.0', targetSession, {
+            isResume: result.replayMessages.length > 0,
             replayCount: result.replayMessages.length,
             nextBulletId: result.nextBulletId,
           }),
         );
-
         if (result.replayMessages.length > 0) {
           sendToConnection(
             connectionId,
-            createReplayBatch(resumeSessionId, result.replayMessages, true),
+            createReplayBatch(targetSession, result.replayMessages, true),
           );
         }
-
         cancelOrphanTimeout();
-        log(
-          `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
-        );
+        log(`Attached connection ${connectionId} to session ${targetSession}`);
         return;
       }
 
-      log(`Resume failed: ${result.error}, creating new session`);
-      sendToConnection(
-        connectionId,
-        createError(
-          'RESUME_FAILED',
-          `Could not resume session ${resumeSessionId}: ${result.error}. Creating new session.`,
-        ),
-      );
+      // Attach failed (session busy); send hello_ack without attach so
+      // utility clients (ls, kill) can still send requests
+      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
+      log(`Connection ${connectionId} connected without attach (session busy or query client)`);
+      return;
     }
 
-    // In daemon mode, accept connection without auto-creating a session.
-    // Clients use create_session_request to explicitly create sessions.
-    // This avoids spawning unwanted Claude processes when utility clients
-    // (ls, kill, attach probes) connect.
-    if (!wrapperMode) {
-      sendToConnection(connectionId, createHelloAck('1.0.0', '' as UUID));
-      log(`Connection ${connectionId} accepted in daemon mode (no auto-session)`);
-    } else if (wrapperMode && primarySessionId) {
-      // Wrapper mode: resume failed but session exists; send hello_ack
-      // so the client can still send queries (ls, kill, etc.)
-      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
-      log(`Connection ${connectionId} connected without attach in wrapper mode`);
-    } else {
-      sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
-    }
+    // No session available
+    sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
   },
 
   onDisconnect: async (connectionId: UUID, reason: string) => {
@@ -2004,62 +1952,20 @@ const sharedEvents = {
 
   onCreateSessionRequest: async (
     connectionId: UUID,
-    directory: string | undefined,
+    _directory: string | undefined,
     requestId: UUID,
   ) => {
-    log(`Create session request from ${connectionId}, directory: ${directory || '(default)'}`);
-
-    const dirResult = resolveDirectory(directory);
-    if ('error' in dirResult) {
-      logError(`Directory error: ${dirResult.error}`);
-      sendToConnection(
-        connectionId,
-        createCreateSessionResponse(false, requestId, undefined, dirResult.error),
-      );
-      return;
-    }
-
-    const workingDirectory = dirResult.resolved;
-    const sessionId = sessionRegistry.createSessionId();
-
-    log(`Creating new session ${sessionId} in ${workingDirectory}...`);
-
-    try {
-      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-        const session = sessionRegistry.getSession(sid);
-        if (session?.activeConnectionId) {
-          sendToConnection(session.activeConnectionId, msg);
-        }
-      });
-
-      // Attach requesting connection to the new session
-      const result = sessionRegistry.attachConnection(sessionId, connectionId);
-
-      if (result.success) {
-        sendToConnection(connectionId, createCreateSessionResponse(true, requestId, sessionId));
-        // Also send hello_ack so client knows about the new session
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', sessionId, {
-            isResume: false,
-            replayCount: 0,
-            nextBulletId: 1,
-          }),
-        );
-        log(`Session ${sessionId} created via create_session_request`);
-      } else {
-        // Clean up the orphaned session to avoid resource leak
-        sessionRegistry.closeSession(sessionId, 'forced');
-        sendToConnection(
-          connectionId,
-          createCreateSessionResponse(false, requestId, undefined, result.error),
-        );
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logError('Failed to create session:', msg);
-      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
-    }
+    // One session per daemon. Reject session creation requests.
+    log(`Create session request from ${connectionId} rejected (one session per daemon)`);
+    sendToConnection(
+      connectionId,
+      createCreateSessionResponse(
+        false,
+        requestId,
+        undefined,
+        "This daemon already has an active session. Start a new daemon with 'remi new'.",
+      ),
+    );
   },
 
   onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => {
@@ -2099,7 +2005,7 @@ const sharedEvents = {
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
     log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
 
-    // Check if this session is still alive in the registry
+    // If the target matches our active session, try to attach
     const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
     if (existingSession) {
       const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
@@ -2132,7 +2038,22 @@ const sharedEvents = {
       return;
     }
 
-    // Look up Claude session ID from SessionStore
+    // Session not alive in registry. One session per daemon, so we cannot
+    // spawn a new session if one already exists.
+    if (sessionRegistry.activeSession !== null) {
+      sendToConnection(
+        connectionId,
+        createResumeSessionResponse(
+          false,
+          requestId,
+          undefined,
+          "This daemon already has an active session. Use 'remi new' to start a new daemon for resume.",
+        ),
+      );
+      return;
+    }
+
+    // No active session; attempt transcript-based resume by spawning a new PTY.
     let claudeSessionId: string | null = null;
     let projectPath: string | null = null;
 
@@ -2150,11 +2071,6 @@ const sharedEvents = {
       }
     }
 
-    // For transcript-only sessions: the sessionId IS the Claude session ID.
-    // The project path is decoded from the transcript directory name, but this
-    // encoding is lossy (Claude Code replaces "/" with "-", so paths containing
-    // dashes like "/Users/dev/my-project" become indistinguishable from
-    // "/Users/dev/my/project"). The decoded path may be wrong.
     if (!claudeSessionId) {
       const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
       if (transcriptPath) {
@@ -2177,7 +2093,6 @@ const sharedEvents = {
       return;
     }
 
-    // Ensure we have a project path before attempting resume
     if (!projectPath) {
       sendToConnection(
         connectionId,
@@ -2191,11 +2106,8 @@ const sharedEvents = {
       return;
     }
 
-    // Validate project path exists
     const dirResult = resolveDirectory(projectPath);
     if ('error' in dirResult) {
-      // For transcript-only sessions, the decoded path may be wrong due to
-      // lossy encoding (dashes in paths are indistinguishable from separators).
       const hint = projectPath?.includes('/')
         ? ' Path may be inaccurate for projects with dashes in their name.'
         : '';
@@ -2212,7 +2124,6 @@ const sharedEvents = {
     }
     const workingDirectory = dirResult.resolved;
 
-    // Spawn new PTY with --resume
     const newSessionId = sessionRegistry.createSessionId();
     log(
       `Resuming Claude session ${claudeSessionId} as new Remi session ${newSessionId} in ${workingDirectory}`,
@@ -2254,7 +2165,6 @@ const sharedEvents = {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError('Failed to resume session:', msg);
-      // Clean up any partially-registered session to avoid zombies
       sessionRegistry.closeSession(newSessionId, 'forced');
       sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
     }
@@ -2561,13 +2471,73 @@ if (cliDaemonMode) {
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Write status so remi status/start can detect running daemon
-  updateRemiStatus({ wsPort: PORT, sessionStatus: 'starting' });
+  // Create the daemon's single session (one session per daemon)
+  const workingDirectory = cliDir ? path.resolve(cliDir) : process.cwd();
+  const sessionId = sessionRegistry.createSessionId();
+  primarySessionId = sessionId;
+
+  updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
+
+  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
+  try {
+    hookServer = new HookServer(
+      { port: 0 },
+      {
+        onError: (err) => console.error(`[HookServer] ${err.message}`),
+      },
+    );
+    hookServer.start();
+    HOOK_PORT = hookServer.port;
+    console.log(`  Hook server listening on port ${HOOK_PORT}`);
+
+    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+    hookConfigManager.install();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+    );
+    hookServer = null;
+    hookConfigManager = null;
+  }
+
+  // Register in live-sessions so remi ls can discover this daemon
+  liveSessionsRegistry.register({
+    sessionId,
+    pid: process.pid,
+    wsPort: PORT,
+    hookPort: HOOK_PORT,
+    projectPath: workingDirectory,
+    name: path.basename(workingDirectory),
+    startedAt: new Date().toISOString(),
+  });
+
+  // Create the PTY session
+  try {
+    await createNewSession(sessionId, workingDirectory, (sid, msg) => {
+      const session = sessionRegistry.getSession(sid);
+      if (session?.activeConnectionId) {
+        sendToConnection(session.activeConnectionId, msg);
+      }
+      if (msg.type !== 'raw_pty_output') {
+        registry.broadcast(msg);
+      }
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to create session: ${msg}`);
+    await registry.stopAll();
+    process.exit(1);
+  }
+
+  const managedSession = sessionRegistry.getSession(sessionId);
 
   console.log('');
   console.log('Remi daemon ready!');
   console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
   console.log(`  Port: ${PORT} (use --port to change)`);
+  console.log(`  Session: ${managedSession?.name ?? sessionId}`);
+  console.log(`  Directory: ${workingDirectory}`);
   console.log(
     `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
   );
