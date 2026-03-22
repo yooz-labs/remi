@@ -2410,7 +2410,7 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 if (!cliNoRelay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
   const { generateConnectionCode } = await import('./remote/signaling-client.ts');
-  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
+  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.yooz.workers.dev/connect';
 
   let relayAdapter: InstanceType<typeof RelayAdapter>;
 

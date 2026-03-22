@@ -120,7 +120,7 @@ Four phases: signaling server hardening, daemon always-on signaling, web client 
 
 | Service | URL | Deploy Command |
 |---------|-----|----------------|
-| Signaling | `wss://remi-signaling.dev-941.workers.dev` | `cd packages/signaling && npx cfman wrangler --account yooz-labs deploy` |
+| Signaling | `wss://remi-signaling.yooz.workers.dev` | `cd packages/signaling && npx cfman wrangler --account yooz-labs deploy` |
 | Web App | `https://remi-app.pages.dev` | `cd packages/web && bun run build && npx cfman wrangler --account yooz-labs pages deploy dist --project-name remi-app --branch main` |
 
 ## Key Files
