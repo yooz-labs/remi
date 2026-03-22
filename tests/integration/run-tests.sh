@@ -127,7 +127,7 @@ run_test "new --host from daemon1 to daemon2 spawns daemon" \
 
 # Verify daemon2 now has sessions on multiple ports
 run_test "ls on daemon2 shows spawned session" \
-  bash -c "OUTPUT=\$(docker_remi remi-test-daemon2 ls 2>&1); \
+  bash -c "OUTPUT=\$(docker exec remi-test-daemon2 bun run packages/daemon/src/cli.ts ls 2>&1); \
     echo \"\$OUTPUT\"; \
     echo \"\$OUTPUT\" | grep -c 'session\|idle\|active' | grep -q '[1-9]'"
 
