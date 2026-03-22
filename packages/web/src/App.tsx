@@ -23,12 +23,11 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
-import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
   createHello,
   createResumeSessionRequest,
-  createSessionHistoryRequest,
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
@@ -113,7 +112,6 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
-  const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
@@ -403,7 +401,7 @@ function App() {
       }
 
       case 'session_history_response': {
-        setRecentDirectories([...message.directories]);
+        // Session history received; currently unused (one session per daemon)
         break;
       }
 
@@ -524,7 +522,6 @@ function App() {
     requestSessionList,
     requestTranscriptLoad,
     requestResumeSession,
-    requestSessionHistory,
     needsPassphrase,
     serverFingerprint,
     provideIdentity,
@@ -613,14 +610,6 @@ function App() {
     [connectionMode, relaySend, requestResumeSession],
   );
 
-  const effectiveRequestSessionHistory = useCallback(
-    (limit?: number): boolean => {
-      if (connectionMode === 'relay') return relaySend(createSessionHistoryRequest(limit));
-      return requestSessionHistory(limit);
-    },
-    [connectionMode, relaySend, requestSessionHistory],
-  );
-
   // Close modal and store URL on successful connect
   useEffect(() => {
     if (connectionStatus === 'connected') {
@@ -653,27 +642,19 @@ function App() {
     }
   }, [effectiveStatus, activeSessionId]);
 
-  // Request session list and history after direct connection
+  // Request session list after direct connection
   useEffect(() => {
     if (connectionStatus === 'connected') {
       effectiveRequestSessionList(true);
-      effectiveRequestSessionHistory();
     }
-  }, [connectionStatus, effectiveRequestSessionList, effectiveRequestSessionHistory]);
+  }, [connectionStatus, effectiveRequestSessionList]);
 
-  // Request session list and history after relay connection (hello_ack received)
+  // Request session list after relay connection (hello_ack received)
   useEffect(() => {
     if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
       effectiveRequestSessionList(true);
-      effectiveRequestSessionHistory();
     }
-  }, [
-    connectionMode,
-    relayStatus,
-    activeSessionId,
-    effectiveRequestSessionList,
-    effectiveRequestSessionHistory,
-  ]);
+  }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
   const connectRef = useRef(connect);
@@ -1031,7 +1012,6 @@ function App() {
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
       onSettings={() => setShowSettings(true)}
-      recentDirectories={recentDirectories}
     />
   );
 
@@ -1040,10 +1020,6 @@ function App() {
     (sum, s) => sum + (s.id === activeSessionId ? 0 : s.unreadCount),
     0,
   );
-
-  const handleOpenSessions = useCallback(() => {
-    // One session per daemon; no session switcher needed
-  }, []);
 
   // Main content
   const main = activeSession ? (
@@ -1054,8 +1030,6 @@ function App() {
       error={error}
       onSend={handleSend}
       onBack={handleBack}
-      onOpenSessions={handleOpenSessions}
-      sessionCount={sessions.length}
       totalUnread={totalUnread}
       onCopyConversation={handleCopyConversation}
       onClearMessages={handleClearMessages}

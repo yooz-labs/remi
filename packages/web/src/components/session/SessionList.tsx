@@ -5,7 +5,6 @@
  */
 
 import type { UISession } from '@/types';
-import type { RecentDirectory } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
 import { Link2, Settings } from 'lucide-react';
@@ -20,7 +19,6 @@ interface SessionListProps {
   readonly onConnect?: () => void;
   readonly onSettings?: () => void;
   readonly className?: string;
-  readonly recentDirectories?: readonly RecentDirectory[];
 }
 
 export function SessionList({
