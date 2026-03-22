@@ -101,9 +101,7 @@ export interface StartOptions {
 }
 
 import { findAvailableTcpPort } from '../session/port-utils.ts';
-
-const DEFAULT_BASE_PORT = 18765;
-const DEFAULT_PORT_RANGE = 10;
+import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-registry-file.ts';
 
 /**
  * Start the remi daemon in the background.

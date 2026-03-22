@@ -30,7 +30,7 @@ export interface LiveSessionEntry {
 
 /** Default port range for auto-selection. */
 export const DEFAULT_BASE_PORT = 18765;
-export const DEFAULT_PORT_RANGE = 10;
+export const DEFAULT_PORT_RANGE = 20;
 
 /** Type guard for LiveSessionEntry after JSON.parse. */
 function isValidEntry(data: unknown): data is LiveSessionEntry {

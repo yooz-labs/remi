@@ -318,19 +318,49 @@ describe('SessionRegistry', () => {
   });
 
   describe('orphanedCount', () => {
-    test('counts orphaned sessions', () => {
-      const sessionId1 = generateId();
-      const sessionId2 = generateId();
-      const connectionId1 = generateId();
+    test('counts orphaned session', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
 
-      registry.registerSession(sessionId1, '/test/dir', createMockPTY(), createMockMessageAPI());
-      registry.registerSession(sessionId2, '/test/dir', createMockPTY(), createMockMessageAPI());
-
-      registry.attachConnection(sessionId1, connectionId1);
-      registry.attachConnection(sessionId2, generateId());
-      registry.detachConnection(connectionId1);
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
 
       expect(registry.orphanedCount).toBe(1);
+    });
+
+    test('returns 0 when session is connected', () => {
+      const sessionId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, generateId());
+
+      expect(registry.orphanedCount).toBe(0);
+    });
+  });
+
+  describe('registerSession() single-session enforcement', () => {
+    test('throws when registering a second session', () => {
+      registry.registerSession(generateId(), '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      expect(() => {
+        registry.registerSession(
+          generateId(),
+          '/test/dir2',
+          createMockPTY(),
+          createMockMessageAPI(),
+        );
+      }).toThrow('Session already registered');
+    });
+
+    test('can register again after session is closed', () => {
+      const sessionId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.closeSession(sessionId, 'forced');
+
+      const newSessionId = generateId();
+      registry.registerSession(newSessionId, '/test/dir2', createMockPTY(), createMockMessageAPI());
+      expect(registry.sessionCount).toBe(1);
+      expect(registry.getSession(newSessionId)).toBeDefined();
     });
   });
 
@@ -383,20 +413,11 @@ describe('SessionRegistry', () => {
       // Locally-owned session with no connection should not count as orphaned
       expect(registry.orphanedCount).toBe(0);
 
-      // Add a non-locally-owned detached session
-      const remoteSessionId = generateId();
+      // Even after attach+detach, locally-owned session is not orphaned
       const connectionId = generateId();
-      registry.registerSession(
-        remoteSessionId,
-        '/test/dir',
-        createMockPTY(),
-        createMockMessageAPI(),
-      );
-      registry.attachConnection(remoteSessionId, connectionId);
+      registry.attachConnection(localSessionId, connectionId);
       registry.detachConnection(connectionId);
-
-      // Only the non-locally-owned session counts
-      expect(registry.orphanedCount).toBe(1);
+      expect(registry.orphanedCount).toBe(0);
     });
 
     test('non-locally-owned session reports orphaned status without connection', () => {
@@ -413,16 +434,18 @@ describe('SessionRegistry', () => {
   });
 
   describe('shutdown()', () => {
-    test('closes all sessions', async () => {
-      const pty1 = createMockPTY();
-      const pty2 = createMockPTY();
-      registry.registerSession(generateId(), '/test', pty1, createMockMessageAPI());
-      registry.registerSession(generateId(), '/test', pty2, createMockMessageAPI());
+    test('closes the session', async () => {
+      const pty = createMockPTY();
+      registry.registerSession(generateId(), '/test', pty, createMockMessageAPI());
 
       await registry.shutdown();
 
-      expect(pty1.close).toHaveBeenCalled();
-      expect(pty2.close).toHaveBeenCalled();
+      expect(pty.close).toHaveBeenCalled();
+      expect(registry.sessionCount).toBe(0);
+    });
+
+    test('is safe to call with no session', async () => {
+      await registry.shutdown();
       expect(registry.sessionCount).toBe(0);
     });
   });

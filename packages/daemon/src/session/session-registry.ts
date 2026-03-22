@@ -1,11 +1,12 @@
 /**
- * SessionRegistry - Manages session lifecycle independently of connections.
+ * SessionRegistry - Manages a single session per daemon.
  *
  * Key concepts:
+ * - One daemon = one session = one port
  * - Sessions survive connection drops (orphaned state)
  * - Orphaned sessions timeout after configurable period (default 5 minutes)
  * - Locally-owned sessions (wrapper mode) are exempt from orphan timeout
- * - Connections can resume existing sessions within timeout window
+ * - Connections can resume the session within the timeout window
  * - Message history is tracked for replay on reconnect
  */
 
@@ -20,7 +21,7 @@ import type {
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
-import { generateSessionName, makeUniqueName } from './session-name.ts';
+import { generateSessionName } from './session-name.ts';
 
 /** Configuration for SessionRegistry */
 export interface SessionRegistryConfig {
@@ -103,7 +104,7 @@ export interface ManagedSession {
 }
 
 /**
- * SessionRegistry manages session lifecycle independently of WebSocket connections.
+ * SessionRegistry manages a single session per daemon process.
  *
  * This enables:
  * - Sessions surviving temporary disconnects
@@ -111,8 +112,7 @@ export interface ManagedSession {
  * - Graceful timeout-based cleanup
  */
 export class SessionRegistry {
-  private readonly sessions: Map<UUID, ManagedSession> = new Map();
-  private readonly connectionToSession: Map<UUID, UUID> = new Map();
+  private session: ManagedSession | null = null;
   private readonly events: SessionRegistryEvents;
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
@@ -123,8 +123,14 @@ export class SessionRegistry {
     this.events = events;
   }
 
+  /** The current session, if any. */
+  get activeSession(): ManagedSession | null {
+    return this.session;
+  }
+
   /**
    * Register a new session with its PTY and message API.
+   * Only one session is allowed per daemon; throws if a session already exists.
    */
   registerSession(
     sessionId: UUID,
@@ -133,12 +139,14 @@ export class SessionRegistry {
     messageApi: MessageAPI,
     locallyOwned = false,
   ): void {
-    const baseName = generateSessionName(workingDirectory);
-    const existingNames = this.getExistingNames();
-    const name = makeUniqueName(baseName, existingNames);
+    if (this.session !== null) {
+      throw new Error('Session already registered. Only one session per daemon is allowed.');
+    }
+
+    const name = generateSessionName(workingDirectory);
 
     const createdAt = now();
-    const session: ManagedSession = {
+    this.session = {
       sessionId,
       name,
       createdAt,
@@ -156,12 +164,11 @@ export class SessionRegistry {
       locallyOwned,
     };
 
-    this.sessions.set(sessionId, session);
     this.events.onSessionCreated?.(sessionId);
   }
 
   /**
-   * Create a new session ID for a fresh connection.
+   * Create a new session ID.
    * The actual session components (PTY, messageApi) must be
    * registered separately via registerSession.
    */
@@ -173,25 +180,27 @@ export class SessionRegistry {
    * Get a session by its ID.
    */
   getSession(sessionId: UUID): ManagedSession | undefined {
-    return this.sessions.get(sessionId);
+    if (this.session !== null && this.session.sessionId === sessionId) {
+      return this.session;
+    }
+    return undefined;
   }
 
   /**
    * Check if a session exists (has not been cleaned up).
    */
   hasSession(sessionId: UUID): boolean {
-    return this.sessions.has(sessionId);
+    return this.session !== null && this.session.sessionId === sessionId;
   }
 
   /**
    * Get the session for a given connection.
    */
   getSessionForConnection(connectionId: UUID): ManagedSession | undefined {
-    const sessionId = this.connectionToSession.get(connectionId);
-    if (sessionId === undefined) {
-      return undefined;
+    if (this.session !== null && this.session.activeConnectionId === connectionId) {
+      return this.session;
     }
-    return this.sessions.get(sessionId);
+    return undefined;
   }
 
   /**
@@ -199,23 +208,17 @@ export class SessionRegistry {
    * Returns true if session exists and has no active connection.
    */
   canResume(sessionId: UUID): boolean {
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) {
+    if (this.session === null || this.session.sessionId !== sessionId) {
       return false;
     }
-    // Can only resume sessions with no active connection
-    return session.activeConnectionId === null;
+    return this.session.activeConnectionId === null;
   }
 
   /**
-   * Attach a connection to a session.
-   * For new sessions, pass the newly created sessionId.
-   * For resume, pass the existing sessionId.
+   * Attach a connection to the session.
    */
   attachConnection(sessionId: UUID, connectionId: UUID): AttachResult {
-    const session = this.sessions.get(sessionId);
-
-    if (session === undefined) {
+    if (this.session === null || this.session.sessionId !== sessionId) {
       return {
         success: false,
         isResume: false,
@@ -228,36 +231,35 @@ export class SessionRegistry {
     }
 
     // Check if session already has an active connection
-    if (session.activeConnectionId !== null) {
+    if (this.session.activeConnectionId !== null) {
       return {
         success: false,
         isResume: false,
         replayMessages: [],
-        currentStatus: session.currentStatus,
-        currentQuestion: session.currentQuestion,
-        nextBulletId: session.messageApi.bulletCount + 1,
+        currentStatus: this.session.currentStatus,
+        currentQuestion: this.session.currentQuestion,
+        nextBulletId: this.session.messageApi.bulletCount + 1,
         error: 'Session already has active connection',
       };
     }
 
-    const isResume = session.lastDisconnectedAt !== null;
+    const isResume = this.session.lastDisconnectedAt !== null;
 
     // Clear orphan timeout if resuming
-    if (session.orphanTimeoutId !== null) {
-      clearTimeout(session.orphanTimeoutId);
-      session.orphanTimeoutId = null;
+    if (this.session.orphanTimeoutId !== null) {
+      clearTimeout(this.session.orphanTimeoutId);
+      this.session.orphanTimeoutId = null;
     }
 
     // Attach connection
-    session.activeConnectionId = connectionId;
-    session.lastDisconnectedAt = null;
-    this.connectionToSession.set(connectionId, sessionId);
+    this.session.activeConnectionId = connectionId;
+    this.session.lastDisconnectedAt = null;
 
     // Get messages to replay (from after last delivered)
-    const replayMessages = session.messageHistory.slice(session.lastDeliveredIndex + 1);
+    const replayMessages = this.session.messageHistory.slice(this.session.lastDeliveredIndex + 1);
 
     // Mark all as delivered now
-    session.lastDeliveredIndex = session.messageHistory.length - 1;
+    this.session.lastDeliveredIndex = this.session.messageHistory.length - 1;
 
     if (isResume) {
       this.events.onSessionResumed?.(sessionId, connectionId);
@@ -267,39 +269,33 @@ export class SessionRegistry {
       success: true,
       isResume,
       replayMessages,
-      currentStatus: session.currentStatus,
-      currentQuestion: session.currentQuestion,
-      nextBulletId: session.messageApi.bulletCount + 1,
+      currentStatus: this.session.currentStatus,
+      currentQuestion: this.session.currentQuestion,
+      nextBulletId: this.session.messageApi.bulletCount + 1,
     };
   }
 
   /**
-   * Detach a connection from its session.
+   * Detach a connection from the session.
    * Non-locally-owned sessions become orphaned and start the timeout countdown.
    * Locally-owned sessions remain active without a timeout.
    */
   detachConnection(connectionId: UUID): void {
-    const sessionId = this.connectionToSession.get(connectionId);
-    if (sessionId === undefined) {
+    if (this.session === null || this.session.activeConnectionId !== connectionId) {
       return;
     }
 
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) {
-      this.connectionToSession.delete(connectionId);
-      return;
-    }
+    const { sessionId } = this.session;
 
     // Detach connection
-    session.activeConnectionId = null;
-    session.lastDisconnectedAt = now();
-    this.connectionToSession.delete(connectionId);
+    this.session.activeConnectionId = null;
+    this.session.lastDisconnectedAt = now();
 
     // Start orphan timeout (skip for locally-owned sessions; they stay alive
     // until PTY exits, explicit kill, or daemon shutdown).
     // orphanTimeoutMs === 0 disables automatic cleanup.
-    if (!session.locallyOwned && this.orphanTimeoutMs > 0) {
-      session.orphanTimeoutId = setTimeout(() => {
+    if (!this.session.locallyOwned && this.orphanTimeoutMs > 0) {
+      this.session.orphanTimeoutId = setTimeout(() => {
         this.closeSession(sessionId, 'timeout');
       }, this.orphanTimeoutMs);
     }
@@ -312,31 +308,29 @@ export class SessionRegistry {
    * Call this for every message sent to the client.
    */
   recordOutgoingMessage(sessionId: UUID, message: ProtocolMessage): void {
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) {
+    if (this.session === null || this.session.sessionId !== sessionId) {
       return;
     }
 
-    session.messageHistory.push(message);
-    session.lastActivityAt = now();
+    this.session.messageHistory.push(message);
+    this.session.lastActivityAt = now();
 
     // If connected, mark as delivered
-    if (session.activeConnectionId !== null) {
-      session.lastDeliveredIndex = session.messageHistory.length - 1;
+    if (this.session.activeConnectionId !== null) {
+      this.session.lastDeliveredIndex = this.session.messageHistory.length - 1;
     }
 
     // Prune history if too large
-    this.pruneHistory(session);
+    this.pruneHistory(this.session);
   }
 
   /**
    * Update session status (from hook events).
    */
   updateStatus(sessionId: UUID, status: AgentStatus): void {
-    const session = this.sessions.get(sessionId);
-    if (session !== undefined) {
-      session.currentStatus = status;
-      session.lastActivityAt = now();
+    if (this.session !== null && this.session.sessionId === sessionId) {
+      this.session.currentStatus = status;
+      this.session.lastActivityAt = now();
     }
   }
 
@@ -344,42 +338,34 @@ export class SessionRegistry {
    * Update current question (from hook events).
    */
   updateQuestion(sessionId: UUID, question: Question | null): void {
-    const session = this.sessions.get(sessionId);
-    if (session !== undefined) {
-      session.currentQuestion = question;
-      session.lastActivityAt = now();
+    if (this.session !== null && this.session.sessionId === sessionId) {
+      this.session.currentQuestion = question;
+      this.session.lastActivityAt = now();
     }
   }
 
   /**
-   * Close a session, cleaning up all resources.
+   * Close the session, cleaning up all resources.
    */
   closeSession(sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced'): void {
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) {
+    if (this.session === null || this.session.sessionId !== sessionId) {
       return;
     }
 
     // Clear timeout if any
-    if (session.orphanTimeoutId !== null) {
-      clearTimeout(session.orphanTimeoutId);
-    }
-
-    // Remove connection mapping if still exists
-    if (session.activeConnectionId !== null) {
-      this.connectionToSession.delete(session.activeConnectionId);
+    if (this.session.orphanTimeoutId !== null) {
+      clearTimeout(this.session.orphanTimeoutId);
     }
 
     // Close PTY unless the closure was triggered by PTY exit
     if (reason !== 'pty_exit') {
-      session.pty.close().catch((err) => {
-        // Log but don't throw; we're already cleaning up
+      this.session.pty.close().catch((err) => {
         console.error(`Failed to close PTY for session ${sessionId}:`, err);
       });
     }
 
-    // Remove from registry
-    this.sessions.delete(sessionId);
+    // Clear the session
+    this.session = null;
 
     this.events.onSessionClosed?.(sessionId, reason);
   }
@@ -397,75 +383,54 @@ export class SessionRegistry {
    * Supports exact match and prefix match.
    */
   resolveByName(name: string): ManagedSession | undefined {
-    // Exact match first
-    for (const session of this.sessions.values()) {
-      if (session.name === name) {
-        return session;
-      }
+    if (this.session === null) {
+      return undefined;
     }
-    // Prefix match (e.g. "mac/remi" matches "mac/remi/main")
-    const matches: ManagedSession[] = [];
-    for (const session of this.sessions.values()) {
-      if (session.name.startsWith(name)) {
-        matches.push(session);
-      }
-    }
-    if (matches.length === 1) {
-      return matches[0];
+    if (this.session.name === name || this.session.name.startsWith(name)) {
+      return this.session;
     }
     return undefined;
-  }
-
-  /**
-   * Get all existing session names for uniqueness checks.
-   */
-  private getExistingNames(): Set<string> {
-    const names = new Set<string>();
-    for (const session of this.sessions.values()) {
-      names.add(session.name);
-    }
-    return names;
   }
 
   /**
    * Get all active session IDs.
    */
   getActiveSessionIds(): UUID[] {
-    return Array.from(this.sessions.keys());
+    if (this.session !== null) {
+      return [this.session.sessionId];
+    }
+    return [];
   }
 
   /**
-   * List all sessions with metadata for discovery.
-   * Returns daemon-managed sessions as DiscoverableSession objects.
+   * List sessions with metadata for discovery.
+   * Returns 0 or 1 sessions (one session per daemon).
    */
   listSessions(): DiscoverableSession[] {
-    const result: DiscoverableSession[] = [];
-
-    for (const session of this.sessions.values()) {
-      const status = this.getDiscoverableStatus(session);
-      const lastMessage = this.getLastMessagePreview(session);
-
-      result.push({
-        sessionId: session.sessionId,
-        name: session.name,
-        projectPath: session.workingDirectory,
-        status,
-        createdAt: session.createdAt,
-        lastActivity: session.lastActivityAt,
-        messageCount: session.messageHistory.length,
-        lastMessage,
-        source: 'daemon',
-        canAttach: session.activeConnectionId === null,
-        canResume: false, // Daemon-managed sessions are alive; use canAttach instead
-      });
+    if (this.session === null) {
+      return [];
     }
 
-    return result;
+    const status = this.getDiscoverableStatus(this.session);
+    const lastMessage = this.getLastMessagePreview(this.session);
+
+    return [
+      {
+        sessionId: this.session.sessionId,
+        name: this.session.name,
+        projectPath: this.session.workingDirectory,
+        status,
+        createdAt: this.session.createdAt,
+        lastActivity: this.session.lastActivityAt,
+        messageCount: this.session.messageHistory.length,
+        lastMessage,
+        source: 'daemon',
+        canAttach: this.session.activeConnectionId === null,
+        canResume: false,
+      },
+    ];
   }
 
-  /**
-   * Determine discoverable status from managed session state.
-   */
   private getDiscoverableStatus(session: ManagedSession): 'active' | 'idle' | 'orphaned' {
     if (session.activeConnectionId === null) {
       return session.locallyOwned ? 'active' : 'orphaned';
@@ -476,9 +441,6 @@ export class SessionRegistry {
     return 'active';
   }
 
-  /**
-   * Get a truncated preview of the last message content.
-   */
   private getLastMessagePreview(session: ManagedSession): string | undefined {
     if (session.messageHistory.length === 0) {
       return undefined;
@@ -489,7 +451,6 @@ export class SessionRegistry {
       return undefined;
     }
 
-    // Extract content from different message types
     let content: string | undefined;
     if (lastMsg.type === 'agent_output') {
       content = lastMsg.message.content;
@@ -503,33 +464,24 @@ export class SessionRegistry {
       return undefined;
     }
 
-    // Truncate to 100 chars
     return content.length > 100 ? `${content.slice(0, 97)}...` : content;
   }
 
-  /**
-   * Get count of sessions.
-   */
   get sessionCount(): number {
-    return this.sessions.size;
+    return this.session !== null ? 1 : 0;
   }
 
-  /**
-   * Get count of orphaned sessions.
-   */
   get orphanedCount(): number {
-    let count = 0;
-    for (const session of this.sessions.values()) {
-      if (session.activeConnectionId === null && !session.locallyOwned) {
-        count++;
-      }
+    if (
+      this.session !== null &&
+      this.session.activeConnectionId === null &&
+      !this.session.locallyOwned
+    ) {
+      return 1;
     }
-    return count;
+    return 0;
   }
 
-  /**
-   * Prune old messages from history to prevent unbounded growth.
-   */
   private pruneHistory(session: ManagedSession): void {
     if (session.messageHistory.length <= this.maxReplayHistory) {
       return;
@@ -538,30 +490,24 @@ export class SessionRegistry {
     const toRemove = session.messageHistory.length - this.maxReplayHistory;
     session.messageHistory.splice(0, toRemove);
 
-    // Adjust delivered index
     session.lastDeliveredIndex = Math.max(-1, session.lastDeliveredIndex - toRemove);
   }
 
   /**
-   * Shutdown all sessions.
+   * Shutdown the session.
    * Call this on daemon shutdown.
    */
   async shutdown(): Promise<void> {
-    const closePromises: Promise<void>[] = [];
-
-    for (const sessionId of this.sessions.keys()) {
-      const session = this.sessions.get(sessionId);
-      if (session !== undefined) {
-        // Clear timeout
-        if (session.orphanTimeoutId !== null) {
-          clearTimeout(session.orphanTimeoutId);
-        }
-        closePromises.push(session.pty.close());
+    if (this.session !== null) {
+      if (this.session.orphanTimeoutId !== null) {
+        clearTimeout(this.session.orphanTimeoutId);
       }
+      try {
+        await this.session.pty.close();
+      } catch (err) {
+        console.error('Failed to close PTY during shutdown:', err);
+      }
+      this.session = null;
     }
-
-    await Promise.all(closePromises);
-    this.sessions.clear();
-    this.connectionToSession.clear();
   }
 }
