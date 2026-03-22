@@ -1974,8 +1974,16 @@ const sharedEvents = {
         return;
       }
 
+      // Forward parent's flags so spawned daemon has matching config
+      const inheritedArgs: string[] = [];
+      if (cliAuth === true) inheritedArgs.push('--auth');
+      if (cliAuth === false) inheritedArgs.push('--no-auth');
+      if (cliNoRelay) inheritedArgs.push('--no-relay');
+      if (cliNoMdns) inheritedArgs.push('--no-mdns');
+      if (bindHost !== '0.0.0.0') inheritedArgs.push('--bind', bindHost);
+
       log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
-      const result = await spawnRemiDaemon(freePort, directory);
+      const result = await spawnRemiDaemon(freePort, directory, inheritedArgs);
 
       sendToConnection(
         connectionId,

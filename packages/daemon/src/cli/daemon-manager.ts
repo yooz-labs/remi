@@ -317,6 +317,7 @@ export interface SpawnResult {
 export async function spawnRemiDaemon(
   port: number,
   directory?: string,
+  extraArgs: string[] = [],
   timeoutMs = 10000,
 ): Promise<SpawnResult> {
   const { SessionRegistryFile } = await import('../session/session-registry-file.ts');
@@ -327,6 +328,7 @@ export async function spawnRemiDaemon(
   if (directory) {
     spawnArgs.push('--dir', directory);
   }
+  spawnArgs.push(...extraArgs);
 
   const logFd = fs.openSync(LOG_FILE, 'a');
   fs.writeSync(logFd, `\n--- Spawning daemon on port ${port} at ${new Date().toISOString()} ---\n`);
