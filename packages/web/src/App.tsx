@@ -4,7 +4,7 @@
  * Main application component wired to real daemon data.
  */
 
-import { ChatView, SessionSwitcher } from '@/components/chat';
+import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
@@ -26,7 +26,6 @@ import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@
 import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
-  createCreateSessionRequest,
   createHello,
   createResumeSessionRequest,
   createSessionHistoryRequest,
@@ -110,12 +109,10 @@ function App() {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [creatingSession, setCreatingSession] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
-  const [showSessionSwitcher, setShowSessionSwitcher] = useState(false);
   const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
 
   // Refs for stable callbacks
@@ -146,10 +143,8 @@ function App() {
   const handleMessage = useCallback((message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        // Daemon mode sends an empty-string sessionId on initial connect.
-        // No session is attached yet; user will select or create one from the session list.
+        // One session per daemon; the sessionId identifies the daemon's single session.
         if (!message.sessionId) {
-          setCreatingSession(false);
           break;
         }
         setSessions((prev) => {
@@ -159,7 +154,6 @@ function App() {
               s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s,
             );
           }
-          // Only create new entry for non-resume (resume expects session to exist)
           if (message.isResume) return prev;
           return [
             ...prev,
@@ -175,7 +169,6 @@ function App() {
             } satisfies UISession,
           ];
         });
-        setCreatingSession(false);
         setActiveSessionId(message.sessionId);
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
         break;
@@ -442,20 +435,9 @@ function App() {
       }
 
       case 'create_session_response': {
-        setCreatingSession(false);
+        // One session per daemon; session creation is rejected.
         if (!message.success) {
-          console.error(`Failed to create session: ${message.error}`);
-          // Add error message to the current session's chat so the user sees it
-          const errorMsg: UIMessage = {
-            id: generateId(),
-            sessionId: activeSessionIdRef.current ?? ('' as UUID),
-            sender: 'system',
-            content: `Failed to create session: ${message.error ?? 'Unknown error'}`,
-            timestamp: new Date().toISOString(),
-            state: 'delivered',
-            isEditing: false,
-          };
-          setMessages((prev) => [...prev, errorMsg]);
+          console.error(`Session creation rejected: ${message.error}`);
         }
         break;
       }
@@ -541,7 +523,6 @@ function App() {
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
-    requestNewSession,
     requestResumeSession,
     requestSessionHistory,
     needsPassphrase,
@@ -624,14 +605,6 @@ function App() {
     [connectionMode, relaySend, requestTranscriptLoad],
   );
 
-  const effectiveRequestNewSession = useCallback(
-    (directory?: string): boolean => {
-      if (connectionMode === 'relay') return relaySend(createCreateSessionRequest(directory));
-      return requestNewSession(directory);
-    },
-    [connectionMode, relaySend, requestNewSession],
-  );
-
   const effectiveRequestResumeSession = useCallback(
     (sessionId: string): boolean => {
       if (connectionMode === 'relay') return relaySend(createResumeSessionRequest(sessionId));
@@ -668,7 +641,6 @@ function App() {
       );
       setQuestion(null);
       setResumingSession(null);
-      setCreatingSession(false);
     } else if (effectiveStatus === 'connected') {
       // Restore connected status for active session
       if (activeSessionId) {
@@ -1010,15 +982,6 @@ function App() {
     [activeSessionId, effectiveRequestBulletExpand],
   );
 
-  const handleNewSession = useCallback(
-    (directory?: string) => {
-      if (creatingSession) return;
-      setCreatingSession(true);
-      effectiveRequestNewSession(directory);
-    },
-    [effectiveRequestNewSession, creatingSession],
-  );
-
   const handleResumeSession = useCallback(
     (sessionId: string) => {
       if (resumingSession) return;
@@ -1059,13 +1022,11 @@ function App() {
   }, [sessionMessages, activeSessionId]);
 
   // Sidebar content
-  const canCreateSession = effectiveStatus === 'connected' && !creatingSession;
   const sidebar = (
     <SessionList
       sessions={sessions}
       activeSessionId={activeSessionId}
       onSelectSession={handleSelectSession}
-      onNewSession={canCreateSession ? handleNewSession : undefined}
       onResumeSession={effectiveStatus === 'connected' ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
@@ -1081,11 +1042,7 @@ function App() {
   );
 
   const handleOpenSessions = useCallback(() => {
-    setShowSessionSwitcher(true);
-  }, []);
-
-  const handleCloseSessionSwitcher = useCallback(() => {
-    setShowSessionSwitcher(false);
+    // One session per daemon; no session switcher needed
   }, []);
 
   // Main content
@@ -1114,14 +1071,6 @@ function App() {
   return (
     <>
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
-
-      <SessionSwitcher
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        isOpen={showSessionSwitcher}
-        onSelectSession={handleSelectSession}
-        onClose={handleCloseSessionSwitcher}
-      />
 
       <SettingsPanel
         open={showSettings}
