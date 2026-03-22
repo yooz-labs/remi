@@ -9,7 +9,8 @@ const TEST_BASE = 45000 + Math.floor(Math.random() * 5000);
 function occupyPort(port: number): Promise<net.Server> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
-    srv.once('error', reject);
+    // biome-ignore lint/suspicious/noExplicitAny: Bun's net.Server type is incomplete
+    (srv as any).on('error', reject);
     srv.listen({ port, host: '0.0.0.0', exclusive: true }, () => resolve(srv));
   });
 }

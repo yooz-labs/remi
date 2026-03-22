@@ -29,9 +29,9 @@ describe('Version synchronization', () => {
     const deps = npmPkg.optionalDependencies ?? {};
     const versions = Object.values(deps) as string[];
     if (versions.length > 0) {
-      const first = versions[0];
+      const first = versions[0] as string;
       for (const v of versions) {
-        expect(v).toBe(first);
+        expect(v as string).toBe(first);
       }
     }
   });
