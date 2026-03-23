@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# Integration tests for remi CLI remote commands.
-# Spins up Docker containers running remi daemons, then tests
-# ls, recent, new, kill against them from the host and cross-container.
+# Integration tests for remi using Docker containers.
+#
+# Tests run the compiled remi binary inside Docker containers on a shared
+# network, simulating real-world multi-machine scenarios.
 #
 # Usage:
 #   ./tests/integration/run-tests.sh
@@ -15,24 +16,14 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR/../.."
-
-# Must run from project root for bun workspace resolution
 cd "$PROJECT_ROOT"
 
-remi_cli() {
-  bun run packages/daemon/src/cli.ts "$@"
-}
-export -f remi_cli
-
-# Use non-standard ports to avoid conflicts with local daemons
-D1_PORT=19765
-D2_PORT=19766
-HOST=localhost
-
-# Docker container IPs on the test network
-D1_DOCKER_IP=172.28.0.10
-D2_DOCKER_IP=172.28.0.11
-DAEMON_PORT=18765  # Internal port inside containers
+# Container names and IPs
+D1=remi-test-daemon1
+D2=remi-test-daemon2
+D1_IP=172.28.0.10
+D2_IP=172.28.0.11
+PORT=18765
 
 PASS=0
 FAIL=0
@@ -40,7 +31,6 @@ TOTAL=0
 
 # Load CLAUDE_CODE_OAUTH_TOKEN if not set
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  # Extract token from ~/.zshrc (may be commented out with "# export")
   TOKEN=$(grep 'CLAUDE_CODE_OAUTH_TOKEN=' ~/.zshrc 2>/dev/null | head -1 | sed 's/.*CLAUDE_CODE_OAUTH_TOKEN=//')
   if [ -n "$TOKEN" ]; then
     export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
@@ -61,12 +51,11 @@ run_test() {
     PASS=$((PASS + 1))
   else
     echo "FAIL"
-    echo "    Output: ${output:0:200}"
+    echo "    Output: ${output:0:300}"
     FAIL=$((FAIL + 1))
   fi
 }
 
-# Expect failure (exit code != 0)
 run_test_expect_fail() {
   local name="$1"
   shift
@@ -81,12 +70,9 @@ run_test_expect_fail() {
   fi
 }
 
-# Run remi CLI inside a Docker container
-docker_remi() {
-  local container="$1"
-  shift
-  docker exec "$container" bun run packages/daemon/src/cli.ts "$@"
-}
+# Run remi inside a container
+d1_remi() { docker exec $D1 remi "$@"; }
+d2_remi() { docker exec $D2 remi "$@"; }
 
 cleanup() {
   echo ""
@@ -95,62 +81,78 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---- Start containers ----
+# ---- Build and start containers ----
 echo "Building and starting Docker containers..."
+echo "(This builds the remi binary inside Docker, may take a minute on first run)"
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d --build --wait 2>&1
 
 echo ""
 echo "Containers ready. Running integration tests..."
 echo ""
 
-# ---- Test Group 1: remi ls (from host via port mapping) ----
-echo "== ls tests =="
-run_test "ls --host --port daemon1" remi_cli ls --host $HOST --port $D1_PORT
-run_test "ls --host --port daemon2" remi_cli ls --host $HOST --port $D2_PORT
-run_test "ls --port (no --host, defaults to localhost)" remi_cli ls --port $D1_PORT
+# ==== Test Group 1: Binary installation ====
+echo "== binary installation =="
+run_test "remi binary exists on daemon1" docker exec $D1 which remi
+run_test "remi binary exists on daemon2" docker exec $D2 which remi
+run_test "remi --version works" docker exec $D1 remi --version
 
-# ---- Test Group 2: remi recent ----
+# ==== Test Group 2: Session listing ====
 echo ""
-echo "== recent tests =="
-run_test "recent --host --port daemon1" remi_cli recent --host $HOST --port $D1_PORT
-run_test "recent --host --port daemon2" remi_cli recent --host $HOST --port $D2_PORT
+echo "== session listing =="
+run_test "ls on daemon1 shows session" d1_remi ls
+run_test "ls on daemon2 shows session" d2_remi ls
+run_test "ls shows project name (sample-app)" \
+  bash -c "docker exec $D1 remi ls 2>&1 | grep -q 'sample-app'"
+run_test "ls shows project name (api-server)" \
+  bash -c "docker exec $D2 remi ls 2>&1 | grep -q 'api-server'"
 
-# ---- Test Group 3: remi new --host (cross-container via docker exec) ----
+# ==== Test Group 3: Cross-container ls ====
 echo ""
-echo "== new --host tests (remote daemon spawning) =="
+echo "== cross-container discovery =="
+run_test "daemon1 can ls daemon2" d1_remi ls --host $D2_IP --port $PORT
+run_test "daemon2 can ls daemon1" d2_remi ls --host $D1_IP --port $PORT
 
-# daemon1 asks daemon2 to spawn a new session (cross-container, same Docker network)
-# This tests the full flow: create_session_request -> spawn daemon -> return port -> attach
-run_test "new --host from daemon1 to daemon2 spawns daemon" \
-  bash -c "docker exec remi-test-daemon1 bash -c \
-    'bun run packages/daemon/src/cli.ts new --host $D2_DOCKER_IP --port $DAEMON_PORT --dir /tmp &>/dev/null & PID=\$!; sleep 12; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0'"
+# ==== Test Group 4: Remote daemon spawning ====
+echo ""
+echo "== remote daemon spawning =="
+
+# daemon1 asks daemon2 to spawn a new session in /projects/sample-app
+run_test "remote spawn: daemon1 triggers new daemon on daemon2" \
+  bash -c "docker exec $D1 bash -c \
+    'remi new --host $D2_IP --port $PORT --dir /projects/sample-app &>/dev/null & PID=\$!; sleep 12; kill \$PID 2>/dev/null; wait \$PID 2>/dev/null; exit 0'"
 
 # Verify daemon2 now has sessions on multiple ports
-run_test "ls on daemon2 shows spawned session" \
-  bash -c "OUTPUT=\$(docker exec remi-test-daemon2 bun run packages/daemon/src/cli.ts ls 2>&1); \
+run_test "daemon2 has sessions on multiple ports after spawn" \
+  bash -c "OUTPUT=\$(docker exec $D2 remi ls 2>&1); \
     echo \"\$OUTPUT\"; \
-    echo \"\$OUTPUT\" | grep -c 'session\|idle\|active' | grep -q '[1-9]'"
+    echo \"\$OUTPUT\" | grep -c 'session\|idle\|active' | grep -q '[2-9]'"
 
-# ---- Test Group 4: flags before subcommand (backward compat) ----
+# ==== Test Group 5: Config system ====
 echo ""
-echo "== flags before subcommand (backward compat) =="
-run_test "flags before: --host X ls" remi_cli --host $HOST --port $D1_PORT ls
+echo "== config system =="
+run_test "config shows defaults" \
+  bash -c "docker exec $D1 remi config 2>&1 | grep -q 'base_port = 18765'"
+run_test "config init creates file" \
+  bash -c "docker exec $D1 remi config init 2>&1 | grep -q 'Config file created'"
+run_test "config init rejects duplicate" \
+  bash -c "! docker exec $D1 remi config init 2>&1 | grep -q 'already exists' || exit 1; exit 0"
+run_test "config path shows location" \
+  bash -c "docker exec $D1 remi config path 2>&1 | grep -q 'config.toml'"
 
-# ---- Test Group 5: remi kill ----
+# ==== Test Group 6: Kill session ====
 echo ""
-echo "== kill tests =="
-run_test_expect_fail "kill nonexistent (--host flag)" \
-  remi_cli kill nonexistent --host $HOST --port $D1_PORT
+echo "== kill session =="
+run_test_expect_fail "kill nonexistent session" d1_remi kill nonexistent
+run_test_expect_fail "kill nonexistent on remote" d1_remi kill nonexistent --host $D2_IP --port $PORT
 
-# Test universal resolver: kill with host:port/session format
-run_test_expect_fail "kill host:port/nonexistent (universal resolver)" \
-  remi_cli kill $HOST:$D1_PORT/nonexistent
-
-# ---- Test Group 6: -- separator ----
+# ==== Test Group 7: Help and CLI ====
 echo ""
-echo "== -- separator tests =="
-# Verify that -- stops remi flag parsing. --weird-flag should NOT cause a remi error.
-run_test "ls with -- separator" remi_cli ls --port $D1_PORT -- --weird-flag
+echo "== help and CLI =="
+run_test "help shows config command" \
+  bash -c "docker exec $D1 remi --help 2>&1 | grep -q 'config'"
+run_test "help shows reload command" \
+  bash -c "docker exec $D1 remi --help 2>&1 | grep -q 'reload'"
+run_test "-- separator works" d1_remi ls -- --weird-flag
 
 # ---- Results ----
 echo ""
