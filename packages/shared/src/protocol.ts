@@ -371,6 +371,8 @@ export interface CreateSessionResponseMessage {
   readonly error?: string;
   /** ID of the original request */
   readonly requestId: UUID;
+  /** Port of the new daemon (when session was spawned on a new daemon) */
+  readonly port?: number;
 }
 
 /** Request to resume a dead/ended Claude Code session */
@@ -942,6 +944,7 @@ export function createCreateSessionResponse(
   requestId: UUID,
   sessionId?: UUID,
   error?: string,
+  port?: number,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -951,6 +954,7 @@ export function createCreateSessionResponse(
     requestId,
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
+    ...(port !== undefined && { port }),
   };
 }
 

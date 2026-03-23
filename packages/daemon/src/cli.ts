@@ -1373,6 +1373,8 @@ const sessionRegistry = new SessionRegistry(
 
 // The primary session ID (in wrapper mode, this is the one running in the terminal)
 let primarySessionId: UUID | null = null;
+// Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
+const spawningPorts = new Set<number>();
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1949,20 +1951,69 @@ const sharedEvents = {
 
   onCreateSessionRequest: async (
     connectionId: UUID,
-    _directory: string | undefined,
+    directory: string | undefined,
     requestId: UUID,
   ) => {
-    // One session per daemon. Reject session creation requests.
-    log(`Create session request from ${connectionId} rejected (one session per daemon)`);
-    sendToConnection(
-      connectionId,
-      createCreateSessionResponse(
-        false,
-        requestId,
-        undefined,
-        "This daemon already has an active session. Start a new daemon with 'remi new'.",
-      ),
-    );
+    // One session per daemon. Spawn a new daemon process for the new session.
+    log(`Create session request from ${connectionId}, spawning new daemon`);
+
+    try {
+      const { spawnRemiDaemon } = await import('./cli/daemon-manager.ts');
+      const { findAvailableTcpPort } = await import('./session/port-utils.ts');
+
+      // Include in-flight spawn ports to prevent TOCTOU race on concurrent requests
+      const liveUsed = new Set([
+        ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
+        ...spawningPorts,
+      ]);
+      const freePort = await findAvailableTcpPort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE, liveUsed);
+      if (freePort === null) {
+        sendToConnection(
+          connectionId,
+          createCreateSessionResponse(
+            false,
+            requestId,
+            undefined,
+            `All ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+          ),
+        );
+        return;
+      }
+
+      // Forward parent's flags so spawned daemon has matching config
+      const inheritedArgs: string[] = [];
+      if (cliAuth === true) inheritedArgs.push('--auth');
+      if (cliAuth === false) inheritedArgs.push('--no-auth');
+      if (cliNoRelay) inheritedArgs.push('--no-relay');
+      if (cliNoMdns) inheritedArgs.push('--no-mdns');
+      if (bindHost !== '0.0.0.0') inheritedArgs.push('--bind', bindHost);
+
+      log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
+      spawningPorts.add(freePort);
+      try {
+        const result = await spawnRemiDaemon(freePort, directory, inheritedArgs);
+
+        sendToConnection(
+          connectionId,
+          createCreateSessionResponse(
+            true,
+            requestId,
+            result.sessionId as UUID,
+            undefined,
+            result.port,
+          ),
+        );
+        log(
+          `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
+        );
+      } finally {
+        spawningPorts.delete(freePort);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`Failed to spawn daemon: ${msg}`);
+      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
+    }
   },
 
   onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => {
