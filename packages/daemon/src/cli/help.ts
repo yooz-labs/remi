@@ -136,8 +136,8 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi reload', 'Send SIGHUP to all running daemons'),
     '',
     dim('  Hot-reloads settings from ~/.remi/config.toml.'),
-    dim('  Applies: telegram, relay, mDNS, display settings.'),
-    dim('  Requires restart: port, bind, auth, orphan timeout.'),
+    dim('  Applies: telegram settings, display settings.'),
+    dim('  Requires restart: port, bind, auth, orphan timeout, relay, mDNS.'),
   ],
   start: [
     'Start the Remi daemon in the background.',

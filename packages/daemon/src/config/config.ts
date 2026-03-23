@@ -248,10 +248,14 @@ authorized_user_ids = []
  */
 export function initConfigFile(configPath: string = CONFIG_PATH): string {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  if (fs.existsSync(configPath)) {
-    throw new Error(`Config file already exists: ${configPath}`);
+  try {
+    fs.writeFileSync(configPath, generateDefaultConfig(), { encoding: 'utf-8', flag: 'wx' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error(`Config file already exists: ${configPath}`);
+    }
+    throw err;
   }
-  fs.writeFileSync(configPath, generateDefaultConfig(), 'utf-8');
   return configPath;
 }
 

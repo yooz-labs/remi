@@ -497,7 +497,7 @@ if (parsedArgs.subcommand === 'reload') {
   let reloaded = 0;
   for (const entry of liveSessions) {
     try {
-      process.kill(entry.pid, 'SIGHUP');
+      process.kill(entry.pid, 'SIGUSR1');
       console.log(`Sent reload signal to ${entry.name} (PID ${entry.pid}, port ${entry.wsPort})`);
       reloaded++;
     } catch (err) {
@@ -513,8 +513,11 @@ if (parsedArgs.subcommand === 'reload') {
   }
   if (reloaded > 0) {
     console.log(`Reloaded ${reloaded} daemon(s).`);
+    process.exit(0);
+  } else {
+    console.error('Failed to reload any daemons (all session entries appear stale).');
+    process.exit(1);
   }
-  process.exit(0);
 }
 
 // Destructure into existing variable names for zero downstream changes
@@ -2674,28 +2677,33 @@ if (cliDaemonMode) {
     await cleanup();
     process.exit(0);
   });
-  process.on('SIGHUP', () => {
+  // SIGUSR1: hot-reload config (triggered by `remi reload`)
+  // Uses SIGUSR1 to avoid collision with SIGHUP (used for terminal detach in wrapper mode)
+  process.on('SIGUSR1', () => {
     console.log('[reload] Reloading configuration...');
+    let newConfig: RemiConfig;
     try {
-      const newConfig = applyEnvOverrides(loadConfig());
-
-      // Apply hot-reloadable settings
-      MAX_BULLET_LENGTH = newConfig.display.max_bullet_length;
-      console.log(`[reload] max_bullet_length = ${MAX_BULLET_LENGTH}`);
-
-      // Telegram reload
-      const newTelegramEnabled = newConfig.telegram.enabled && !!newConfig.telegram.bot_token;
-      if (newTelegramEnabled !== TELEGRAM_ENABLED) {
-        TELEGRAM_ENABLED = newTelegramEnabled;
-        console.log(`[reload] telegram.enabled = ${TELEGRAM_ENABLED}`);
-      }
-      TELEGRAM_AUTHORIZED_CHAT_IDS = [...newConfig.telegram.authorized_chat_ids];
-      TELEGRAM_AUTHORIZED_USER_IDS = [...newConfig.telegram.authorized_user_ids];
-
-      console.log('[reload] Configuration reloaded successfully');
+      newConfig = applyEnvOverrides(loadConfig());
     } catch (err) {
-      console.error(`[reload] Failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
     }
+
+    // Apply hot-reloadable settings
+    MAX_BULLET_LENGTH = newConfig.display.max_bullet_length;
+    console.log(`[reload] max_bullet_length = ${MAX_BULLET_LENGTH}`);
+
+    const newTelegramEnabled = newConfig.telegram.enabled && !!newConfig.telegram.bot_token;
+    if (newTelegramEnabled !== TELEGRAM_ENABLED) {
+      TELEGRAM_ENABLED = newTelegramEnabled;
+      console.log(`[reload] telegram.enabled = ${TELEGRAM_ENABLED}`);
+    }
+    TELEGRAM_AUTHORIZED_CHAT_IDS = [...newConfig.telegram.authorized_chat_ids];
+    TELEGRAM_AUTHORIZED_USER_IDS = [...newConfig.telegram.authorized_user_ids];
+
+    console.log('[reload] Configuration reloaded successfully');
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
@@ -3000,6 +3008,28 @@ if (cliDaemonMode) {
   process.on('SIGHUP', () => {
     detachLocalTerminal('sighup');
     // Do NOT exit; the event loop keeps running for remote clients and PTY.
+  });
+
+  // SIGUSR1: hot-reload config (triggered by `remi reload`)
+  process.on('SIGUSR1', () => {
+    log('[reload] Reloading configuration...');
+    let newConfig: RemiConfig;
+    try {
+      newConfig = applyEnvOverrides(loadConfig());
+    } catch (err) {
+      logError(
+        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    MAX_BULLET_LENGTH = newConfig.display.max_bullet_length;
+    const newTelegramEnabled = newConfig.telegram.enabled && !!newConfig.telegram.bot_token;
+    if (newTelegramEnabled !== TELEGRAM_ENABLED) {
+      TELEGRAM_ENABLED = newTelegramEnabled;
+    }
+    TELEGRAM_AUTHORIZED_CHAT_IDS = [...newConfig.telegram.authorized_chat_ids];
+    TELEGRAM_AUTHORIZED_USER_IDS = [...newConfig.telegram.authorized_user_ids];
+    log('[reload] Configuration reloaded successfully');
   });
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
