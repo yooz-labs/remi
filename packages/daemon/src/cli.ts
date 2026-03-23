@@ -256,6 +256,14 @@ import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import {
+  CONFIG_PATH,
+  applyEnvOverrides,
+  formatConfig,
+  initConfigFile,
+  loadConfig,
+} from './config/index.ts';
+import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import {
@@ -453,6 +461,63 @@ if (parsedArgs.showHelp) {
     console.log(formatHelp(REMI_VERSION));
   }
   process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Load config file (before consuming parsed args, so config provides defaults)
+// ---------------------------------------------------------------------------
+const remiConfig: RemiConfig = applyEnvOverrides(loadConfig());
+
+// Handle 'config' subcommand
+if (parsedArgs.subcommand === 'config') {
+  const configArg = parsedArgs.subcommandArg;
+  if (configArg === 'init') {
+    try {
+      const created = initConfigFile();
+      console.log(`Config file created: ${created}`);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else if (configArg === 'path') {
+    console.log(CONFIG_PATH);
+  } else {
+    console.log(formatConfig(remiConfig));
+  }
+  process.exit(0);
+}
+
+// Handle 'reload' subcommand
+if (parsedArgs.subcommand === 'reload') {
+  const liveSessions = new SessionRegistryFile().listLive();
+  if (liveSessions.length === 0) {
+    console.error('No running daemons found.');
+    process.exit(1);
+  }
+  let reloaded = 0;
+  for (const entry of liveSessions) {
+    try {
+      process.kill(entry.pid, 'SIGUSR1');
+      console.log(`Sent reload signal to ${entry.name} (PID ${entry.pid}, port ${entry.wsPort})`);
+      reloaded++;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') {
+        console.error(`Process ${entry.pid} not found (stale session entry)`);
+      } else {
+        console.error(
+          `Failed to signal PID ${entry.pid}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+  if (reloaded > 0) {
+    console.log(`Reloaded ${reloaded} daemon(s).`);
+    process.exit(0);
+  } else {
+    console.error('Failed to reload any daemons (all session entries appear stale).');
+    process.exit(1);
+  }
 }
 
 // Destructure into existing variable names for zero downstream changes
@@ -1293,7 +1358,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHo
 }
 
 // ---------------------------------------------------------------------------
-// Config
+// Config (merge: CLI flags > env vars > config file > built-in defaults)
 // ---------------------------------------------------------------------------
 const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
 let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 0);
@@ -1301,13 +1366,12 @@ let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['R
 // Auto-select port if not explicitly set
 if (!portExplicitlySet) {
   const autoPort = await liveSessionsRegistry.findAvailablePort(
-    DEFAULT_BASE_PORT,
-    DEFAULT_PORT_RANGE,
+    remiConfig.daemon.base_port,
+    remiConfig.daemon.port_range,
   );
   if (autoPort === null) {
-    console.error(
-      `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
-    );
+    const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
+    console.error(`All remi ports in range ${remiConfig.daemon.base_port}-${rangeEnd} are in use.`);
     console.error('Use --port to specify a different port, or stop an existing remi session.');
     process.exit(1);
   }
@@ -1316,20 +1380,11 @@ if (!portExplicitlySet) {
 // Update per-port status file path now that PORT is finalized
 STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
-const MAX_BULLET_LENGTH =
-  cliMaxBulletLength ??
-  (process.env['REMI_MAX_BULLET_LENGTH']
-    ? Number.parseInt(process.env['REMI_MAX_BULLET_LENGTH'])
-    : 500);
-const TELEGRAM_TOKEN = process.env['TELEGRAM_BOT_TOKEN'];
-const TELEGRAM_ENABLED =
-  !cliNoTelegram && process.env['TELEGRAM_ENABLED'] !== 'false' && !!TELEGRAM_TOKEN;
-const TELEGRAM_AUTHORIZED_CHAT_IDS = process.env['TELEGRAM_AUTHORIZED_CHAT_IDS']
-  ? process.env['TELEGRAM_AUTHORIZED_CHAT_IDS'].split(',').map(Number).filter(Boolean)
-  : [];
-const TELEGRAM_AUTHORIZED_USER_IDS = process.env['TELEGRAM_AUTHORIZED_USER_IDS']
-  ? process.env['TELEGRAM_AUTHORIZED_USER_IDS'].split(',').map(Number).filter(Boolean)
-  : [];
+const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
+const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
+const TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
+const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
+const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -1339,7 +1394,10 @@ const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const sessionStore = new SessionStore();
 
-const orphanTimeoutMs = cliOrphanTimeout !== undefined ? cliOrphanTimeout * 1000 : 5 * 60 * 1000;
+const orphanTimeoutMs =
+  cliOrphanTimeout !== undefined
+    ? cliOrphanTimeout * 1000
+    : remiConfig.daemon.orphan_timeout * 1000;
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
@@ -1387,7 +1445,7 @@ let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = nul
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
-  if (cliNoMdns || isLocalhostBind) return null;
+  if (cliNoMdns || !remiConfig.network.mdns || isLocalhostBind) return null;
   try {
     const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
     const publisher = new MdnsPublisher({
@@ -2253,13 +2311,13 @@ const sharedEvents = {
 // ---------------------------------------------------------------------------
 // Auth setup: auto based on bind host (default 0.0.0.0=on, localhost=off), --auth/--no-auth override
 // ---------------------------------------------------------------------------
-const bindHost = cliBindHost ?? '0.0.0.0';
+const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
-// Default: auth off for localhost, auth on for 0.0.0.0/network binds
-// Explicit --auth/--no-auth overrides the default
-const authEnabled = cliAuth ?? !isLocalhostBind;
+// Priority: CLI flag > config file > auto (based on bind host)
+const configAuth = remiConfig.auth.enabled;
+const authEnabled = cliAuth ?? (configAuth === 'auto' ? !isLocalhostBind : configAuth);
 
 let authenticator: Authenticator | undefined;
 let serverFingerprint: string | undefined;
@@ -2365,10 +2423,10 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-if (!cliNoRelay) {
+if (!cliNoRelay && remiConfig.network.relay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
   const { generateConnectionCode } = await import('./remote/signaling-client.ts');
-  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.yooz.workers.dev/connect';
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
 
   let relayAdapter: InstanceType<typeof RelayAdapter>;
 
@@ -2618,6 +2676,20 @@ if (cliDaemonMode) {
     cleanupStatusFile();
     await cleanup();
     process.exit(0);
+  });
+  // SIGUSR1: config reload signal (triggered by `remi reload`)
+  // Uses SIGUSR1 to avoid collision with SIGHUP (used for terminal detach in wrapper mode)
+  // Currently validates the config; hot-reload of running adapters is planned for a future release.
+  process.on('SIGUSR1', () => {
+    console.log('[reload] Re-reading configuration...');
+    try {
+      applyEnvOverrides(loadConfig());
+      console.log('[reload] Config validated. Changes take effect on next daemon restart.');
+    } catch (err) {
+      console.error(
+        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
@@ -2922,6 +2994,19 @@ if (cliDaemonMode) {
   process.on('SIGHUP', () => {
     detachLocalTerminal('sighup');
     // Do NOT exit; the event loop keeps running for remote clients and PTY.
+  });
+
+  // SIGUSR1: config reload signal (triggered by `remi reload`)
+  process.on('SIGUSR1', () => {
+    log('[reload] Re-reading configuration...');
+    try {
+      applyEnvOverrides(loadConfig());
+      log('[reload] Config validated. Changes take effect on next daemon restart.');
+    } catch (err) {
+      logError(
+        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   });
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
