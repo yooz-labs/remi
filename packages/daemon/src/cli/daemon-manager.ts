@@ -76,10 +76,19 @@ function readStatus(): Record<string, unknown> | null {
  * Handles both compiled binary and bun/node script execution.
  */
 export function resolveRemiCommand(): { command: string; baseArgs: string[] } {
+  // In compiled Bun binaries, process.execPath points to the actual binary,
+  // while process.argv[0] may report as "bun" (the embedded runtime).
+  // Bun.argv[0] also gives the real path in compiled binaries.
+  const execPath = process.execPath ?? '';
   const argv0 = process.argv[0] ?? '';
   const argv1 = process.argv[1] ?? '';
 
-  // Compiled binary: argv[0] is the remi binary itself
+  // Compiled binary: execPath ends with /remi (the installed binary)
+  if (execPath.endsWith('/remi') || execPath.endsWith('\\remi')) {
+    return { command: execPath, baseArgs: [] };
+  }
+
+  // Compiled binary: argv[0] ends with /remi
   if (argv0.endsWith('/remi') || argv0.endsWith('\\remi')) {
     return { command: argv0, baseArgs: [] };
   }
@@ -338,16 +347,23 @@ export async function spawnRemiDaemon(
   // biome-ignore lint/performance/noDelete: must truly remove env var from child process
   delete childEnv['REMI_PORT'];
 
-  const child = spawn(command, spawnArgs, {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    env: childEnv,
-  });
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(command, spawnArgs, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: childEnv,
+    });
+  } catch (err) {
+    fs.closeSync(logFd);
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to spawn daemon (command: ${command}): ${msg}`);
+  }
 
   const pid = child.pid;
   if (!pid) {
     fs.closeSync(logFd);
-    throw new Error('Failed to start daemon process');
+    throw new Error(`Failed to start daemon process (command: ${command})`);
   }
 
   child.unref();
