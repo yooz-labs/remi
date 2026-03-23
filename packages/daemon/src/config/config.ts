@@ -90,15 +90,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
  * Only applies values that are present in the partial; preserves defaults for the rest.
  */
 function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConfig {
-  function mergeSection<T extends Record<string, unknown>>(
-    defaults: T,
-    overrides: Record<string, unknown> | undefined,
-  ): T {
+  // biome-ignore lint/suspicious/noExplicitAny: generic merge utility
+  function mergeSection(defaults: any, overrides: Record<string, unknown> | undefined): any {
     if (!overrides) return defaults;
     const result = { ...defaults };
     for (const key of Object.keys(defaults)) {
       if (key in overrides) {
-        (result as Record<string, unknown>)[key] = overrides[key];
+        result[key] = overrides[key];
       }
     }
     return result;
@@ -187,17 +185,15 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     (telegram as { enabled: boolean }).enabled = false;
   }
   if (env['TELEGRAM_AUTHORIZED_CHAT_IDS']) {
-    (telegram as { authorized_chat_ids: number[] }).authorized_chat_ids = env[
-      'TELEGRAM_AUTHORIZED_CHAT_IDS'
-    ]
+    // biome-ignore lint/suspicious/noExplicitAny: overriding readonly property
+    (telegram as any).authorized_chat_ids = env['TELEGRAM_AUTHORIZED_CHAT_IDS']
       .split(',')
       .map(Number)
       .filter((n) => !Number.isNaN(n));
   }
   if (env['TELEGRAM_AUTHORIZED_USER_IDS']) {
-    (telegram as { authorized_user_ids: number[] }).authorized_user_ids = env[
-      'TELEGRAM_AUTHORIZED_USER_IDS'
-    ]
+    // biome-ignore lint/suspicious/noExplicitAny: overriding readonly property
+    (telegram as any).authorized_user_ids = env['TELEGRAM_AUTHORIZED_USER_IDS']
       .split(',')
       .map(Number)
       .filter((n) => !Number.isNaN(n));
