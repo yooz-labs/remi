@@ -4,7 +4,7 @@
  * Main application component wired to real daemon data.
  */
 
-import { ChatView, SessionSwitcher } from '@/components/chat';
+import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
@@ -23,13 +23,11 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
-import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
-  createCreateSessionRequest,
   createHello,
   createResumeSessionRequest,
-  createSessionHistoryRequest,
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
@@ -110,13 +108,10 @@ function App() {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [creatingSession, setCreatingSession] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
-  const [showSessionSwitcher, setShowSessionSwitcher] = useState(false);
-  const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
 
   // Refs for stable callbacks
   const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
@@ -146,10 +141,8 @@ function App() {
   const handleMessage = useCallback((message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        // Daemon mode sends an empty-string sessionId on initial connect.
-        // No session is attached yet; user will select or create one from the session list.
+        // One session per daemon; the sessionId identifies the daemon's single session.
         if (!message.sessionId) {
-          setCreatingSession(false);
           break;
         }
         setSessions((prev) => {
@@ -159,7 +152,6 @@ function App() {
               s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s,
             );
           }
-          // Only create new entry for non-resume (resume expects session to exist)
           if (message.isResume) return prev;
           return [
             ...prev,
@@ -175,7 +167,6 @@ function App() {
             } satisfies UISession,
           ];
         });
-        setCreatingSession(false);
         setActiveSessionId(message.sessionId);
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
         break;
@@ -410,7 +401,7 @@ function App() {
       }
 
       case 'session_history_response': {
-        setRecentDirectories([...message.directories]);
+        // Session history received; currently unused (one session per daemon)
         break;
       }
 
@@ -442,20 +433,9 @@ function App() {
       }
 
       case 'create_session_response': {
-        setCreatingSession(false);
+        // One session per daemon; session creation is rejected.
         if (!message.success) {
-          console.error(`Failed to create session: ${message.error}`);
-          // Add error message to the current session's chat so the user sees it
-          const errorMsg: UIMessage = {
-            id: generateId(),
-            sessionId: activeSessionIdRef.current ?? ('' as UUID),
-            sender: 'system',
-            content: `Failed to create session: ${message.error ?? 'Unknown error'}`,
-            timestamp: new Date().toISOString(),
-            state: 'delivered',
-            isEditing: false,
-          };
-          setMessages((prev) => [...prev, errorMsg]);
+          console.error(`Session creation rejected: ${message.error}`);
         }
         break;
       }
@@ -541,9 +521,7 @@ function App() {
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
-    requestNewSession,
     requestResumeSession,
-    requestSessionHistory,
     needsPassphrase,
     serverFingerprint,
     provideIdentity,
@@ -624,28 +602,12 @@ function App() {
     [connectionMode, relaySend, requestTranscriptLoad],
   );
 
-  const effectiveRequestNewSession = useCallback(
-    (directory?: string): boolean => {
-      if (connectionMode === 'relay') return relaySend(createCreateSessionRequest(directory));
-      return requestNewSession(directory);
-    },
-    [connectionMode, relaySend, requestNewSession],
-  );
-
   const effectiveRequestResumeSession = useCallback(
     (sessionId: string): boolean => {
       if (connectionMode === 'relay') return relaySend(createResumeSessionRequest(sessionId));
       return requestResumeSession(sessionId);
     },
     [connectionMode, relaySend, requestResumeSession],
-  );
-
-  const effectiveRequestSessionHistory = useCallback(
-    (limit?: number): boolean => {
-      if (connectionMode === 'relay') return relaySend(createSessionHistoryRequest(limit));
-      return requestSessionHistory(limit);
-    },
-    [connectionMode, relaySend, requestSessionHistory],
   );
 
   // Close modal and store URL on successful connect
@@ -668,7 +630,6 @@ function App() {
       );
       setQuestion(null);
       setResumingSession(null);
-      setCreatingSession(false);
     } else if (effectiveStatus === 'connected') {
       // Restore connected status for active session
       if (activeSessionId) {
@@ -681,27 +642,19 @@ function App() {
     }
   }, [effectiveStatus, activeSessionId]);
 
-  // Request session list and history after direct connection
+  // Request session list after direct connection
   useEffect(() => {
     if (connectionStatus === 'connected') {
       effectiveRequestSessionList(true);
-      effectiveRequestSessionHistory();
     }
-  }, [connectionStatus, effectiveRequestSessionList, effectiveRequestSessionHistory]);
+  }, [connectionStatus, effectiveRequestSessionList]);
 
-  // Request session list and history after relay connection (hello_ack received)
+  // Request session list after relay connection (hello_ack received)
   useEffect(() => {
     if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
       effectiveRequestSessionList(true);
-      effectiveRequestSessionHistory();
     }
-  }, [
-    connectionMode,
-    relayStatus,
-    activeSessionId,
-    effectiveRequestSessionList,
-    effectiveRequestSessionHistory,
-  ]);
+  }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
   const connectRef = useRef(connect);
@@ -848,7 +801,7 @@ function App() {
         setRelayError(null);
         pendingRelayChallengeRef.current = null;
 
-        const signalingUrl = 'wss://remi-signaling.dev-941.workers.dev/connect';
+        const signalingUrl = 'wss://remi-signaling.yooz.workers.dev/connect';
         const client = new WebSignalingClient({
           onStateChange: (state) => {
             if (state === 'connected') {
@@ -1010,15 +963,6 @@ function App() {
     [activeSessionId, effectiveRequestBulletExpand],
   );
 
-  const handleNewSession = useCallback(
-    (directory?: string) => {
-      if (creatingSession) return;
-      setCreatingSession(true);
-      effectiveRequestNewSession(directory);
-    },
-    [effectiveRequestNewSession, creatingSession],
-  );
-
   const handleResumeSession = useCallback(
     (sessionId: string) => {
       if (resumingSession) return;
@@ -1059,18 +1003,15 @@ function App() {
   }, [sessionMessages, activeSessionId]);
 
   // Sidebar content
-  const canCreateSession = effectiveStatus === 'connected' && !creatingSession;
   const sidebar = (
     <SessionList
       sessions={sessions}
       activeSessionId={activeSessionId}
       onSelectSession={handleSelectSession}
-      onNewSession={canCreateSession ? handleNewSession : undefined}
       onResumeSession={effectiveStatus === 'connected' ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
       onSettings={() => setShowSettings(true)}
-      recentDirectories={recentDirectories}
     />
   );
 
@@ -1079,14 +1020,6 @@ function App() {
     (sum, s) => sum + (s.id === activeSessionId ? 0 : s.unreadCount),
     0,
   );
-
-  const handleOpenSessions = useCallback(() => {
-    setShowSessionSwitcher(true);
-  }, []);
-
-  const handleCloseSessionSwitcher = useCallback(() => {
-    setShowSessionSwitcher(false);
-  }, []);
 
   // Main content
   const main = activeSession ? (
@@ -1097,8 +1030,6 @@ function App() {
       error={error}
       onSend={handleSend}
       onBack={handleBack}
-      onOpenSessions={handleOpenSessions}
-      sessionCount={sessions.length}
       totalUnread={totalUnread}
       onCopyConversation={handleCopyConversation}
       onClearMessages={handleClearMessages}
@@ -1114,14 +1045,6 @@ function App() {
   return (
     <>
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
-
-      <SessionSwitcher
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        isOpen={showSessionSwitcher}
-        onSelectSession={handleSelectSession}
-        onClose={handleCloseSessionSwitcher}
-      />
 
       <SettingsPanel
         open={showSettings}

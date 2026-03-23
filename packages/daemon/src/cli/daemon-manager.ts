@@ -75,11 +75,20 @@ function readStatus(): Record<string, unknown> | null {
  * Resolve the command and args to invoke remi.
  * Handles both compiled binary and bun/node script execution.
  */
-function resolveRemiCommand(): { command: string; baseArgs: string[] } {
+export function resolveRemiCommand(): { command: string; baseArgs: string[] } {
+  // In compiled Bun binaries, process.execPath points to the actual binary,
+  // while process.argv[0] may report as "bun" (the embedded runtime).
+  // Bun.argv[0] also gives the real path in compiled binaries.
+  const execPath = process.execPath ?? '';
   const argv0 = process.argv[0] ?? '';
   const argv1 = process.argv[1] ?? '';
 
-  // Compiled binary: argv[0] is the remi binary itself
+  // Compiled binary: execPath ends with /remi (the installed binary)
+  if (execPath.endsWith('/remi') || execPath.endsWith('\\remi')) {
+    return { command: execPath, baseArgs: [] };
+  }
+
+  // Compiled binary: argv[0] ends with /remi
   if (argv0.endsWith('/remi') || argv0.endsWith('\\remi')) {
     return { command: argv0, baseArgs: [] };
   }
@@ -101,9 +110,7 @@ export interface StartOptions {
 }
 
 import { findAvailableTcpPort } from '../session/port-utils.ts';
-
-const DEFAULT_BASE_PORT = 18765;
-const DEFAULT_PORT_RANGE = 10;
+import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-registry-file.ts';
 
 /**
  * Start the remi daemon in the background.
@@ -303,6 +310,85 @@ export function showDaemonLogs(lines = 50): void {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Failed to read daemon log: ${msg}`);
   }
+}
+
+export interface SpawnResult {
+  readonly pid: number;
+  readonly port: number;
+  readonly sessionId: string;
+}
+
+/**
+ * Spawn a new remi daemon process on a specific port.
+ * Unlike startDaemon(), this does not check for existing daemons or write PID files.
+ * Polls the live-sessions registry until the new daemon registers.
+ */
+export async function spawnRemiDaemon(
+  port: number,
+  directory?: string,
+  extraArgs: string[] = [],
+  timeoutMs = 10000,
+): Promise<SpawnResult> {
+  ensureRemiDir();
+  const { SessionRegistryFile } = await import('../session/session-registry-file.ts');
+  const liveRegistry = new SessionRegistryFile();
+
+  const { command, baseArgs } = resolveRemiCommand();
+  const spawnArgs = [...baseArgs, '--daemon', '--port', String(port)];
+  if (directory) {
+    spawnArgs.push('--dir', directory);
+  }
+  spawnArgs.push(...extraArgs);
+
+  const logFd = fs.openSync(LOG_FILE, 'a');
+  fs.writeSync(logFd, `\n--- Spawning daemon on port ${port} at ${new Date().toISOString()} ---\n`);
+
+  const childEnv = { ...process.env };
+  // biome-ignore lint/performance/noDelete: must truly remove env var from child process
+  delete childEnv['REMI_PORT'];
+
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(command, spawnArgs, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: childEnv,
+    });
+  } catch (err) {
+    fs.closeSync(logFd);
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to spawn daemon (command: ${command}): ${msg}`);
+  }
+
+  const pid = child.pid;
+  if (!pid) {
+    fs.closeSync(logFd);
+    throw new Error(`Failed to start daemon process (command: ${command})`);
+  }
+
+  child.unref();
+  fs.closeSync(logFd);
+
+  // Poll live-sessions registry until the new daemon registers
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    const entries = liveRegistry.listLive();
+    const entry = entries.find((e) => e.wsPort === port && e.pid === pid);
+    if (entry) {
+      return { pid, port, sessionId: entry.sessionId };
+    }
+
+    // Check if process is still alive
+    try {
+      process.kill(pid, 0);
+    } catch {
+      throw new Error(`Daemon process exited unexpectedly. Check logs: ${LOG_FILE}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw new Error(`Daemon did not register within ${timeoutMs / 1000}s. Check logs: ${LOG_FILE}`);
 }
 
 function cleanupFiles(): void {

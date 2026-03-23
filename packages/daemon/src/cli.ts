@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.11'; // REMI_COMPILED_VERSION
+      return '0.4.12-dev.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.11'; // REMI_COMPILED_VERSION
+    return '0.4.12-dev.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -256,6 +256,14 @@ import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import {
+  CONFIG_PATH,
+  applyEnvOverrides,
+  formatConfig,
+  initConfigFile,
+  loadConfig,
+} from './config/index.ts';
+import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import {
@@ -453,6 +461,69 @@ if (parsedArgs.showHelp) {
     console.log(formatHelp(REMI_VERSION));
   }
   process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Load config file (before consuming parsed args, so config provides defaults)
+// ---------------------------------------------------------------------------
+let remiConfig: RemiConfig;
+try {
+  remiConfig = applyEnvOverrides(loadConfig());
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
+
+// Handle 'config' subcommand
+if (parsedArgs.subcommand === 'config') {
+  const configArg = parsedArgs.subcommandArg;
+  if (configArg === 'init') {
+    try {
+      const created = initConfigFile();
+      console.log(`Config file created: ${created}`);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else if (configArg === 'path') {
+    console.log(CONFIG_PATH);
+  } else {
+    console.log(formatConfig(remiConfig));
+  }
+  process.exit(0);
+}
+
+// Handle 'reload' subcommand
+if (parsedArgs.subcommand === 'reload') {
+  const liveSessions = new SessionRegistryFile().listLive();
+  if (liveSessions.length === 0) {
+    console.error('No running daemons found.');
+    process.exit(1);
+  }
+  let reloaded = 0;
+  for (const entry of liveSessions) {
+    try {
+      process.kill(entry.pid, 'SIGUSR1');
+      console.log(`Sent reload signal to ${entry.name} (PID ${entry.pid}, port ${entry.wsPort})`);
+      reloaded++;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') {
+        console.error(`Process ${entry.pid} not found (stale session entry)`);
+      } else {
+        console.error(
+          `Failed to signal PID ${entry.pid}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+  if (reloaded > 0) {
+    console.log(`Reloaded ${reloaded} daemon(s).`);
+    process.exit(0);
+  } else {
+    console.error('Failed to reload any daemons (all session entries appear stale).');
+    process.exit(1);
+  }
 }
 
 // Destructure into existing variable names for zero downstream changes
@@ -1293,7 +1364,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHo
 }
 
 // ---------------------------------------------------------------------------
-// Config
+// Config (merge: CLI flags > env vars > config file > built-in defaults)
 // ---------------------------------------------------------------------------
 const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
 let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 0);
@@ -1301,13 +1372,12 @@ let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['R
 // Auto-select port if not explicitly set
 if (!portExplicitlySet) {
   const autoPort = await liveSessionsRegistry.findAvailablePort(
-    DEFAULT_BASE_PORT,
-    DEFAULT_PORT_RANGE,
+    remiConfig.daemon.base_port,
+    remiConfig.daemon.port_range,
   );
   if (autoPort === null) {
-    console.error(
-      `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
-    );
+    const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
+    console.error(`All remi ports in range ${remiConfig.daemon.base_port}-${rangeEnd} are in use.`);
     console.error('Use --port to specify a different port, or stop an existing remi session.');
     process.exit(1);
   }
@@ -1316,20 +1386,11 @@ if (!portExplicitlySet) {
 // Update per-port status file path now that PORT is finalized
 STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
-const MAX_BULLET_LENGTH =
-  cliMaxBulletLength ??
-  (process.env['REMI_MAX_BULLET_LENGTH']
-    ? Number.parseInt(process.env['REMI_MAX_BULLET_LENGTH'])
-    : 500);
-const TELEGRAM_TOKEN = process.env['TELEGRAM_BOT_TOKEN'];
-const TELEGRAM_ENABLED =
-  !cliNoTelegram && process.env['TELEGRAM_ENABLED'] !== 'false' && !!TELEGRAM_TOKEN;
-const TELEGRAM_AUTHORIZED_CHAT_IDS = process.env['TELEGRAM_AUTHORIZED_CHAT_IDS']
-  ? process.env['TELEGRAM_AUTHORIZED_CHAT_IDS'].split(',').map(Number).filter(Boolean)
-  : [];
-const TELEGRAM_AUTHORIZED_USER_IDS = process.env['TELEGRAM_AUTHORIZED_USER_IDS']
-  ? process.env['TELEGRAM_AUTHORIZED_USER_IDS'].split(',').map(Number).filter(Boolean)
-  : [];
+const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
+const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
+const TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
+const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
+const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -1339,7 +1400,10 @@ const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const sessionStore = new SessionStore();
 
-const orphanTimeoutMs = cliOrphanTimeout !== undefined ? cliOrphanTimeout * 1000 : 5 * 60 * 1000;
+const orphanTimeoutMs =
+  cliOrphanTimeout !== undefined
+    ? cliOrphanTimeout * 1000
+    : remiConfig.daemon.orphan_timeout * 1000;
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
@@ -1373,6 +1437,8 @@ const sessionRegistry = new SessionRegistry(
 
 // The primary session ID (in wrapper mode, this is the one running in the terminal)
 let primarySessionId: UUID | null = null;
+// Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
+const spawningPorts = new Set<number>();
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1385,7 +1451,7 @@ let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = nul
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
-  if (cliNoMdns || isLocalhostBind) return null;
+  if (cliNoMdns || !remiConfig.network.mdns || isLocalhostBind) return null;
   try {
     const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
     const publisher = new MdnsPublisher({
@@ -1751,108 +1817,53 @@ const sharedEvents = {
 
     const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
 
-    // In wrapper mode, try to attach to the primary session first
-    if (wrapperMode && primarySessionId && !resumeSessionId) {
-      const session = sessionRegistry.getSession(primarySessionId);
-      if (session) {
-        const result = sessionRegistry.attachConnection(primarySessionId, connectionId);
-        if (result.success) {
+    // Unified connection flow: one session per daemon, both modes behave the same.
+    // If a resumeSessionId is provided, validate it matches our session.
+    if (resumeSessionId && primarySessionId && resumeSessionId !== primarySessionId) {
+      log(`Resume ID mismatch: requested ${resumeSessionId}, daemon has ${primarySessionId}`);
+      sendToConnection(
+        connectionId,
+        createError(
+          'SESSION_NOT_FOUND',
+          `Session ${resumeSessionId} not found on this daemon. Active session: ${primarySessionId}.`,
+        ),
+      );
+      return;
+    }
+
+    // Try to attach to the primary (only) session
+    if (primarySessionId) {
+      const targetSession = primarySessionId;
+      const result = sessionRegistry.attachConnection(targetSession, connectionId);
+      if (result.success) {
+        sendToConnection(
+          connectionId,
+          createHelloAck('1.0.0', targetSession, {
+            isResume: result.replayMessages.length > 0,
+            replayCount: result.replayMessages.length,
+            nextBulletId: result.nextBulletId,
+          }),
+        );
+        if (result.replayMessages.length > 0) {
           sendToConnection(
             connectionId,
-            createHelloAck('1.0.0', primarySessionId, {
-              isResume: result.replayMessages.length > 0,
-              replayCount: result.replayMessages.length,
-              nextBulletId: result.nextBulletId,
-            }),
+            createReplayBatch(targetSession, result.replayMessages, true),
           );
-          if (result.replayMessages.length > 0) {
-            sendToConnection(
-              connectionId,
-              createReplayBatch(primarySessionId, result.replayMessages, true),
-            );
-          }
-          cancelOrphanTimeout();
-          log(`Attached connection ${connectionId} to primary session ${primarySessionId}`);
-          return;
         }
+        cancelOrphanTimeout();
+        log(`Attached connection ${connectionId} to session ${targetSession}`);
+        return;
       }
 
-      // Auto-attach failed (session busy or missing); send hello_ack anyway
-      // so utility clients (ls, kill) can proceed with requests
+      // Attach failed (session busy); send hello_ack without attach so
+      // utility clients (ls, kill) can still send requests
       sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
       log(`Connection ${connectionId} connected without attach (session busy or query client)`);
       return;
     }
 
-    // Check if resume target exists but is busy (another client attached)
-    if (resumeSessionId) {
-      const resumeTarget = sessionRegistry.getSession(resumeSessionId);
-      if (resumeTarget && resumeTarget.activeConnectionId !== null) {
-        log(`Resume failed: session ${resumeSessionId} is busy (another client attached)`);
-        sendToConnection(
-          connectionId,
-          createError(
-            'SESSION_BUSY',
-            "Session is already attached by another client. Wait for them to detach (Ctrl+B d) or use 'remi kill' to force disconnect.",
-          ),
-        );
-        return;
-      }
-    }
-
-    if (resumeSessionId && sessionRegistry.canResume(resumeSessionId)) {
-      log(`Resuming session ${resumeSessionId}...`);
-      const result = sessionRegistry.attachConnection(resumeSessionId, connectionId);
-
-      if (result.success) {
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', resumeSessionId, {
-            isResume: true,
-            replayCount: result.replayMessages.length,
-            nextBulletId: result.nextBulletId,
-          }),
-        );
-
-        if (result.replayMessages.length > 0) {
-          sendToConnection(
-            connectionId,
-            createReplayBatch(resumeSessionId, result.replayMessages, true),
-          );
-        }
-
-        cancelOrphanTimeout();
-        log(
-          `Session ${resumeSessionId} resumed with ${result.replayMessages.length} messages replayed`,
-        );
-        return;
-      }
-
-      log(`Resume failed: ${result.error}, creating new session`);
-      sendToConnection(
-        connectionId,
-        createError(
-          'RESUME_FAILED',
-          `Could not resume session ${resumeSessionId}: ${result.error}. Creating new session.`,
-        ),
-      );
-    }
-
-    // In daemon mode, accept connection without auto-creating a session.
-    // Clients use create_session_request to explicitly create sessions.
-    // This avoids spawning unwanted Claude processes when utility clients
-    // (ls, kill, attach probes) connect.
-    if (!wrapperMode) {
-      sendToConnection(connectionId, createHelloAck('1.0.0', '' as UUID));
-      log(`Connection ${connectionId} accepted in daemon mode (no auto-session)`);
-    } else if (wrapperMode && primarySessionId) {
-      // Wrapper mode: resume failed but session exists; send hello_ack
-      // so the client can still send queries (ls, kill, etc.)
-      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
-      log(`Connection ${connectionId} connected without attach in wrapper mode`);
-    } else {
-      sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
-    }
+    // No session available
+    sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
   },
 
   onDisconnect: async (connectionId: UUID, reason: string) => {
@@ -2007,57 +2018,69 @@ const sharedEvents = {
     directory: string | undefined,
     requestId: UUID,
   ) => {
-    log(`Create session request from ${connectionId}, directory: ${directory || '(default)'}`);
-
-    const dirResult = resolveDirectory(directory);
-    if ('error' in dirResult) {
-      logError(`Directory error: ${dirResult.error}`);
-      sendToConnection(
-        connectionId,
-        createCreateSessionResponse(false, requestId, undefined, dirResult.error),
-      );
-      return;
-    }
-
-    const workingDirectory = dirResult.resolved;
-    const sessionId = sessionRegistry.createSessionId();
-
-    log(`Creating new session ${sessionId} in ${workingDirectory}...`);
+    // One session per daemon. Spawn a new daemon process for the new session.
+    log(`Create session request from ${connectionId}, spawning new daemon`);
 
     try {
-      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-        const session = sessionRegistry.getSession(sid);
-        if (session?.activeConnectionId) {
-          sendToConnection(session.activeConnectionId, msg);
-        }
-      });
+      const { spawnRemiDaemon } = await import('./cli/daemon-manager.ts');
+      const { findAvailableTcpPort } = await import('./session/port-utils.ts');
 
-      // Attach requesting connection to the new session
-      const result = sessionRegistry.attachConnection(sessionId, connectionId);
-
-      if (result.success) {
-        sendToConnection(connectionId, createCreateSessionResponse(true, requestId, sessionId));
-        // Also send hello_ack so client knows about the new session
+      // Include in-flight spawn ports to prevent TOCTOU race on concurrent requests
+      const liveUsed = new Set([
+        ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
+        ...spawningPorts,
+      ]);
+      const freePort = await findAvailableTcpPort(
+        remiConfig.daemon.base_port,
+        remiConfig.daemon.port_range,
+        liveUsed,
+      );
+      if (freePort === null) {
+        const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
         sendToConnection(
           connectionId,
-          createHelloAck('1.0.0', sessionId, {
-            isResume: false,
-            replayCount: 0,
-            nextBulletId: 1,
-          }),
+          createCreateSessionResponse(
+            false,
+            requestId,
+            undefined,
+            `All ports in range ${remiConfig.daemon.base_port}-${rangeEnd} are in use.`,
+          ),
         );
-        log(`Session ${sessionId} created via create_session_request`);
-      } else {
-        // Clean up the orphaned session to avoid resource leak
-        sessionRegistry.closeSession(sessionId, 'forced');
-        sendToConnection(
-          connectionId,
-          createCreateSessionResponse(false, requestId, undefined, result.error),
-        );
+        return;
       }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logError('Failed to create session:', msg);
+
+      // Forward parent's flags so spawned daemon has matching config
+      const inheritedArgs: string[] = [];
+      if (cliAuth === true) inheritedArgs.push('--auth');
+      if (cliAuth === false) inheritedArgs.push('--no-auth');
+      if (cliNoRelay) inheritedArgs.push('--no-relay');
+      if (cliNoMdns) inheritedArgs.push('--no-mdns');
+      if (bindHost !== '0.0.0.0') inheritedArgs.push('--bind', bindHost);
+
+      log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
+      spawningPorts.add(freePort);
+      try {
+        const result = await spawnRemiDaemon(freePort, directory, inheritedArgs);
+
+        sendToConnection(
+          connectionId,
+          createCreateSessionResponse(
+            true,
+            requestId,
+            result.sessionId as UUID,
+            undefined,
+            result.port,
+          ),
+        );
+        log(
+          `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
+        );
+      } finally {
+        spawningPorts.delete(freePort);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`Failed to spawn daemon: ${msg}`);
       sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
     }
   },
@@ -2099,7 +2122,7 @@ const sharedEvents = {
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
     log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
 
-    // Check if this session is still alive in the registry
+    // If the target matches our active session, try to attach
     const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
     if (existingSession) {
       const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
@@ -2132,7 +2155,22 @@ const sharedEvents = {
       return;
     }
 
-    // Look up Claude session ID from SessionStore
+    // Session not alive in registry. One session per daemon, so we cannot
+    // spawn a new session if one already exists.
+    if (sessionRegistry.activeSession !== null) {
+      sendToConnection(
+        connectionId,
+        createResumeSessionResponse(
+          false,
+          requestId,
+          undefined,
+          "This daemon already has an active session. Use 'remi new' to start a new daemon for resume.",
+        ),
+      );
+      return;
+    }
+
+    // No active session; attempt transcript-based resume by spawning a new PTY.
     let claudeSessionId: string | null = null;
     let projectPath: string | null = null;
 
@@ -2150,11 +2188,6 @@ const sharedEvents = {
       }
     }
 
-    // For transcript-only sessions: the sessionId IS the Claude session ID.
-    // The project path is decoded from the transcript directory name, but this
-    // encoding is lossy (Claude Code replaces "/" with "-", so paths containing
-    // dashes like "/Users/dev/my-project" become indistinguishable from
-    // "/Users/dev/my/project"). The decoded path may be wrong.
     if (!claudeSessionId) {
       const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
       if (transcriptPath) {
@@ -2177,7 +2210,6 @@ const sharedEvents = {
       return;
     }
 
-    // Ensure we have a project path before attempting resume
     if (!projectPath) {
       sendToConnection(
         connectionId,
@@ -2191,11 +2223,8 @@ const sharedEvents = {
       return;
     }
 
-    // Validate project path exists
     const dirResult = resolveDirectory(projectPath);
     if ('error' in dirResult) {
-      // For transcript-only sessions, the decoded path may be wrong due to
-      // lossy encoding (dashes in paths are indistinguishable from separators).
       const hint = projectPath?.includes('/')
         ? ' Path may be inaccurate for projects with dashes in their name.'
         : '';
@@ -2212,7 +2241,6 @@ const sharedEvents = {
     }
     const workingDirectory = dirResult.resolved;
 
-    // Spawn new PTY with --resume
     const newSessionId = sessionRegistry.createSessionId();
     log(
       `Resuming Claude session ${claudeSessionId} as new Remi session ${newSessionId} in ${workingDirectory}`,
@@ -2254,7 +2282,6 @@ const sharedEvents = {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logError('Failed to resume session:', msg);
-      // Clean up any partially-registered session to avoid zombies
       sessionRegistry.closeSession(newSessionId, 'forced');
       sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
     }
@@ -2295,13 +2322,13 @@ const sharedEvents = {
 // ---------------------------------------------------------------------------
 // Auth setup: auto based on bind host (default 0.0.0.0=on, localhost=off), --auth/--no-auth override
 // ---------------------------------------------------------------------------
-const bindHost = cliBindHost ?? '0.0.0.0';
+const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
-// Default: auth off for localhost, auth on for 0.0.0.0/network binds
-// Explicit --auth/--no-auth overrides the default
-const authEnabled = cliAuth ?? !isLocalhostBind;
+// Priority: CLI flag > config file > auto (based on bind host)
+const configAuth = remiConfig.auth.enabled;
+const authEnabled = cliAuth ?? (configAuth === 'auto' ? !isLocalhostBind : configAuth);
 
 let authenticator: Authenticator | undefined;
 let serverFingerprint: string | undefined;
@@ -2407,10 +2434,10 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-if (!cliNoRelay) {
+if (!cliNoRelay && remiConfig.network.relay) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
   const { generateConnectionCode } = await import('./remote/signaling-client.ts');
-  const signalingUrl = cliSignalingUrl ?? 'wss://remi-signaling.dev-941.workers.dev/connect';
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
 
   let relayAdapter: InstanceType<typeof RelayAdapter>;
 
@@ -2561,13 +2588,81 @@ if (cliDaemonMode) {
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Write status so remi status/start can detect running daemon
-  updateRemiStatus({ wsPort: PORT, sessionStatus: 'starting' });
+  // Create the daemon's single session (one session per daemon)
+  const workingDirectory = cliDir ? path.resolve(cliDir) : process.cwd();
+  const sessionId = sessionRegistry.createSessionId();
+  primarySessionId = sessionId;
+
+  updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
+
+  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
+  try {
+    hookServer = new HookServer(
+      { port: 0 },
+      {
+        onError: (err) => console.error(`[HookServer] ${err.message}`),
+      },
+    );
+    hookServer.start();
+    HOOK_PORT = hookServer.port;
+    console.log(`  Hook server listening on port ${HOOK_PORT}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+    );
+    hookServer = null;
+  }
+
+  if (hookServer) {
+    try {
+      hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+      hookConfigManager.install();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
+      hookConfigManager = null;
+    }
+  }
+
+  // Register in live-sessions so remi ls can discover this daemon
+  liveSessionsRegistry.register({
+    sessionId,
+    pid: process.pid,
+    wsPort: PORT,
+    hookPort: HOOK_PORT,
+    projectPath: workingDirectory,
+    name: path.basename(workingDirectory),
+    startedAt: new Date().toISOString(),
+  });
+
+  // Create the PTY session
+  try {
+    await createNewSession(sessionId, workingDirectory, (sid, msg) => {
+      const session = sessionRegistry.getSession(sid);
+      if (session?.activeConnectionId) {
+        sendToConnection(session.activeConnectionId, msg);
+      }
+      if (msg.type !== 'raw_pty_output') {
+        registry.broadcast(msg);
+      }
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to create session: ${msg}`);
+    liveSessionsRegistry.unregister(sessionId);
+    await registry.stopAll();
+    process.exit(1);
+  }
+
+  const managedSession = sessionRegistry.getSession(sessionId);
 
   console.log('');
   console.log('Remi daemon ready!');
   console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
   console.log(`  Port: ${PORT} (use --port to change)`);
+  console.log(`  Session: ${managedSession?.name ?? sessionId}`);
+  console.log(`  Directory: ${workingDirectory}`);
   console.log(
     `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
   );
@@ -2592,6 +2687,20 @@ if (cliDaemonMode) {
     cleanupStatusFile();
     await cleanup();
     process.exit(0);
+  });
+  // SIGUSR1: config reload signal (triggered by `remi reload`)
+  // Uses SIGUSR1 to avoid collision with SIGHUP (used for terminal detach in wrapper mode)
+  // Currently validates the config; hot-reload of running adapters is planned for a future release.
+  process.on('SIGUSR1', () => {
+    console.log('[reload] Re-reading configuration...');
+    try {
+      applyEnvOverrides(loadConfig());
+      console.log('[reload] Config validated. Changes take effect on next daemon restart.');
+    } catch (err) {
+      console.error(
+        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
@@ -2896,6 +3005,19 @@ if (cliDaemonMode) {
   process.on('SIGHUP', () => {
     detachLocalTerminal('sighup');
     // Do NOT exit; the event loop keeps running for remote clients and PTY.
+  });
+
+  // SIGUSR1: config reload signal (triggered by `remi reload`)
+  process.on('SIGUSR1', () => {
+    log('[reload] Re-reading configuration...');
+    try {
+      applyEnvOverrides(loadConfig());
+      log('[reload] Config validated. Changes take effect on next daemon restart.');
+    } catch (err) {
+      logError(
+        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   });
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting

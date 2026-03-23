@@ -4,6 +4,7 @@ services:
       context: ../..
       dockerfile: tests/integration/Dockerfile
     container_name: remi-test-daemon1
+    working_dir: /projects/sample-app
     ports:
       - "19765:18765"
     environment:
@@ -12,7 +13,7 @@ services:
       remi-test:
         ipv4_address: 172.28.0.10
     healthcheck:
-      test: ["CMD", "bun", "run", "packages/daemon/src/cli.ts", "ls"]
+      test: ["CMD", "remi", "ls"]
       interval: 3s
       timeout: 3s
       retries: 10
@@ -23,6 +24,7 @@ services:
       context: ../..
       dockerfile: tests/integration/Dockerfile
     container_name: remi-test-daemon2
+    working_dir: /projects/api-server
     ports:
       - "19766:18765"
     environment:
@@ -31,7 +33,7 @@ services:
       remi-test:
         ipv4_address: 172.28.0.11
     healthcheck:
-      test: ["CMD", "bun", "run", "packages/daemon/src/cli.ts", "ls"]
+      test: ["CMD", "remi", "ls"]
       interval: 3s
       timeout: 3s
       retries: 10

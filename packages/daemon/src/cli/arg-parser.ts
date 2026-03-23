@@ -11,6 +11,7 @@ const SUBCOMMAND_LIST = [
   'ls',
   'attach',
   'code',
+  'config',
   'keygen',
   'export-key',
   'import-key',
@@ -20,6 +21,7 @@ const SUBCOMMAND_LIST = [
   'kill',
   'detach',
   'recent',
+  'reload',
   'start',
   'stop',
   'status',
@@ -32,6 +34,7 @@ const SUBCOMMANDS: ReadonlySet<string> = new Set(SUBCOMMAND_LIST);
 
 const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcommand>([
   'attach',
+  'config',
   'import-key',
   'authorize',
   'kill',

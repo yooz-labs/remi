@@ -1,41 +1,35 @@
 /**
  * SessionList component.
  *
- * Displays a list of active sessions.
+ * Displays the daemon's session (one session per daemon).
  */
 
 import type { UISession } from '@/types';
-import type { RecentDirectory } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { Link2, Plus, Settings } from 'lucide-react';
-import { RecentProjects } from './RecentProjects';
+import { Link2, Settings } from 'lucide-react';
 import { SessionCard } from './SessionCard';
 
 interface SessionListProps {
   readonly sessions: readonly UISession[];
   readonly activeSessionId: UUID | null;
   readonly onSelectSession: (id: UUID) => void;
-  readonly onNewSession?: ((directory?: string) => void) | undefined;
   readonly onResumeSession?: ((sessionId: string) => void) | undefined;
   readonly resumingSessionId?: string | null;
   readonly onConnect?: () => void;
   readonly onSettings?: () => void;
   readonly className?: string;
-  readonly recentDirectories?: readonly RecentDirectory[];
 }
 
 export function SessionList({
   sessions,
   activeSessionId,
   onSelectSession,
-  onNewSession,
   onResumeSession,
   resumingSessionId,
   onConnect,
   onSettings,
   className,
-  recentDirectories,
 }: SessionListProps) {
   return (
     <div className={clsx('flex h-full flex-col bg-[--color-surface]', className)}>
@@ -100,27 +94,6 @@ export function SessionList({
           </div>
         )}
       </div>
-
-      {/* Recent projects */}
-      {onNewSession && recentDirectories && recentDirectories.length > 0 && (
-        <RecentProjects
-          directories={recentDirectories}
-          onStartSession={(dir) => onNewSession(dir)}
-        />
-      )}
-
-      {/* New session button (floating) */}
-      {onNewSession && sessions.length > 0 && (
-        <div className="absolute bottom-20 right-4 safe-area-bottom">
-          <button
-            onClick={() => onNewSession()}
-            className="flex size-14 items-center justify-center rounded-full bg-[--color-primary] text-white shadow-lg transition-transform hover:scale-105 active:scale-95"
-            aria-label="New session"
-          >
-            <Plus className="size-6" />
-          </button>
-        </div>
-      )}
     </div>
   );
 }

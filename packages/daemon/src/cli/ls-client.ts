@@ -317,11 +317,11 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     browseTimeoutMs: mdnsTimeout = MDNS_BROWSE_TIMEOUT_MS,
   } = opts;
 
-  // Query all local daemons. If the registry has no live entries, include the default
-  // port range so daemons are discoverable even when live-sessions files were cleaned up.
+  // Network scan always probes the full default port range for local sessions.
+  // Unlike `remi ls` (which uses registry-only for speed), --network should find
+  // all local sessions including those without live-session files.
   const registryPorts = opts.localPorts ?? [];
-  const extraPorts = registryPorts.length === 0 ? getDefaultPortRange() : [];
-  const allLocalPorts = [...new Set([localPort, ...registryPorts, ...extraPorts])];
+  const allLocalPorts = [...new Set([localPort, ...registryPorts, ...getDefaultPortRange()])];
   const localResults = await queryMultiplePorts({
     host: 'localhost',
     ports: allLocalPorts,
