@@ -466,7 +466,13 @@ if (parsedArgs.showHelp) {
 // ---------------------------------------------------------------------------
 // Load config file (before consuming parsed args, so config provides defaults)
 // ---------------------------------------------------------------------------
-const remiConfig: RemiConfig = applyEnvOverrides(loadConfig());
+let remiConfig: RemiConfig;
+try {
+  remiConfig = applyEnvOverrides(loadConfig());
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
 
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {
@@ -2024,15 +2030,20 @@ const sharedEvents = {
         ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
         ...spawningPorts,
       ]);
-      const freePort = await findAvailableTcpPort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE, liveUsed);
+      const freePort = await findAvailableTcpPort(
+        remiConfig.daemon.base_port,
+        remiConfig.daemon.port_range,
+        liveUsed,
+      );
       if (freePort === null) {
+        const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
         sendToConnection(
           connectionId,
           createCreateSessionResponse(
             false,
             requestId,
             undefined,
-            `All ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+            `All ports in range ${remiConfig.daemon.base_port}-${rangeEnd} are in use.`,
           ),
         );
         return;

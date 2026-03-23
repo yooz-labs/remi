@@ -73,15 +73,14 @@ max_bullet_length = 200
     expect(config.telegram).toEqual(DEFAULT_CONFIG.telegram);
   });
 
-  test('returns defaults for invalid TOML', () => {
+  test('throws on invalid TOML', () => {
     fs.writeFileSync(TEST_CONFIG, 'this is not valid toml ][}{');
 
-    const config = loadConfig(TEST_CONFIG);
-    expect(config).toEqual(DEFAULT_CONFIG);
+    expect(() => loadConfig(TEST_CONFIG)).toThrow('Invalid TOML');
   });
 
-  test('returns defaults for unreadable file', () => {
-    const config = loadConfig('/nonexistent/path/config.toml');
+  test('returns defaults for nonexistent file', () => {
+    const config = loadConfig(path.join(TEST_DIR, 'nonexistent.toml'));
     expect(config).toEqual(DEFAULT_CONFIG);
   });
 
@@ -121,8 +120,7 @@ describe('applyEnvOverrides', () => {
     // Restore original env
     for (const key of Object.keys(process.env)) {
       if (!(key in originalEnv)) {
-        // biome-ignore lint/performance/noDelete: cleanup test env vars
-        delete process.env[key];
+        process.env[key] = undefined;
       }
     }
     for (const [key, value] of Object.entries(originalEnv)) {

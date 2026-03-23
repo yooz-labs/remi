@@ -115,7 +115,8 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
 /**
  * Load config from ~/.remi/config.toml, merged with defaults.
  * Returns DEFAULT_CONFIG if no config file exists.
- * Logs a warning if the file exists but is invalid.
+ * Returns DEFAULT_CONFIG if no config file exists.
+ * Throws if the file exists but cannot be read or has invalid TOML.
  */
 export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
   let raw: string;
@@ -126,20 +127,18 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     if (code === 'ENOENT') {
       return deepMerge(DEFAULT_CONFIG, {});
     }
-    console.error(
-      `[config] Cannot read ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+    throw new Error(
+      `Cannot read config file ${configPath}: ${err instanceof Error ? err.message : String(err)}. Fix file permissions or remove the file to use defaults.`,
     );
-    return deepMerge(DEFAULT_CONFIG, {});
   }
 
   try {
     const parsed = parseToml(raw) as Record<string, unknown>;
     return deepMerge(DEFAULT_CONFIG, parsed);
   } catch (err) {
-    console.error(
-      `[config] Invalid TOML in ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+    throw new Error(
+      `Invalid TOML in ${configPath}: ${err instanceof Error ? err.message : String(err)}. Fix the syntax or delete the file to use defaults.`,
     );
-    return deepMerge(DEFAULT_CONFIG, {});
   }
 }
 
@@ -212,7 +211,7 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
 export function generateDefaultConfig(): string {
   return `# Remi configuration
 # Priority: CLI flags > environment variables > this file > built-in defaults
-# Run 'remi reload' to apply changes to a running daemon (hot-reloadable settings only).
+# Run 'remi reload' to validate changes. Restart the daemon to apply.
 
 [daemon]
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
@@ -246,7 +245,11 @@ authorized_user_ids = []
 export function initConfigFile(configPath: string = CONFIG_PATH): string {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   try {
-    fs.writeFileSync(configPath, generateDefaultConfig(), { encoding: 'utf-8', flag: 'wx' });
+    fs.writeFileSync(configPath, generateDefaultConfig(), {
+      encoding: 'utf-8',
+      flag: 'wx',
+      mode: 0o600,
+    });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       throw new Error(`Config file already exists: ${configPath}`);

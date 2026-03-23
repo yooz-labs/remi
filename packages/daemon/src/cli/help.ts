@@ -133,7 +133,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     'Reload configuration on all running daemons.',
     '',
     bold('Usage:'),
-    entry('remi reload', 'Send SIGHUP to all running daemons'),
+    entry('remi reload', 'Validate config on all running daemons'),
     '',
     dim('  Hot-reloads settings from ~/.remi/config.toml.'),
     dim('  Currently all settings require a daemon restart to take effect.'),
