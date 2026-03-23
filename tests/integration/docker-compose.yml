@@ -5,6 +5,8 @@ services:
       dockerfile: tests/integration/Dockerfile
     container_name: remi-test-daemon1
     working_dir: /projects/sample-app
+    ports:
+      - "19765:18765"
     environment:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
     networks:
@@ -23,6 +25,8 @@ services:
       dockerfile: tests/integration/Dockerfile
     container_name: remi-test-daemon2
     working_dir: /projects/api-server
+    ports:
+      - "19766:18765"
     environment:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
     networks:
