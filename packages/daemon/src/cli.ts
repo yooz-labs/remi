@@ -1380,11 +1380,11 @@ if (!portExplicitlySet) {
 // Update per-port status file path now that PORT is finalized
 STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
-let MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
+const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
 const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
-let TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
-let TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
-let TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
+const TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
+const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
+const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -2677,33 +2677,19 @@ if (cliDaemonMode) {
     await cleanup();
     process.exit(0);
   });
-  // SIGUSR1: hot-reload config (triggered by `remi reload`)
+  // SIGUSR1: config reload signal (triggered by `remi reload`)
   // Uses SIGUSR1 to avoid collision with SIGHUP (used for terminal detach in wrapper mode)
+  // Currently validates the config; hot-reload of running adapters is planned for a future release.
   process.on('SIGUSR1', () => {
-    console.log('[reload] Reloading configuration...');
-    let newConfig: RemiConfig;
+    console.log('[reload] Re-reading configuration...');
     try {
-      newConfig = applyEnvOverrides(loadConfig());
+      applyEnvOverrides(loadConfig());
+      console.log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
       console.error(
         `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return;
     }
-
-    // Apply hot-reloadable settings
-    MAX_BULLET_LENGTH = newConfig.display.max_bullet_length;
-    console.log(`[reload] max_bullet_length = ${MAX_BULLET_LENGTH}`);
-
-    const newTelegramEnabled = newConfig.telegram.enabled && !!newConfig.telegram.bot_token;
-    if (newTelegramEnabled !== TELEGRAM_ENABLED) {
-      TELEGRAM_ENABLED = newTelegramEnabled;
-      console.log(`[reload] telegram.enabled = ${TELEGRAM_ENABLED}`);
-    }
-    TELEGRAM_AUTHORIZED_CHAT_IDS = [...newConfig.telegram.authorized_chat_ids];
-    TELEGRAM_AUTHORIZED_USER_IDS = [...newConfig.telegram.authorized_user_ids];
-
-    console.log('[reload] Configuration reloaded successfully');
   });
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
@@ -3010,26 +2996,17 @@ if (cliDaemonMode) {
     // Do NOT exit; the event loop keeps running for remote clients and PTY.
   });
 
-  // SIGUSR1: hot-reload config (triggered by `remi reload`)
+  // SIGUSR1: config reload signal (triggered by `remi reload`)
   process.on('SIGUSR1', () => {
-    log('[reload] Reloading configuration...');
-    let newConfig: RemiConfig;
+    log('[reload] Re-reading configuration...');
     try {
-      newConfig = applyEnvOverrides(loadConfig());
+      applyEnvOverrides(loadConfig());
+      log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
       logError(
         `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return;
     }
-    MAX_BULLET_LENGTH = newConfig.display.max_bullet_length;
-    const newTelegramEnabled = newConfig.telegram.enabled && !!newConfig.telegram.bot_token;
-    if (newTelegramEnabled !== TELEGRAM_ENABLED) {
-      TELEGRAM_ENABLED = newTelegramEnabled;
-    }
-    TELEGRAM_AUTHORIZED_CHAT_IDS = [...newConfig.telegram.authorized_chat_ids];
-    TELEGRAM_AUTHORIZED_USER_IDS = [...newConfig.telegram.authorized_user_ids];
-    log('[reload] Configuration reloaded successfully');
   });
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting

@@ -32,7 +32,6 @@ export interface NetworkConfig {
 export interface AuthConfig {
   /** "auto" = based on bind address, true = always, false = never */
   readonly enabled: 'auto' | boolean;
-  readonly tofu: boolean;
 }
 
 /** Display settings */
@@ -72,7 +71,6 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   auth: {
     enabled: 'auto',
-    tofu: true,
   },
   display: {
     max_bullet_length: 500,
@@ -126,12 +124,12 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
-      return { ...DEFAULT_CONFIG };
+      return deepMerge(DEFAULT_CONFIG, {});
     }
     console.error(
       `[config] Cannot read ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return { ...DEFAULT_CONFIG };
+    return deepMerge(DEFAULT_CONFIG, {});
   }
 
   try {
@@ -141,7 +139,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     console.error(
       `[config] Invalid TOML in ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return { ...DEFAULT_CONFIG };
+    return deepMerge(DEFAULT_CONFIG, {});
   }
 }
 
@@ -229,7 +227,6 @@ signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 
 [auth]
 enabled = "${DEFAULT_CONFIG.auth.enabled}"  # "auto" | true | false
-tofu = ${DEFAULT_CONFIG.auth.tofu}
 
 [display]
 max_bullet_length = ${DEFAULT_CONFIG.display.max_bullet_length}  # 0 = disabled
@@ -281,7 +278,6 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('');
   lines.push('[auth]');
   lines.push(`  enabled = "${config.auth.enabled}"`);
-  lines.push(`  tofu = ${config.auth.tofu}`);
   lines.push('');
   lines.push('[display]');
   lines.push(`  max_bullet_length = ${config.display.max_bullet_length}`);
