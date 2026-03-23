@@ -34,6 +34,7 @@ const SUBCOMMANDS: ReadonlySet<string> = new Set(SUBCOMMAND_LIST);
 
 const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcommand>([
   'attach',
+  'config',
   'import-key',
   'authorize',
   'kill',
