@@ -1,8 +1,8 @@
 /**
  * ConnectModal component.
  *
- * Modal for connecting to a daemon via direct URL or connection code.
- * Includes passphrase prompt when daemon requires authentication.
+ * Simplified connection flow: enter a host to discover sessions,
+ * or use a connection code for remote access via WebRTC.
  */
 
 import type { ConnectionStatus } from '@/types';
@@ -12,10 +12,9 @@ import {
   CheckCircle2,
   Globe,
   Key,
-  Link2,
   Loader2,
+  Monitor,
   Shield,
-  Wifi,
   X,
 } from 'lucide-react';
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react';
@@ -33,7 +32,24 @@ interface ConnectModalProps {
   readonly onPassphraseSubmit?: (passphrase: string) => Promise<void>;
 }
 
-type ConnectionMode = 'direct' | 'code';
+type ConnectionMode = 'local' | 'remote';
+
+const DEFAULT_PORT = 18765;
+const LOCALSTORAGE_HOST_KEY = 'remi-last-host';
+
+/** Build WebSocket URL from host and optional port */
+function buildWsUrl(host: string): string {
+  const trimmed = host.trim();
+  // If user entered a full ws:// URL, use it as-is (backward compat)
+  if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) {
+    return trimmed;
+  }
+  // Extract port if provided (e.g., "192.168.1.5:18770")
+  const parts = trimmed.split(':');
+  const hostname = parts[0];
+  const port = parts.length > 1 ? Number.parseInt(parts[1], 10) : DEFAULT_PORT;
+  return `ws://${hostname}:${port}/ws`;
+}
 
 /** Code input with auto-formatting */
 function CodeInput({
@@ -48,7 +64,6 @@ function CodeInput({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    // Format: ABCD-1234
     const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const formatted = raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4, 8)}` : raw;
     onChange(formatted);
@@ -64,11 +79,11 @@ function CodeInput({
       placeholder="ABCD-1234"
       maxLength={9}
       className={clsx(
-        'w-full rounded-xl bg-[--color-surface-light] px-4 py-3',
+        'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
         'text-center text-2xl font-mono tracking-widest',
-        'text-[--color-text] placeholder:text-[--color-text-muted]',
+        'text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
         'outline-none transition-colors',
-        'focus:ring-2 focus:ring-[--color-primary]/50',
+        'focus:ring-2 focus:ring-[var(--color-primary)]/50',
         disabled && 'cursor-not-allowed opacity-50',
       )}
     />
@@ -116,11 +131,11 @@ function PassphraseView({
   if (!hasIdentity) {
     return (
       <div className="space-y-3 text-center">
-        <Shield className="mx-auto size-10 text-[--color-warning]" />
-        <p className="text-sm text-[--color-text]">
+        <Shield className="mx-auto size-10 text-[var(--color-warning)]" />
+        <p className="text-sm text-[var(--color-text)]">
           This daemon requires authentication, but no identity is configured.
         </p>
-        <p className="text-xs text-[--color-text-muted]">
+        <p className="text-xs text-[var(--color-text-muted)]">
           Generate an identity in Settings, or import one from another device.
         </p>
       </div>
@@ -129,12 +144,12 @@ function PassphraseView({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="flex items-center gap-3 rounded-lg bg-[--color-surface-light] p-3">
-        <Shield className="size-5 shrink-0 text-[--color-primary]" />
+      <div className="flex items-center gap-3 rounded-lg bg-[var(--color-surface-light)] p-3">
+        <Shield className="size-5 shrink-0 text-[var(--color-primary)]" />
         <div className="min-w-0">
-          <p className="text-sm font-medium text-[--color-text]">Authentication Required</p>
+          <p className="text-sm font-medium text-[var(--color-text)]">Authentication Required</p>
           {serverFingerprint && (
-            <p className="truncate text-xs font-mono text-[--color-text-muted]">
+            <p className="truncate text-xs font-mono text-[var(--color-text-muted)]">
               Server: {serverFingerprint}
             </p>
           )}
@@ -142,7 +157,7 @@ function PassphraseView({
       </div>
 
       <label className="block">
-        <span className="mb-1 block text-sm text-[--color-text-secondary]">
+        <span className="mb-1 block text-sm text-[var(--color-text-secondary)]">
           Passphrase
         </span>
         <input
@@ -153,17 +168,17 @@ function PassphraseView({
           disabled={isSubmitting}
           placeholder="Enter your passphrase"
           className={clsx(
-            'w-full rounded-xl bg-[--color-surface-light] px-4 py-3',
-            'text-sm text-[--color-text] placeholder:text-[--color-text-muted]',
+            'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
+            'text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
             'outline-none transition-colors',
-            'focus:ring-2 focus:ring-[--color-primary]/50',
+            'focus:ring-2 focus:ring-[var(--color-primary)]/50',
             isSubmitting && 'cursor-not-allowed opacity-50',
           )}
         />
       </label>
 
       {passphraseError && (
-        <div className="flex items-center gap-2 rounded-lg bg-[--color-error]/10 p-3 text-[--color-error]">
+        <div className="flex items-center gap-2 rounded-lg bg-[var(--color-error)]/10 p-3 text-[var(--color-error)]">
           <AlertCircle className="size-4 shrink-0" />
           <span className="text-sm">{passphraseError}</span>
         </div>
@@ -175,8 +190,8 @@ function PassphraseView({
         className={clsx(
           'flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-white transition-colors',
           passphrase && !isSubmitting
-            ? 'bg-[--color-primary] hover:bg-[--color-primary-dark]'
-            : 'cursor-not-allowed bg-[--color-primary]/50',
+            ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)]'
+            : 'cursor-not-allowed bg-[var(--color-primary)]/50',
         )}
       >
         {isSubmitting ? (
@@ -202,19 +217,27 @@ export function ConnectModal({
   serverFingerprint,
   onPassphraseSubmit,
 }: ConnectModalProps) {
-  const [mode, setMode] = useState<ConnectionMode>('direct');
-  const [directUrl, setDirectUrl] = useState('ws://localhost:18765/ws');
-  const [directory, setDirectory] = useState('');
+  const [mode, setMode] = useState<ConnectionMode>('local');
+  const [host, setHost] = useState(() =>
+    localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost',
+  );
   const [code, setCode] = useState('');
+  const hostInputRef = useRef<HTMLInputElement>(null);
 
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
       setCode('');
-      setDirectUrl(localStorage.getItem('remi-last-url') || 'ws://localhost:18765/ws');
-      setDirectory('');
+      setHost(localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost');
     }
   }, [isOpen]);
+
+  // Auto-focus host input when modal opens
+  useEffect(() => {
+    if (isOpen && mode === 'local') {
+      setTimeout(() => hostInputRef.current?.focus(), 100);
+    }
+  }, [isOpen, mode]);
 
   if (!isOpen) return null;
 
@@ -225,13 +248,13 @@ export function ConnectModal({
   // Show passphrase view when auth is needed
   if (needsPassphrase && onPassphraseSubmit) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-        <div className="w-full max-w-md rounded-2xl bg-[--color-surface] shadow-xl">
-          <div className="flex items-center justify-between border-b border-[--color-border] p-4">
-            <h2 className="text-lg font-semibold text-[--color-text]">Authenticate</h2>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="w-full max-w-md rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
+          <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
+            <h2 className="text-lg font-semibold text-[var(--color-text)]">Authenticate</h2>
             <button
               onClick={onClose}
-              className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
+              className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
               aria-label="Close"
             >
               <X className="size-5" />
@@ -250,24 +273,33 @@ export function ConnectModal({
   }
 
   const handleConnect = () => {
-    if (mode === 'direct') {
-      onConnectDirect(directUrl, directory || undefined);
+    if (mode === 'local') {
+      const wsUrl = buildWsUrl(host);
+      localStorage.setItem(LOCALSTORAGE_HOST_KEY, host.trim());
+      onConnectDirect(wsUrl);
     } else {
       onConnectCode(code);
     }
   };
 
-  const canConnect = mode === 'direct' ? directUrl.trim() : code.length === 9;
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && canConnect && !isConnecting) {
+      e.preventDefault();
+      handleConnect();
+    }
+  };
+
+  const canConnect = mode === 'local' ? host.trim().length > 0 : code.length === 9;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-md rounded-2xl bg-[--color-surface] shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 safe-area-bottom">
+      <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[--color-border] p-4">
-          <h2 className="text-lg font-semibold text-[--color-text]">Connect to Daemon</h2>
+        <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
+          <h2 className="text-lg font-semibold text-[var(--color-text)]">Connect</h2>
           <button
             onClick={onClose}
-            className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
+            className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
             aria-label="Close"
           >
             <X className="size-5" />
@@ -277,91 +309,75 @@ export function ConnectModal({
         {/* Content */}
         <div className="p-4">
           {/* Mode tabs */}
-          <div className="mb-4 flex gap-2 rounded-xl bg-[--color-surface-light] p-1">
+          <div className="mb-4 flex gap-2 rounded-xl bg-[var(--color-surface-light)] p-1">
             <button
-              onClick={() => setMode('direct')}
+              onClick={() => setMode('local')}
               className={clsx(
                 'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors',
-                mode === 'direct'
-                  ? 'bg-[--color-primary] text-white'
-                  : 'text-[--color-text-secondary] hover:text-[--color-text]',
+                mode === 'local'
+                  ? 'bg-[var(--color-primary)] text-white'
+                  : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]',
               )}
             >
-              <Wifi className="size-4" />
-              Direct
+              <Monitor className="size-4" />
+              Host
             </button>
             <button
-              onClick={() => setMode('code')}
+              onClick={() => setMode('remote')}
               className={clsx(
                 'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors',
-                mode === 'code'
-                  ? 'bg-[--color-primary] text-white'
-                  : 'text-[--color-text-secondary] hover:text-[--color-text]',
+                mode === 'remote'
+                  ? 'bg-[var(--color-primary)] text-white'
+                  : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]',
               )}
             >
               <Globe className="size-4" />
-              Remote
+              Code
             </button>
           </div>
 
-          {/* Direct connection */}
-          {mode === 'direct' && (
+          {/* Host connection */}
+          {mode === 'local' && (
             <div className="space-y-3">
               <label className="block">
-                <span className="mb-1 block text-sm text-[--color-text-secondary]">
-                  WebSocket URL
+                <span className="mb-1 block text-sm text-[var(--color-text-secondary)]">
+                  Hostname or IP
                 </span>
                 <input
+                  ref={hostInputRef}
                   type="text"
-                  value={directUrl}
-                  onChange={(e) => setDirectUrl(e.target.value)}
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  onKeyDown={handleKeyDown}
                   disabled={isConnecting}
-                  placeholder="ws://localhost:3847/ws"
+                  placeholder="localhost"
                   className={clsx(
-                    'w-full rounded-xl bg-[--color-surface-light] px-4 py-3',
-                    'text-sm text-[--color-text] placeholder:text-[--color-text-muted]',
+                    'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
+                    'text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
                     'outline-none transition-colors',
-                    'focus:ring-2 focus:ring-[--color-primary]/50',
+                    'focus:ring-2 focus:ring-[var(--color-primary)]/50',
                     isConnecting && 'cursor-not-allowed opacity-50',
                   )}
                 />
               </label>
-              <label className="block">
-                <span className="mb-1 block text-sm text-[--color-text-secondary]">
-                  Working Directory (optional)
-                </span>
-                <input
-                  type="text"
-                  value={directory}
-                  onChange={(e) => setDirectory(e.target.value)}
-                  disabled={isConnecting}
-                  placeholder="~/Documents/git/myproject"
-                  className={clsx(
-                    'w-full rounded-xl bg-[--color-surface-light] px-4 py-3',
-                    'text-sm text-[--color-text] placeholder:text-[--color-text-muted]',
-                    'outline-none transition-colors',
-                    'focus:ring-2 focus:ring-[--color-primary]/50',
-                    isConnecting && 'cursor-not-allowed opacity-50',
-                  )}
-                />
-              </label>
-              <p className="text-xs text-[--color-text-muted]">
-                Connect directly when on the same network as the daemon.
+              <p className="text-xs text-[var(--color-text-muted)]">
+                Connect to discover active Claude sessions on this host.
+                Use hostname:port for non-default ports.
               </p>
             </div>
           )}
 
           {/* Code connection */}
-          {mode === 'code' && (
+          {mode === 'remote' && (
             <div className="space-y-3">
               <label className="block">
-                <span className="mb-1 block text-sm text-[--color-text-secondary]">
+                <span className="mb-1 block text-sm text-[var(--color-text-secondary)]">
                   Connection Code
                 </span>
                 <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
               </label>
-              <p className="text-xs text-[--color-text-muted]">
-                Enter the code displayed by the daemon for remote access via WebRTC.
+              <p className="text-xs text-[var(--color-text-muted)]">
+                Enter the 8-digit code from <span className="font-mono text-[var(--color-text-secondary)]">remi code</span> for remote access.
               </p>
             </div>
           )}
@@ -371,9 +387,9 @@ export function ConnectModal({
             <div
               className={clsx(
                 'mt-4 flex items-center gap-2 rounded-lg p-3',
-                error && 'bg-[--color-error]/10 text-[--color-error]',
-                (isConnecting || isAuthenticating) && 'bg-[--color-warning]/10 text-[--color-warning]',
-                isConnected && 'bg-[--color-success]/10 text-[--color-success]',
+                error && 'bg-[var(--color-error)]/10 text-[var(--color-error)]',
+                (isConnecting || isAuthenticating) && 'bg-[var(--color-warning)]/10 text-[var(--color-warning)]',
+                isConnected && 'bg-[var(--color-success)]/10 text-[var(--color-success)]',
               )}
             >
               {(isConnecting || isAuthenticating) && (
@@ -387,7 +403,7 @@ export function ConnectModal({
               {isConnected && (
                 <>
                   <CheckCircle2 className="size-4" />
-                  <span className="text-sm">Connected!</span>
+                  <span className="text-sm">Connected</span>
                 </>
               )}
               {error && (
@@ -401,10 +417,10 @@ export function ConnectModal({
         </div>
 
         {/* Footer */}
-        <div className="flex gap-3 border-t border-[--color-border] p-4">
+        <div className="flex gap-3 border-t border-[var(--color-border)] p-4">
           <button
             onClick={onClose}
-            className="flex-1 rounded-xl bg-[--color-surface-light] py-2.5 text-sm font-medium text-[--color-text] transition-colors hover:bg-[--color-surface-elevated]"
+            className="flex-1 rounded-xl bg-[var(--color-surface-light)] py-2.5 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface-elevated)]"
           >
             Cancel
           </button>
@@ -414,16 +430,16 @@ export function ConnectModal({
             className={clsx(
               'flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-white transition-colors',
               canConnect && !isConnecting && !isAuthenticating && !isConnected
-                ? 'bg-[--color-primary] hover:bg-[--color-primary-dark]'
-                : 'cursor-not-allowed bg-[--color-primary]/50',
+                ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)]'
+                : 'cursor-not-allowed bg-[var(--color-primary)]/50',
             )}
           >
             {isConnecting || isAuthenticating ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
-              <Link2 className="size-4" />
+              <Monitor className="size-4" />
             )}
-            {isConnecting || isAuthenticating ? 'Connecting...' : 'Connect'}
+            {isConnecting || isAuthenticating ? 'Discovering...' : 'Connect'}
           </button>
         </div>
       </div>

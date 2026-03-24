@@ -59,8 +59,8 @@ export function ToolUseCard({
   return (
     <div
       className={clsx(
-        "rounded-lg border border-[--color-border] overflow-hidden",
-        "bg-[--color-surface-light] transition-colors",
+        "rounded-lg border border-[var(--color-border)] overflow-hidden",
+        "bg-[var(--color-surface-light)] transition-colors",
       )}
     >
       {/* Header (always visible) */}
@@ -69,23 +69,23 @@ export function ToolUseCard({
         onClick={() => setExpanded(!expanded)}
         className={clsx(
           "flex w-full items-center gap-2 px-3 py-2 text-left",
-          "hover:bg-[--color-surface-elevated] transition-colors",
+          "hover:bg-[var(--color-surface-elevated)] transition-colors",
         )}
       >
         {expanded ? (
-          <ChevronDown className="size-3.5 shrink-0 text-[--color-text-muted]" />
+          <ChevronDown className="size-3.5 shrink-0 text-[var(--color-text-muted)]" />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-[--color-text-muted]" />
+          <ChevronRight className="size-3.5 shrink-0 text-[var(--color-text-muted)]" />
         )}
         <ToolIcon
           name={toolName}
-          className="size-3.5 shrink-0 text-[--color-primary]"
+          className="size-3.5 shrink-0 text-[var(--color-primary)]"
         />
-        <span className="text-xs font-medium text-[--color-text-secondary]">
+        <span className="text-xs font-medium text-[var(--color-text-secondary)]">
           {toolName}
         </span>
         {!expanded && summary && (
-          <span className="truncate text-xs text-[--color-text-muted]">
+          <span className="truncate text-xs text-[var(--color-text-muted)]">
             {summary}
           </span>
         )}
@@ -93,11 +93,11 @@ export function ToolUseCard({
 
       {/* Expanded content */}
       {expanded && (
-        <div className="border-t border-[--color-border] px-3 py-2">
+        <div className="border-t border-[var(--color-border)] px-3 py-2">
           <pre
             className={clsx(
               "whitespace-pre-wrap break-words text-xs leading-relaxed",
-              "text-[--color-text] font-[family-name:--font-mono]",
+              "text-[var(--color-text)] font-[family-name:--font-mono]",
               "max-h-64 overflow-y-auto",
             )}
           >

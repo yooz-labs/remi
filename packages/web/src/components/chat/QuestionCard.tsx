@@ -76,20 +76,20 @@ function OptionButton({
         'shadow-sm border',
         disabled && 'pointer-events-none opacity-40',
         variant === 'primary' && [
-          'bg-[--color-primary] text-white border-[--color-primary]',
-          'hover:bg-[--color-primary-dark]',
+          'bg-[var(--color-primary)] text-white border-[var(--color-primary)]',
+          'hover:bg-[var(--color-primary-dark)]',
         ],
         variant === 'danger' && [
-          'bg-[--color-error]/10 text-[--color-error] border-[--color-error]/20',
-          'hover:bg-[--color-error]/20',
+          'bg-[var(--color-error)]/10 text-[var(--color-error)] border-[var(--color-error)]/20',
+          'hover:bg-[var(--color-error)]/20',
         ],
         variant === 'warning' && [
-          'bg-[--color-warning]/10 text-[--color-warning] border-[--color-warning]/20',
-          'hover:bg-[--color-warning]/20',
+          'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20',
+          'hover:bg-[var(--color-warning)]/20',
         ],
         variant === 'default' && [
-          'bg-[--color-surface-elevated] text-[--color-text] border-[--color-border]',
-          'hover:bg-[--color-surface-light]',
+          'bg-[var(--color-surface-elevated)] text-[var(--color-text)] border-[var(--color-border)]',
+          'hover:bg-[var(--color-surface-light)]',
         ],
       )}
     >
@@ -164,22 +164,22 @@ function NumberedCard({
           onClick={() => onAnswer(String(index + 1))}
           className={clsx(
             'flex min-h-[44px] items-center gap-3 rounded-xl px-4 py-3',
-            'bg-[--color-surface-elevated] border border-[--color-border]',
-            'text-left text-sm text-[--color-text]',
+            'bg-[var(--color-surface-elevated)] border border-[var(--color-border)]',
+            'text-left text-sm text-[var(--color-text)]',
             'transition-all duration-150 active:scale-[0.98]',
-            'hover:bg-[--color-surface-light] hover:border-[--color-primary]/30',
+            'hover:bg-[var(--color-surface-light)] hover:border-[var(--color-primary)]/30',
           )}
         >
           <span
             className={clsx(
               'flex size-7 shrink-0 items-center justify-center rounded-full',
-              'bg-[--color-primary]/10 text-xs font-bold text-[--color-primary]',
+              'bg-[var(--color-primary)]/10 text-xs font-bold text-[var(--color-primary)]',
             )}
           >
             {index + 1}
           </span>
           <span className="flex-1">{option}</span>
-          <ChevronRight className="size-4 shrink-0 text-[--color-text-muted]" />
+          <ChevronRight className="size-4 shrink-0 text-[var(--color-text-muted)]" />
         </button>
       ))}
     </div>
@@ -217,10 +217,10 @@ function FreeTextCard({
         onKeyDown={handleKeyDown}
         placeholder="Type your response..."
         className={clsx(
-          'min-h-[44px] flex-1 rounded-xl border border-[--color-border]',
-          'bg-[--color-surface-elevated] px-4 py-2.5 text-sm text-[--color-text]',
-          'placeholder:text-[--color-text-muted]',
-          'outline-none focus:ring-2 focus:ring-[--color-primary]/50',
+          'min-h-[44px] flex-1 rounded-xl border border-[var(--color-border)]',
+          'bg-[var(--color-surface-elevated)] px-4 py-2.5 text-sm text-[var(--color-text)]',
+          'placeholder:text-[var(--color-text-muted)]',
+          'outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50',
         )}
       />
       <button
@@ -231,8 +231,8 @@ function FreeTextCard({
           'flex size-[44px] items-center justify-center rounded-xl',
           'transition-all duration-150 active:scale-95',
           value.trim()
-            ? 'bg-[--color-primary] text-white hover:bg-[--color-primary-dark]'
-            : 'bg-[--color-surface-elevated] text-[--color-text-muted]',
+            ? 'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)]'
+            : 'bg-[var(--color-surface-elevated)] text-[var(--color-text-muted)]',
         )}
         aria-label="Send response"
       >
@@ -254,14 +254,14 @@ function AnsweredCard({
     <div
       className={clsx(
         'flex items-center gap-2 rounded-xl px-4 py-2.5',
-        'bg-[--color-success]/10 border border-[--color-success]/20',
-        'text-sm text-[--color-text-secondary]',
+        'bg-[var(--color-success)]/10 border border-[var(--color-success)]/20',
+        'text-sm text-[var(--color-text-secondary)]',
         'animate-[fade-in_200ms_ease-out]',
       )}
     >
-      <Check className="size-4 shrink-0 text-[--color-success]" />
+      <Check className="size-4 shrink-0 text-[var(--color-success)]" />
       <span>
-        Answered: <span className="font-medium text-[--color-text]">{answerLabel}</span>
+        Answered: <span className="font-medium text-[var(--color-text)]">{answerLabel}</span>
       </span>
     </div>
   );
@@ -297,7 +297,7 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
   return (
     <div
       className={clsx(
-        'rounded-2xl border border-[--color-border] bg-[--color-surface]',
+        'rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]',
         'shadow-md p-4',
         'animate-[slide-up_200ms_ease-out]',
         isAnswered && 'opacity-75',
@@ -306,8 +306,8 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
     >
       {/* Question prompt */}
       <div className="mb-3 flex items-start gap-2">
-        <MessageSquare className="mt-0.5 size-4 shrink-0 text-[--color-primary]" />
-        <p className="text-sm font-medium text-[--color-text]">{question.prompt}</p>
+        <MessageSquare className="mt-0.5 size-4 shrink-0 text-[var(--color-primary)]" />
+        <p className="text-sm font-medium text-[var(--color-text)]">{question.prompt}</p>
       </div>
 
       {/* Answer area */}

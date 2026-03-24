@@ -28,25 +28,25 @@ function StatusDot({
 }) {
   // Connection status takes priority
   if (connectionStatus === 'error') {
-    return <span className="size-2.5 rounded-full bg-[--color-error]" />;
+    return <span className="size-2.5 rounded-full bg-[var(--color-error)]" />;
   }
   if (connectionStatus === 'disconnected') {
-    return <span className="size-2.5 rounded-full bg-[--color-text-muted]" />;
+    return <span className="size-2.5 rounded-full bg-[var(--color-text-muted)]" />;
   }
   if (connectionStatus === 'connecting' || connectionStatus === 'reconnecting') {
-    return <span className="size-2.5 animate-pulse rounded-full bg-[--color-warning]" />;
+    return <span className="size-2.5 animate-pulse rounded-full bg-[var(--color-warning)]" />;
   }
 
   // Agent status when connected
   switch (agentStatus) {
     case 'thinking':
     case 'executing':
-      return <span className="size-2.5 animate-pulse rounded-full bg-[--color-primary]" />;
+      return <span className="size-2.5 animate-pulse rounded-full bg-[var(--color-primary)]" />;
     case 'waiting':
-      return <span className="size-2.5 rounded-full bg-[--color-success]" />;
+      return <span className="size-2.5 rounded-full bg-[var(--color-success)]" />;
     case 'idle':
     default:
-      return <span className="size-2.5 rounded-full bg-[--color-text-muted]" />;
+      return <span className="size-2.5 rounded-full bg-[var(--color-text-muted)]" />;
   }
 }
 
@@ -67,8 +67,8 @@ export function SessionCard({
       onClick={onClick}
       className={clsx(
         'w-full rounded-xl p-3 text-left transition-colors',
-        'hover:bg-[--color-surface-light]',
-        isActive && 'bg-[--color-surface-light] ring-1 ring-[--color-primary]/30',
+        'hover:bg-[var(--color-surface-light)]',
+        isActive && 'bg-[var(--color-surface-light)] ring-1 ring-[var(--color-primary)]/30',
       )}
     >
       <div className="flex items-start gap-3">
@@ -80,22 +80,22 @@ export function SessionCard({
         {/* Session info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="truncate font-medium text-[--color-text]">
+            <h3 className="truncate font-medium text-[var(--color-text)]">
               {session.name || 'Claude Session'}
             </h3>
-            <span className="shrink-0 text-xs text-[--color-text-muted]">
+            <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
               {formatRelativeTime(session.lastActiveAt)}
             </span>
           </div>
 
           {/* Preview or status */}
-          <p className="mt-0.5 truncate text-sm text-[--color-text-secondary]">
+          <p className="mt-0.5 truncate text-sm text-[var(--color-text-secondary)]">
             {session.preview || getStatusText(session.status)}
           </p>
 
           {/* CWD if available */}
           {session.cwd && (
-            <p className="mt-1 truncate text-xs text-[--color-text-muted]">{session.cwd}</p>
+            <p className="mt-1 truncate text-xs text-[var(--color-text-muted)]">{session.cwd}</p>
           )}
 
           {/* Resume button for dead sessions */}
@@ -110,8 +110,8 @@ export function SessionCard({
               className={clsx(
                 'mt-2 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
                 isResuming
-                  ? 'bg-[--color-surface-light] text-[--color-text-muted] cursor-wait'
-                  : 'bg-[--color-primary]/10 text-[--color-primary] hover:bg-[--color-primary]/20',
+                  ? 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)] cursor-wait'
+                  : 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] hover:bg-[var(--color-primary)]/20',
               )}
             >
               <RotateCcw className={clsx('size-3', isResuming && 'animate-spin')} />
@@ -122,7 +122,7 @@ export function SessionCard({
 
         {/* Unread badge */}
         {session.unreadCount > 0 && (
-          <span className="flex size-5 items-center justify-center rounded-full bg-[--color-primary] text-xs font-medium text-white">
+          <span className="flex size-5 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-medium text-white">
             {session.unreadCount > 9 ? '9+' : session.unreadCount}
           </span>
         )}

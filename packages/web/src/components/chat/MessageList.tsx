@@ -25,9 +25,9 @@ interface MessageListProps {
 function DateSeparator({ date }: { readonly date: string }) {
   return (
     <div className="flex items-center gap-3 py-3">
-      <div className="h-px flex-1 bg-[--color-border]" />
-      <span className="text-xs text-[--color-text-muted]">{date}</span>
-      <div className="h-px flex-1 bg-[--color-border]" />
+      <div className="h-px flex-1 bg-[var(--color-border)]" />
+      <span className="text-xs text-[var(--color-text-muted)]">{date}</span>
+      <div className="h-px flex-1 bg-[var(--color-border)]" />
     </div>
   );
 }
@@ -100,7 +100,7 @@ export function MessageList({
     >
       {/* Empty state */}
       {messages.length === 0 && !error && (
-        <div className="flex h-full flex-col items-center justify-center text-[--color-text-muted]">
+        <div className="flex h-full flex-col items-center justify-center text-[var(--color-text-muted)]">
           <MessageSquare className="mb-3 size-10 opacity-40" />
           <p className="text-sm">Waiting for agent output</p>
         </div>

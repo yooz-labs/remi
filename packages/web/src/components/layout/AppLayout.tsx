@@ -67,7 +67,7 @@ export function AppLayout({ sidebar, main, showSidebar = true }: AppLayoutProps)
       {/* Sidebar */}
       <aside
         className={clsx(
-          'h-full border-r border-[--color-border]',
+          'h-full border-r border-[var(--color-border)]',
           'w-80 shrink-0',
           'transition-all duration-300',
         )}

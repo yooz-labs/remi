@@ -41,7 +41,7 @@ function SegmentRenderer({
             "font-[family-name:--font-mono]",
             isUser
               ? "bg-white/15"
-              : "bg-[--color-surface-light] text-[--color-primary]",
+              : "bg-[var(--color-surface-light)] text-[var(--color-primary)]",
           )}
         >
           {segment.code}
@@ -57,7 +57,7 @@ function SegmentRenderer({
     case "list_item":
       return (
         <div className="flex gap-2 pl-1">
-          <span className="shrink-0 text-[--color-text-muted]">
+          <span className="shrink-0 text-[var(--color-text-muted)]">
             {segment.ordered ? `${segment.index}.` : "-"}
           </span>
           <span className="break-words">{segment.text}</span>
@@ -80,16 +80,16 @@ function CodeBlock({
   }, [code]);
 
   return (
-    <div className="my-2 rounded-lg border border-[--color-border] overflow-hidden bg-[--color-surface]">
+    <div className="my-2 rounded-lg border border-[var(--color-border)] overflow-hidden bg-[var(--color-surface)]">
       {/* Header with language label and copy button */}
-      <div className="flex items-center justify-between border-b border-[--color-border] bg-[--color-surface-light] px-3 py-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-[--color-text-muted]">
+      <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-surface-light)] px-3 py-1.5">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
           {language || "code"}
         </span>
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1 text-[10px] text-[--color-text-muted] hover:text-[--color-text] transition-colors"
+          className="flex items-center gap-1 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
           aria-label="Copy code"
         >
           {copied ? (
@@ -106,7 +106,7 @@ function CodeBlock({
         </button>
       </div>
       {/* Code content */}
-      <pre className="overflow-x-auto p-3 text-xs leading-relaxed font-[family-name:--font-mono] text-[--color-text]">
+      <pre className="overflow-x-auto p-3 text-xs leading-relaxed font-[family-name:--font-mono] text-[var(--color-text)]">
         <code>{code}</code>
       </pre>
     </div>

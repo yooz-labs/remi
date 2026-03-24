@@ -33,8 +33,8 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
   const visibleDirs = expanded ? directories : directories.slice(0, 5);
 
   return (
-    <div className="border-t border-[--color-border] px-3 py-2">
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[--color-text-muted]">
+    <div className="border-t border-[var(--color-border)] px-3 py-2">
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
         Recent Projects
       </h3>
 
@@ -42,21 +42,21 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
         {visibleDirs.map((dir) => (
           <div
             key={dir.directory}
-            className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[--color-surface-light]"
+            className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--color-surface-light)]"
           >
-            <FolderOpen className="size-4 shrink-0 text-[--color-text-muted]" />
+            <FolderOpen className="size-4 shrink-0 text-[var(--color-text-muted)]" />
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium text-[--color-text]">
+              <div className="truncate text-sm font-medium text-[var(--color-text)]">
                 {dir.displayName}
               </div>
-              <div className="truncate text-xs text-[--color-text-muted]">
+              <div className="truncate text-xs text-[var(--color-text-muted)]">
                 {formatAge(dir.lastUsed)} - {dir.sessionCount} session
                 {dir.sessionCount !== 1 ? 's' : ''}
               </div>
             </div>
             <button
               onClick={() => onStartSession(dir.directory)}
-              className="invisible rounded p-1 text-[--color-primary] transition-colors hover:bg-[--color-primary]/10 group-hover:visible"
+              className="invisible rounded p-1 text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary)]/10 group-hover:visible"
               aria-label={`Start session in ${dir.displayName}`}
             >
               <Play className="size-4" />
@@ -68,7 +68,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
       {directories.length > 5 && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="mt-1 w-full text-center text-xs text-[--color-text-muted] hover:text-[--color-text]"
+          className="mt-1 w-full text-center text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
         >
           {expanded ? 'Show less' : `Show ${directories.length - 5} more`}
         </button>
@@ -87,7 +87,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
             }
           }}
           placeholder="Custom path..."
-          className="min-w-0 flex-1 rounded border border-[--color-border] bg-[--color-surface] px-2 py-1 text-xs text-[--color-text] placeholder:text-[--color-text-muted] focus:border-[--color-primary] focus:outline-none"
+          className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
         />
         <button
           onClick={() => {
@@ -97,7 +97,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
             }
           }}
           disabled={!customPath.trim()}
-          className="rounded bg-[--color-primary] px-2 py-1 text-xs text-white disabled:opacity-50"
+          className="rounded bg-[var(--color-primary)] px-2 py-1 text-xs text-white disabled:opacity-50"
         >
           Start
         </button>
