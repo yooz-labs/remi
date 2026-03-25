@@ -66,7 +66,7 @@ export function ChatView({
   const inputQuestion = viewMode === 'chat' ? null : question;
 
   return (
-    <div className={clsx('flex h-full flex-col bg-[var(--color-surface)]', className)}>
+    <div className={clsx('flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]', className)}>
       <ChatHeader
         session={session}
         viewMode={viewMode}

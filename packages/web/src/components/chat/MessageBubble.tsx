@@ -163,7 +163,7 @@ export function MessageBubble({
   if (enhanced && message.tool && !isUser) {
     return (
       <div className="flex w-full animate-[slide-up] justify-start">
-        <div className="w-full max-w-[95%]">
+        <div className="w-full max-w-[95%] overflow-hidden">
           <ChatMessage content={message.content} toolName={message.tool} />
           {/* Footer */}
           <div className="mt-0.5 flex items-center gap-1.5 px-1">
@@ -191,7 +191,7 @@ export function MessageBubble({
     >
       <div
         className={clsx(
-          'rounded-2xl px-4 py-2.5',
+          'rounded-2xl px-4 py-2.5 overflow-hidden',
           'transition-all duration-200',
           'shadow-sm border',
           // Width: wider in enhanced mode for better code block display

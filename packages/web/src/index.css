@@ -197,20 +197,24 @@ body.keyboard-open .safe-area-bottom {
   background-color: var(--color-text-muted);
 }
 
-/* Prevent horizontal overflow from any content */
-* {
-  max-width: 100%;
-}
-
 /* Code block styling */
 pre,
 code {
   font-family: var(--font-mono);
 }
 
+/* Prevent code/pre from causing horizontal page overflow */
 pre {
   overflow-x: auto;
-  max-width: 100%;
+  overflow-y: hidden;
+  max-width: calc(100vw - 2rem);
+  word-break: break-all;
+}
+
+/* Force long words/URLs to break in message content */
+.break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Selection styling */
