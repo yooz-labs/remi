@@ -44,7 +44,7 @@ export async function hapticNotification(type: NotificationFeedback = 'success')
   }
 }
 
-/** Trigger selection haptic feedback (picker changes, selections) */
+/** Trigger a one-shot selection haptic (e.g., confirming a picker value) */
 export async function hapticSelection(): Promise<void> {
   if (!isNative()) return;
   try {

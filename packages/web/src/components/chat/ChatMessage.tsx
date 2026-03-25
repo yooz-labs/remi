@@ -131,7 +131,7 @@ const markdownComponents = {
   td: ({ children, ...props }: React.ComponentProps<'td'>) => (
     <td className="border border-[var(--color-border)] px-2 py-1" {...props}>{children}</td>
   ),
-  code: ({ children, className, ...props }: React.ComponentProps<'code'> & { inline?: boolean }) => {
+  code: ({ children, className, ...props }: React.ComponentProps<'code'>) => {
     const match = /language-(\w+)/.exec(className || '');
     const isBlock = !!(className && match);
 

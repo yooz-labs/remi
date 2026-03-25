@@ -3,7 +3,7 @@
  *
  * Wraps @capacitor/keyboard to track keyboard visibility and height.
  * Adds/removes a `.keyboard-open` class on document.body for CSS targeting.
- * No-ops on web where keyboard events don't fire.
+ * Returns a no-op on non-native platforms (early-returns from the effect).
  */
 
 import { Keyboard } from '@capacitor/keyboard';

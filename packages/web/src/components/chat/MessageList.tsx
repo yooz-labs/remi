@@ -81,7 +81,8 @@ function isDifferentDay(msg1: UIMessage, msg2: UIMessage): boolean {
 
 /**
  * Group consecutive tool messages together for collapsed display.
- * Returns an array of items: either a single message or a group of tool messages.
+ * When filterTools is true (chat view mode), consecutive tool messages are
+ * batched into { type: 'tools' } groups. When false, all messages pass through.
  */
 function groupMessages(
   messages: readonly UIMessage[],
@@ -127,7 +128,8 @@ export function MessageList({
   const shouldAutoScrollRef = useRef(true);
   const [showJumpButton, setShowJumpButton] = useState(false);
 
-  // Handle scroll to detect if user has scrolled up
+  // Auto-scroll threshold (100px) is tighter than the jump-button threshold (300px)
+  // to avoid flashing the button during small scrolls
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
