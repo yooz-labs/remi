@@ -1,9 +1,9 @@
 /**
  * ChatMessage component.
  *
- * Renders message content as markdown for assistant messages,
- * or as plain text for user messages. Tool messages render as
- * collapsible cards.
+ * Renders message content as markdown for both user and assistant
+ * messages. User messages use alternate styling (translucent code
+ * backgrounds). Tool messages delegate to ToolUseCard.
  */
 
 import { clsx } from 'clsx';
@@ -27,9 +27,12 @@ function CodeBlock({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch((err) => {
+      console.warn('Failed to copy to clipboard:', err);
+    });
   }, [code]);
 
   return (
