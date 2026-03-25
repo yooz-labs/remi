@@ -66,7 +66,7 @@ export function ChatView({
   const inputQuestion = viewMode === 'chat' ? null : question;
 
   return (
-    <div className={clsx('flex h-full flex-col bg-[--color-surface]', className)}>
+    <div className={clsx('flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]', className)}>
       <ChatHeader
         session={session}
         viewMode={viewMode}
@@ -91,7 +91,7 @@ export function ChatView({
 
       {/* Question card in chat mode */}
       {(showQuestionCard || showAnsweredCard) && question && (
-        <div className="border-t border-[--color-border] px-3 py-2">
+        <div className="border-t border-[var(--color-border)] px-3 py-2">
           <QuestionCard question={question} onAnswer={onSend} />
         </div>
       )}

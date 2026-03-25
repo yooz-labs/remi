@@ -108,6 +108,7 @@ function App() {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [connectedHost, setConnectedHost] = useState<string | null>(null);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -377,19 +378,27 @@ function App() {
 
       case 'session_list_response': {
         // Map DiscoverableSession[] to UISession[]
-        const discovered: UISession[] = message.sessions.map((ds: DiscoverableSession) => ({
-          id: ds.sessionId as UUID,
-          name: ds.name || ds.projectPath.split('/').pop() || 'Session',
-          createdAt: ds.lastActivity,
-          lastActiveAt: ds.lastActivity,
-          status: mapSessionStatus(ds.status),
-          connectionStatus: ds.canAttach ? ('connected' as const) : ('disconnected' as const),
-          unreadCount: 0,
-          cwd: ds.projectPath,
-          preview: ds.lastMessage || `${ds.messageCount} messages`,
-          source: ds.source,
-          canResume: !ds.canAttach && ds.canResume,
-        }));
+        const discovered: UISession[] = message.sessions.map((ds: DiscoverableSession) => {
+          // Strip XML-like tags from preview text
+          const rawPreview = ds.lastMessage || `${ds.messageCount} messages`;
+          const cleanPreview = rawPreview.replace(/<[^>]+>/g, '').trim() || rawPreview;
+          // Only show resume for dead sessions (completed/orphaned), never for idle/active
+          const isDead = ds.status !== 'active' && ds.status !== 'idle';
+          const showResume = isDead && !ds.canAttach && ds.canResume;
+          return {
+            id: ds.sessionId as UUID,
+            name: ds.name || ds.projectPath.split('/').pop() || 'Session',
+            createdAt: ds.lastActivity,
+            lastActiveAt: ds.lastActivity,
+            status: mapSessionStatus(ds.status),
+            connectionStatus: ds.canAttach ? ('connected' as const) : ('disconnected' as const),
+            unreadCount: 0,
+            cwd: ds.projectPath,
+            preview: cleanPreview.slice(0, 100),
+            source: ds.source,
+            canResume: showResume,
+          };
+        });
 
         setSessions((prev) => {
           // Merge: keep existing sessions, add new ones from discovery
@@ -665,6 +674,13 @@ function App() {
   useEffect(() => {
     const storedUrl = localStorage.getItem(LOCALSTORAGE_URL_KEY);
     if (storedUrl) {
+      // Extract hostname for display
+      try {
+        const parsed = new URL(storedUrl);
+        setConnectedHost(parsed.hostname);
+      } catch (err) {
+        console.warn('[App] Failed to parse stored URL for hostname display:', err);
+      }
       connectRef.current(storedUrl);
     }
   }, []);
@@ -768,6 +784,13 @@ function App() {
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
       setConnectionMode('direct');
+      // Extract hostname from ws:// URL for display
+      try {
+        const parsed = new URL(url);
+        setConnectedHost(parsed.hostname);
+      } catch {
+        setConnectedHost(null);
+      }
       // Close any existing relay connection
       if (signalingClientRef.current) {
         signalingClientRef.current.close();
@@ -1007,6 +1030,7 @@ function App() {
     <SessionList
       sessions={sessions}
       activeSessionId={activeSessionId}
+      connectedHost={connectedHost}
       onSelectSession={handleSelectSession}
       onResumeSession={effectiveStatus === 'connected' ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
@@ -1037,7 +1061,7 @@ function App() {
       onBulletExpand={handleBulletExpand}
     />
   ) : (
-    <div className="flex h-full items-center justify-center text-[--color-text-muted]">
+    <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">
       <p>Select a session or connect to a daemon</p>
     </div>
   );

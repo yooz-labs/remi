@@ -234,6 +234,7 @@ import {
   createResumeSessionResponse,
   createSessionHistoryResponse,
   createSessionListResponse,
+  createStructuredAgentOutput,
   createTranscriptLoadComplete,
   generateId,
   now,
@@ -1492,6 +1493,20 @@ async function createNewSession(
       maxBulletLength: MAX_BULLET_LENGTH,
     },
     {
+      onStructuredMessage: (structured) => {
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, false));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send structured message:`, err);
+        }
+      },
+      onStructuredMessageUpdate: (_messageId, structured, changedBulletIds) => {
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send structured message update:`, err);
+        }
+      },
       onMessageFinalized: (msgId) => {
         log(`Message ${msgId} finalized`);
       },

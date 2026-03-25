@@ -48,15 +48,15 @@ function ConnectionIndicator({
 }) {
   switch (status) {
     case 'connected':
-      return <Wifi className="size-4 text-[--color-success]" />;
+      return <Wifi className="size-4 text-[var(--color-success)]" />;
     case 'connecting':
     case 'reconnecting':
-      return <Loader2 className="size-4 animate-spin text-[--color-warning]" />;
+      return <Loader2 className="size-4 animate-spin text-[var(--color-warning)]" />;
     case 'error':
-      return <AlertCircle className="size-4 text-[--color-error]" />;
+      return <AlertCircle className="size-4 text-[var(--color-error)]" />;
     case 'disconnected':
     default:
-      return <WifiOff className="size-4 text-[--color-text-muted]" />;
+      return <WifiOff className="size-4 text-[var(--color-text-muted)]" />;
   }
 }
 
@@ -66,22 +66,22 @@ function AgentStatusIndicator({ status }: { readonly status: AgentStatus }) {
     idle: {
       icon: Clock,
       label: 'Idle',
-      color: 'text-[--color-text-muted]',
+      color: 'text-[var(--color-text-muted)]',
     },
     thinking: {
       icon: Brain,
       label: 'Thinking...',
-      color: 'text-[--color-warning]',
+      color: 'text-[var(--color-warning)]',
     },
     executing: {
       icon: Terminal,
       label: 'Executing...',
-      color: 'text-[--color-primary]',
+      color: 'text-[var(--color-primary)]',
     },
     waiting: {
       icon: Clock,
       label: 'Waiting for input',
-      color: 'text-[--color-success]',
+      color: 'text-[var(--color-success)]',
     },
   };
 
@@ -146,16 +146,16 @@ export function ChatHeader({
   return (
     <header
       className={clsx(
-        'flex items-center gap-3 border-b border-[--color-border] bg-[--color-surface] px-4 py-3',
+        'flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3',
         'safe-area-top',
         className,
       )}
     >
-      {/* Back button (mobile) */}
+      {/* Back button */}
       {onBack && (
         <button
           onClick={onBack}
-          className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text] md:hidden"
+          className="shrink-0 rounded-full p-2 text-[var(--color-primary)] transition-colors hover:bg-[var(--color-surface-light)]"
           aria-label="Go back"
         >
           <ArrowLeft className="size-5" />
@@ -166,12 +166,12 @@ export function ChatHeader({
       {onOpenSessions && sessionCount > 1 && (
         <button
           onClick={onOpenSessions}
-          className="relative rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
+          className="relative rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
           aria-label="Open sessions"
         >
           <Layers className="size-5" />
           {totalUnread > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 flex min-w-[1rem] items-center justify-center rounded-full bg-[--color-primary] px-1 text-[9px] font-bold leading-4 text-white">
+            <span className="absolute -right-0.5 -top-0.5 flex min-w-[1rem] items-center justify-center rounded-full bg-[var(--color-primary)] px-1 text-[9px] font-bold leading-4 text-white">
               {totalUnread > 9 ? '9+' : totalUnread}
             </span>
           )}
@@ -181,7 +181,7 @@ export function ChatHeader({
       {/* Session info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <h1 className="truncate font-medium text-[--color-text]">
+          <h1 className="truncate font-medium text-[var(--color-text)]">
             {session.name || 'Claude Session'}
           </h1>
           <ConnectionIndicator status={session.connectionStatus} />
@@ -190,8 +190,8 @@ export function ChatHeader({
           <AgentStatusIndicator status={session.status} />
           {session.cwd && (
             <>
-              <span className="text-[--color-text-muted]">|</span>
-              <span className="truncate text-xs text-[--color-text-muted]">{session.cwd}</span>
+              <span className="text-[var(--color-text-muted)]">|</span>
+              <span className="truncate text-xs text-[var(--color-text-muted)]">{session.cwd}</span>
             </>
           )}
         </div>
@@ -204,8 +204,8 @@ export function ChatHeader({
           className={clsx(
             'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
             viewMode === 'chat'
-              ? 'bg-[--color-primary]/15 text-[--color-primary]'
-              : 'text-[--color-text-secondary] hover:bg-[--color-surface-light] hover:text-[--color-text]',
+              ? 'bg-[var(--color-primary)]/15 text-[var(--color-primary)]'
+              : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]',
           )}
           aria-label={`Switch to ${viewMode === 'chat' ? 'compact' : 'chat'} view`}
           title={viewMode === 'chat' ? 'Switch to compact view' : 'Switch to chat view'}
@@ -224,23 +224,23 @@ export function ChatHeader({
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen(!menuOpen)}
-            className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light] hover:text-[--color-text]"
+            className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
             aria-label="More options"
           >
             <MoreVertical className="size-5" />
           </button>
 
           {menuOpen && (
-            <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-[--color-border] bg-[--color-surface-elevated] py-1 shadow-lg">
+            <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-elevated)] py-1 shadow-lg">
               {onCopyConversation && (
                 <button
                   onClick={() => {
                     onCopyConversation();
                     closeMenu();
                   }}
-                  className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[--color-text] transition-colors hover:bg-[--color-surface-light]"
+                  className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface-light)]"
                 >
-                  <Copy className="size-4 text-[--color-text-muted]" />
+                  <Copy className="size-4 text-[var(--color-text-muted)]" />
                   Copy conversation
                 </button>
               )}
@@ -250,21 +250,21 @@ export function ChatHeader({
                     onExportText();
                     closeMenu();
                   }}
-                  className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[--color-text] transition-colors hover:bg-[--color-surface-light]"
+                  className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface-light)]"
                 >
-                  <FileText className="size-4 text-[--color-text-muted]" />
+                  <FileText className="size-4 text-[var(--color-text-muted)]" />
                   Export as text
                 </button>
               )}
               {onClearMessages && (
                 <>
-                  <div className="my-1 h-px bg-[--color-border]" />
+                  <div className="my-1 h-px bg-[var(--color-border)]" />
                   <button
                     onClick={() => {
                       onClearMessages();
                       closeMenu();
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[--color-error] transition-colors hover:bg-[--color-surface-light]"
+                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[var(--color-error)] transition-colors hover:bg-[var(--color-surface-light)]"
                   >
                     <Trash2 className="size-4" />
                     Clear messages

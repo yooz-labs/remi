@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.yooz.remi',
+  appId: 'live.yooz.remi',
   appName: 'Remi',
   webDir: 'dist',
   server: {
@@ -22,16 +22,13 @@ const config: CapacitorConfig = {
     allowMixedContent: true,
   },
   plugins: {
-    // Splash screen configuration (when @capacitor/splash-screen is added)
-    SplashScreen: {
-      launchShowDuration: 2000,
-      backgroundColor: '#1a1a2e',
-      showSpinner: false,
-    },
-    // Status bar configuration (when @capacitor/status-bar is added)
     StatusBar: {
       style: 'dark',
-      backgroundColor: '#1a1a2e',
+      backgroundColor: '#1a1d21',
+    },
+    Keyboard: {
+      resize: 'body',
+      scrollPadding: false,
     },
   },
 };
