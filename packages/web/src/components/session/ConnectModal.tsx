@@ -44,10 +44,23 @@ function buildWsUrl(host: string): string {
   if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) {
     return trimmed;
   }
+  // IPv6 addresses contain multiple colons; don't split on port
+  const hasMultipleColons = (trimmed.match(/:/g) || []).length > 1;
+  if (hasMultipleColons) {
+    // Treat as IPv6 hostname without port
+    const hostname = trimmed.startsWith('[') ? trimmed : `[${trimmed}]`;
+    return `ws://${hostname}:${DEFAULT_PORT}/ws`;
+  }
   // Extract port if provided (e.g., "192.168.1.5:18770")
   const parts = trimmed.split(':');
   const hostname = parts[0];
-  const port = parts.length > 1 ? Number.parseInt(parts[1], 10) : DEFAULT_PORT;
+  let port = DEFAULT_PORT;
+  if (parts.length > 1 && parts[1]) {
+    const parsed = Number.parseInt(parts[1], 10);
+    if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= 65535) {
+      port = parsed;
+    }
+  }
   return `ws://${hostname}:${port}/ws`;
 }
 

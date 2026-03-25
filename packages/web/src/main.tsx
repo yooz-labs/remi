@@ -22,4 +22,6 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-initNative();
+initNative().catch((err) => {
+  console.warn('[initNative] Failed to initialize native features:', err);
+});

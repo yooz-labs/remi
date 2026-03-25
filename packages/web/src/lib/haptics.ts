@@ -3,6 +3,7 @@
  *
  * Wraps @capacitor/haptics with safe no-ops on web.
  * Import and call directly; no need to check platform first.
+ * All errors are caught and logged since haptics are non-critical.
  */
 
 import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
@@ -26,19 +27,31 @@ const NOTIFICATION_MAP: Record<NotificationFeedback, NotificationType> = {
 /** Trigger impact haptic feedback (button taps, interactions) */
 export async function hapticImpact(style: ImpactWeight = 'medium'): Promise<void> {
   if (!isNative()) return;
-  await Haptics.impact({ style: IMPACT_MAP[style] });
+  try {
+    await Haptics.impact({ style: IMPACT_MAP[style] });
+  } catch (err) {
+    console.warn('[Haptics] impact failed:', err);
+  }
 }
 
 /** Trigger notification haptic feedback (success, warning, error events) */
 export async function hapticNotification(type: NotificationFeedback = 'success'): Promise<void> {
   if (!isNative()) return;
-  await Haptics.notification({ type: NOTIFICATION_MAP[type] });
+  try {
+    await Haptics.notification({ type: NOTIFICATION_MAP[type] });
+  } catch (err) {
+    console.warn('[Haptics] notification failed:', err);
+  }
 }
 
 /** Trigger selection haptic feedback (picker changes, selections) */
 export async function hapticSelection(): Promise<void> {
   if (!isNative()) return;
-  await Haptics.selectionStart();
-  await Haptics.selectionChanged();
-  await Haptics.selectionEnd();
+  try {
+    await Haptics.selectionStart();
+    await Haptics.selectionChanged();
+    await Haptics.selectionEnd();
+  } catch (err) {
+    console.warn('[Haptics] selection failed:', err);
+  }
 }

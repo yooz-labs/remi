@@ -678,7 +678,9 @@ function App() {
       try {
         const parsed = new URL(storedUrl);
         setConnectedHost(parsed.hostname);
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.warn('[App] Failed to parse stored URL for hostname display:', err);
+      }
       connectRef.current(storedUrl);
     }
   }, []);

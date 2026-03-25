@@ -31,9 +31,12 @@ export function useKeyboard(): KeyboardState {
       document.body.classList.remove('keyboard-open');
     });
 
+    showListener.catch((err) => console.warn('[useKeyboard] show listener failed:', err));
+    hideListener.catch((err) => console.warn('[useKeyboard] hide listener failed:', err));
+
     return () => {
-      showListener.then((h) => h.remove());
-      hideListener.then((h) => h.remove());
+      showListener.then((h) => h.remove()).catch(() => {});
+      hideListener.then((h) => h.remove()).catch(() => {});
     };
   }, []);
 

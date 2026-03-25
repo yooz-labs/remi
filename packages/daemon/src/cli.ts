@@ -1494,10 +1494,18 @@ async function createNewSession(
     },
     {
       onStructuredMessage: (structured) => {
-        sendAndRecord(createStructuredAgentOutput(structured, false));
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, false));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send structured message:`, err);
+        }
       },
       onStructuredMessageUpdate: (_messageId, structured, changedBulletIds) => {
-        sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send structured message update:`, err);
+        }
       },
       onMessageFinalized: (msgId) => {
         log(`Message ${msgId} finalized`);
