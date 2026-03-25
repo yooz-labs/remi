@@ -234,6 +234,7 @@ import {
   createResumeSessionResponse,
   createSessionHistoryResponse,
   createSessionListResponse,
+  createStructuredAgentOutput,
   createTranscriptLoadComplete,
   generateId,
   now,
@@ -1492,6 +1493,12 @@ async function createNewSession(
       maxBulletLength: MAX_BULLET_LENGTH,
     },
     {
+      onStructuredMessage: (structured) => {
+        sendAndRecord(createStructuredAgentOutput(structured, false));
+      },
+      onStructuredMessageUpdate: (_messageId, structured, changedBulletIds) => {
+        sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
+      },
       onMessageFinalized: (msgId) => {
         log(`Message ${msgId} finalized`);
       },
