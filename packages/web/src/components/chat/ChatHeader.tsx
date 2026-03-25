@@ -151,11 +151,11 @@ export function ChatHeader({
         className,
       )}
     >
-      {/* Back button (mobile) */}
+      {/* Back button */}
       {onBack && (
         <button
           onClick={onBack}
-          className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)] md:hidden"
+          className="shrink-0 rounded-full p-2 text-[var(--color-primary)] transition-colors hover:bg-[var(--color-surface-light)]"
           aria-label="Go back"
         >
           <ArrowLeft className="size-5" />

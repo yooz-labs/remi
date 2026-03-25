@@ -382,9 +382,9 @@ function App() {
           // Strip XML-like tags from preview text
           const rawPreview = ds.lastMessage || `${ds.messageCount} messages`;
           const cleanPreview = rawPreview.replace(/<[^>]+>/g, '').trim() || rawPreview;
-          // Only show resume for transcript-sourced sessions that can't be attached
-          // (idle sessions on other daemons should NOT show resume)
-          const showResume = !ds.canAttach && ds.canResume && ds.source === 'transcript';
+          // Only show resume for dead sessions (completed/orphaned), never for idle/active
+          const isDead = ds.status !== 'active' && ds.status !== 'idle';
+          const showResume = isDead && !ds.canAttach && ds.canResume;
           return {
             id: ds.sessionId as UUID,
             name: ds.name || ds.projectPath.split('/').pop() || 'Session',

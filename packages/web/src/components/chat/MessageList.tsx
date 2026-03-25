@@ -159,7 +159,7 @@ export function MessageList({
   const grouped = groupMessages(messages, filterTools);
 
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1 min-h-0 overflow-hidden">
       <div
         ref={containerRef}
         onScroll={handleScroll}
