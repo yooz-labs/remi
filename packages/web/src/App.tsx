@@ -785,12 +785,21 @@ function App() {
     (url: string, directory?: string) => {
       setConnectionMode('direct');
       // Extract hostname from ws:// URL for display
+      let newHost: string | null = null;
       try {
         const parsed = new URL(url);
-        setConnectedHost(parsed.hostname);
-      } catch {
-        setConnectedHost(null);
+        newHost = parsed.hostname;
+      } catch (err) {
+        console.warn('[App] Failed to parse URL for hostname display:', err);
       }
+      // Clear sessions when switching to a different host
+      if (newHost && newHost !== connectedHost) {
+        setSessions([]);
+        setMessages([]);
+        setActiveSessionId(null);
+        setQuestion(null);
+      }
+      setConnectedHost(newHost);
       // Close any existing relay connection
       if (signalingClientRef.current) {
         signalingClientRef.current.close();
