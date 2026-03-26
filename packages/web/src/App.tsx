@@ -377,34 +377,63 @@ function App() {
       }
 
       case 'session_list_response': {
-        // Map DiscoverableSession[] to UISession[]
-        const discovered: UISession[] = message.sessions.map((ds: DiscoverableSession) => {
-          // Strip XML-like tags from preview text
-          const rawPreview = ds.lastMessage || `${ds.messageCount} messages`;
-          const cleanPreview = rawPreview.replace(/<[^>]+>/g, '').trim() || rawPreview;
-          // Only show resume for dead sessions (completed/orphaned), never for idle/active
-          const isDead = ds.status !== 'active' && ds.status !== 'idle';
-          const showResume = isDead && !ds.canAttach && ds.canResume;
-          return {
-            id: ds.sessionId as UUID,
-            name: ds.name || ds.projectPath.split('/').pop() || 'Session',
-            createdAt: ds.lastActivity,
-            lastActiveAt: ds.lastActivity,
-            status: mapSessionStatus(ds.status),
-            connectionStatus: ds.canAttach ? ('connected' as const) : ('disconnected' as const),
-            unreadCount: 0,
-            cwd: ds.projectPath,
-            preview: cleanPreview.slice(0, 100),
-            source: ds.source,
-            canResume: showResume,
-          };
-        });
+        // Map, filter, and sort DiscoverableSession[] to UISession[]
+        const discovered: UISession[] = message.sessions
+          .filter((ds: DiscoverableSession) => {
+            // Filter out empty/useless sessions with no content
+            // Keep sessions that are attachable (live) or have actual messages
+            if (!ds.canAttach && (!ds.messageCount || ds.messageCount === 0) && !ds.lastMessage) {
+              return false;
+            }
+            return true;
+          })
+          .map((ds: DiscoverableSession) => {
+            // Strip XML-like tags from preview text
+            const rawPreview = ds.lastMessage || `${ds.messageCount} messages`;
+            const cleanPreview = rawPreview.replace(/<[^>]+>/g, '').trim() || rawPreview;
+            // Only show resume for dead sessions (completed/orphaned), never for idle/active
+            const isDead = ds.status !== 'active' && ds.status !== 'idle';
+            const showResume = isDead && !ds.canAttach && ds.canResume;
+            return {
+              id: ds.sessionId as UUID,
+              name: ds.name || ds.projectPath.split('/').pop() || 'Session',
+              createdAt: ds.lastActivity,
+              lastActiveAt: ds.lastActivity,
+              status: mapSessionStatus(ds.status),
+              connectionStatus: ds.canAttach ? ('connected' as const) : ('disconnected' as const),
+              unreadCount: 0,
+              cwd: ds.projectPath,
+              preview: cleanPreview.slice(0, 100),
+              source: ds.source,
+              canResume: showResume,
+            };
+          })
+          // Sort: attachable (live) first, then by last activity (most recent first)
+          .sort((a, b) => {
+            const aLive = a.connectionStatus === 'connected' ? 0 : 1;
+            const bLive = b.connectionStatus === 'connected' ? 0 : 1;
+            if (aLive !== bLive) return aLive - bLive;
+            return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
+          });
 
         setSessions((prev) => {
-          // Merge: keep existing sessions, add new ones from discovery
-          const existingIds = new Set(prev.map((s) => s.id));
-          const newSessions = discovered.filter((s) => !existingIds.has(s.id));
-          return [...prev, ...newSessions];
+          // Keep only the currently attached session (from hello_ack), replace everything else
+          // with the freshly discovered sessions from the daemon
+          const attachedSession = prev.find(
+            (s) => s.connectionStatus === 'connected' && s.id === activeSessionIdRef.current,
+          );
+          const discoveredIds = new Set(discovered.map((s) => s.id));
+          // Start with attached session (if not already in discovered list)
+          const result = attachedSession && !discoveredIds.has(attachedSession.id)
+            ? [attachedSession, ...discovered]
+            : [...discovered];
+          // Sort: live first, then by last activity
+          return result.sort((a, b) => {
+            const aLive = a.connectionStatus === 'connected' ? 0 : 1;
+            const bLive = b.connectionStatus === 'connected' ? 0 : 1;
+            if (aLive !== bLive) return aLive - bLive;
+            return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
+          });
         });
         break;
       }
