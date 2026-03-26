@@ -186,8 +186,9 @@ export function MessageList({
             // Walk backward past tool groups to find the previous real message for date separator
             let prevMessage: UIMessage | null = null;
             for (let i = index - 1; i >= 0; i--) {
-              if (grouped[i].type === 'message') {
-                prevMessage = grouped[i].message;
+              const prev = grouped[i];
+              if (prev.type === 'message') {
+                prevMessage = prev.message;
                 break;
               }
             }
