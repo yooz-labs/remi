@@ -1711,21 +1711,44 @@ async function createNewSession(
   });
 
   // Transcript watcher: started by SessionStart hook (provides path directly).
-  // Safety net: if hook doesn't fire within 5s, fall back to filesystem discovery.
-  setTimeout(() => {
-    if (transcriptWatchers.has(sessionId)) return;
-    if (!sessionRegistry.hasSession(sessionId)) return;
-    logError('[Hooks] SessionStart hook not received, falling back to transcript discovery');
+  // Safety net: if hook doesn't fire, poll for a NEW transcript file.
+  // Claude creates its transcript file after startup, so we must wait for it.
+  const startupTime = Date.now();
+  const fallbackInterval = setInterval(() => {
+    if (transcriptWatchers.has(sessionId)) {
+      clearInterval(fallbackInterval);
+      return;
+    }
+    if (!sessionRegistry.hasSession(sessionId)) {
+      clearInterval(fallbackInterval);
+      return;
+    }
+    // Look for a transcript file created AFTER daemon startup
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
-      startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-      extractClaudeSessionId(transcriptPath, sessionId);
-    } else {
-      logError(
-        `[Hooks] Transcript discovery failed for session ${sessionId}. No transcript content available.`,
-      );
+      try {
+        const stat = fs.statSync(transcriptPath);
+        if (stat.mtimeMs >= startupTime) {
+          clearInterval(fallbackInterval);
+          log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
+          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+          extractClaudeSessionId(transcriptPath, sessionId);
+          return;
+        }
+      } catch {
+        /* stat failed, retry */
+      }
     }
-  }, 5000);
+    // Give up after 30 seconds
+    if (Date.now() - startupTime > 30000) {
+      clearInterval(fallbackInterval);
+      logError('[Hooks] Transcript fallback timed out. Using latest available file.');
+      if (transcriptPath) {
+        startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+        extractClaudeSessionId(transcriptPath, sessionId);
+      }
+    }
+  }, 2000);
 
   return ptySession;
 }
@@ -1753,10 +1776,12 @@ function startTranscriptWatcher(
   messageApi: MessageAPI,
   sendAndRecord: (message: ProtocolMessage) => void,
 ): void {
-  log(`Watching transcript: ${transcriptPath}`);
+  log(`[Transcript] Watching: ${transcriptPath}`);
+  log(`[Transcript] File exists: ${fs.existsSync(transcriptPath)}`);
 
   const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
     onTranscriptContent: (message) => {
+      log(`[Transcript] Delivering content (${message.type}) to clients`);
       sendAndRecord(message);
     },
   });
@@ -1769,9 +1794,13 @@ function startTranscriptWatcher(
     },
     {
       onAssistantMessage: (entry: AssistantEntry) => {
+        log(
+          `[Transcript] Assistant entry: ${entry.uuid?.slice(0, 8)} (${entry.message?.content?.length ?? 0} blocks)`,
+        );
         bridge.handleAssistantEntry(entry);
       },
       onUserMessage: (entry) => {
+        log(`[Transcript] User entry: ${entry.uuid?.slice(0, 8)}`);
         bridge.handleUserEntry(entry);
       },
       onError: (error) => {
@@ -1784,6 +1813,7 @@ function startTranscriptWatcher(
   watcher.start().catch((error) => {
     logError(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
   });
+  log(`[Transcript] Watcher started for session ${sessionId}`);
 }
 
 // ---------------------------------------------------------------------------
