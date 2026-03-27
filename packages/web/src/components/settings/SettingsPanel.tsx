@@ -42,8 +42,8 @@ function ThemeButton({
       className={clsx(
         'flex flex-1 flex-col items-center gap-1.5 rounded-lg p-3 text-xs transition-colors',
         active
-          ? 'bg-[--color-primary] text-white'
-          : 'bg-[--color-surface-light] text-[--color-text-secondary] hover:bg-[--color-surface-elevated]',
+          ? 'bg-[var(--color-primary)] text-white'
+          : 'bg-[var(--color-surface-light)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]',
       )}
     >
       <Icon className="size-5" />
@@ -63,14 +63,14 @@ function Toggle({
 }) {
   return (
     <label className="flex cursor-pointer items-center justify-between py-2">
-      <span className="text-sm text-[--color-text]">{label}</span>
+      <span className="text-sm text-[var(--color-text)]">{label}</span>
       <button
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
         className={clsx(
           'relative h-6 w-11 rounded-full transition-colors',
-          checked ? 'bg-[--color-primary]' : 'bg-[--color-border]',
+          checked ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-border)]',
         )}
       >
         <span
@@ -188,45 +188,45 @@ function IdentitySection() {
 
   return (
     <section>
-      <h3 className="mb-3 text-sm font-medium text-[--color-text-secondary]">
+      <h3 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">
         Identity & Security
       </h3>
 
       {fingerprint ? (
         <div className="space-y-3">
           {/* Fingerprint display */}
-          <div className="flex items-center gap-2 rounded-lg bg-[--color-surface-light] p-3">
-            <Shield className="size-5 shrink-0 text-[--color-primary]" />
+          <div className="flex items-center gap-2 rounded-lg bg-[var(--color-surface-light)] p-3">
+            <Shield className="size-5 shrink-0 text-[var(--color-primary)]" />
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-[--color-text-muted]">
+              <p className="text-xs text-[var(--color-text-muted)]">
                 Your fingerprint {encrypted ? '(encrypted)' : '(unencrypted)'}
               </p>
-              <p className="truncate font-mono text-sm text-[--color-text]">{fingerprint}</p>
+              <p className="truncate font-mono text-sm text-[var(--color-text)]">{fingerprint}</p>
             </div>
             <button
               onClick={handleCopyFingerprint}
-              className="shrink-0 rounded p-1 text-[--color-text-muted] hover:text-[--color-text]"
+              className="shrink-0 rounded p-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
               title="Copy fingerprint"
             >
               <Copy className="size-4" />
             </button>
           </div>
           {copied && (
-            <p className="text-xs text-[--color-success]">Copied to clipboard</p>
+            <p className="text-xs text-[var(--color-success)]">Copied to clipboard</p>
           )}
 
           {/* Action buttons */}
           <div className="flex gap-2">
             <button
               onClick={handleExport}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-surface-light] py-2 text-xs text-[--color-text-secondary] hover:bg-[--color-surface-elevated]"
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-surface-light)] py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]"
             >
               <Download className="size-3.5" />
               Export
             </button>
             <button
               onClick={handleRemove}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-error]/10 py-2 text-xs text-[--color-error] hover:bg-[--color-error]/20"
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-error)]/10 py-2 text-xs text-[var(--color-error)] hover:bg-[var(--color-error)]/20"
             >
               <X className="size-3.5" />
               Remove
@@ -235,7 +235,7 @@ function IdentitySection() {
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-sm text-[--color-text-muted]">
+          <p className="text-sm text-[var(--color-text-muted)]">
             No identity configured. Generate one or import from another device.
           </p>
 
@@ -243,14 +243,14 @@ function IdentitySection() {
             <div className="flex gap-2">
               <button
                 onClick={() => { setShowGenerate(true); setShowImport(false); }}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-primary] py-2 text-xs text-white hover:bg-[--color-primary-dark]"
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)]"
               >
                 <Key className="size-3.5" />
                 Generate
               </button>
               <button
                 onClick={() => { setShowImport(true); setShowGenerate(false); }}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[--color-surface-light] py-2 text-xs text-[--color-text-secondary] hover:bg-[--color-surface-elevated]"
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-surface-light)] py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]"
               >
                 <Upload className="size-3.5" />
                 Import
@@ -261,7 +261,7 @@ function IdentitySection() {
           {/* Generate form */}
           {showGenerate && (
             <form onSubmit={handleGenerate} className="space-y-2">
-              <label className="flex items-center gap-2 text-sm text-[--color-text-secondary]">
+              <label className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
                 <input
                   type="checkbox"
                   checked={usePassphrase}
@@ -278,14 +278,14 @@ function IdentitySection() {
                     value={passphrase}
                     onChange={(e) => setPassphrase(e.target.value)}
                     placeholder="Passphrase (min 8 chars)"
-                    className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+                    className="w-full rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50"
                   />
                   <input
                     type="password"
                     value={confirmPassphrase}
                     onChange={(e) => setConfirmPassphrase(e.target.value)}
                     placeholder="Confirm passphrase"
-                    className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+                    className="w-full rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50"
                   />
                 </>
               )}
@@ -293,14 +293,14 @@ function IdentitySection() {
                 <button
                   type="submit"
                   disabled={generating}
-                  className="flex-1 rounded-lg bg-[--color-primary] py-2 text-xs text-white hover:bg-[--color-primary-dark] disabled:opacity-50"
+                  className="flex-1 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)] disabled:opacity-50"
                 >
                   {generating ? 'Generating...' : 'Create Identity'}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setShowGenerate(false); setPassphrase(''); setConfirmPassphrase(''); }}
-                  className="rounded-lg bg-[--color-surface-light] px-3 py-2 text-xs text-[--color-text-secondary]"
+                  className="rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-xs text-[var(--color-text-secondary)]"
                 >
                   Cancel
                 </button>
@@ -316,20 +316,20 @@ function IdentitySection() {
                 onChange={(e) => setImportJson(e.target.value)}
                 placeholder="Paste identity JSON here"
                 rows={4}
-                className="w-full rounded-lg bg-[--color-surface-light] px-3 py-2 text-sm font-mono text-[--color-text] placeholder:text-[--color-text-muted] outline-none focus:ring-2 focus:ring-[--color-primary]/50"
+                className="w-full rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-sm font-mono text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50"
               />
               <div className="flex gap-2">
                 <button
                   type="submit"
                   disabled={!importJson.trim()}
-                  className="flex-1 rounded-lg bg-[--color-primary] py-2 text-xs text-white hover:bg-[--color-primary-dark] disabled:opacity-50"
+                  className="flex-1 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)] disabled:opacity-50"
                 >
                   Import
                 </button>
                 <button
                   type="button"
                   onClick={() => { setShowImport(false); setImportJson(''); }}
-                  className="rounded-lg bg-[--color-surface-light] px-3 py-2 text-xs text-[--color-text-secondary]"
+                  className="rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-xs text-[var(--color-text-secondary)]"
                 >
                   Cancel
                 </button>
@@ -340,7 +340,7 @@ function IdentitySection() {
       )}
 
       {feedback && (
-        <p className="mt-2 text-xs text-[--color-text-muted]">{feedback}</p>
+        <p className="mt-2 text-xs text-[var(--color-text-muted)]">{feedback}</p>
       )}
     </section>
   );
@@ -366,29 +366,29 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       {/* Panel */}
-      <div className="relative w-full max-w-sm bg-[--color-surface] shadow-lg animate-[slide-in-right_0.2s_ease-out]">
+      <div className="relative w-full max-w-sm bg-[var(--color-surface)] shadow-lg animate-[slide-in-right_0.2s_ease-out]">
         {/* Header */}
-        <header className="flex items-center justify-between border-b border-[--color-border] px-4 py-3 safe-area-top">
-          <h2 className="text-lg font-semibold text-[--color-text]">Settings</h2>
+        <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3 safe-area-top">
+          <h2 className="text-lg font-semibold text-[var(--color-text)]">Settings</h2>
           <button
             onClick={onClose}
-            className="rounded-full p-1.5 text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light]"
+            className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)]"
             aria-label="Close settings"
           >
             <X className="size-5" />
           </button>
         </header>
 
-        <div className="overflow-y-auto p-4 space-y-6">
+        <div className="overflow-y-auto p-4 space-y-6 safe-area-bottom">
           {/* Identity & Security */}
           <IdentitySection />
 
           {/* Theme */}
           <section>
-            <h3 className="mb-3 text-sm font-medium text-[--color-text-secondary]">Theme</h3>
+            <h3 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">Theme</h3>
             <div className="flex gap-2">
               <ThemeButton
                 active={settings.theme === 'system'}
@@ -413,7 +413,7 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
           {/* Font Size */}
           <section>
-            <h3 className="mb-3 text-sm font-medium text-[--color-text-secondary]">Font Size</h3>
+            <h3 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">Font Size</h3>
             <div className="flex gap-2">
               {(['small', 'medium', 'large'] as const).map((size) => (
                 <button
@@ -422,8 +422,8 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
                   className={clsx(
                     'flex-1 rounded-lg py-2 text-sm capitalize transition-colors',
                     settings.fontSize === size
-                      ? 'bg-[--color-primary] text-white'
-                      : 'bg-[--color-surface-light] text-[--color-text-secondary] hover:bg-[--color-surface-elevated]',
+                      ? 'bg-[var(--color-primary)] text-white'
+                      : 'bg-[var(--color-surface-light)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]',
                   )}
                 >
                   {size}
@@ -434,7 +434,7 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
           {/* Toggles */}
           <section>
-            <h3 className="mb-2 text-sm font-medium text-[--color-text-secondary]">Preferences</h3>
+            <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">Preferences</h3>
             <div className="space-y-1">
               <Toggle
                 label="Show timestamps"
@@ -461,14 +461,14 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
           {/* About */}
           <section>
-            <h3 className="mb-2 text-sm font-medium text-[--color-text-secondary]">About</h3>
-            <p className="text-sm text-[--color-text-muted]">Remi v0.1.0</p>
+            <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">About</h3>
+            <p className="text-sm text-[var(--color-text-muted)]">Remi v0.1.0</p>
           </section>
 
           {/* Reset */}
           <button
             onClick={() => onChange(DEFAULT_SETTINGS)}
-            className="w-full rounded-lg border border-[--color-border] py-2 text-sm text-[--color-text-secondary] transition-colors hover:bg-[--color-surface-light]"
+            className="w-full rounded-lg border border-[var(--color-border)] py-2 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)]"
           >
             Reset to defaults
           </button>

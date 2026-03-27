@@ -31,13 +31,13 @@ interface MessageBubbleProps {
 function StatusIcon({ state }: { readonly state: MessageState }) {
   switch (state) {
     case 'sending':
-      return <Clock className="size-3.5 text-[--color-status-sending]" />;
+      return <Clock className="size-3.5 text-[var(--color-status-sending)]" />;
     case 'sent':
-      return <Check className="size-3.5 text-[--color-status-sent]" />;
+      return <Check className="size-3.5 text-[var(--color-status-sent)]" />;
     case 'delivered':
-      return <CheckCheck className="size-3.5 text-[--color-status-delivered]" />;
+      return <CheckCheck className="size-3.5 text-[var(--color-status-delivered)]" />;
     case 'read':
-      return <CheckCheck className="size-3.5 text-[--color-status-read]" />;
+      return <CheckCheck className="size-3.5 text-[var(--color-status-read)]" />;
     default:
       return null;
   }
@@ -80,7 +80,7 @@ function BulletItem({
           disabled={bullet.isExpanding}
           className={clsx(
             'mt-1 flex items-center gap-1 text-xs',
-            'text-[--color-primary] hover:text-[--color-primary-hover]',
+            'text-[var(--color-primary)] hover:text-[var(--color-primary-hover)]',
             'transition-colors duration-150',
             bullet.isExpanding && 'opacity-50 cursor-wait',
           )}
@@ -163,12 +163,12 @@ export function MessageBubble({
   if (enhanced && message.tool && !isUser) {
     return (
       <div className="flex w-full animate-[slide-up] justify-start">
-        <div className="w-full max-w-[95%]">
+        <div className="w-full max-w-[95%] overflow-hidden">
           <ChatMessage content={message.content} toolName={message.tool} />
           {/* Footer */}
           <div className="mt-0.5 flex items-center gap-1.5 px-1">
             {showTimestamp && (
-              <span className="text-[10px] text-[--color-text-muted]">
+              <span className="text-[10px] text-[var(--color-text-muted)]">
                 {formatTime(message.timestamp)}
               </span>
             )}
@@ -191,42 +191,42 @@ export function MessageBubble({
     >
       <div
         className={clsx(
-          'rounded-2xl px-4 py-2.5',
+          'rounded-2xl px-4 py-2.5 overflow-hidden',
           'transition-all duration-200',
           'shadow-sm border',
           // Width: wider in enhanced mode for better code block display
           enhanced ? 'max-w-[95%]' : 'max-w-[85%]',
           // Bubble colors
-          isUser && 'bg-[--color-bubble-user] text-white border-[--color-bubble-user]',
-          !isUser && !isSystem && 'bg-[--color-bubble-assistant] border-[--color-border]',
+          isUser && 'bg-[var(--color-bubble-user)] text-white border-[var(--color-bubble-user)]',
+          !isUser && !isSystem && 'bg-[var(--color-bubble-assistant)] border-[var(--color-border)]',
           isSystem &&
-            'bg-[--color-bubble-system] text-[--color-text-secondary] border-[--color-border]',
+            'bg-[var(--color-bubble-system)] text-[var(--color-text-secondary)] border-[var(--color-border)]',
           // Bubble shape variations
           isUser && 'rounded-br-md',
           !isUser && 'rounded-bl-md',
           // Streaming indicator
           message.isStreaming && 'animate-pulse',
           // Editing indicator
-          message.isEditing && 'border-[--color-primary] border-dashed',
+          message.isEditing && 'border-[var(--color-primary)] border-dashed',
         )}
       >
         {/* Sender label in enhanced mode */}
         {senderLabel && (
-          <div className="mb-1 text-[11px] font-semibold text-[--color-text-muted]">
+          <div className="mb-1 text-[11px] font-semibold text-[var(--color-text-muted)]">
             {senderLabel}
           </div>
         )}
 
         {/* Tool indicator (compact mode only; enhanced mode uses ToolUseCard) */}
         {!enhanced && message.tool && (
-          <div className="mb-1 flex items-center gap-1.5 text-xs text-[--color-text-secondary]">
+          <div className="mb-1 flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
             <Terminal className="size-3" />
             <span>{message.tool}</span>
           </div>
         )}
 
         {/* Message content */}
-        <div className={clsx(isUser ? 'text-white' : 'text-[--color-text]')}>
+        <div className={clsx(isUser ? 'text-white' : 'text-[var(--color-text)]')}>
           <MessageContent
             message={message}
             enhanced={enhanced}
@@ -245,7 +245,7 @@ export function MessageBubble({
         >
           {/* Edited indicator */}
           {message.editedAt && (
-            <span className="flex items-center gap-0.5 text-[10px] text-[--color-text-muted]">
+            <span className="flex items-center gap-0.5 text-[10px] text-[var(--color-text-muted)]">
               <Pencil className="size-2.5" />
               edited
             </span>
@@ -256,7 +256,7 @@ export function MessageBubble({
             <span
               className={clsx(
                 'text-[10px]',
-                isUser ? 'text-white/70' : 'text-[--color-text-muted]',
+                isUser ? 'text-white/70' : 'text-[var(--color-text-muted)]',
               )}
             >
               {formatTime(message.timestamp)}
@@ -281,7 +281,7 @@ export function ErrorBubble({
 }) {
   return (
     <div className="flex w-full justify-center">
-      <div className="flex items-center gap-2 rounded-full bg-[--color-error]/10 px-4 py-2 text-sm text-[--color-error]">
+      <div className="flex items-center gap-2 rounded-full bg-[var(--color-error)]/10 px-4 py-2 text-sm text-[var(--color-error)]">
         <AlertCircle className="size-4" />
         <span>{message}</span>
         {onRetry && (
@@ -301,10 +301,10 @@ export function ErrorBubble({
 export function TypingIndicator() {
   return (
     <div className="flex justify-start">
-      <div className="flex gap-1 rounded-2xl rounded-bl-md bg-[--color-bubble-assistant] px-4 py-3">
-        <span className="size-2 animate-bounce rounded-full bg-[--color-text-muted] [animation-delay:0ms]" />
-        <span className="size-2 animate-bounce rounded-full bg-[--color-text-muted] [animation-delay:150ms]" />
-        <span className="size-2 animate-bounce rounded-full bg-[--color-text-muted] [animation-delay:300ms]" />
+      <div className="flex gap-1 rounded-2xl rounded-bl-md bg-[var(--color-bubble-assistant)] px-4 py-3">
+        <span className="size-2 animate-bounce rounded-full bg-[var(--color-text-muted)] [animation-delay:0ms]" />
+        <span className="size-2 animate-bounce rounded-full bg-[var(--color-text-muted)] [animation-delay:150ms]" />
+        <span className="size-2 animate-bounce rounded-full bg-[var(--color-text-muted)] [animation-delay:300ms]" />
       </div>
     </div>
   );

@@ -171,14 +171,24 @@ export class TranscriptWatcher {
     this.running = true;
     const dir = path.dirname(this.config.filePath);
 
+    // Transition from "waiting for file" to "actively watching".
+    // Must reset this.running so start() doesn't bail out early.
+    const onFileAppeared = (): void => {
+      if (!this.running) return;
+      this.running = false;
+      this.start();
+    };
+
     // Watch the directory for the file to appear
     try {
       const dirWatcher = fs.watch(dir, (_eventType, filename) => {
         if (filename && this.config.filePath.endsWith(filename)) {
           dirWatcher.close();
-          if (this.running) {
-            this.start();
+          if (this.pollTimer) {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
           }
+          onFileAppeared();
         }
       });
 
@@ -190,22 +200,23 @@ export class TranscriptWatcher {
             this.pollTimer = null;
           }
           dirWatcher.close();
-          if (this.running) {
-            this.start();
-          }
+          onFileAppeared();
         }
       }, this.config.pollIntervalMs);
-    } catch {
+    } catch (watchErr) {
       // If directory watching fails, fall back to polling only
+      this.events.onError?.(
+        new Error(
+          `fs.watch on directory failed, using polling: ${watchErr instanceof Error ? watchErr.message : String(watchErr)}`,
+        ),
+      );
       this.pollTimer = setInterval(() => {
         if (fs.existsSync(this.config.filePath)) {
           if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
           }
-          if (this.running) {
-            this.start();
-          }
+          onFileAppeared();
         }
       }, this.config.pollIntervalMs);
     }
@@ -217,10 +228,12 @@ export class TranscriptWatcher {
   private startWatching(): void {
     this.running = true;
 
-    // Use fs.watch for immediate notifications
+    // Use fs.watch for immediate notifications.
+    // Listen for both 'change' (in-place append) and 'rename' (atomic write)
+    // since macOS FSEvents may emit either depending on how the file is written.
     try {
       this.watcher = fs.watch(this.config.filePath, (eventType) => {
-        if (eventType === 'change' && this.running) {
+        if ((eventType === 'change' || eventType === 'rename') && this.running) {
           this.readNewEntries();
         }
       });

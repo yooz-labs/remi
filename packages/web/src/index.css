@@ -1,31 +1,52 @@
 @import "tailwindcss";
 
-/* Konsta UI theme variables */
+/* Theme colors as @property so bare references work in Safari/WKWebView */
+@property --color-primary { syntax: "<color>"; inherits: true; initial-value: #0d9490; }
+@property --color-primary-dark { syntax: "<color>"; inherits: true; initial-value: #0b7f7a; }
+@property --color-surface { syntax: "<color>"; inherits: true; initial-value: #1a1d21; }
+@property --color-surface-light { syntax: "<color>"; inherits: true; initial-value: #242830; }
+@property --color-surface-elevated { syntax: "<color>"; inherits: true; initial-value: #2e323a; }
+@property --color-text { syntax: "<color>"; inherits: true; initial-value: #f0f2f5; }
+@property --color-text-secondary { syntax: "<color>"; inherits: true; initial-value: #9ca3af; }
+@property --color-text-muted { syntax: "<color>"; inherits: true; initial-value: #6b7280; }
+@property --color-border { syntax: "<color>"; inherits: true; initial-value: #343840; }
+@property --color-success { syntax: "<color>"; inherits: true; initial-value: #34d399; }
+@property --color-warning { syntax: "<color>"; inherits: true; initial-value: #f59e0b; }
+@property --color-error { syntax: "<color>"; inherits: true; initial-value: #ef4444; }
+@property --color-bubble-user { syntax: "<color>"; inherits: true; initial-value: #0d9490; }
+@property --color-bubble-assistant { syntax: "<color>"; inherits: true; initial-value: #2e323a; }
+@property --color-bubble-system { syntax: "<color>"; inherits: true; initial-value: #1e3a5f; }
+@property --color-status-sending { syntax: "<color>"; inherits: true; initial-value: #9ca3af; }
+@property --color-status-sent { syntax: "<color>"; inherits: true; initial-value: #38bdf8; }
+@property --color-status-delivered { syntax: "<color>"; inherits: true; initial-value: #34d399; }
+@property --color-status-read { syntax: "<color>"; inherits: true; initial-value: #0d9490; }
+
+/* Theme variables */
 @theme {
-  /* Colors - Dark mode with improved contrast */
-  --color-primary: #6366f1;
-  --color-primary-dark: #4f46e5;
-  --color-surface: #0f1419;
-  --color-surface-light: #1a1f2e;
-  --color-surface-elevated: #242938;
-  --color-text: #ffffff;
-  --color-text-secondary: #a0aec0;
-  --color-text-muted: #718096;
-  --color-border: #2d3748;
-  --color-success: #48bb78;
-  --color-warning: #ed8936;
-  --color-error: #f56565;
+  /* Dark mode -- warm dark grays (Telegram-inspired, not pure black) */
+  --color-primary: #0d9490;
+  --color-primary-dark: #0b7f7a;
+  --color-surface: #1a1d21;
+  --color-surface-light: #242830;
+  --color-surface-elevated: #2e323a;
+  --color-text: #f0f2f5;
+  --color-text-secondary: #9ca3af;
+  --color-text-muted: #6b7280;
+  --color-border: #343840;
+  --color-success: #34d399;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
 
-  /* Message bubble colors with better contrast */
-  --color-bubble-user: #5865f2;
-  --color-bubble-assistant: #2d3748;
-  --color-bubble-system: #2c5282;
+  /* Message bubbles -- teal for user, warm gray for assistant */
+  --color-bubble-user: #0d9490;
+  --color-bubble-assistant: #2e323a;
+  --color-bubble-system: #1e3a5f;
 
-  /* Status colors */
-  --color-status-sending: #94a3b8;
-  --color-status-sent: #60a5fa;
-  --color-status-delivered: #22c55e;
-  --color-status-read: #6366f1;
+  /* Delivery status */
+  --color-status-sending: #9ca3af;
+  --color-status-sent: #38bdf8;
+  --color-status-delivered: #34d399;
+  --color-status-read: #0d9490;
 
   /* Spacing */
   --spacing-safe-top: env(safe-area-inset-top, 0px);
@@ -94,16 +115,18 @@
   }
 }
 
-/* Light mode: JS sets data-theme="light" for both manual and system preference */
+/* Light mode -- soft warm whites, vibrant teal accent */
 html[data-theme="light"] {
-  --color-surface: #ffffff;
-  --color-surface-light: #f8fafc;
-  --color-surface-elevated: #f1f5f9;
-  --color-text: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-muted: #64748b;
-  --color-border: #e2e8f0;
-  --color-bubble-assistant: #e2e8f0;
+  --color-primary: #0ea5a1;
+  --color-primary-dark: #0d9490;
+  --color-surface: #f7f8fa;
+  --color-surface-light: #eef0f4;
+  --color-surface-elevated: #e4e7ec;
+  --color-text: #1a1d21;
+  --color-text-secondary: #4b5563;
+  --color-text-muted: #6b7280;
+  --color-border: #d1d5db;
+  --color-bubble-assistant: #e4e7ec;
   --color-bubble-system: #dbeafe;
 }
 
@@ -114,6 +137,8 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 body {
@@ -124,6 +149,19 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* iOS native app resets */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+[role="button"] {
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 /* Safe area handling for mobile */
@@ -133,6 +171,11 @@ body {
 
 .safe-area-bottom {
   padding-bottom: var(--spacing-safe-bottom);
+}
+
+/* Remove safe-area-bottom when keyboard is open (the keyboard replaces the home indicator) */
+body.keyboard-open .safe-area-bottom {
+  padding-bottom: 0;
 }
 
 /* Scrollbar styling */
@@ -158,6 +201,20 @@ body {
 pre,
 code {
   font-family: var(--font-mono);
+}
+
+/* Prevent code/pre from causing horizontal page overflow */
+pre {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: calc(100vw - 2rem);
+  word-break: break-all;
+}
+
+/* Force long words/URLs to break in message content */
+.break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Selection styling */

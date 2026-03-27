@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.12'; // REMI_COMPILED_VERSION
+      return '0.4.13-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.12'; // REMI_COMPILED_VERSION
+    return '0.4.13-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -234,6 +234,7 @@ import {
   createResumeSessionResponse,
   createSessionHistoryResponse,
   createSessionListResponse,
+  createStructuredAgentOutput,
   createTranscriptLoadComplete,
   generateId,
   now,
@@ -265,6 +266,7 @@ import {
 } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
+import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
@@ -1398,6 +1400,7 @@ const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids
 const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
+const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 const sessionStore = new SessionStore();
 
 const orphanTimeoutMs =
@@ -1492,6 +1495,20 @@ async function createNewSession(
       maxBulletLength: MAX_BULLET_LENGTH,
     },
     {
+      onStructuredMessage: (structured) => {
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, false));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send structured message:`, err);
+        }
+      },
+      onStructuredMessageUpdate: (_messageId, structured, changedBulletIds) => {
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send structured message update:`, err);
+        }
+      },
       onMessageFinalized: (msgId) => {
         log(`Message ${msgId} finalized`);
       },
@@ -1534,6 +1551,9 @@ async function createNewSession(
       },
     },
   );
+
+  // PTY output parser: status-only mode (content comes from transcript for clean results)
+  const outputProcessor = new OutputProcessor({ sessionId, streamStatusOnly: true }, {});
 
   // Hook-based event bridge for status/question detection
   if (hookServer) {
@@ -1638,10 +1658,19 @@ async function createNewSession(
           sendMessage(sessionId, msg);
         }
       },
-      onData: (_output: string) => {
-        // No PTY output parsing; hooks handle status/questions, transcript handles content
+      onData: (output: string) => {
+        try {
+          outputProcessor.process(output);
+        } catch (err) {
+          logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
+        }
       },
       onExit: (code: number | null) => {
+        try {
+          outputProcessor.flush();
+        } catch (err) {
+          logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
+        }
         log(`PTY ${ptySession.id} exited with code ${code}`);
         sessionRegistry.handlePTYExit(sessionId);
         sessionStore.markExited(sessionId, code);
@@ -1683,21 +1712,49 @@ async function createNewSession(
   });
 
   // Transcript watcher: started by SessionStart hook (provides path directly).
-  // Safety net: if hook doesn't fire within 5s, fall back to filesystem discovery.
-  setTimeout(() => {
-    if (transcriptWatchers.has(sessionId)) return;
-    if (!sessionRegistry.hasSession(sessionId)) return;
-    logError('[Hooks] SessionStart hook not received, falling back to transcript discovery');
+  // Safety net: if hook doesn't fire, poll for a NEW transcript file.
+  // Claude creates its transcript file after startup, so we must wait for it.
+  const startupTime = Date.now();
+  const fallbackInterval = setInterval(() => {
+    if (transcriptWatchers.has(sessionId)) {
+      clearInterval(fallbackInterval);
+      transcriptFallbackTimers.delete(sessionId);
+      return;
+    }
+    if (!sessionRegistry.hasSession(sessionId)) {
+      clearInterval(fallbackInterval);
+      transcriptFallbackTimers.delete(sessionId);
+      return;
+    }
+    // Look for a transcript file created AFTER daemon startup
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
-      startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-      extractClaudeSessionId(transcriptPath, sessionId);
-    } else {
-      logError(
-        `[Hooks] Transcript discovery failed for session ${sessionId}. No transcript content available.`,
-      );
+      try {
+        const stat = fs.statSync(transcriptPath);
+        if (stat.mtimeMs >= startupTime) {
+          clearInterval(fallbackInterval);
+          transcriptFallbackTimers.delete(sessionId);
+          log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
+          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+          extractClaudeSessionId(transcriptPath, sessionId);
+          return;
+        }
+      } catch {
+        /* stat failed, retry */
+      }
     }
-  }, 5000);
+    // Give up after 30 seconds
+    if (Date.now() - startupTime > 30000) {
+      clearInterval(fallbackInterval);
+      transcriptFallbackTimers.delete(sessionId);
+      logError('[Hooks] Transcript fallback timed out. Using latest available file.');
+      if (transcriptPath) {
+        startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+        extractClaudeSessionId(transcriptPath, sessionId);
+      }
+    }
+  }, 2000);
+  transcriptFallbackTimers.set(sessionId, fallbackInterval);
 
   return ptySession;
 }
@@ -1725,10 +1782,12 @@ function startTranscriptWatcher(
   messageApi: MessageAPI,
   sendAndRecord: (message: ProtocolMessage) => void,
 ): void {
-  log(`Watching transcript: ${transcriptPath}`);
+  log(`[Transcript] Watching: ${transcriptPath}`);
+  log(`[Transcript] File exists: ${fs.existsSync(transcriptPath)}`);
 
   const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
     onTranscriptContent: (message) => {
+      log(`[Transcript] Delivering content (${message.type}) to clients`);
       sendAndRecord(message);
     },
   });
@@ -1741,9 +1800,13 @@ function startTranscriptWatcher(
     },
     {
       onAssistantMessage: (entry: AssistantEntry) => {
+        log(
+          `[Transcript] Assistant entry: ${entry.uuid?.slice(0, 8)} (${entry.message?.content?.length ?? 0} blocks)`,
+        );
         bridge.handleAssistantEntry(entry);
       },
       onUserMessage: (entry) => {
+        log(`[Transcript] User entry: ${entry.uuid?.slice(0, 8)}`);
         bridge.handleUserEntry(entry);
       },
       onError: (error) => {
@@ -1756,6 +1819,7 @@ function startTranscriptWatcher(
   watcher.start().catch((error) => {
     logError(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
   });
+  log(`[Transcript] Watcher started for session ${sessionId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2518,6 +2582,10 @@ async function cleanup(): Promise<void> {
     watcher.stop();
   }
   transcriptWatchers.clear();
+  for (const timer of transcriptFallbackTimers.values()) {
+    clearInterval(timer);
+  }
+  transcriptFallbackTimers.clear();
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();

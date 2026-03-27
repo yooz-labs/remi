@@ -255,4 +255,94 @@ describe('TranscriptWatcher', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(watcher.entryCount).toBe(1); // Only the initial entry
   });
+
+  test('waits for non-existent file then reads entries when it appears', async () => {
+    const filePath = path.join(TEMP_DIR, 'deferred.jsonl');
+    // File does NOT exist yet
+
+    const receivedUsers: UserEntry[] = [];
+    const receivedAssistants: AssistantEntry[] = [];
+
+    const watcher = new TranscriptWatcher(
+      { filePath, readExisting: true, pollIntervalMs: 50 },
+      {
+        onUserMessage: (entry) => receivedUsers.push(entry),
+        onAssistantMessage: (entry) => receivedAssistants.push(entry),
+      },
+    );
+    await watcher.start();
+    expect(watcher.isRunning).toBe(true);
+
+    // File appears after a short delay with initial content
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fs.writeFileSync(filePath, `${JSON.stringify(makeUserEntry('hello'))}\n`);
+
+    // Wait for poll to detect the file and read it
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(receivedUsers).toHaveLength(1);
+    expect(receivedUsers[0]?.message.content).toBe('hello');
+
+    // Append more content and verify it is also picked up
+    appendLine(filePath, makeAssistantEntry('response'));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(receivedAssistants).toHaveLength(1);
+
+    watcher.stop();
+  });
+
+  test('waits for non-existent file then detects new entries after initial read', async () => {
+    const filePath = path.join(TEMP_DIR, 'deferred-live.jsonl');
+    // File does NOT exist yet
+
+    const receivedAssistants: AssistantEntry[] = [];
+
+    const watcher = new TranscriptWatcher(
+      { filePath, readExisting: true, pollIntervalMs: 50 },
+      {
+        onAssistantMessage: (entry) => receivedAssistants.push(entry),
+      },
+    );
+    await watcher.start();
+
+    // Create the file with one entry
+    fs.writeFileSync(filePath, `${JSON.stringify(makeAssistantEntry('initial'))}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(receivedAssistants).toHaveLength(1);
+
+    // Append a second entry after the file is being watched
+    appendLine(filePath, makeAssistantEntry('follow-up'));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(receivedAssistants).toHaveLength(2);
+    expect(receivedAssistants[1]?.message.content[0]).toEqual({
+      type: 'text',
+      text: 'follow-up',
+    });
+
+    watcher.stop();
+  });
+
+  test('stop during waitForFile prevents watching from starting', async () => {
+    const filePath = path.join(TEMP_DIR, 'stop-wait.jsonl');
+    // File does NOT exist yet
+
+    const receivedUsers: UserEntry[] = [];
+
+    const watcher = new TranscriptWatcher(
+      { filePath, readExisting: true, pollIntervalMs: 50 },
+      {
+        onUserMessage: (entry) => receivedUsers.push(entry),
+      },
+    );
+    await watcher.start();
+    expect(watcher.isRunning).toBe(true);
+
+    // Stop before the file appears
+    watcher.stop();
+    expect(watcher.isRunning).toBe(false);
+
+    // Now create the file; watcher should not read it
+    fs.writeFileSync(filePath, `${JSON.stringify(makeUserEntry('should not see'))}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(receivedUsers).toHaveLength(0);
+  });
 });

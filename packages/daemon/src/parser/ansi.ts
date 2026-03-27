@@ -238,6 +238,30 @@ export function filterTerminalUI(text: string): string {
     /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻]\s+.{1,8}\s*$/,
     // Lines with only thinking symbols and spaces
     /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻\s]+$/,
+    // Remi daemon status line
+    /remi\s+:\d+\s+\w+/i,
+    // Effort indicator (with or without bullet)
+    /(high|medium|low)\s*·\s*\/effort/i,
+    // Stop hook output
+    /Ran\s+\d+\s+stop\s+hooks?\s/i,
+    /stop\s+hook\s+error/i,
+    // Plugin path fragments
+    /\.claude\/plugins\/marketplaces\//,
+    // Context percentage
+    /\d+%\s*conte?x?t?/i,
+    // Model info with context
+    /\[(Opus|Sonnet|Haiku)\s[\d.]+.*context\]/i,
+    // "no clients" / "starting" daemon status
+    /\|\s*no\s+clients\s*\|/i,
+    /\|\s*starting\s*\|/i,
+    // Permission denied from hooks
+    /Permission\s+denied\s*$/i,
+    // "You'v" and similar truncated fragments
+    /^You'v\s*$/,
+    // Not logged in messages
+    /Not\s+logged\s+in\s*·/i,
+    // Claude in Chrome subscription message
+    /Claude\s+in\s+Chrome\s+requires/i,
   ];
 
   for (const line of lines) {

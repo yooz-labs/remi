@@ -42,10 +42,10 @@ function QuickResponse({
       className={clsx(
         'rounded-full px-4 py-2 text-sm font-medium transition-colors',
         variant === 'default' &&
-          'bg-[--color-surface-elevated] text-[--color-text] hover:bg-[--color-surface-light]',
-        variant === 'primary' && 'bg-[--color-primary] text-white hover:bg-[--color-primary-dark]',
+          'bg-[var(--color-surface-elevated)] text-[var(--color-text)] hover:bg-[var(--color-surface-light)]',
+        variant === 'primary' && 'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)]',
         variant === 'danger' &&
-          'bg-[--color-error]/10 text-[--color-error] hover:bg-[--color-error]/20',
+          'bg-[var(--color-error)]/10 text-[var(--color-error)] hover:bg-[var(--color-error)]/20',
       )}
     >
       {label}
@@ -147,15 +147,15 @@ export function InputArea({
   return (
     <div
       className={clsx(
-        'border-t border-[--color-border] bg-[--color-surface]',
+        'border-t border-[var(--color-border)] bg-[var(--color-surface)]',
         'safe-area-bottom',
         className,
       )}
     >
       {/* Quick responses for questions */}
       {showQuickResponses && (
-        <div className="border-b border-[--color-border] px-4 py-3">
-          <p className="mb-2 text-sm text-[--color-text-secondary]">{question.prompt}</p>
+        <div className="border-b border-[var(--color-border)] px-4 py-3">
+          <p className="mb-2 text-sm text-[var(--color-text-secondary)]">{question.prompt}</p>
           <div className="flex flex-wrap gap-2">
             {question.type === 'yes_no' && (
               <>
@@ -199,10 +199,10 @@ export function InputArea({
 
       {/* Cancel button when agent is busy */}
       {isAgentBusy && onCancel && (
-        <div className="flex justify-center border-b border-[--color-border] py-2">
+        <div className="flex justify-center border-b border-[var(--color-border)] py-2">
           <button
             onClick={onCancel}
-            className="flex items-center gap-2 rounded-full bg-[--color-error]/10 px-4 py-1.5 text-sm text-[--color-error] transition-colors hover:bg-[--color-error]/20"
+            className="flex items-center gap-2 rounded-full bg-[var(--color-error)]/10 px-4 py-1.5 text-sm text-[var(--color-error)] transition-colors hover:bg-[var(--color-error)]/20"
           >
             <StopCircle className="size-4" />
             Stop
@@ -223,10 +223,10 @@ export function InputArea({
             disabled={disabled}
             rows={1}
             className={clsx(
-              'w-full resize-none rounded-2xl bg-[--color-surface-light] px-4 py-2.5',
-              'text-sm text-[--color-text] placeholder:text-[--color-text-muted]',
+              'w-full resize-none rounded-2xl bg-[var(--color-surface-light)] px-4 py-2.5',
+              'text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
               'outline-none transition-colors',
-              'focus:ring-2 focus:ring-[--color-primary]/50',
+              'focus:ring-2 focus:ring-[var(--color-primary)]/50',
               disabled && 'cursor-not-allowed opacity-50',
             )}
           />
@@ -239,8 +239,8 @@ export function InputArea({
           className={clsx(
             'rounded-full p-2.5 transition-all',
             value.trim()
-              ? 'bg-[--color-primary] text-white hover:bg-[--color-primary-dark] active:scale-95'
-              : 'text-[--color-text-muted]',
+              ? 'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)] active:scale-95'
+              : 'text-[var(--color-text-muted)]',
             disabled && 'cursor-not-allowed opacity-50',
           )}
           aria-label="Send message"
