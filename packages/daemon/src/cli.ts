@@ -187,7 +187,12 @@ function installStatusLine(): void {
     const claudeSettingsFile = path.join(os.homedir(), '.claude', 'settings.json');
     let settings: Record<string, unknown> = {};
     if (fs.existsSync(claudeSettingsFile)) {
-      settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
+      try {
+        settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
+      } catch {
+        console.error(`[warn] Claude settings file is corrupted: ${claudeSettingsFile}`);
+        return;
+      }
     }
     if (!settings['statusLine']) {
       fs.mkdirSync(path.dirname(claudeSettingsFile), { recursive: true });
@@ -195,7 +200,8 @@ function installStatusLine(): void {
       fs.writeFileSync(claudeSettingsFile, `${JSON.stringify(settings, null, 2)}\n`);
     }
   } catch (err) {
-    writeToLog(`[warn] Failed to install status line: ${err}`);
+    // console.error works in both wrapper and daemon mode
+    console.error(`[warn] Failed to install status line: ${err}`);
   }
 }
 
