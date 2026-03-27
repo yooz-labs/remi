@@ -1668,11 +1668,18 @@ async function createNewSession(
         }
       },
       onData: (output: string) => {
-        // Feed PTY output into OutputProcessor for real-time structured streaming
-        outputProcessor.process(output);
+        try {
+          outputProcessor.process(output);
+        } catch (err) {
+          logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
+        }
       },
       onExit: (code: number | null) => {
-        outputProcessor.flush();
+        try {
+          outputProcessor.flush();
+        } catch (err) {
+          logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
+        }
         log(`PTY ${ptySession.id} exited with code ${code}`);
         sessionRegistry.handlePTYExit(sessionId);
         sessionStore.markExited(sessionId, code);
