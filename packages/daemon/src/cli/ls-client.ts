@@ -384,6 +384,9 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
           sessions: r.sessions,
         });
       }
+    } else {
+      const reason = er.reason instanceof Error ? er.reason.message : String(er.reason);
+      console.error(`\x1b[2m[ls] Failed to query discovered host: ${reason}\x1b[0m`);
     }
   }
 

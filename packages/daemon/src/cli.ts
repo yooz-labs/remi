@@ -1092,10 +1092,9 @@ if (cliSubcommand === 'attach') {
             const hostEndpoints = findEndpointsByHostname(discovery, targetHostname);
 
             if (hostEndpoints.length > 0) {
-              // Query all ports on this host (the host may have multiple remi instances)
-              const allHostPorts = [...new Set(hostEndpoints.map((e) => e.port))].sort(
-                (a, b) => a - b,
-              );
+              // Query all ports on this host, not just the ones discovery found
+              const { getDefaultPortRange } = await import('./cli/ls-client.ts');
+              const allHostPorts = getDefaultPortRange();
               const remoteHost = hostEndpoints[0]?.host ?? targetHostname;
               const remoteHostname = hostEndpoints[0]?.hostname ?? targetHostname;
 
