@@ -822,10 +822,9 @@ if (cliSubcommand === 'ls') {
     }
   } else if (cliHost) {
     // Host without port: probe the standard port range on that host
-    const { runHostLs } = await import('./cli/ls-client.ts');
+    const { runHostLs, getDefaultPortRange } = await import('./cli/ls-client.ts');
     try {
-      const ports = Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
-      await runHostLs({ host: cliHost, ports });
+      await runHostLs({ host: cliHost, ports: getDefaultPortRange() });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -1093,10 +1092,9 @@ if (cliSubcommand === 'attach') {
             const hostEndpoints = findEndpointsByHostname(discovery, targetHostname);
 
             if (hostEndpoints.length > 0) {
-              // Query all ports on this host (the host may have multiple remi instances)
-              const allHostPorts = [...new Set(hostEndpoints.map((e) => e.port))].sort(
-                (a, b) => a - b,
-              );
+              // Query all ports on this host, not just the ones discovery found
+              const { getDefaultPortRange } = await import('./cli/ls-client.ts');
+              const allHostPorts = getDefaultPortRange();
               const remoteHost = hostEndpoints[0]?.host ?? targetHostname;
               const remoteHostname = hostEndpoints[0]?.hostname ?? targetHostname;
 
