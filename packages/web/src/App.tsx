@@ -394,13 +394,15 @@ function App() {
             // Only show resume for dead sessions (completed/orphaned), never for idle/active
             const isDead = ds.status !== 'active' && ds.status !== 'idle';
             const showResume = isDead && !ds.canAttach && ds.canResume;
+            // If this session is the one we're actively connected to, keep it connected
+            const isActiveSession = ds.sessionId === activeSessionIdRef.current;
             return {
               id: ds.sessionId as UUID,
               name: ds.name || ds.projectPath.split('/').pop() || 'Session',
               createdAt: ds.lastActivity,
               lastActiveAt: ds.lastActivity,
               status: mapSessionStatus(ds.status),
-              connectionStatus: ds.canAttach ? ('connected' as const) : ('disconnected' as const),
+              connectionStatus: (isActiveSession || ds.canAttach) ? ('connected' as const) : ('disconnected' as const),
               unreadCount: 0,
               cwd: ds.projectPath,
               preview: cleanPreview.slice(0, 100),
