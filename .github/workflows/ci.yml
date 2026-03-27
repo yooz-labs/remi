@@ -159,18 +159,27 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
-          # Merge main; if version files conflict, take ours since bump overwrites them
-          git merge origin/main --no-edit || {
+          if git merge origin/main --no-edit; then
+            echo "Merge succeeded cleanly"
+          else
+            # Verify this is actually a merge conflict, not a different failure
+            if ! git diff --name-only --diff-filter=U | grep -q .; then
+              echo "Error: merge failed but no conflicts detected. Aborting." >&2
+              git merge --abort || true
+              exit 1
+            fi
+            echo "Resolving version file conflicts (bump-version.sh will overwrite)..."
             git checkout --ours package.json packages/daemon/src/cli.ts
             git add package.json packages/daemon/src/cli.ts
             # Fail if there are still unresolved conflicts beyond version files
             if git diff --name-only --diff-filter=U | grep -q .; then
-              echo "Error: unresolved merge conflicts beyond version files" >&2
-              git diff --name-only --diff-filter=U
+              echo "Error: unresolved merge conflicts beyond version files:" >&2
+              git diff --name-only --diff-filter=U >&2
+              git merge --abort || true
               exit 1
             fi
             git commit --no-edit
-          }
+          fi
 
       - name: Bump to next dev version
         run: |

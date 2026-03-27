@@ -370,8 +370,9 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
   const hostMap = groupEndpointsByHost(discovery.endpoints);
 
   const allPorts = getDefaultPortRange();
+  const hostEntries = [...hostMap.entries()];
   const endpointResults = await Promise.allSettled(
-    [...hostMap.entries()].map(async ([host, endpoint]) => {
+    hostEntries.map(async ([host, endpoint]) => {
       const portResults = await queryMultiplePorts({
         host,
         ports: allPorts,
@@ -381,8 +382,9 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
       return { endpoint, portResults };
     }),
   );
-  for (const er of endpointResults) {
-    if (er.status === 'fulfilled') {
+  for (let i = 0; i < endpointResults.length; i++) {
+    const er = endpointResults[i];
+    if (er?.status === 'fulfilled') {
       const ep = er.value.endpoint;
       for (const r of er.value.portResults) {
         results.push({
@@ -395,9 +397,12 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
           sessions: r.sessions,
         });
       }
-    } else {
+    } else if (er?.status === 'rejected') {
+      const [failedHost] = hostEntries[i] ?? [];
       const reason = er.reason instanceof Error ? er.reason.message : String(er.reason);
-      console.error(`\x1b[2m[ls] Failed to query discovered host: ${reason}\x1b[0m`);
+      console.error(
+        `\x1b[2m[ls] Failed to query ${failedHost ?? 'unknown host'}: ${reason}\x1b[0m`,
+      );
     }
   }
 
