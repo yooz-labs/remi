@@ -1617,7 +1617,7 @@ async function createNewSession(
       args: extraArgs,
       cwd: workingDirectory,
       size: termSize,
-      env: passThrough ? { REMI_PORT: String(remiStatus.wsPort) } : {},
+      env: { REMI_PORT: String(remiStatus.wsPort) },
     },
     {
       onRawData: (data: Uint8Array) => {
@@ -2663,6 +2663,7 @@ if (cliDaemonMode) {
   primarySessionId = sessionId;
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
+  installStatusLine();
 
   // Start hook server for Claude Code event detection (port 0 = OS-assigned)
   try {
