@@ -172,14 +172,31 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "Waiting for @yooz-labs/remi@$VERSION on npm..."
+          PLATFORMS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
+          echo "Waiting for all platform tarballs on npm..."
           for i in $(seq 1 30); do
-            if curl -sf "https://registry.npmjs.org/@yooz-labs/remi-darwin-arm64/$VERSION" > /dev/null 2>&1; then
-              echo "Available after ${i}0 seconds"
+            ALL_READY=true
+            for PLAT in "${PLATFORMS[@]}"; do
+              URL="https://registry.npmjs.org/@yooz-labs/remi-${PLAT}/-/remi-${PLAT}-${VERSION}.tgz"
+              if ! curl -sfI "$URL" > /dev/null 2>&1; then
+                ALL_READY=false
+                break
+              fi
+            done
+            if [[ "$ALL_READY" == true ]]; then
+              echo "All packages available after ${i}0 seconds"
               break
             fi
             if [[ $i -eq 30 ]]; then
-              echo "ERROR: Timed out waiting for npm" >&2
+              echo "ERROR: Timed out waiting for npm packages" >&2
+              for PLAT in "${PLATFORMS[@]}"; do
+                URL="https://registry.npmjs.org/@yooz-labs/remi-${PLAT}/-/remi-${PLAT}-${VERSION}.tgz"
+                if curl -sfI "$URL" > /dev/null 2>&1; then
+                  echo "  $PLAT: ready"
+                else
+                  echo "  $PLAT: NOT READY"
+                fi
+              done
               exit 1
             fi
             sleep 10
