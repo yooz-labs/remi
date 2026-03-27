@@ -822,10 +822,9 @@ if (cliSubcommand === 'ls') {
     }
   } else if (cliHost) {
     // Host without port: probe the standard port range on that host
-    const { runHostLs } = await import('./cli/ls-client.ts');
+    const { runHostLs, getDefaultPortRange } = await import('./cli/ls-client.ts');
     try {
-      const ports = Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
-      await runHostLs({ host: cliHost, ports });
+      await runHostLs({ host: cliHost, ports: getDefaultPortRange() });
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);

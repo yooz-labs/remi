@@ -15,6 +15,7 @@ import {
 } from '../session/session-registry-file.ts';
 import { performAuthHandshake } from './auth-helper.ts';
 import {
+  type DiscoveredEndpoint,
   FETCH_SESSIONS_TIMEOUT_MS,
   MDNS_BROWSE_TIMEOUT_MS,
   discoverNetworkDaemons,
@@ -26,8 +27,8 @@ function getTerminalWidth(): number {
   return process.stdout.columns ?? 100;
 }
 
-/** Generate the default port range array (18765-18774). */
-function getDefaultPortRange(): number[] {
+/** Generate the default port range array (18765-18784). */
+export function getDefaultPortRange(): number[] {
   return Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
 }
 
@@ -348,12 +349,21 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
     logLabel: 'ls',
   });
 
-  // Query all discovered endpoints in parallel
+  // Group discovered endpoints by unique host so we scan all ports on each host,
+  // not just the port that discovery happened to find. This matches --host behavior.
+  const hostMap = new Map<string, DiscoveredEndpoint>();
+  for (const endpoint of discovery.endpoints) {
+    if (!hostMap.has(endpoint.host)) {
+      hostMap.set(endpoint.host, endpoint);
+    }
+  }
+
+  const allPorts = getDefaultPortRange();
   const endpointResults = await Promise.allSettled(
-    discovery.endpoints.map(async (endpoint) => {
+    [...hostMap.entries()].map(async ([host, endpoint]) => {
       const portResults = await queryMultiplePorts({
-        host: endpoint.host,
-        ports: [endpoint.port],
+        host,
+        ports: allPorts,
         timeoutMs: timeout,
         logLabel: 'ls',
       });
@@ -362,14 +372,14 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
   );
   for (const er of endpointResults) {
     if (er.status === 'fulfilled') {
+      const ep = er.value.endpoint;
       for (const r of er.value.portResults) {
         results.push({
           daemon: {
-            name:
-              er.value.endpoint.name ?? `${er.value.endpoint.source}:${er.value.endpoint.hostname}`,
-            host: er.value.endpoint.host,
-            port: er.value.endpoint.port,
-            hostname: er.value.endpoint.hostname,
+            name: ep.name ?? `${ep.source}:${ep.hostname}`,
+            host: ep.host,
+            port: r.port,
+            hostname: ep.hostname,
           },
           sessions: r.sessions,
         });
