@@ -35,8 +35,8 @@ export function useKeyboard(): KeyboardState {
     hideListener.catch((err) => console.warn('[useKeyboard] hide listener failed:', err));
 
     return () => {
-      showListener.then((h) => h.remove()).catch(() => {});
-      hideListener.then((h) => h.remove()).catch(() => {});
+      showListener.then((h) => h.remove()).catch((err) => console.warn('[useKeyboard] cleanup show:', err));
+      hideListener.then((h) => h.remove()).catch((err) => console.warn('[useKeyboard] cleanup hide:', err));
     };
   }, []);
 
