@@ -240,8 +240,8 @@ export function filterTerminalUI(text: string): string {
     /^[+*✱✲✳✴✵✶✷✸✹✺·✢✻\s]+$/,
     // Remi daemon status line
     /remi\s+:\d+\s+\w+/i,
-    // Effort indicator
-    /●\s*(high|medium|low)\s*·\s*\/effort/i,
+    // Effort indicator (with or without bullet)
+    /(high|medium|low)\s*·\s*\/effort/i,
     // Stop hook output
     /Ran\s+\d+\s+stop\s+hooks?\s/i,
     /stop\s+hook\s+error/i,

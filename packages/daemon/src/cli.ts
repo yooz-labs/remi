@@ -1551,18 +1551,8 @@ async function createNewSession(
     },
   );
 
-  // Real-time PTY output parser: converts terminal output into structured messages
-  const outputProcessor = new OutputProcessor(
-    { sessionId },
-    {
-      onMessage: (message) => {
-        messageApi.handleMessage(message);
-      },
-      onMessageUpdate: (messageId, content, tool) => {
-        messageApi.handleMessageUpdate(messageId, content, tool);
-      },
-    },
-  );
+  // PTY output parser: status-only mode (content comes from transcript for clean results)
+  const outputProcessor = new OutputProcessor({ sessionId, streamStatusOnly: true }, {});
 
   // Hook-based event bridge for status/question detection
   if (hookServer) {
