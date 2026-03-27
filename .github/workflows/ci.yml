@@ -86,6 +86,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      released: ${{ steps.check.outputs.is_dev }}
     steps:
       - name: Generate App Token
         id: app-token
@@ -124,3 +126,55 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bun install --frozen-lockfile
           ./scripts/bump-version.sh --push --force stable
+
+  # After a stable release on main, merge main back into develop and
+  # bump to the next patch dev version (e.g. 0.4.13 -> 0.4.14-dev.1).
+  sync-develop:
+    name: Sync Develop After Release
+    needs: [auto-release]
+    if: needs.auto-release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Merge main into develop
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          # Merge main; if version files conflict, take ours since bump overwrites them
+          git merge origin/main --no-edit || {
+            git checkout --ours package.json packages/daemon/src/cli.ts
+            git add package.json packages/daemon/src/cli.ts
+            # Fail if there are still unresolved conflicts beyond version files
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "Error: unresolved merge conflicts beyond version files" >&2
+              git diff --name-only --diff-filter=U
+              exit 1
+            fi
+            git commit --no-edit
+          }
+
+      - name: Bump to next dev version
+        run: |
+          bun install --frozen-lockfile
+          ./scripts/bump-version.sh dev
+          # Push branch only (no tag to avoid triggering a dev release)
+          git push origin develop
