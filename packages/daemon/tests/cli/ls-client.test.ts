@@ -463,7 +463,8 @@ describe('getDefaultPortRange', () => {
   test('returns sequential ports with no gaps', () => {
     const ports = getDefaultPortRange();
     for (let i = 1; i < ports.length; i++) {
-      expect(ports[i]).toBe(ports[i - 1]! + 1);
+      const prev = ports[i - 1] ?? 0;
+      expect(ports[i]).toBe(prev + 1);
     }
   });
 });
