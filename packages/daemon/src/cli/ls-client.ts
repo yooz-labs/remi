@@ -32,6 +32,22 @@ export function getDefaultPortRange(): number[] {
   return Array.from({ length: DEFAULT_PORT_RANGE }, (_, i) => DEFAULT_BASE_PORT + i);
 }
 
+/**
+ * Deduplicate discovered endpoints by host, keeping the first endpoint per unique host IP.
+ * This allows scanning all ports on each host rather than just the discovered port.
+ */
+export function groupEndpointsByHost(
+  endpoints: readonly DiscoveredEndpoint[],
+): Map<string, DiscoveredEndpoint> {
+  const hostMap = new Map<string, DiscoveredEndpoint>();
+  for (const endpoint of endpoints) {
+    if (!hostMap.has(endpoint.host)) {
+      hostMap.set(endpoint.host, endpoint);
+    }
+  }
+  return hostMap;
+}
+
 /** Minimum name column width to keep output readable even on very narrow terminals. */
 const MIN_NAME_WIDTH = 20;
 
@@ -351,12 +367,7 @@ export async function runNetworkLs(opts: NetworkLsOptions): Promise<void> {
 
   // Group discovered endpoints by unique host so we scan all ports on each host,
   // not just the port that discovery happened to find. This matches --host behavior.
-  const hostMap = new Map<string, DiscoveredEndpoint>();
-  for (const endpoint of discovery.endpoints) {
-    if (!hostMap.has(endpoint.host)) {
-      hostMap.set(endpoint.host, endpoint);
-    }
-  }
+  const hostMap = groupEndpointsByHost(discovery.endpoints);
 
   const allPorts = getDefaultPortRange();
   const endpointResults = await Promise.allSettled(
