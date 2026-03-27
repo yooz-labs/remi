@@ -1400,6 +1400,7 @@ const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids
 const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
+const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 const sessionStore = new SessionStore();
 
 const orphanTimeoutMs =
@@ -1717,10 +1718,12 @@ async function createNewSession(
   const fallbackInterval = setInterval(() => {
     if (transcriptWatchers.has(sessionId)) {
       clearInterval(fallbackInterval);
+      transcriptFallbackTimers.delete(sessionId);
       return;
     }
     if (!sessionRegistry.hasSession(sessionId)) {
       clearInterval(fallbackInterval);
+      transcriptFallbackTimers.delete(sessionId);
       return;
     }
     // Look for a transcript file created AFTER daemon startup
@@ -1730,6 +1733,7 @@ async function createNewSession(
         const stat = fs.statSync(transcriptPath);
         if (stat.mtimeMs >= startupTime) {
           clearInterval(fallbackInterval);
+          transcriptFallbackTimers.delete(sessionId);
           log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
           startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
           extractClaudeSessionId(transcriptPath, sessionId);
@@ -1742,6 +1746,7 @@ async function createNewSession(
     // Give up after 30 seconds
     if (Date.now() - startupTime > 30000) {
       clearInterval(fallbackInterval);
+      transcriptFallbackTimers.delete(sessionId);
       logError('[Hooks] Transcript fallback timed out. Using latest available file.');
       if (transcriptPath) {
         startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
@@ -1749,6 +1754,7 @@ async function createNewSession(
       }
     }
   }, 2000);
+  transcriptFallbackTimers.set(sessionId, fallbackInterval);
 
   return ptySession;
 }
@@ -2576,6 +2582,10 @@ async function cleanup(): Promise<void> {
     watcher.stop();
   }
   transcriptWatchers.clear();
+  for (const timer of transcriptFallbackTimers.values()) {
+    clearInterval(timer);
+  }
+  transcriptFallbackTimers.clear();
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();

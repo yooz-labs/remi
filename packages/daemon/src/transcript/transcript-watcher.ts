@@ -203,8 +203,13 @@ export class TranscriptWatcher {
           onFileAppeared();
         }
       }, this.config.pollIntervalMs);
-    } catch {
+    } catch (watchErr) {
       // If directory watching fails, fall back to polling only
+      this.events.onError?.(
+        new Error(
+          `fs.watch on directory failed, using polling: ${watchErr instanceof Error ? watchErr.message : String(watchErr)}`,
+        ),
+      );
       this.pollTimer = setInterval(() => {
         if (fs.existsSync(this.config.filePath)) {
           if (this.pollTimer) {
