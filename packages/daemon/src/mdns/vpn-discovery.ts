@@ -16,6 +16,7 @@
 
 import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-registry-file.ts';
 
 export interface VpnPeer {
   /** Hostname of the peer machine */
@@ -31,7 +32,7 @@ export interface VpnPeer {
 export interface VpnDiscoveryOptions {
   /** Base port to probe for remi daemons. Default: 18765 */
   readonly port?: number | undefined;
-  /** Number of ports to probe starting from base port. Default: 10 */
+  /** Number of ports to probe starting from base port. Default: DEFAULT_PORT_RANGE */
   readonly portRange?: number | undefined;
   /** Timeout per probe in ms. Default: 2000 */
   readonly probeTimeoutMs?: number | undefined;
@@ -46,8 +47,8 @@ export interface VpnDiscoveryOptions {
 export async function discoverVpnPeers(
   opts?: VpnDiscoveryOptions,
 ): Promise<{ peer: VpnPeer; host: string; port: number }[]> {
-  const basePort = opts?.port ?? 18765;
-  const portRange = opts?.portRange ?? 10;
+  const basePort = opts?.port ?? DEFAULT_BASE_PORT;
+  const portRange = opts?.portRange ?? DEFAULT_PORT_RANGE;
   const probeTimeout = opts?.probeTimeoutMs ?? 2000;
 
   const peers = getAllVpnPeers();

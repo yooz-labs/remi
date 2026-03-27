@@ -285,9 +285,9 @@ export async function discoverNetworkDaemons(
   const myHostname = os.hostname();
   const localAddrs = getLocalAddresses(myHostname);
 
-  // Convert mDNS daemons to endpoints, filtering out self
+  // Convert mDNS daemons to endpoints, filtering out self (any local address, any port)
   const mdnsEndpoints: DiscoveredEndpoint[] = daemons
-    .filter((d) => !(d.port === defaultPort && localAddrs.has(d.host)))
+    .filter((d) => !localAddrs.has(d.host))
     .map((d) => ({
       host: d.host,
       port: d.port,

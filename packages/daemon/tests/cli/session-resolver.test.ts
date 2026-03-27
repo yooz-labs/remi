@@ -12,6 +12,7 @@ import {
   type PortQueryResult,
   classifyQueryError,
   findEndpointsByHostname,
+  getLocalAddresses,
   resolveSession,
 } from '../../src/cli/session-resolver.ts';
 
@@ -329,5 +330,35 @@ describe('findEndpointsByHostname', () => {
     const empty: NetworkDiscoveryResult = { endpoints: [] };
     const matches = findEndpointsByHostname(empty, 'macbook');
     expect(matches).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLocalAddresses (mDNS self-filter foundation)
+// ---------------------------------------------------------------------------
+
+describe('getLocalAddresses', () => {
+  test('includes loopback addresses', () => {
+    const addrs = getLocalAddresses('test-host');
+    expect(addrs.has('127.0.0.1')).toBe(true);
+    expect(addrs.has('::1')).toBe(true);
+    expect(addrs.has('localhost')).toBe(true);
+  });
+
+  test('includes the provided hostname', () => {
+    const addrs = getLocalAddresses('my-machine');
+    expect(addrs.has('my-machine')).toBe(true);
+  });
+
+  test('self-filter should use address only, not port', () => {
+    // The mDNS self-filter uses localAddrs.has(d.host) without port checks.
+    // Verify that a local address is filtered regardless of what port a daemon runs on.
+    const addrs = getLocalAddresses('test-host');
+    // If 127.0.0.1 is in the set, any daemon at 127.0.0.1 (any port) should be filtered.
+    // This tests the contract that discoverNetworkDaemons relies on.
+    expect(addrs.has('127.0.0.1')).toBe(true);
+    // The set contains IPs, not host:port pairs, confirming port-independent filtering.
+    expect(addrs.has('127.0.0.1:18765')).toBe(false);
+    expect(addrs.has('127.0.0.1:18770')).toBe(false);
   });
 });

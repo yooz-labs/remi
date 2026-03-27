@@ -13,11 +13,14 @@ import {
   fetchSessions,
   formatAge,
   formatDuration,
+  getDefaultPortRange,
   getLocalAddresses,
+  groupEndpointsByHost,
   parseHostPort,
   parseRemoteTarget,
   runLsClient,
 } from '../../src/cli/ls-client.ts';
+import type { DiscoveredEndpoint } from '../../src/cli/session-resolver.ts';
 
 const TEST_PORT = 9871;
 
@@ -442,5 +445,69 @@ describe('formatDuration', () => {
   test('formats exact days without hours', () => {
     const ts = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     expect(formatDuration(ts)).toBe('2d');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getDefaultPortRange
+// ---------------------------------------------------------------------------
+
+describe('getDefaultPortRange', () => {
+  test('returns 20 ports starting at 18765', () => {
+    const ports = getDefaultPortRange();
+    expect(ports).toHaveLength(20);
+    expect(ports[0]).toBe(18765);
+    expect(ports[19]).toBe(18784);
+  });
+
+  test('returns sequential ports with no gaps', () => {
+    const ports = getDefaultPortRange();
+    for (let i = 1; i < ports.length; i++) {
+      const prev = ports[i - 1] ?? 0;
+      expect(ports[i]).toBe(prev + 1);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupEndpointsByHost
+// ---------------------------------------------------------------------------
+
+describe('groupEndpointsByHost', () => {
+  function ep(host: string, port: number, source: 'mdns' | 'vpn' = 'mdns'): DiscoveredEndpoint {
+    return { host, port, hostname: `host-${host}`, source };
+  }
+
+  test('returns empty map for empty input', () => {
+    expect(groupEndpointsByHost([])).toEqual(new Map());
+  });
+
+  test('keeps one endpoint per unique host', () => {
+    const endpoints = [ep('192.168.1.1', 18765), ep('192.168.1.2', 18770)];
+    const result = groupEndpointsByHost(endpoints);
+    expect(result.size).toBe(2);
+    expect(result.get('192.168.1.1')?.port).toBe(18765);
+    expect(result.get('192.168.1.2')?.port).toBe(18770);
+  });
+
+  test('deduplicates same host on different ports, keeping the first', () => {
+    const endpoints = [
+      ep('192.168.1.1', 18765, 'mdns'),
+      ep('192.168.1.1', 18770, 'vpn'),
+      ep('192.168.1.1', 18775, 'mdns'),
+    ];
+    const result = groupEndpointsByHost(endpoints);
+    expect(result.size).toBe(1);
+    expect(result.get('192.168.1.1')?.port).toBe(18765);
+    expect(result.get('192.168.1.1')?.source).toBe('mdns');
+  });
+
+  test('treats different IPs for same hostname as separate hosts', () => {
+    const endpoints = [
+      { host: '192.168.1.1', port: 18765, hostname: 'myhost', source: 'mdns' as const },
+      { host: '100.79.39.98', port: 18765, hostname: 'myhost', source: 'vpn' as const },
+    ];
+    const result = groupEndpointsByHost(endpoints);
+    expect(result.size).toBe(2);
   });
 });
