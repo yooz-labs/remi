@@ -266,6 +266,7 @@ import {
 } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
+import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
@@ -1550,6 +1551,19 @@ async function createNewSession(
     },
   );
 
+  // Real-time PTY output parser: converts terminal output into structured messages
+  const outputProcessor = new OutputProcessor(
+    { sessionId },
+    {
+      onMessage: (message) => {
+        messageApi.handleMessage(message);
+      },
+      onMessageUpdate: (messageId, content, tool) => {
+        messageApi.handleMessageUpdate(messageId, content, tool);
+      },
+    },
+  );
+
   // Hook-based event bridge for status/question detection
   if (hookServer) {
     // Track the Claude session ID so we can filter hook events by session.
@@ -1653,10 +1667,12 @@ async function createNewSession(
           sendMessage(sessionId, msg);
         }
       },
-      onData: (_output: string) => {
-        // No PTY output parsing; hooks handle status/questions, transcript handles content
+      onData: (output: string) => {
+        // Feed PTY output into OutputProcessor for real-time structured streaming
+        outputProcessor.process(output);
       },
       onExit: (code: number | null) => {
+        outputProcessor.flush();
         log(`PTY ${ptySession.id} exited with code ${code}`);
         sessionRegistry.handlePTYExit(sessionId);
         sessionStore.markExited(sessionId, code);
