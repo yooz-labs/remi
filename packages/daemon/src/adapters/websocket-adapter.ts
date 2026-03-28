@@ -99,6 +99,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
           platformData: {
             directory: connection.connectionDirectory,
             resumeSessionId: connection.connectionResumeSessionId,
+            mode: connection.connectionMode,
           },
         };
         this.events.onConnect?.(connection.id, metadata);

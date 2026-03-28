@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.14'; // REMI_COMPILED_VERSION
+      return '0.4.15-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.14'; // REMI_COMPILED_VERSION
+    return '0.4.15-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -187,7 +187,12 @@ function installStatusLine(): void {
     const claudeSettingsFile = path.join(os.homedir(), '.claude', 'settings.json');
     let settings: Record<string, unknown> = {};
     if (fs.existsSync(claudeSettingsFile)) {
-      settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
+      try {
+        settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
+      } catch {
+        console.error(`[warn] Claude settings file is corrupted: ${claudeSettingsFile}`);
+        return;
+      }
     }
     if (!settings['statusLine']) {
       fs.mkdirSync(path.dirname(claudeSettingsFile), { recursive: true });
@@ -195,7 +200,8 @@ function installStatusLine(): void {
       fs.writeFileSync(claudeSettingsFile, `${JSON.stringify(settings, null, 2)}\n`);
     }
   } catch (err) {
-    writeToLog(`[warn] Failed to install status line: ${err}`);
+    // console.error works in both wrapper and daemon mode
+    console.error(`[warn] Failed to install status line: ${err}`);
   }
 }
 
@@ -1617,7 +1623,7 @@ async function createNewSession(
       args: extraArgs,
       cwd: workingDirectory,
       size: termSize,
-      env: passThrough ? { REMI_PORT: String(remiStatus.wsPort) } : {},
+      env: { REMI_PORT: String(remiStatus.wsPort) },
     },
     {
       onRawData: (data: Uint8Array) => {
@@ -1897,33 +1903,39 @@ const sharedEvents = {
     }
 
     // Try to attach to the primary (only) session
+    const isQueryMode = metadata.platformData?.['mode'] === 'query';
     if (primarySessionId) {
-      const targetSession = primarySessionId;
-      const result = sessionRegistry.attachConnection(targetSession, connectionId);
-      if (result.success) {
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', targetSession, {
-            isResume: result.replayMessages.length > 0,
-            replayCount: result.replayMessages.length,
-            nextBulletId: result.nextBulletId,
-          }),
-        );
-        if (result.replayMessages.length > 0) {
+      // Only auto-attach if the client wants to attach (not a utility client like ls/kill)
+      if (!isQueryMode) {
+        const targetSession = primarySessionId;
+        const result = sessionRegistry.attachConnection(targetSession, connectionId);
+        if (result.success) {
           sendToConnection(
             connectionId,
-            createReplayBatch(targetSession, result.replayMessages, true),
+            createHelloAck('1.0.0', targetSession, {
+              isResume: result.replayMessages.length > 0,
+              replayCount: result.replayMessages.length,
+              nextBulletId: result.nextBulletId,
+            }),
           );
+          if (result.replayMessages.length > 0) {
+            sendToConnection(
+              connectionId,
+              createReplayBatch(targetSession, result.replayMessages, true),
+            );
+          }
+          cancelOrphanTimeout();
+          log(`Attached connection ${connectionId} to session ${targetSession}`);
+          return;
         }
-        cancelOrphanTimeout();
-        log(`Attached connection ${connectionId} to session ${targetSession}`);
-        return;
       }
 
-      // Attach failed (session busy); send hello_ack without attach so
-      // utility clients (ls, kill) can still send requests
+      // Query mode or attach failed (session busy); send hello_ack without attach
+      // so utility clients (ls, kill) can still send requests
       sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
-      log(`Connection ${connectionId} connected without attach (session busy or query client)`);
+      log(
+        `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
+      );
       return;
     }
 
@@ -2663,6 +2675,7 @@ if (cliDaemonMode) {
   primarySessionId = sessionId;
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
+  installStatusLine();
 
   // Start hook server for Claude Code event detection (port 0 = OS-assigned)
   try {

@@ -129,6 +129,7 @@ export class Connection {
   private sessionId: UUID | null = null;
   private directory: string | null = null;
   private resumeSessionId: UUID | null = null;
+  private _mode: 'query' | undefined = undefined;
 
   private readonly ws: WebSocket;
   private readonly config: Required<ConnectionConfig> & {
@@ -195,6 +196,11 @@ export class Connection {
   /** Get resume session ID (null if not resuming) */
   get connectionResumeSessionId(): UUID | null {
     return this.resumeSessionId;
+  }
+
+  /** Connection mode: 'query' for utility clients that should not auto-attach */
+  get connectionMode(): 'query' | undefined {
+    return this._mode;
   }
 
   /** Check if connection is active */
@@ -357,6 +363,7 @@ export class Connection {
     this.sessionId = this.id;
     this.directory = message.directory ?? null;
     this.resumeSessionId = message.resumeSessionId ?? null;
+    this._mode = message.mode === 'query' ? 'query' : undefined;
     this.state = 'connected';
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
