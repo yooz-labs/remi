@@ -65,7 +65,7 @@ export async function fetchRecentDirectories(
 
     function sendHello(): void {
       const clientId = generateId();
-      ws.send(serialize(createHello(clientId, '1.0.0')));
+      ws.send(serialize(createHello(clientId, '1.0.0', undefined, undefined, undefined, 'query')));
     }
 
     function handleMessage(msg: ProtocolMessage): void {

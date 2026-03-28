@@ -217,7 +217,7 @@ export async function fetchSessions(
 
     function sendHelloAndRequestList(): void {
       const clientId = generateId();
-      ws.send(serialize(createHello(clientId, '1.0.0')));
+      ws.send(serialize(createHello(clientId, '1.0.0', undefined, undefined, undefined, 'query')));
     }
 
     let sentListRequest = false;

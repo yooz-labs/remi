@@ -1039,6 +1039,26 @@ describe('Message factory functions', () => {
       expect(msg.resumeSessionId).toBe(sessionId);
       expect(msg.lastReceivedIndex).toBe(10);
     });
+
+    test('includes mode when provided', () => {
+      const msg = createHello('client-1', '1.0.0', undefined, undefined, undefined, 'query');
+      expect(msg.mode).toBe('query');
+    });
+
+    test('omits mode when not provided', () => {
+      const msg = createHello('client-1', '1.0.0');
+      expect(msg.mode).toBeUndefined();
+      expect('mode' in msg).toBe(false);
+    });
+
+    test('mode survives serialize/deserialize round-trip', () => {
+      const msg = createHello('client-1', '1.0.0', undefined, undefined, undefined, 'query');
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('hello');
+      expect((deserialized as typeof msg).mode).toBe('query');
+    });
   });
 
   describe('createHelloAck() with resume info', () => {

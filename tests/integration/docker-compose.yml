@@ -4,6 +4,7 @@ services:
       context: ../..
       dockerfile: tests/integration/Dockerfile
     container_name: remi-test-daemon1
+    init: true
     working_dir: /projects/sample-app
     ports:
       - "19765:18765"
@@ -24,6 +25,7 @@ services:
       context: ../..
       dockerfile: tests/integration/Dockerfile
     container_name: remi-test-daemon2
+    init: true
     working_dir: /projects/api-server
     ports:
       - "19766:18765"
@@ -38,6 +40,25 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+
+  client1:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile
+    container_name: remi-test-client1
+    init: true
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+    depends_on:
+      daemon1:
+        condition: service_healthy
+      daemon2:
+        condition: service_healthy
+    environment:
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+    networks:
+      remi-test:
+        ipv4_address: 172.28.0.12
 
 networks:
   remi-test:
