@@ -1903,33 +1903,39 @@ const sharedEvents = {
     }
 
     // Try to attach to the primary (only) session
+    const isQueryMode = metadata.platformData?.['mode'] === 'query';
     if (primarySessionId) {
-      const targetSession = primarySessionId;
-      const result = sessionRegistry.attachConnection(targetSession, connectionId);
-      if (result.success) {
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', targetSession, {
-            isResume: result.replayMessages.length > 0,
-            replayCount: result.replayMessages.length,
-            nextBulletId: result.nextBulletId,
-          }),
-        );
-        if (result.replayMessages.length > 0) {
+      // Only auto-attach if the client wants to attach (not a utility client like ls/kill)
+      if (!isQueryMode) {
+        const targetSession = primarySessionId;
+        const result = sessionRegistry.attachConnection(targetSession, connectionId);
+        if (result.success) {
           sendToConnection(
             connectionId,
-            createReplayBatch(targetSession, result.replayMessages, true),
+            createHelloAck('1.0.0', targetSession, {
+              isResume: result.replayMessages.length > 0,
+              replayCount: result.replayMessages.length,
+              nextBulletId: result.nextBulletId,
+            }),
           );
+          if (result.replayMessages.length > 0) {
+            sendToConnection(
+              connectionId,
+              createReplayBatch(targetSession, result.replayMessages, true),
+            );
+          }
+          cancelOrphanTimeout();
+          log(`Attached connection ${connectionId} to session ${targetSession}`);
+          return;
         }
-        cancelOrphanTimeout();
-        log(`Attached connection ${connectionId} to session ${targetSession}`);
-        return;
       }
 
-      // Attach failed (session busy); send hello_ack without attach so
-      // utility clients (ls, kill) can still send requests
+      // Query mode or attach failed (session busy); send hello_ack without attach
+      // so utility clients (ls, kill) can still send requests
       sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
-      log(`Connection ${connectionId} connected without attach (session busy or query client)`);
+      log(
+        `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
+      );
       return;
     }
 

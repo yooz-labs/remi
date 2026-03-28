@@ -110,6 +110,8 @@ export interface HelloMessage {
   readonly resumeSessionId?: UUID | undefined;
   /** Index of last received message (for efficient replay) */
   readonly lastReceivedIndex?: number | undefined;
+  /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach */
+  readonly mode?: 'query' | undefined;
 }
 
 /** Server hello ack - confirms connection */
@@ -590,6 +592,7 @@ export function createHello(
   directory?: string,
   resumeSessionId?: UUID,
   lastReceivedIndex?: number,
+  mode?: 'query',
 ): HelloMessage {
   return {
     type: 'hello',
@@ -600,6 +603,7 @@ export function createHello(
     ...(directory !== undefined && { directory }),
     ...(resumeSessionId !== undefined && { resumeSessionId }),
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
+    ...(mode !== undefined && { mode }),
   };
 }
 
