@@ -49,6 +49,11 @@ services:
     init: true
     entrypoint: ["sleep"]
     command: ["infinity"]
+    depends_on:
+      daemon1:
+        condition: service_healthy
+      daemon2:
+        condition: service_healthy
     environment:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
     networks:

@@ -363,7 +363,7 @@ export class Connection {
     this.sessionId = this.id;
     this.directory = message.directory ?? null;
     this.resumeSessionId = message.resumeSessionId ?? null;
-    this._mode = message.mode;
+    this._mode = message.mode === 'query' ? 'query' : undefined;
     this.state = 'connected';
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)

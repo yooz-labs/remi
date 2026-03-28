@@ -83,27 +83,35 @@ c1_remi() { docker exec $C1 remi "$@"; }
 # Returns the PID of the remi attach process.
 bg_attach() {
   local ctr=$1; shift
-  docker exec "$ctr" bash -c "sleep infinity | remi attach $* &>/dev/null & echo \$!"
+  docker exec "$ctr" bash -c 'sleep infinity | remi attach "$@" &>/dev/null & echo $!' -- "$@"
 }
 
 # Kill a process inside a container
 ckill() { docker exec "$1" kill "$2" 2>/dev/null || true; }
 
-# Poll until session becomes occupied (no 'available to attach' in ls)
+# Poll until session becomes occupied (no 'available to attach' in ls).
+# Args after timeout are passed to remi ls (e.g., --host/--port).
 wait_occupied() {
   local ctr=$1 secs=${2:-5}; shift 2 || shift $#
+  local output
   for i in $(seq 1 "$secs"); do
-    if ! docker exec "$ctr" remi ls "${@}" 2>&1 | grep -qF 'available to attach'; then return 0; fi
+    if output=$(docker exec "$ctr" remi ls "${@}" 2>&1); then
+      if ! echo "$output" | grep -qF 'available to attach'; then return 0; fi
+    fi
     sleep 1
   done
   return 1
 }
 
-# Poll until session becomes available ('available to attach' in ls)
+# Poll until session becomes available ('available to attach' in ls).
+# Args after timeout are passed to remi ls (e.g., --host/--port).
 wait_available() {
   local ctr=$1 secs=${2:-5}; shift 2 || shift $#
+  local output
   for i in $(seq 1 "$secs"); do
-    if docker exec "$ctr" remi ls "${@}" 2>&1 | grep -qF 'available to attach'; then return 0; fi
+    if output=$(docker exec "$ctr" remi ls "${@}" 2>&1); then
+      if echo "$output" | grep -qF 'available to attach'; then return 0; fi
+    fi
     sleep 1
   done
   return 1
