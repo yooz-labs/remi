@@ -201,10 +201,67 @@ describe('HookConfigManager', () => {
 
     // Live hook should be preserved alongside our hook
     expect(settings.hooks['PreToolUse']?.length).toBe(2);
-    const urls = settings.hooks['PreToolUse'].flatMap((m) => m.hooks.map((h) => h.url));
+    const urls = settings.hooks['PreToolUse']!.flatMap((m) => m.hooks.map((h) => h.url));
     expect(urls).toContain(liveUrl);
     expect(urls).toContain(hookUrl);
 
     server.stop();
+  });
+
+  it('purges dead hooks while preserving live ones in mixed scenario', async () => {
+    const server = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: { data() {}, open() {}, close() {} },
+    });
+
+    const liveUrl = `http://127.0.0.1:${server.port}/hooks`;
+    const deadUrl = 'http://127.0.0.1:19998/hooks';
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          { hooks: [{ type: 'http', url: deadUrl, timeout: 5 }] },
+          { hooks: [{ type: 'http', url: liveUrl, timeout: 5 }] },
+        ],
+        PostToolUse: [{ hooks: [{ type: 'http', url: deadUrl, timeout: 5 }] }],
+      },
+    });
+
+    await manager.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url: string }> }>>;
+    };
+
+    // PreToolUse: dead removed, live preserved, ours added = 2
+    const preUrls = settings.hooks['PreToolUse']!.flatMap((m) => m.hooks.map((h) => h.url));
+    expect(preUrls).toContain(liveUrl);
+    expect(preUrls).toContain(hookUrl);
+    expect(preUrls).not.toContain(deadUrl);
+
+    // PostToolUse: dead removed, ours added = 1
+    const postUrls = settings.hooks['PostToolUse']!.flatMap((m) => m.hooks.map((h) => h.url));
+    expect(postUrls).toContain(hookUrl);
+    expect(postUrls).not.toContain(deadUrl);
+
+    server.stop();
+  });
+
+  it('preserves non-localhost and non-HTTP hooks during purge', async () => {
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          { hooks: [{ type: 'http', url: 'http://10.0.0.5:9999/hooks', timeout: 5 }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo blocked' }] },
+        ],
+      },
+    });
+
+    await manager.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url?: string; command?: string }> }>>;
+    };
+
+    // Both non-localhost HTTP and command hooks preserved, plus ours = 3
+    expect(settings.hooks['PreToolUse']?.length).toBe(3);
   });
 });

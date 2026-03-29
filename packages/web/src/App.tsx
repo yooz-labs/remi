@@ -683,8 +683,9 @@ function App() {
   }, [effectiveStatus, activeSessionId]);
 
   // Request session list after direct connection
-  // Use includeExternal=false to only show sessions from THIS daemon
-  // (external transcript sessions can't receive messages)
+  // Use includeExternal=false so only sessions owned by THIS daemon are listed.
+  // External transcript sessions belong to other daemons and cannot receive
+  // input from this connection.
   useEffect(() => {
     if (connectionStatus === 'connected') {
       effectiveRequestSessionList(false);

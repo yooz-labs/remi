@@ -42,7 +42,8 @@ export class HookConfigManager {
 
   /**
    * Write Remi hook configuration into Claude settings.
-   * Purges stale hooks from dead daemons first, then adds ours.
+   * Purges stale hooks from dead daemons first, then merges ours
+   * alongside any existing user hooks without overwriting them.
    */
   async install(): Promise<void> {
     const dir = path.dirname(this.settingsPath);
@@ -50,8 +51,13 @@ export class HookConfigManager {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    // Purge stale hooks from dead daemons before adding ours
-    await this.purgeStaleHooks();
+    try {
+      await this.purgeStaleHooks();
+    } catch (err) {
+      console.warn(
+        `Failed to purge stale hooks: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
+      );
+    }
 
     const settings = this.readSettings();
     if (!settings.hooks) {
@@ -93,53 +99,31 @@ export class HookConfigManager {
     const settings = this.readSettings();
     if (!settings.hooks) return;
 
-    let modified = false;
-    const hooks = settings.hooks;
-    for (const event of Object.keys(hooks)) {
-      const matchers = hooks[event];
-      if (!matchers) continue;
-      const filtered = matchers.filter(
-        (m) => !m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
-      );
-      if (filtered.length !== matchers.length) {
-        hooks[event] = filtered;
-        modified = true;
-      }
-    }
-
-    // Clean up empty event arrays
-    for (const event of Object.keys(hooks)) {
-      if (hooks[event]?.length === 0) {
-        Reflect.deleteProperty(hooks, event);
-      }
-    }
-
-    // Remove hooks key if empty
-    let hooksEmpty = false;
-    if (settings.hooks && Object.keys(settings.hooks).length === 0) {
-      hooksEmpty = true;
-    }
+    const modified = this.removeHooksWhere(
+      settings,
+      (h) => h.type === 'http' && h.url === this.hookUrl,
+    );
 
     if (modified) {
-      // Build clean settings without empty hooks
-      const cleanSettings: ClaudeSettings = {};
-      for (const [key, value] of Object.entries(settings)) {
-        if (key === 'hooks' && hooksEmpty) continue;
-        cleanSettings[key] = value;
-      }
-
-      if (Object.keys(cleanSettings).length === 0) {
-        // Settings file is empty; remove it
-        try {
-          fs.unlinkSync(this.settingsPath);
-        } catch (err) {
-          console.error(
-            `Warning: failed to remove ${this.settingsPath}; stale hooks may remain: ${err}`,
-          );
+      if (
+        Object.keys(settings).length === 0 ||
+        (Object.keys(settings).length === 1 && !settings.hooks)
+      ) {
+        // Settings effectively empty after removing hooks
+        const remaining = { ...settings };
+        Reflect.deleteProperty(remaining, 'hooks');
+        if (Object.keys(remaining).length === 0) {
+          try {
+            fs.unlinkSync(this.settingsPath);
+          } catch (err) {
+            console.error(
+              `Warning: failed to remove ${this.settingsPath}; stale hooks may remain: ${err}`,
+            );
+          }
+          return;
         }
-      } else {
-        this.writeSettings(cleanSettings);
       }
+      this.writeSettings(settings);
     }
   }
 
@@ -161,7 +145,7 @@ export class HookConfigManager {
   /**
    * Remove hook entries whose HTTP servers are no longer reachable.
    * Probes each localhost HTTP hook URL with a TCP connect.
-   * Only removes localhost HTTP hooks (the kind Remi installs).
+   * Only probes localhost HTTP hooks; non-localhost or non-HTTP hooks are never touched.
    */
   private async purgeStaleHooks(): Promise<void> {
     if (!fs.existsSync(this.settingsPath)) return;
@@ -169,34 +153,33 @@ export class HookConfigManager {
     const settings = this.readSettings();
     if (!settings.hooks) return;
 
-    // Collect all unique localhost HTTP hook URLs (excluding our own)
-    const localhostUrls = new Set<string>();
+    // Collect all unique localhost HTTP hook URLs with their ports (excluding our own)
+    const localhostHooks = new Map<string, number>();
     for (const matchers of Object.values(settings.hooks)) {
       if (!matchers) continue;
       for (const m of matchers) {
+        if (!Array.isArray(m.hooks)) continue;
         for (const h of m.hooks) {
           if (h.type !== 'http') continue;
           if (h.url === this.hookUrl) continue;
           try {
             const parsed = new URL(h.url);
             if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') {
-              localhostUrls.add(h.url);
+              const port = Number(parsed.port);
+              if (port) localhostHooks.set(h.url, port);
             }
           } catch {
-            // Skip malformed URLs
+            // Malformed URL; leave it alone (not our concern)
           }
         }
       }
     }
 
-    if (localhostUrls.size === 0) return;
+    if (localhostHooks.size === 0) return;
 
     // Probe all URLs in parallel
     const probeResults = await Promise.all(
-      [...localhostUrls].map(async (url) => {
-        const parsed = new URL(url);
-        const port = Number.parseInt(parsed.port, 10);
-        if (!port) return { url, alive: true }; // Skip if no port
+      [...localhostHooks.entries()].map(async ([url, port]) => {
         const alive = await isPortReachable(port);
         return { url, alive };
       }),
@@ -205,14 +188,31 @@ export class HookConfigManager {
     const deadUrls = new Set(probeResults.filter((r) => !r.alive).map((r) => r.url));
     if (deadUrls.size === 0) return;
 
-    // Remove dead hook entries
+    const modified = this.removeHooksWhere(
+      settings,
+      (h) => h.type === 'http' && deadUrls.has(h.url),
+    );
+    if (modified) {
+      this.writeSettings(settings);
+    }
+  }
+
+  /**
+   * Remove hook matchers where any hook entry matches the predicate.
+   * Cleans up empty event arrays and the hooks key itself.
+   * Returns true if any matchers were removed.
+   */
+  private removeHooksWhere(
+    settings: ClaudeSettings,
+    predicate: (h: HookEntry) => boolean,
+  ): boolean {
+    if (!settings.hooks) return false;
+
     let modified = false;
     for (const event of Object.keys(settings.hooks)) {
       const matchers = settings.hooks[event];
       if (!matchers) continue;
-      const filtered = matchers.filter(
-        (m) => !m.hooks.some((h) => h.type === 'http' && deadUrls.has(h.url)),
-      );
+      const filtered = matchers.filter((m) => !Array.isArray(m.hooks) || !m.hooks.some(predicate));
       if (filtered.length !== matchers.length) {
         settings.hooks[event] = filtered;
         modified = true;
@@ -220,7 +220,6 @@ export class HookConfigManager {
     }
 
     if (modified) {
-      // Clean up empty event arrays
       for (const event of Object.keys(settings.hooks)) {
         if (settings.hooks[event]?.length === 0) {
           Reflect.deleteProperty(settings.hooks, event);
@@ -229,8 +228,9 @@ export class HookConfigManager {
       if (Object.keys(settings.hooks).length === 0) {
         Reflect.deleteProperty(settings, 'hooks');
       }
-      this.writeSettings(settings);
     }
+
+    return modified;
   }
 
   private readSettings(): ClaudeSettings {
@@ -262,23 +262,18 @@ export class HookConfigManager {
   }
 }
 
-/** TCP connect probe with 500ms timeout. */
+/** TCP connect probe; resolves false on connection failure or timeout. */
 function isPortReachable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     socket.setTimeout(500);
-    socket.on('connect', () => {
+    function done(reachable: boolean): void {
       socket.destroy();
-      resolve(true);
-    });
-    socket.on('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.on('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
+      resolve(reachable);
+    }
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+    socket.once('timeout', () => done(false));
     socket.connect(port, '127.0.0.1');
   });
 }
