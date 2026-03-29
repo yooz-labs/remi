@@ -683,16 +683,19 @@ function App() {
   }, [effectiveStatus, activeSessionId]);
 
   // Request session list after direct connection
+  // Use includeExternal=false so only sessions owned by THIS daemon are listed.
+  // External transcript sessions belong to other daemons and cannot receive
+  // input from this connection.
   useEffect(() => {
     if (connectionStatus === 'connected') {
-      effectiveRequestSessionList(true);
+      effectiveRequestSessionList(false);
     }
   }, [connectionStatus, effectiveRequestSessionList]);
 
   // Request session list after relay connection (hello_ack received)
   useEffect(() => {
     if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
-      effectiveRequestSessionList(true);
+      effectiveRequestSessionList(false);
     }
   }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
 
