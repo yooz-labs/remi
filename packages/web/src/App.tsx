@@ -683,16 +683,18 @@ function App() {
   }, [effectiveStatus, activeSessionId]);
 
   // Request session list after direct connection
+  // Use includeExternal=false to only show sessions from THIS daemon
+  // (external transcript sessions can't receive messages)
   useEffect(() => {
     if (connectionStatus === 'connected') {
-      effectiveRequestSessionList(true);
+      effectiveRequestSessionList(false);
     }
   }, [connectionStatus, effectiveRequestSessionList]);
 
   // Request session list after relay connection (hello_ack received)
   useEffect(() => {
     if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
-      effectiveRequestSessionList(true);
+      effectiveRequestSessionList(false);
     }
   }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
 

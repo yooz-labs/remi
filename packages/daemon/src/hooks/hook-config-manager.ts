@@ -10,6 +10,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import { HOOK_EVENT_NAMES } from './hook-types.ts';
 
@@ -41,13 +42,16 @@ export class HookConfigManager {
 
   /**
    * Write Remi hook configuration into Claude settings.
-   * Merges with existing user hooks; does not overwrite them.
+   * Purges stale hooks from dead daemons first, then adds ours.
    */
-  install(): void {
+  async install(): Promise<void> {
     const dir = path.dirname(this.settingsPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
+
+    // Purge stale hooks from dead daemons before adding ours
+    await this.purgeStaleHooks();
 
     const settings = this.readSettings();
     if (!settings.hooks) {
@@ -106,7 +110,7 @@ export class HookConfigManager {
     // Clean up empty event arrays
     for (const event of Object.keys(hooks)) {
       if (hooks[event]?.length === 0) {
-        delete hooks[event];
+        Reflect.deleteProperty(hooks, event);
       }
     }
 
@@ -154,6 +158,81 @@ export class HookConfigManager {
     });
   }
 
+  /**
+   * Remove hook entries whose HTTP servers are no longer reachable.
+   * Probes each localhost HTTP hook URL with a TCP connect.
+   * Only removes localhost HTTP hooks (the kind Remi installs).
+   */
+  private async purgeStaleHooks(): Promise<void> {
+    if (!fs.existsSync(this.settingsPath)) return;
+
+    const settings = this.readSettings();
+    if (!settings.hooks) return;
+
+    // Collect all unique localhost HTTP hook URLs (excluding our own)
+    const localhostUrls = new Set<string>();
+    for (const matchers of Object.values(settings.hooks)) {
+      if (!matchers) continue;
+      for (const m of matchers) {
+        for (const h of m.hooks) {
+          if (h.type !== 'http') continue;
+          if (h.url === this.hookUrl) continue;
+          try {
+            const parsed = new URL(h.url);
+            if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') {
+              localhostUrls.add(h.url);
+            }
+          } catch {
+            // Skip malformed URLs
+          }
+        }
+      }
+    }
+
+    if (localhostUrls.size === 0) return;
+
+    // Probe all URLs in parallel
+    const probeResults = await Promise.all(
+      [...localhostUrls].map(async (url) => {
+        const parsed = new URL(url);
+        const port = Number.parseInt(parsed.port, 10);
+        if (!port) return { url, alive: true }; // Skip if no port
+        const alive = await isPortReachable(port);
+        return { url, alive };
+      }),
+    );
+
+    const deadUrls = new Set(probeResults.filter((r) => !r.alive).map((r) => r.url));
+    if (deadUrls.size === 0) return;
+
+    // Remove dead hook entries
+    let modified = false;
+    for (const event of Object.keys(settings.hooks)) {
+      const matchers = settings.hooks[event];
+      if (!matchers) continue;
+      const filtered = matchers.filter(
+        (m) => !m.hooks.some((h) => h.type === 'http' && deadUrls.has(h.url)),
+      );
+      if (filtered.length !== matchers.length) {
+        settings.hooks[event] = filtered;
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      // Clean up empty event arrays
+      for (const event of Object.keys(settings.hooks)) {
+        if (settings.hooks[event]?.length === 0) {
+          Reflect.deleteProperty(settings.hooks, event);
+        }
+      }
+      if (Object.keys(settings.hooks).length === 0) {
+        Reflect.deleteProperty(settings, 'hooks');
+      }
+      this.writeSettings(settings);
+    }
+  }
+
   private readSettings(): ClaudeSettings {
     let content: string;
     try {
@@ -181,4 +260,25 @@ export class HookConfigManager {
   private writeSettings(settings: ClaudeSettings): void {
     fs.writeFileSync(this.settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8');
   }
+}
+
+/** TCP connect probe with 500ms timeout. */
+function isPortReachable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(500);
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, '127.0.0.1');
+  });
 }

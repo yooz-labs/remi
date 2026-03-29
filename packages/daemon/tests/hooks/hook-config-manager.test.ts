@@ -30,13 +30,13 @@ describe('HookConfigManager', () => {
     fs.writeFileSync(path.join(dir, 'settings.local.json'), JSON.stringify(settings, null, 2));
   }
 
-  it('creates .claude directory if it does not exist', () => {
-    manager.install();
+  it('creates .claude directory if it does not exist', async () => {
+    await manager.install();
     expect(fs.existsSync(path.join(tmpDir, '.claude'))).toBe(true);
   });
 
-  it('writes hook config with all required events', () => {
-    manager.install();
+  it('writes hook config with all required events', async () => {
+    await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
     expect(settings.hooks).toBeDefined();
@@ -48,8 +48,8 @@ describe('HookConfigManager', () => {
     expect(events).toContain('SessionStart');
   });
 
-  it('each event has an HTTP hook entry with the correct URL', () => {
-    manager.install();
+  it('each event has an HTTP hook entry with the correct URL', async () => {
+    await manager.install();
     const settings = readSettings() as {
       hooks: Record<
         string,
@@ -72,9 +72,9 @@ describe('HookConfigManager', () => {
     }
   });
 
-  it('does not duplicate hooks on repeated install', () => {
-    manager.install();
-    manager.install();
+  it('does not duplicate hooks on repeated install', async () => {
+    await manager.install();
+    await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
     for (const event of ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionStart']) {
@@ -82,7 +82,7 @@ describe('HookConfigManager', () => {
     }
   });
 
-  it('preserves existing user hooks', () => {
+  it('preserves existing user hooks', async () => {
     writeSettings({
       hooks: {
         PreToolUse: [
@@ -95,7 +95,7 @@ describe('HookConfigManager', () => {
       someOtherSetting: 'value',
     });
 
-    manager.install();
+    await manager.install();
     const settings = readSettings() as {
       hooks: Record<string, unknown[]>;
       someOtherSetting: string;
@@ -106,7 +106,7 @@ describe('HookConfigManager', () => {
     expect(settings.someOtherSetting).toBe('value');
   });
 
-  it('uninstall removes only Remi hooks', () => {
+  it('uninstall removes only Remi hooks', async () => {
     writeSettings({
       hooks: {
         PreToolUse: [
@@ -118,7 +118,7 @@ describe('HookConfigManager', () => {
       },
     });
 
-    manager.install();
+    await manager.install();
     manager.uninstall();
 
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
@@ -128,8 +128,8 @@ describe('HookConfigManager', () => {
     expect(settings.hooks['PostToolUse']).toBeUndefined();
   });
 
-  it('uninstall removes settings file if empty', () => {
-    manager.install();
+  it('uninstall removes settings file if empty', async () => {
+    await manager.install();
     manager.uninstall();
 
     const settingsPath = path.join(tmpDir, '.claude', 'settings.local.json');
@@ -141,15 +141,70 @@ describe('HookConfigManager', () => {
     expect(() => manager.uninstall()).not.toThrow();
   });
 
-  it('isInstalled returns true after install', () => {
+  it('isInstalled returns true after install', async () => {
     expect(manager.isInstalled()).toBe(false);
-    manager.install();
+    await manager.install();
     expect(manager.isInstalled()).toBe(true);
   });
 
-  it('isInstalled returns false after uninstall', () => {
-    manager.install();
+  it('isInstalled returns false after uninstall', async () => {
+    await manager.install();
     manager.uninstall();
     expect(manager.isInstalled()).toBe(false);
+  });
+
+  it('purges stale hooks from dead ports on install', async () => {
+    // Pre-seed settings with a hook pointing to a dead port
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          { hooks: [{ type: 'http', url: 'http://127.0.0.1:19999/hooks', timeout: 5 }] },
+        ],
+        PostToolUse: [
+          { hooks: [{ type: 'http', url: 'http://127.0.0.1:19999/hooks', timeout: 5 }] },
+        ],
+      },
+    });
+
+    await manager.install();
+    const settings = readSettings() as { hooks: Record<string, unknown[]> };
+
+    // Dead hook should be purged, only our hook remains
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      expect(settings.hooks[event]?.length).toBe(1);
+    }
+  });
+
+  it('preserves hooks on reachable ports during purge', async () => {
+    // Start a real TCP server on a port
+    const server = Bun.listen({
+      hostname: '127.0.0.1',
+      port: 0,
+      socket: {
+        data() {},
+        open() {},
+        close() {},
+      },
+    });
+
+    const liveUrl = `http://127.0.0.1:${server.port}/hooks`;
+    writeSettings({
+      hooks: {
+        PreToolUse: [{ hooks: [{ type: 'http', url: liveUrl, timeout: 5 }] }],
+      },
+    });
+
+    await manager.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url: string }> }>>;
+    };
+
+    // Live hook should be preserved alongside our hook
+    expect(settings.hooks['PreToolUse']?.length).toBe(2);
+    const urls = settings.hooks['PreToolUse'].flatMap((m) => m.hooks.map((h) => h.url));
+    expect(urls).toContain(liveUrl);
+    expect(urls).toContain(hookUrl);
+
+    server.stop();
   });
 });

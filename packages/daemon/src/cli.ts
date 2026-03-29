@@ -2699,7 +2699,7 @@ if (cliDaemonMode) {
   if (hookServer) {
     try {
       hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
-      hookConfigManager.install();
+      await hookConfigManager.install();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
@@ -2918,7 +2918,7 @@ if (cliDaemonMode) {
 
     // Configure Claude Code hooks to POST to our server
     hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
-    hookConfigManager.install();
+    await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
