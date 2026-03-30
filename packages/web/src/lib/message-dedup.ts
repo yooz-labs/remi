@@ -13,9 +13,9 @@
  *    PTY message entirely since the transcript version is already present.
  */
 
-import type { UIMessage } from '../types';
+import type { MessageSource, UIMessage } from '../types';
 
-export type MessageSource = 'optimistic' | 'pty' | 'transcript';
+export type { MessageSource } from '../types';
 
 export interface IncomingMessage {
   readonly sessionId: string;
