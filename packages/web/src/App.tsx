@@ -239,8 +239,12 @@ function App() {
           };
 
           if (dedup.action === 'replace') {
-            // Replace the PTY-sourced duplicate with the transcript version
-            return prev.map((m, i) => (i === dedup.replaceIndex ? uiMessage : m));
+            // Replace the optimistic/PTY duplicate with the transcript version,
+            // preserving the original id as React key to prevent remount flicker
+            const replaced = dedup.preserveId
+              ? { ...uiMessage, id: dedup.preserveId }
+              : uiMessage;
+            return prev.map((m, i) => (i === dedup.replaceIndex ? replaced : m));
           }
 
           return [...prev, uiMessage];
@@ -773,6 +777,7 @@ function App() {
           timestamp: new Date().toISOString(),
           state: 'sent',
           isEditing: false,
+          source: 'optimistic',
         };
         setMessages((prev) => [...prev, userMsg]);
         return;
@@ -787,6 +792,7 @@ function App() {
         timestamp: new Date().toISOString(),
         state: 'sending',
         isEditing: false,
+        source: 'optimistic',
       };
 
       setMessages((prev) => [...prev, newMessage]);
