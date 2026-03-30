@@ -313,9 +313,13 @@ export class SessionRegistry {
       if (result.success) {
         try {
           this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
-        } catch {
+        } catch (err) {
           // Callback failed (e.g., promoted connection unreachable).
-          // Detach so the loop can try the next waiter.
+          // Log the error and detach so the loop can try the next waiter.
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[SessionRegistry] Promotion callback failed for ${nextConnectionId}: ${msg}`,
+          );
           this.session.activeConnectionId = null;
           this.session.lastDisconnectedAt = now();
           continue;

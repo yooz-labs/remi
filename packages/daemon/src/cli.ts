@@ -1458,7 +1458,13 @@ const sessionRegistry = new SessionRegistry(
         return;
       }
       if (result.replayMessages.length > 0) {
-        registry.sendRaw(connectionId, createReplayBatch(sessionId, result.replayMessages, true));
+        const replaySent = registry.sendRaw(
+          connectionId,
+          createReplayBatch(sessionId, result.replayMessages, true),
+        );
+        if (!replaySent) {
+          log(`Failed to send replay batch to promoted connection ${connectionId}`);
+        }
       }
       cancelOrphanTimeout();
     },

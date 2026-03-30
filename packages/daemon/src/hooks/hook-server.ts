@@ -149,13 +149,15 @@ export class HookServer {
     }
 
     // Accept all events with 200 to future-proof against new Claude Code events.
-    // Only dispatch known events to typed handlers; unknown events are silently accepted.
+    // Only dispatch known events to typed handlers; unknown events are logged.
     if (isValidHookEvent(eventName)) {
       try {
         this.dispatch(body as unknown as HookInput);
       } catch (err) {
         this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
       }
+    } else {
+      console.debug(`[HookServer] Unknown hook event accepted: ${eventName}`);
     }
 
     return new Response('{}', {

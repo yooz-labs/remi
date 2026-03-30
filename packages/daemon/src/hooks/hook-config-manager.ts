@@ -76,8 +76,10 @@ export class HookConfigManager {
       }
 
       const matchers = settings.hooks[event];
-      const alreadyInstalled = matchers.some((m) =>
-        m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
+      const alreadyInstalled = matchers.some(
+        (m) =>
+          Array.isArray(m.hooks) &&
+          m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
       );
 
       if (!alreadyInstalled) {

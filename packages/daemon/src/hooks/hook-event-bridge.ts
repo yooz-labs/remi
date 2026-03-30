@@ -33,6 +33,8 @@ export interface HookBridgeEvents {
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
+  /** Timestamp of last PermissionRequest, used to suppress duplicate Notification */
+  private lastPermissionRequestAt = 0;
 
   constructor(sessionId: UUID, events: HookBridgeEvents) {
     this.sessionId = sessionId;
@@ -66,6 +68,10 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
+      // Suppress if PermissionRequest already handled this prompt (within 2s window)
+      if (Date.now() - this.lastPermissionRequestAt < 2000) {
+        return;
+      }
       const question = this.buildPermissionQuestion(input.message);
       this.events.onQuestion(question);
       this.events.onStatusChange('waiting');
@@ -88,16 +94,22 @@ export class HookEventBridge {
 
   handleSessionStart(input: SessionStartHookInput): void {
     if (!input.session_id || !input.transcript_path) {
+      console.warn(
+        `[HookEventBridge] SessionStart missing required fields: session_id=${input.session_id}, transcript_path=${input.transcript_path}`,
+      );
       return;
     }
     this.events.onSessionInfo(input.session_id, input.transcript_path);
   }
 
   handlePermissionRequest(input: PermissionRequestHookInput): void {
+    this.lastPermissionRequestAt = Date.now();
+
     // Build a rich question from the tool_name and permission_suggestions.
     // If permission_suggestions are provided, use them as numbered options;
     // otherwise fall back to a Yes/No question with tool context.
-    const promptText = `Allow ${input.tool_name}?`;
+    const toolName = input.tool_name || 'unknown tool';
+    const promptText = `Allow ${toolName}?`;
 
     if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
       const options: QuestionOption[] = input.permission_suggestions.map((suggestion, idx) => {
