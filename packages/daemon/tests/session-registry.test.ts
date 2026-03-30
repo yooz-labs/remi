@@ -7,6 +7,7 @@ import type { ProtocolMessage } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../src/api/message-api.ts';
 import type { PTYSession } from '../src/pty/pty-session.ts';
+import type { AttachResult } from '../src/session/session-registry.ts';
 import { SessionRegistry } from '../src/session/session-registry.ts';
 
 function createMockPTY(): PTYSession {
@@ -32,6 +33,7 @@ describe('SessionRegistry', () => {
     onSessionClosed: ReturnType<typeof mock>;
     onSessionOrphaned: ReturnType<typeof mock>;
     onSessionResumed: ReturnType<typeof mock>;
+    onConnectionPromoted: ReturnType<typeof mock>;
   };
 
   beforeEach(() => {
@@ -40,6 +42,7 @@ describe('SessionRegistry', () => {
       onSessionClosed: mock(() => {}),
       onSessionOrphaned: mock(() => {}),
       onSessionResumed: mock(() => {}),
+      onConnectionPromoted: mock(() => {}),
     };
 
     registry = new SessionRegistry(
@@ -447,6 +450,128 @@ describe('SessionRegistry', () => {
     test('is safe to call with no session', async () => {
       await registry.shutdown();
       expect(registry.sessionCount).toBe(0);
+    });
+  });
+
+  describe('waiting connection promotion', () => {
+    const sessionId = generateId();
+    const connA = generateId();
+    const connB = generateId();
+    const connC = generateId();
+
+    beforeEach(() => {
+      registry.registerSession(sessionId, '/tmp/test', createMockPTY(), createMockMessageAPI());
+    });
+
+    test('queues connection when session is busy', () => {
+      registry.attachConnection(sessionId, connA);
+      const result = registry.attachConnection(sessionId, connB);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Session already has active connection');
+      expect(registry.waitingConnectionCount).toBe(1);
+    });
+
+    test('does not queue same connection twice', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB);
+      registry.attachConnection(sessionId, connB); // duplicate
+
+      expect(registry.waitingConnectionCount).toBe(1);
+    });
+
+    test('auto-promotes waiting connection when active disconnects', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB); // queued
+
+      registry.detachConnection(connA);
+
+      // connB should now be active
+      const session = registry.getSessionForConnection(connB);
+      expect(session).toBeDefined();
+      expect(session?.activeConnectionId).toBe(connB);
+      expect(registry.waitingConnectionCount).toBe(0);
+    });
+
+    test('fires onConnectionPromoted when promoting', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB);
+
+      registry.detachConnection(connA);
+
+      expect(events.onConnectionPromoted).toHaveBeenCalledTimes(1);
+      const call = events.onConnectionPromoted.mock.calls[0] as
+        | [string, string, AttachResult]
+        | undefined;
+      expect(call).toBeDefined();
+      const [sid, cid, result] = call as [string, string, AttachResult];
+      expect(sid).toBe(sessionId);
+      expect(cid).toBe(connB);
+      expect(result.success).toBe(true);
+    });
+
+    test('does not fire onSessionOrphaned when promoting', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB);
+
+      registry.detachConnection(connA);
+
+      // onSessionOrphaned should NOT fire because connB was promoted
+      expect(events.onSessionOrphaned).not.toHaveBeenCalled();
+    });
+
+    test('promotes in FIFO order', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB);
+      registry.attachConnection(sessionId, connC);
+
+      expect(registry.waitingConnectionCount).toBe(2);
+
+      // A disconnects -> B promoted
+      registry.detachConnection(connA);
+      expect(registry.getSessionForConnection(connB)).toBeDefined();
+      expect(registry.waitingConnectionCount).toBe(1);
+
+      // B disconnects -> C promoted
+      registry.detachConnection(connB);
+      expect(registry.getSessionForConnection(connC)).toBeDefined();
+      expect(registry.waitingConnectionCount).toBe(0);
+    });
+
+    test('removes waiting connection on disconnect before promotion', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB);
+      registry.attachConnection(sessionId, connC);
+
+      // B disconnects before being promoted
+      registry.removeWaitingConnection(connB);
+      expect(registry.waitingConnectionCount).toBe(1);
+
+      // A disconnects -> C promoted (B was removed)
+      registry.detachConnection(connA);
+      expect(registry.getSessionForConnection(connC)).toBeDefined();
+    });
+
+    test('detachConnection also removes from waiting queue', () => {
+      registry.attachConnection(sessionId, connA);
+      registry.attachConnection(sessionId, connB);
+
+      // detach connB which is in waiting queue, not active
+      registry.detachConnection(connB);
+      expect(registry.waitingConnectionCount).toBe(0);
+
+      // A disconnects -> no one to promote, becomes orphaned
+      registry.detachConnection(connA);
+      expect(events.onSessionOrphaned).toHaveBeenCalled();
+    });
+
+    test('orphans session when no waiting connections remain', () => {
+      registry.attachConnection(sessionId, connA);
+
+      registry.detachConnection(connA);
+
+      // No waiting connections, should fire orphaned event
+      expect(events.onSessionOrphaned).toHaveBeenCalled();
     });
   });
 });

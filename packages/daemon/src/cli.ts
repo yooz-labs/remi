@@ -1442,6 +1442,21 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    onConnectionPromoted: (sessionId, connectionId, result) => {
+      log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      sendToConnection(
+        connectionId,
+        createHelloAck('1.0.0', sessionId, {
+          isResume: result.replayMessages.length > 0,
+          replayCount: result.replayMessages.length,
+          nextBulletId: result.nextBulletId,
+        }),
+      );
+      if (result.replayMessages.length > 0) {
+        sendToConnection(connectionId, createReplayBatch(sessionId, result.replayMessages, true));
+      }
+      cancelOrphanTimeout();
+    },
   },
 );
 
@@ -1947,6 +1962,9 @@ const sharedEvents = {
     log(`Client disconnected: ${connectionId}`);
     log(`   Reason: ${reason}`);
 
+    // Remove from waiting queue if queued, or detach if active
+    // (detachConnection handles both: if active, it auto-promotes the next waiter)
+    sessionRegistry.removeWaitingConnection(connectionId);
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
