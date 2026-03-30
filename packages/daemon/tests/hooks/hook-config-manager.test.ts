@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { HookConfigManager } from '../../src/hooks/hook-config-manager.ts';
+import { HOOK_EVENT_NAMES } from '../../src/hooks/hook-types.ts';
 
 describe('HookConfigManager', () => {
   let tmpDir: string;
@@ -35,17 +36,20 @@ describe('HookConfigManager', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude'))).toBe(true);
   });
 
-  it('writes hook config with all required events', async () => {
+  it('writes hook config with all 25 required events', async () => {
     await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
     expect(settings.hooks).toBeDefined();
     const events = Object.keys(settings.hooks);
-    expect(events).toContain('PreToolUse');
-    expect(events).toContain('PostToolUse');
-    expect(events).toContain('Notification');
-    expect(events).toContain('Stop');
-    expect(events).toContain('SessionStart');
+
+    // Verify all 25 events are registered
+    expect(HOOK_EVENT_NAMES.length).toBe(25);
+    for (const event of HOOK_EVENT_NAMES) {
+      expect(events).toContain(event);
+    }
+    // No extra events beyond what HOOK_EVENT_NAMES defines
+    expect(events.length).toBe(HOOK_EVENT_NAMES.length);
   });
 
   it('each event has an HTTP hook entry with the correct URL', async () => {
@@ -57,7 +61,7 @@ describe('HookConfigManager', () => {
       >;
     };
 
-    for (const event of ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionStart']) {
+    for (const event of HOOK_EVENT_NAMES) {
       const matchers = settings.hooks[event] as Array<{
         hooks: Array<{ type: string; url: string; timeout: number }>;
       }>;
@@ -77,7 +81,7 @@ describe('HookConfigManager', () => {
     await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
-    for (const event of ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionStart']) {
+    for (const event of HOOK_EVENT_NAMES) {
       expect(settings.hooks[event]?.length).toBe(1);
     }
   });

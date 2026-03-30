@@ -15,6 +15,8 @@ export interface HookCommonInput {
   hook_event_name: HookEventName;
 }
 
+// --- Original 5 events ---
+
 export interface PreToolUseHookInput extends HookCommonInput {
   hook_event_name: 'PreToolUse';
   tool_name: string;
@@ -46,13 +48,152 @@ export interface SessionStartHookInput extends HookCommonInput {
   model: string;
 }
 
+// --- 20 new events ---
+
+/** Fired when a permission dialog is about to show */
+export interface PermissionRequestHookInput extends HookCommonInput {
+  hook_event_name: 'PermissionRequest';
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  permission_suggestions?: string[];
+}
+
+/** Fired after a tool call fails */
+export interface PostToolUseFailureHookInput extends HookCommonInput {
+  hook_event_name: 'PostToolUseFailure';
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  error: string;
+}
+
+/** Fired when the user submits a prompt */
+export interface UserPromptSubmitHookInput extends HookCommonInput {
+  hook_event_name: 'UserPromptSubmit';
+}
+
+/** Fired when instructions are loaded */
+export interface InstructionsLoadedHookInput extends HookCommonInput {
+  hook_event_name: 'InstructionsLoaded';
+  source: string;
+}
+
+/** Fired when a subagent starts */
+export interface SubagentStartHookInput extends HookCommonInput {
+  hook_event_name: 'SubagentStart';
+  agent_type: string;
+}
+
+/** Fired when a subagent stops */
+export interface SubagentStopHookInput extends HookCommonInput {
+  hook_event_name: 'SubagentStop';
+  agent_type: string;
+}
+
+/** Fired when a task is created */
+export interface TaskCreatedHookInput extends HookCommonInput {
+  hook_event_name: 'TaskCreated';
+}
+
+/** Fired when a task completes */
+export interface TaskCompletedHookInput extends HookCommonInput {
+  hook_event_name: 'TaskCompleted';
+}
+
+/** Fired when the stop hook itself fails */
+export interface StopFailureHookInput extends HookCommonInput {
+  hook_event_name: 'StopFailure';
+  error_type: string;
+}
+
+/** Fired when a teammate agent becomes idle */
+export interface TeammateIdleHookInput extends HookCommonInput {
+  hook_event_name: 'TeammateIdle';
+}
+
+/** Fired when configuration changes */
+export interface ConfigChangeHookInput extends HookCommonInput {
+  hook_event_name: 'ConfigChange';
+  config_type: string;
+}
+
+/** Fired when the working directory changes */
+export interface CwdChangedHookInput extends HookCommonInput {
+  hook_event_name: 'CwdChanged';
+}
+
+/** Fired when a file changes */
+export interface FileChangedHookInput extends HookCommonInput {
+  hook_event_name: 'FileChanged';
+  filename: string;
+}
+
+/** Fired when a git worktree is created */
+export interface WorktreeCreateHookInput extends HookCommonInput {
+  hook_event_name: 'WorktreeCreate';
+}
+
+/** Fired when a git worktree is removed */
+export interface WorktreeRemoveHookInput extends HookCommonInput {
+  hook_event_name: 'WorktreeRemove';
+}
+
+/** Fired before context compaction */
+export interface PreCompactHookInput extends HookCommonInput {
+  hook_event_name: 'PreCompact';
+  source: string;
+}
+
+/** Fired after context compaction */
+export interface PostCompactHookInput extends HookCommonInput {
+  hook_event_name: 'PostCompact';
+  source: string;
+}
+
+/** Fired when an MCP server requests input via elicitation */
+export interface ElicitationHookInput extends HookCommonInput {
+  hook_event_name: 'Elicitation';
+  mcp_server_name: string;
+}
+
+/** Fired after an elicitation result is collected */
+export interface ElicitationResultHookInput extends HookCommonInput {
+  hook_event_name: 'ElicitationResult';
+  mcp_server_name: string;
+}
+
+/** Fired when the session ends */
+export interface SessionEndHookInput extends HookCommonInput {
+  hook_event_name: 'SessionEnd';
+  reason: string;
+}
+
 /** Discriminated union of all hook event inputs */
 export type HookInput =
   | PreToolUseHookInput
   | PostToolUseHookInput
   | NotificationHookInput
   | StopHookInput
-  | SessionStartHookInput;
+  | SessionStartHookInput
+  | PermissionRequestHookInput
+  | PostToolUseFailureHookInput
+  | UserPromptSubmitHookInput
+  | InstructionsLoadedHookInput
+  | SubagentStartHookInput
+  | SubagentStopHookInput
+  | TaskCreatedHookInput
+  | TaskCompletedHookInput
+  | StopFailureHookInput
+  | TeammateIdleHookInput
+  | ConfigChangeHookInput
+  | CwdChangedHookInput
+  | FileChangedHookInput
+  | WorktreeCreateHookInput
+  | WorktreeRemoveHookInput
+  | PreCompactHookInput
+  | PostCompactHookInput
+  | ElicitationHookInput
+  | ElicitationResultHookInput
+  | SessionEndHookInput;
 
 /** Valid hook event names */
 export const HOOK_EVENT_NAMES = [
@@ -61,6 +202,26 @@ export const HOOK_EVENT_NAMES = [
   'Notification',
   'Stop',
   'SessionStart',
+  'PermissionRequest',
+  'PostToolUseFailure',
+  'UserPromptSubmit',
+  'InstructionsLoaded',
+  'SubagentStart',
+  'SubagentStop',
+  'TaskCreated',
+  'TaskCompleted',
+  'StopFailure',
+  'TeammateIdle',
+  'ConfigChange',
+  'CwdChanged',
+  'FileChanged',
+  'WorktreeCreate',
+  'WorktreeRemove',
+  'PreCompact',
+  'PostCompact',
+  'Elicitation',
+  'ElicitationResult',
+  'SessionEnd',
 ] as const;
 
 export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
