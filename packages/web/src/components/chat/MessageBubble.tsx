@@ -18,7 +18,7 @@ import {
   Pencil,
   Terminal,
 } from 'lucide-react';
-import { ChatMessage } from './ChatMessage';
+import { ChatMessage, InlineMarkdown } from './ChatMessage';
 
 interface MessageBubbleProps {
   readonly message: UIMessage;
@@ -55,9 +55,11 @@ function formatTime(timestamp: string): string {
 /** Single bullet item with optional truncation indicator */
 function BulletItem({
   bullet,
+  isUser = false,
   onExpand,
 }: {
   readonly bullet: UIBullet;
+  readonly isUser?: boolean;
   readonly onExpand?: (bulletId: number) => void;
 }) {
   const handleExpand = () => {
@@ -71,7 +73,7 @@ function BulletItem({
 
   return (
     <div className="group relative">
-      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{displayContent}</div>
+      <InlineMarkdown content={displayContent} isUser={isUser} />
 
       {/* Truncation indicator */}
       {bullet.isTruncated && !bullet.fullContent && (
@@ -117,6 +119,7 @@ function MessageContent({
   readonly onBulletExpand?: (bulletId: number) => void;
 }) {
   if (message.isStreaming) {
+    // Use raw text during streaming to avoid re-parsing markdown on every chunk
     return (
       <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
         {message.streamedContent}
@@ -129,7 +132,7 @@ function MessageContent({
     return (
       <div className="space-y-2">
         {message.bullets!.map((bullet) => (
-          <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
+          <BulletItem key={bullet.bulletId} bullet={bullet} isUser={isUser} onExpand={onBulletExpand} />
         ))}
       </div>
     );
@@ -139,11 +142,7 @@ function MessageContent({
     return <ChatMessage content={message.content} isUser={isUser} />;
   }
 
-  return (
-    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-      {message.content}
-    </div>
-  );
+  return <InlineMarkdown content={message.content} isUser={isUser} />;
 }
 
 export function MessageBubble({

@@ -9,10 +9,16 @@
 import type {
   HookInput,
   NotificationHookInput,
+  PermissionRequestHookInput,
+  PostToolUseFailureHookInput,
   PostToolUseHookInput,
   PreToolUseHookInput,
+  SessionEndHookInput,
   SessionStartHookInput,
+  StopFailureHookInput,
   StopHookInput,
+  SubagentStartHookInput,
+  SubagentStopHookInput,
 } from './hook-types.ts';
 import { isValidHookEvent } from './hook-types.ts';
 
@@ -22,6 +28,12 @@ export interface HookServerEvents {
   onNotification: (input: NotificationHookInput) => void;
   onStop: (input: StopHookInput) => void;
   onSessionStart: (input: SessionStartHookInput) => void;
+  onPermissionRequest: (input: PermissionRequestHookInput) => void;
+  onPostToolUseFailure: (input: PostToolUseFailureHookInput) => void;
+  onSubagentStart: (input: SubagentStartHookInput) => void;
+  onSubagentStop: (input: SubagentStopHookInput) => void;
+  onStopFailure: (input: StopFailureHookInput) => void;
+  onSessionEnd: (input: SessionEndHookInput) => void;
   onError: (error: Error) => void;
 }
 
@@ -129,17 +141,23 @@ export class HookServer {
 
     const eventName = body['hook_event_name'] as string;
 
-    if (!eventName || !isValidHookEvent(eventName)) {
-      return new Response(JSON.stringify({ error: 'unknown event' }), {
+    if (!eventName) {
+      return new Response(JSON.stringify({ error: 'missing hook_event_name' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    try {
-      this.dispatch(body as unknown as HookInput);
-    } catch (err) {
-      this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+    // Accept all events with 200 to future-proof against new Claude Code events.
+    // Only dispatch known events to typed handlers; unknown events are logged.
+    if (isValidHookEvent(eventName)) {
+      try {
+        this.dispatch(body as unknown as HookInput);
+      } catch (err) {
+        this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    } else {
+      console.debug(`[HookServer] Unknown hook event accepted: ${eventName}`);
     }
 
     return new Response('{}', {
@@ -168,6 +186,31 @@ export class HookServer {
           break;
         case 'SessionStart':
           this.events.onSessionStart?.(input);
+          break;
+        case 'PermissionRequest':
+          this.events.onPermissionRequest?.(input);
+          break;
+        case 'PostToolUseFailure':
+          this.events.onPostToolUseFailure?.(input);
+          break;
+        case 'SubagentStart':
+          this.events.onSubagentStart?.(input);
+          break;
+        case 'SubagentStop':
+          this.events.onSubagentStop?.(input);
+          break;
+        case 'StopFailure':
+          this.events.onStopFailure?.(input);
+          break;
+        case 'SessionEnd':
+          this.events.onSessionEnd?.(input);
+          break;
+        default:
+          // Medium/low priority events (UserPromptSubmit, InstructionsLoaded,
+          // TaskCreated, TaskCompleted, TeammateIdle, ConfigChange, CwdChanged,
+          // FileChanged, WorktreeCreate, WorktreeRemove, PreCompact, PostCompact,
+          // Elicitation, ElicitationResult) are accepted but only dispatched
+          // to dynamic listeners below.
           break;
       }
     } catch (err) {

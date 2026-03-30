@@ -239,8 +239,12 @@ function App() {
           };
 
           if (dedup.action === 'replace') {
-            // Replace the PTY-sourced duplicate with the transcript version
-            return prev.map((m, i) => (i === dedup.replaceIndex ? uiMessage : m));
+            // Replace the optimistic/PTY duplicate with the transcript version,
+            // preserving the original id as React key to prevent remount flicker
+            const replaced = dedup.preserveId
+              ? { ...uiMessage, id: dedup.preserveId }
+              : uiMessage;
+            return prev.map((m, i) => (i === dedup.replaceIndex ? replaced : m));
           }
 
           return [...prev, uiMessage];
@@ -683,16 +687,19 @@ function App() {
   }, [effectiveStatus, activeSessionId]);
 
   // Request session list after direct connection
+  // Use includeExternal=false so only sessions owned by THIS daemon are listed.
+  // External transcript sessions belong to other daemons and cannot receive
+  // input from this connection.
   useEffect(() => {
     if (connectionStatus === 'connected') {
-      effectiveRequestSessionList(true);
+      effectiveRequestSessionList(false);
     }
   }, [connectionStatus, effectiveRequestSessionList]);
 
   // Request session list after relay connection (hello_ack received)
   useEffect(() => {
     if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
-      effectiveRequestSessionList(true);
+      effectiveRequestSessionList(false);
     }
   }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
 
@@ -770,6 +777,7 @@ function App() {
           timestamp: new Date().toISOString(),
           state: 'sent',
           isEditing: false,
+          source: 'optimistic',
         };
         setMessages((prev) => [...prev, userMsg]);
         return;
@@ -784,6 +792,7 @@ function App() {
         timestamp: new Date().toISOString(),
         state: 'sending',
         isEditing: false,
+        source: 'optimistic',
       };
 
       setMessages((prev) => [...prev, newMessage]);

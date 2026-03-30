@@ -7,7 +7,7 @@
 import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
 /** Source that produced a UI message */
-export type MessageSource = 'pty' | 'transcript';
+export type MessageSource = 'optimistic' | 'pty' | 'transcript';
 
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';

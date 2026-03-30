@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.15'; // REMI_COMPILED_VERSION
+      return '0.4.16-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.15'; // REMI_COMPILED_VERSION
+    return '0.4.16-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1442,6 +1442,32 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    onConnectionPromoted: (sessionId, connectionId, result) => {
+      log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      const sent = registry.sendRaw(
+        connectionId,
+        createHelloAck('1.0.0', sessionId, {
+          isResume: result.replayMessages.length > 0,
+          replayCount: result.replayMessages.length,
+          nextBulletId: result.nextBulletId,
+        }),
+      );
+      if (!sent) {
+        log(`Promoted connection ${connectionId} is unreachable; detaching`);
+        sessionRegistry.detachConnection(connectionId);
+        return;
+      }
+      if (result.replayMessages.length > 0) {
+        const replaySent = registry.sendRaw(
+          connectionId,
+          createReplayBatch(sessionId, result.replayMessages, true),
+        );
+        if (!replaySent) {
+          log(`Failed to send replay batch to promoted connection ${connectionId}`);
+        }
+      }
+      cancelOrphanTimeout();
+    },
   },
 );
 
@@ -1947,6 +1973,10 @@ const sharedEvents = {
     log(`Client disconnected: ${connectionId}`);
     log(`   Reason: ${reason}`);
 
+    // Explicitly remove from waiting queue, then detach if active.
+    // detachConnection also handles waiting removal, but this ensures
+    // cleanup even if detachConnection's early-return path changes.
+    sessionRegistry.removeWaitingConnection(connectionId);
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
@@ -2699,7 +2729,7 @@ if (cliDaemonMode) {
   if (hookServer) {
     try {
       hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
-      hookConfigManager.install();
+      await hookConfigManager.install();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
@@ -2918,7 +2948,7 @@ if (cliDaemonMode) {
 
     // Configure Claude Code hooks to POST to our server
     hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
-    hookConfigManager.install();
+    await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

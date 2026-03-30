@@ -2,10 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { HookServer } from '../../src/hooks/hook-server.ts';
 import type {
   NotificationHookInput,
+  PermissionRequestHookInput,
+  PostToolUseFailureHookInput,
   PostToolUseHookInput,
   PreToolUseHookInput,
+  SessionEndHookInput,
   SessionStartHookInput,
+  StopFailureHookInput,
   StopHookInput,
+  SubagentStartHookInput,
+  SubagentStopHookInput,
 } from '../../src/hooks/hook-types.ts';
 
 const TEST_PORT = 19876;
@@ -63,7 +69,7 @@ describe('HookServer', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 400 for unknown event names', async () => {
+  it('accepts unknown event names with 200 (future-proofing)', async () => {
     server = new HookServer({ port });
     server.start();
 
@@ -71,6 +77,18 @@ describe('HookServer', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makePayload({ hook_event_name: 'UnknownEvent' })),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 400 for missing hook_event_name', async () => {
+    server = new HookServer({ port });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(makePayload({})),
     });
     expect(res.status).toBe(400);
   });
@@ -216,6 +234,129 @@ describe('HookServer', () => {
     expect(res.status).toBe(200);
     expect(received.length).toBe(1);
     expect(received[0]?.model).toBe('claude-opus-4-6');
+  });
+
+  it('dispatches PermissionRequest events', async () => {
+    const received: PermissionRequestHookInput[] = [];
+    server = new HookServer({ port }, { onPermissionRequest: (input) => received.push(input) });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        makePayload({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf /' },
+          permission_suggestions: ['Yes', 'No'],
+        }),
+      ),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
+    expect(received[0]?.tool_name).toBe('Bash');
+  });
+
+  it('dispatches PostToolUseFailure events', async () => {
+    const received: PostToolUseFailureHookInput[] = [];
+    server = new HookServer({ port }, { onPostToolUseFailure: (input) => received.push(input) });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        makePayload({
+          hook_event_name: 'PostToolUseFailure',
+          tool_name: 'Bash',
+          tool_input: {},
+          error: 'command not found',
+        }),
+      ),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
+    expect(received[0]?.error).toBe('command not found');
+  });
+
+  it('dispatches SubagentStart events', async () => {
+    const received: SubagentStartHookInput[] = [];
+    server = new HookServer({ port }, { onSubagentStart: (input) => received.push(input) });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        makePayload({ hook_event_name: 'SubagentStart', agent_type: 'code-reviewer' }),
+      ),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
+    expect(received[0]?.agent_type).toBe('code-reviewer');
+  });
+
+  it('dispatches SubagentStop events', async () => {
+    const received: SubagentStopHookInput[] = [];
+    server = new HookServer({ port }, { onSubagentStop: (input) => received.push(input) });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        makePayload({ hook_event_name: 'SubagentStop', agent_type: 'code-reviewer' }),
+      ),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
+  });
+
+  it('dispatches StopFailure events', async () => {
+    const received: StopFailureHookInput[] = [];
+    server = new HookServer({ port }, { onStopFailure: (input) => received.push(input) });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(makePayload({ hook_event_name: 'StopFailure', error_type: 'timeout' })),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
+    expect(received[0]?.error_type).toBe('timeout');
+  });
+
+  it('dispatches SessionEnd events', async () => {
+    const received: SessionEndHookInput[] = [];
+    server = new HookServer({ port }, { onSessionEnd: (input) => received.push(input) });
+    server.start();
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(makePayload({ hook_event_name: 'SessionEnd', reason: 'user_exit' })),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
+    expect(received[0]?.reason).toBe('user_exit');
+  });
+
+  it('dispatches medium-priority events to dynamic listeners only', async () => {
+    server = new HookServer({ port });
+    server.start();
+
+    const received: unknown[] = [];
+    server.on('UserPromptSubmit', (input) => received.push(input));
+
+    const res = await fetch(makeUrl(port), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(makePayload({ hook_event_name: 'UserPromptSubmit' })),
+    });
+    expect(res.status).toBe(200);
+    expect(received.length).toBe(1);
   });
 
   it('supports dynamic listeners via on()', async () => {
