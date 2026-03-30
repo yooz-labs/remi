@@ -182,11 +182,11 @@ const userMarkdownComponents = {
   ),
 };
 
-export function ChatMessage({ content, toolName, isUser = false }: ChatMessageProps) {
-  if (toolName) {
-    return <ToolUseCard toolName={toolName} content={content} />;
-  }
-
+/** Lightweight markdown renderer without tool-use logic */
+export function InlineMarkdown({
+  content,
+  isUser = false,
+}: { readonly content: string; readonly isUser?: boolean }) {
   return (
     <div className="text-sm leading-relaxed">
       <Markdown
@@ -197,4 +197,12 @@ export function ChatMessage({ content, toolName, isUser = false }: ChatMessagePr
       </Markdown>
     </div>
   );
+}
+
+export function ChatMessage({ content, toolName, isUser = false }: ChatMessageProps) {
+  if (toolName) {
+    return <ToolUseCard toolName={toolName} content={content} />;
+  }
+
+  return <InlineMarkdown content={content} isUser={isUser} />;
 }
