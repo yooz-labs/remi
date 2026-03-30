@@ -311,7 +311,15 @@ export class SessionRegistry {
       if (!nextConnectionId) continue;
       const result = this.attachConnection(sessionId, nextConnectionId);
       if (result.success) {
-        this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
+        try {
+          this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
+        } catch {
+          // Callback failed (e.g., promoted connection unreachable).
+          // Detach so the loop can try the next waiter.
+          this.session.activeConnectionId = null;
+          this.session.lastDisconnectedAt = now();
+          continue;
+        }
         return;
       }
     }

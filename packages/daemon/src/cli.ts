@@ -1444,7 +1444,7 @@ const sessionRegistry = new SessionRegistry(
     },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
-      sendToConnection(
+      const sent = registry.sendRaw(
         connectionId,
         createHelloAck('1.0.0', sessionId, {
           isResume: result.replayMessages.length > 0,
@@ -1452,8 +1452,13 @@ const sessionRegistry = new SessionRegistry(
           nextBulletId: result.nextBulletId,
         }),
       );
+      if (!sent) {
+        log(`Promoted connection ${connectionId} is unreachable; detaching`);
+        sessionRegistry.detachConnection(connectionId);
+        return;
+      }
       if (result.replayMessages.length > 0) {
-        sendToConnection(connectionId, createReplayBatch(sessionId, result.replayMessages, true));
+        registry.sendRaw(connectionId, createReplayBatch(sessionId, result.replayMessages, true));
       }
       cancelOrphanTimeout();
     },
