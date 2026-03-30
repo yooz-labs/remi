@@ -12,10 +12,16 @@ import { parseNumberedOptions } from '../parser/question-parser.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   NotificationHookInput,
+  PermissionRequestHookInput,
+  PostToolUseFailureHookInput,
   PostToolUseHookInput,
   PreToolUseHookInput,
+  SessionEndHookInput,
   SessionStartHookInput,
+  StopFailureHookInput,
   StopHookInput,
+  SubagentStartHookInput,
+  SubagentStopHookInput,
 } from './hook-types.ts';
 
 export interface HookBridgeEvents {
@@ -41,6 +47,12 @@ export class HookEventBridge {
       onNotification: (input) => this.handleNotification(input),
       onStop: (input) => this.handleStop(input),
       onSessionStart: (input) => this.handleSessionStart(input),
+      onPermissionRequest: (input) => this.handlePermissionRequest(input),
+      onPostToolUseFailure: (input) => this.handlePostToolUseFailure(input),
+      onSubagentStart: (input) => this.handleSubagentStart(input),
+      onSubagentStop: (input) => this.handleSubagentStop(input),
+      onStopFailure: (input) => this.handleStopFailure(input),
+      onSessionEnd: (input) => this.handleSessionEnd(input),
     };
   }
 
@@ -79,6 +91,72 @@ export class HookEventBridge {
       return;
     }
     this.events.onSessionInfo(input.session_id, input.transcript_path);
+  }
+
+  handlePermissionRequest(input: PermissionRequestHookInput): void {
+    // Build a rich question from the tool_name and permission_suggestions.
+    // If permission_suggestions are provided, use them as numbered options;
+    // otherwise fall back to a Yes/No question with tool context.
+    const promptText = `Allow ${input.tool_name}?`;
+
+    if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
+      const options: QuestionOption[] = input.permission_suggestions.map((suggestion, idx) => {
+        const lower = suggestion.toLowerCase();
+        const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
+        const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
+        return {
+          label: suggestion,
+          value: String(idx + 1),
+          isRecommended: idx === 0,
+          isYes,
+          isNo,
+        };
+      });
+
+      this.events.onQuestion({
+        id: generateId(),
+        text: promptText,
+        options,
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+    } else {
+      this.events.onQuestion(this.buildPermissionQuestion(promptText));
+    }
+
+    this.events.onStatusChange('waiting');
+  }
+
+  handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {
+    this.events.onStatusChange('executing', `${input.tool_name} failed: ${input.error}`);
+  }
+
+  handleSubagentStart(input: SubagentStartHookInput): void {
+    this.events.onStatusChange('executing', `subagent:${input.agent_type}`);
+  }
+
+  handleSubagentStop(_input: SubagentStopHookInput): void {
+    this.events.onStatusChange('thinking');
+  }
+
+  handleStopFailure(input: StopFailureHookInput): void {
+    // Emit a question so the user is notified of the stop failure
+    const question: Question = {
+      id: generateId(),
+      text: `Session stop failed (${input.error_type}). Retry?`,
+      options: [
+        { label: 'Yes', value: 'y', isRecommended: true, isYes: true, isNo: false },
+        { label: 'No', value: 'n', isRecommended: false, isYes: false, isNo: true },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    };
+    this.events.onQuestion(question);
+    this.events.onStatusChange('waiting');
+  }
+
+  handleSessionEnd(_input: SessionEndHookInput): void {
+    this.events.onStatusChange('idle');
   }
 
   private buildPermissionQuestion(message: string): Question {
