@@ -15,7 +15,7 @@
 
 import type { UIMessage } from '../types';
 
-export type MessageSource = 'pty' | 'transcript';
+export type MessageSource = 'optimistic' | 'pty' | 'transcript';
 
 export interface IncomingMessage {
   readonly sessionId: string;
@@ -27,20 +27,27 @@ export interface IncomingMessage {
 
 export type DedupResult =
   | { readonly action: 'add' }
-  | { readonly action: 'replace'; readonly replaceIndex: number }
+  | { readonly action: 'replace'; readonly replaceIndex: number; readonly preserveId?: string }
   | { readonly action: 'skip' };
 
 /**
  * Determine whether an incoming message should be added, should replace
  * an existing message, or should be skipped entirely.
+ *
+ * Three-way dedup handles: optimistic (user-sent) + PTY echo + transcript.
+ *
+ * When replacing an optimistic or PTY message, `preserveId` is set to the
+ * original message's `id` so the caller can keep the same React key and
+ * avoid a remount/flicker.
  */
 export function deduplicateMessage(
   existingMessages: readonly UIMessage[],
   incoming: IncomingMessage,
 ): DedupResult {
   if (incoming.source === 'transcript') {
-    // Transcript message arriving: look for a PTY-sourced duplicate
-    // (no entryUuid, same sessionId+sender+content)
+    // Transcript is the authoritative source. Look for any non-transcript
+    // duplicate (optimistic or PTY) with matching sessionId+sender+content
+    // and no entryUuid yet.
     const dupIdx = existingMessages.findIndex(
       (m) =>
         !m.entryUuid &&
@@ -50,23 +57,46 @@ export function deduplicateMessage(
         m.content === incoming.content,
     );
     if (dupIdx >= 0) {
-      return { action: 'replace', replaceIndex: dupIdx };
+      return {
+        action: 'replace',
+        replaceIndex: dupIdx,
+        preserveId: existingMessages[dupIdx].id,
+      };
     }
     return { action: 'add' };
   }
 
-  // PTY message arriving: check if transcript already delivered this content
-  const hasTranscriptDup = existingMessages.some(
-    (m) =>
-      m.entryUuid &&
-      m.source === 'transcript' &&
-      m.sessionId === incoming.sessionId &&
-      m.sender === incoming.sender &&
-      m.content === incoming.content,
-  );
-  if (hasTranscriptDup) {
-    return { action: 'skip' };
+  if (incoming.source === 'pty') {
+    // PTY echo arriving: skip if an optimistic message already exists with
+    // matching sessionId+sender+content (the optimistic version is already
+    // displayed; the transcript version will replace it later).
+    const hasOptimisticDup = existingMessages.some(
+      (m) =>
+        m.source === 'optimistic' &&
+        m.sessionId === incoming.sessionId &&
+        m.sender === incoming.sender &&
+        m.content === incoming.content,
+    );
+    if (hasOptimisticDup) {
+      return { action: 'skip' };
+    }
+
+    // Also skip if transcript already delivered this content
+    const hasTranscriptDup = existingMessages.some(
+      (m) =>
+        m.entryUuid &&
+        m.source === 'transcript' &&
+        m.sessionId === incoming.sessionId &&
+        m.sender === incoming.sender &&
+        m.content === incoming.content,
+    );
+    if (hasTranscriptDup) {
+      return { action: 'skip' };
+    }
+
+    return { action: 'add' };
   }
 
+  // Optimistic or unknown source: just add
   return { action: 'add' };
 }

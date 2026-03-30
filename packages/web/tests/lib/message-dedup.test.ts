@@ -17,6 +17,8 @@ function makeUIMessage(overrides: Partial<UIMessage> = {}): UIMessage {
 }
 
 describe('deduplicateMessage', () => {
+  // --- Transcript arriving ---
+
   test('transcript arriving with no existing messages returns add', () => {
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
@@ -41,7 +43,22 @@ describe('deduplicateMessage', () => {
       source: 'transcript',
     };
     const result = deduplicateMessage(existing, incoming);
-    expect(result).toEqual({ action: 'replace', replaceIndex: 0 });
+    expect(result).toEqual({ action: 'replace', replaceIndex: 0, preserveId: 'msg-1' });
+  });
+
+  test('transcript arriving replaces optimistic duplicate and preserves its id', () => {
+    const existing = [
+      makeUIMessage({ id: 'optimistic-abc' as UIMessage['id'], sender: 'user', source: 'optimistic', entryUuid: undefined }),
+    ];
+    const incoming: IncomingMessage = {
+      sessionId: 'session-1',
+      sender: 'user',
+      content: 'Hello world',
+      entryUuid: 'entry-1',
+      source: 'transcript',
+    };
+    const result = deduplicateMessage(existing, incoming);
+    expect(result).toEqual({ action: 'replace', replaceIndex: 0, preserveId: 'optimistic-abc' });
   });
 
   test('transcript arriving does not replace message with different content', () => {
@@ -89,6 +106,40 @@ describe('deduplicateMessage', () => {
     expect(result).toEqual({ action: 'add' });
   });
 
+  test('transcript replaces correct index among multiple messages', () => {
+    const existing = [
+      makeUIMessage({ id: 'msg-0' as UIMessage['id'], content: 'First', source: 'pty' }),
+      makeUIMessage({ id: 'msg-1' as UIMessage['id'], content: 'Hello world', entryUuid: undefined, source: 'pty' }),
+      makeUIMessage({ id: 'msg-2' as UIMessage['id'], content: 'Third', source: 'pty' }),
+    ];
+    const incoming: IncomingMessage = {
+      sessionId: 'session-1',
+      sender: 'agent',
+      content: 'Hello world',
+      entryUuid: 'entry-1',
+      source: 'transcript',
+    };
+    const result = deduplicateMessage(existing, incoming);
+    expect(result).toEqual({ action: 'replace', replaceIndex: 1, preserveId: 'msg-1' });
+  });
+
+  test('sender mismatch prevents dedup', () => {
+    const existing = [
+      makeUIMessage({ sender: 'user', entryUuid: undefined, source: 'pty' }),
+    ];
+    const incoming: IncomingMessage = {
+      sessionId: 'session-1',
+      sender: 'agent',
+      content: 'Hello world',
+      entryUuid: 'entry-1',
+      source: 'transcript',
+    };
+    const result = deduplicateMessage(existing, incoming);
+    expect(result).toEqual({ action: 'add' });
+  });
+
+  // --- PTY arriving ---
+
   test('PTY arriving skips when transcript duplicate exists', () => {
     const existing = [
       makeUIMessage({ entryUuid: 'entry-1', source: 'transcript' }),
@@ -131,35 +182,70 @@ describe('deduplicateMessage', () => {
     expect(result).toEqual({ action: 'add' });
   });
 
-  test('transcript replaces correct index among multiple messages', () => {
+  test('PTY arriving skips when optimistic duplicate exists', () => {
     const existing = [
-      makeUIMessage({ id: 'msg-0' as UIMessage['id'], content: 'First', source: 'pty' }),
-      makeUIMessage({ id: 'msg-1' as UIMessage['id'], content: 'Hello world', entryUuid: undefined, source: 'pty' }),
-      makeUIMessage({ id: 'msg-2' as UIMessage['id'], content: 'Third', source: 'pty' }),
+      makeUIMessage({ id: 'opt-1' as UIMessage['id'], sender: 'user', source: 'optimistic', entryUuid: undefined }),
     ];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
-      sender: 'agent',
+      sender: 'user',
       content: 'Hello world',
-      entryUuid: 'entry-1',
-      source: 'transcript',
+      source: 'pty',
     };
     const result = deduplicateMessage(existing, incoming);
-    expect(result).toEqual({ action: 'replace', replaceIndex: 1 });
+    expect(result).toEqual({ action: 'skip' });
   });
 
-  test('sender mismatch prevents dedup', () => {
+  test('PTY arriving adds when optimistic message has different content', () => {
     const existing = [
-      makeUIMessage({ sender: 'user', entryUuid: undefined, source: 'pty' }),
+      makeUIMessage({ sender: 'user', source: 'optimistic', content: 'Different text' }),
     ];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
-      sender: 'agent',
+      sender: 'user',
       content: 'Hello world',
-      entryUuid: 'entry-1',
-      source: 'transcript',
+      source: 'pty',
     };
     const result = deduplicateMessage(existing, incoming);
     expect(result).toEqual({ action: 'add' });
+  });
+
+  // --- Full three-way lifecycle ---
+
+  test('three-way lifecycle: optimistic -> PTY skip -> transcript replace preserves id', () => {
+    // Step 1: optimistic message is already in the list
+    const optimisticMsg = makeUIMessage({
+      id: 'opt-xyz' as UIMessage['id'],
+      sender: 'user',
+      source: 'optimistic',
+      entryUuid: undefined,
+    });
+    const messages = [optimisticMsg];
+
+    // Step 2: PTY echo arrives and should be skipped
+    const ptyIncoming: IncomingMessage = {
+      sessionId: 'session-1',
+      sender: 'user',
+      content: 'Hello world',
+      source: 'pty',
+    };
+    const ptyResult = deduplicateMessage(messages, ptyIncoming);
+    expect(ptyResult).toEqual({ action: 'skip' });
+
+    // Step 3: transcript arrives and should replace the optimistic message,
+    // preserving its id for stable React keys
+    const transcriptIncoming: IncomingMessage = {
+      sessionId: 'session-1',
+      sender: 'user',
+      content: 'Hello world',
+      entryUuid: 'entry-abc',
+      source: 'transcript',
+    };
+    const transcriptResult = deduplicateMessage(messages, transcriptIncoming);
+    expect(transcriptResult).toEqual({
+      action: 'replace',
+      replaceIndex: 0,
+      preserveId: 'opt-xyz',
+    });
   });
 });
