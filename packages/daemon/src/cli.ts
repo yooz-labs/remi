@@ -1962,8 +1962,9 @@ const sharedEvents = {
     log(`Client disconnected: ${connectionId}`);
     log(`   Reason: ${reason}`);
 
-    // Remove from waiting queue if queued, or detach if active
-    // (detachConnection handles both: if active, it auto-promotes the next waiter)
+    // Explicitly remove from waiting queue, then detach if active.
+    // detachConnection also handles waiting removal, but this ensures
+    // cleanup even if detachConnection's early-return path changes.
     sessionRegistry.removeWaitingConnection(connectionId);
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);

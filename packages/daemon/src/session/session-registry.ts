@@ -305,16 +305,15 @@ export class SessionRegistry {
     this.session.activeConnectionId = null;
     this.session.lastDisconnectedAt = now();
 
-    // Try to promote the next waiting connection
-    if (this.waitingConnections.length > 0) {
+    // Try to promote the next waiting connection (loop until one succeeds or queue exhausted)
+    while (this.waitingConnections.length > 0) {
       const nextConnectionId = this.waitingConnections.shift();
-      if (!nextConnectionId) return;
+      if (!nextConnectionId) continue;
       const result = this.attachConnection(sessionId, nextConnectionId);
       if (result.success) {
         this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
         return;
       }
-      // If attach failed somehow, fall through to orphan logic
     }
 
     // Start orphan timeout (skip for locally-owned sessions; they stay alive
@@ -407,6 +406,9 @@ export class SessionRegistry {
         console.error(`Failed to close PTY for session ${sessionId}:`, err);
       });
     }
+
+    // Clear waiting queue to prevent stale IDs leaking into a future session
+    this.waitingConnections.length = 0;
 
     // Clear the session
     this.session = null;
@@ -551,6 +553,7 @@ export class SessionRegistry {
       } catch (err) {
         console.error('Failed to close PTY during shutdown:', err);
       }
+      this.waitingConnections.length = 0;
       this.session = null;
     }
   }
