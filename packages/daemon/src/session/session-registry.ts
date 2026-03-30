@@ -60,6 +60,8 @@ export interface SessionRegistryEvents {
   onSessionOrphaned?: (sessionId: UUID) => void;
   /** Session was resumed (connection reattached) */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
+  /** A waiting connection was promoted to active after the previous client disconnected */
+  onConnectionPromoted?: (sessionId: UUID, connectionId: UUID, result: AttachResult) => void;
 }
 
 /** A managed session with all its runtime state */
@@ -116,6 +118,8 @@ export class SessionRegistry {
   private readonly events: SessionRegistryEvents;
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
+  /** Connections waiting for the active connection to disconnect */
+  private readonly waitingConnections: UUID[] = [];
 
   constructor(config: SessionRegistryConfig = {}, events: SessionRegistryEvents = {}) {
     this.orphanTimeoutMs = config.orphanTimeoutMs ?? 5 * 60 * 1000; // 5 minutes
@@ -232,6 +236,10 @@ export class SessionRegistry {
 
     // Check if session already has an active connection
     if (this.session.activeConnectionId !== null) {
+      // Queue this connection for auto-promotion when the active one disconnects
+      if (!this.waitingConnections.includes(connectionId)) {
+        this.waitingConnections.push(connectionId);
+      }
       return {
         success: false,
         isResume: false,
@@ -277,11 +285,17 @@ export class SessionRegistry {
 
   /**
    * Detach a connection from the session.
-   * Non-locally-owned sessions become orphaned and start the timeout countdown.
+   * If there are waiting connections, the next one is auto-promoted.
+   * Otherwise, non-locally-owned sessions become orphaned and start the timeout countdown.
    * Locally-owned sessions remain active without a timeout.
    */
   detachConnection(connectionId: UUID): void {
     if (this.session === null || this.session.activeConnectionId !== connectionId) {
+      // Also remove from waiting list if it was queued
+      const waitIdx = this.waitingConnections.indexOf(connectionId);
+      if (waitIdx >= 0) {
+        this.waitingConnections.splice(waitIdx, 1);
+      }
       return;
     }
 
@@ -290,6 +304,25 @@ export class SessionRegistry {
     // Detach connection
     this.session.activeConnectionId = null;
     this.session.lastDisconnectedAt = now();
+
+    // Try to promote the next waiting connection (loop until one succeeds or queue exhausted)
+    while (this.waitingConnections.length > 0) {
+      const nextConnectionId = this.waitingConnections.shift();
+      if (!nextConnectionId) continue;
+      const result = this.attachConnection(sessionId, nextConnectionId);
+      if (result.success) {
+        try {
+          this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
+        } catch {
+          // Callback failed (e.g., promoted connection unreachable).
+          // Detach so the loop can try the next waiter.
+          this.session.activeConnectionId = null;
+          this.session.lastDisconnectedAt = now();
+          continue;
+        }
+        return;
+      }
+    }
 
     // Start orphan timeout (skip for locally-owned sessions; they stay alive
     // until PTY exits, explicit kill, or daemon shutdown).
@@ -301,6 +334,24 @@ export class SessionRegistry {
     }
 
     this.events.onSessionOrphaned?.(sessionId);
+  }
+
+  /**
+   * Remove a connection from the waiting queue.
+   * Call this when a waiting connection disconnects before being promoted.
+   */
+  removeWaitingConnection(connectionId: UUID): void {
+    const idx = this.waitingConnections.indexOf(connectionId);
+    if (idx >= 0) {
+      this.waitingConnections.splice(idx, 1);
+    }
+  }
+
+  /**
+   * Get the number of connections waiting for promotion.
+   */
+  get waitingConnectionCount(): number {
+    return this.waitingConnections.length;
   }
 
   /**
@@ -363,6 +414,9 @@ export class SessionRegistry {
         console.error(`Failed to close PTY for session ${sessionId}:`, err);
       });
     }
+
+    // Clear waiting queue to prevent stale IDs leaking into a future session
+    this.waitingConnections.length = 0;
 
     // Clear the session
     this.session = null;
@@ -507,6 +561,7 @@ export class SessionRegistry {
       } catch (err) {
         console.error('Failed to close PTY during shutdown:', err);
       }
+      this.waitingConnections.length = 0;
       this.session = null;
     }
   }

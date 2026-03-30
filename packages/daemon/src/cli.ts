@@ -1442,6 +1442,26 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    onConnectionPromoted: (sessionId, connectionId, result) => {
+      log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      const sent = registry.sendRaw(
+        connectionId,
+        createHelloAck('1.0.0', sessionId, {
+          isResume: result.replayMessages.length > 0,
+          replayCount: result.replayMessages.length,
+          nextBulletId: result.nextBulletId,
+        }),
+      );
+      if (!sent) {
+        log(`Promoted connection ${connectionId} is unreachable; detaching`);
+        sessionRegistry.detachConnection(connectionId);
+        return;
+      }
+      if (result.replayMessages.length > 0) {
+        registry.sendRaw(connectionId, createReplayBatch(sessionId, result.replayMessages, true));
+      }
+      cancelOrphanTimeout();
+    },
   },
 );
 
@@ -1947,6 +1967,10 @@ const sharedEvents = {
     log(`Client disconnected: ${connectionId}`);
     log(`   Reason: ${reason}`);
 
+    // Explicitly remove from waiting queue, then detach if active.
+    // detachConnection also handles waiting removal, but this ensures
+    // cleanup even if detachConnection's early-return path changes.
+    sessionRegistry.removeWaitingConnection(connectionId);
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
