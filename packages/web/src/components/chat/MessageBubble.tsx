@@ -55,9 +55,11 @@ function formatTime(timestamp: string): string {
 /** Single bullet item with optional truncation indicator */
 function BulletItem({
   bullet,
+  isUser = false,
   onExpand,
 }: {
   readonly bullet: UIBullet;
+  readonly isUser?: boolean;
   readonly onExpand?: (bulletId: number) => void;
 }) {
   const handleExpand = () => {
@@ -71,7 +73,7 @@ function BulletItem({
 
   return (
     <div className="group relative">
-      <InlineMarkdown content={displayContent} />
+      <InlineMarkdown content={displayContent} isUser={isUser} />
 
       {/* Truncation indicator */}
       {bullet.isTruncated && !bullet.fullContent && (
@@ -117,9 +119,10 @@ function MessageContent({
   readonly onBulletExpand?: (bulletId: number) => void;
 }) {
   if (message.isStreaming) {
+    // Use raw text during streaming to avoid re-parsing markdown on every chunk
     return (
-      <div>
-        <InlineMarkdown content={message.streamedContent || ''} isUser={isUser} />
+      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+        {message.streamedContent}
         <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
       </div>
     );
@@ -129,7 +132,7 @@ function MessageContent({
     return (
       <div className="space-y-2">
         {message.bullets!.map((bullet) => (
-          <BulletItem key={bullet.bulletId} bullet={bullet} onExpand={onBulletExpand} />
+          <BulletItem key={bullet.bulletId} bullet={bullet} isUser={isUser} onExpand={onBulletExpand} />
         ))}
       </div>
     );
