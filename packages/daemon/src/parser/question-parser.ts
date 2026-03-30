@@ -50,8 +50,8 @@ const PATTERNS = {
     /proceed with\s+\w+.*\?\s*$/i,
   ],
 
-  // Numbered option patterns
-  numberedOption: /^\s*(\d+)\.\s+(.+)$/,
+  // Numbered option patterns: "1. Option" or "1) Option"
+  numberedOption: /^\s*(\d+)[.)]\s+(.+)$/,
 
   // Option with marker (arrow, bullet)
   markedOption: /^\s*[►▸•●]\s+(.+)$/,
@@ -292,6 +292,105 @@ function createOption(
     isYes,
     isNo,
   };
+}
+
+/**
+ * Inline numbered option pattern: "(1) Yes (2) Always (3) No"
+ * Matches sequences like (N) text within a single line.
+ */
+const INLINE_NUMBERED = /\((\d+)\)\s+([^(]+)/g;
+
+/**
+ * Result of parsing numbered options from plain text.
+ */
+export interface NumberedParseResult {
+  /** The question/prompt text before the options */
+  readonly questionText: string;
+  /** Parsed options */
+  readonly options: readonly QuestionOption[];
+}
+
+/**
+ * Parse numbered options from plain text (no ANSI stripping).
+ *
+ * Handles multiple formats:
+ * - Line-per-option with dot:    "1. Yes\n2. No"
+ * - Line-per-option with paren:  "1) Yes\n2) No"
+ * - Inline with parens:          "(1) Yes (2) Always (3) No"
+ *
+ * Returns null if fewer than 2 options are found.
+ */
+export function parseNumberedOptions(text: string): NumberedParseResult | null {
+  if (!text || text.trim().length === 0) {
+    return null;
+  }
+
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+
+  // First, try line-per-option format: "N. text" or "N) text"
+  const lineOptions: QuestionOption[] = [];
+  let firstOptionIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]?.trim() ?? '';
+    const match = PATTERNS.numberedOption.exec(line);
+
+    if (match) {
+      if (firstOptionIndex === -1) {
+        firstOptionIndex = i;
+      }
+      const num = match[1] ?? '';
+      const label = match[2]?.trim() ?? '';
+
+      lineOptions.push(createOption(label, num, lineOptions.length === 0, false, false));
+    }
+  }
+
+  if (lineOptions.length >= 2) {
+    let questionText = '';
+    if (firstOptionIndex > 0) {
+      questionText = lines.slice(0, firstOptionIndex).join(' ').trim();
+    }
+    return {
+      questionText: questionText || 'Select an option:',
+      options: lineOptions,
+    };
+  }
+
+  // Then, try inline format: "(1) Yes (2) Always (3) No"
+  const fullText = lines.join(' ');
+  const inlineOptions: QuestionOption[] = [];
+  let firstMatchStart = -1;
+
+  // Reset lastIndex for global regex
+  INLINE_NUMBERED.lastIndex = 0;
+  let inlineMatch = INLINE_NUMBERED.exec(fullText);
+  while (inlineMatch !== null) {
+    if (firstMatchStart === -1) {
+      firstMatchStart = inlineMatch.index;
+    }
+    const num = inlineMatch[1] ?? '';
+    const label = inlineMatch[2]?.trim() ?? '';
+    inlineOptions.push(createOption(label, num, inlineOptions.length === 0, false, false));
+    inlineMatch = INLINE_NUMBERED.exec(fullText);
+  }
+
+  if (inlineOptions.length >= 2 && firstMatchStart > 0) {
+    const questionText = fullText.slice(0, firstMatchStart).trim();
+    return {
+      questionText: questionText || 'Select an option:',
+      options: inlineOptions,
+    };
+  }
+
+  if (inlineOptions.length >= 2) {
+    return {
+      questionText: 'Select an option:',
+      options: inlineOptions,
+    };
+  }
+
+  return null;
 }
 
 /**

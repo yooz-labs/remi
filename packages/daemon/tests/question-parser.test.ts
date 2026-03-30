@@ -3,7 +3,11 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { hasQuestionIndicator, parseQuestion } from '../src/parser/question-parser.ts';
+import {
+  hasQuestionIndicator,
+  parseNumberedOptions,
+  parseQuestion,
+} from '../src/parser/question-parser.ts';
 
 describe('parseQuestion()', () => {
   describe('Yes/No questions', () => {
@@ -260,5 +264,94 @@ describe('hasQuestionIndicator()', () => {
 
   test('handles ANSI codes', () => {
     expect(hasQuestionIndicator('\x1b[31mQuestion?\x1b[0m')).toBe(true);
+  });
+});
+
+describe('parseQuestion() with parenthesis numbered format', () => {
+  test('detects N) format numbered list', () => {
+    const input = `Select a framework:
+1) React
+2) Vue
+3) Angular`;
+    const result = parseQuestion(input);
+    expect(result.detected).toBe(true);
+    expect(result.type).toBe('numbered');
+    expect(result.question?.options.length).toBe(3);
+    expect(result.question?.options[0]?.label).toBe('React');
+    expect(result.question?.options[1]?.label).toBe('Vue');
+    expect(result.question?.options[2]?.label).toBe('Angular');
+  });
+
+  test('N) format option values are the numbers', () => {
+    const input = `1) Option A
+2) Option B`;
+    const result = parseQuestion(input);
+    expect(result.question?.options[0]?.value).toBe('1');
+    expect(result.question?.options[1]?.value).toBe('2');
+  });
+
+  test('hasQuestionIndicator detects N) format', () => {
+    expect(hasQuestionIndicator('1) First\n2) Second')).toBe(true);
+  });
+});
+
+describe('parseNumberedOptions()', () => {
+  test('parses multiline N) format', () => {
+    const result = parseNumberedOptions('Question?\n1) Yes\n2) No');
+    expect(result).not.toBeNull();
+    expect(result?.questionText).toBe('Question?');
+    expect(result?.options.length).toBe(2);
+    expect(result?.options[0]?.label).toBe('Yes');
+    expect(result?.options[0]?.value).toBe('1');
+    expect(result?.options[1]?.label).toBe('No');
+    expect(result?.options[1]?.value).toBe('2');
+  });
+
+  test('parses multiline N. format', () => {
+    const result = parseNumberedOptions('Pick one:\n1. Alpha\n2. Beta');
+    expect(result).not.toBeNull();
+    expect(result?.questionText).toBe('Pick one:');
+    expect(result?.options.length).toBe(2);
+    expect(result?.options[0]?.label).toBe('Alpha');
+    expect(result?.options[1]?.label).toBe('Beta');
+  });
+
+  test('parses inline (N) format', () => {
+    const result = parseNumberedOptions('Allow? (1) Yes (2) Always (3) No');
+    expect(result).not.toBeNull();
+    expect(result?.questionText).toBe('Allow?');
+    expect(result?.options.length).toBe(3);
+    expect(result?.options[0]?.label).toBe('Yes');
+    expect(result?.options[1]?.label).toBe('Always');
+    expect(result?.options[2]?.label).toBe('No');
+  });
+
+  test('returns null for empty string', () => {
+    expect(parseNumberedOptions('')).toBeNull();
+  });
+
+  test('returns null for text without numbered options', () => {
+    expect(parseNumberedOptions('Just some plain text')).toBeNull();
+  });
+
+  test('returns null for single option', () => {
+    expect(parseNumberedOptions('1) Only one')).toBeNull();
+  });
+
+  test('first option is marked recommended', () => {
+    const result = parseNumberedOptions('Choose:\n1) A\n2) B');
+    expect(result?.options[0]?.isRecommended).toBe(true);
+    expect(result?.options[1]?.isRecommended).toBe(false);
+  });
+
+  test('handles three options with long labels', () => {
+    const msg =
+      "Do you want to proceed?\n1) Yes\n2) Yes, and don't ask again for this session\n3) No";
+    const result = parseNumberedOptions(msg);
+    expect(result).not.toBeNull();
+    expect(result?.options.length).toBe(3);
+    expect(result?.options[0]?.label).toBe('Yes');
+    expect(result?.options[1]?.label).toBe("Yes, and don't ask again for this session");
+    expect(result?.options[2]?.label).toBe('No');
   });
 });

@@ -8,6 +8,7 @@
 
 import { generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
+import { parseNumberedOptions } from '../parser/question-parser.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   NotificationHookInput,
@@ -81,6 +82,35 @@ export class HookEventBridge {
   }
 
   private buildPermissionQuestion(message: string): Question {
+    // Try to parse numbered options from the message text.
+    // Claude Code sends messages like:
+    //   "Do you want to proceed?\n1) Yes\n2) Yes, and don't ask again\n3) No"
+    // or inline: "Allow? (1) Yes (2) Always (3) No"
+    const parsed = message ? parseNumberedOptions(message) : null;
+
+    if (parsed) {
+      // Tag yes/no semantics on parsed options
+      const taggedOptions: QuestionOption[] = parsed.options.map((opt) => {
+        const lower = opt.label.toLowerCase();
+        const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
+        const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
+        return {
+          ...opt,
+          isYes,
+          isNo,
+        };
+      });
+
+      return {
+        id: generateId(),
+        text: parsed.questionText,
+        options: taggedOptions,
+        allowsFreeText: false,
+        isAnswered: false,
+      };
+    }
+
+    // Fallback: simple Yes/No when no numbered options found
     const yesOption: QuestionOption = {
       label: 'Yes',
       value: 'y',
