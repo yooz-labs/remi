@@ -18,7 +18,7 @@ import {
   Pencil,
   Terminal,
 } from 'lucide-react';
-import { ChatMessage } from './ChatMessage';
+import { ChatMessage, InlineMarkdown } from './ChatMessage';
 
 interface MessageBubbleProps {
   readonly message: UIMessage;
@@ -71,7 +71,7 @@ function BulletItem({
 
   return (
     <div className="group relative">
-      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{displayContent}</div>
+      <InlineMarkdown content={displayContent} />
 
       {/* Truncation indicator */}
       {bullet.isTruncated && !bullet.fullContent && (
@@ -118,8 +118,8 @@ function MessageContent({
 }) {
   if (message.isStreaming) {
     return (
-      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-        {message.streamedContent}
+      <div>
+        <InlineMarkdown content={message.streamedContent || ''} isUser={isUser} />
         <span className="ml-0.5 inline-block size-1.5 animate-pulse rounded-full bg-current" />
       </div>
     );
@@ -139,11 +139,7 @@ function MessageContent({
     return <ChatMessage content={message.content} isUser={isUser} />;
   }
 
-  return (
-    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-      {message.content}
-    </div>
-  );
+  return <InlineMarkdown content={message.content} isUser={isUser} />;
 }
 
 export function MessageBubble({
