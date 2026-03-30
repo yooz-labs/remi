@@ -153,4 +153,160 @@ describe('HookEventBridge', () => {
 
     expect(statuses).toEqual([{ status: 'executing', context: 'Edit' }]);
   });
+
+  describe('numbered option parsing in permission_prompt', () => {
+    it('parses multiline numbered options with parenthesis format', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: "Do you want to proceed?\n1) Yes\n2) Yes, and don't ask again\n3) No",
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.text).toBe('Do you want to proceed?');
+      expect(questions[0]?.options.length).toBe(3);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+      expect(questions[0]?.options[0]?.value).toBe('1');
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.label).toBe("Yes, and don't ask again");
+      expect(questions[0]?.options[1]?.value).toBe('2');
+      expect(questions[0]?.options[1]?.isYes).toBe(true);
+      expect(questions[0]?.options[2]?.label).toBe('No');
+      expect(questions[0]?.options[2]?.value).toBe('3');
+      expect(questions[0]?.options[2]?.isNo).toBe(true);
+    });
+
+    it('parses multiline numbered options with dot format', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Allow Bash?\n1. Yes\n2. Always\n3. No',
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.text).toBe('Allow Bash?');
+      expect(questions[0]?.options.length).toBe(3);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+      expect(questions[0]?.options[1]?.label).toBe('Always');
+      expect(questions[0]?.options[1]?.isYes).toBe(true);
+      expect(questions[0]?.options[2]?.label).toBe('No');
+      expect(questions[0]?.options[2]?.isNo).toBe(true);
+    });
+
+    it('parses inline numbered options', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Allow? (1) Yes (2) Always (3) No',
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.options.length).toBe(3);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+      expect(questions[0]?.options[0]?.value).toBe('1');
+      expect(questions[0]?.options[1]?.label).toBe('Always');
+      expect(questions[0]?.options[2]?.label).toBe('No');
+    });
+
+    it('falls back to Yes/No when no numbered options in message', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Allow Bash: npm test?',
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.text).toBe('Allow Bash: npm test?');
+      expect(questions[0]?.options.length).toBe(2);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.label).toBe('No');
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
+    });
+
+    it('falls back to Yes/No for empty message', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: '',
+      } as NotificationHookInput);
+
+      expect(questions[0]?.text).toBe('Allow this action?');
+      expect(questions[0]?.options.length).toBe(2);
+    });
+
+    it('falls back to Yes/No when only one numbered option', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Something\n1) Only one option here',
+      } as NotificationHookInput);
+
+      // Single option should not be treated as numbered; fall back
+      expect(questions[0]?.options.length).toBe(2);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+    });
+
+    it('tags deny/reject as isNo', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Confirm?\n1) Allow\n2) Deny',
+      } as NotificationHookInput);
+
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[0]?.isNo).toBe(false);
+      expect(questions[0]?.options[1]?.isYes).toBe(false);
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
+    });
+
+    it('sets allowsFreeText to false for numbered permission options', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Proceed?\n1) Yes\n2) No',
+      } as NotificationHookInput);
+
+      expect(questions[0]?.allowsFreeText).toBe(false);
+    });
+
+    it('marks first option as recommended', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Allow?\n1) Yes\n2) Yes, always\n3) No',
+      } as NotificationHookInput);
+
+      expect(questions[0]?.options[0]?.isRecommended).toBe(true);
+      expect(questions[0]?.options[1]?.isRecommended).toBe(false);
+      expect(questions[0]?.options[2]?.isRecommended).toBe(false);
+    });
+  });
 });
