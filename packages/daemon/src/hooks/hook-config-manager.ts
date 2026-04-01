@@ -238,15 +238,15 @@ export class HookConfigManager {
         continue;
       }
 
-      const allRemiStyle = matchers.every(
-        (m) =>
+      const allRemiStyle = matchers.every((m) => {
+        const h = Array.isArray(m.hooks) && m.hooks.length === 1 ? m.hooks[0] : undefined;
+        return (
           !m.matcher &&
-          Array.isArray(m.hooks) &&
-          m.hooks.length === 1 &&
-          m.hooks[0].type === 'http' &&
-          (m.hooks[0].url.startsWith('http://127.0.0.1') ||
-            m.hooks[0].url.startsWith('http://localhost')),
-      );
+          h !== undefined &&
+          h.type === 'http' &&
+          (h.url.startsWith('http://127.0.0.1') || h.url.startsWith('http://localhost'))
+        );
+      });
 
       if (allRemiStyle) {
         Reflect.deleteProperty(settings.hooks, event);
