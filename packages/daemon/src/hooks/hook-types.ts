@@ -89,11 +89,6 @@ export interface SubagentStopHookInput extends HookCommonInput {
   agent_type: string;
 }
 
-/** Fired when a task is created */
-export interface TaskCreatedHookInput extends HookCommonInput {
-  hook_event_name: 'TaskCreated';
-}
-
 /** Fired when a task completes */
 export interface TaskCompletedHookInput extends HookCommonInput {
   hook_event_name: 'TaskCompleted';
@@ -114,17 +109,6 @@ export interface TeammateIdleHookInput extends HookCommonInput {
 export interface ConfigChangeHookInput extends HookCommonInput {
   hook_event_name: 'ConfigChange';
   config_type: string;
-}
-
-/** Fired when the working directory changes */
-export interface CwdChangedHookInput extends HookCommonInput {
-  hook_event_name: 'CwdChanged';
-}
-
-/** Fired when a file changes */
-export interface FileChangedHookInput extends HookCommonInput {
-  hook_event_name: 'FileChanged';
-  filename: string;
 }
 
 /** Fired when a git worktree is created */
@@ -180,13 +164,10 @@ export type HookInput =
   | InstructionsLoadedHookInput
   | SubagentStartHookInput
   | SubagentStopHookInput
-  | TaskCreatedHookInput
   | TaskCompletedHookInput
   | StopFailureHookInput
   | TeammateIdleHookInput
   | ConfigChangeHookInput
-  | CwdChangedHookInput
-  | FileChangedHookInput
   | WorktreeCreateHookInput
   | WorktreeRemoveHookInput
   | PreCompactHookInput
@@ -208,13 +189,10 @@ export const HOOK_EVENT_NAMES = [
   'InstructionsLoaded',
   'SubagentStart',
   'SubagentStop',
-  'TaskCreated',
   'TaskCompleted',
   'StopFailure',
   'TeammateIdle',
   'ConfigChange',
-  'CwdChanged',
-  'FileChanged',
   'WorktreeCreate',
   'WorktreeRemove',
   'PreCompact',

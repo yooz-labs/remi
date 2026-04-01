@@ -42,8 +42,9 @@ export class HookConfigManager {
 
   /**
    * Write Remi hook configuration into Claude settings.
-   * Purges stale hooks from dead daemons first, then merges ours
-   * alongside any existing user hooks without overwriting them.
+   * Purges stale hooks from dead daemons and removes invalid event
+   * names first, then merges ours alongside any existing user hooks
+   * without overwriting them.
    */
   async install(): Promise<void> {
     const dir = path.dirname(this.settingsPath);
@@ -56,6 +57,14 @@ export class HookConfigManager {
     } catch (err) {
       console.warn(
         `Failed to purge stale hooks: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
+      );
+    }
+
+    try {
+      this.purgeInvalidEventNames();
+    } catch (err) {
+      console.warn(
+        `Failed to purge invalid event names: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
       );
     }
 
@@ -195,6 +204,60 @@ export class HookConfigManager {
       (h) => h.type === 'http' && deadUrls.has(h.url),
     );
     if (modified) {
+      this.writeSettings(settings);
+    }
+  }
+
+  /**
+   * Remove hook event keys that Claude Code no longer recognizes.
+   * Claude Code rejects the entire settings file if any hook key is
+   * invalid, so stale event names from older remi versions break
+   * all hooks. This method removes any event name not in the current
+   * HOOK_EVENT_NAMES list (only removes entries that look like remi's
+   * HTTP hooks, not user-configured hooks with matchers or other types).
+   */
+  private purgeInvalidEventNames(): void {
+    if (!fs.existsSync(this.settingsPath)) return;
+
+    const settings = this.readSettings();
+    if (!settings.hooks) return;
+
+    const validNames = new Set<string>(HOOK_EVENT_NAMES);
+    let modified = false;
+
+    for (const event of Object.keys(settings.hooks)) {
+      if (validNames.has(event)) continue;
+
+      // Only remove if all matchers in this event are remi-style HTTP hooks
+      // (no matcher field, single http hook pointing to localhost).
+      // This avoids removing user-configured hooks for custom events.
+      const matchers = settings.hooks[event];
+      if (!matchers || matchers.length === 0) {
+        Reflect.deleteProperty(settings.hooks, event);
+        modified = true;
+        continue;
+      }
+
+      const allRemiStyle = matchers.every((m) => {
+        const h = Array.isArray(m.hooks) && m.hooks.length === 1 ? m.hooks[0] : undefined;
+        return (
+          !m.matcher &&
+          h !== undefined &&
+          h.type === 'http' &&
+          (h.url.startsWith('http://127.0.0.1') || h.url.startsWith('http://localhost'))
+        );
+      });
+
+      if (allRemiStyle) {
+        Reflect.deleteProperty(settings.hooks, event);
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      if (settings.hooks && Object.keys(settings.hooks).length === 0) {
+        Reflect.deleteProperty(settings, 'hooks');
+      }
       this.writeSettings(settings);
     }
   }

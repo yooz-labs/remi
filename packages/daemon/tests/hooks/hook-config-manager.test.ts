@@ -36,15 +36,15 @@ describe('HookConfigManager', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude'))).toBe(true);
   });
 
-  it('writes hook config with all 25 required events', async () => {
+  it('writes hook config with all required events', async () => {
     await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
     expect(settings.hooks).toBeDefined();
     const events = Object.keys(settings.hooks);
 
-    // Verify all 25 events are registered
-    expect(HOOK_EVENT_NAMES.length).toBe(25);
+    // Verify all events are registered (22 after Claude Code removed 3)
+    expect(HOOK_EVENT_NAMES.length).toBe(22);
     for (const event of HOOK_EVENT_NAMES) {
       expect(events).toContain(event);
     }
@@ -267,5 +267,51 @@ describe('HookConfigManager', () => {
 
     // Both non-localhost HTTP and command hooks preserved, plus ours = 3
     expect(settings.hooks['PreToolUse']?.length).toBe(3);
+  });
+
+  it('removes invalid event names left by older remi versions', async () => {
+    // Simulate stale settings with events Claude Code no longer recognizes
+    writeSettings({
+      hooks: {
+        PreToolUse: [
+          { hooks: [{ type: 'http', url: 'http://127.0.0.1:12345/hooks', timeout: 5 }] },
+        ],
+        CwdChanged: [
+          { hooks: [{ type: 'http', url: 'http://127.0.0.1:12345/hooks', timeout: 5 }] },
+        ],
+        FileChanged: [
+          { hooks: [{ type: 'http', url: 'http://127.0.0.1:12345/hooks', timeout: 5 }] },
+        ],
+        TaskCreated: [
+          { hooks: [{ type: 'http', url: 'http://127.0.0.1:12345/hooks', timeout: 5 }] },
+        ],
+      },
+    });
+
+    await manager.install();
+    const settings = readSettings() as { hooks: Record<string, unknown[]> };
+
+    // Invalid events should be removed
+    expect(settings.hooks['CwdChanged']).toBeUndefined();
+    expect(settings.hooks['FileChanged']).toBeUndefined();
+    expect(settings.hooks['TaskCreated']).toBeUndefined();
+
+    // Valid events should remain (PreToolUse with stale + ours)
+    expect(settings.hooks['PreToolUse']).toBeDefined();
+  });
+
+  it('preserves non-remi hooks on invalid event names', async () => {
+    // If someone has a custom command hook on an unknown event, leave it alone
+    writeSettings({
+      hooks: {
+        CwdChanged: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo hello' }] }],
+      },
+    });
+
+    await manager.install();
+    const settings = readSettings() as { hooks: Record<string, unknown[]> };
+
+    // Custom command hook preserved (not remi-style)
+    expect(settings.hooks['CwdChanged']).toBeDefined();
   });
 });
