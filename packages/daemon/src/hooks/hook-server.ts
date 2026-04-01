@@ -207,9 +207,9 @@ export class HookServer {
           break;
         default:
           // Medium/low priority events (UserPromptSubmit, InstructionsLoaded,
-          // TaskCreated, TaskCompleted, TeammateIdle, ConfigChange, CwdChanged,
-          // FileChanged, WorktreeCreate, WorktreeRemove, PreCompact, PostCompact,
-          // Elicitation, ElicitationResult) are accepted but only dispatched
+          // TaskCompleted, TeammateIdle, ConfigChange, WorktreeCreate,
+          // WorktreeRemove, PreCompact, PostCompact, Elicitation,
+          // ElicitationResult) are accepted but only dispatched
           // to dynamic listeners below.
           break;
       }
