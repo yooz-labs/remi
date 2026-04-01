@@ -153,6 +153,50 @@ export async function unlockIdentity(
 }
 
 /**
+ * Re-key an identity: change, add, or remove the passphrase without
+ * regenerating the keypair. The fingerprint and public key stay the same,
+ * so authorized clients do not need to re-authorize.
+ *
+ * @param identity  The existing identity (encrypted or unencrypted)
+ * @param oldPassphrase  Passphrase to unlock (undefined if unencrypted)
+ * @param newPassphrase  New passphrase (undefined to store unencrypted)
+ */
+export async function rekeyIdentity(
+  identity: RemiIdentity,
+  oldPassphrase?: string,
+  newPassphrase?: string,
+): Promise<RemiIdentity> {
+  // Unlock to get the raw private key
+  const unlocked = await unlockIdentity(identity, oldPassphrase);
+  const privateKeyRaw = await crypto.subtle.exportKey('pkcs8', unlocked.privateKey);
+
+  if (newPassphrase) {
+    const encrypted = await encryptPrivateKey(privateKeyRaw, newPassphrase);
+    return {
+      version: 1,
+      publicKey: identity.publicKey,
+      encryptedPrivateKey: encrypted.ciphertext,
+      salt: encrypted.salt,
+      iv: encrypted.iv,
+      iterations: PBKDF2_ITERATIONS,
+      fingerprint: identity.fingerprint,
+      createdAt: identity.createdAt,
+    };
+  }
+
+  return {
+    version: 1,
+    publicKey: identity.publicKey,
+    encryptedPrivateKey: toBase64(privateKeyRaw),
+    salt: '',
+    iv: '',
+    iterations: 0,
+    fingerprint: identity.fingerprint,
+    createdAt: identity.createdAt,
+  };
+}
+
+/**
  * Serialize an identity to JSON string for export/storage.
  */
 export function serializeIdentity(identity: RemiIdentity): string {

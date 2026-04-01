@@ -551,6 +551,8 @@ const cliCodeRefresh = parsedArgs.codeRefresh;
 const cliPermanentCode = parsedArgs.permanentCode;
 const cliForce = parsedArgs.force;
 const cliUsePassphrase = parsedArgs.usePassphrase;
+const cliDecrypt = parsedArgs.decrypt;
+const cliEncrypt = parsedArgs.encrypt;
 const cliNoTofu = parsedArgs.noTofu;
 const cliAuth = parsedArgs.auth;
 const cliLabel = parsedArgs.label;
@@ -704,6 +706,8 @@ if (cliSubcommand === 'keygen') {
   await runKeygen({
     passphrase: process.env['REMI_PASSPHRASE'],
     usePassphrase: cliUsePassphrase,
+    decrypt: cliDecrypt,
+    encrypt: cliEncrypt,
     force: cliForce,
   });
   process.exit(0);
