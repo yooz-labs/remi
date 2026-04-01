@@ -150,6 +150,7 @@ export {
   isEncrypted,
   createIdentity,
   unlockIdentity,
+  rekeyIdentity,
   serializeIdentity,
   deserializeIdentity,
   createAuthorizedKey,

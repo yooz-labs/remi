@@ -73,6 +73,8 @@ export interface ParsedArgs {
   readonly permanentCode: boolean;
   readonly force: boolean;
   readonly usePassphrase: boolean;
+  readonly decrypt: boolean;
+  readonly encrypt: boolean;
   readonly noTofu: boolean;
   readonly auth: boolean | undefined;
   readonly label: string | undefined;
@@ -110,6 +112,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let permanentCode = false;
   let force = false;
   let usePassphrase = false;
+  let decrypt = false;
+  let encrypt = false;
   let noTofu = false;
   let auth: boolean | undefined;
   let label: string | undefined;
@@ -221,6 +225,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       force = true;
     } else if (arg === '--passphrase') {
       usePassphrase = true;
+    } else if (arg === '--decrypt') {
+      decrypt = true;
+    } else if (arg === '--encrypt') {
+      encrypt = true;
     } else if (arg === '--no-tofu') {
       noTofu = true;
     } else if (arg === '--auth') {
@@ -335,6 +343,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     permanentCode,
     force,
     usePassphrase,
+    decrypt,
+    encrypt,
     noTofu,
     auth,
     label,
