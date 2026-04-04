@@ -1547,7 +1547,17 @@ async function createNewSession(
         }
       },
       onMessageFinalized: (msgId) => {
-        log(`Message ${msgId} finalized`);
+        const structured = messageApi.getMessage(msgId);
+        if (!structured) {
+          log(`Message ${msgId} finalized`);
+          return;
+        }
+
+        try {
+          sendAndRecord(createStructuredAgentOutput(structured, true, []));
+        } catch (err) {
+          logError(`[Session ${sessionId}] Failed to send finalized structured message:`, err);
+        }
       },
       onQuestion: (question) => {
         log(`Question detected: ${question.text.substring(0, 50)}...`);
@@ -1589,8 +1599,32 @@ async function createNewSession(
     },
   );
 
-  // PTY output parser: status-only mode (content comes from transcript for clean results)
-  const outputProcessor = new OutputProcessor({ sessionId, streamStatusOnly: true }, {});
+  // PTY output parser: keep streaming structured PTY messages so terminal-only
+  // failures still surface in remote clients when transcript updates never arrive.
+  const outputProcessor = new OutputProcessor(
+    { sessionId },
+    {
+      onMessage: (message) => {
+        messageApi.handleMessage(message);
+      },
+      onMessageUpdate: (messageId, content, tool) => {
+        messageApi.handleMessageUpdate(messageId, content, tool);
+      },
+      onMessageFinalized: (messageId) => {
+        messageApi.finalizeMessage(messageId);
+      },
+      onQuestion: (question) => {
+        if (!hookServer) {
+          messageApi.handleQuestion(question);
+        }
+      },
+      onStatusChange: (status, context) => {
+        if (!hookServer) {
+          messageApi.handleStatusChange(status, context);
+        }
+      },
+    },
+  );
 
   // Hook-based event bridge for status/question detection
   if (hookServer) {
