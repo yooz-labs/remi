@@ -8,7 +8,7 @@
 import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { useKeyboard } from '@/hooks/useKeyboard';
 import { clsx } from 'clsx';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
@@ -58,17 +58,8 @@ export function ChatView({
 }: ChatViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
   const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
-  const containerRef = useRef<HTMLDivElement>(null);
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
-
-  // When keyboard opens, set a CSS custom property for components to use
-  useEffect(() => {
-    document.documentElement.style.setProperty(
-      '--keyboard-height',
-      keyboardVisible ? `${keyboardHeight}px` : '0px',
-    );
-  }, [keyboardVisible, keyboardHeight]);
 
   // In chat mode, show QuestionCard for active questions (not free_text with no options).
   // In compact mode, fall back to the InputArea's built-in quick responses.
@@ -80,7 +71,6 @@ export function ChatView({
 
   return (
     <div
-      ref={containerRef}
       className={clsx('flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]', className)}
       style={{ paddingBottom: keyboardVisible ? `${keyboardHeight}px` : undefined }}
     >
