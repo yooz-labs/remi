@@ -5,7 +5,7 @@ export const DAEMON2_PORT = 19766;
 
 /**
  * Connect to a Remi daemon via the web UI's ConnectModal.
- * Opens the modal, fills in the WebSocket URL, and waits for connection.
+ * Opens the modal, fills in the host, and waits for connection.
  */
 export async function connectToDaemon(page: Page, port: number = DAEMON1_PORT): Promise<void> {
   // Click the connect button in the session list header
@@ -14,10 +14,10 @@ export async function connectToDaemon(page: Page, port: number = DAEMON1_PORT): 
   // Wait for modal to appear
   await page.waitForSelector('text=Connect to Daemon');
 
-  // Clear the URL input and fill with our daemon URL
-  const urlInput = page.locator('input[placeholder="ws://localhost:3847/ws"]');
-  await urlInput.clear();
-  await urlInput.fill(`ws://localhost:${port}/ws`);
+  // Clear the host input and point it at the requested daemon.
+  const hostInput = page.locator('input[placeholder="localhost"]');
+  await hostInput.clear();
+  await hostInput.fill(`localhost:${port}`);
 
   // Click the Connect button in the modal footer if it's enabled.
   // The app may auto-connect when the URL changes (if previously connected),
@@ -36,18 +36,18 @@ export async function connectToDaemon(page: Page, port: number = DAEMON1_PORT): 
     .catch(() => false);
 
   if (!modalClosed) {
-    // Modal still open; should show "Connected!" status
-    await page.waitForSelector('text=Connected!', { timeout: 5_000 });
+    // Modal still open; should show "Connected" status
+    await page.waitForSelector('text=Connected', { timeout: 5_000 });
     await page.locator('[aria-label="Close"]').first().click();
     await page.waitForSelector('text=Connect to Daemon', { state: 'hidden', timeout: 3_000 });
   }
 }
 
 /**
- * Wait for the session list header to appear (indicates connection is active).
+ * Wait for the main Remi shell to appear (indicates connection is active).
  */
 export async function waitForSessionList(page: Page): Promise<void> {
-  await page.waitForSelector('h1:has-text("Sessions")', { timeout: 10_000 });
+  await page.waitForSelector('h1:has-text("Remi")', { timeout: 10_000 });
 }
 
 /**
