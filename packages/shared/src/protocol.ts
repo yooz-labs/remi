@@ -95,7 +95,9 @@ export type ProtocolMessage =
   | SessionHistoryRequestMessage
   | SessionHistoryResponseMessage
   | ResumeSessionRequestMessage
-  | ResumeSessionResponseMessage;
+  | ResumeSessionResponseMessage
+  | DetachSessionMessage
+  | DetachSessionAckMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -473,6 +475,28 @@ export interface KillSessionResponseMessage {
   readonly requestId: UUID;
 }
 
+/** Request to detach from a session without killing it (tmux-style) */
+export interface DetachSessionMessage {
+  readonly type: 'detach_session';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Session ID to detach from */
+  readonly sessionId: UUID;
+}
+
+/** Acknowledgment that detach was processed; sent before the server closes the connection */
+export interface DetachSessionAckMessage {
+  readonly type: 'detach_session_ack';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Session ID that was detached */
+  readonly sessionId: UUID;
+  /** Whether the detach succeeded */
+  readonly success: boolean;
+  /** Error message if detach failed */
+  readonly error?: string;
+}
+
 /** A recent project directory aggregated from session history */
 export interface RecentDirectory {
   /** Absolute path */
@@ -578,6 +602,8 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'session_history_response',
     'resume_session_request',
     'resume_session_response',
+    'detach_session',
+    'detach_session_ack',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1128,6 +1154,36 @@ export function createResumeSessionResponse(
     success,
     requestId,
     ...(sessionId !== undefined && { sessionId }),
+    ...(error !== undefined && { error }),
+  };
+}
+
+/**
+ * Create a detach session request (tmux-style detach without killing).
+ */
+export function createDetachSession(sessionId: UUID): DetachSessionMessage {
+  return {
+    type: 'detach_session',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+  };
+}
+
+/**
+ * Create a detach session acknowledgment.
+ */
+export function createDetachSessionAck(
+  sessionId: UUID,
+  success: boolean,
+  error?: string,
+): DetachSessionAckMessage {
+  return {
+    type: 'detach_session_ack',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    success,
     ...(error !== undefined && { error }),
   };
 }

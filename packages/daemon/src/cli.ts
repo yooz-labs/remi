@@ -232,6 +232,7 @@ if (fs.existsSync(envPath)) {
 import {
   createBulletExpandResponse,
   createCreateSessionResponse,
+  createDetachSessionAck,
   createError,
   createHelloAck,
   createKillSessionResponse,
@@ -915,17 +916,41 @@ if (cliSubcommand === 'kill') {
   process.exit(0);
 }
 
-// Handle 'detach' subcommand: detach from a session
+// Handle 'detach' subcommand: detach from a session without killing it
 if (cliSubcommand === 'detach') {
-  // Without args: not meaningful from CLI (Ctrl+B d handles interactive detach)
-  // With name: informational only; there's no remote detach protocol yet
   if (!resolved.targetId) {
-    console.log('To detach from a session interactively, press Ctrl+B d.');
-    console.log('To detach a specific session by name: remi detach <session-name>');
-    console.log('(Remote detach is not yet implemented; use Ctrl+B d in the attached terminal.)');
-  } else {
-    console.log('Remote detach of named sessions is not yet implemented.');
-    console.log('To detach, press Ctrl+B d in the attached terminal.');
+    console.error('Usage: remi detach <session-name-or-id>');
+    console.error('  Detach from a session without killing it (tmux-style).');
+    console.error('  The session remains alive and can be re-attached with `remi attach`.');
+    console.error('  Examples: remi detach my-session');
+    console.error('            remi detach host:port/session-name');
+    console.error('  Tip: When attached interactively, press Ctrl+B d to detach.');
+    console.error('Run `remi ls` to see live sessions.');
+    process.exit(1);
+  }
+
+  let resolvedPort = resolved.port;
+
+  // Resolve port from live registry if target matches a known local session
+  if (!cliPort && resolved.host === 'localhost') {
+    const liveMatch =
+      liveSessionsRegistry.findByName(resolved.targetId) ??
+      liveSessionsRegistry.findBySessionId(resolved.targetId);
+    if (liveMatch) {
+      resolvedPort = liveMatch.wsPort;
+    }
+  }
+
+  const { runDetachClient } = await import('./cli/detach-client.ts');
+  try {
+    await runDetachClient({
+      host: resolved.host,
+      port: resolvedPort,
+      target: resolved.targetId,
+    });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
   }
   process.exit(0);
 }
@@ -1451,6 +1476,8 @@ const sessionRegistry = new SessionRegistry(
       const session = sessionRegistry.getSession(sessionId);
       if (session?.locallyOwned) {
         log(`Session detached: ${sessionId} (locally owned, no timeout)`);
+      } else if (session?.explicitlyDetached) {
+        log(`Session explicitly detached: ${sessionId} (no timeout, re-attachable)`);
       } else {
         log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
       }
@@ -1957,8 +1984,8 @@ function getRecentDirectories(store: SessionStore, limit: number): RecentDirecto
   return entries;
 }
 
-const sendToConnection = (connectionId: UUID, message: ProtocolMessage): void => {
-  registry.sendRaw(connectionId, message);
+const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
+  return registry.sendRaw(connectionId, message);
 };
 
 const sharedEvents = {
@@ -2280,6 +2307,44 @@ const sharedEvents = {
     } else {
       log(`Session killed: ${sessionName}`);
     }
+  },
+
+  onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID) => {
+    log(`Detach session request from ${connectionId} for session ${sessionId}`);
+
+    const session = sessionRegistry.getSession(sessionId);
+    if (!session) {
+      sendToConnection(
+        connectionId,
+        createDetachSessionAck(sessionId, false, `Session ${sessionId} not found`),
+      );
+      return;
+    }
+
+    const activeConnId = session.activeConnectionId;
+    if (activeConnId === null) {
+      sendToConnection(
+        connectionId,
+        createDetachSessionAck(sessionId, false, 'Session is already detached'),
+      );
+      return;
+    }
+
+    // Send ack to the requesting connection (may be the active client or
+    // a separate query-mode client like `remi detach <session>`)
+    const ackSent = sendToConnection(connectionId, createDetachSessionAck(sessionId, true));
+    if (!ackSent) {
+      log(`Warning: detach ack could not be delivered to ${connectionId}`);
+    }
+
+    // Detach the ACTIVE connection (not necessarily the requesting one)
+    sessionRegistry.detachConnection(activeConnId, true);
+    registry.untrackConnection(activeConnId);
+    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
+
+    log(
+      `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
+    );
   },
 
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {

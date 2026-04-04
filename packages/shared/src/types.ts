@@ -239,8 +239,8 @@ export function isErr<T, E>(result: Result<T, E>): result is { ok: false; error:
 /** How a session was discovered */
 export type SessionSource = 'daemon' | 'transcript';
 
-/** Session status for discovery. Daemon sessions use 'active'/'idle'/'orphaned'; transcript sessions use 'active'/'idle'/'completed'. */
-export type DiscoverableSessionStatus = 'active' | 'idle' | 'orphaned' | 'completed';
+/** Session status for discovery. Daemon sessions use 'active'/'idle'/'orphaned'/'detached'; transcript sessions use 'active'/'idle'/'completed'. */
+export type DiscoverableSessionStatus = 'active' | 'idle' | 'orphaned' | 'detached' | 'completed';
 
 /**
  * A session visible through the discovery mechanism.

@@ -66,6 +66,9 @@ export interface AdapterEvents {
   /** Session history request received */
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
 
+  /** Detach session request received (tmux-style) */
+  onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

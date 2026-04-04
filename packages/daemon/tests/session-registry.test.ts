@@ -436,6 +436,111 @@ describe('SessionRegistry', () => {
     });
   });
 
+  describe('explicit detach (tmux-style)', () => {
+    test('explicit detach skips orphan timeout', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI());
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId, true);
+
+      // Wait well past the orphan timeout (100ms + buffer)
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Session should still exist (not killed by timeout)
+      expect(registry.getSession(sessionId)).toBeDefined();
+      expect(pty.close).not.toHaveBeenCalled();
+      expect(events.onSessionOrphaned).toHaveBeenCalledWith(sessionId);
+      expect(events.onSessionClosed).not.toHaveBeenCalled();
+    });
+
+    test('explicit detach sets explicitlyDetached flag', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId, true);
+
+      const session = registry.getSession(sessionId);
+      expect(session?.explicitlyDetached).toBe(true);
+    });
+
+    test('non-explicit detach does not set explicitlyDetached flag', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      const session = registry.getSession(sessionId);
+      expect(session?.explicitlyDetached).toBe(false);
+    });
+
+    test('reattach clears explicitlyDetached flag', () => {
+      const sessionId = generateId();
+      const conn1 = generateId();
+      const conn2 = generateId();
+
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, conn1);
+      registry.detachConnection(conn1, true);
+
+      const beforeAttach = registry.getSession(sessionId);
+      expect(beforeAttach?.explicitlyDetached).toBe(true);
+
+      registry.attachConnection(sessionId, conn2);
+
+      const afterAttach = registry.getSession(sessionId);
+      expect(afterAttach?.explicitlyDetached).toBe(false);
+    });
+
+    test('explicitly detached session reports "detached" status in listSessions', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId, true);
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.status).toBe('detached');
+    });
+
+    test('non-explicit detach reports "orphaned" status', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId, false);
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.status).toBe('orphaned');
+    });
+
+    test('explicitly detached session is re-attachable', () => {
+      const sessionId = generateId();
+      const conn1 = generateId();
+
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, conn1);
+      registry.detachConnection(conn1, true);
+
+      expect(registry.canResume(sessionId)).toBe(true);
+
+      const conn2 = generateId();
+      const result = registry.attachConnection(sessionId, conn2);
+      expect(result.success).toBe(true);
+      expect(result.isResume).toBe(true);
+    });
+  });
+
   describe('shutdown()', () => {
     test('closes the session', async () => {
       const pty = createMockPTY();

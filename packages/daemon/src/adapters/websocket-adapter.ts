@@ -149,6 +149,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onSessionHistoryRequest?.(connectionId, requestId, limit);
       },
 
+      onDetachSession: (connectionId, sessionId, requestId) => {
+        this.events.onDetachSession?.(connectionId, sessionId, requestId);
+      },
+
       onError: (error) => {
         // For server-level errors, use a dummy connection ID
         this.events.onError?.('server' as UUID, error);

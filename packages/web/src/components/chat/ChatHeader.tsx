@@ -15,6 +15,7 @@ import {
   FileText,
   Layers,
   Loader2,
+  LogOut,
   MessageSquare,
   MoreVertical,
   Terminal,
@@ -37,6 +38,7 @@ interface ChatHeaderProps {
   readonly onCopyConversation?: () => void;
   readonly onClearMessages?: () => void;
   readonly onExportText?: () => void;
+  readonly onDetach?: () => void;
   readonly className?: string;
 }
 
@@ -112,12 +114,13 @@ export function ChatHeader({
   onCopyConversation,
   onClearMessages,
   onExportText,
+  onDetach,
   className,
 }: ChatHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const hasMenuActions = onCopyConversation || onClearMessages || onExportText;
+  const hasMenuActions = onCopyConversation || onClearMessages || onExportText || onDetach;
 
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
@@ -255,6 +258,21 @@ export function ChatHeader({
                   <FileText className="size-4 text-[var(--color-text-muted)]" />
                   Export as text
                 </button>
+              )}
+              {onDetach && (
+                <>
+                  <div className="my-1 h-px bg-[var(--color-border)]" />
+                  <button
+                    onClick={() => {
+                      onDetach();
+                      closeMenu();
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[var(--color-warning)] transition-colors hover:bg-[var(--color-surface-light)]"
+                  >
+                    <LogOut className="size-4" />
+                    Detach session
+                  </button>
+                </>
               )}
               {onClearMessages && (
                 <>

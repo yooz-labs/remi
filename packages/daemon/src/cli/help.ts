@@ -216,13 +216,15 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('cat key.json | remi import-key', 'Import from stdin'),
   ],
   detach: [
-    'Detach from a session.',
+    'Detach from a session without killing it (tmux-style).',
+    'The session remains alive and can be re-attached with `remi attach`.',
     '',
     bold('Usage:'),
-    entry('remi detach', 'Detach from current session'),
-    entry('remi detach <name>', 'Detach a named session'),
+    entry('remi detach <name>', 'Detach the named session'),
+    entry('remi detach <host:port/name>', 'Detach a remote session'),
     '',
-    dim('  In practice, use Ctrl+B d to detach interactively.'),
+    dim('  When attached interactively, press Ctrl+B d to detach.'),
+    dim('  Detached sessions show as "detached" in `remi ls`.'),
   ],
 };
 
