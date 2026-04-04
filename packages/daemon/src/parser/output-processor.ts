@@ -239,12 +239,21 @@ export class OutputProcessor {
         const filteredLine = cleanAndFilterOutput(rawLine);
         const contentLine = cleanMessageLine(filteredLine);
         if (contentLine.trim().length > 0) {
-          if (this.currentMessageId === null) {
-            this.appendContentLine(contentLine);
-            this.finalizeMessage();
-          } else {
-            this.appendContentLine(contentLine);
-          }
+          // Meaningful tool output (errors like "OAuth token revoked") emitted
+          // as standalone finalized messages, bypassing streamStatusOnly.
+          // These errors often don't appear in the transcript.
+          const id = generateId();
+          const message: Message = {
+            id,
+            sessionId: this.config.sessionId,
+            sender: 'agent',
+            content: contentLine,
+            createdAt: now(),
+            state: 'sent',
+            stateChangedAt: now(),
+            isEditing: false,
+          };
+          this.events.onMessage?.(message);
         }
       } else if (boundary === 'user' || boundary === 'thinking') {
       } else {
@@ -328,9 +337,7 @@ export class OutputProcessor {
 
   private finalizeMessage(): void {
     if (this.currentMessageId !== null) {
-      // Final update with isEditing = false
       if (!this.config.streamStatusOnly) {
-        this.events.onMessageUpdate?.(this.currentMessageId, this.currentMessageContent, undefined);
         this.events.onMessageFinalized?.(this.currentMessageId);
       }
     }

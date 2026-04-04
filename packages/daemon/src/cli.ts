@@ -1547,17 +1547,7 @@ async function createNewSession(
         }
       },
       onMessageFinalized: (msgId) => {
-        const structured = messageApi.getMessage(msgId);
-        if (!structured) {
-          log(`Message ${msgId} finalized`);
-          return;
-        }
-
-        try {
-          sendAndRecord(createStructuredAgentOutput(structured, true, []));
-        } catch (err) {
-          logError(`[Session ${sessionId}] Failed to send finalized structured message:`, err);
-        }
+        log(`Message ${msgId} finalized`);
       },
       onQuestion: (question) => {
         log(`Question detected: ${question.text.substring(0, 50)}...`);
@@ -1599,19 +1589,15 @@ async function createNewSession(
     },
   );
 
-  // PTY output parser: keep streaming structured PTY messages so terminal-only
-  // failures still surface in remote clients when transcript updates never arrive.
+  // PTY output parser: streamStatusOnly suppresses regular agent content (comes
+  // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
+  // guard so terminal-only failures still reach remote clients.
   const outputProcessor = new OutputProcessor(
-    { sessionId },
+    { sessionId, streamStatusOnly: true },
     {
       onMessage: (message) => {
+        // Only fires for tool-output errors that bypass streamStatusOnly.
         messageApi.handleMessage(message);
-      },
-      onMessageUpdate: (messageId, content, tool) => {
-        messageApi.handleMessageUpdate(messageId, content, tool);
-      },
-      onMessageFinalized: (messageId) => {
-        messageApi.finalizeMessage(messageId);
       },
       onQuestion: (question) => {
         if (!hookServer) {
