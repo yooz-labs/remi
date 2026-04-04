@@ -43,6 +43,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let authInProgress = false;
   let receivedRawPty = false;
   let rawPtyTimer: ReturnType<typeof setTimeout> | null = null;
+  let detachPending = false;
+  let detachAckTimer: ReturnType<typeof setTimeout> | null = null;
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -58,6 +60,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   }
 
   function restoreTerminal(): void {
+    if (detachAckTimer) {
+      clearTimeout(detachAckTimer);
+      detachAckTimer = null;
+    }
     if (rawPtyTimer) {
       clearTimeout(rawPtyTimer);
       rawPtyTimer = null;
@@ -204,12 +210,20 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         // raw byte 0x02 and kitty keyboard protocol ESC[98;5u)
         detachScannerInstance = new DetachScanner({
           onDetach: () => {
-            // Notify daemon of explicit detach so it skips orphan timeout
+            // Notify daemon of explicit detach so it skips orphan timeout.
+            // Wait briefly for the ack to ensure the daemon processes the
+            // detach before we close the WebSocket connection.
             if (attachedSessionId) {
               sendMessage(createDetachSession(attachedSessionId));
+              detachPending = true;
+              detachAckTimer = setTimeout(() => {
+                process.stderr.write('[detached]\n');
+                finish({ exitCode: 0, reason: 'detached' });
+              }, 500);
+            } else {
+              process.stderr.write('[detached]\n');
+              finish({ exitCode: 0, reason: 'detached' });
             }
-            process.stderr.write('[detached]\n');
-            finish({ exitCode: 0, reason: 'detached' });
           },
           onData: (data) => {
             sendInput(data.toString());
@@ -257,6 +271,17 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
       if (msg.type === 'ping') {
         sendMessage(createPong(msg.id));
+        return;
+      }
+
+      if (msg.type === 'detach_session_ack' && detachPending) {
+        // Daemon confirmed the explicit detach; finish immediately
+        if (detachAckTimer) {
+          clearTimeout(detachAckTimer);
+          detachAckTimer = null;
+        }
+        process.stderr.write('[detached]\n');
+        finish({ exitCode: 0, reason: 'detached' });
         return;
       }
 

@@ -38,8 +38,9 @@ export async function runDetachClient(opts: DetachClientOptions): Promise<void> 
 
     try {
       ws = new WebSocket(url);
-    } catch {
-      reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }
 

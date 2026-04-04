@@ -1972,8 +1972,8 @@ function getRecentDirectories(store: SessionStore, limit: number): RecentDirecto
   return entries;
 }
 
-const sendToConnection = (connectionId: UUID, message: ProtocolMessage): void => {
-  registry.sendRaw(connectionId, message);
+const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
+  return registry.sendRaw(connectionId, message);
 };
 
 const sharedEvents = {
@@ -2309,15 +2309,30 @@ const sharedEvents = {
       return;
     }
 
-    // Send ack before detaching (the connection may close after detach)
-    sendToConnection(connectionId, createDetachSessionAck(sessionId, true));
+    const activeConnId = session.activeConnectionId;
+    if (activeConnId === null) {
+      sendToConnection(
+        connectionId,
+        createDetachSessionAck(sessionId, false, 'Session is already detached'),
+      );
+      return;
+    }
 
-    // Perform explicit detach (skips orphan timeout)
-    sessionRegistry.detachConnection(connectionId, true);
-    registry.untrackConnection(connectionId);
+    // Send ack to the requesting connection (may be the active client or
+    // a separate query-mode client like `remi detach <session>`)
+    const ackSent = sendToConnection(connectionId, createDetachSessionAck(sessionId, true));
+    if (!ackSent) {
+      log(`Warning: detach ack could not be delivered to ${connectionId}`);
+    }
+
+    // Detach the ACTIVE connection (not necessarily the requesting one)
+    sessionRegistry.detachConnection(activeConnId, true);
+    registry.untrackConnection(activeConnId);
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
 
-    log(`Session explicitly detached: ${session.name} (no timeout, re-attachable)`);
+    log(
+      `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
+    );
   },
 
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {

@@ -512,20 +512,18 @@ function App() {
       }
 
       case 'detach_session_ack': {
-        if (message.success) {
-          const detachedMsg: UIMessage = {
-            id: generateId(),
-            sessionId: message.sessionId,
-            sender: 'system',
-            content: 'Session detached. Use "remi attach" or reconnect to resume.',
-            timestamp: new Date().toISOString(),
-            state: 'delivered',
-            isEditing: false,
-          };
-          setMessages((prev) => [...prev, detachedMsg]);
-        } else {
-          console.error(`Failed to detach: ${message.error}`);
-        }
+        const detachedMsg: UIMessage = {
+          id: generateId(),
+          sessionId: message.sessionId,
+          sender: 'system',
+          content: message.success
+            ? 'Session detached. Use "remi attach" or reconnect to resume.'
+            : `Failed to detach session: ${message.error ?? 'unknown error'}`,
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, detachedMsg]);
         break;
       }
 
@@ -1090,7 +1088,19 @@ function App() {
 
   const handleDetach = useCallback(() => {
     if (!activeSessionId) return;
-    effectiveDetachSession(activeSessionId);
+    const sent = effectiveDetachSession(activeSessionId);
+    if (!sent) {
+      const errorMsg: UIMessage = {
+        id: generateId(),
+        sessionId: activeSessionId,
+        sender: 'system',
+        content: 'Cannot detach: not connected to daemon.',
+        timestamp: new Date().toISOString(),
+        state: 'delivered',
+        isEditing: false,
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    }
   }, [activeSessionId, effectiveDetachSession]);
 
   const handleExportText = useCallback(() => {
