@@ -1784,11 +1784,31 @@ async function createNewSession(
     if (Date.now() - startupTime > 30000) {
       clearInterval(fallbackInterval);
       transcriptFallbackTimers.delete(sessionId);
-      logError('[Hooks] Transcript fallback timed out. Using latest available file.');
       if (transcriptPath) {
-        startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-        extractClaudeSessionId(transcriptPath, sessionId);
+        try {
+          const stat = fs.statSync(transcriptPath);
+          if (stat.mtimeMs >= startupTime) {
+            logError(
+              '[Hooks] Transcript fallback timed out, but a fresh transcript was found on the final check.',
+            );
+            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+            extractClaudeSessionId(transcriptPath, sessionId);
+            return;
+          }
+
+          logError(
+            `[Hooks] Transcript fallback timed out without a fresh transcript. Skipping stale file: ${transcriptPath}`,
+          );
+          return;
+        } catch {
+          logError(
+            '[Hooks] Transcript fallback timed out and transcript stat failed on final check.',
+          );
+          return;
+        }
       }
+
+      logError('[Hooks] Transcript fallback timed out without any transcript file.');
     }
   }, 2000);
   transcriptFallbackTimers.set(sessionId, fallbackInterval);
