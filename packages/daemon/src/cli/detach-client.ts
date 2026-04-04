@@ -9,6 +9,7 @@
 import {
   createDetachSession,
   createHello,
+  createPong,
   createSessionListRequest,
   deserialize,
   generateId,
@@ -101,6 +102,8 @@ export async function runDetachClient(opts: DetachClientOptions): Promise<void> 
         } else {
           done(new Error(`Failed to detach session: ${msg.error ?? 'unknown error'}`));
         }
+      } else if (msg.type === 'ping') {
+        ws.send(serialize(createPong(msg.id)));
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED' && authInProgress) return;
         done(new Error(`Daemon error: ${msg.message}`));

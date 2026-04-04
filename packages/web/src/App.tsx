@@ -524,6 +524,11 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, detachedMsg]);
+        // On successful detach, clear active session so the UI reflects
+        // the disconnected state. The WebSocket close will handle cleanup.
+        if (message.success) {
+          setActiveSessionId(null);
+        }
         break;
       }
 

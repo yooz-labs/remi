@@ -2337,10 +2337,14 @@ const sharedEvents = {
       log(`Warning: detach ack could not be delivered to ${connectionId}`);
     }
 
-    // Detach the ACTIVE connection (not necessarily the requesting one)
+    // Detach the ACTIVE connection (not necessarily the requesting one).
+    // Only untrack/decrement here for third-party detach (connectionId !== activeConnId).
+    // For self-detach, onDisconnect will handle cleanup when the WebSocket closes.
     sessionRegistry.detachConnection(activeConnId, true);
-    registry.untrackConnection(activeConnId);
-    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
+    if (activeConnId !== connectionId) {
+      registry.untrackConnection(activeConnId);
+      updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
+    }
 
     log(
       `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
