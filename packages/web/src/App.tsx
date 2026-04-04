@@ -373,9 +373,10 @@ function App() {
       }
 
       case 'replay_batch': {
-        // Re-dispatch each message in the batch through handleMessage
+        // Replay batches can arrive immediately after hello_ack on first attach.
+        // Dispatch them directly so early history is not dropped before refs/effects settle.
         for (const replayMsg of message.messages) {
-          handleMessageRef.current?.(replayMsg);
+          handleMessage(replayMsg);
         }
         break;
       }
@@ -515,10 +516,8 @@ function App() {
     }
   }, []);
 
-  // Keep refs in sync
-  useEffect(() => {
-    handleMessageRef.current = handleMessage;
-  }, [handleMessage]);
+  // Keep the latest message handler available synchronously for relay callbacks.
+  handleMessageRef.current = handleMessage;
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
