@@ -155,6 +155,10 @@ export function filterTerminalUI(text: string): string {
     // Tool output tree characters with status (filter status lines, keep content)
     /^[\s]*⎿[\s]*(Running|Waiting|No content)/i,
     /^[\s]*⎿[\s]*$/,
+    // Tool output tree with checkmarks/crosses (task completion indicators)
+    /^[\s]*⎿[\s]*[✔✓✗✕✘☑☒⬜]/,
+    // Standalone checkmark/cross lines (subtask results)
+    /^[\s]*[✔✓✗✕✘]\s+\w/,
     // Lines starting with + or * followed by status
     /^[+*]\s*(Honking|Misting)/i,
     // Date output from bash (standalone)
