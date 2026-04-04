@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { DAEMON1_PORT, connectToDaemon, waitForSessionList } from '../helpers/daemon';
+import {
+  DAEMON1_PORT,
+  connectToDaemon,
+  seedReplayableHistory,
+  waitForSessionList,
+} from '../helpers/daemon';
 
 test.describe('Connection flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -11,14 +16,14 @@ test.describe('Connection flow', () => {
 
   test('app loads with empty state', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'No Sessions' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'No Active Sessions' })).toBeVisible();
     await expect(page.locator('[aria-label="Connect to daemon"]')).toBeVisible();
   });
 
   test('connect modal opens on click', async ({ page }) => {
     await page.goto('/');
     await page.click('[aria-label="Connect to daemon"]');
-    await expect(page.locator('text=Connect to Daemon')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Connect' })).toBeVisible();
     // Direct tab should be active by default
     await expect(page.locator('input[placeholder="localhost"]')).toBeVisible();
   });
@@ -26,11 +31,11 @@ test.describe('Connection flow', () => {
   test('connect modal can be closed', async ({ page }) => {
     await page.goto('/');
     await page.click('[aria-label="Connect to daemon"]');
-    await expect(page.locator('text=Connect to Daemon')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Connect' })).toBeVisible();
 
     // Click close button
     await page.click('[aria-label="Close"]');
-    await expect(page.locator('text=Connect to Daemon')).toBeHidden();
+    await expect(page.getByRole('heading', { name: 'Connect' })).toBeHidden();
   });
 
   test('direct connection to daemon succeeds', async ({ page }) => {
@@ -53,6 +58,18 @@ test.describe('Connection flow', () => {
     await waitForSessionList(page);
   });
 
+  test('first attach replays existing history immediately', async ({ page }) => {
+    await page.goto('/');
+
+    const replayPrompt = await seedReplayableHistory(DAEMON1_PORT);
+
+    await connectToDaemon(page, DAEMON1_PORT);
+    await waitForSessionList(page);
+
+    await expect(page.getByText(replayPrompt, { exact: false })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Waiting for agent output')).toHaveCount(0);
+  });
+
   test('invalid URL shows connection failure', async ({ page }) => {
     await page.goto('/');
     await page.click('[aria-label="Connect to daemon"]');
@@ -65,6 +82,6 @@ test.describe('Connection flow', () => {
     await connectButton.click();
 
     // Modal should remain open (connection failed)
-    await expect(page.locator('text=Connect to Daemon')).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('heading', { name: 'Connect' })).toBeVisible({ timeout: 5_000 });
   });
 });
