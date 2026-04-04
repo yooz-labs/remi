@@ -129,4 +129,36 @@ describe('DetachScanner', () => {
     // After destroy, no timeout should fire
     expect(forwarded.length).toBe(0);
   });
+
+  test('Ctrl+Z byte (0x1a) passes through without interception', () => {
+    // Ctrl+Z sends 0x1a (SUB) to the PTY. The scanner must not intercept it;
+    // Claude Code handles Ctrl+Z internally (e.g. spawning a subshell).
+    const CTRL_Z = 0x1a;
+    scanner.write(Buffer.from([CTRL_Z]));
+    expect(detached).toBe(false);
+    const result = getForwarded();
+    expect(result.length).toBe(1);
+    expect(result[0]).toBe(CTRL_Z);
+  });
+
+  test('Ctrl+Z byte surrounded by normal data passes through', () => {
+    const CTRL_Z = 0x1a;
+    scanner.write(Buffer.from([0x61, 0x62, CTRL_Z, 0x63, 0x64])); // "ab" + Ctrl+Z + "cd"
+    expect(detached).toBe(false);
+    const result = getForwarded();
+    expect(result.length).toBe(5);
+    expect(result[0]).toBe(0x61); // 'a'
+    expect(result[2]).toBe(CTRL_Z);
+    expect(result[4]).toBe(0x64); // 'd'
+  });
+
+  test('Ctrl+Z does not interfere with Ctrl+B d detection', () => {
+    const CTRL_Z = 0x1a;
+    // Ctrl+Z followed by Ctrl+B d: Ctrl+Z should pass through, then detach
+    scanner.write(Buffer.from([CTRL_Z, CTRL_B, 0x64]));
+    expect(detached).toBe(true);
+    const result = getForwarded();
+    expect(result.length).toBe(1);
+    expect(result[0]).toBe(CTRL_Z);
+  });
 });

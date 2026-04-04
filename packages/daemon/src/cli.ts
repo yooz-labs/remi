@@ -1406,6 +1406,17 @@ const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
+// SIGTSTP protection: the daemon must never suspend itself.
+// When Claude Code handles Ctrl+Z (which spawns a subshell inside its PTY),
+// the terminal may propagate SIGTSTP to the process group. Ignoring it here
+// keeps the daemon, WebSocket server, and all remote connections alive.
+// ---------------------------------------------------------------------------
+process.on('SIGTSTP', () => {
+  // Intentionally ignored. The PTY child handles Ctrl+Z on its own; the
+  // daemon process must remain running to serve remote clients.
+});
+
+// ---------------------------------------------------------------------------
 // Core components
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
