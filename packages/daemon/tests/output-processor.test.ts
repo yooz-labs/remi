@@ -265,10 +265,27 @@ describe('OutputProcessor', () => {
       },
     );
 
-    processor.process('⎿ tool output here\n');
+    processor.process('⎿ Read 5 lines\n');
     processor.flush();
 
     expect(messages.length).toBe(0);
+  });
+
+  test('emits meaningful tool output lines as agent messages', () => {
+    const messages: Message[] = [];
+    const processor = new OutputProcessor(
+      { sessionId },
+      {
+        onMessage: (msg) => messages.push(msg),
+      },
+    );
+
+    processor.process('⎿ OAuth token revoked · Please run /login\n');
+    processor.flush();
+
+    expect(messages.length).toBe(1);
+    expect(messages[0]?.content).toContain('OAuth token revoked');
+    expect(messages[0]?.content).toContain('Please run /login');
   });
 
   test('deduplicates repeated content', () => {
@@ -341,11 +358,13 @@ describe('OutputProcessor', () => {
   test('finalizes message on new agent boundary', () => {
     const messages: Message[] = [];
     const updates: Array<{ id: string; content: string }> = [];
+    const finalized: string[] = [];
     const processor = new OutputProcessor(
       { sessionId },
       {
         onMessage: (msg) => messages.push(msg),
         onMessageUpdate: (id, content) => updates.push({ id, content }),
+        onMessageFinalized: (id) => finalized.push(id),
       },
     );
 
@@ -355,5 +374,6 @@ describe('OutputProcessor', () => {
 
     // Should have created at least one message
     expect(messages.length).toBeGreaterThanOrEqual(1);
+    expect(finalized.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -210,6 +210,11 @@ describe('filterTerminalUI()', () => {
     expect(filterTerminalUI(input)).toBe('Real content here');
   });
 
+  test('preserves meaningful tool output lines', () => {
+    const input = '  ⎿ OAuth token revoked · Please run /login';
+    expect(filterTerminalUI(input)).toBe(input);
+  });
+
   test('filters ANSI color code fragments', () => {
     const input = '39m\nReal content here\n90m';
     expect(filterTerminalUI(input)).toBe('Real content here');

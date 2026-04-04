@@ -25,6 +25,9 @@ export interface OutputEvents {
   /** Existing message updated (progressive output) */
   onMessageUpdate: (messageId: UUID, content: string, tool?: string) => void;
 
+  /** Message is finalized (no longer editing) */
+  onMessageFinalized: (messageId: UUID) => void;
+
   /** Question detected */
   onQuestion: (question: Question) => void;
 
@@ -232,16 +235,32 @@ export class OutputProcessor {
         }
         // Note: Even if filteredLine is empty (tool execution line filtered out),
         // currentMessageId is now set, so subsequent content lines will be appended.
-      } else if (boundary === 'user' || boundary === 'thinking' || boundary === 'tool_output') {
+      } else if (boundary === 'tool_output') {
+        const filteredLine = cleanAndFilterOutput(rawLine);
+        const contentLine = cleanMessageLine(filteredLine);
+        if (contentLine.trim().length > 0) {
+          // Meaningful tool output (errors like "OAuth token revoked") emitted
+          // as standalone finalized messages, bypassing streamStatusOnly.
+          // These errors often don't appear in the transcript.
+          const id = generateId();
+          const message: Message = {
+            id,
+            sessionId: this.config.sessionId,
+            sender: 'agent',
+            content: contentLine,
+            createdAt: now(),
+            state: 'sent',
+            stateChangedAt: now(),
+            isEditing: false,
+          };
+          this.events.onMessage?.(message);
+        }
+      } else if (boundary === 'user' || boundary === 'thinking') {
       } else {
         // Continuation of current message
         const filteredLine = cleanAndFilterOutput(rawLine);
         if (filteredLine.trim().length > 0 && this.currentMessageId !== null) {
-          const newContent = this.deduplicateContent(filteredLine);
-          if (newContent.length > 0) {
-            this.currentMessageContent += `\n${newContent}`;
-            this.emitMessageUpdate([]);
-          }
+          this.appendContentLine(filteredLine);
         }
       }
     }
@@ -255,6 +274,27 @@ export class OutputProcessor {
   private extractToolName(line: string): string | undefined {
     const match = line.match(/^(\w+)\(/);
     return match ? match[1] : undefined;
+  }
+
+  private appendContentLine(line: string): void {
+    if (line.trim().length === 0) {
+      return;
+    }
+
+    const newContent = this.deduplicateContent(line);
+    if (newContent.length === 0) {
+      return;
+    }
+
+    if (this.currentMessageId === null) {
+      this.currentMessageId = generateId();
+      this.currentMessageContent = newContent;
+      this.emitMessageUpdate([]);
+      return;
+    }
+
+    this.currentMessageContent += `\n${newContent}`;
+    this.emitMessageUpdate([]);
   }
 
   private emitMessageUpdate(_lines: readonly string[]): void {
@@ -297,9 +337,8 @@ export class OutputProcessor {
 
   private finalizeMessage(): void {
     if (this.currentMessageId !== null) {
-      // Final update with isEditing = false
       if (!this.config.streamStatusOnly) {
-        this.events.onMessageUpdate?.(this.currentMessageId, this.currentMessageContent, undefined);
+        this.events.onMessageFinalized?.(this.currentMessageId);
       }
     }
 

@@ -1589,8 +1589,28 @@ async function createNewSession(
     },
   );
 
-  // PTY output parser: status-only mode (content comes from transcript for clean results)
-  const outputProcessor = new OutputProcessor({ sessionId, streamStatusOnly: true }, {});
+  // PTY output parser: streamStatusOnly suppresses regular agent content (comes
+  // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
+  // guard so terminal-only failures still reach remote clients.
+  const outputProcessor = new OutputProcessor(
+    { sessionId, streamStatusOnly: true },
+    {
+      onMessage: (message) => {
+        // Only fires for tool-output errors that bypass streamStatusOnly.
+        messageApi.handleMessage(message);
+      },
+      onQuestion: (question) => {
+        if (!hookServer) {
+          messageApi.handleQuestion(question);
+        }
+      },
+      onStatusChange: (status, context) => {
+        if (!hookServer) {
+          messageApi.handleStatusChange(status, context);
+        }
+      },
+    },
+  );
 
   // Hook-based event bridge for status/question detection
   if (hookServer) {
