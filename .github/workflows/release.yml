@@ -96,10 +96,10 @@ jobs:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Upgrade npm for OIDC support
+      - name: Verify npm OIDC support
         run: |
-          npm install -g npm@latest
           echo "npm version: $(npm --version)"
+          echo "node version: $(node --version)"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
