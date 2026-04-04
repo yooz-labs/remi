@@ -26,6 +26,7 @@ import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
+  createDetachSession,
   createHello,
   createResumeSessionRequest,
   createSessionListRequest,
@@ -510,6 +511,27 @@ function App() {
         break;
       }
 
+      case 'detach_session_ack': {
+        const detachedMsg: UIMessage = {
+          id: generateId(),
+          sessionId: message.sessionId,
+          sender: 'system',
+          content: message.success
+            ? 'Session detached. Use "remi attach" or reconnect to resume.'
+            : `Failed to detach session: ${message.error ?? 'unknown error'}`,
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, detachedMsg]);
+        // On successful detach, clear active session so the UI reflects
+        // the disconnected state. The WebSocket close will handle cleanup.
+        if (message.success) {
+          setActiveSessionId(null);
+        }
+        break;
+      }
+
       case 'error':
         console.error('Daemon error:', message);
         break;
@@ -561,6 +583,7 @@ function App() {
     connect,
     sendInput,
     sendAnswer,
+    sendMessage: wsSendMessage,
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
@@ -651,6 +674,14 @@ function App() {
       return requestResumeSession(sessionId);
     },
     [connectionMode, relaySend, requestResumeSession],
+  );
+
+  const effectiveDetachSession = useCallback(
+    (sessionId: UUID): boolean => {
+      if (connectionMode === 'relay') return relaySend(createDetachSession(sessionId));
+      return wsSendMessage(createDetachSession(sessionId));
+    },
+    [connectionMode, relaySend, wsSendMessage],
   );
 
   // Close modal and store URL on successful connect
@@ -1060,6 +1091,23 @@ function App() {
     }
   }, [activeSessionId]);
 
+  const handleDetach = useCallback(() => {
+    if (!activeSessionId) return;
+    const sent = effectiveDetachSession(activeSessionId);
+    if (!sent) {
+      const errorMsg: UIMessage = {
+        id: generateId(),
+        sessionId: activeSessionId,
+        sender: 'system',
+        content: 'Cannot detach: not connected to daemon.',
+        timestamp: new Date().toISOString(),
+        state: 'delivered',
+        isEditing: false,
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    }
+  }, [activeSessionId, effectiveDetachSession]);
+
   const handleExportText = useCallback(() => {
     const text = sessionMessages
       .map((m) => `[${new Date(m.timestamp).toLocaleString()}] [${m.sender}] ${m.content}`)
@@ -1107,6 +1155,7 @@ function App() {
       onClearMessages={handleClearMessages}
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
+      onDetach={handleDetach}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">

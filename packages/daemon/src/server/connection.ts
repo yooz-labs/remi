@@ -32,6 +32,7 @@ import type {
   AuthResponseMessage,
   BulletExpandRequestMessage,
   CreateSessionRequestMessage,
+  DetachSessionMessage,
   HelloMessage,
   KillSessionRequestMessage,
   PingMessage,
@@ -86,6 +87,9 @@ export interface ConnectionEvents {
 
   /** Session history request received */
   onSessionHistoryRequest: (requestId: UUID, limit: number | undefined) => void;
+
+  /** Detach session request received (tmux-style) */
+  onDetachSession: (sessionId: UUID, requestId: UUID) => void;
 
   /** Authentication succeeded */
   onAuthSuccess: (clientFingerprint: string) => void;
@@ -277,6 +281,9 @@ export class Connection {
       case 'session_history_request':
         this.handleSessionHistoryRequest(message);
         break;
+      case 'detach_session':
+        this.handleDetachSession(message);
+        break;
       case 'ping':
         this.handlePing(message);
         break;
@@ -454,6 +461,11 @@ export class Connection {
   private handleSessionHistoryRequest(message: SessionHistoryRequestMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onSessionHistoryRequest?.(message.id, message.limit);
+  }
+
+  private handleDetachSession(message: DetachSessionMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onDetachSession?.(message.sessionId, message.id);
   }
 
   private handleTerminalResize(message: TerminalResizeMessage): void {

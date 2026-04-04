@@ -9,6 +9,8 @@ import {
   createAgentOutput,
   createBulletExpandRequest,
   createBulletExpandResponse,
+  createDetachSession,
+  createDetachSessionAck,
   createEdit,
   createError,
   createHello,
@@ -790,6 +792,53 @@ describe('Message factory functions', () => {
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('resume_session_response');
+    });
+  });
+
+  describe('createDetachSession()', () => {
+    test('creates detach request with session ID', () => {
+      const sessionId = generateId();
+      const msg = createDetachSession(sessionId);
+      expect(msg.type).toBe('detach_session');
+      expect(msg.sessionId).toBe(sessionId);
+      expect(msg.id).toBeDefined();
+      expect(msg.timestamp).toBeDefined();
+    });
+
+    test('serializes and deserializes', () => {
+      const msg = createDetachSession(generateId());
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('detach_session');
+    });
+  });
+
+  describe('createDetachSessionAck()', () => {
+    test('creates successful ack', () => {
+      const sessionId = generateId();
+      const msg = createDetachSessionAck(sessionId, true);
+      expect(msg.type).toBe('detach_session_ack');
+      expect(msg.sessionId).toBe(sessionId);
+      expect(msg.success).toBe(true);
+      expect(msg.error).toBeUndefined();
+    });
+
+    test('creates failed ack with error', () => {
+      const sessionId = generateId();
+      const msg = createDetachSessionAck(sessionId, false, 'Session not found');
+      expect(msg.type).toBe('detach_session_ack');
+      expect(msg.sessionId).toBe(sessionId);
+      expect(msg.success).toBe(false);
+      expect(msg.error).toBe('Session not found');
+    });
+
+    test('serializes and deserializes', () => {
+      const msg = createDetachSessionAck(generateId(), true);
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('detach_session_ack');
     });
   });
 

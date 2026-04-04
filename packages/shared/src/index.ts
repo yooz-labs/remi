@@ -72,6 +72,8 @@ export type {
   SessionHistoryResponseMessage,
   ResumeSessionRequestMessage,
   ResumeSessionResponseMessage,
+  DetachSessionMessage,
+  DetachSessionAckMessage,
 } from './protocol.ts';
 
 export {
@@ -112,6 +114,8 @@ export {
   createSessionHistoryResponse,
   createResumeSessionRequest,
   createResumeSessionResponse,
+  createDetachSession,
+  createDetachSessionAck,
   MessageIdTracker,
 } from './protocol.ts';
 
