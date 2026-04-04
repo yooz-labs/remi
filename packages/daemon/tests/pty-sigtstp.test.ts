@@ -53,6 +53,9 @@ describe('PTY SIGTSTP handling', () => {
         onData: (data) => {
           output += data;
         },
+        onError: (err) => {
+          console.error('[PTY error]', err.message);
+        },
       },
     );
     await session.start();
@@ -89,6 +92,6 @@ describe('PTY SIGTSTP handling', () => {
     await received;
 
     // If we reach here, the process was not suspended -- it handled the signal
-    expect(true).toBe(true);
+    expect(process.exitCode).toBeUndefined();
   });
 });

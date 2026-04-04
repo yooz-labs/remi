@@ -1414,6 +1414,7 @@ const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids
 process.on('SIGTSTP', () => {
   // Intentionally ignored. The PTY child handles Ctrl+Z on its own; the
   // daemon process must remain running to serve remote clients.
+  writeToLog('[signal] SIGTSTP received and ignored (daemon must not suspend)');
 });
 
 // ---------------------------------------------------------------------------
