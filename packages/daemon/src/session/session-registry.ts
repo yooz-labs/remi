@@ -103,6 +103,10 @@ export interface ManagedSession {
   /** Whether this session is owned by the local process (wrapper mode).
    * Locally-owned sessions are never killed by orphan timeout. */
   readonly locallyOwned: boolean;
+
+  /** Whether the last detach was an explicit user request (tmux-style).
+   * Explicitly detached sessions skip the orphan timeout entirely. */
+  explicitlyDetached: boolean;
 }
 
 /**
@@ -166,6 +170,7 @@ export class SessionRegistry {
       currentStatus: 'idle',
       currentQuestion: null,
       locallyOwned,
+      explicitlyDetached: false,
     };
 
     this.events.onSessionCreated?.(sessionId);
@@ -262,6 +267,7 @@ export class SessionRegistry {
     // Attach connection
     this.session.activeConnectionId = connectionId;
     this.session.lastDisconnectedAt = null;
+    this.session.explicitlyDetached = false;
 
     // Get messages to replay (from after last delivered)
     const replayMessages = this.session.messageHistory.slice(this.session.lastDeliveredIndex + 1);
@@ -288,8 +294,12 @@ export class SessionRegistry {
    * If there are waiting connections, the next one is auto-promoted.
    * Otherwise, non-locally-owned sessions become orphaned and start the timeout countdown.
    * Locally-owned sessions remain active without a timeout.
+   *
+   * When `explicit` is true (tmux-style detach), the orphan timeout is skipped
+   * regardless of whether the session is locally owned; the session remains
+   * discoverable and re-attachable indefinitely.
    */
-  detachConnection(connectionId: UUID): void {
+  detachConnection(connectionId: UUID, explicit = false): void {
     if (this.session === null || this.session.activeConnectionId !== connectionId) {
       // Also remove from waiting list if it was queued
       const waitIdx = this.waitingConnections.indexOf(connectionId);
@@ -328,10 +338,13 @@ export class SessionRegistry {
       }
     }
 
-    // Start orphan timeout (skip for locally-owned sessions; they stay alive
-    // until PTY exits, explicit kill, or daemon shutdown).
-    // orphanTimeoutMs === 0 disables automatic cleanup.
-    if (!this.session.locallyOwned && this.orphanTimeoutMs > 0) {
+    // Track explicit detach state for discovery status
+    this.session.explicitlyDetached = explicit;
+
+    // Start orphan timeout (skip for locally-owned sessions, explicit detaches,
+    // and when orphanTimeoutMs === 0).
+    // Explicitly detached sessions stay alive indefinitely like locally-owned ones.
+    if (!this.session.locallyOwned && !explicit && this.orphanTimeoutMs > 0) {
       this.session.orphanTimeoutId = setTimeout(() => {
         this.closeSession(sessionId, 'timeout');
       }, this.orphanTimeoutMs);
@@ -489,9 +502,13 @@ export class SessionRegistry {
     ];
   }
 
-  private getDiscoverableStatus(session: ManagedSession): 'active' | 'idle' | 'orphaned' {
+  private getDiscoverableStatus(
+    session: ManagedSession,
+  ): 'active' | 'idle' | 'orphaned' | 'detached' {
     if (session.activeConnectionId === null) {
-      return session.locallyOwned ? 'active' : 'orphaned';
+      if (session.locallyOwned) return 'active';
+      if (session.explicitlyDetached) return 'detached';
+      return 'orphaned';
     }
     if (session.currentStatus === 'idle') {
       return 'idle';

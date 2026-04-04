@@ -32,6 +32,7 @@ interface ChatViewProps {
   readonly onClearMessages?: () => void;
   readonly onExportText?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
+  readonly onDetach?: () => void;
   readonly className?: string;
 }
 
@@ -51,6 +52,7 @@ export function ChatView({
   onClearMessages,
   onExportText,
   onBulletExpand,
+  onDetach,
   className,
 }: ChatViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
@@ -78,6 +80,7 @@ export function ChatView({
         onCopyConversation={onCopyConversation}
         onClearMessages={onClearMessages}
         onExportText={onExportText}
+        onDetach={onDetach}
       />
 
       <MessageList

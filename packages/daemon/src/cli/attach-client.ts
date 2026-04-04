@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import {
+  createDetachSession,
   createHello,
   createPong,
   createTerminalResize,
@@ -203,6 +204,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         // raw byte 0x02 and kitty keyboard protocol ESC[98;5u)
         detachScannerInstance = new DetachScanner({
           onDetach: () => {
+            // Notify daemon of explicit detach so it skips orphan timeout
+            if (attachedSessionId) {
+              sendMessage(createDetachSession(attachedSessionId));
+            }
             process.stderr.write('[detached]\n');
             finish({ exitCode: 0, reason: 'detached' });
           },

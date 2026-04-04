@@ -80,6 +80,9 @@ export interface ServerEvents {
   /** Session history request from client */
   onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
 
+  /** Detach session request from client (tmux-style) */
+  onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -329,6 +332,10 @@ export class WebSocketServer {
 
       onSessionHistoryRequest: (requestId, limit) => {
         this.events.onSessionHistoryRequest?.(ws.data.connectionId, requestId, limit);
+      },
+
+      onDetachSession: (sessionId, requestId) => {
+        this.events.onDetachSession?.(ws.data.connectionId, sessionId, requestId);
       },
 
       onError: (error) => {

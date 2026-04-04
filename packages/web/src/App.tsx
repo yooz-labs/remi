@@ -26,6 +26,7 @@ import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createBulletExpandRequest,
+  createDetachSession,
   createHello,
   createResumeSessionRequest,
   createSessionListRequest,
@@ -510,6 +511,24 @@ function App() {
         break;
       }
 
+      case 'detach_session_ack': {
+        if (message.success) {
+          const detachedMsg: UIMessage = {
+            id: generateId(),
+            sessionId: message.sessionId,
+            sender: 'system',
+            content: 'Session detached. Use "remi attach" or reconnect to resume.',
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, detachedMsg]);
+        } else {
+          console.error(`Failed to detach: ${message.error}`);
+        }
+        break;
+      }
+
       case 'error':
         console.error('Daemon error:', message);
         break;
@@ -561,6 +580,7 @@ function App() {
     connect,
     sendInput,
     sendAnswer,
+    sendMessage: wsSendMessage,
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
@@ -651,6 +671,14 @@ function App() {
       return requestResumeSession(sessionId);
     },
     [connectionMode, relaySend, requestResumeSession],
+  );
+
+  const effectiveDetachSession = useCallback(
+    (sessionId: UUID): boolean => {
+      if (connectionMode === 'relay') return relaySend(createDetachSession(sessionId));
+      return wsSendMessage(createDetachSession(sessionId));
+    },
+    [connectionMode, relaySend, wsSendMessage],
   );
 
   // Close modal and store URL on successful connect
@@ -1060,6 +1088,11 @@ function App() {
     }
   }, [activeSessionId]);
 
+  const handleDetach = useCallback(() => {
+    if (!activeSessionId) return;
+    effectiveDetachSession(activeSessionId);
+  }, [activeSessionId, effectiveDetachSession]);
+
   const handleExportText = useCallback(() => {
     const text = sessionMessages
       .map((m) => `[${new Date(m.timestamp).toLocaleString()}] [${m.sender}] ${m.content}`)
@@ -1107,6 +1140,7 @@ function App() {
       onClearMessages={handleClearMessages}
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
+      onDetach={handleDetach}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">
