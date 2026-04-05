@@ -37,6 +37,7 @@ import type {
   KillSessionRequestMessage,
   PingMessage,
   ProtocolMessage,
+  RegisterDeviceTokenMessage,
   ResumeSessionRequestMessage,
   SessionHistoryRequestMessage,
   SessionListRequestMessage,
@@ -90,6 +91,9 @@ export interface ConnectionEvents {
 
   /** Detach session request received (tmux-style) */
   onDetachSession: (sessionId: UUID, requestId: UUID) => void;
+
+  /** Device token registered for push notifications */
+  onRegisterDeviceToken: (token: string, platform: 'ios' | 'android') => void;
 
   /** Authentication succeeded */
   onAuthSuccess: (clientFingerprint: string) => void;
@@ -287,6 +291,9 @@ export class Connection {
       case 'ping':
         this.handlePing(message);
         break;
+      case 'register_device_token':
+        this.handleRegisterDeviceToken(message);
+        break;
       case 'pong':
         // Client responding to our ping - no action needed
         break;
@@ -466,6 +473,11 @@ export class Connection {
   private handleDetachSession(message: DetachSessionMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onDetachSession?.(message.sessionId, message.id);
+  }
+
+  private handleRegisterDeviceToken(message: RegisterDeviceTokenMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onRegisterDeviceToken?.(message.token, message.platform);
   }
 
   private handleTerminalResize(message: TerminalResizeMessage): void {

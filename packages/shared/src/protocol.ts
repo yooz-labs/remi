@@ -97,7 +97,8 @@ export type ProtocolMessage =
   | ResumeSessionRequestMessage
   | ResumeSessionResponseMessage
   | DetachSessionMessage
-  | DetachSessionAckMessage;
+  | DetachSessionAckMessage
+  | RegisterDeviceTokenMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -497,6 +498,17 @@ export interface DetachSessionAckMessage {
   readonly error?: string;
 }
 
+/** Register a device token for push notifications */
+export interface RegisterDeviceTokenMessage {
+  readonly type: 'register_device_token';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** APNS or FCM device token */
+  readonly token: string;
+  /** Device platform */
+  readonly platform: 'ios' | 'android';
+}
+
 /** A recent project directory aggregated from session history */
 export interface RecentDirectory {
   /** Absolute path */
@@ -604,6 +616,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'resume_session_response',
     'detach_session',
     'detach_session_ack',
+    'register_device_token',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1185,6 +1198,20 @@ export function createDetachSessionAck(
     sessionId,
     success,
     ...(error !== undefined && { error }),
+  };
+}
+
+/** Create a device token registration message */
+export function createRegisterDeviceToken(
+  token: string,
+  platform: 'ios' | 'android',
+): RegisterDeviceTokenMessage {
+  return {
+    type: 'register_device_token',
+    id: generateId(),
+    timestamp: now(),
+    token,
+    platform,
   };
 }
 

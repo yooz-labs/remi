@@ -83,6 +83,9 @@ export interface ServerEvents {
   /** Detach session request from client (tmux-style) */
   onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
 
+  /** Device token registered for push notifications */
+  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -336,6 +339,10 @@ export class WebSocketServer {
 
       onDetachSession: (sessionId, requestId) => {
         this.events.onDetachSession?.(ws.data.connectionId, sessionId, requestId);
+      },
+
+      onRegisterDeviceToken: (token, platform) => {
+        this.events.onRegisterDeviceToken?.(ws.data.connectionId, token, platform);
       },
 
       onError: (error) => {
