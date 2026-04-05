@@ -194,7 +194,7 @@ function App() {
                 i === idx
                   ? {
                       ...m,
-                      content: structuredMsg.content,
+                      content: role === 'user' ? stripProtocolTags(structuredMsg.content) : structuredMsg.content,
                       isEditing: structuredMsg.isEditing,
                       tool: structuredMsg.tool,
                       bullets: uiBullets,
@@ -419,7 +419,7 @@ function App() {
           .map((ds: DiscoverableSession) => {
             // Clean preview text (strip XML/protocol tags)
             const rawPreview = ds.lastMessage || '';
-            const cleanedPreview = cleanPreviewText(rawPreview) || rawPreview;
+            const cleanedPreview = cleanPreviewText(rawPreview);
             // Only show resume for dead sessions (completed/orphaned), never for idle/active
             const isDead = ds.status !== 'active' && ds.status !== 'idle';
             const showResume = isDead && !ds.canAttach && ds.canResume;
