@@ -57,10 +57,14 @@ export function SessionList({
 }: SessionListProps) {
   const isMultiConnection = connections.length > 1;
 
-  // Group sessions by connectionId
+  // Group sessions by connectionId, ensuring ALL connections appear
   const grouped = useMemo(() => {
     if (!isMultiConnection) return null;
     const groups = new Map<ConnectionId, UISession[]>();
+    // Initialize with all connections so empty ones still show headers
+    for (const conn of connections) {
+      groups.set(conn.connectionId, []);
+    }
     for (const session of sessions) {
       const key = session.connectionId;
       const group = groups.get(key) ?? [];
@@ -68,7 +72,7 @@ export function SessionList({
       groups.set(key, group);
     }
     return groups;
-  }, [sessions, isMultiConnection]);
+  }, [sessions, connections, isMultiConnection]);
 
   return (
     <div className={clsx('flex h-full flex-col bg-[var(--color-surface)]', className)}>

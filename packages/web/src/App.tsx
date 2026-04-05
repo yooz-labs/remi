@@ -445,18 +445,16 @@ function App() {
               canResume: showResume,
             };
           })
-          // Deduplicate: when daemon and transcript sources report the same
-          // project directory, keep the daemon version (interactable).
-          // First pass: collect best version per cwd.
+          // Filter out transcript sessions that duplicate a daemon session
+          // from the SAME connection (same cwd, keep daemon version)
           .reduce<UISession[]>((acc, s) => {
             if (!s.cwd) { acc.push(s); return acc; }
-            const existingIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            const existingIdx = acc.findIndex(
+              (other) => other.cwd === s.cwd && other.connectionId === s.connectionId,
+            );
             if (existingIdx === -1) { acc.push(s); return acc; }
-            // Prefer daemon over transcript, then connected over disconnected
             const existing = acc[existingIdx];
-            const sBetter = s.source === 'daemon' && existing.source !== 'daemon';
-            const sConnected = s.connectionStatus === 'connected' && existing.connectionStatus !== 'connected';
-            if (sBetter || sConnected) {
+            if (s.source === 'daemon' && existing.source !== 'daemon') {
               acc[existingIdx] = s;
             }
             return acc;
@@ -496,8 +494,22 @@ function App() {
               }
             }
           }
+          // Cross-connection dedup: when two connections report the same
+          // project (same cwd), keep the daemon-sourced version (it routes
+          // to the correct daemon). Drop the transcript-sourced duplicate.
+          const deduped = result.reduce<UISession[]>((acc, s) => {
+            if (!s.cwd) { acc.push(s); return acc; }
+            const dupIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            if (dupIdx === -1) { acc.push(s); return acc; }
+            const existing = acc[dupIdx];
+            // Prefer daemon over transcript source
+            if (s.source === 'daemon' && existing.source !== 'daemon') {
+              acc[dupIdx] = s;
+            }
+            return acc;
+          }, []);
           // Sort: live first, then by last activity
-          return result.sort((a, b) => {
+          return deduped.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
             const bLive = b.connectionStatus === 'connected' ? 0 : 1;
             if (aLive !== bLive) return aLive - bLive;
@@ -703,7 +715,10 @@ function App() {
   useEffect(() => {
     for (const id of connectedIds) {
       if (!prevConnectedIdsRef.current.has(id)) {
-        requestSessionList(id, true);
+        // Only request external sessions when single connection (avoids
+        // cross-daemon duplicates that cause routing confusion)
+        const includeExternal = connectedIds.size === 1;
+        requestSessionList(id, includeExternal);
       }
     }
     prevConnectedIdsRef.current = connectedIds;
@@ -732,8 +747,9 @@ function App() {
   // Refresh session lists when app resumes from background
   useEffect(() => {
     const handleResume = () => {
+      const includeExternal = connectedIds.size === 1;
       for (const id of connectedIds) {
-        requestSessionList(id, true);
+        requestSessionList(id, includeExternal);
       }
     };
     document.addEventListener('app-resume', handleResume);
