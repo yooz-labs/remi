@@ -50,6 +50,16 @@ const toolOutputPatterns = [
   /^\/Users\/\S+$/i, // Bare absolute file paths
   /^[a-z_]+_t$/i, // C/Swift type names like operating_modes_t
   /^Let me fix:?$/i, // Short tool action phrases
+  /^\w+ing\.{3}$/i, // Thinking status words ("Thinking...", "Compiling...")
+  /^\w+ing…$/i, // Same with ellipsis char
+  /^Set model to\b/i, // Model switch notifications
+  /^\[[\w\s.-]+\]\s*$/i, // Bracketed status like [task-name]
+  /^Billed\b/i, // Billing info
+  /^↓\s*\d/i, // Token count indicators (↓ 310 tokens)
+  /^·\s/i, // Middle dot bullet points (Claude Code status)
+  /^\d+%\s*conte?x?t?/i, // Context percentage (85% context)
+  /^Using\s/i, // "Using model X" status
+  /^Switching\s/i, // "Switching to..." status
 ];
 
 /** Patterns for content that contains XML/protocol tags that should be stripped */

@@ -20,6 +20,7 @@ interface MessageListProps {
   readonly onRetry?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
   readonly viewMode?: ViewMode;
+  readonly keyboardVisible?: boolean;
   readonly className?: string;
 }
 
@@ -121,6 +122,7 @@ export function MessageList({
   onRetry,
   onBulletExpand,
   viewMode = 'compact',
+  keyboardVisible = false,
   className,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -152,6 +154,15 @@ export function MessageList({
     shouldAutoScrollRef.current = true;
     setShowJumpButton(false);
   }, []);
+
+  // Scroll to bottom when keyboard opens
+  useEffect(() => {
+    if (keyboardVisible) {
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
+  }, [keyboardVisible]);
 
   // Show typing indicator when agent is thinking/executing
   const showTyping = agentStatus === 'thinking' || agentStatus === 'executing';
