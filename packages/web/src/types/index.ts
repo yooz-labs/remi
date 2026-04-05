@@ -161,17 +161,6 @@ export interface ConnectionConfig {
   readonly role: PeerRole;
 }
 
-/** App state */
-export interface AppState {
-  readonly sessions: readonly UISession[];
-  readonly activeSessionId: UUID | null;
-  readonly messages: Record<UUID, readonly UIMessage[]>;
-  readonly pendingQuestions: Record<UUID, UIQuestion>;
-  readonly connectionStatus: ConnectionStatus;
-  readonly settings: AppSettings;
-  readonly error: string | null;
-}
-
 /** Default settings */
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',

@@ -11,6 +11,7 @@ import { SettingsPanel } from '@/components/settings';
 import { useConnectionManager, parseConnectionId } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
+import { isToolOutputNoise } from '@/lib/message-filter';
 import { notifyQuestion } from '@/lib/notifications';
 import type {
   AppSettings,
@@ -35,63 +36,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
 const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
-
-/**
- * Filter out tool output noise from transcript text content.
- * The daemon transcript bridge sends all text blocks from assistant entries,
- * which includes short tool-summary lines Claude writes alongside tool calls.
- * These are noise in the chat view.
- */
-const toolOutputPatterns = [
-  /^\(No output\)$/,
-  /^Done\.?$/i,
-  /^OK\.?$/i,
-  /^Added \d+ lines?/,
-  /^Removed \d+ lines?/,
-  /^Added \d+ lines?, removed \d+ lines?/,
-  /^Read \d+ lines?/,
-  /^Wrote \d+ lines?/,
-  /^Created \S+$/,
-  /^Deleted \S+$/,
-  /^Modified \S+$/,
-  /^Error editing file$/,
-  /^\$ .+/, // Shell command echo ($ ls /path)
-  /^\d+ files? (changed|modified|deleted|created)/,
-  /^\[[\d/]+\]\s/, // Progress indicators like [0/1], [3/5]
-  /^\[\d+-[a-z]/, // Kernel/system log prefixes like [8-virtio-console...]
-  /^To https:\/\/github\.com\//, // git push output
-  /^\w+ \| \d+ [+-]+$/, // git diff stat lines
-  /^\d+ (insertions?|deletions?)\(/, // git diff summary
-  /^\d+ messages$/, // Session message count
-  /^[a-f0-9]{7,40}$/, // Bare git commit hashes
-  /^feat:|^fix:|^chore:|^docs:|^refactor:|^test:/, // Commit message prefixes
-  /^Sources?\//i, // Source file paths
-  /^Tests?\//i, // Test file paths
-  /^packages?\//i, // Package file paths
-  /^\[[\w\s]+\]$/, // Bare bracketed labels like [Kernel Boot], [HV Diagnostic]
-  /^vm_\w+::/i, // VM function calls
-  /^Error \w+ file$/i, // Tool errors like "Error editing file"
-  /^\(timeout \d+[smh]?\)$/i, // Timeout indicators like (timeout 3m), (timeout 20s)
-  /^\.build\//i, // Build artifact paths
-  /^: replacing existing signature$/i, // Codesigning output
-  /^replacing existing signature$/i,
-  /^Compiling \S+$/i, // Swift/build compilation
-  /^Linking \S+$/i, // Build linking
-  /^Build complete!/i,
-  /^\d+ warnings? generated/i, // Compiler warnings summary
-];
-
-function isToolOutputNoise(content: string): boolean {
-  const trimmed = content.trim();
-  if (!trimmed) return true;
-  // Short messages (under 60 chars) matching known patterns
-  if (trimmed.length < 80) {
-    for (const pattern of toolOutputPatterns) {
-      if (pattern.test(trimmed)) return true;
-    }
-  }
-  return false;
-}
 
 function loadSettings(): AppSettings {
   try {
@@ -167,7 +111,6 @@ function App() {
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
-  const connectionsRef = useRef<readonly import('@/types').ConnectionState[]>([]);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
 
@@ -221,11 +164,6 @@ function App() {
             } satisfies UISession,
           ];
         });
-        // Don't auto-select; let the user pick from the session list.
-        // Only auto-select if no session is currently active (single-session convenience).
-        if (!activeSessionIdRef.current) {
-          // Still don't auto-select; user should see the session list first
-        }
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
         break;
       }
@@ -700,7 +638,6 @@ function App() {
   });
 
   // Keep refs in sync for use in handleMessage callbacks
-  connectionsRef.current = connections;
   getSessionIdRef.current = getSessionId;
   sessionsRef.current = sessions;
 
@@ -966,8 +903,6 @@ function App() {
     },
     [connectDirect],
   );
-
-  // Relay connections not yet ported to multi-daemon mode (handler hidden from ConnectModal)
 
   // Disconnect a connection and remove from persisted localStorage
   const handleDisconnect = useCallback((connectionId: ConnectionId) => {
