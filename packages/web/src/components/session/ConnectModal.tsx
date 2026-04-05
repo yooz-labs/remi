@@ -23,7 +23,7 @@ interface ConnectModalProps {
   readonly isOpen: boolean;
   readonly onClose: () => void;
   readonly onConnectDirect: (url: string, directory?: string) => void;
-  readonly onConnectCode: (code: string) => void;
+  readonly onConnectCode?: (code: string) => void;
   readonly connectionStatus: ConnectionStatus;
   readonly error?: string | null;
   readonly needsPassphrase?: boolean;
@@ -290,7 +290,7 @@ export function ConnectModal({
       const wsUrl = buildWsUrl(host);
       localStorage.setItem(LOCALSTORAGE_HOST_KEY, host.trim());
       onConnectDirect(wsUrl);
-    } else {
+    } else if (onConnectCode) {
       onConnectCode(code);
     }
   };
@@ -335,18 +335,20 @@ export function ConnectModal({
               <Monitor className="size-4" />
               Host
             </button>
-            <button
-              onClick={() => setMode('remote')}
-              className={clsx(
-                'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors',
-                mode === 'remote'
-                  ? 'bg-[var(--color-primary)] text-white'
-                  : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]',
-              )}
-            >
-              <Globe className="size-4" />
-              Code
-            </button>
+            {onConnectCode && (
+              <button
+                onClick={() => setMode('remote')}
+                className={clsx(
+                  'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors',
+                  mode === 'remote'
+                    ? 'bg-[var(--color-primary)] text-white'
+                    : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]',
+                )}
+              >
+                <Globe className="size-4" />
+                Code
+              </button>
+            )}
           </div>
 
           {/* Host connection */}

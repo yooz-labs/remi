@@ -28,7 +28,7 @@ import {
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
@@ -593,19 +593,23 @@ function App() {
   // Update session connectionStatus when connections change
   useEffect(() => {
     const connMap = new Map(connections.map((c) => [c.connectionId, c.status]));
-    setSessions((prev) =>
-      prev.map((s) => {
+    setSessions((prev) => {
+      let changed = false;
+      const next = prev.map((s) => {
         if (!s.connectionId) return s;
         const connStatus = connMap.get(s.connectionId);
-        if (connStatus === 'disconnected' || connStatus === 'error') {
+        if ((connStatus === 'disconnected' || connStatus === 'error') && s.connectionStatus !== 'disconnected') {
+          changed = true;
           return { ...s, connectionStatus: 'disconnected' as const, questionPending: false };
         }
         if (connStatus === 'connected' && s.connectionStatus === 'disconnected') {
+          changed = true;
           return { ...s, connectionStatus: 'connected' as const };
         }
         return s;
-      }),
-    );
+      });
+      return changed ? next : prev;
+    });
     // Clear stale question if all connections are down
     if (!hasAnyConnected && !isAnyConnecting) {
       setQuestion(null);
@@ -613,14 +617,20 @@ function App() {
     }
   }, [connections, hasAnyConnected, isAnyConnecting]);
 
-  // Request session list from all connected daemons
+  // Request session list when a connection transitions to 'connected'
+  const prevConnectedIdsRef = useRef<Set<ConnectionId>>(new Set());
+  const connectedIds = useMemo(
+    () => new Set(connections.filter((c) => c.status === 'connected').map((c) => c.connectionId)),
+    [connections],
+  );
   useEffect(() => {
-    for (const conn of connections) {
-      if (conn.status === 'connected') {
-        requestSessionList(conn.connectionId, false);
+    for (const id of connectedIds) {
+      if (!prevConnectedIdsRef.current.has(id)) {
+        requestSessionList(id, false);
       }
     }
-  }, [connections, requestSessionList]);
+    prevConnectedIdsRef.current = connectedIds;
+  }, [connectedIds, requestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
   const connectDirectRef = useRef(connectDirect);
@@ -764,10 +774,18 @@ function App() {
     [connectDirect],
   );
 
-  // Stub for relay connection code (to be extended later with connection manager relay support)
-  const handleConnectCode = useCallback((_code: string) => {
-    console.warn('[App] Relay connections not yet supported in multi-daemon mode');
-  }, []);
+  // Relay connections not yet ported to multi-daemon mode (handler hidden from ConnectModal)
+
+  // Disconnect a connection and remove from persisted localStorage
+  const handleDisconnect = useCallback((connectionId: ConnectionId) => {
+    disconnectConnection(connectionId);
+    try {
+      const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+      const urls: string[] = stored ? JSON.parse(stored) : [];
+      const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
+      localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
+    } catch { /* ignore parse errors */ }
+  }, [disconnectConnection]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
@@ -862,7 +880,7 @@ function App() {
   // Derive connectedHost from the first connected connection (for SessionList display)
   const firstConnected = connections.find((c) => c.status === 'connected');
   const connectedHost = firstConnected
-    ? parseConnectionId(firstConnected.url).split(':')[0]
+    ? firstConnected.connectionId.replace(/:\d+$/, '')
     : null;
 
   // Compute effective status for ConnectModal: show the latest connection's status
@@ -886,7 +904,7 @@ function App() {
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
       onAddConnection={() => setShowConnectModal(true)}
-      onDisconnect={disconnectConnection}
+      onDisconnect={handleDisconnect}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -934,7 +952,6 @@ function App() {
         isOpen={showConnectModal || needsPassphrase}
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
-        onConnectCode={handleConnectCode}
         connectionStatus={effectiveStatus}
         error={error}
         needsPassphrase={needsPassphrase}

@@ -527,10 +527,8 @@ export function useConnectionManager(
       });
   }, [getMc, syncState]);
 
-  // Derived: passphrase state
-  const passphraseConnection = Array.from(connectionsMapRef.current.values()).find(
-    (mc) => mc.needsPassphrase,
-  );
+  // Derived: passphrase state (from React state, not mutable ref)
+  const passphraseConnection = connectionsState.find((c) => c.needsPassphrase);
   const needsPassphrase = passphraseConnection != null;
   const passphraseConnectionId = passphraseConnection?.connectionId ?? null;
   const passphraseServerFingerprint = passphraseConnection?.serverFingerprint ?? null;
