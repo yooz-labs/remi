@@ -494,8 +494,22 @@ function App() {
               }
             }
           }
+          // Cross-connection dedup: when two connections report the same
+          // project (same cwd), keep the daemon-sourced version (it routes
+          // to the correct daemon). Drop the transcript-sourced duplicate.
+          const deduped = result.reduce<UISession[]>((acc, s) => {
+            if (!s.cwd) { acc.push(s); return acc; }
+            const dupIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            if (dupIdx === -1) { acc.push(s); return acc; }
+            const existing = acc[dupIdx];
+            // Prefer daemon over transcript source
+            if (s.source === 'daemon' && existing.source !== 'daemon') {
+              acc[dupIdx] = s;
+            }
+            return acc;
+          }, []);
           // Sort: live first, then by last activity
-          return result.sort((a, b) => {
+          return deduped.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
             const bLive = b.connectionStatus === 'connected' ? 0 : 1;
             if (aLive !== bLive) return aLive - bLive;
