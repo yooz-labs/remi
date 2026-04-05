@@ -80,7 +80,7 @@ export function stripProtocolTags(content: string): string {
 
 /** Patterns that match regardless of message length */
 const alwaysFilterPatterns = [
-  /^[■□▪▫●○◆◇◼◻◾◽▶▷⏺⏹✢]\s/i, // Bullet/status markers from tool output
+  /^[^\x00-\x7F]\s/, // Any non-ASCII char + space = Claude Code UI marker
   /^Tip:/i, // Claude Code tips
   /^\w+ing\.{3}$/i, // Thinking status ("Thinking...")
   /^\w+ing…$/i, // Same with ellipsis char
