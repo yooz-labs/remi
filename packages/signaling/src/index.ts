@@ -27,10 +27,13 @@ interface Env {
   APNS_TEAM_ID?: string;
   APNS_PRIVATE_KEY?: string;
   APNS_BUNDLE_ID?: string;
+  PUSH_SECRET?: string;
 }
 
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
 const rateLimiter = new RateLimiter(10, 60_000);
+/** Per-IP rate limiter for push: 5 pushes per 60 seconds */
+const pushRateLimiter = new RateLimiter(5, 60_000);
 
 /** Main worker */
 export default {
@@ -86,12 +89,32 @@ export default {
       return room.fetch(request);
     }
 
-    // Push notification trigger endpoint
+    // Push notification trigger endpoint (authenticated, rate-limited)
     if (url.pathname === '/push' && request.method === 'POST') {
       const corsHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': 'application/json',
       };
+
+      // Authenticate: daemon must provide the shared secret
+      if (env.PUSH_SECRET) {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader !== `Bearer ${env.PUSH_SECRET}`) {
+          return new Response(
+            JSON.stringify({ error: 'UNAUTHORIZED', message: 'Invalid or missing authorization' }),
+            { status: 401, headers: corsHeaders },
+          );
+        }
+      }
+
+      // Rate limit per IP
+      const pushClientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      if (!pushRateLimiter.check(pushClientIp)) {
+        return new Response(
+          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many push requests' }),
+          { status: 429, headers: corsHeaders },
+        );
+      }
 
       if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY) {
         return new Response(
@@ -100,13 +123,7 @@ export default {
         );
       }
 
-      let body: {
-        token?: string;
-        title?: string;
-        body?: string;
-        platform?: string;
-        bundleId?: string;
-      };
+      let body: { token?: string; title?: string; body?: string };
       try {
         body = await request.json();
       } catch {
@@ -126,12 +143,19 @@ export default {
         );
       }
 
-      const bundleId = body.bundleId || env.APNS_BUNDLE_ID || 'live.yooz.remi';
+      // bundleId is always server-controlled (never from client)
+      const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
 
-      const result = await sendApnsPush(
-        { token: body.token, title: body.title, body: body.body, bundleId },
-        { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
-      );
+      let result: { success: boolean; error?: string };
+      try {
+        result = await sendApnsPush(
+          { token: body.token, title: body.title, body: body.body, bundleId },
+          { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result = { success: false, error: `APNS internal error: ${msg}` };
+      }
 
       if (result.success) {
         return new Response(JSON.stringify({ success: true }), {

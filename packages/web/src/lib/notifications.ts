@@ -17,7 +17,10 @@ import { PushNotifications } from '@capacitor/push-notifications';
 import { isNative } from './platform';
 
 let localPermissionGranted = false;
-let notificationIdCounter = 1;
+/** Use timestamp-based IDs to avoid collisions across app restarts */
+function nextNotificationId(): number {
+  return (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000);
+}
 let deviceToken: string | null = null;
 
 /** Callback for when device token is received */
@@ -67,7 +70,7 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
           notifications: [{
             title: notification.title ?? 'Remi',
             body: notification.body ?? 'Your agent needs attention',
-            id: notificationIdCounter++,
+            id: nextNotificationId(),
             schedule: { at: new Date() },
             sound: 'default',
           }],
@@ -95,7 +98,7 @@ export async function notifyQuestion(sessionName: string, prompt: string): Promi
         {
           title: `${sessionName} needs input`,
           body: prompt.length > 100 ? `${prompt.slice(0, 97)}...` : prompt,
-          id: notificationIdCounter++,
+          id: nextNotificationId(),
           schedule: { at: new Date() },
           sound: 'default',
           actionTypeId: 'QUESTION',
@@ -116,7 +119,7 @@ export async function notifySessionComplete(sessionName: string): Promise<void> 
         {
           title: `${sessionName} finished`,
           body: 'The agent has completed its work.',
-          id: notificationIdCounter++,
+          id: nextNotificationId(),
           schedule: { at: new Date() },
           sound: 'default',
         },
@@ -136,7 +139,7 @@ export async function notifySessionError(sessionName: string, error: string): Pr
         {
           title: `${sessionName} error`,
           body: error.length > 100 ? `${error.slice(0, 97)}...` : error,
-          id: notificationIdCounter++,
+          id: nextNotificationId(),
           schedule: { at: new Date() },
           sound: 'default',
         },

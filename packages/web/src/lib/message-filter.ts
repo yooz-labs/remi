@@ -19,7 +19,6 @@ const toolOutputPatterns = [
   /^Deleted \S+$/,
   /^Modified \S+$/,
   /^Error editing file$/,
-  /^\$ .+/, // Shell command echo ($ ls /path)
   /^\d+ files? (changed|modified|deleted|created)/,
   /^\[[\d/]+\]\s/, // Progress indicators like [0/1], [3/5]
   /^\[\d+-[a-z]/, // Kernel/system log prefixes like [8-virtio-console...]

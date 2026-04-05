@@ -622,6 +622,10 @@ function App() {
         }
         break;
       }
+
+      default:
+        console.debug(`[App] Unhandled message type: ${(message as { type: string }).type}`);
+        break;
     }
   }, []);
 
