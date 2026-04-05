@@ -47,15 +47,19 @@ const toolOutputPatterns = [
   /^Added \d+ lines?, removed \d+ lines?/,
   /^Read \d+ lines?/,
   /^Wrote \d+ lines?/,
-  /^Created \S+/,
-  /^Deleted \S+/,
-  /^Modified \S+/,
+  /^Created \S+$/,
+  /^Deleted \S+$/,
+  /^Modified \S+$/,
   /^\$ .+/, // Shell command echo ($ ls /path)
   /^\d+ files? (changed|modified|deleted|created)/,
   /^\[[\d/]+\]\s/, // Progress indicators like [0/1], [3/5]
+  /^\[\d+-[a-z]/, // Kernel/system log prefixes like [8-virtio-console...]
   /^To https:\/\/github\.com\//, // git push output
   /^\w+ \| \d+ [+-]+$/, // git diff stat lines
   /^\d+ (insertions?|deletions?)\(/, // git diff summary
+  /^\d+ messages$/, // Session message count
+  /^[a-f0-9]{7,40}$/, // Bare git commit hashes
+  /^feat:|^fix:|^chore:|^docs:|^refactor:|^test:/, // Commit message prefixes (tool output)
 ];
 
 function isToolOutputNoise(content: string): boolean {
@@ -297,6 +301,11 @@ function App() {
         // Handle structured message with bullets (from PTY stream)
         const structuredMsg = message.message;
 
+        // Filter out tool output noise from agent messages
+        if (structuredMsg.sender === 'agent' && isToolOutputNoise(structuredMsg.content)) {
+          break;
+        }
+
         const uiBullets = toBullets(structuredMsg.bullets);
 
         setMessages((prev) => {
@@ -437,8 +446,9 @@ function App() {
             // Only show resume for dead sessions (completed/orphaned), never for idle/active
             const isDead = ds.status !== 'active' && ds.status !== 'idle';
             const showResume = isDead && !ds.canAttach && ds.canResume;
-            // If this session is the one we're actively connected to, keep it connected
+            // Check if this session is the one we're directly attached to via hello_ack
             const isActiveSession = ds.sessionId === activeSessionIdRef.current;
+            const isAttachedSession = !ds.canAttach && ds.status === 'active' && ds.source === 'daemon';
             return {
               id: ds.sessionId as UUID,
               name: ds.name || ds.projectPath.split('/').pop() || 'Session',
@@ -446,7 +456,7 @@ function App() {
               createdAt: ds.lastActivity,
               lastActiveAt: ds.lastActivity,
               status: mapSessionStatus(ds.status),
-              connectionStatus: (isActiveSession || ds.canAttach) ? ('connected' as const) : ('disconnected' as const),
+              connectionStatus: (isActiveSession || isAttachedSession || ds.canAttach) ? ('connected' as const) : ('disconnected' as const),
               unreadCount: 0,
               cwd: ds.projectPath,
               preview: cleanPreview.slice(0, 100),
@@ -471,8 +481,7 @@ function App() {
           const attachedSession = prev.find(
             (s) =>
               s.connectionId === connectionId &&
-              s.connectionStatus === 'connected' &&
-              s.id === activeSessionIdRef.current,
+              s.connectionStatus === 'connected',
           );
           const discoveredIds = new Set(discovered.map((s) => s.id));
           // Start with sessions from other connections

@@ -14,6 +14,7 @@ async function initNative(): Promise<void> {
     window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   await StatusBar.setStyle({ style: prefersDark ? Style.Dark : Style.Light });
+  await StatusBar.setOverlaysWebView({ overlay: true });
 }
 
 createRoot(document.getElementById('root')!).render(
