@@ -8,12 +8,12 @@ import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
-import { useWebSocket } from '@/hooks';
+import { useConnectionManager, parseConnectionId } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
-import { checkKnownHost, trustHost } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import type {
   AppSettings,
+  ConnectionId,
   UIBullet,
   UIMessage,
   UIQuestion,
@@ -22,23 +22,15 @@ import type {
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
-import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
-  createBulletExpandRequest,
   createDetachSession,
-  createHello,
-  createResumeSessionRequest,
-  createSessionListRequest,
-  createTranscriptLoadRequest,
-  createUserInput,
   generateId,
-  now,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-const LOCALSTORAGE_URL_KEY = 'remi-last-url';
+const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
 const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
 
@@ -103,26 +95,20 @@ function updateSessionActivity(
 }
 
 function App() {
-  // State
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [question, setQuestion] = useState<UIQuestion | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [connectedHost, setConnectedHost] = useState<string | null>(null);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
 
-  // Refs for stable callbacks
-  const handleMessageRef = useRef<((message: ProtocolMessage) => void) | undefined>(undefined);
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
-  const unlockedIdentityRef = useRef<UnlockedIdentity | null>(null);
 
-  // Apply theme and font size on settings change
   useEffect(() => {
     applyTheme(settings.theme);
 
@@ -139,19 +125,22 @@ function App() {
     setSettings(newSettings);
   }, []);
 
-  // WebSocket connection
-  const handleMessage = useCallback((message: ProtocolMessage) => {
+  // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
+  const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        // One session per daemon; the sessionId identifies the daemon's single session.
+        // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
+          console.warn('[App] Received hello_ack without sessionId from connection:', connectionId);
           break;
         }
         setSessions((prev) => {
           const exists = prev.some((s) => s.id === message.sessionId);
           if (exists) {
             return prev.map((s) =>
-              s.id === message.sessionId ? { ...s, connectionStatus: 'connected' } : s,
+              s.id === message.sessionId
+                ? { ...s, connectionStatus: 'connected', connectionId }
+                : s,
             );
           }
           if (message.isResume) return prev;
@@ -164,6 +153,7 @@ function App() {
               lastActiveAt: new Date().toISOString(),
               status: 'idle',
               connectionStatus: 'connected',
+              connectionId,
               unreadCount: 0,
               preview: 'Connected',
             } satisfies UISession,
@@ -226,6 +216,7 @@ function App() {
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId,
+            connectionId,
             sender: newSender,
             content: resolvedContent,
             timestamp: structuredMsg.createdAt || message.timestamp,
@@ -296,6 +287,7 @@ function App() {
           const uiMessage: UIMessage = {
             id: structuredMsg.id,
             sessionId: structuredMsg.sessionId,
+            connectionId,
             sender: structuredMsg.sender,
             content: structuredMsg.content,
             timestamp: structuredMsg.createdAt,
@@ -377,7 +369,7 @@ function App() {
         // Replay batches can arrive immediately after hello_ack on first attach.
         // Dispatch them directly so early history is not dropped before refs/effects settle.
         for (const replayMsg of message.messages) {
-          handleMessage(replayMsg);
+          handleMessage(connectionId, replayMsg);
         }
         break;
       }
@@ -405,6 +397,7 @@ function App() {
             return {
               id: ds.sessionId as UUID,
               name: ds.name || ds.projectPath.split('/').pop() || 'Session',
+              connectionId,
               createdAt: ds.lastActivity,
               lastActiveAt: ds.lastActivity,
               status: mapSessionStatus(ds.status),
@@ -424,17 +417,26 @@ function App() {
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
 
+        // Multi-daemon merge: keep sessions from other connections, preserve attached session
+        // for this connection if not in discovered list, add all newly discovered sessions,
+        // sort live-first then by recency.
         setSessions((prev) => {
-          // Keep only the currently attached session (from hello_ack), replace everything else
-          // with the freshly discovered sessions from the daemon
+          const otherConnSessions = prev.filter((s) => s.connectionId !== connectionId);
+          // Keep the attached session for this connection (from hello_ack)
           const attachedSession = prev.find(
-            (s) => s.connectionStatus === 'connected' && s.id === activeSessionIdRef.current,
+            (s) =>
+              s.connectionId === connectionId &&
+              s.connectionStatus === 'connected' &&
+              s.id === activeSessionIdRef.current,
           );
           const discoveredIds = new Set(discovered.map((s) => s.id));
-          // Start with attached session (if not already in discovered list)
-          const result = attachedSession && !discoveredIds.has(attachedSession.id)
-            ? [attachedSession, ...discovered]
-            : [...discovered];
+          // Start with sessions from other connections
+          const result = [...otherConnSessions];
+          // Add attached session if not already in discovered list
+          if (attachedSession && !discoveredIds.has(attachedSession.id)) {
+            result.push(attachedSession);
+          }
+          result.push(...discovered);
           // Sort: live first, then by last activity
           return result.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
@@ -447,7 +449,7 @@ function App() {
       }
 
       case 'session_history_response': {
-        // Session history received; currently unused (one session per daemon)
+        // Session history response received; not yet integrated into the UI
         break;
       }
 
@@ -479,7 +481,7 @@ function App() {
       }
 
       case 'create_session_response': {
-        // One session per daemon; session creation is rejected.
+        // Log session creation failures. Success case currently unhandled.
         if (!message.success) {
           console.error(`Session creation rejected: ${message.error}`);
         }
@@ -532,14 +534,25 @@ function App() {
         break;
       }
 
-      case 'error':
+      case 'error': {
         console.error('Daemon error:', message);
+        const errorSessionId = activeSessionIdRef.current;
+        if (errorSessionId) {
+          const errMsg: UIMessage = {
+            id: generateId(),
+            sessionId: errorSessionId,
+            sender: 'system',
+            content: `Daemon error: ${message.message ?? 'unknown'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errMsg]);
+        }
         break;
+      }
     }
   }, []);
-
-  // Keep the latest message handler available synchronously for relay callbacks.
-  handleMessageRef.current = handleMessage;
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -549,207 +562,106 @@ function App() {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
 
-  useEffect(() => {
-    unlockedIdentityRef.current = unlockedIdentity;
-  }, [unlockedIdentity]);
-
-  // Restore session ID from localStorage for reconnect after page reload (read once)
-  const [storedSessionId] = useState<UUID | null>(
-    () => localStorage.getItem(LOCALSTORAGE_SESSION_KEY) as UUID | null,
-  );
-
-  const signalingClientRef = useRef<import('@/lib/signaling-client').WebSignalingClient | null>(
-    null,
-  );
-  const pendingRelayChallengeRef = useRef<{
-    challenge: string;
-    serverPublicKey: string;
-    serverFingerprint: string;
-  } | null>(null);
-  const [connectionMode, setConnectionMode] = useState<'direct' | 'relay'>('direct');
-  const [relayStatus, setRelayStatus] = useState<'disconnected' | 'connecting' | 'connected'>(
-    'disconnected',
-  );
-  const [relayError, setRelayError] = useState<Error | null>(null);
-
-  /** Set error (works for both direct and relay modes) */
-  const setError = useCallback((err: Error) => {
-    setRelayError(err);
-  }, []);
-
+  // Connection manager: manages N simultaneous WebSocket connections
   const {
-    status: connectionStatus,
-    error: wsError,
-    connect,
+    connections,
+    connectDirect,
+    disconnect: disconnectConnection,
     sendInput,
     sendAnswer,
-    sendMessage: wsSendMessage,
+    sendMessage: cmSendMessage,
     requestBulletExpand,
     requestSessionList,
     requestTranscriptLoad,
     requestResumeSession,
     needsPassphrase,
-    serverFingerprint,
+    passphraseConnectionId,
+    passphraseServerFingerprint,
     provideIdentity,
-  } = useWebSocket({
+  } = useConnectionManager({
     onMessage: handleMessage,
-    initialResumeSessionId: storedSessionId ?? undefined,
     unlockedIdentity,
+    clientId: 'remi-web',
+    clientVersion: '0.0.1',
   });
 
-  const error = (connectionMode === 'relay' ? relayError?.message : wsError?.message) ?? null;
-
-  // Effective connection status: use relay status when in relay mode
-  const effectiveStatus = connectionMode === 'relay' ? relayStatus : connectionStatus;
-
-  // Relay-aware send: dispatches through signaling client when in relay mode
-  const relaySend = useCallback(
-    (message: ProtocolMessage): boolean => {
-      if (connectionMode === 'relay') {
-        if (signalingClientRef.current?.isConnected) {
-          signalingClientRef.current.sendMessage(message);
-          return true;
-        }
-        console.warn(`Relay send dropped (not connected): ${message.type}`);
-        return false;
-      }
-      return false;
-    },
-    [connectionMode],
+  // Derived connection status
+  const hasAnyConnected = connections.some((c) => c.status === 'connected');
+  const isAnyConnecting = connections.some(
+    (c) => c.status === 'connecting' || c.status === 'authenticating',
   );
 
-  // Relay-aware wrappers for send functions
-  const effectiveSendInput = useCallback(
-    (sessionId: UUID, content: string): boolean => {
-      if (connectionMode === 'relay') return relaySend(createUserInput(sessionId, content));
-      return sendInput(sessionId, content);
-    },
-    [connectionMode, relaySend, sendInput],
-  );
+  // Resolve connectionId for the active session
+  const getActiveConnectionId = useCallback((): ConnectionId | undefined => {
+    const session = sessions.find((s) => s.id === activeSessionId);
+    return session?.connectionId;
+  }, [sessions, activeSessionId]);
 
-  const effectiveSendAnswer = useCallback(
-    (questionId: UUID, answer: string): boolean => {
-      if (connectionMode === 'relay') {
-        return relaySend({
-          type: 'answer',
-          id: generateId(),
-          timestamp: now(),
-          questionId,
-          answer,
-        });
-      }
-      return sendAnswer(questionId, answer);
-    },
-    [connectionMode, relaySend, sendAnswer],
-  );
-
-  const effectiveRequestBulletExpand = useCallback(
-    (sessionId: UUID, bulletId: number): boolean => {
-      if (connectionMode === 'relay')
-        return relaySend(createBulletExpandRequest(sessionId, bulletId));
-      return requestBulletExpand(sessionId, bulletId);
-    },
-    [connectionMode, relaySend, requestBulletExpand],
-  );
-
-  const effectiveRequestSessionList = useCallback(
-    (includeExternal?: boolean): boolean => {
-      if (connectionMode === 'relay') return relaySend(createSessionListRequest(includeExternal));
-      return requestSessionList(includeExternal);
-    },
-    [connectionMode, relaySend, requestSessionList],
-  );
-
-  const effectiveRequestTranscriptLoad = useCallback(
-    (sessionId: string): boolean => {
-      if (connectionMode === 'relay') return relaySend(createTranscriptLoadRequest(sessionId));
-      return requestTranscriptLoad(sessionId);
-    },
-    [connectionMode, relaySend, requestTranscriptLoad],
-  );
-
-  const effectiveRequestResumeSession = useCallback(
-    (sessionId: string): boolean => {
-      if (connectionMode === 'relay') return relaySend(createResumeSessionRequest(sessionId));
-      return requestResumeSession(sessionId);
-    },
-    [connectionMode, relaySend, requestResumeSession],
-  );
-
-  const effectiveDetachSession = useCallback(
-    (sessionId: UUID): boolean => {
-      if (connectionMode === 'relay') return relaySend(createDetachSession(sessionId));
-      return wsSendMessage(createDetachSession(sessionId));
-    },
-    [connectionMode, relaySend, wsSendMessage],
-  );
-
-  // Close modal and store URL on successful connect
+  // Close modal on successful connect
   useEffect(() => {
-    if (connectionStatus === 'connected') {
+    if (hasAnyConnected) {
       setShowConnectModal(false);
     }
-  }, [connectionStatus]);
+  }, [hasAnyConnected]);
 
-  // Update session connectionStatus on disconnect/reconnecting
-  // Clear stale question on disconnect
+  // Update session connectionStatus when connections change
   useEffect(() => {
-    if (effectiveStatus === 'disconnected' || effectiveStatus === 'reconnecting') {
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.connectionStatus === 'connected'
-            ? { ...s, connectionStatus: 'disconnected' as const, questionPending: false }
-            : s,
-        ),
-      );
+    const connMap = new Map(connections.map((c) => [c.connectionId, c.status]));
+    setSessions((prev) => {
+      let changed = false;
+      const next = prev.map((s) => {
+        const connStatus = connMap.get(s.connectionId);
+        if ((connStatus === 'disconnected' || connStatus === 'error') && s.connectionStatus !== 'disconnected') {
+          changed = true;
+          return { ...s, connectionStatus: 'disconnected' as const, questionPending: false };
+        }
+        if (connStatus === 'connected' && s.connectionStatus === 'disconnected') {
+          changed = true;
+          return { ...s, connectionStatus: 'connected' as const };
+        }
+        return s;
+      });
+      return changed ? next : prev;
+    });
+    // Clear stale question if all connections are down
+    if (!hasAnyConnected && !isAnyConnecting) {
       setQuestion(null);
       setResumingSession(null);
-    } else if (effectiveStatus === 'connected') {
-      // Restore connected status for active session
-      if (activeSessionId) {
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeSessionId ? { ...s, connectionStatus: 'connected' as const } : s,
-          ),
-        );
+    }
+  }, [connections, hasAnyConnected, isAnyConnecting]);
+
+  // Request session list when a connection transitions to 'connected'
+  const prevConnectedIdsRef = useRef<Set<ConnectionId>>(new Set());
+  const connectedIds = useMemo(
+    () => new Set(connections.filter((c) => c.status === 'connected').map((c) => c.connectionId)),
+    [connections],
+  );
+  useEffect(() => {
+    for (const id of connectedIds) {
+      if (!prevConnectedIdsRef.current.has(id)) {
+        requestSessionList(id, false);
       }
     }
-  }, [effectiveStatus, activeSessionId]);
-
-  // Request session list after direct connection
-  // Use includeExternal=false so only sessions owned by THIS daemon are listed.
-  // External transcript sessions belong to other daemons and cannot receive
-  // input from this connection.
-  useEffect(() => {
-    if (connectionStatus === 'connected') {
-      effectiveRequestSessionList(false);
-    }
-  }, [connectionStatus, effectiveRequestSessionList]);
-
-  // Request session list after relay connection (hello_ack received)
-  useEffect(() => {
-    if (connectionMode === 'relay' && relayStatus === 'connected' && activeSessionId) {
-      effectiveRequestSessionList(false);
-    }
-  }, [connectionMode, relayStatus, activeSessionId, effectiveRequestSessionList]);
+    prevConnectedIdsRef.current = connectedIds;
+  }, [connectedIds, requestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
-  const connectRef = useRef(connect);
+  const connectDirectRef = useRef(connectDirect);
   useEffect(() => {
-    connectRef.current = connect;
-  }, [connect]);
+    connectDirectRef.current = connectDirect;
+  }, [connectDirect]);
 
   useEffect(() => {
-    const storedUrl = localStorage.getItem(LOCALSTORAGE_URL_KEY);
-    if (storedUrl) {
-      // Extract hostname for display
-      try {
-        const parsed = new URL(storedUrl);
-        setConnectedHost(parsed.hostname);
-      } catch (err) {
-        console.warn('[App] Failed to parse stored URL for hostname display:', err);
+    try {
+      const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+      if (stored) {
+        const urls: string[] = JSON.parse(stored);
+        for (const url of urls) {
+          connectDirectRef.current(url);
+        }
       }
-      connectRef.current(storedUrl);
+    } catch (err) {
+      console.warn('[App] Failed to restore connections from localStorage:', err);
     }
   }, []);
 
@@ -758,7 +670,6 @@ function App() {
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
   const sessionQuestion = question?.sessionId === activeSessionId ? question : null;
 
-  // Handlers
   const handleSelectSession = useCallback(
     (id: UUID) => {
       setActiveSessionId(id);
@@ -774,10 +685,10 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, isLoadingTranscript: true } : s)),
         );
-        effectiveRequestTranscriptLoad(id);
+        requestTranscriptLoad(session.connectionId, id);
       }
     },
-    [sessions, effectiveRequestTranscriptLoad],
+    [sessions, requestTranscriptLoad],
   );
 
   const handleBack = useCallback(() => {
@@ -787,10 +698,25 @@ function App() {
   const handleSend = useCallback(
     (content: string) => {
       if (!activeSessionId) return;
+      const connId = getActiveConnectionId();
+      if (!connId) {
+        const systemMsg: UIMessage = {
+          id: generateId(),
+          sessionId: activeSessionId,
+          sender: 'system',
+          content: 'Cannot send: not connected to daemon',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, systemMsg]);
+        return;
+      }
 
       // If there's an active question, send as answer
       if (sessionQuestion) {
-        effectiveSendAnswer(sessionQuestion.id, content);
+        const sent = sendAnswer(connId, sessionQuestion.id, content);
+        if (!sent) return; // Don't transition question UI if send failed
         // Mark question as answered (card shows collapsed state briefly)
         setQuestion({ ...sessionQuestion, answeredWith: content });
         setTimeout(() => setQuestion(null), 1500);
@@ -827,14 +753,28 @@ function App() {
 
       setMessages((prev) => [...prev, newMessage]);
 
-      const success = effectiveSendInput(activeSessionId, content);
+      const success = sendInput(connId, activeSessionId, content);
       if (success) {
         setMessages((prev) =>
           prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
         );
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'delivered' as const } : m)),
+        );
+        const errorMsg: UIMessage = {
+          id: generateId(),
+          sessionId: activeSessionId,
+          sender: 'system',
+          content: 'Failed to send message: connection unavailable',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, effectiveSendInput, effectiveSendAnswer, sessionQuestion],
+    [activeSessionId, getActiveConnectionId, sendInput, sendAnswer, sessionQuestion],
   );
 
   const handlePassphraseSubmit = useCallback(
@@ -842,206 +782,47 @@ function App() {
       try {
         const identity = await unlockStoredIdentity(passphrase);
         setUnlockedIdentity(identity);
-        provideIdentity(identity);
+        if (passphraseConnectionId) {
+          provideIdentity(passphraseConnectionId, identity);
+        }
       } catch (err) {
         console.error('Failed to unlock identity:', err);
         throw err;
       }
     },
-    [provideIdentity],
+    [provideIdentity, passphraseConnectionId],
   );
 
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
-      setConnectionMode('direct');
-      // Extract hostname from ws:// URL for display
-      let newHost: string | null = null;
+      connectDirect(url, directory);
+      // Persist connected URLs
       try {
-        const parsed = new URL(url);
-        newHost = parsed.hostname;
+        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+        const urls: string[] = stored ? JSON.parse(stored) : [];
+        if (!urls.includes(url)) {
+          urls.push(url);
+        }
+        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(urls));
       } catch (err) {
-        console.warn('[App] Failed to parse URL for hostname display:', err);
+        console.warn('[App] Failed to persist connection URL:', err);
       }
-      // Clear sessions when switching to a different host
-      if (newHost && newHost !== connectedHost) {
-        setSessions([]);
-        setMessages([]);
-        setActiveSessionId(null);
-        setQuestion(null);
-      }
-      setConnectedHost(newHost);
-      // Close any existing relay connection
-      if (signalingClientRef.current) {
-        signalingClientRef.current.close();
-        signalingClientRef.current = null;
-        setRelayStatus('disconnected');
-      }
-      localStorage.setItem(LOCALSTORAGE_URL_KEY, url);
-      connect(url, directory);
     },
-    [connect],
+    [connectDirect],
   );
 
-  // Clean up signaling client on unmount
-  useEffect(() => {
-    return () => {
-      signalingClientRef.current?.close();
-    };
-  }, []);
+  // Relay connections not yet ported to multi-daemon mode (handler hidden from ConnectModal)
 
-  const handleConnectCode = useCallback((code: string) => {
-    // Dynamic import to avoid bundling when not used
-    import('@/lib/signaling-client')
-      .then(({ WebSignalingClient }) => {
-        // Close existing signaling connection if any
-        if (signalingClientRef.current) {
-          signalingClientRef.current.close();
-        }
-
-        setConnectionMode('relay');
-        setRelayStatus('connecting');
-        setRelayError(null);
-        pendingRelayChallengeRef.current = null;
-
-        const signalingUrl = 'wss://remi-signaling.yooz.workers.dev/connect';
-        const client = new WebSignalingClient({
-          onStateChange: (state) => {
-            if (state === 'connected') {
-              setRelayStatus('connected');
-              setShowConnectModal(false);
-              // Send hello via relay with resumeSessionId if reconnecting
-              // (harmless if auth is required; daemon drops it and sends
-              // auth_challenge first, then hello_ack after auth completes)
-              const resumeId = activeSessionIdRef.current ?? undefined;
-              client.sendMessage(createHello(generateId(), '0.1.0', undefined, resumeId));
-            } else if (state === 'connecting' || state === 'joined') {
-              setRelayStatus('connecting');
-            } else if (state === 'disconnected' || state === 'error') {
-              setRelayStatus('disconnected');
-            }
-          },
-          onMessage: (message) => {
-            if (!message || typeof message !== 'object' || !('type' in message)) return;
-            const msg = message as ProtocolMessage;
-
-            // Handle auth_challenge: TOFU check, sign, and respond
-            if (msg.type === 'auth_challenge') {
-              const identity = unlockedIdentityRef.current;
-              if (!identity) {
-                setError(
-                  new Error(
-                    'This daemon requires authentication. Unlock your identity first (Settings > Identity).',
-                  ),
-                );
-                setRelayStatus('disconnected');
-                client.close();
-                return;
-              }
-
-              // TOFU: check known hosts for relay server
-              const relayUrl = `relay:${msg.serverFingerprint}`;
-              const tofuResult = checkKnownHost(relayUrl, msg.serverFingerprint);
-              if (tofuResult === 'mismatch') {
-                setError(
-                  new Error(
-                    'Server fingerprint changed. This could indicate a MITM attack. Connection rejected.',
-                  ),
-                );
-                setRelayStatus('disconnected');
-                client.close();
-                return;
-              }
-
-              // Store challenge data for mutual auth verification in auth_result
-              pendingRelayChallengeRef.current = {
-                challenge: msg.challenge,
-                serverPublicKey: msg.serverPublicKey,
-                serverFingerprint: msg.serverFingerprint,
-              };
-
-              (async () => {
-                try {
-                  const challengeData = fromBase64(msg.challenge);
-                  const signature = await sign(identity.privateKey, challengeData);
-                  client.sendMessage(
-                    createAuthResponse(identity.publicKeyRaw, signature, identity.fingerprint),
-                  );
-                } catch (err) {
-                  const detail = err instanceof Error ? err.message : String(err);
-                  setError(new Error(`Relay authentication failed: ${detail}`));
-                  setRelayStatus('disconnected');
-                  client.close();
-                }
-              })();
-              return;
-            }
-
-            // Handle auth_result: verify mutual auth, TOFU trust, then send hello
-            if (msg.type === 'auth_result') {
-              if (!msg.success) {
-                setError(new Error(`Relay auth rejected: ${msg.error ?? 'unknown'}`));
-                setRelayStatus('disconnected');
-                client.close();
-                return;
-              }
-
-              const pending = pendingRelayChallengeRef.current;
-              if (!msg.serverSignature || !pending) {
-                setError(new Error('Server did not provide mutual authentication signature'));
-                setRelayStatus('disconnected');
-                client.close();
-                return;
-              }
-
-              // Verify server signature for mutual auth
-              (async () => {
-                try {
-                  const serverPubKey = await importPublicKey(fromBase64(pending.serverPublicKey));
-                  const challengeData = fromBase64(pending.challenge);
-                  const valid = await verify(serverPubKey, challengeData, msg.serverSignature!);
-                  if (!valid) {
-                    setError(new Error('Server signature verification failed'));
-                    setRelayStatus('disconnected');
-                    client.close();
-                    return;
-                  }
-
-                  // TOFU: trust server on first use
-                  const relayUrl = `relay:${pending.serverFingerprint}`;
-                  trustHost(relayUrl, pending.serverFingerprint, pending.serverPublicKey);
-                  pendingRelayChallengeRef.current = null;
-
-                  // Auth succeeded; now send hello so the daemon creates our session
-                  const resumeId = activeSessionIdRef.current ?? undefined;
-                  client.sendMessage(createHello(generateId(), '0.1.0', undefined, resumeId));
-                } catch (err) {
-                  const detail = err instanceof Error ? err.message : String(err);
-                  setError(new Error(`Server verification failed: ${detail}`));
-                  setRelayStatus('disconnected');
-                  client.close();
-                }
-              })();
-              return;
-            }
-
-            // Forward all other messages to the existing handler
-            handleMessageRef.current?.(msg);
-          },
-          onError: (errCode, errMsg) => {
-            console.error(`Signaling error [${errCode}]: ${errMsg}`);
-            setError(new Error(`Connection failed: ${errMsg}`));
-          },
-        });
-
-        signalingClientRef.current = client;
-        client.connect(signalingUrl, code);
-      })
-      .catch((err) => {
-        console.error('Failed to load signaling client:', err);
-        setRelayStatus('disconnected');
-        setConnectionMode('direct');
-      });
-  }, []);
+  // Disconnect a connection and remove from persisted localStorage
+  const handleDisconnect = useCallback((connectionId: ConnectionId) => {
+    disconnectConnection(connectionId);
+    try {
+      const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+      const urls: string[] = stored ? JSON.parse(stored) : [];
+      const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
+      localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
+    } catch (err) { console.warn('[App] Failed to update persisted connections:', err); }
+  }, [disconnectConnection]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
@@ -1060,21 +841,42 @@ function App() {
         }),
       );
 
-      effectiveRequestBulletExpand(activeSessionId, bulletId);
+      const connId = getActiveConnectionId();
+      if (connId) {
+        requestBulletExpand(connId, activeSessionId, bulletId);
+      } else {
+        // Revert expanding state since we can't reach the daemon
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (!msg.bullets) return msg;
+            const updatedBullets = msg.bullets.map((b) =>
+              b.bulletId === bulletId ? { ...b, isExpanding: false } : b,
+            );
+            return { ...msg, bullets: updatedBullets };
+          }),
+        );
+      }
     },
-    [activeSessionId, effectiveRequestBulletExpand],
+    [activeSessionId, getActiveConnectionId, requestBulletExpand],
   );
 
   const handleResumeSession = useCallback(
     (sessionId: string) => {
       if (resumingSession) return;
+      // Find the connection that owns this session
+      const session = sessions.find((s) => s.id === sessionId);
+      const connId = session?.connectionId;
+      if (!connId) {
+        console.warn('[App] Cannot resume session: no connection for session', sessionId);
+        return;
+      }
       setResumingSession(sessionId);
-      const sent = effectiveRequestResumeSession(sessionId);
+      const sent = requestResumeSession(connId, sessionId);
       if (!sent) {
         setResumingSession(null);
       }
     },
-    [effectiveRequestResumeSession, resumingSession],
+    [sessions, requestResumeSession, resumingSession],
   );
 
   // Menu actions
@@ -1093,7 +895,8 @@ function App() {
 
   const handleDetach = useCallback(() => {
     if (!activeSessionId) return;
-    const sent = effectiveDetachSession(activeSessionId);
+    const connId = getActiveConnectionId();
+    const sent = connId ? cmSendMessage(connId, createDetachSession(activeSessionId)) : false;
     if (!sent) {
       const errorMsg: UIMessage = {
         id: generateId(),
@@ -1106,7 +909,7 @@ function App() {
       };
       setMessages((prev) => [...prev, errorMsg]);
     }
-  }, [activeSessionId, effectiveDetachSession]);
+  }, [activeSessionId, getActiveConnectionId, cmSendMessage]);
 
   const handleExportText = useCallback(() => {
     const text = sessionMessages
@@ -1121,16 +924,40 @@ function App() {
     URL.revokeObjectURL(url);
   }, [sessionMessages, activeSessionId]);
 
+  // Derive error from the most recently errored connection (if any)
+  const errorConnection = connections.find((c) => c.status === 'error');
+  const error: string | null = errorConnection
+    ? errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`
+    : null;
+
+  // Derive connectedHost from the first connected connection (for SessionList display)
+  const firstConnected = connections.find((c) => c.status === 'connected');
+  const connectedHost = firstConnected
+    ? firstConnected.connectionId.replace(/:\d+$/, '')
+    : null;
+
+  // Compute effective status for ConnectModal: show the latest connection's status
+  const effectiveStatus = (() => {
+    if (hasAnyConnected) return 'connected' as const;
+    if (isAnyConnecting) return 'connecting' as const;
+    if (connections.some((c) => c.status === 'reconnecting')) return 'reconnecting' as const;
+    if (connections.some((c) => c.status === 'error')) return 'error' as const;
+    return 'disconnected' as const;
+  })();
+
   // Sidebar content
   const sidebar = (
     <SessionList
       sessions={sessions}
       activeSessionId={activeSessionId}
+      connections={connections}
       connectedHost={connectedHost}
       onSelectSession={handleSelectSession}
-      onResumeSession={effectiveStatus === 'connected' ? handleResumeSession : undefined}
+      onResumeSession={hasAnyConnected ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
+      onAddConnection={() => setShowConnectModal(true)}
+      onDisconnect={handleDisconnect}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -1178,12 +1005,11 @@ function App() {
         isOpen={showConnectModal || needsPassphrase}
         onClose={() => setShowConnectModal(false)}
         onConnectDirect={handleConnectDirect}
-        onConnectCode={handleConnectCode}
         connectionStatus={effectiveStatus}
         error={error}
         needsPassphrase={needsPassphrase}
         hasIdentity={hasIdentity()}
-        serverFingerprint={serverFingerprint}
+        serverFingerprint={passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
       />
     </>
