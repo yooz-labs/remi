@@ -34,6 +34,42 @@ const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
 const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
 
+/**
+ * Filter out tool output noise from transcript text content.
+ * The daemon transcript bridge sends all text blocks from assistant entries,
+ * which includes short tool-summary lines Claude writes alongside tool calls.
+ * These are noise in the chat view.
+ */
+const toolOutputPatterns = [
+  /^\(No output\)$/,
+  /^Added \d+ lines?/,
+  /^Removed \d+ lines?/,
+  /^Added \d+ lines?, removed \d+ lines?/,
+  /^Read \d+ lines?/,
+  /^Wrote \d+ lines?/,
+  /^Created \S+/,
+  /^Deleted \S+/,
+  /^Modified \S+/,
+  /^\$ .+/, // Shell command echo ($ ls /path)
+  /^\d+ files? (changed|modified|deleted|created)/,
+  /^\[[\d/]+\]\s/, // Progress indicators like [0/1], [3/5]
+  /^To https:\/\/github\.com\//, // git push output
+  /^\w+ \| \d+ [+-]+$/, // git diff stat lines
+  /^\d+ (insertions?|deletions?)\(/, // git diff summary
+];
+
+function isToolOutputNoise(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return true;
+  // Short messages (under 60 chars) matching known patterns
+  if (trimmed.length < 80) {
+    for (const pattern of toolOutputPatterns) {
+      if (pattern.test(trimmed)) return true;
+    }
+  }
+  return false;
+}
+
 function loadSettings(): AppSettings {
   try {
     const stored = localStorage.getItem(LOCALSTORAGE_SETTINGS_KEY);
@@ -159,7 +195,11 @@ function App() {
             } satisfies UISession,
           ];
         });
-        setActiveSessionId(message.sessionId);
+        // Don't auto-select; let the user pick from the session list.
+        // Only auto-select if no session is currently active (single-session convenience).
+        if (!activeSessionIdRef.current) {
+          // Still don't auto-select; user should see the session list first
+        }
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
         break;
       }
@@ -167,6 +207,11 @@ function App() {
       case 'transcript_content': {
         const { sessionId, entryUuid, role, content, isUpdate } = message;
         const structuredMsg = message.message;
+
+        // Filter out tool output noise from agent messages (not updates or user messages)
+        if (!isUpdate && role === 'assistant' && isToolOutputNoise(structuredMsg.content || content)) {
+          break;
+        }
 
         const uiBullets = toBullets(structuredMsg.bullets);
 
@@ -639,7 +684,7 @@ function App() {
   useEffect(() => {
     for (const id of connectedIds) {
       if (!prevConnectedIdsRef.current.has(id)) {
-        requestSessionList(id, false);
+        requestSessionList(id, true);
       }
     }
     prevConnectedIdsRef.current = connectedIds;
