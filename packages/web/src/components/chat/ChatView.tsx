@@ -112,7 +112,7 @@ export function ChatView({
         disabled={!isConnected}
         placeholder={
           !isConnected
-            ? 'Connecting...'
+            ? 'Not connected'
             : question && !question.answeredWith
               ? 'Type your response...'
               : 'Type a message...'

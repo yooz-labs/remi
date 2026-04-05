@@ -69,6 +69,14 @@ const toolOutputPatterns = [
   /^\[[\w\s]+\]$/, // Bare bracketed labels like [Kernel Boot], [HV Diagnostic]
   /^vm_\w+::/i, // VM function calls
   /^Error \w+ file$/i, // Tool errors like "Error editing file"
+  /^\(timeout \d+[smh]?\)$/i, // Timeout indicators like (timeout 3m), (timeout 20s)
+  /^\.build\//i, // Build artifact paths
+  /^: replacing existing signature$/i, // Codesigning output
+  /^replacing existing signature$/i,
+  /^Compiling \S+$/i, // Swift/build compilation
+  /^Linking \S+$/i, // Build linking
+  /^Build complete!/i,
+  /^\d+ warnings? generated/i, // Compiler warnings summary
 ];
 
 function isToolOutputNoise(content: string): boolean {
@@ -158,6 +166,7 @@ function App() {
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const connectionsRef = useRef<readonly import('@/types').ConnectionState[]>([]);
+  const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -439,14 +448,14 @@ function App() {
       }
 
       case 'session_list_response': {
-        // Look up the hello_ack session ID for this connection
-        const thisConn = connectionsRef.current.find((c) => c.connectionId === connectionId);
-        const helloAckSessionId = thisConn?.sessionId ?? null;
+        // Look up the hello_ack session ID directly from the mutable connection state
+        const helloAckSessionId = getSessionIdRef.current?.(connectionId) ?? null;
         // Map, filter, and sort DiscoverableSession[] to UISession[]
         const discovered: UISession[] = message.sessions
           .filter((ds: DiscoverableSession) => {
-            // Filter out empty/useless sessions with no content
-            // Keep sessions that are attachable (live) or have actual messages
+            // Always keep daemon-sourced sessions (our connection's sessions)
+            if (ds.source === 'daemon') return true;
+            // Filter out empty transcript sessions with no content
             if (!ds.canAttach && (!ds.messageCount || ds.messageCount === 0) && !ds.lastMessage) {
               return false;
             }
@@ -459,9 +468,13 @@ function App() {
             // Only show resume for dead sessions (completed/orphaned), never for idle/active
             const isDead = ds.status !== 'active' && ds.status !== 'idle';
             const showResume = isDead && !ds.canAttach && ds.canResume;
-            // Check if this session is the one we're directly attached to via hello_ack
+            // Sessions from the directly connected daemon (source 'daemon') are
+            // interactable. mDNS-discovered sessions (source 'transcript') are
+            // read-only until we separately connect to their daemon.
             const isActiveSession = ds.sessionId === activeSessionIdRef.current;
             const isAttachedViaHelloAck = ds.sessionId === helloAckSessionId;
+            const isDaemonSession = ds.source === 'daemon';
+            const isInteractable = isActiveSession || isAttachedViaHelloAck || isDaemonSession;
             return {
               id: ds.sessionId as UUID,
               name: ds.name || ds.projectPath.split('/').pop() || 'Session',
@@ -469,7 +482,7 @@ function App() {
               createdAt: ds.lastActivity,
               lastActiveAt: ds.lastActivity,
               status: mapSessionStatus(ds.status),
-              connectionStatus: (isActiveSession || isAttachedViaHelloAck || ds.canAttach) ? ('connected' as const) : ('disconnected' as const),
+              connectionStatus: isInteractable ? ('connected' as const) : ('disconnected' as const),
               unreadCount: 0,
               cwd: ds.projectPath,
               preview: cleanPreview.slice(0, 100),
@@ -477,7 +490,23 @@ function App() {
               canResume: showResume,
             };
           })
-          // Sort: attachable (live) first, then by last activity (most recent first)
+          // Deduplicate: when daemon and transcript sources report the same
+          // project directory, keep the daemon version (interactable).
+          // First pass: collect best version per cwd.
+          .reduce<UISession[]>((acc, s) => {
+            if (!s.cwd) { acc.push(s); return acc; }
+            const existingIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            if (existingIdx === -1) { acc.push(s); return acc; }
+            // Prefer daemon over transcript, then connected over disconnected
+            const existing = acc[existingIdx];
+            const sBetter = s.source === 'daemon' && existing.source !== 'daemon';
+            const sConnected = s.connectionStatus === 'connected' && existing.connectionStatus !== 'connected';
+            if (sBetter || sConnected) {
+              acc[existingIdx] = s;
+            }
+            return acc;
+          }, [])
+          // Sort: connected first, then by last activity (most recent first)
           .sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
             const bLive = b.connectionStatus === 'connected' ? 0 : 1;
@@ -504,6 +533,14 @@ function App() {
             result.push(attachedSession);
           }
           result.push(...discovered);
+          // Ensure the hello_ack session is always marked connected
+          if (helloAckSessionId) {
+            for (let i = 0; i < result.length; i++) {
+              if (result[i].id === helloAckSessionId && result[i].connectionStatus !== 'connected') {
+                result[i] = { ...result[i], connectionStatus: 'connected', source: 'daemon' };
+              }
+            }
+          }
           // Sort: live first, then by last activity
           return result.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
@@ -645,6 +682,7 @@ function App() {
     passphraseConnectionId,
     passphraseServerFingerprint,
     provideIdentity,
+    getSessionId,
   } = useConnectionManager({
     onMessage: handleMessage,
     unlockedIdentity,
@@ -652,8 +690,9 @@ function App() {
     clientVersion: '0.0.1',
   });
 
-  // Keep connections ref in sync for use in handleMessage callbacks
+  // Keep refs in sync for use in handleMessage callbacks
   connectionsRef.current = connections;
+  getSessionIdRef.current = getSessionId;
 
   // Derived connection status
   const hasAnyConnected = connections.some((c) => c.status === 'connected');
@@ -746,8 +785,19 @@ function App() {
     return () => document.removeEventListener('app-resume', handleResume);
   }, [connectedIds, requestSessionList]);
 
-  // Get active session
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // Get active session. Derive connectionStatus from live connection state
+  // at render time to avoid stale status from session_list_response merge timing.
+  const rawActiveSession = sessions.find((s) => s.id === activeSessionId);
+  const activeSession = rawActiveSession
+    ? (() => {
+        const conn = connections.find((c) => c.connectionId === rawActiveSession.connectionId);
+        const connIsLive = conn?.status === 'connected';
+        if (connIsLive && rawActiveSession.connectionStatus !== 'connected') {
+          return { ...rawActiveSession, connectionStatus: 'connected' as const };
+        }
+        return rawActiveSession;
+      })()
+    : undefined;
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
   const sessionQuestion = question?.sessionId === activeSessionId ? question : null;
 
