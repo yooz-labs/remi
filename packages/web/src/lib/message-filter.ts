@@ -37,14 +37,42 @@ const toolOutputPatterns = [
   /^Error \w+ file$/i, // Tool errors like "Error editing file"
   /^\(timeout \d+[smh]?\)$/i, // Timeout indicators like (timeout 3m), (timeout 20s)
   /^\.build\//i, // Build artifact paths
+  /^\.context\//i, // Context file paths
   /^: replacing existing signature$/i, // Codesigning output
   /^replacing existing signature$/i,
   /^Compiling \S+$/i, // Swift/build compilation
   /^Linking \S+$/i, // Build linking
   /^Build complete!/i,
   /^\d+ warnings? generated/i, // Compiler warnings summary
+  /^Tip:/i, // Claude Code tip messages ("Tip: Run tasks in the cloud...")
+  /^Now update \S+/i, // Tool action summaries ("Now update scratch_history...")
 ];
 
+/** Patterns for content that contains XML/protocol tags that should be stripped */
+const xmlTagPatterns = [
+  /<local-command-caveat>.*?<\/local-command-caveat>/gs,
+  /<local-command-stdout>.*?<\/local-command-stdout>/gs,
+  /<command-name>.*?<\/command-name>/gs,
+  /<command-message>.*?<\/command-message>/gs,
+  /<command-args>.*?<\/command-args>/gs,
+  /<system-reminder>.*?<\/system-reminder>/gs,
+];
+
+/**
+ * Strip protocol/XML tags from message content.
+ * Returns cleaned text, or empty string if nothing remains.
+ */
+export function stripProtocolTags(content: string): string {
+  let cleaned = content;
+  for (const pattern of xmlTagPatterns) {
+    cleaned = cleaned.replace(pattern, '');
+  }
+  return cleaned.trim();
+}
+
+/**
+ * Check if a message is tool-output noise that should be suppressed.
+ */
 export function isToolOutputNoise(content: string): boolean {
   const trimmed = content.trim();
   if (!trimmed) return true;
@@ -55,4 +83,15 @@ export function isToolOutputNoise(content: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Clean preview text for session cards.
+ * Strips XML tags and protocol markers.
+ */
+export function cleanPreviewText(text: string): string {
+  let cleaned = stripProtocolTags(text);
+  // Strip any remaining angle-bracket tags
+  cleaned = cleaned.replace(/<[^>]+>/g, '').trim();
+  return cleaned;
 }
