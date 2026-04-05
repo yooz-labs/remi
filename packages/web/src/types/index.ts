@@ -21,6 +21,19 @@ export type ConnectionStatus =
   | 'reconnecting'
   | 'error';
 
+/** Unique identifier for a daemon connection (e.g. "localhost:18765" or "relay:abc123") */
+export type ConnectionId = string;
+
+/** Per-connection state tracked by the connection manager */
+export interface ConnectionState {
+  readonly connectionId: ConnectionId;
+  readonly url: string;
+  readonly status: ConnectionStatus;
+  readonly mode: 'direct' | 'relay';
+  readonly needsPassphrase: boolean;
+  readonly serverFingerprint: string | null;
+}
+
 /** Agent status as displayed in the UI */
 export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting';
 
@@ -50,6 +63,8 @@ export interface UIBullet {
 export interface UIMessage {
   readonly id: UUID;
   readonly sessionId: UUID;
+  /** Which daemon connection this message arrived from */
+  readonly connectionId?: ConnectionId;
   readonly sender: MessageSender;
   readonly content: string;
   readonly timestamp: Timestamp;
@@ -77,6 +92,8 @@ export interface UIMessage {
 export interface UISession {
   readonly id: UUID;
   readonly name: string;
+  /** Which daemon connection this session belongs to */
+  readonly connectionId?: ConnectionId;
   readonly createdAt: Timestamp;
   readonly lastActiveAt: Timestamp;
   readonly status: AgentStatus;
