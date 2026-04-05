@@ -46,6 +46,10 @@ const toolOutputPatterns = [
   /^\d+ warnings? generated/i, // Compiler warnings summary
   /^Tip:/i, // Claude Code tip messages ("Tip: Run tasks in the cloud...")
   /^Now update \S+/i, // Tool action summaries ("Now update scratch_history...")
+  /^[■□▪▫●○◆◇]\s/i, // Filled/empty square/circle bullet markers from tool output
+  /^\/Users\/\S+$/i, // Bare absolute file paths
+  /^[a-z_]+_t$/i, // C/Swift type names like operating_modes_t
+  /^Let me fix:?$/i, // Short tool action phrases
 ];
 
 /** Patterns for content that contains XML/protocol tags that should be stripped */
