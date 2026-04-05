@@ -715,7 +715,10 @@ function App() {
   useEffect(() => {
     for (const id of connectedIds) {
       if (!prevConnectedIdsRef.current.has(id)) {
-        requestSessionList(id, true);
+        // Only request external sessions when single connection (avoids
+        // cross-daemon duplicates that cause routing confusion)
+        const includeExternal = connectedIds.size === 1;
+        requestSessionList(id, includeExternal);
       }
     }
     prevConnectedIdsRef.current = connectedIds;
@@ -744,8 +747,9 @@ function App() {
   // Refresh session lists when app resumes from background
   useEffect(() => {
     const handleResume = () => {
+      const includeExternal = connectedIds.size === 1;
       for (const id of connectedIds) {
-        requestSessionList(id, true);
+        requestSessionList(id, includeExternal);
       }
     };
     document.addEventListener('app-resume', handleResume);
