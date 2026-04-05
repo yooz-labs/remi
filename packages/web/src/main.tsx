@@ -1,3 +1,4 @@
+import { App as CapApp } from '@capacitor/app';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -15,6 +16,19 @@ async function initNative(): Promise<void> {
 
   await StatusBar.setStyle({ style: prefersDark ? Style.Dark : Style.Light });
   await StatusBar.setOverlaysWebView({ overlay: true });
+
+  // Handle hardware back button (Android) and app state changes
+  await CapApp.addListener('backButton', ({ canGoBack }) => {
+    if (canGoBack) {
+      window.history.back();
+    }
+  });
+
+  await CapApp.addListener('appStateChange', ({ isActive }) => {
+    if (isActive) {
+      document.dispatchEvent(new CustomEvent('app-resume'));
+    }
+  });
 }
 
 createRoot(document.getElementById('root')!).render(
