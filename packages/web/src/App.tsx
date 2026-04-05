@@ -445,18 +445,16 @@ function App() {
               canResume: showResume,
             };
           })
-          // Deduplicate: when daemon and transcript sources report the same
-          // project directory, keep the daemon version (interactable).
-          // First pass: collect best version per cwd.
+          // Filter out transcript sessions that duplicate a daemon session
+          // from the SAME connection (same cwd, keep daemon version)
           .reduce<UISession[]>((acc, s) => {
             if (!s.cwd) { acc.push(s); return acc; }
-            const existingIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            const existingIdx = acc.findIndex(
+              (other) => other.cwd === s.cwd && other.connectionId === s.connectionId,
+            );
             if (existingIdx === -1) { acc.push(s); return acc; }
-            // Prefer daemon over transcript, then connected over disconnected
             const existing = acc[existingIdx];
-            const sBetter = s.source === 'daemon' && existing.source !== 'daemon';
-            const sConnected = s.connectionStatus === 'connected' && existing.connectionStatus !== 'connected';
-            if (sBetter || sConnected) {
+            if (s.source === 'daemon' && existing.source !== 'daemon') {
               acc[existingIdx] = s;
             }
             return acc;
