@@ -37,21 +37,15 @@ const toolOutputPatterns = [
   /^Error \w+ file$/i, // Tool errors like "Error editing file"
   /^\(timeout \d+[smh]?\)$/i, // Timeout indicators like (timeout 3m), (timeout 20s)
   /^\.build\//i, // Build artifact paths
-  /^\.context\//i, // Context file paths
   /^: replacing existing signature$/i, // Codesigning output
   /^replacing existing signature$/i,
   /^Compiling \S+$/i, // Swift/build compilation
   /^Linking \S+$/i, // Build linking
   /^Build complete!/i,
   /^\d+ warnings? generated/i, // Compiler warnings summary
-  /^Tip:/i, // Claude Code tip messages ("Tip: Run tasks in the cloud...")
   /^Now update \S+/i, // Tool action summaries ("Now update scratch_history...")
-  /^[■□▪▫●○◆◇]\s/i, // Filled/empty square/circle bullet markers from tool output
-  /^\/Users\/\S+$/i, // Bare absolute file paths
   /^[a-z_]+_t$/i, // C/Swift type names like operating_modes_t
   /^Let me fix:?$/i, // Short tool action phrases
-  /^\w+ing\.{3}$/i, // Thinking status words ("Thinking...", "Compiling...")
-  /^\w+ing…$/i, // Same with ellipsis char
   /^Set model to\b/i, // Model switch notifications
   /^\[[\w\s.-]+\]\s*$/i, // Bracketed status like [task-name]
   /^Billed\b/i, // Billing info
@@ -84,13 +78,28 @@ export function stripProtocolTags(content: string): string {
   return cleaned.trim();
 }
 
+/** Patterns that match regardless of message length */
+const alwaysFilterPatterns = [
+  /^[■□▪▫●○◆◇]\s/i, // Bullet markers from tool output
+  /^Tip:/i, // Claude Code tips
+  /^\w+ing\.{3}$/i, // Thinking status ("Thinking...")
+  /^\w+ing…$/i, // Same with ellipsis char
+  /^\/Users\/\S+$/i, // Bare absolute file paths
+  /^\.context\//i, // Context file paths
+  /^\$ .+/, // Shell command echo
+];
+
 /**
  * Check if a message is tool-output noise that should be suppressed.
  */
 export function isToolOutputNoise(content: string): boolean {
   const trimmed = content.trim();
   if (!trimmed) return true;
-  // Short messages (under 80 chars) matching known patterns
+  // Always-filter patterns (any length)
+  for (const pattern of alwaysFilterPatterns) {
+    if (pattern.test(trimmed)) return true;
+  }
+  // Length-guarded patterns (short messages only)
   if (trimmed.length < 80) {
     for (const pattern of toolOutputPatterns) {
       if (pattern.test(trimmed)) return true;
