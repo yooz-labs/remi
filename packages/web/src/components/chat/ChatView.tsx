@@ -95,6 +95,7 @@ export function ChatView({
         onRetry={onRetry}
         onBulletExpand={onBulletExpand}
         viewMode={viewMode}
+        keyboardVisible={keyboardVisible}
       />
 
       {/* Question card in chat mode */}
