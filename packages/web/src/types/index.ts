@@ -21,8 +21,8 @@ export type ConnectionStatus =
   | 'reconnecting'
   | 'error';
 
-/** Unique identifier for a daemon connection (e.g. "localhost:18765" or "relay:abc123") */
-export type ConnectionId = string;
+/** Unique identifier for a daemon connection (e.g. "localhost:18765") */
+export type ConnectionId = string & { readonly __brand: 'ConnectionId' };
 
 /** Per-connection state tracked by the connection manager */
 export interface ConnectionState {
@@ -32,6 +32,7 @@ export interface ConnectionState {
   readonly mode: 'direct' | 'relay';
   readonly needsPassphrase: boolean;
   readonly serverFingerprint: string | null;
+  readonly error: string | null;
 }
 
 /** Agent status as displayed in the UI */
@@ -93,7 +94,7 @@ export interface UISession {
   readonly id: UUID;
   readonly name: string;
   /** Which daemon connection this session belongs to */
-  readonly connectionId?: ConnectionId;
+  readonly connectionId: ConnectionId;
   readonly createdAt: Timestamp;
   readonly lastActiveAt: Timestamp;
   readonly status: AgentStatus;

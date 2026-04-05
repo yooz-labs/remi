@@ -4,6 +4,7 @@
  * Manages N simultaneous WebSocket connections to different daemons.
  * Each connection has its own auth state, session, and message routing.
  * WebSocketClient instances are created per connection and stored in a Map.
+ * Connections are keyed by host:port; connecting to the same endpoint replaces any existing connection.
  */
 
 import {
@@ -39,6 +40,10 @@ import {
 } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+function makeConnectionId(raw: string): ConnectionId {
+  return raw as ConnectionId;
+}
 
 /** Internal per-connection state */
 interface ManagedConnection {
@@ -111,15 +116,16 @@ export interface UseConnectionManagerReturn {
   passphraseServerFingerprint: string | null;
 }
 
-/** Derive connectionId from a WebSocket URL */
+/** Derive connectionId (host:port) from a WebSocket URL. Falls back to port 18765 if not specified. */
 export function parseConnectionId(url: string): ConnectionId {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname || 'localhost';
     const port = parsed.port || '18765';
-    return `${host}:${port}`;
-  } catch {
-    return url;
+    return makeConnectionId(`${host}:${port}`);
+  } catch (err) {
+    console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
+    return makeConnectionId(url);
   }
 }
 
@@ -142,6 +148,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     mode: mc.mode,
     needsPassphrase: mc.needsPassphrase,
     serverFingerprint: mc.serverFingerprint,
+    error: mc.error?.message ?? null,
   };
 }
 
@@ -160,7 +167,6 @@ export function useConnectionManager(
   const onMessageRef = useRef(onMessage);
   const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
 
-  // Keep refs current
   useEffect(() => {
     onMessageRef.current = onMessage;
   }, [onMessage]);
@@ -292,7 +298,7 @@ export function useConnectionManager(
     mc.pendingChallenge = null;
     mc.needsPassphrase = false;
 
-    // Auth passed; re-send hello
+    // Auth complete; reset helloSent flag so sendHello dispatches the authenticated hello
     mc.helloSent = false;
     mc.client.setConnected();
     sendHello(mc);
@@ -303,7 +309,10 @@ export function useConnectionManager(
   const createMessageHandler = useCallback((connectionId: ConnectionId) => {
     return (message: ProtocolMessage) => {
       const mc = connectionsMapRef.current.get(connectionId);
-      if (!mc) return;
+      if (!mc) {
+        console.debug(`[ConnectionManager] Dropping message for disconnected connection "${connectionId}":`, message.type);
+        return;
+      }
 
       // Intercept auth messages
       if (message.type === 'auth_challenge') {
@@ -377,7 +386,10 @@ export function useConnectionManager(
     }
 
     const mc: ManagedConnection = {
-      client: null as unknown as WebSocketClient, // set below
+      // client is initialized after this object because WebSocketClient callbacks
+      // reference mc. The client is assigned on the next line after new WebSocketClient().
+      // No callbacks fire synchronously during construction, so this is safe.
+      client: null as unknown as WebSocketClient,
       connectionId,
       url,
       mode: 'direct',
@@ -454,11 +466,12 @@ export function useConnectionManager(
     syncState();
   }, [stopPing, syncState]);
 
-  // --- Send methods: route through the correct connection's client ---
-
   const sendToConnection = useCallback((connectionId: ConnectionId, message: ProtocolMessage): boolean => {
     const mc = getMc(connectionId);
-    if (!mc) return false;
+    if (!mc) {
+      console.warn(`[ConnectionManager] Cannot send ${message.type}: connection "${connectionId}" not found`);
+      return false;
+    }
     return mc.client.send(message);
   }, [getMc]);
 
@@ -513,7 +526,14 @@ export function useConnectionManager(
     identityRef.current = identity;
 
     const mc = getMc(connectionId);
-    if (!mc || !mc.pendingChallenge) return;
+    if (!mc) {
+      console.warn(`[ConnectionManager] Cannot provide identity: connection "${connectionId}" not found`);
+      return;
+    }
+    if (!mc.pendingChallenge) {
+      console.warn(`[ConnectionManager] No pending auth challenge for "${connectionId}"`);
+      return;
+    }
 
     mc.needsPassphrase = false;
     syncState();

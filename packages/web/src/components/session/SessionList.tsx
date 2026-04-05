@@ -60,9 +60,9 @@ export function SessionList({
   // Group sessions by connectionId
   const grouped = useMemo(() => {
     if (!isMultiConnection) return null;
-    const groups = new Map<ConnectionId | 'unknown', UISession[]>();
+    const groups = new Map<ConnectionId, UISession[]>();
     for (const session of sessions) {
-      const key = session.connectionId ?? 'unknown';
+      const key = session.connectionId;
       const group = groups.get(key) ?? [];
       group.push(session);
       groups.set(key, group);
@@ -72,7 +72,6 @@ export function SessionList({
 
   return (
     <div className={clsx('flex h-full flex-col bg-[var(--color-surface)]', className)}>
-      {/* Header */}
       <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3 safe-area-top">
         <h1 className="text-lg font-semibold text-[var(--color-text)]">
           Remi
@@ -81,7 +80,6 @@ export function SessionList({
           ) : null}
         </h1>
         <div className="flex items-center gap-1">
-          {/* "+" button to add another connection */}
           {connections.length > 0 && (onAddConnection || onConnect) && (
             <button
               onClick={onAddConnection ?? onConnect}
@@ -112,7 +110,6 @@ export function SessionList({
         </div>
       </header>
 
-      {/* Session list */}
       <div className="flex-1 overflow-y-auto p-2 safe-area-bottom">
         {sessions.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center px-4 text-center">
@@ -143,7 +140,7 @@ export function SessionList({
                   <div className="flex items-center gap-2 px-3 py-1.5">
                     <StatusDot status={conn?.status ?? 'disconnected'} />
                     <span className="text-xs font-medium text-[var(--color-text-muted)]">
-                      {connId === 'unknown' ? 'Unknown' : connId}
+                      {connId}
                     </span>
                     {onDisconnect && conn && (
                       <button

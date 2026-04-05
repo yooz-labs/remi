@@ -95,7 +95,6 @@ function updateSessionActivity(
 }
 
 function App() {
-  // State
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
@@ -106,12 +105,10 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
 
-  // Refs for stable callbacks
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
 
-  // Apply theme and font size on settings change
   useEffect(() => {
     applyTheme(settings.theme);
 
@@ -128,12 +125,13 @@ function App() {
     setSettings(newSettings);
   }, []);
 
-  // Multi-daemon message handler: connectionId identifies which daemon sent the message
+  // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
     switch (message.type) {
       case 'hello_ack': {
-        // One session per daemon; the sessionId identifies the daemon's single session.
+        // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
+          console.warn('[App] Received hello_ack without sessionId from connection:', connectionId);
           break;
         }
         setSessions((prev) => {
@@ -419,8 +417,10 @@ function App() {
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
 
+        // Multi-daemon merge: keep sessions from other connections, preserve attached session
+        // for this connection if not in discovered list, add all newly discovered sessions,
+        // sort live-first then by recency.
         setSessions((prev) => {
-          // Multi-daemon merge: keep sessions from OTHER connections, replace only THIS connection's sessions
           const otherConnSessions = prev.filter((s) => s.connectionId !== connectionId);
           // Keep the attached session for this connection (from hello_ack)
           const attachedSession = prev.find(
@@ -449,7 +449,7 @@ function App() {
       }
 
       case 'session_history_response': {
-        // Session history received; currently unused (one session per daemon)
+        // Session history response received; not yet integrated into the UI
         break;
       }
 
@@ -481,7 +481,7 @@ function App() {
       }
 
       case 'create_session_response': {
-        // One session per daemon; session creation is rejected.
+        // Log session creation failures. Success case currently unhandled.
         if (!message.success) {
           console.error(`Session creation rejected: ${message.error}`);
         }
@@ -534,9 +534,23 @@ function App() {
         break;
       }
 
-      case 'error':
+      case 'error': {
         console.error('Daemon error:', message);
+        const errorSessionId = activeSessionIdRef.current;
+        if (errorSessionId) {
+          const errMsg: UIMessage = {
+            id: generateId(),
+            sessionId: errorSessionId,
+            sender: 'system',
+            content: `Daemon error: ${message.message ?? 'unknown'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errMsg]);
+        }
         break;
+      }
     }
   }, []);
 
@@ -596,7 +610,6 @@ function App() {
     setSessions((prev) => {
       let changed = false;
       const next = prev.map((s) => {
-        if (!s.connectionId) return s;
         const connStatus = connMap.get(s.connectionId);
         if ((connStatus === 'disconnected' || connStatus === 'error') && s.connectionStatus !== 'disconnected') {
           changed = true;
@@ -657,7 +670,6 @@ function App() {
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
   const sessionQuestion = question?.sessionId === activeSessionId ? question : null;
 
-  // Handlers
   const handleSelectSession = useCallback(
     (id: UUID) => {
       setActiveSessionId(id);
@@ -673,9 +685,7 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, isLoadingTranscript: true } : s)),
         );
-        if (session.connectionId) {
-          requestTranscriptLoad(session.connectionId, id);
-        }
+        requestTranscriptLoad(session.connectionId, id);
       }
     },
     [sessions, requestTranscriptLoad],
@@ -689,11 +699,24 @@ function App() {
     (content: string) => {
       if (!activeSessionId) return;
       const connId = getActiveConnectionId();
-      if (!connId) return;
+      if (!connId) {
+        const systemMsg: UIMessage = {
+          id: generateId(),
+          sessionId: activeSessionId,
+          sender: 'system',
+          content: 'Cannot send: not connected to daemon',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, systemMsg]);
+        return;
+      }
 
       // If there's an active question, send as answer
       if (sessionQuestion) {
-        sendAnswer(connId, sessionQuestion.id, content);
+        const sent = sendAnswer(connId, sessionQuestion.id, content);
+        if (!sent) return; // Don't transition question UI if send failed
         // Mark question as answered (card shows collapsed state briefly)
         setQuestion({ ...sessionQuestion, answeredWith: content });
         setTimeout(() => setQuestion(null), 1500);
@@ -735,6 +758,20 @@ function App() {
         setMessages((prev) =>
           prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
         );
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'delivered' as const } : m)),
+        );
+        const errorMsg: UIMessage = {
+          id: generateId(),
+          sessionId: activeSessionId,
+          sender: 'system',
+          content: 'Failed to send message: connection unavailable',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
       }
     },
     [activeSessionId, getActiveConnectionId, sendInput, sendAnswer, sessionQuestion],
@@ -767,8 +804,8 @@ function App() {
           urls.push(url);
         }
         localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(urls));
-      } catch {
-        // Ignore localStorage errors
+      } catch (err) {
+        console.warn('[App] Failed to persist connection URL:', err);
       }
     },
     [connectDirect],
@@ -784,7 +821,7 @@ function App() {
       const urls: string[] = stored ? JSON.parse(stored) : [];
       const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
       localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
-    } catch { /* ignore parse errors */ }
+    } catch (err) { console.warn('[App] Failed to update persisted connections:', err); }
   }, [disconnectConnection]);
 
   const handleBulletExpand = useCallback(
@@ -807,6 +844,17 @@ function App() {
       const connId = getActiveConnectionId();
       if (connId) {
         requestBulletExpand(connId, activeSessionId, bulletId);
+      } else {
+        // Revert expanding state since we can't reach the daemon
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (!msg.bullets) return msg;
+            const updatedBullets = msg.bullets.map((b) =>
+              b.bulletId === bulletId ? { ...b, isExpanding: false } : b,
+            );
+            return { ...msg, bullets: updatedBullets };
+          }),
+        );
       }
     },
     [activeSessionId, getActiveConnectionId, requestBulletExpand],
@@ -818,7 +866,10 @@ function App() {
       // Find the connection that owns this session
       const session = sessions.find((s) => s.id === sessionId);
       const connId = session?.connectionId;
-      if (!connId) return;
+      if (!connId) {
+        console.warn('[App] Cannot resume session: no connection for session', sessionId);
+        return;
+      }
       setResumingSession(sessionId);
       const sent = requestResumeSession(connId, sessionId);
       if (!sent) {
@@ -875,7 +926,9 @@ function App() {
 
   // Derive error from the most recently errored connection (if any)
   const errorConnection = connections.find((c) => c.status === 'error');
-  const error: string | null = errorConnection ? `Connection error: ${errorConnection.connectionId}` : null;
+  const error: string | null = errorConnection
+    ? errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`
+    : null;
 
   // Derive connectedHost from the first connected connection (for SessionList display)
   const firstConnected = connections.find((c) => c.status === 'connected');
