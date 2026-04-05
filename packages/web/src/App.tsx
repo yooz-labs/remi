@@ -11,7 +11,7 @@ import { SettingsPanel } from '@/components/settings';
 import { useConnectionManager, parseConnectionId } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
-import { isToolOutputNoise } from '@/lib/message-filter';
+import { cleanPreviewText, isToolOutputNoise, stripProtocolTags } from '@/lib/message-filter';
 import { notifyQuestion } from '@/lib/notifications';
 import type {
   AppSettings,
@@ -177,6 +177,12 @@ function App() {
           break;
         }
 
+        // Skip user messages that are entirely protocol tags (empty after stripping)
+        if (!isUpdate && role === 'user') {
+          const stripped = stripProtocolTags(structuredMsg.content || content);
+          if (!stripped) break;
+        }
+
         const uiBullets = toBullets(structuredMsg.bullets);
 
         setMessages((prev) => {
@@ -188,7 +194,7 @@ function App() {
                 i === idx
                   ? {
                       ...m,
-                      content: structuredMsg.content,
+                      content: role === 'user' ? stripProtocolTags(structuredMsg.content) : structuredMsg.content,
                       isEditing: structuredMsg.isEditing,
                       tool: structuredMsg.tool,
                       bullets: uiBullets,
@@ -206,7 +212,9 @@ function App() {
           }
 
           const newSender = role === 'user' ? 'user' : 'agent';
-          const resolvedContent = structuredMsg.content || content;
+          const rawContent = structuredMsg.content || content;
+          // Strip protocol/XML tags from user messages (e.g. <local-command-stdout>)
+          const resolvedContent = newSender === 'user' ? stripProtocolTags(rawContent) : rawContent;
 
           // Cross-type dedup via extracted pure function
           const dedup = deduplicateMessage(prev, {
@@ -409,9 +417,9 @@ function App() {
             return true;
           })
           .map((ds: DiscoverableSession) => {
-            // Strip XML-like tags from preview text
-            const rawPreview = ds.lastMessage || `${ds.messageCount} messages`;
-            const cleanPreview = rawPreview.replace(/<[^>]+>/g, '').trim() || rawPreview;
+            // Clean preview text (strip XML/protocol tags)
+            const rawPreview = ds.lastMessage || '';
+            const cleanedPreview = cleanPreviewText(rawPreview);
             // Only show resume for dead sessions (completed/orphaned), never for idle/active
             const isDead = ds.status !== 'active' && ds.status !== 'idle';
             const showResume = isDead && !ds.canAttach && ds.canResume;
@@ -432,7 +440,7 @@ function App() {
               connectionStatus: isInteractable ? ('connected' as const) : ('disconnected' as const),
               unreadCount: 0,
               cwd: ds.projectPath,
-              preview: cleanPreview.slice(0, 100),
+              preview: cleanedPreview.slice(0, 100),
               source: ds.source,
               canResume: showResume,
             };
