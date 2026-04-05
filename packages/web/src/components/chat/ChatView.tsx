@@ -112,7 +112,9 @@ export function ChatView({
         disabled={!isConnected}
         placeholder={
           !isConnected
-            ? 'Connecting...'
+            ? session.source === 'transcript'
+              ? 'Read only (viewing transcript)'
+              : 'Connecting...'
             : question && !question.answeredWith
               ? 'Type your response...'
               : 'Type a message...'

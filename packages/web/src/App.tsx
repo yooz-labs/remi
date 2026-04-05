@@ -69,6 +69,14 @@ const toolOutputPatterns = [
   /^\[[\w\s]+\]$/, // Bare bracketed labels like [Kernel Boot], [HV Diagnostic]
   /^vm_\w+::/i, // VM function calls
   /^Error \w+ file$/i, // Tool errors like "Error editing file"
+  /^\(timeout \d+[smh]?\)$/i, // Timeout indicators like (timeout 3m), (timeout 20s)
+  /^\.build\//i, // Build artifact paths
+  /^: replacing existing signature$/i, // Codesigning output
+  /^replacing existing signature$/i,
+  /^Compiling \S+$/i, // Swift/build compilation
+  /^Linking \S+$/i, // Build linking
+  /^Build complete!/i,
+  /^\d+ warnings? generated/i, // Compiler warnings summary
 ];
 
 function isToolOutputNoise(content: string): boolean {
