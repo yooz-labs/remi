@@ -11,6 +11,7 @@ import { SettingsPanel } from '@/components/settings';
 import { useConnectionManager, parseConnectionId } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
+import { notifyQuestion } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
@@ -167,6 +168,7 @@ function App() {
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const connectionsRef = useRef<readonly import('@/types').ConnectionState[]>([]);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
+  const sessionsRef = useRef<UISession[]>([]);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -435,6 +437,12 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === questionSessionId ? { ...s, questionPending: true } : s)),
         );
+
+        // Send local notification if user isn't viewing this session
+        if (questionSessionId !== activeSessionIdRef.current || document.hidden) {
+          const sessionName = sessionsRef.current.find((s) => s.id === questionSessionId)?.name || 'Agent';
+          notifyQuestion(sessionName, q.text);
+        }
         break;
       }
 
@@ -693,6 +701,7 @@ function App() {
   // Keep refs in sync for use in handleMessage callbacks
   connectionsRef.current = connections;
   getSessionIdRef.current = getSessionId;
+  sessionsRef.current = sessions;
 
   // Derived connection status
   const hasAnyConnected = connections.some((c) => c.status === 'connected');
