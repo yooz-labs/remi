@@ -311,11 +311,18 @@ export class TranscriptDiscovery {
 
           if (entry.type === 'user') {
             const userEntry = entry as UserEntry;
-            const msgContent =
-              typeof userEntry.message.content === 'string'
-                ? userEntry.message.content
-                : '[complex content]';
-            lastMessage = msgContent.length > 100 ? `${msgContent.slice(0, 97)}...` : msgContent;
+            let msgContent: string;
+            if (typeof userEntry.message.content === 'string') {
+              msgContent = userEntry.message.content;
+            } else if (Array.isArray(userEntry.message.content)) {
+              const textBlocks = userEntry.message.content.filter(isTextBlock);
+              msgContent = textBlocks[0]?.text || '';
+            } else {
+              msgContent = '';
+            }
+            if (msgContent) {
+              lastMessage = msgContent.length > 100 ? `${msgContent.slice(0, 97)}...` : msgContent;
+            }
           }
         } catch {
           // Skip unparsable lines in tail
