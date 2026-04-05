@@ -735,6 +735,17 @@ function App() {
     }
   }, []);
 
+  // Refresh session lists when app resumes from background
+  useEffect(() => {
+    const handleResume = () => {
+      for (const id of connectedIds) {
+        requestSessionList(id, true);
+      }
+    };
+    document.addEventListener('app-resume', handleResume);
+    return () => document.removeEventListener('app-resume', handleResume);
+  }, [connectedIds, requestSessionList]);
+
   // Get active session
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
