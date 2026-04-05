@@ -5,6 +5,7 @@
  */
 
 import type { UIQuestion } from '@/types';
+import { hapticImpact } from '@/lib/haptics';
 import { clsx } from 'clsx';
 import { Send, StopCircle } from 'lucide-react';
 import {
@@ -64,7 +65,15 @@ export function InputArea({
 }: InputAreaProps) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
+
+  // Scroll input into view when focused on iOS (keyboard pushes content up)
+  const handleFocus = useCallback(() => {
+    requestAnimationFrame(() => {
+      containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
+  }, []);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -103,6 +112,7 @@ export function InputArea({
       sendingRef.current = true;
 
       // Send message
+      hapticImpact('light');
       onSend(trimmed);
 
       // Clear input
@@ -127,6 +137,7 @@ export function InputArea({
       return;
     }
 
+    hapticImpact('light');
     onSend(trimmed);
     setValue('');
 
@@ -146,6 +157,7 @@ export function InputArea({
 
   return (
     <div
+      ref={containerRef}
       className={clsx(
         'border-t border-[var(--color-border)] bg-[var(--color-surface)]',
         'safe-area-bottom',
@@ -219,6 +231,7 @@ export function InputArea({
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
+            onFocus={handleFocus}
             placeholder={placeholder}
             disabled={disabled}
             rows={1}

@@ -6,6 +6,7 @@
  */
 
 import type { UIMessage, UIQuestion, UISession } from '@/types';
+import { useKeyboard } from '@/hooks/useKeyboard';
 import { clsx } from 'clsx';
 import { useState } from 'react';
 import { ChatHeader } from './ChatHeader';
@@ -56,6 +57,7 @@ export function ChatView({
   className,
 }: ChatViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
 
@@ -68,7 +70,10 @@ export function ChatView({
   const inputQuestion = viewMode === 'chat' ? null : question;
 
   return (
-    <div className={clsx('flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]', className)}>
+    <div
+      className={clsx('flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]', className)}
+      style={{ paddingBottom: keyboardVisible ? `${keyboardHeight}px` : undefined }}
+    >
       <ChatHeader
         session={session}
         viewMode={viewMode}
@@ -90,6 +95,7 @@ export function ChatView({
         onRetry={onRetry}
         onBulletExpand={onBulletExpand}
         viewMode={viewMode}
+        keyboardVisible={keyboardVisible}
       />
 
       {/* Question card in chat mode */}
@@ -107,7 +113,7 @@ export function ChatView({
         disabled={!isConnected}
         placeholder={
           !isConnected
-            ? 'Connecting...'
+            ? 'Not connected'
             : question && !question.answeredWith
               ? 'Type your response...'
               : 'Type a message...'

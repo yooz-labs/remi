@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.20'; // REMI_COMPILED_VERSION
+      return '0.4.21-dev.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.20'; // REMI_COMPILED_VERSION
+    return '0.4.21-dev.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -273,6 +273,7 @@ import {
 } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
+import { sendPushTrigger } from './notifications/push-client.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import {
@@ -1519,6 +1520,9 @@ let primarySessionId: UUID | null = null;
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
+// Device tokens for push notifications (persists across connection/disconnection)
+const deviceTokens = new Map<string, { token: string; platform: string; registeredAt: number }>();
+
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
 let hookServer: HookServer | null = null;
@@ -1599,6 +1603,21 @@ async function createNewSession(
         };
         sendAndRecord(msg);
         sessionRegistry.updateQuestion(sessionId, question);
+
+        // If no client is connected, trigger push notification to registered devices
+        const session = sessionRegistry.getSession(sessionId);
+        if (session && session.activeConnectionId === null && deviceTokens.size > 0) {
+          const sessionName = session.name || 'Agent';
+          const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+          for (const dt of deviceTokens.values()) {
+            sendPushTrigger(
+              signalingUrl,
+              dt.token,
+              `${sessionName} needs input`,
+              question.text.slice(0, 100),
+            ).catch((err) => log(`Push notification failed: ${err}`));
+          }
+        }
       },
       onStatusChange: (status: AgentStatus, context?: string) => {
         log(`Status: ${status}${context ? ` (${context})` : ''}`);
@@ -2349,6 +2368,11 @@ const sharedEvents = {
     log(
       `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
     );
+  },
+
+  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string) => {
+    log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
+    deviceTokens.set(token, { token, platform, registeredAt: Date.now() });
   },
 
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {

@@ -69,6 +69,9 @@ export interface AdapterEvents {
   /** Detach session request received (tmux-style) */
   onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
 
+  /** Device token registered for push notifications */
+  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

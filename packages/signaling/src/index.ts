@@ -9,6 +9,7 @@
  * - GET /health: Health check
  */
 
+import { sendApnsPush } from './apns.ts';
 import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
 import { RateLimiter } from './rate-limiter.ts';
@@ -22,10 +23,17 @@ interface Env {
   CONNECTIONS: DurableObjectNamespace;
   MAX_CONNECTIONS_PER_ROOM: string;
   CONNECTION_TIMEOUT_MS: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_BUNDLE_ID?: string;
+  PUSH_SECRET?: string;
 }
 
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
 const rateLimiter = new RateLimiter(10, 60_000);
+/** Per-IP rate limiter for push: 5 pushes per 60 seconds */
+const pushRateLimiter = new RateLimiter(5, 60_000);
 
 /** Main worker */
 export default {
@@ -44,7 +52,7 @@ export default {
       return new Response(null, {
         headers: {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers':
             'Content-Type, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version',
         },
@@ -79,6 +87,87 @@ export default {
 
       // Forward the WebSocket upgrade request (URL contains the code for the DO to extract)
       return room.fetch(request);
+    }
+
+    // Push notification trigger endpoint (authenticated, rate-limited)
+    if (url.pathname === '/push' && request.method === 'POST') {
+      const corsHeaders = {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json',
+      };
+
+      // Authenticate: daemon must provide the shared secret
+      if (env.PUSH_SECRET) {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader !== `Bearer ${env.PUSH_SECRET}`) {
+          return new Response(
+            JSON.stringify({ error: 'UNAUTHORIZED', message: 'Invalid or missing authorization' }),
+            { status: 401, headers: corsHeaders },
+          );
+        }
+      }
+
+      // Rate limit per IP
+      const pushClientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      if (!pushRateLimiter.check(pushClientIp)) {
+        return new Response(
+          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many push requests' }),
+          { status: 429, headers: corsHeaders },
+        );
+      }
+
+      if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY) {
+        return new Response(
+          JSON.stringify({ error: 'APNS_NOT_CONFIGURED', message: 'APNS credentials not set' }),
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: { token?: string; title?: string; body?: string };
+      try {
+        body = await request.json();
+      } catch {
+        return new Response(
+          JSON.stringify({ error: 'INVALID_JSON', message: 'Request body must be valid JSON' }),
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      if (!body.token || !body.title || !body.body) {
+        return new Response(
+          JSON.stringify({
+            error: 'MISSING_FIELDS',
+            message: 'token, title, and body are required',
+          }),
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      // bundleId is always server-controlled (never from client)
+      const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
+
+      let result: { success: boolean; error?: string };
+      try {
+        result = await sendApnsPush(
+          { token: body.token, title: body.title, body: body.body, bundleId },
+          { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result = { success: false, error: `APNS internal error: ${msg}` };
+      }
+
+      if (result.success) {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: corsHeaders,
+        });
+      }
+
+      return new Response(JSON.stringify({ success: false, error: result.error }), {
+        status: 502,
+        headers: corsHeaders,
+      });
     }
 
     return new Response('Not found', { status: 404 });

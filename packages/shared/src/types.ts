@@ -282,4 +282,10 @@ export interface DiscoverableSession {
 
   /** Whether this dead session can be resumed via Claude Code --resume */
   readonly canResume: boolean;
+
+  /** WebSocket port of the daemon hosting this session (for auto-connect) */
+  readonly wsPort?: number;
+
+  /** Hostname of the daemon hosting this session */
+  readonly daemonHost?: string;
 }

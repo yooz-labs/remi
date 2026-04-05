@@ -1,6 +1,6 @@
 {
   "name": "remi",
-  "version": "0.4.20",
+  "version": "0.4.21-dev.2",
   "private": true,
   "license": "UNLICENSED",
   "workspaces": ["packages/*"],
@@ -31,5 +31,8 @@
     "@types/bun": "^1.1.0",
     "lefthook": "^2.1.3",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@capacitor/push-notifications": "^8.0.3"
   }
 }

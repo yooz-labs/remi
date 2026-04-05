@@ -9,11 +9,11 @@ const config: CapacitorConfig = {
     allowNavigation: ['*'],
   },
   ios: {
-    // Use WKWebView configuration for better performance
     contentInset: 'automatic',
     preferredContentMode: 'mobile',
-    // Support dark mode
     overrideUserAgent: 'Remi/1.0 iOS',
+    backgroundColor: '#1a1d21',
+    scrollEnabled: false,
   },
   android: {
     // Use AndroidX WebView
@@ -27,7 +27,7 @@ const config: CapacitorConfig = {
       backgroundColor: '#1a1d21',
     },
     Keyboard: {
-      resize: 'body',
+      resize: 'none',
       scrollPadding: false,
     },
   },

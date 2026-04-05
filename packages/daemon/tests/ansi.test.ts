@@ -210,6 +210,22 @@ describe('filterTerminalUI()', () => {
     expect(filterTerminalUI(input)).toBe('Real content here');
   });
 
+  test('filters tool output tree lines with checkmarks', () => {
+    const input =
+      '  ⎿  ✔ Technical landscape research (virtualization, emulation, open source)\nReal content';
+    expect(filterTerminalUI(input)).toBe('Real content');
+  });
+
+  test('filters standalone checkmark status lines', () => {
+    const input = '✔ Technical landscape research\nReal content';
+    expect(filterTerminalUI(input)).toBe('Real content');
+  });
+
+  test('filters tool output tree with cross marks', () => {
+    const input = '  ⎿  ✗ Failed to compile\nReal content';
+    expect(filterTerminalUI(input)).toBe('Real content');
+  });
+
   test('preserves meaningful tool output lines', () => {
     const input = '  ⎿ OAuth token revoked · Please run /login';
     expect(filterTerminalUI(input)).toBe(input);

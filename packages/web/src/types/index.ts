@@ -21,6 +21,22 @@ export type ConnectionStatus =
   | 'reconnecting'
   | 'error';
 
+/** Unique identifier for a daemon connection (e.g. "localhost:18765") */
+export type ConnectionId = string & { readonly __brand: 'ConnectionId' };
+
+/** Per-connection state tracked by the connection manager */
+export interface ConnectionState {
+  readonly connectionId: ConnectionId;
+  readonly url: string;
+  readonly status: ConnectionStatus;
+  readonly mode: 'direct' | 'relay';
+  readonly needsPassphrase: boolean;
+  readonly serverFingerprint: string | null;
+  readonly error: string | null;
+  /** The session ID from hello_ack (the directly attached session) */
+  readonly sessionId: string | null;
+}
+
 /** Agent status as displayed in the UI */
 export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting';
 
@@ -50,6 +66,8 @@ export interface UIBullet {
 export interface UIMessage {
   readonly id: UUID;
   readonly sessionId: UUID;
+  /** Which daemon connection this message arrived from */
+  readonly connectionId?: ConnectionId;
   readonly sender: MessageSender;
   readonly content: string;
   readonly timestamp: Timestamp;
@@ -77,6 +95,8 @@ export interface UIMessage {
 export interface UISession {
   readonly id: UUID;
   readonly name: string;
+  /** Which daemon connection this session belongs to */
+  readonly connectionId: ConnectionId;
   readonly createdAt: Timestamp;
   readonly lastActiveAt: Timestamp;
   readonly status: AgentStatus;
@@ -139,17 +159,6 @@ export interface ConnectionConfig {
   readonly connectionCode?: string;
   /** Peer role (host or client) */
   readonly role: PeerRole;
-}
-
-/** App state */
-export interface AppState {
-  readonly sessions: readonly UISession[];
-  readonly activeSessionId: UUID | null;
-  readonly messages: Record<UUID, readonly UIMessage[]>;
-  readonly pendingQuestions: Record<UUID, UIQuestion>;
-  readonly connectionStatus: ConnectionStatus;
-  readonly settings: AppSettings;
-  readonly error: string | null;
 }
 
 /** Default settings */

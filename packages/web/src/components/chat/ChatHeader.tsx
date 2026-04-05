@@ -16,11 +16,9 @@ import {
   Layers,
   Loader2,
   LogOut,
-  MessageSquare,
   MoreVertical,
   Terminal,
   Trash2,
-  Type,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -105,8 +103,6 @@ function AgentStatusIndicator({ status }: { readonly status: AgentStatus }) {
 
 export function ChatHeader({
   session,
-  viewMode = 'compact',
-  onViewModeChange,
   onBack,
   onOpenSessions,
   sessionCount = 0,
@@ -200,25 +196,15 @@ export function ChatHeader({
         </div>
       </div>
 
-      {/* View mode toggle */}
-      {onViewModeChange && (
+      {/* Detach/Resume button */}
+      {onDetach && (
         <button
-          onClick={() => onViewModeChange(viewMode === 'chat' ? 'compact' : 'chat')}
-          className={clsx(
-            'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
-            viewMode === 'chat'
-              ? 'bg-[var(--color-primary)]/15 text-[var(--color-primary)]'
-              : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]',
-          )}
-          aria-label={`Switch to ${viewMode === 'chat' ? 'compact' : 'chat'} view`}
-          title={viewMode === 'chat' ? 'Switch to compact view' : 'Switch to chat view'}
+          onClick={onDetach}
+          className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-warning)]"
+          aria-label="Detach session"
+          title="Detach session"
         >
-          {viewMode === 'chat' ? (
-            <MessageSquare className="size-3.5" />
-          ) : (
-            <Type className="size-3.5" />
-          )}
-          <span className="hidden sm:inline">{viewMode === 'chat' ? 'Chat' : 'Compact'}</span>
+          <LogOut className="size-4" />
         </button>
       )}
 
