@@ -5,6 +5,7 @@
  */
 
 import type { UIQuestion } from '@/types';
+import { hapticImpact } from '@/lib/haptics';
 import { clsx } from 'clsx';
 import { Send, StopCircle } from 'lucide-react';
 import {
@@ -111,6 +112,7 @@ export function InputArea({
       sendingRef.current = true;
 
       // Send message
+      hapticImpact('light');
       onSend(trimmed);
 
       // Clear input
@@ -135,6 +137,7 @@ export function InputArea({
       return;
     }
 
+    hapticImpact('light');
     onSend(trimmed);
     setValue('');
 

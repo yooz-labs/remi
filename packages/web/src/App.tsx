@@ -42,6 +42,8 @@ const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
  */
 const toolOutputPatterns = [
   /^\(No output\)$/,
+  /^Done\.?$/i,
+  /^OK\.?$/i,
   /^Added \d+ lines?/,
   /^Removed \d+ lines?/,
   /^Added \d+ lines?, removed \d+ lines?/,
@@ -50,6 +52,7 @@ const toolOutputPatterns = [
   /^Created \S+$/,
   /^Deleted \S+$/,
   /^Modified \S+$/,
+  /^Error editing file$/,
   /^\$ .+/, // Shell command echo ($ ls /path)
   /^\d+ files? (changed|modified|deleted|created)/,
   /^\[[\d/]+\]\s/, // Progress indicators like [0/1], [3/5]
@@ -59,7 +62,13 @@ const toolOutputPatterns = [
   /^\d+ (insertions?|deletions?)\(/, // git diff summary
   /^\d+ messages$/, // Session message count
   /^[a-f0-9]{7,40}$/, // Bare git commit hashes
-  /^feat:|^fix:|^chore:|^docs:|^refactor:|^test:/, // Commit message prefixes (tool output)
+  /^feat:|^fix:|^chore:|^docs:|^refactor:|^test:/, // Commit message prefixes
+  /^Sources?\//i, // Source file paths
+  /^Tests?\//i, // Test file paths
+  /^packages?\//i, // Package file paths
+  /^\[[\w\s]+\]$/, // Bare bracketed labels like [Kernel Boot], [HV Diagnostic]
+  /^vm_\w+::/i, // VM function calls
+  /^Error \w+ file$/i, // Tool errors like "Error editing file"
 ];
 
 function isToolOutputNoise(content: string): boolean {
@@ -148,6 +157,7 @@ function App() {
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
+  const connectionsRef = useRef<readonly import('@/types').ConnectionState[]>([]);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -429,6 +439,9 @@ function App() {
       }
 
       case 'session_list_response': {
+        // Look up the hello_ack session ID for this connection
+        const thisConn = connectionsRef.current.find((c) => c.connectionId === connectionId);
+        const helloAckSessionId = thisConn?.sessionId ?? null;
         // Map, filter, and sort DiscoverableSession[] to UISession[]
         const discovered: UISession[] = message.sessions
           .filter((ds: DiscoverableSession) => {
@@ -448,7 +461,7 @@ function App() {
             const showResume = isDead && !ds.canAttach && ds.canResume;
             // Check if this session is the one we're directly attached to via hello_ack
             const isActiveSession = ds.sessionId === activeSessionIdRef.current;
-            const isAttachedSession = !ds.canAttach && ds.status === 'active' && ds.source === 'daemon';
+            const isAttachedViaHelloAck = ds.sessionId === helloAckSessionId;
             return {
               id: ds.sessionId as UUID,
               name: ds.name || ds.projectPath.split('/').pop() || 'Session',
@@ -456,7 +469,7 @@ function App() {
               createdAt: ds.lastActivity,
               lastActiveAt: ds.lastActivity,
               status: mapSessionStatus(ds.status),
-              connectionStatus: (isActiveSession || isAttachedSession || ds.canAttach) ? ('connected' as const) : ('disconnected' as const),
+              connectionStatus: (isActiveSession || isAttachedViaHelloAck || ds.canAttach) ? ('connected' as const) : ('disconnected' as const),
               unreadCount: 0,
               cwd: ds.projectPath,
               preview: cleanPreview.slice(0, 100),
@@ -638,6 +651,9 @@ function App() {
     clientId: 'remi-web',
     clientVersion: '0.0.1',
   });
+
+  // Keep connections ref in sync for use in handleMessage callbacks
+  connectionsRef.current = connections;
 
   // Derived connection status
   const hasAnyConnected = connections.some((c) => c.status === 'connected');
