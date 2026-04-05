@@ -45,7 +45,7 @@ coverage/
 
 # Capacitor
 android/
-ios/
+# ios/ is tracked for custom native code (AppDelegate, Info.plist)
 *.keystore
 
 # Native builds
