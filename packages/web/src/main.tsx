@@ -4,7 +4,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import App from './App.tsx';
-import { requestNotificationPermission } from './lib/notifications';
+import { initNotifications } from './lib/notifications';
 import { isNative } from './lib/platform';
 
 /** Initialize native platform features after React mount */
@@ -31,8 +31,11 @@ async function initNative(): Promise<void> {
     }
   });
 
-  // Request notification permission
-  await requestNotificationPermission();
+  // Initialize notifications (local + APNS push token registration)
+  await initNotifications((token) => {
+    // Device token received; dispatch event so App.tsx can send it to daemon
+    document.dispatchEvent(new CustomEvent('device-token', { detail: token }));
+  });
 }
 
 createRoot(document.getElementById('root')!).render(

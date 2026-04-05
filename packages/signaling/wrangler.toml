@@ -31,3 +31,8 @@ local_protocol = "http"
 MAX_CONNECTIONS_PER_ROOM = "2"
 CONNECTION_TIMEOUT_MS = "300000"  # 5 minutes
 CODE_LENGTH = "8"
+APNS_BUNDLE_ID = "live.yooz.remi"
+# APNS_KEY_ID, APNS_TEAM_ID, and APNS_PRIVATE_KEY must be set as secrets:
+#   wrangler secret put APNS_KEY_ID
+#   wrangler secret put APNS_TEAM_ID
+#   wrangler secret put APNS_PRIVATE_KEY

@@ -26,6 +26,7 @@ import type { UnlockedIdentity } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createDetachSession,
+  createRegisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
@@ -793,6 +794,21 @@ function App() {
     document.addEventListener('app-resume', handleResume);
     return () => document.removeEventListener('app-resume', handleResume);
   }, [connectedIds, requestSessionList]);
+
+  // Send device token to daemons: on new token or new connection
+  const deviceTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    const handleToken = (e: Event) => {
+      const token = (e as CustomEvent<string>).detail;
+      if (!token) return;
+      deviceTokenRef.current = token;
+      for (const id of connectedIds) {
+        cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+      }
+    };
+    document.addEventListener('device-token', handleToken);
+    return () => document.removeEventListener('device-token', handleToken);
+  }, [connectedIds, cmSendMessage]);
 
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.

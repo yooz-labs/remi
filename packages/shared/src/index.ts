@@ -74,6 +74,7 @@ export type {
   ResumeSessionResponseMessage,
   DetachSessionMessage,
   DetachSessionAckMessage,
+  RegisterDeviceTokenMessage,
 } from './protocol.ts';
 
 export {
@@ -116,6 +117,7 @@ export {
   createResumeSessionResponse,
   createDetachSession,
   createDetachSessionAck,
+  createRegisterDeviceToken,
   MessageIdTracker,
 } from './protocol.ts';
 
