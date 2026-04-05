@@ -113,6 +113,7 @@ function App() {
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
+  const lastQuestionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -345,6 +346,11 @@ function App() {
 
       case 'question': {
         const q = message.question;
+        // Dedup: skip if we already have this question (can arrive from multiple connections or hook+PTY)
+        if (q.id === lastQuestionIdRef.current) {
+          break;
+        }
+        lastQuestionIdRef.current = q.id;
         // Map daemon Question to UIQuestion
         let questionType: UIQuestion['type'] = 'free_text';
         if (q.options.length > 0) {
