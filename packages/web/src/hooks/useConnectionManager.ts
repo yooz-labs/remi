@@ -108,6 +108,8 @@ export interface UseConnectionManagerReturn {
   requestSessionHistory: (connectionId: ConnectionId, limit?: number) => boolean;
   /** Provide unlocked identity for a connection needing passphrase */
   provideIdentity: (connectionId: ConnectionId, identity: UnlockedIdentity) => void;
+  /** Get the hello_ack session ID for a connection (reads from live state, not React state) */
+  getSessionId: (connectionId: ConnectionId) => string | null;
   /** Whether any connection needs a passphrase */
   needsPassphrase: boolean;
   /** The connectionId that needs a passphrase (if any) */
@@ -548,6 +550,11 @@ export function useConnectionManager(
       });
   }, [getMc, syncState]);
 
+  // Get hello_ack session ID directly from mutable state (avoids React state timing issues)
+  const getSessionId = useCallback((connectionId: ConnectionId): string | null => {
+    return getMc(connectionId)?.sessionId ?? null;
+  }, [getMc]);
+
   // Derived: passphrase state (from React state, not mutable ref)
   const passphraseConnection = connectionsState.find((c) => c.needsPassphrase);
   const needsPassphrase = passphraseConnection != null;
@@ -580,6 +587,7 @@ export function useConnectionManager(
     requestResumeSession,
     requestSessionHistory,
     provideIdentity,
+    getSessionId,
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,
