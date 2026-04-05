@@ -149,6 +149,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     needsPassphrase: mc.needsPassphrase,
     serverFingerprint: mc.serverFingerprint,
     error: mc.error?.message ?? null,
+    sessionId: mc.sessionId,
   };
 }
 

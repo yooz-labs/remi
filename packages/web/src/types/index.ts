@@ -33,6 +33,8 @@ export interface ConnectionState {
   readonly needsPassphrase: boolean;
   readonly serverFingerprint: string | null;
   readonly error: string | null;
+  /** The session ID from hello_ack (the directly attached session) */
+  readonly sessionId: string | null;
 }
 
 /** Agent status as displayed in the UI */
