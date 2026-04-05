@@ -208,7 +208,7 @@ export function useConnectionManager(
   ) => {
     mc.serverFingerprint = srvFingerprint;
 
-    // TOFU: check known hosts
+    // Trust On First Use (TOFU): check known hosts
     const tofuResult = checkKnownHost(mc.url, srvFingerprint);
     if (tofuResult === 'mismatch') {
       mc.error = new Error(

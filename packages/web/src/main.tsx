@@ -11,31 +11,41 @@ import { isNative } from './lib/platform';
 async function initNative(): Promise<void> {
   if (!isNative()) return;
 
-  const prefersDark =
-    document.documentElement.getAttribute('data-theme') === 'dark' ||
-    window.matchMedia('(prefers-color-scheme: dark)').matches;
+  try {
+    const prefersDark =
+      document.documentElement.getAttribute('data-theme') === 'dark' ||
+      window.matchMedia('(prefers-color-scheme: dark)').matches;
+    await StatusBar.setStyle({ style: prefersDark ? Style.Dark : Style.Light });
+    await StatusBar.setOverlaysWebView({ overlay: true });
+  } catch (err) {
+    console.warn('[initNative] StatusBar setup failed:', err);
+  }
 
-  await StatusBar.setStyle({ style: prefersDark ? Style.Dark : Style.Light });
-  await StatusBar.setOverlaysWebView({ overlay: true });
+  try {
+    // Handle hardware back button (Android) and app state changes
+    await CapApp.addListener('backButton', ({ canGoBack }) => {
+      if (canGoBack) {
+        window.history.back();
+      }
+    });
+    await CapApp.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) {
+        document.dispatchEvent(new CustomEvent('app-resume'));
+      }
+    });
+  } catch (err) {
+    console.warn('[initNative] App lifecycle listeners failed:', err);
+  }
 
-  // Handle hardware back button (Android) and app state changes
-  await CapApp.addListener('backButton', ({ canGoBack }) => {
-    if (canGoBack) {
-      window.history.back();
-    }
-  });
-
-  await CapApp.addListener('appStateChange', ({ isActive }) => {
-    if (isActive) {
-      document.dispatchEvent(new CustomEvent('app-resume'));
-    }
-  });
-
-  // Initialize notifications (local + APNS push token registration)
-  await initNotifications((token) => {
-    // Device token received; dispatch event so App.tsx can send it to daemon
-    document.dispatchEvent(new CustomEvent('device-token', { detail: token }));
-  });
+  try {
+    // Initialize notifications (local + APNS push token registration)
+    await initNotifications((token) => {
+      // Device token received; dispatch event so App.tsx can send it to daemon
+      document.dispatchEvent(new CustomEvent('device-token', { detail: token }));
+    });
+  } catch (err) {
+    console.warn('[initNative] Notification setup failed:', err);
+  }
 }
 
 createRoot(document.getElementById('root')!).render(

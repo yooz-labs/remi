@@ -146,10 +146,16 @@ export default {
       // bundleId is always server-controlled (never from client)
       const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
 
-      const result = await sendApnsPush(
-        { token: body.token, title: body.title, body: body.body, bundleId },
-        { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
-      );
+      let result: { success: boolean; error?: string };
+      try {
+        result = await sendApnsPush(
+          { token: body.token, title: body.title, body: body.body, bundleId },
+          { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result = { success: false, error: `APNS internal error: ${msg}` };
+      }
 
       if (result.success) {
         return new Response(JSON.stringify({ success: true }), {
