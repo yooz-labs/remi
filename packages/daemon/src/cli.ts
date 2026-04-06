@@ -1597,15 +1597,16 @@ async function createNewSession(
       },
       onQuestion: (question) => {
         log(`Question detected: ${question.text.substring(0, 50)}...`);
+        const questionSessionId = primarySessionId ?? sessionId;
         const msg: ProtocolMessage = {
           type: 'question',
           id: generateId(),
           timestamp: now(),
           question: question,
-          sessionId,
+          sessionId: questionSessionId,
         };
         sendAndRecord(msg);
-        sessionRegistry.updateQuestion(sessionId, question);
+        sessionRegistry.updateQuestion(questionSessionId, question);
 
         // If no client is connected, trigger push notification to registered devices
         const session = sessionRegistry.getSession(sessionId);
