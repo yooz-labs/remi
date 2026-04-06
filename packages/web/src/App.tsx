@@ -243,6 +243,7 @@ function App() {
             bullets: uiBullets.length > 0 ? uiBullets : undefined,
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
+            contentBlocks: message.contentBlocks,
           };
 
           if (dedup.action === 'replace') {

@@ -6,6 +6,7 @@
 
 import type { UIBullet, UIMessage } from '@/types';
 import type { ViewMode } from './ChatView';
+import type { TranscriptContentBlock } from '@remi/shared/protocol.ts';
 import type { MessageState } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
 import {
@@ -14,10 +15,13 @@ import {
   CheckCheck,
   ChevronDown,
   Clock,
+  FileText,
   Loader2,
   Pencil,
   Terminal,
+  Wrench,
 } from 'lucide-react';
+import { useState } from 'react';
 import { ChatMessage, InlineMarkdown } from './ChatMessage';
 
 interface MessageBubbleProps {
@@ -104,6 +108,68 @@ function BulletItem({
   );
 }
 
+/** Tool use/result chip displayed inline in messages */
+function ToolChip({ block }: { readonly block: TranscriptContentBlock }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (block.type === 'tool_use') {
+    const name = block.toolName || 'Tool';
+    let summary = name;
+    if (block.toolInput) {
+      try {
+        const input = JSON.parse(block.toolInput);
+        if (name === 'Bash' || name === 'bash') {
+          summary = `$ ${input.command?.slice(0, 60) || '...'}`;
+        } else if (name === 'Read' || name === 'read_file') {
+          summary = `Read ${input.file_path?.split('/').pop() || '...'}`;
+        } else if (name === 'Write' || name === 'write_file') {
+          summary = `Write ${input.file_path?.split('/').pop() || '...'}`;
+        } else if (name === 'Edit' || name === 'edit_file') {
+          summary = `Edit ${input.file_path?.split('/').pop() || '...'}`;
+        } else if (name === 'Glob' || name === 'glob_search') {
+          summary = `Search ${input.pattern || '...'}`;
+        } else if (name === 'Grep' || name === 'grep_search') {
+          summary = `Grep ${input.pattern || '...'}`;
+        }
+      } catch { /* use plain name */ }
+    }
+    return (
+      <div className="my-1 flex items-center gap-1.5 rounded-md bg-[var(--color-surface-light)] px-2 py-1 text-xs text-[var(--color-text-muted)]">
+        <Wrench className="size-3 shrink-0" />
+        <span className="truncate">{summary}</span>
+      </div>
+    );
+  }
+
+  if (block.type === 'tool_result') {
+    if (!block.toolOutput && !block.isError) return null;
+    return (
+      <div className="my-1">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className={clsx(
+            'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors',
+            block.isError
+              ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]'
+              : 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-elevated)]',
+          )}
+        >
+          {block.isError ? <AlertCircle className="size-3" /> : <FileText className="size-3" />}
+          <span>{block.isError ? 'Error' : 'Output'}{block.toolName ? `: ${block.toolName}` : ''}</span>
+          <ChevronDown className={clsx('size-3 transition-transform', expanded && 'rotate-180')} />
+        </button>
+        {expanded && block.toolOutput && (
+          <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-[var(--color-surface)] p-2 text-xs text-[var(--color-text-secondary)]">
+            {block.toolOutput}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+}
+
 /** Renders the inner content of a message bubble based on mode and content type */
 function MessageContent({
   message,
@@ -138,11 +204,39 @@ function MessageContent({
     );
   }
 
+  // Content blocks: render text + tool chips
+  const hasContentBlocks = message.contentBlocks && message.contentBlocks.length > 0;
+  const toolBlocks = hasContentBlocks
+    ? message.contentBlocks!.filter((b) => b.type === 'tool_use' || b.type === 'tool_result')
+    : [];
+
   if (enhanced) {
-    return <ChatMessage content={message.content} isUser={isUser} />;
+    return (
+      <>
+        {message.content && <ChatMessage content={message.content} isUser={isUser} />}
+        {toolBlocks.length > 0 && (
+          <div className="mt-1">
+            {toolBlocks.map((block, i) => (
+              <ToolChip key={`${block.type}-${block.toolUseId || i}`} block={block} />
+            ))}
+          </div>
+        )}
+      </>
+    );
   }
 
-  return <InlineMarkdown content={message.content} isUser={isUser} />;
+  return (
+    <>
+      {message.content && <InlineMarkdown content={message.content} isUser={isUser} />}
+      {toolBlocks.length > 0 && (
+        <div className="mt-1">
+          {toolBlocks.map((block, i) => (
+            <ToolChip key={`${block.type}-${block.toolUseId || i}`} block={block} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 }
 
 export function MessageBubble({
