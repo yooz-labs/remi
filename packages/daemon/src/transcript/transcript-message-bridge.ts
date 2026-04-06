@@ -9,7 +9,7 @@
  * - Phase 2 (Transcript): Clean content delivery via this bridge
  */
 
-import type { Message, TranscriptContentMessage, UUID } from '@remi/shared';
+import type { Message, TranscriptContentBlock, TranscriptContentMessage, UUID } from '@remi/shared';
 import { createTranscriptContent, generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { AssistantEntry, ContentBlock, UserEntry } from './types.ts';
@@ -65,8 +65,11 @@ export class TranscriptMessageBridge {
     const tools = this.extractToolNames(entry.message.content);
     const hadThinking = this.hasThinkingBlocks(entry.message.content);
 
-    // Skip entries with no text content (pure tool invocations, thinking-only, etc.)
-    if (!textContent) {
+    // Skip entries with no text AND no tool blocks (thinking-only entries)
+    const contentBlocks_check = entry.message.content.filter(
+      (b: ContentBlock) => b.type === 'text' || b.type === 'tool_use' || b.type === 'tool_result',
+    );
+    if (!textContent && contentBlocks_check.length === 0) {
       this.processedEntryUuids.add(entry.uuid);
       return;
     }
@@ -91,6 +94,9 @@ export class TranscriptMessageBridge {
     // Only mark as processed after successful structuring
     this.processedEntryUuids.add(entry.uuid);
 
+    // Convert raw content blocks for client rendering
+    const contentBlocks = this.toContentBlocks(entry.message.content);
+
     // Emit the transcript content message
     const transcriptMessage = createTranscriptContent(
       this.sessionId,
@@ -104,6 +110,7 @@ export class TranscriptMessageBridge {
         ...(entry.message.model != null && { model: entry.message.model }),
         ...(hadThinking && { hadThinking }),
         ...(entry.message.usage != null && { usage: entry.message.usage }),
+        contentBlocks,
       },
     );
 
@@ -186,6 +193,51 @@ export class TranscriptMessageBridge {
    */
   private hasThinkingBlocks(blocks: readonly ContentBlock[]): boolean {
     return blocks.some((block) => block.type === 'thinking');
+  }
+
+  /**
+   * Convert raw content blocks to protocol format for the web client.
+   * Includes text, tool_use, and tool_result blocks. Skips thinking blocks.
+   * Truncates tool output to prevent oversized messages.
+   */
+  private toContentBlocks(blocks: readonly ContentBlock[]): TranscriptContentBlock[] {
+    const MAX_TOOL_OUTPUT = 500;
+    return blocks
+      .filter((b) => b.type !== 'thinking')
+      .map((block): TranscriptContentBlock | null => {
+        if (block.type === 'text') {
+          return { type: 'text', text: block.text };
+        }
+        if (block.type === 'tool_use') {
+          return {
+            type: 'tool_use',
+            toolUseId: block.id,
+            toolName: block.name,
+            toolInput:
+              typeof block.input === 'string'
+                ? block.input.slice(0, MAX_TOOL_OUTPUT)
+                : JSON.stringify(block.input).slice(0, MAX_TOOL_OUTPUT),
+          };
+        }
+        if (block.type === 'tool_result') {
+          const output =
+            typeof block.content === 'string'
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content
+                    .filter((c) => c.type === 'text')
+                    .map((c) => (c as { text: string }).text)
+                    .join('\n')
+                : '';
+          return {
+            type: 'tool_result',
+            toolUseId: block.tool_use_id,
+            toolOutput: output.slice(0, MAX_TOOL_OUTPUT),
+          };
+        }
+        return null;
+      })
+      .filter((b): b is TranscriptContentBlock => b !== null);
   }
 
   /**
