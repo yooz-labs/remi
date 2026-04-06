@@ -11,7 +11,7 @@ import { SettingsPanel } from '@/components/settings';
 import { useConnectionManager, parseConnectionId } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
-import { cleanPreviewText, isToolOutputNoise, stripProtocolTags } from '@/lib/message-filter';
+import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { notifyQuestion } from '@/lib/notifications';
 import type {
   AppSettings,
@@ -173,14 +173,11 @@ function App() {
         const { sessionId, entryUuid, role, content, isUpdate } = message;
         const structuredMsg = message.message;
 
-        // Filter out tool output noise from agent messages (not updates or user messages)
-        if (!isUpdate && role === 'assistant' && isToolOutputNoise(structuredMsg.content || content)) {
-          break;
-        }
-
-        // Skip user messages that are entirely protocol tags (empty after stripping)
+        // Skip empty messages and strip protocol tags from user messages
+        const rawContent = structuredMsg.content || content;
+        if (!rawContent || !rawContent.trim()) break;
         if (!isUpdate && role === 'user') {
-          const stripped = stripProtocolTags(structuredMsg.content || content);
+          const stripped = stripProtocolTags(rawContent);
           if (!stripped) break;
         }
 
@@ -267,70 +264,14 @@ function App() {
       }
 
       case 'structured_agent_output': {
-        // Handle structured message with bullets (from PTY stream)
+        // PTY stream: use ONLY for status updates, NOT for message content.
+        // All chat messages come from transcript_content (clean JSONL data).
         const structuredMsg = message.message;
-
-        // Filter out tool output noise from agent messages
-        if (structuredMsg.sender === 'agent' && isToolOutputNoise(structuredMsg.content)) {
-          break;
-        }
-
-        const uiBullets = toBullets(structuredMsg.bullets);
-
-        setMessages((prev) => {
-          // Same-type dedup by message ID (streaming updates)
-          const existingIndex = prev.findIndex((m) => m.id === structuredMsg.id);
-          if (existingIndex >= 0) {
-            return prev.map((m, i) =>
-              i === existingIndex
-                ? {
-                    ...m,
-                    content: structuredMsg.content,
-                    isEditing: structuredMsg.isEditing,
-                    tool: structuredMsg.tool,
-                    bullets: uiBullets,
-                    firstBulletId: structuredMsg.firstBulletId,
-                    lastBulletId: structuredMsg.lastBulletId,
-                  }
-                : m,
-            );
-          }
-
-          // Cross-type dedup via extracted pure function
-          const dedup = deduplicateMessage(prev, {
-            sessionId: structuredMsg.sessionId,
-            sender: structuredMsg.sender,
-            content: structuredMsg.content,
-            source: 'pty',
-          });
-          if (dedup.action === 'skip') {
-            return prev;
-          }
-
-          const uiMessage: UIMessage = {
-            id: structuredMsg.id,
-            sessionId: structuredMsg.sessionId,
-            connectionId,
-            sender: structuredMsg.sender,
-            content: structuredMsg.content,
-            timestamp: structuredMsg.createdAt,
-            state: structuredMsg.state,
-            isEditing: structuredMsg.isEditing,
-            tool: structuredMsg.tool,
-            source: 'pty',
-            bullets: uiBullets,
-            firstBulletId: structuredMsg.firstBulletId,
-            lastBulletId: structuredMsg.lastBulletId,
-          };
-          return [...prev, uiMessage];
-        });
-
         setSessions((prev) =>
-          updateSessionActivity(
-            prev,
-            structuredMsg.sessionId,
-            activeSessionIdRef.current,
-            structuredMsg.content,
+          prev.map((s) =>
+            s.id === structuredMsg.sessionId
+              ? { ...s, lastActiveAt: new Date().toISOString() }
+              : s,
           ),
         );
         break;
