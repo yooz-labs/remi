@@ -1564,8 +1564,11 @@ async function createNewSession(
   passThrough = false,
 ): Promise<PTYSession> {
   const sendAndRecord = (message: ProtocolMessage) => {
+    // Always record under primarySessionId so replay works correctly.
+    // The client only knows primarySessionId (from hello_ack).
+    const recordId = primarySessionId ?? sessionId;
     sendMessage(sessionId, message);
-    sessionRegistry.recordOutgoingMessage(sessionId, message);
+    sessionRegistry.recordOutgoingMessage(recordId, message);
   };
 
   const messageApi = new MessageAPI(
