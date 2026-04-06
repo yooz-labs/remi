@@ -89,6 +89,8 @@ export interface UIMessage {
   readonly firstBulletId?: number;
   /** Last bullet ID in this message */
   readonly lastBulletId?: number;
+  /** Raw content blocks from transcript (Text, ToolUse, ToolResult) */
+  readonly contentBlocks?: readonly import('@remi/shared/protocol.ts').TranscriptContentBlock[];
 }
 
 /** Session information for the UI */
