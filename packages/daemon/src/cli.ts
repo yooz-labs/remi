@@ -1841,12 +1841,15 @@ async function createNewSession(
       transcriptFallbackTimers.delete(sessionId);
       return;
     }
-    // Look for a transcript file created AFTER daemon startup
+    // Look for a transcript file that is actively being written to.
+    // Accept any transcript modified within the last 5 minutes (handles daemon
+    // restarts where the session was already running before startup).
+    const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
-        if (stat.mtimeMs >= startupTime) {
+        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
           clearInterval(fallbackInterval);
           transcriptFallbackTimers.delete(sessionId);
           log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
@@ -1865,10 +1868,10 @@ async function createNewSession(
       if (transcriptPath) {
         try {
           const stat = fs.statSync(transcriptPath);
-          if (stat.mtimeMs >= startupTime) {
-            logError(
-              '[Hooks] Transcript fallback timed out, but a fresh transcript was found on the final check.',
-            );
+          const isRecent =
+            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
+          if (isRecent) {
+            log('[Hooks] Transcript fallback: found recent transcript on final check.');
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
             extractClaudeSessionId(transcriptPath, sessionId);
             return;
