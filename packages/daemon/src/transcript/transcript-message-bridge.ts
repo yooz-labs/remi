@@ -66,20 +66,23 @@ export class TranscriptMessageBridge {
     const hadThinking = this.hasThinkingBlocks(entry.message.content);
 
     // Skip entries with no text AND no tool blocks (thinking-only entries)
-    const contentBlocks_check = entry.message.content.filter(
+    const visibleBlocks = entry.message.content.filter(
       (b: ContentBlock) => b.type === 'text' || b.type === 'tool_use' || b.type === 'tool_result',
     );
-    if (!textContent && contentBlocks_check.length === 0) {
+    if (!textContent && visibleBlocks.length === 0) {
       this.processedEntryUuids.add(entry.uuid);
       return;
     }
+
+    // For tool-only entries (no text), generate a descriptive placeholder
+    const displayContent = textContent || (tools.length > 0 ? `Used ${tools.join(', ')}` : '');
 
     // Create a Message for the MessageAPI to structure with bullets
     const message: Message = {
       id: generateId(),
       sessionId: this.sessionId,
       sender: 'agent',
-      content: textContent,
+      content: displayContent,
       createdAt: entry.timestamp ?? now(),
       state: 'delivered',
       stateChangedAt: now(),
@@ -232,7 +235,9 @@ export class TranscriptMessageBridge {
           return {
             type: 'tool_result',
             toolUseId: block.tool_use_id,
+            ...(block.tool_name != null && { toolName: block.tool_name }),
             toolOutput: output.slice(0, MAX_TOOL_OUTPUT),
+            ...(block.is_error != null && { isError: block.is_error }),
           };
         }
         return null;

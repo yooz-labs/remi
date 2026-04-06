@@ -34,6 +34,8 @@ export interface ToolResultBlock {
   readonly type: 'tool_result';
   readonly tool_use_id: string;
   readonly content: string | readonly ContentBlock[];
+  readonly is_error?: boolean;
+  readonly tool_name?: string;
 }
 
 /** Union of all content block types */
