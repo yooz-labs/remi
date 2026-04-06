@@ -1,15 +1,16 @@
 /**
  * SessionList component.
  *
- * Displays sessions grouped by daemon connection when multiple connections
- * are active. Shows a flat list for single connections.
+ * Shows active sessions (from connected daemons) at the top.
+ * "Show recent" expander reveals historical/transcript sessions below.
+ * Each connection has a disconnect button. Reconnect shown when dropped.
  */
 
 import type { ConnectionId, ConnectionState, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { Link2, Plus, Settings } from 'lucide-react';
-import { useMemo } from 'react';
+import { ChevronDown, ChevronRight, Link2, Plus, RefreshCw, Settings, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { SessionCard } from './SessionCard';
 
 /** Status dot for connection state */
@@ -45,7 +46,6 @@ export function SessionList({
   sessions,
   activeSessionId,
   connections = [],
-  connectedHost,
   onSelectSession,
   onResumeSession,
   resumingSessionId,
@@ -55,36 +55,31 @@ export function SessionList({
   onSettings,
   className,
 }: SessionListProps) {
-  const isMultiConnection = connections.length > 1;
+  const [showRecent, setShowRecent] = useState(false);
 
-  // Group sessions by connectionId, ensuring ALL connections appear
-  const grouped = useMemo(() => {
-    if (!isMultiConnection) return null;
-    const groups = new Map<ConnectionId, UISession[]>();
-    // Initialize with all connections so empty ones still show headers
-    for (const conn of connections) {
-      groups.set(conn.connectionId, []);
-    }
+  // Split sessions into active (from daemon, connected) and recent (transcript/disconnected)
+  const { activeSessions, recentSessions } = useMemo(() => {
+    const active: UISession[] = [];
+    const recent: UISession[] = [];
     for (const session of sessions) {
-      const key = session.connectionId;
-      const group = groups.get(key) ?? [];
-      group.push(session);
-      groups.set(key, group);
+      if (session.source === 'daemon' || session.connectionStatus === 'connected') {
+        active.push(session);
+      } else {
+        recent.push(session);
+      }
     }
-    return groups;
-  }, [sessions, connections, isMultiConnection]);
+    return { activeSessions: active, recentSessions: recent };
+  }, [sessions]);
+
+  const hasConnections = connections.length > 0;
 
   return (
     <div className={clsx('flex h-full flex-col bg-[var(--color-surface)]', className)}>
+      {/* Header */}
       <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3 safe-area-top">
-        <h1 className="text-lg font-semibold text-[var(--color-text)]">
-          Remi
-          {!isMultiConnection && connectedHost ? (
-            <span className="font-normal text-[var(--color-text-muted)]"> on {connectedHost}</span>
-          ) : null}
-        </h1>
+        <h1 className="text-lg font-semibold text-[var(--color-text)]">Remi</h1>
         <div className="flex items-center gap-1">
-          {connections.length > 0 && (onAddConnection || onConnect) && (
+          {hasConnections && (onAddConnection || onConnect) && (
             <button
               onClick={onAddConnection ?? onConnect}
               className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
@@ -93,7 +88,7 @@ export function SessionList({
               <Plus className="size-5" />
             </button>
           )}
-          {connections.length === 0 && onConnect && (
+          {!hasConnections && onConnect && (
             <button
               onClick={onConnect}
               className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
@@ -114,8 +109,10 @@ export function SessionList({
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-2 safe-area-bottom">
-        {sessions.length === 0 ? (
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto safe-area-bottom">
+        {/* No connections state */}
+        {!hasConnections && (
           <div className="flex h-full flex-col items-center justify-center px-4 text-center">
             <div className="mb-4 rounded-full bg-[var(--color-surface-light)] p-4">
               <Link2 className="size-8 text-[var(--color-text-muted)]" />
@@ -134,29 +131,74 @@ export function SessionList({
               </button>
             )}
           </div>
-        ) : isMultiConnection && grouped ? (
-          // Multi-connection: grouped by daemon
-          <div className="space-y-3">
-            {Array.from(grouped.entries()).map(([connId, groupSessions]) => {
-              const conn = connections.find((c) => c.connectionId === connId);
-              return (
-                <div key={connId}>
-                  <div className="flex items-center gap-2 px-3 py-1.5">
-                    <StatusDot status={conn?.status ?? 'disconnected'} />
-                    <span className="text-xs font-medium text-[var(--color-text-muted)]">
-                      {connId}
-                    </span>
-                    {onDisconnect && conn && (
-                      <button
-                        onClick={() => onDisconnect(conn.connectionId)}
-                        className="ml-auto text-xs text-[var(--color-text-muted)] hover:text-[var(--color-error)]"
-                      >
-                        Disconnect
-                      </button>
-                    )}
-                  </div>
+        )}
+
+        {/* Connected state */}
+        {hasConnections && (
+          <div className="p-2">
+            {/* Connection headers with disconnect */}
+            {connections.map((conn) => (
+              <div key={conn.connectionId} className="mb-1 flex items-center gap-2 px-2 py-1">
+                <StatusDot status={conn.status} />
+                <span className="text-xs font-medium text-[var(--color-text-muted)]">
+                  {conn.connectionId}
+                </span>
+                {conn.status === 'error' && onConnect && (
+                  <button
+                    onClick={onConnect}
+                    className="ml-auto flex items-center gap-1 text-xs text-[var(--color-warning)]"
+                  >
+                    <RefreshCw className="size-3" />
+                    Reconnect
+                  </button>
+                )}
+                {onDisconnect && conn.status !== 'error' && (
+                  <button
+                    onClick={() => onDisconnect(conn.connectionId)}
+                    className="ml-auto flex items-center gap-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-error)]"
+                  >
+                    <X className="size-3" />
+                    Disconnect
+                  </button>
+                )}
+              </div>
+            ))}
+
+            {/* Active sessions */}
+            {activeSessions.length > 0 && (
+              <div className="space-y-1">
+                {activeSessions.map((session) => (
+                  <SessionCard
+                    key={session.id}
+                    session={session}
+                    isActive={session.id === activeSessionId}
+                    onClick={() => onSelectSession(session.id)}
+                    onResume={onResumeSession}
+                    isResuming={resumingSessionId === session.id}
+                  />
+                ))}
+              </div>
+            )}
+
+            {activeSessions.length === 0 && (
+              <p className="px-3 py-4 text-center text-sm text-[var(--color-text-muted)]">
+                No active sessions on connected daemons
+              </p>
+            )}
+
+            {/* Recent sessions expander */}
+            {recentSessions.length > 0 && (
+              <div className="mt-3 border-t border-[var(--color-border)] pt-2">
+                <button
+                  onClick={() => setShowRecent(!showRecent)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-secondary)]"
+                >
+                  {showRecent ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                  Recent sessions ({recentSessions.length})
+                </button>
+                {showRecent && (
                   <div className="space-y-1">
-                    {groupSessions.map((session) => (
+                    {recentSessions.map((session) => (
                       <SessionCard
                         key={session.id}
                         session={session}
@@ -167,23 +209,9 @@ export function SessionList({
                       />
                     ))}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          // Single connection: flat list
-          <div className="space-y-1">
-            {sessions.map((session) => (
-              <SessionCard
-                key={session.id}
-                session={session}
-                isActive={session.id === activeSessionId}
-                onClick={() => onSelectSession(session.id)}
-                onResume={onResumeSession}
-                isResuming={resumingSessionId === session.id}
-              />
-            ))}
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
