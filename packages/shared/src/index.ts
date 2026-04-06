@@ -55,6 +55,7 @@ export type {
   SessionListRequestMessage,
   SessionListResponseMessage,
   TranscriptContentMessage,
+  TranscriptContentBlock,
   TranscriptLoadRequestMessage,
   TranscriptLoadCompleteMessage,
   TranscriptUsage,
