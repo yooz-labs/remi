@@ -29,14 +29,13 @@ interface SessionListProps {
   readonly sessions: readonly UISession[];
   readonly activeSessionId: UUID | null;
   readonly connections?: readonly ConnectionState[];
-  readonly connectedHost?: string | null;
   readonly onSelectSession: (id: UUID) => void;
   readonly onResumeSession?: ((sessionId: string) => void) | undefined;
   readonly resumingSessionId?: string | null;
-  readonly onConnect?: () => void;
+  readonly onConnect: () => void;
   readonly onAddConnection?: () => void;
-  readonly onDisconnect?: (connectionId: ConnectionId) => void;
-  readonly onDisconnectAll?: () => void;
+  readonly onDisconnect: (connectionId: ConnectionId) => void;
+  readonly onDisconnectAll: () => void;
   readonly onSettings?: () => void;
   readonly className?: string;
 }
@@ -155,15 +154,15 @@ export function SessionList({
                 <span className="flex-1 text-xs font-medium text-[var(--color-text-muted)] truncate">
                   {conn.connectionId}
                 </span>
-                {conn.status === 'error' && (
+                {conn.status === 'error' && onConnect && (
                   <button
                     onClick={onConnect}
                     className="flex items-center gap-1 text-xs text-[var(--color-warning)]"
                   >
-                    <RefreshCw className="size-3" /> Retry
+                    <RefreshCw className="size-3" /> Reconnect
                   </button>
                 )}
-                {conn.status !== 'error' && onDisconnect && (
+                {onDisconnect && (
                   <button
                     onClick={() => onDisconnect(conn.connectionId)}
                     className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-error)]"

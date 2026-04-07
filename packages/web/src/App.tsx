@@ -594,6 +594,7 @@ function App() {
     connections,
     connectDirect,
     disconnect: disconnectConnection,
+    disconnectAll,
     sendInput,
     sendAnswer,
     sendMessage: cmSendMessage,
@@ -897,9 +898,7 @@ function App() {
 
   // Disconnect ALL connections and clear everything (back to connect screen)
   const handleDisconnectAll = useCallback(() => {
-    for (const conn of connections) {
-      disconnectConnection(conn.connectionId);
-    }
+    disconnectAll();
     setSessions([]);
     setMessages([]);
     setActiveSessionId(null);
@@ -907,7 +906,7 @@ function App() {
     try {
       localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
     } catch (err) { console.warn('[App] Failed to clear persisted connections:', err); }
-  }, [connections, disconnectConnection]);
+  }, [disconnectAll]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
@@ -1015,11 +1014,7 @@ function App() {
     ? errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`
     : null;
 
-  // Derive connectedHost from the first connected connection (for SessionList display)
-  const firstConnected = connections.find((c) => c.status === 'connected');
-  const connectedHost = firstConnected
-    ? firstConnected.connectionId.replace(/:\d+$/, '')
-    : null;
+
 
   // Compute effective status for ConnectModal: show the latest connection's status
   const effectiveStatus = (() => {
@@ -1036,7 +1031,6 @@ function App() {
       sessions={sessions}
       activeSessionId={activeSessionId}
       connections={connections}
-      connectedHost={connectedHost}
       onSelectSession={handleSelectSession}
       onResumeSession={hasAnyConnected ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
