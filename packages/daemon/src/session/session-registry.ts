@@ -211,12 +211,13 @@ export class SessionRegistry {
   }
 
   /**
-   * Get the session for a given connection.
+   * Get the session for a given connection (active or queued).
+   * Both the active CLI connection and queued app connections can interact.
    */
   getSessionForConnection(connectionId: UUID): ManagedSession | undefined {
-    if (this.session !== null && this.session.activeConnectionId === connectionId) {
-      return this.session;
-    }
+    if (this.session === null) return undefined;
+    if (this.session.activeConnectionId === connectionId) return this.session;
+    if (this.waitingConnections.includes(connectionId)) return this.session;
     return undefined;
   }
 
@@ -247,20 +248,24 @@ export class SessionRegistry {
       };
     }
 
-    // Check if session already has an active connection
+    // If session already has an active connection, still provide replay
+    // for read-only viewing. Queue for write promotion when active disconnects.
     if (this.session.activeConnectionId !== null) {
-      // Queue this connection for auto-promotion when the active one disconnects
       if (!this.waitingConnections.includes(connectionId)) {
         this.waitingConnections.push(connectionId);
       }
+      const MAX_REPLAY_MESSAGES = 200;
+      const replayMessages =
+        this.session.messageHistory.length > MAX_REPLAY_MESSAGES
+          ? this.session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
+          : [...this.session.messageHistory];
       return {
-        success: false,
-        isResume: false,
-        replayMessages: [],
+        success: true,
+        isResume: true,
+        replayMessages,
         currentStatus: this.session.currentStatus,
         currentQuestion: this.session.currentQuestion,
         nextBulletId: this.session.messageApi.bulletCount + 1,
-        error: 'Session already has active connection',
       };
     }
 
