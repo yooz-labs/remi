@@ -45,13 +45,18 @@ export function SessionList({
 }: SessionListProps) {
   const [showRecent, setShowRecent] = useState(false);
 
-  // Active = sessions from connected daemons (source 'daemon') or connected status.
-  // Recent = everything else (transcript discoveries, completed sessions).
+  // Active = sessions that are actually running (thinking, executing, waiting, or recently active).
+  // Recent = idle/completed sessions (folded by default).
   const { activeSessions, recentSessions } = useMemo(() => {
     const active: UISession[] = [];
     const recent: UISession[] = [];
+    const RECENT_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
     for (const session of sessions) {
-      if (session.source === 'daemon' || session.connectionStatus === 'connected') {
+      const isLiveStatus = session.status === 'thinking' || session.status === 'executing' || session.status === 'waiting';
+      const isRecentlyActive = session.lastActiveAt && (now - new Date(session.lastActiveAt).getTime()) < RECENT_THRESHOLD_MS;
+      const isDaemonConnected = session.source === 'daemon' && session.connectionStatus === 'connected';
+      if (isLiveStatus || (isDaemonConnected && isRecentlyActive)) {
         active.push(session);
       } else {
         recent.push(session);
