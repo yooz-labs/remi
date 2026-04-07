@@ -57,16 +57,13 @@ export function SessionList({
 }: SessionListProps) {
   const [showRecent, setShowRecent] = useState(false);
 
-  // Active = running sessions (active/idle/executing/thinking status, or connected).
-  // Recent = completed/orphaned sessions that can be resumed.
+  // Active = sessions from connected daemons (source 'daemon') or connected status.
+  // Recent = everything else (transcript discoveries, completed sessions).
   const { activeSessions, recentSessions } = useMemo(() => {
     const active: UISession[] = [];
     const recent: UISession[] = [];
     for (const session of sessions) {
-      const isLive = session.status === 'executing' || session.status === 'thinking' ||
-        session.status === 'idle' || session.status === 'waiting' ||
-        session.connectionStatus === 'connected';
-      if (isLive) {
+      if (session.source === 'daemon' || session.connectionStatus === 'connected') {
         active.push(session);
       } else {
         recent.push(session);
