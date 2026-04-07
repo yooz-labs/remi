@@ -395,8 +395,11 @@ export class SessionRegistry {
    */
   recordOutgoingMessage(sessionId: UUID, message: ProtocolMessage): void {
     if (this.session === null) {
-      // Session not yet registered; buffer for later
+      // Session not yet registered; buffer for later (capped to prevent unbounded growth)
       this.preRegistrationBuffer.push(message);
+      if (this.preRegistrationBuffer.length > this.maxReplayHistory) {
+        this.preRegistrationBuffer = this.preRegistrationBuffer.slice(-this.maxReplayHistory);
+      }
       return;
     }
     if (this.session.sessionId !== sessionId) {
