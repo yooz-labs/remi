@@ -9,7 +9,7 @@
 import type { ConnectionId, ConnectionState, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { ChevronDown, ChevronRight, Link2, Plus, RefreshCw, Settings, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Link2, Link2Off, Plus, RefreshCw, Settings, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { SessionCard } from './SessionCard';
 
@@ -38,6 +38,7 @@ interface SessionListProps {
   readonly onConnect?: () => void;
   readonly onAddConnection?: () => void;
   readonly onDisconnect?: (connectionId: ConnectionId) => void;
+  readonly onDisconnectAll?: () => void;
   readonly onSettings?: () => void;
   readonly className?: string;
 }
@@ -52,6 +53,7 @@ export function SessionList({
   onConnect,
   onAddConnection,
   onDisconnect,
+  onDisconnectAll,
   onSettings,
   className,
 }: SessionListProps) {
@@ -79,23 +81,38 @@ export function SessionList({
       <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3 safe-area-top">
         <h1 className="text-lg font-semibold text-[var(--color-text)]">Remi</h1>
         <div className="flex items-center gap-1">
-          {hasConnections && (onAddConnection || onConnect) && (
-            <button
-              onClick={onAddConnection ?? onConnect}
-              className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
-              aria-label="Add connection"
-            >
-              <Plus className="size-5" />
-            </button>
-          )}
-          {!hasConnections && onConnect && (
-            <button
-              onClick={onConnect}
-              className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
-              aria-label="Connect to daemon"
-            >
-              <Link2 className="size-5" />
-            </button>
+          {/* Connect (chain) or Disconnect (broken chain) */}
+          {hasConnections ? (
+            <>
+              {(onAddConnection || onConnect) && (
+                <button
+                  onClick={onAddConnection ?? onConnect}
+                  className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
+                  aria-label="Add connection"
+                >
+                  <Plus className="size-5" />
+                </button>
+              )}
+              {onDisconnectAll && (
+                <button
+                  onClick={onDisconnectAll}
+                  className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-error)]"
+                  aria-label="Disconnect all"
+                >
+                  <Link2Off className="size-5" />
+                </button>
+              )}
+            </>
+          ) : (
+            onConnect && (
+              <button
+                onClick={onConnect}
+                className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
+                aria-label="Connect to daemon"
+              >
+                <Link2 className="size-5" />
+              </button>
+            )
           )}
           {onSettings && (
             <button
