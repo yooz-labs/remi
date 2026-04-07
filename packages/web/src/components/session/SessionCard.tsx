@@ -10,6 +10,21 @@ import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 import { clsx } from 'clsx';
 import { RotateCcw } from 'lucide-react';
 
+/** Strip hostname prefix and truncate branch for display.
+ *  "yahyas-mcm:remi/develop" -> "remi/develop"
+ *  "remi/very-long-branch-name-here" -> "remi/very-long-br..."
+ */
+function formatSessionName(name: string): string {
+  // Strip hostname: prefix (everything before the first colon that's followed by non-digit)
+  let display = name.replace(/^[^:]+:/, '');
+  // Truncate branch part if too long (keep folder, limit branch to 15 chars)
+  const slashIdx = display.indexOf('/');
+  if (slashIdx >= 0 && display.length > slashIdx + 16) {
+    display = `${display.slice(0, slashIdx + 16)}...`;
+  }
+  return display || name;
+}
+
 interface SessionCardProps {
   readonly session: UISession;
   readonly isActive: boolean;
@@ -81,7 +96,7 @@ export function SessionCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <h3 className="truncate font-medium text-[var(--color-text)]">
-              {session.name || 'Claude Session'}
+              {formatSessionName(session.name || 'Claude Session')}
             </h3>
             <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
               {formatRelativeTime(session.lastActiveAt)}
