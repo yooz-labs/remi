@@ -9,21 +9,9 @@
 import type { ConnectionId, ConnectionState, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { ChevronDown, ChevronRight, Link2, Link2Off, MessageSquarePlus, RefreshCw, Settings } from 'lucide-react';
+import { ChevronDown, ChevronRight, Link2, Link2Off, MessageSquarePlus, Settings } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { SessionCard } from './SessionCard';
-
-function StatusDot({ status }: { readonly status: ConnectionState['status'] }) {
-  const colorClass =
-    status === 'connected'
-      ? 'bg-green-500'
-      : status === 'connecting' || status === 'authenticating' || status === 'reconnecting'
-        ? 'bg-yellow-500 animate-pulse'
-        : status === 'error'
-          ? 'bg-red-500'
-          : 'bg-gray-400';
-  return <span className={clsx('inline-block size-2 rounded-full', colorClass)} />;
-}
 
 interface SessionListProps {
   readonly sessions: readonly UISession[];
@@ -49,7 +37,7 @@ export function SessionList({
   onResumeSession,
   resumingSessionId,
   onConnect,
-  onDisconnect,
+  onDisconnect: _onDisconnect,
   onDisconnectAll,
   onNewSession,
   onSettings,
@@ -141,32 +129,6 @@ export function SessionList({
           </div>
         ) : (
           <div className="p-2 space-y-1">
-            {/* Per-connection status bars (only if multiple connections) */}
-            {connections.length > 1 && connections.map((conn) => (
-              <div key={conn.connectionId} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-[var(--color-surface-light)]">
-                <StatusDot status={conn.status} />
-                <span className="flex-1 text-xs font-medium text-[var(--color-text-muted)] truncate">
-                  {conn.connectionId}
-                </span>
-                {conn.status === 'error' && onConnect && (
-                  <button
-                    onClick={onConnect}
-                    className="flex items-center gap-1 text-xs text-[var(--color-warning)]"
-                  >
-                    <RefreshCw className="size-3" /> Reconnect
-                  </button>
-                )}
-                {onDisconnect && (
-                  <button
-                    onClick={() => onDisconnect(conn.connectionId)}
-                    className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-error)]"
-                  >
-                    Disconnect
-                  </button>
-                )}
-              </div>
-            ))}
-
             {/* Active sessions */}
             {activeSessions.map((session) => (
               <SessionCard

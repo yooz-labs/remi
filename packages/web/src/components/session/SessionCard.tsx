@@ -8,7 +8,7 @@
 import { formatRelativeTime } from '@/lib/format-time';
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 import { clsx } from 'clsx';
-import { RotateCcw } from 'lucide-react';
+import { MessageCircleQuestion, RotateCcw } from 'lucide-react';
 
 /** Strip hostname prefix and truncate branch for display.
  *  "yahyas-mcm:remi/develop" -> "remi/develop"
@@ -104,8 +104,15 @@ export function SessionCard({
           </div>
 
           {/* Preview or status */}
-          <p className="mt-0.5 truncate text-sm text-[var(--color-text-secondary)]">
-            {session.preview || getStatusText(session.status)}
+          <p className={clsx(
+            'mt-0.5 truncate text-sm',
+            session.questionPending
+              ? 'font-medium text-[var(--color-warning)]'
+              : 'text-[var(--color-text-secondary)]',
+          )}>
+            {session.questionPending
+              ? 'Needs your input'
+              : (session.preview || getStatusText(session.status))}
           </p>
 
           {/* CWD if available */}
@@ -135,12 +142,17 @@ export function SessionCard({
           )}
         </div>
 
-        {/* Unread badge */}
-        {session.unreadCount > 0 && (
-          <span className="flex size-5 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-medium text-white">
-            {session.unreadCount > 9 ? '9+' : session.unreadCount}
-          </span>
-        )}
+        {/* Question and unread badges */}
+        <div className="flex items-center gap-1.5">
+          {session.questionPending && (
+            <MessageCircleQuestion className="size-5 text-[var(--color-warning)]" />
+          )}
+          {session.unreadCount > 0 && (
+            <span className="flex size-5 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-medium text-white">
+              {session.unreadCount > 9 ? '9+' : session.unreadCount}
+            </span>
+          )}
+        </div>
       </div>
     </button>
   );
