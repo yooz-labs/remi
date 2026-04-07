@@ -2585,15 +2585,16 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: auto based on bind host (default 0.0.0.0=on, localhost=off), --auth/--no-auth override
+// Auth setup: disabled by default. Enable with --auth flag.
+// Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
 const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
-// Priority: CLI flag > config file > auto (based on bind host)
+// Priority: CLI flag > config file > default (off)
 const configAuth = remiConfig.auth.enabled;
-const authEnabled = cliAuth ?? (configAuth === 'auto' ? !isLocalhostBind : configAuth);
+const authEnabled = cliAuth ?? (configAuth === 'auto' ? false : configAuth);
 
 let authenticator: Authenticator | undefined;
 let serverFingerprint: string | undefined;
