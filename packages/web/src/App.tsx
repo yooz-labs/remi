@@ -283,6 +283,10 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
+        // If status moved from 'waiting' to something else, the question was answered elsewhere
+        if (sessionData.status !== 'waiting' && question?.sessionId === sessionData.id) {
+          setQuestion(null);
+        }
         break;
       }
 

@@ -1567,6 +1567,9 @@ async function createNewSession(
     // Always record under primarySessionId so replay works correctly.
     // The client only knows primarySessionId (from hello_ack).
     const recordId = primarySessionId ?? sessionId;
+    log(
+      `[sendAndRecord] type=${message.type} recordId=${recordId?.slice(0, 8)} primary=${primarySessionId?.slice(0, 8)} closure=${sessionId.slice(0, 8)}`,
+    );
     sendMessage(sessionId, message);
     sessionRegistry.recordOutgoingMessage(recordId, message);
   };

@@ -9,7 +9,7 @@
 import type { ConnectionId, ConnectionState, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { ChevronDown, ChevronRight, Link2, Link2Off, MessageSquarePlus, Plus, RefreshCw, Settings } from 'lucide-react';
+import { ChevronDown, ChevronRight, Link2, Link2Off, MessageSquarePlus, RefreshCw, Settings } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { SessionCard } from './SessionCard';
 
@@ -58,11 +58,16 @@ export function SessionList({
 }: SessionListProps) {
   const [showRecent, setShowRecent] = useState(false);
 
+  // Active = running sessions (active/idle/executing/thinking status, or connected).
+  // Recent = completed/orphaned sessions that can be resumed.
   const { activeSessions, recentSessions } = useMemo(() => {
     const active: UISession[] = [];
     const recent: UISession[] = [];
     for (const session of sessions) {
-      if (session.source === 'daemon' || session.connectionStatus === 'connected') {
+      const isLive = session.status === 'executing' || session.status === 'thinking' ||
+        session.status === 'idle' || session.status === 'waiting' ||
+        session.connectionStatus === 'connected';
+      if (isLive) {
         active.push(session);
       } else {
         recent.push(session);
@@ -91,22 +96,13 @@ export function SessionList({
         </div>
         <div className="flex items-center gap-1">
           {hasConnections ? (
-            <>
-              <button
-                onClick={onAddConnection ?? onConnect}
-                className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
-                aria-label="Add connection"
-              >
-                <Plus className="size-5" />
-              </button>
-              <button
-                onClick={onDisconnectAll}
-                className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-error)]"
-                aria-label="Disconnect all"
-              >
-                <Link2Off className="size-5" />
-              </button>
-            </>
+            <button
+              onClick={onDisconnectAll}
+              className="rounded-full p-2 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-error)]"
+              aria-label="Disconnect"
+            >
+              <Link2Off className="size-5" />
+            </button>
           ) : (
             <button
               onClick={onConnect}

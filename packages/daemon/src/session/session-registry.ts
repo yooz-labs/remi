@@ -124,6 +124,8 @@ export class SessionRegistry {
   private readonly maxReplayHistory: number;
   /** Connections waiting for the active connection to disconnect */
   private readonly waitingConnections: UUID[] = [];
+  /** Buffer for messages received before session registration (from readExisting transcript) */
+  private preRegistrationBuffer: ProtocolMessage[] = [];
 
   constructor(config: SessionRegistryConfig = {}, events: SessionRegistryEvents = {}) {
     this.orphanTimeoutMs = config.orphanTimeoutMs ?? 5 * 60 * 1000; // 5 minutes
@@ -172,6 +174,12 @@ export class SessionRegistry {
       locallyOwned,
       explicitlyDetached: false,
     };
+
+    // Flush pre-registration buffer (messages from readExisting transcript entries)
+    if (this.preRegistrationBuffer.length > 0) {
+      this.session.messageHistory.push(...this.preRegistrationBuffer);
+      this.preRegistrationBuffer = [];
+    }
 
     this.events.onSessionCreated?.(sessionId);
   }
@@ -381,7 +389,12 @@ export class SessionRegistry {
    * Call this for every message sent to the client.
    */
   recordOutgoingMessage(sessionId: UUID, message: ProtocolMessage): void {
-    if (this.session === null || this.session.sessionId !== sessionId) {
+    if (this.session === null) {
+      // Session not yet registered; buffer for later
+      this.preRegistrationBuffer.push(message);
+      return;
+    }
+    if (this.session.sessionId !== sessionId) {
       return;
     }
 
