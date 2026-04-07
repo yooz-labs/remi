@@ -54,6 +54,15 @@ android/
 *.apk
 *.aab
 
+# Context and MCP
+.context/
+.mcp.json
+.serena/
+
+# Xcode workspace user data
+**/project.xcworkspace/
+**/CapApp-SPM/
+
 # Temporary
 tmp/
 temp/
