@@ -142,6 +142,11 @@ export function MessageList({
     setShowJumpButton(!isAtBottom && scrollHeight - scrollTop - clientHeight > 300);
   }, []);
 
+  // Scroll to bottom on mount (instant, no animation)
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+  }, []);
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (shouldAutoScrollRef.current && bottomRef.current) {
