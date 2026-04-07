@@ -9,7 +9,7 @@
 import type { ConnectionId, ConnectionState, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { ChevronDown, ChevronRight, Link2, Link2Off, Plus, RefreshCw, Settings } from 'lucide-react';
+import { ChevronDown, ChevronRight, Link2, Link2Off, MessageSquarePlus, Plus, RefreshCw, Settings } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { SessionCard } from './SessionCard';
 
@@ -36,6 +36,7 @@ interface SessionListProps {
   readonly onAddConnection?: () => void;
   readonly onDisconnect: (connectionId: ConnectionId) => void;
   readonly onDisconnectAll: () => void;
+  readonly onNewSession?: (directory?: string) => void;
   readonly onSettings?: () => void;
   readonly className?: string;
 }
@@ -51,6 +52,7 @@ export function SessionList({
   onAddConnection,
   onDisconnect,
   onDisconnectAll,
+  onNewSession,
   onSettings,
   className,
 }: SessionListProps) {
@@ -186,9 +188,28 @@ export function SessionList({
             ))}
 
             {activeSessions.length === 0 && (
-              <p className="px-3 py-6 text-center text-sm text-[var(--color-text-muted)]">
+              <p className="px-3 py-4 text-center text-sm text-[var(--color-text-muted)]">
                 No active sessions
               </p>
+            )}
+
+            {/* New Session button */}
+            {onNewSession && (
+              <button
+                onClick={() => {
+                  const dir = prompt('Project directory (leave empty for home):');
+                  onNewSession(dir || undefined);
+                }}
+                className={clsx(
+                  'flex w-full items-center gap-3 rounded-xl px-4 py-3 mt-1',
+                  'border border-dashed border-[var(--color-border)]',
+                  'text-sm text-[var(--color-text-secondary)]',
+                  'transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]',
+                )}
+              >
+                <MessageSquarePlus className="size-5" />
+                New Session
+              </button>
             )}
 
             {/* Recent sessions */}
