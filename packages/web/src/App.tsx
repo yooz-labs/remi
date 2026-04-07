@@ -504,9 +504,24 @@ function App() {
       }
 
       case 'create_session_response': {
-        // Log session creation failures. Success case currently unhandled.
-        if (!message.success) {
-          console.error(`Session creation rejected: ${message.error}`);
+        if (message.success && message.sessionId) {
+          // New session created; it will appear via hello_ack. Refresh session list.
+          for (const id of connectedIds) {
+            requestSessionList(id, connectedIds.size === 1);
+          }
+        } else {
+          console.error(`Session creation failed: ${message.error}`);
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            connectionId: '' as ConnectionId,
+            sender: 'system',
+            content: `Failed to create session: ${message.error || 'unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
         }
         break;
       }
@@ -602,6 +617,7 @@ function App() {
     requestSessionList,
     requestTranscriptLoad,
     requestResumeSession,
+    requestNewSession,
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,
@@ -963,6 +979,16 @@ function App() {
     [sessions, requestResumeSession, resumingSession],
   );
 
+  // Create new session on the first connected daemon
+  const handleNewSession = useCallback(
+    (directory?: string) => {
+      const conn = connections.find((c) => c.status === 'connected');
+      if (!conn) return;
+      requestNewSession(conn.connectionId, directory);
+    },
+    [connections, requestNewSession],
+  );
+
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
@@ -1038,6 +1064,7 @@ function App() {
       onAddConnection={() => setShowConnectModal(true)}
       onDisconnect={handleDisconnect}
       onDisconnectAll={handleDisconnectAll}
+      onNewSession={handleNewSession}
       onSettings={() => setShowSettings(true)}
     />
   );
