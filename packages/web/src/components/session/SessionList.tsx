@@ -49,7 +49,6 @@ export function SessionList({
   onResumeSession,
   resumingSessionId,
   onConnect,
-  onAddConnection,
   onDisconnect,
   onDisconnectAll,
   onNewSession,
