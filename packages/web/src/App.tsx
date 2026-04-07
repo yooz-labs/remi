@@ -293,16 +293,20 @@ function App() {
           break;
         }
         lastQuestionIdRef.current = q.id;
-        // Map daemon Question to UIQuestion
+        // Map daemon Question to UIQuestion.
+        // Use yes_no ONLY for exactly 2 options with clear yes+no.
+        // Use multi_option for 3+ options (even if they include yes/no).
+        // Use numbered for options without yes/no semantics.
         let questionType: UIQuestion['type'] = 'free_text';
         if (q.options.length > 0) {
-          const hasYesNo = q.options.some((o) => o.isYes || o.isNo);
-          if (hasYesNo) {
-            // Check for multi-option (yes/no plus extra options like all/quit)
-            const extraOptions = q.options.filter((o) => !o.isYes && !o.isNo);
-            questionType = extraOptions.length > 0 ? 'multi_option' : 'yes_no';
+          if (q.options.length === 2) {
+            const hasYes = q.options.some((o) => o.isYes);
+            const hasNo = q.options.some((o) => o.isNo);
+            questionType = hasYes && hasNo ? 'yes_no' : 'multi_option';
           } else {
-            questionType = 'numbered';
+            // 3+ options: always show all of them
+            const hasYesNo = q.options.some((o) => o.isYes || o.isNo);
+            questionType = hasYesNo ? 'multi_option' : 'numbered';
           }
         }
 
@@ -590,6 +594,7 @@ function App() {
     connections,
     connectDirect,
     disconnect: disconnectConnection,
+    disconnectAll,
     sendInput,
     sendAnswer,
     sendMessage: cmSendMessage,
@@ -891,6 +896,18 @@ function App() {
     } catch (err) { console.warn('[App] Failed to update persisted connections:', err); }
   }, [disconnectConnection]);
 
+  // Disconnect ALL connections and clear everything (back to connect screen)
+  const handleDisconnectAll = useCallback(() => {
+    disconnectAll();
+    setSessions([]);
+    setMessages([]);
+    setActiveSessionId(null);
+    setQuestion(null);
+    try {
+      localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
+    } catch (err) { console.warn('[App] Failed to clear persisted connections:', err); }
+  }, [disconnectAll]);
+
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
       if (!activeSessionId) return;
@@ -997,11 +1014,7 @@ function App() {
     ? errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`
     : null;
 
-  // Derive connectedHost from the first connected connection (for SessionList display)
-  const firstConnected = connections.find((c) => c.status === 'connected');
-  const connectedHost = firstConnected
-    ? firstConnected.connectionId.replace(/:\d+$/, '')
-    : null;
+
 
   // Compute effective status for ConnectModal: show the latest connection's status
   const effectiveStatus = (() => {
@@ -1018,13 +1031,13 @@ function App() {
       sessions={sessions}
       activeSessionId={activeSessionId}
       connections={connections}
-      connectedHost={connectedHost}
       onSelectSession={handleSelectSession}
       onResumeSession={hasAnyConnected ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
       onAddConnection={() => setShowConnectModal(true)}
       onDisconnect={handleDisconnect}
+      onDisconnectAll={handleDisconnectAll}
       onSettings={() => setShowSettings(true)}
     />
   );
