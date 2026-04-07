@@ -277,15 +277,15 @@ export class SessionRegistry {
     this.session.lastDisconnectedAt = null;
     this.session.explicitlyDetached = false;
 
-    // Get messages to replay (from after last delivered, capped at 200 most recent)
+    // Always replay the last 200 messages for every new client.
+    // Each client needs full context, not just undelivered messages.
     const MAX_REPLAY_MESSAGES = 200;
-    const undelivered = this.session.messageHistory.slice(this.session.lastDeliveredIndex + 1);
     const replayMessages =
-      undelivered.length > MAX_REPLAY_MESSAGES
-        ? undelivered.slice(-MAX_REPLAY_MESSAGES)
-        : undelivered;
+      this.session.messageHistory.length > MAX_REPLAY_MESSAGES
+        ? this.session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
+        : [...this.session.messageHistory];
 
-    // Mark all as delivered now
+    // Mark all as delivered
     this.session.lastDeliveredIndex = this.session.messageHistory.length - 1;
 
     if (isResume) {
