@@ -278,5 +278,6 @@ export class TranscriptMessageBridge {
    */
   reset(): void {
     this.processedEntryUuids.clear();
+    this.transcriptSessionId = null;
   }
 }

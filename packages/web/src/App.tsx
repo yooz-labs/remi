@@ -114,7 +114,7 @@ function App() {
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
-  const requestSessionListRef = useRef<typeof requestSessionList>(null as unknown as typeof requestSessionList);
+  const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly { connectionId: ConnectionId; status: string }[]>([]);
 
   useEffect(() => {
@@ -534,9 +534,12 @@ function App() {
       case 'create_session_response': {
         if (message.success && message.sessionId) {
           // New session created; it will appear via hello_ack. Refresh session list.
-          const conns = connectionsRef.current.filter((c) => c.status === 'connected');
-          for (const conn of conns) {
-            requestSessionListRef.current(conn.connectionId, conns.length === 1);
+          const reqList = requestSessionListRef.current;
+          if (reqList) {
+            const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+            for (const conn of conns) {
+              reqList(conn.connectionId, conns.length === 1);
+            }
           }
         } else {
           console.error(`Session creation failed: ${message.error}`);
@@ -609,9 +612,14 @@ function App() {
           break;
         }
         // Show non-auth errors to the user as system messages
+        const targetSession = activeSessionIdRef.current;
+        if (!targetSession) {
+          console.error('[App] Daemon error with no active session:', errorText);
+          break;
+        }
         const errorMsg: UIMessage = {
           id: message.id ?? generateId(),
-          sessionId: activeSessionIdRef.current ?? ('' as UUID),
+          sessionId: targetSession,
           connectionId: connectionId,
           sender: 'system',
           content: errorText,
@@ -841,7 +849,20 @@ function App() {
       // If there's an active question, send as answer
       if (sessionQuestion) {
         const sent = sendAnswer(connId, sessionQuestion.id, content);
-        if (!sent) return; // Don't transition question UI if send failed
+        if (!sent) {
+          const failMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionId,
+            connectionId: connId,
+            sender: 'system',
+            content: 'Failed to send answer: connection unavailable. Try again.',
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, failMsg]);
+          return;
+        }
         // Mark question as answered (card shows collapsed state briefly)
         setQuestions((prev) => {
           const next = new Map(prev);
