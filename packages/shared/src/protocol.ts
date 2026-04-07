@@ -287,6 +287,8 @@ export interface SessionListResponseMessage {
   readonly sessions: readonly DiscoverableSession[];
   /** ID of the request this responds to */
   readonly requestId: UUID;
+  /** Other daemon ports on this machine (for auto-connect) */
+  readonly daemonPorts?: readonly number[];
 }
 
 /** Token usage information from a transcript entry */
@@ -912,6 +914,7 @@ export function createSessionListRequest(includeExternal?: boolean): SessionList
 export function createSessionListResponse(
   sessions: readonly DiscoverableSession[],
   requestId: UUID,
+  daemonPorts?: readonly number[],
 ): SessionListResponseMessage {
   return {
     type: 'session_list_response',
@@ -919,6 +922,7 @@ export function createSessionListResponse(
     timestamp: now(),
     sessions,
     requestId,
+    ...(daemonPorts && daemonPorts.length > 0 && { daemonPorts }),
   };
 }
 

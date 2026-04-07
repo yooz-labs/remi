@@ -472,6 +472,19 @@ function App() {
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
         });
+
+        // Auto-connect to other daemon ports on the same machine.
+        // Use setTimeout to run after this handler completes (avoids stale refs).
+        if (message.daemonPorts && message.daemonPorts.length > 0) {
+          const ports = [...message.daemonPorts];
+          const host = connectionId.replace(/:\d+$/, '');
+          setTimeout(() => {
+            for (const port of ports) {
+              const url = `ws://${host}:${port}/ws`;
+              connectDirectRef.current(url);
+            }
+          }, 100);
+        }
         break;
       }
 

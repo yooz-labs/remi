@@ -2163,7 +2163,9 @@ const sharedEvents = {
       `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
         `(${daemonSessions.length} daemon, ${allSessions.length - daemonSessions.length} external)`,
     );
-    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId));
+    // Include other daemon ports on this machine so the app can auto-connect
+    const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId, livePorts));
   },
 
   onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
