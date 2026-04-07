@@ -590,20 +590,13 @@ function App() {
       }
 
       case 'error': {
-        console.error('Daemon error:', message);
-        const errorSessionId = activeSessionIdRef.current;
-        if (errorSessionId) {
-          const errMsg: UIMessage = {
-            id: generateId(),
-            sessionId: errorSessionId,
-            sender: 'system',
-            content: `Daemon error: ${message.message ?? 'unknown'}`,
-            timestamp: new Date().toISOString(),
-            state: 'delivered',
-            isEditing: false,
-          };
-          setMessages((prev) => [...prev, errMsg]);
+        const errorText = message.message ?? 'unknown';
+        // Suppress auth errors (handled by the connection manager silently)
+        if (errorText.includes('Authentication required') || errorText.includes('AUTH_REQUIRED')) {
+          console.debug('[App] Auth error suppressed:', errorText);
+          break;
         }
+        console.error('Daemon error:', message);
         break;
       }
 
