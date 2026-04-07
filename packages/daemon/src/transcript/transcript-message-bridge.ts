@@ -36,6 +36,8 @@ export class TranscriptMessageBridge {
   private readonly messageApi: MessageAPI;
   private readonly events: Partial<TranscriptMessageBridgeEvents>;
   private readonly processedEntryUuids: Set<string> = new Set();
+  /** Tracks the transcript file's own session ID to detect session boundaries */
+  private transcriptSessionId: string | null = null;
 
   constructor(
     config: TranscriptMessageBridgeConfig,
@@ -59,6 +61,20 @@ export class TranscriptMessageBridge {
   handleAssistantEntry(entry: AssistantEntry): void {
     if (this.processedEntryUuids.has(entry.uuid)) {
       return; // Already processed
+    }
+    // Track the transcript's own session ID to detect session boundaries.
+    // If the entry's sessionId changes from a previously seen one, a new
+    // Claude Code session started in the same directory; skip old entries.
+    if (
+      entry.sessionId &&
+      this.transcriptSessionId &&
+      entry.sessionId !== this.transcriptSessionId
+    ) {
+      this.processedEntryUuids.add(entry.uuid);
+      return;
+    }
+    if (entry.sessionId) {
+      this.transcriptSessionId = entry.sessionId;
     }
 
     const textContent = this.extractTextContent(entry.message.content);
@@ -127,6 +143,18 @@ export class TranscriptMessageBridge {
   handleUserEntry(entry: UserEntry): void {
     if (this.processedEntryUuids.has(entry.uuid)) {
       return; // Already processed
+    }
+    // Track the transcript's own session ID to detect session boundaries.
+    if (
+      entry.sessionId &&
+      this.transcriptSessionId &&
+      entry.sessionId !== this.transcriptSessionId
+    ) {
+      this.processedEntryUuids.add(entry.uuid);
+      return;
+    }
+    if (entry.sessionId) {
+      this.transcriptSessionId = entry.sessionId;
     }
 
     const content =

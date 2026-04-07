@@ -101,7 +101,7 @@ function App() {
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [question, setQuestion] = useState<UIQuestion | null>(null);
+  const [questions, setQuestions] = useState<Map<UUID, UIQuestion>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -114,6 +114,8 @@ function App() {
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
+  const requestSessionListRef = useRef<typeof requestSessionList>(null as unknown as typeof requestSessionList);
+  const connectionsRef = useRef<readonly { connectionId: ConnectionId; status: string }[]>([]);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -284,8 +286,13 @@ function App() {
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
         // If status moved from 'waiting' to something else, the question was answered elsewhere
-        if (sessionData.status !== 'waiting' && question?.sessionId === sessionData.id) {
-          setQuestion(null);
+        if (sessionData.status !== 'waiting') {
+          setQuestions((prev) => {
+            if (!prev.has(sessionData.id)) return prev;
+            const next = new Map(prev);
+            next.delete(sessionData.id);
+            return next;
+          });
         }
         break;
       }
@@ -334,7 +341,11 @@ function App() {
           structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
           timestamp: new Date().toISOString(),
         };
-        setQuestion(uiQuestion);
+        setQuestions((prev) => {
+          const next = new Map(prev);
+          next.set(questionSessionId, uiQuestion);
+          return next;
+        });
 
         // Mark session as having a pending question
         setSessions((prev) =>
@@ -523,8 +534,9 @@ function App() {
       case 'create_session_response': {
         if (message.success && message.sessionId) {
           // New session created; it will appear via hello_ack. Refresh session list.
-          for (const id of connectedIds) {
-            requestSessionList(id, connectedIds.size === 1);
+          const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+          for (const conn of conns) {
+            requestSessionListRef.current(conn.connectionId, conns.length === 1);
           }
         } else {
           console.error(`Session creation failed: ${message.error}`);
@@ -591,12 +603,23 @@ function App() {
 
       case 'error': {
         const errorText = message.message ?? 'unknown';
-        // Suppress auth errors (handled by the connection manager silently)
+        // Suppress auth errors (handled by the connection manager)
         if (errorText.includes('Authentication required') || errorText.includes('AUTH_REQUIRED')) {
           console.debug('[App] Auth error suppressed:', errorText);
           break;
         }
-        console.error('Daemon error:', message);
+        // Show non-auth errors to the user as system messages
+        const errorMsg: UIMessage = {
+          id: message.id ?? generateId(),
+          sessionId: activeSessionIdRef.current ?? ('' as UUID),
+          connectionId: connectionId,
+          sender: 'system',
+          content: errorText,
+          timestamp: message.timestamp ?? new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
         break;
       }
 
@@ -643,6 +666,8 @@ function App() {
   // Keep refs in sync for use in handleMessage callbacks
   getSessionIdRef.current = getSessionId;
   sessionsRef.current = sessions;
+  requestSessionListRef.current = requestSessionList;
+  connectionsRef.current = connections;
 
   // Derived connection status
   const hasAnyConnected = connections.some((c) => c.status === 'connected');
@@ -682,9 +707,9 @@ function App() {
       });
       return changed ? next : prev;
     });
-    // Clear stale question if all connections are down
+    // Clear stale questions if all connections are down
     if (!hasAnyConnected && !isAnyConnecting) {
-      setQuestion(null);
+      setQuestions(new Map());
       setResumingSession(null);
     }
   }, [connections, hasAnyConnected, isAnyConnecting]);
@@ -768,7 +793,7 @@ function App() {
       })()
     : undefined;
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
-  const sessionQuestion = question?.sessionId === activeSessionId ? question : null;
+  const sessionQuestion = activeSessionId ? (questions.get(activeSessionId) ?? null) : null;
 
   const handleSelectSession = useCallback(
     (id: UUID) => {
@@ -818,8 +843,19 @@ function App() {
         const sent = sendAnswer(connId, sessionQuestion.id, content);
         if (!sent) return; // Don't transition question UI if send failed
         // Mark question as answered (card shows collapsed state briefly)
-        setQuestion({ ...sessionQuestion, answeredWith: content });
-        setTimeout(() => setQuestion(null), 1500);
+        setQuestions((prev) => {
+          const next = new Map(prev);
+          next.set(activeSessionId, { ...sessionQuestion, answeredWith: content });
+          return next;
+        });
+        setTimeout(() => {
+          setQuestions((prev) => {
+            if (!prev.has(activeSessionId)) return prev;
+            const next = new Map(prev);
+            next.delete(activeSessionId);
+            return next;
+          });
+        }, 1500);
         // Clear question-pending on the session
         setSessions((prev) =>
           prev.map((s) => (s.id === activeSessionId ? { ...s, questionPending: false } : s)),
@@ -928,7 +964,7 @@ function App() {
     setSessions([]);
     setMessages([]);
     setActiveSessionId(null);
-    setQuestion(null);
+    setQuestions(new Map());
     try {
       localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
     } catch (err) { console.warn('[App] Failed to clear persisted connections:', err); }

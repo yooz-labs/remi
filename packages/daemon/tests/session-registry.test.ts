@@ -101,15 +101,16 @@ describe('SessionRegistry', () => {
       expect(result.error).toBe('Session not found');
     });
 
-    test('returns error if session already has connection', () => {
+    test('queues second connection when session already has one', () => {
       const sessionId = generateId();
       registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
       registry.attachConnection(sessionId, generateId());
 
       const result = registry.attachConnection(sessionId, generateId());
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Session already has active connection');
+      // Second connection is queued (read-only with replay) rather than rejected
+      expect(result.success).toBe(true);
+      expect(result.isResume).toBe(true);
     });
 
     test('getSessionForConnection works after attach', () => {
@@ -215,7 +216,7 @@ describe('SessionRegistry', () => {
       expect(pty.close).not.toHaveBeenCalled();
     });
 
-    test('resume returns replay messages', () => {
+    test('resume replays last 200 messages (not just undelivered)', () => {
       const sessionId = generateId();
       const connectionId1 = generateId();
       const connectionId2 = generateId();
@@ -234,13 +235,15 @@ describe('SessionRegistry', () => {
       const msg3: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
       registry.recordOutgoingMessage(sessionId, msg3);
 
-      // Resume
+      // Resume - now replays ALL messages (up to 200), not just undelivered
       const result = registry.attachConnection(sessionId, connectionId2);
 
       expect(result.success).toBe(true);
       expect(result.isResume).toBe(true);
-      expect(result.replayMessages.length).toBe(1);
-      expect(result.replayMessages[0]).toBe(msg3);
+      expect(result.replayMessages.length).toBe(3);
+      expect(result.replayMessages).toContain(msg1);
+      expect(result.replayMessages).toContain(msg2);
+      expect(result.replayMessages).toContain(msg3);
       expect(result.nextBulletId).toBe(6);
     });
   });
@@ -568,12 +571,13 @@ describe('SessionRegistry', () => {
       registry.registerSession(sessionId, '/tmp/test', createMockPTY(), createMockMessageAPI());
     });
 
-    test('queues connection when session is busy', () => {
+    test('queues connection when session is busy (with read-only replay)', () => {
       registry.attachConnection(sessionId, connA);
       const result = registry.attachConnection(sessionId, connB);
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Session already has active connection');
+      // Queued connections now succeed with read-only replay access
+      expect(result.success).toBe(true);
+      expect(result.isResume).toBe(true);
       expect(registry.waitingConnectionCount).toBe(1);
     });
 
@@ -698,10 +702,10 @@ describe('SessionRegistry', () => {
       expect(result.isResume).toBe(true);
     });
 
-    test('promoted connection receives undelivered replay messages', () => {
+    test('promoted connection receives all recent replay messages', () => {
       registry.attachConnection(sessionId, connA);
 
-      // Record messages, then detach A so they become undelivered
+      // Record messages while A is connected
       const msg1 = {
         type: 'session_update',
         id: generateId(),
@@ -715,10 +719,10 @@ describe('SessionRegistry', () => {
       registry.recordOutgoingMessage(sessionId, msg1);
       registry.recordOutgoingMessage(sessionId, msg2);
 
-      // Detach A, making messages orphaned
+      // Detach A
       registry.detachConnection(connA);
 
-      // Now record more messages while orphaned (no active connection)
+      // Record more messages while orphaned
       const msg3 = {
         type: 'session_update',
         id: generateId(),
@@ -726,11 +730,10 @@ describe('SessionRegistry', () => {
       } as ProtocolMessage;
       registry.recordOutgoingMessage(sessionId, msg3);
 
-      // B attaches manually (simulates what promotion would do)
+      // B attaches - now gets ALL recent messages (up to 200), not just undelivered
       const result = registry.attachConnection(sessionId, connB);
       expect(result.success).toBe(true);
-      // Only msg3 is undelivered (msg1 and msg2 were delivered to A)
-      expect(result.replayMessages.length).toBe(1);
+      expect(result.replayMessages.length).toBe(3);
     });
 
     test('onSessionResumed fires during promotion', () => {

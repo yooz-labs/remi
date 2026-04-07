@@ -380,9 +380,14 @@ export function useConnectionManager(
   const connectDirect = useCallback((url: string, directory?: string): ConnectionId => {
     const connectionId = parseConnectionId(url);
 
-    // If already connected to this host:port, disconnect first
+    // If already connected/connecting to this host:port, skip
     const existing = connectionsMapRef.current.get(connectionId);
     if (existing) {
+      const s = existing.status;
+      if (s === 'connected' || s === 'connecting' || s === 'authenticating' || s === 'reconnecting') {
+        return connectionId;
+      }
+      // Only tear down errored or disconnected connections
       stopPing(existing);
       existing.client.disconnect();
       connectionsMapRef.current.delete(connectionId);
