@@ -144,17 +144,24 @@ function App() {
           break;
         }
         setSessions((prev) => {
-          const exists = prev.some((s) => s.id === message.sessionId);
+          // On reconnect, remove stale sessions from this connection that have a different
+          // session ID (the daemon may have assigned a new session). Keep sessions from
+          // other connections and sessions matching the new ID untouched.
+          const cleaned = prev.filter(
+            (s) => s.connectionId !== connectionId || s.id === message.sessionId,
+          );
+
+          const exists = cleaned.some((s) => s.id === message.sessionId);
           if (exists) {
-            return prev.map((s) =>
+            return cleaned.map((s) =>
               s.id === message.sessionId
                 ? { ...s, connectionStatus: 'connected', connectionId }
                 : s,
             );
           }
-          if (message.isResume) return prev;
+          if (message.isResume) return cleaned;
           return [
-            ...prev,
+            ...cleaned,
             {
               id: message.sessionId,
               name: 'Claude Code Session',
@@ -775,8 +782,21 @@ function App() {
     return () => document.removeEventListener('app-resume', handleResume);
   }, [connectedIds, requestSessionList]);
 
+  // Navigate to session when user taps a push notification
+  useEffect(() => {
+    const handleNotificationTap = (e: Event) => {
+      const data = (e as CustomEvent).detail;
+      if (data?.sessionId) {
+        setActiveSessionId(data.sessionId);
+      }
+    };
+    document.addEventListener('push-notification-tap', handleNotificationTap);
+    return () => document.removeEventListener('push-notification-tap', handleNotificationTap);
+  }, []);
+
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
+  const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
   useEffect(() => {
     const handleToken = (e: Event) => {
       const token = (e as CustomEvent<string>).detail;
@@ -784,10 +804,28 @@ function App() {
       deviceTokenRef.current = token;
       for (const id of connectedIds) {
         cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+        tokenSentToRef.current.add(id);
       }
     };
     document.addEventListener('device-token', handleToken);
     return () => document.removeEventListener('device-token', handleToken);
+  }, [connectedIds, cmSendMessage]);
+
+  // Send cached device token to newly connected daemons
+  useEffect(() => {
+    if (!deviceTokenRef.current) return;
+    for (const id of connectedIds) {
+      if (!tokenSentToRef.current.has(id)) {
+        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios'));
+        tokenSentToRef.current.add(id);
+      }
+    }
+    // Clean up disconnected entries
+    for (const id of tokenSentToRef.current) {
+      if (!connectedIds.has(id)) {
+        tokenSentToRef.current.delete(id);
+      }
+    }
   }, [connectedIds, cmSendMessage]);
 
   // Get active session. Derive connectionStatus from live connection state

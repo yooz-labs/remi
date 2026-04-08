@@ -1,4 +1,5 @@
 import { App as CapApp } from '@capacitor/app';
+import { Network } from '@capacitor/network';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -31,10 +32,24 @@ async function initNative(): Promise<void> {
     await CapApp.addListener('appStateChange', ({ isActive }) => {
       if (isActive) {
         document.dispatchEvent(new CustomEvent('app-resume'));
+        // Force reconnect stale WebSockets after returning from background
+        document.dispatchEvent(new CustomEvent('app-force-reconnect'));
       }
     });
   } catch (err) {
     console.warn('[initNative] App lifecycle listeners failed:', err);
+  }
+
+  try {
+    // Monitor network changes (WiFi <-> cellular transitions)
+    await Network.addListener('networkStatusChange', (status) => {
+      if (status.connected) {
+        // Network interface changed; force reconnect on new route
+        document.dispatchEvent(new CustomEvent('app-force-reconnect'));
+      }
+    });
+  } catch (err) {
+    console.warn('[initNative] Network monitoring failed:', err);
   }
 
   try {

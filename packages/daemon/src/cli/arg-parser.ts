@@ -86,6 +86,7 @@ export interface ParsedArgs {
   readonly host: string | undefined;
   readonly dir: string | undefined;
   readonly recent: boolean;
+  readonly pushSecret: string | undefined;
   readonly orphanTimeout: number | undefined;
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
@@ -123,6 +124,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let noMdns = false;
   let network = false;
   let host: string | undefined;
+  let pushSecret: string | undefined;
   let dir: string | undefined;
   let recent = false;
   let showVersion = false;
@@ -209,6 +211,13 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         error = 'Error: --signaling-url requires a value.';
       } else {
         signalingUrl = nextArg;
+        i++;
+      }
+    } else if (arg === '--push-secret') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --push-secret requires a value.';
+      } else {
+        pushSecret = nextArg;
         i++;
       }
     } else if (arg === '--install') {
@@ -354,6 +363,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     noMdns,
     network,
     host,
+    pushSecret,
     dir,
     recent,
     orphanTimeout,

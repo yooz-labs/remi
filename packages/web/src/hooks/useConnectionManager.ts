@@ -423,14 +423,17 @@ export function useConnectionManager(
         mc.status = newStatus;
 
         if (newStatus === 'authenticating') {
+          // Clear previous errors on successful transport open
+          mc.error = null;
           sendHello(mc);
         }
 
         if (newStatus === 'connected') {
+          mc.error = null;
           startPing(mc);
         }
 
-        if (newStatus === 'disconnected') {
+        if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
           mc.sessionId = null;
           mc.helloSent = false;
           stopPing(mc);
@@ -565,6 +568,19 @@ export function useConnectionManager(
   const needsPassphrase = passphraseConnection != null;
   const passphraseConnectionId = passphraseConnection?.connectionId ?? null;
   const passphraseServerFingerprint = passphraseConnection?.serverFingerprint ?? null;
+
+  // Force reconnect on network change or app resume (iOS)
+  useEffect(() => {
+    const handleForceReconnect = () => {
+      for (const mc of connectionsMapRef.current.values()) {
+        if (mc.status === 'connected' || mc.status === 'authenticating') {
+          mc.client.forceReconnect();
+        }
+      }
+    };
+    document.addEventListener('app-force-reconnect', handleForceReconnect);
+    return () => document.removeEventListener('app-force-reconnect', handleForceReconnect);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
