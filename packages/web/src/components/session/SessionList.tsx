@@ -37,7 +37,7 @@ export function SessionList({
   onResumeSession,
   resumingSessionId,
   onConnect,
-  onDisconnect: _onDisconnect,
+  onDisconnect,
   onDisconnectAll,
   onNewSession,
   onSettings,
@@ -45,18 +45,13 @@ export function SessionList({
 }: SessionListProps) {
   const [showRecent, setShowRecent] = useState(false);
 
-  // Active = sessions that are actually running (thinking, executing, waiting, or recently active).
-  // Recent = idle/completed sessions (folded by default).
+  // Active = sessions owned by a running daemon (has a live port behind it).
+  // Recent = transcript-discovered sessions with no live daemon.
   const { activeSessions, recentSessions } = useMemo(() => {
     const active: UISession[] = [];
     const recent: UISession[] = [];
-    const RECENT_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-    const now = Date.now();
     for (const session of sessions) {
-      const isLiveStatus = session.status === 'thinking' || session.status === 'executing' || session.status === 'waiting';
-      const isRecentlyActive = session.lastActiveAt && (now - new Date(session.lastActiveAt).getTime()) < RECENT_THRESHOLD_MS;
-      const isDaemonConnected = session.source === 'daemon' && session.connectionStatus === 'connected';
-      if (isLiveStatus || (isDaemonConnected && isRecentlyActive)) {
+      if (session.source === 'daemon') {
         active.push(session);
       } else {
         recent.push(session);
@@ -142,6 +137,7 @@ export function SessionList({
                 isActive={session.id === activeSessionId}
                 onClick={() => onSelectSession(session.id)}
                 onResume={onResumeSession}
+                onDisconnect={onDisconnect}
                 isResuming={resumingSessionId === session.id}
               />
             ))}
