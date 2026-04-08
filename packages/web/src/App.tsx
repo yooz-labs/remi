@@ -114,6 +114,7 @@ function App() {
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
+  const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly { connectionId: ConnectionId; status: string }[]>([]);
 
@@ -352,8 +353,8 @@ function App() {
           prev.map((s) => (s.id === questionSessionId ? { ...s, questionPending: true } : s)),
         );
 
-        // Send local notification if user isn't viewing this session
-        if (questionSessionId !== activeSessionIdRef.current || document.hidden) {
+        // Send local notification if user isn't viewing this session (skip during replay)
+        if (!isReplayingRef.current && (questionSessionId !== activeSessionIdRef.current || document.hidden)) {
           const sessionName = sessionsRef.current.find((s) => s.id === questionSessionId)?.name || 'Agent';
           notifyQuestion(sessionName, q.text);
         }
@@ -361,11 +362,13 @@ function App() {
       }
 
       case 'replay_batch': {
-        // Replay batches can arrive immediately after hello_ack on first attach.
-        // Dispatch them directly so early history is not dropped before refs/effects settle.
+        // Replay batches arrive on connect/reconnect. Suppress notifications during replay
+        // to prevent spamming the user with old events.
+        isReplayingRef.current = true;
         for (const replayMsg of message.messages) {
           handleMessage(connectionId, replayMsg);
         }
+        isReplayingRef.current = false;
         break;
       }
 
