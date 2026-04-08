@@ -35,6 +35,8 @@ export class HookEventBridge {
   private readonly events: HookBridgeEvents;
   /** Timestamp of last PermissionRequest, used to suppress duplicate Notification */
   private lastPermissionRequestAt = 0;
+  /** Whether last PermissionRequest had multi-choice options (not just Yes/No fallback) */
+  private lastPermissionHadOptions = false;
 
   constructor(sessionId: UUID, events: HookBridgeEvents) {
     this.sessionId = sessionId;
@@ -68,8 +70,10 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      // Suppress if PermissionRequest already handled this prompt (within 2s window)
-      if (Date.now() - this.lastPermissionRequestAt < 2000) {
+      // If PermissionRequest already fired with multi-choice options, suppress this duplicate.
+      // But if it only produced Yes/No (no permission_suggestions), let the Notification
+      // through because it may parse richer options from the full message text.
+      if (Date.now() - this.lastPermissionRequestAt < 2000 && this.lastPermissionHadOptions) {
         return;
       }
       const question = this.buildPermissionQuestion(input.message);
@@ -111,7 +115,12 @@ export class HookEventBridge {
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
     const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;
 
+    console.log(
+      `[HookEventBridge] PermissionRequest: tool=${toolName}, suggestions=${JSON.stringify(input.permission_suggestions)}, inputKeys=${Object.keys(input.tool_input || {})}`,
+    );
+
     if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
+      this.lastPermissionHadOptions = true;
       const options: QuestionOption[] = input.permission_suggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
@@ -133,6 +142,9 @@ export class HookEventBridge {
         isAnswered: false,
       });
     } else {
+      // No multi-choice suggestions; send Yes/No but allow Notification handler
+      // to upgrade with richer options if it arrives within the dedup window
+      this.lastPermissionHadOptions = false;
       this.events.onQuestion(this.buildPermissionQuestion(promptText));
     }
 
