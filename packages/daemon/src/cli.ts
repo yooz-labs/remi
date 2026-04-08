@@ -566,6 +566,7 @@ const cliNetwork = parsedArgs.network;
 const cliHost = parsedArgs.host;
 const cliDir = parsedArgs.dir;
 const cliRecent = parsedArgs.recent;
+const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
@@ -790,6 +791,7 @@ if (
     if (cliNoTelegram) extraArgs.push('--no-telegram');
     if (cliPermanentCode) extraArgs.push('--permanent-code');
     if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
+    if (cliPushSecret) extraArgs.push('--push-secret', cliPushSecret);
     if (cliOrphanTimeout !== undefined)
       extraArgs.push('--orphan-timeout', String(cliOrphanTimeout));
     await dm.startDaemon({ port: explicitPort, extraArgs });
@@ -1619,6 +1621,7 @@ async function createNewSession(
               dt.token,
               `${sessionName} needs input`,
               question.text.slice(0, 100),
+              cliPushSecret,
             ).catch((err) => log(`Push notification failed: ${err}`));
           }
         }

@@ -777,6 +777,7 @@ function App() {
 
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
+  const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
   useEffect(() => {
     const handleToken = (e: Event) => {
       const token = (e as CustomEvent<string>).detail;
@@ -784,10 +785,28 @@ function App() {
       deviceTokenRef.current = token;
       for (const id of connectedIds) {
         cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+        tokenSentToRef.current.add(id);
       }
     };
     document.addEventListener('device-token', handleToken);
     return () => document.removeEventListener('device-token', handleToken);
+  }, [connectedIds, cmSendMessage]);
+
+  // Send cached device token to newly connected daemons
+  useEffect(() => {
+    if (!deviceTokenRef.current) return;
+    for (const id of connectedIds) {
+      if (!tokenSentToRef.current.has(id)) {
+        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios'));
+        tokenSentToRef.current.add(id);
+      }
+    }
+    // Clean up disconnected entries
+    for (const id of tokenSentToRef.current) {
+      if (!connectedIds.has(id)) {
+        tokenSentToRef.current.delete(id);
+      }
+    }
   }, [connectedIds, cmSendMessage]);
 
   // Get active session. Derive connectionStatus from live connection state

@@ -77,6 +77,15 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
         }).catch((err) => console.warn('[Notifications] Failed to show push as local:', err));
       }
     });
+
+    // Handle notification tap (when user taps a push notification to open the app)
+    await PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
+      const data = action.notification.data;
+      console.debug('[Notifications] Push notification tapped:', data);
+      // Dispatch a custom event so App.tsx can navigate to the relevant session
+      const event = new CustomEvent('push-notification-tap', { detail: data });
+      document.dispatchEvent(event);
+    });
   } catch (err) {
     console.warn('[Notifications] Push registration setup failed:', err);
   }
