@@ -782,6 +782,18 @@ function App() {
     return () => document.removeEventListener('app-resume', handleResume);
   }, [connectedIds, requestSessionList]);
 
+  // Navigate to session when user taps a push notification
+  useEffect(() => {
+    const handleNotificationTap = (e: Event) => {
+      const data = (e as CustomEvent).detail;
+      if (data?.sessionId) {
+        setActiveSessionId(data.sessionId);
+      }
+    };
+    document.addEventListener('push-notification-tap', handleNotificationTap);
+    return () => document.removeEventListener('push-notification-tap', handleNotificationTap);
+  }, []);
+
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());

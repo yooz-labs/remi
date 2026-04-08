@@ -114,9 +114,14 @@ export class WebSocketClient {
     this.clearTimers();
     this.reconnectAttempts = 0;
     if (this.ws) {
+      // Detach handlers to prevent handleClose from scheduling a competing reconnect
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
       this.ws.close();
       this.ws = null;
     }
+    this.setStatus('reconnecting');
     // Small delay for the new network interface to stabilize
     setTimeout(() => this.connect(), 500);
   }
