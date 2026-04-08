@@ -433,7 +433,7 @@ export function useConnectionManager(
           startPing(mc);
         }
 
-        if (newStatus === 'disconnected') {
+        if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
           mc.sessionId = null;
           mc.helloSent = false;
           stopPing(mc);
