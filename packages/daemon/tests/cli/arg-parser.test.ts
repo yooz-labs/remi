@@ -440,6 +440,16 @@ describe('parseArgs', () => {
       expect(r.error).toBeDefined();
     });
 
+    test('--push-secret without value produces error', () => {
+      const r = parseArgs(['--push-secret']);
+      expect(r.error).toBeDefined();
+    });
+
+    test('--push-secret followed by flag produces error', () => {
+      const r = parseArgs(['--push-secret', '--daemon']);
+      expect(r.error).toBeDefined();
+    });
+
     test('--label without value produces error', () => {
       const r = parseArgs(['--label']);
       expect(r.error).toBeDefined();
@@ -472,6 +482,14 @@ describe('parseArgs', () => {
       expect(parseArgs(['--signaling-url', 'wss://example.com']).signalingUrl).toBe(
         'wss://example.com',
       );
+    });
+
+    test('--push-secret VALUE', () => {
+      expect(parseArgs(['--push-secret', 'my-secret-key']).pushSecret).toBe('my-secret-key');
+    });
+
+    test('--push-secret defaults to undefined', () => {
+      expect(parseArgs([]).pushSecret).toBeUndefined();
     });
 
     test('--passphrase', () => {
