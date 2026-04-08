@@ -9,7 +9,7 @@ import { formatRelativeTime } from '@/lib/format-time';
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 import type { ConnectionId } from '@/types';
 import { clsx } from 'clsx';
-import { Link2Off, MessageCircleQuestion, RotateCcw } from 'lucide-react';
+import { Link2, Link2Off, MessageCircleQuestion, RotateCcw } from 'lucide-react';
 
 /** Strip hostname prefix and truncate branch for display.
  *  "yahyas-mcm:remi/develop" -> "remi/develop"
@@ -119,6 +119,27 @@ export function SessionCard({
             <Link2Off className="size-3.5" />
           </button>
         )}
+        {showResume && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onResume(session.id);
+            }}
+            disabled={isResuming}
+            className={clsx(
+              'shrink-0 rounded-full p-1 transition-colors',
+              isResuming
+                ? 'text-[var(--color-text-muted)] cursor-wait'
+                : 'text-[var(--color-primary)] hover:bg-[var(--color-primary)]/10',
+            )}
+            aria-label="Resume"
+          >
+            {isResuming
+              ? <RotateCcw className="size-3.5 animate-spin" />
+              : <Link2 className="size-3.5" />}
+          </button>
+        )}
       </div>
 
       {/* Preview line: status/preview + timestamp */}
@@ -143,26 +164,6 @@ export function SessionCard({
         <p className="mt-0.5 truncate pl-4.5 text-xs text-[var(--color-text-muted)]">{session.cwd}</p>
       )}
 
-      {/* Resume button for dead sessions */}
-      {showResume && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onResume(session.id);
-          }}
-          disabled={isResuming}
-          className={clsx(
-            'mt-2 ml-4.5 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
-            isResuming
-              ? 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)] cursor-wait'
-              : 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] hover:bg-[var(--color-primary)]/20',
-          )}
-        >
-          <RotateCcw className={clsx('size-3', isResuming && 'animate-spin')} />
-          {isResuming ? 'Resuming...' : 'Resume'}
-        </button>
-      )}
     </button>
   );
 }
