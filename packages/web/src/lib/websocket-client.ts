@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: Required<Omit<WebSocketClientConfig, 'url'>> = {
   reconnectDelay: 1000,
   maxReconnectDelay: 30000,
   connectionTimeout: 10000,
-  heartbeatInterval: 30000,
+  heartbeatInterval: 15000,
 };
 
 /**
@@ -106,6 +106,19 @@ export class WebSocketClient {
     } catch (error) {
       this.handleError(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  /** Force-close and immediately reconnect (for network transitions and app resume). */
+  forceReconnect(): void {
+    if (this.intentionalDisconnect) return;
+    this.clearTimers();
+    this.reconnectAttempts = 0;
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    // Small delay for the new network interface to stabilize
+    setTimeout(() => this.connect(), 500);
   }
 
   /** Disconnect from the daemon */
