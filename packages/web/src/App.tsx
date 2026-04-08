@@ -144,17 +144,24 @@ function App() {
           break;
         }
         setSessions((prev) => {
-          const exists = prev.some((s) => s.id === message.sessionId);
+          // On reconnect, remove stale sessions from this connection that have a different
+          // session ID (the daemon may have assigned a new session). Keep sessions from
+          // other connections and sessions matching the new ID untouched.
+          const cleaned = prev.filter(
+            (s) => s.connectionId !== connectionId || s.id === message.sessionId,
+          );
+
+          const exists = cleaned.some((s) => s.id === message.sessionId);
           if (exists) {
-            return prev.map((s) =>
+            return cleaned.map((s) =>
               s.id === message.sessionId
                 ? { ...s, connectionStatus: 'connected', connectionId }
                 : s,
             );
           }
-          if (message.isResume) return prev;
+          if (message.isResume) return cleaned;
           return [
-            ...prev,
+            ...cleaned,
             {
               id: message.sessionId,
               name: 'Claude Code Session',

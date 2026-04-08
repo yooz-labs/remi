@@ -14,12 +14,16 @@ export interface WebSocketClientConfig {
   readonly url: string;
   /** Reconnect on close */
   readonly autoReconnect?: boolean;
-  /** Max reconnect attempts */
+  /** Max reconnect attempts (Infinity for unlimited) */
   readonly maxReconnectAttempts?: number;
-  /** Reconnect delay in ms */
+  /** Reconnect delay in ms (base for exponential backoff) */
   readonly reconnectDelay?: number;
+  /** Maximum reconnect delay in ms (caps exponential backoff) */
+  readonly maxReconnectDelay?: number;
   /** Connection timeout in ms */
   readonly connectionTimeout?: number;
+  /** Heartbeat interval in ms (0 to disable). Closes stale connections that miss 2 heartbeats. */
+  readonly heartbeatInterval?: number;
 }
 
 /** WebSocket client events */
@@ -35,9 +39,11 @@ export interface WebSocketClientEvents {
 /** Default configuration */
 const DEFAULT_CONFIG: Required<Omit<WebSocketClientConfig, 'url'>> = {
   autoReconnect: true,
-  maxReconnectAttempts: 5,
+  maxReconnectAttempts: Number.POSITIVE_INFINITY,
   reconnectDelay: 1000,
+  maxReconnectDelay: 30000,
   connectionTimeout: 10000,
+  heartbeatInterval: 30000,
 };
 
 /**
@@ -52,6 +58,10 @@ export class WebSocketClient {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private lastDataReceived = 0;
+  private missedHeartbeats = 0;
+  private intentionalDisconnect = false;
 
   constructor(config: WebSocketClientConfig, events: WebSocketClientEvents = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -74,6 +84,7 @@ export class WebSocketClient {
       return;
     }
 
+    this.intentionalDisconnect = false;
     this.setStatus('connecting');
     this.clearTimers();
 
@@ -99,8 +110,8 @@ export class WebSocketClient {
 
   /** Disconnect from the daemon */
   disconnect(): void {
+    this.intentionalDisconnect = true;
     this.clearTimers();
-    this.config.autoReconnect && (this.reconnectAttempts = this.config.maxReconnectAttempts);
 
     if (this.ws) {
       this.ws.close();
@@ -129,6 +140,9 @@ export class WebSocketClient {
   private handleOpen(): void {
     this.clearConnectionTimer();
     this.reconnectAttempts = 0;
+    this.lastDataReceived = Date.now();
+    this.missedHeartbeats = 0;
+    this.startHeartbeat();
     // Don't set 'connected' yet; wait for auth handshake or hello_ack.
     // Set 'authenticating' to signal that the transport is open but auth is pending.
     this.setStatus('authenticating');
@@ -143,8 +157,13 @@ export class WebSocketClient {
   private handleClose(): void {
     this.ws = null;
     this.clearConnectionTimer();
+    this.stopHeartbeat();
 
-    if (this.config.autoReconnect && this.reconnectAttempts < this.config.maxReconnectAttempts) {
+    if (
+      this.config.autoReconnect &&
+      !this.intentionalDisconnect &&
+      this.reconnectAttempts < this.config.maxReconnectAttempts
+    ) {
       this.scheduleReconnect();
     } else {
       this.setStatus('disconnected');
@@ -159,6 +178,9 @@ export class WebSocketClient {
 
   /** Handle incoming message */
   private handleMessage(event: MessageEvent): void {
+    this.lastDataReceived = Date.now();
+    this.missedHeartbeats = 0;
+
     try {
       const data = typeof event.data === 'string' ? event.data : '';
       const message = deserialize(data);
@@ -192,8 +214,12 @@ export class WebSocketClient {
     this.setStatus('reconnecting');
     this.reconnectAttempts++;
 
-    // Exponential backoff
-    const delay = this.config.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+    // Exponential backoff with jitter, capped at maxReconnectDelay
+    const base = this.config.reconnectDelay * Math.pow(2, Math.min(this.reconnectAttempts - 1, 10));
+    const capped = Math.min(base, this.config.maxReconnectDelay);
+    // Add up to 25% jitter to prevent thundering herd
+    const jitter = capped * Math.random() * 0.25;
+    const delay = capped + jitter;
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -209,9 +235,48 @@ export class WebSocketClient {
     }
   }
 
+  /** Start heartbeat monitoring. Detects dead connections that the OS hasn't closed yet. */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    const interval = this.config.heartbeatInterval;
+    if (interval <= 0) return;
+
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        this.stopHeartbeat();
+        return;
+      }
+
+      const elapsed = Date.now() - this.lastDataReceived;
+      if (elapsed > interval) {
+        this.missedHeartbeats++;
+      } else {
+        this.missedHeartbeats = 0;
+      }
+
+      // If no data received for 2 heartbeat intervals, the connection is likely dead.
+      // Force-close so reconnection logic kicks in.
+      if (this.missedHeartbeats >= 2) {
+        this.stopHeartbeat();
+        this.handleError(new Error('Connection stale: no data received'));
+        this.ws?.close();
+      }
+    }, interval);
+  }
+
+  /** Stop heartbeat monitoring */
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.missedHeartbeats = 0;
+  }
+
   /** Clear all timers */
   private clearTimers(): void {
     this.clearConnectionTimer();
+    this.stopHeartbeat();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

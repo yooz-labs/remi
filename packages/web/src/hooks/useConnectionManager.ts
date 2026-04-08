@@ -423,10 +423,13 @@ export function useConnectionManager(
         mc.status = newStatus;
 
         if (newStatus === 'authenticating') {
+          // Clear previous errors on successful transport open
+          mc.error = null;
           sendHello(mc);
         }
 
         if (newStatus === 'connected') {
+          mc.error = null;
           startPing(mc);
         }
 
