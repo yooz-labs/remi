@@ -172,7 +172,8 @@ describe('HookEventBridge', () => {
 
     expect(statuses).toEqual([{ status: 'waiting' }]);
     expect(questions.length).toBe(1);
-    expect(questions[0]?.text).toBe('Allow Bash?');
+    // Prompt includes tool input context (the command)
+    expect(questions[0]?.text).toBe('Allow Bash: rm -rf /');
     expect(questions[0]?.options.length).toBe(2);
     expect(questions[0]?.options[0]?.isYes).toBe(true);
     expect(questions[0]?.options[1]?.isNo).toBe(true);

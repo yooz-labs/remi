@@ -169,42 +169,29 @@ export function InputArea({
         <div className="border-b border-[var(--color-border)] px-4 py-3">
           <p className="mb-2 text-sm text-[var(--color-text-secondary)]">{question.prompt}</p>
           <div className="flex flex-wrap gap-2">
-            {question.type === 'yes_no' && (
-              <>
-                <QuickResponse
-                  label="Yes"
-                  onClick={() => handleQuickResponse('yes')}
-                  variant="primary"
-                />
-                <QuickResponse
-                  label="No"
-                  onClick={() => handleQuickResponse('no')}
-                  variant="danger"
-                />
-              </>
-            )}
-            {question.type === 'numbered' &&
-              question.options?.map((option, index) => (
-                <QuickResponse
-                  key={index}
-                  label={`${index + 1}. ${option}`}
-                  onClick={() => handleQuickResponse(String(index + 1))}
-                />
-              ))}
-            {question.type === 'permission' && (
-              <>
-                <QuickResponse
-                  label="Allow"
-                  onClick={() => handleQuickResponse('allow')}
-                  variant="primary"
-                />
-                <QuickResponse
-                  label="Deny"
-                  onClick={() => handleQuickResponse('deny')}
-                  variant="danger"
-                />
-              </>
-            )}
+            {question.structuredOptions && question.structuredOptions.length > 0
+              ? question.structuredOptions.map((opt, index) => (
+                  <QuickResponse
+                    key={index}
+                    label={opt.label}
+                    onClick={() => handleQuickResponse(opt.value)}
+                    variant={opt.isYes ? 'primary' : opt.isNo ? 'danger' : 'default'}
+                  />
+                ))
+              : question.type === 'yes_no' && (
+                  <>
+                    <QuickResponse
+                      label="Yes"
+                      onClick={() => handleQuickResponse('y')}
+                      variant="primary"
+                    />
+                    <QuickResponse
+                      label="No"
+                      onClick={() => handleQuickResponse('n')}
+                      variant="danger"
+                    />
+                  </>
+                )}
           </div>
         </div>
       )}
