@@ -77,7 +77,8 @@ function mapSessionStatus(status: string): 'executing' | 'idle' {
   return status === 'active' ? 'executing' : 'idle';
 }
 
-/** Update a session's last-active time, clear questionPending, and bump unread if not active */
+/** Update a session's last-active time and bump unread if not active.
+ *  Does NOT clear questionPending - that's only cleared when the question is answered. */
 function updateSessionActivity(
   sessions: UISession[],
   sessionId: UUID,
@@ -89,7 +90,6 @@ function updateSessionActivity(
       ? {
           ...s,
           lastActiveAt: new Date().toISOString(),
-          questionPending: false,
           unreadCount: s.id === activeId ? s.unreadCount : s.unreadCount + 1,
           preview: preview?.slice(0, 80) || s.preview,
         }

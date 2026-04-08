@@ -70,6 +70,18 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
+      // Diagnostic logging
+      try {
+        const fs = require('node:fs');
+        const timeSincePermReq = Date.now() - this.lastPermissionRequestAt;
+        fs.appendFileSync(
+          require('node:path').join(require('node:os').homedir(), '.remi', 'hook-debug.log'),
+          `[${new Date().toISOString()}] Notification(permission_prompt): message="${input.message?.slice(0, 200)}", timeSincePermReq=${timeSincePermReq}ms, lastHadOptions=${this.lastPermissionHadOptions}\n`,
+        );
+      } catch {
+        /* ignore */
+      }
+
       // If PermissionRequest already fired with multi-choice options, suppress this duplicate.
       // But if it only produced Yes/No (no permission_suggestions), let the Notification
       // through because it may parse richer options from the full message text.
@@ -115,9 +127,16 @@ export class HookEventBridge {
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
     const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;
 
-    console.log(
-      `[HookEventBridge] PermissionRequest: tool=${toolName}, suggestions=${JSON.stringify(input.permission_suggestions)}, inputKeys=${Object.keys(input.tool_input || {})}`,
-    );
+    // Diagnostic: write to a file since console.log goes to the terminal
+    try {
+      const fs = require('node:fs');
+      fs.appendFileSync(
+        require('node:path').join(require('node:os').homedir(), '.remi', 'hook-debug.log'),
+        `[${new Date().toISOString()}] PermissionRequest: tool=${toolName}, suggestions=${JSON.stringify(input.permission_suggestions)}, inputKeys=${Object.keys(input.tool_input || {})}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
 
     if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
       this.lastPermissionHadOptions = true;

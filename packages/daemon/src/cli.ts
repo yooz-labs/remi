@@ -1665,7 +1665,14 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
+        // PTY parser captures the full terminal output including numbered options.
+        // When hooks are active, the hook sends a Yes/No question first (limited data).
+        // Allow PTY questions through if they have MORE options than what hooks sent,
+        // since the PTY sees the actual multi-choice prompt from the terminal.
         if (!hookServer) {
+          messageApi.handleQuestion(question);
+        } else if (question.options.length > 2) {
+          // PTY detected multi-choice options that the hook missed
           messageApi.handleQuestion(question);
         }
       },
