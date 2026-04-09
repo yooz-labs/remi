@@ -741,10 +741,10 @@ function App() {
   useEffect(() => {
     for (const id of connectedIds) {
       if (!prevConnectedIdsRef.current.has(id)) {
-        // Only request external sessions when single connection (avoids
-        // cross-daemon duplicates that cause routing confusion)
-        const includeExternal = connectedIds.size === 1;
-        requestSessionList(id, includeExternal);
+        // Always include external (transcript-discovered) sessions.
+        // Cross-daemon duplicates are handled by the dedup logic in
+        // the session_list_response handler.
+        requestSessionList(id, true);
       }
     }
     prevConnectedIdsRef.current = connectedIds;
@@ -773,9 +773,8 @@ function App() {
   // Refresh session lists when app resumes from background
   useEffect(() => {
     const handleResume = () => {
-      const includeExternal = connectedIds.size === 1;
       for (const id of connectedIds) {
-        requestSessionList(id, includeExternal);
+        requestSessionList(id, true);
       }
     };
     document.addEventListener('app-resume', handleResume);
