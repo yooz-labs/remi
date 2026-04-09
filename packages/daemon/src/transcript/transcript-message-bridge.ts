@@ -62,18 +62,9 @@ export class TranscriptMessageBridge {
     if (this.processedEntryUuids.has(entry.uuid)) {
       return; // Already processed
     }
-    // Track the transcript's own session ID to detect session boundaries.
-    // If the entry's sessionId changes from a previously seen one, a new
-    // Claude Code session started in the same directory; skip old entries.
-    if (
-      entry.sessionId &&
-      this.transcriptSessionId &&
-      entry.sessionId !== this.transcriptSessionId
-    ) {
-      this.processedEntryUuids.add(entry.uuid);
-      return;
-    }
-    if (entry.sessionId) {
+    // Track the transcript's session ID. When it changes, a new Claude Code
+    // session started. Switch to the new session (prefer latest, not first).
+    if (entry.sessionId && entry.sessionId !== this.transcriptSessionId) {
       this.transcriptSessionId = entry.sessionId;
     }
 
@@ -144,16 +135,8 @@ export class TranscriptMessageBridge {
     if (this.processedEntryUuids.has(entry.uuid)) {
       return; // Already processed
     }
-    // Track the transcript's own session ID to detect session boundaries.
-    if (
-      entry.sessionId &&
-      this.transcriptSessionId &&
-      entry.sessionId !== this.transcriptSessionId
-    ) {
-      this.processedEntryUuids.add(entry.uuid);
-      return;
-    }
-    if (entry.sessionId) {
+    // Track the transcript's session ID (switch to latest on change).
+    if (entry.sessionId && entry.sessionId !== this.transcriptSessionId) {
       this.transcriptSessionId = entry.sessionId;
     }
 

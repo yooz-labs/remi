@@ -340,18 +340,17 @@ describe('TranscriptMessageBridge', () => {
       expect(transcriptMessages.length).toBe(3);
     });
 
-    test('skips entries from a different session after first is established', () => {
+    test('switches to new session when sessionId changes (prefers latest)', () => {
       const { bridge, transcriptMessages } = createBridge();
       // First entry establishes session A
       bridge.handleAssistantEntry(makeAssistantEntry({ sessionId: 'session-A' }));
       expect(transcriptMessages.length).toBe(1);
 
-      // Entry from session B is skipped
+      // Entry from session B is accepted (switch to latest session)
       bridge.handleAssistantEntry(
         makeAssistantEntry({ sessionId: 'session-B', uuid: generateId() }),
       );
-      expect(transcriptMessages.length).toBe(1);
-      expect(bridge.processedCount).toBe(2); // still marked as processed
+      expect(transcriptMessages.length).toBe(2);
     });
 
     test('entries without sessionId pass through regardless', () => {
@@ -366,13 +365,13 @@ describe('TranscriptMessageBridge', () => {
       expect(transcriptMessages.length).toBe(2);
     });
 
-    test('user entries respect session boundary', () => {
+    test('user entries switch to new session (prefers latest)', () => {
       const { bridge, transcriptMessages } = createBridge();
       bridge.handleUserEntry(makeUserEntry({ sessionId: 'session-A' }));
       expect(transcriptMessages.length).toBe(1);
 
       bridge.handleUserEntry(makeUserEntry({ sessionId: 'session-B', uuid: generateId() }));
-      expect(transcriptMessages.length).toBe(1); // skipped
+      expect(transcriptMessages.length).toBe(2); // accepted, switched to B
     });
 
     test('reset clears session boundary state', () => {
