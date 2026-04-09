@@ -1719,6 +1719,10 @@ async function createNewSession(
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onNotification?.(input);
     });
+    hookServer.on('PermissionRequest', (input) => {
+      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      handlers.onPermissionRequest?.(input);
+    });
     hookServer.on('Stop', (input) => {
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onStop?.(input);
