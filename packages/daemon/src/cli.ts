@@ -1620,7 +1620,7 @@ async function createNewSession(
             sendPushTrigger(signalingUrl, dt.token, {
               title: `${sessionName} needs input`,
               body: question.text.slice(0, 100),
-              pushSecret: cliPushSecret,
+              ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
               sessionId: pushSessionId,
             })
               .then(() => log(`Push notification sent for session ${pushSessionId}`))

@@ -43,9 +43,9 @@ describe('sendPushTrigger', () => {
 
     expect(lastRequest).not.toBeNull();
     const body = lastRequest!.body as Record<string, string>;
-    expect(body.token).toBe('device-token-abc');
-    expect(body.title).toBe('Agent needs input');
-    expect(body.body).toBe('Please respond');
+    expect(body['token']).toBe('device-token-abc');
+    expect(body['title']).toBe('Agent needs input');
+    expect(body['body']).toBe('Please respond');
   });
 
   test('includes sessionId when provided', async () => {
@@ -56,7 +56,7 @@ describe('sendPushTrigger', () => {
     });
 
     const body = lastRequest!.body as Record<string, string>;
-    expect(body.sessionId).toBe('remi-uuid-1234');
+    expect(body['sessionId']).toBe('remi-uuid-1234');
   });
 
   test('omits sessionId when not provided', async () => {
