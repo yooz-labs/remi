@@ -12,6 +12,7 @@ export async function sendPushTrigger(
   title: string,
   body: string,
   pushSecret?: string,
+  sessionId?: string,
 ): Promise<void> {
   const baseUrl = signalingUrl || DEFAULT_SIGNALING_URL;
   // Strip any path (e.g. /connect) from the signaling URL since we need the root
@@ -20,14 +21,22 @@ export async function sendPushTrigger(
   if (pushSecret) {
     headers['Authorization'] = `Bearer ${pushSecret}`;
   }
+  const payload: Record<string, string> = { token: deviceToken, title, body };
+  if (sessionId) {
+    payload['sessionId'] = sessionId;
+  }
   const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ token: deviceToken, title, body }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const text = await response.text().catch(() => 'unknown');
     throw new Error(`Push trigger failed: ${response.status} ${text}`);
   }
+
+  // Log success for diagnostics (response body may include details)
+  const resultText = await response.text().catch(() => '');
+  console.debug(`[Push] Sent to ${url} for token ${deviceToken.slice(0, 20)}...: ${resultText}`);
 }
