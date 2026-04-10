@@ -1615,14 +1615,16 @@ async function createNewSession(
         if (session && session.activeConnectionId === null && deviceTokens.size > 0) {
           const sessionName = session.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+          const pushSessionId = primarySessionId ?? sessionId;
           for (const dt of deviceTokens.values()) {
-            sendPushTrigger(
-              signalingUrl,
-              dt.token,
-              `${sessionName} needs input`,
-              question.text.slice(0, 100),
-              cliPushSecret,
-            ).catch((err) => log(`Push notification failed: ${err}`));
+            sendPushTrigger(signalingUrl, dt.token, {
+              title: `${sessionName} needs input`,
+              body: question.text.slice(0, 100),
+              ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+              sessionId: pushSessionId,
+            })
+              .then(() => log(`Push notification sent for session ${pushSessionId}`))
+              .catch((err) => log(`Push notification failed: ${err}`));
           }
         }
       },
@@ -2181,7 +2183,20 @@ const sharedEvents = {
   onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
     log(`Transcript load request from ${connectionId} for session ${sessionId}`);
 
-    const filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
+    // First try finding by Claude session ID embedded in the filename
+    let filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
+
+    // If not found by Claude session ID, the request may be using a Remi UUID
+    // (daemon sessions are identified by Remi UUID, not Claude session ID).
+    // Check if an active watcher exists for this session ID and use its path.
+    if (!filePath) {
+      const activeWatcher = transcriptWatchers.get(sessionId as UUID);
+      if (activeWatcher) {
+        filePath = activeWatcher.filePath;
+        log(`[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via active watcher`);
+      }
+    }
+
     if (!filePath) {
       sendToConnection(
         connectionId,

@@ -8,6 +8,11 @@ interface ApnsPayload {
   title: string;
   body: string;
   bundleId: string;
+  /** Custom data fields included at top-level of APNS payload (sibling to aps).
+   *  Must be flat string values — nested objects are dropped by iOS. */
+  data?: Record<string, string>;
+  /** Use APNS sandbox endpoint (development builds) */
+  sandbox?: boolean;
 }
 
 interface ApnsConfig {
@@ -26,7 +31,13 @@ export async function sendApnsPush(
 ): Promise<{ success: boolean; error?: string }> {
   const jwt = await createApnsJwt(config);
 
-  const apnsUrl = `https://api.push.apple.com/3/device/${payload.token}`;
+  const apnsHost = payload.sandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+  const apnsUrl = `https://${apnsHost}/3/device/${payload.token}`;
+
+  // Guard against reserved APNS key collision in custom data
+  if (payload.data && 'aps' in payload.data) {
+    throw new Error('ApnsPayload.data must not contain reserved key "aps"');
+  }
 
   const response = await fetch(apnsUrl, {
     method: 'POST',
@@ -45,6 +56,7 @@ export async function sendApnsPush(
         sound: 'default',
         badge: 1,
       },
+      ...(payload.data ? payload.data : {}),
     }),
   });
 

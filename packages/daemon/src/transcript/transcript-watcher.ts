@@ -65,6 +65,11 @@ export class TranscriptWatcher {
     return this.running;
   }
 
+  /** The transcript file path being watched */
+  get filePath(): string {
+    return this.config.filePath;
+  }
+
   /** Number of entries read so far */
   get entryCount(): number {
     return this.entries.length;

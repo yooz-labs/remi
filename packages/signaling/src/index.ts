@@ -28,6 +28,19 @@ interface Env {
   APNS_PRIVATE_KEY?: string;
   APNS_BUNDLE_ID?: string;
   PUSH_SECRET?: string;
+  /** Set to 'true' to use APNS sandbox endpoint for development builds */
+  APNS_SANDBOX?: string;
+}
+
+/** Request body for the /push endpoint */
+interface PushRequestBody {
+  token?: string;
+  title?: string;
+  body?: string;
+  /** Remi session UUID; included in APNS custom data for notification tap navigation */
+  sessionId?: string;
+  /** Reserved for future per-request sandbox override; daemon does not send this today */
+  sandbox?: boolean;
 }
 
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
@@ -123,7 +136,7 @@ export default {
         );
       }
 
-      let body: { token?: string; title?: string; body?: string };
+      let body: PushRequestBody;
       try {
         body = await request.json();
       } catch {
@@ -145,11 +158,17 @@ export default {
 
       // bundleId is always server-controlled (never from client)
       const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
+      // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
+      // override — the daemon does not send it today (payload is Record<string, string>).
+      const sandbox = env.APNS_SANDBOX === 'true' || body.sandbox === true;
+      // Custom data for notification tap navigation; reject empty strings to avoid unroutable taps
+      const data: Record<string, string> | undefined =
+        body.sessionId && body.sessionId.length > 0 ? { sessionId: body.sessionId } : undefined;
 
       let result: { success: boolean; error?: string };
       try {
         result = await sendApnsPush(
-          { token: body.token, title: body.title, body: body.body, bundleId },
+          { token: body.token, title: body.title, body: body.body, bundleId, sandbox, data },
           { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
         );
       } catch (err) {
