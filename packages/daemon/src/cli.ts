@@ -1617,14 +1617,12 @@ async function createNewSession(
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
           const pushSessionId = primarySessionId ?? sessionId;
           for (const dt of deviceTokens.values()) {
-            sendPushTrigger(
-              signalingUrl,
-              dt.token,
-              `${sessionName} needs input`,
-              question.text.slice(0, 100),
-              cliPushSecret,
-              pushSessionId,
-            )
+            sendPushTrigger(signalingUrl, dt.token, {
+              title: `${sessionName} needs input`,
+              body: question.text.slice(0, 100),
+              pushSecret: cliPushSecret,
+              sessionId: pushSessionId,
+            })
               .then(() => log(`Push notification sent for session ${pushSessionId}`))
               .catch((err) => log(`Push notification failed: ${err}`));
           }
