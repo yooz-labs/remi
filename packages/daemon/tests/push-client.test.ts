@@ -42,7 +42,8 @@ describe('sendPushTrigger', () => {
     });
 
     expect(lastRequest).not.toBeNull();
-    const body = lastRequest!.body as Record<string, string>;
+    if (!lastRequest) throw new Error('no request captured');
+    const body = lastRequest.body as Record<string, string>;
     expect(body['token']).toBe('device-token-abc');
     expect(body['title']).toBe('Agent needs input');
     expect(body['body']).toBe('Please respond');
@@ -55,7 +56,8 @@ describe('sendPushTrigger', () => {
       sessionId: 'remi-uuid-1234',
     });
 
-    const body = lastRequest!.body as Record<string, string>;
+    if (!lastRequest) throw new Error('no request captured');
+    const body = lastRequest.body as Record<string, string>;
     expect(body['sessionId']).toBe('remi-uuid-1234');
   });
 
@@ -65,7 +67,8 @@ describe('sendPushTrigger', () => {
       body: 'Body',
     });
 
-    const body = lastRequest!.body as Record<string, string>;
+    if (!lastRequest) throw new Error('no request captured');
+    const body = lastRequest.body as Record<string, string>;
     expect('sessionId' in body).toBe(false);
   });
 
@@ -76,13 +79,15 @@ describe('sendPushTrigger', () => {
       pushSecret: 'my-secret',
     });
 
-    expect(lastRequest!.headers['authorization']).toBe('Bearer my-secret');
+    if (!lastRequest) throw new Error('no request captured');
+    expect(lastRequest.headers['authorization']).toBe('Bearer my-secret');
   });
 
   test('omits Authorization header when pushSecret not provided', async () => {
     await sendPushTrigger(serverUrl, 'tok', { title: 'T', body: 'B' });
 
-    expect(lastRequest!.headers['authorization']).toBeUndefined();
+    if (!lastRequest) throw new Error('no request captured');
+    expect(lastRequest.headers['authorization']).toBeUndefined();
   });
 
   test('throws on non-OK response', async () => {
