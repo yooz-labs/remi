@@ -8,10 +8,11 @@ import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
-import { useConnectionManager, parseConnectionId } from '@/hooks';
+import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
+import { setSoundEnabled } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
@@ -127,6 +128,8 @@ function App() {
       fontSizeMap[settings.fontSize] ?? '16px',
     );
 
+    setSoundEnabled(settings.sound);
+
     localStorage.setItem(LOCALSTORAGE_SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
@@ -202,7 +205,10 @@ function App() {
                 i === idx
                   ? {
                       ...m,
-                      content: role === 'user' ? stripProtocolTags(structuredMsg.content) : structuredMsg.content,
+                      content:
+                        role === 'user'
+                          ? stripProtocolTags(structuredMsg.content)
+                          : structuredMsg.content,
                       isEditing: structuredMsg.isEditing,
                       tool: structuredMsg.tool,
                       bullets: uiBullets,
@@ -259,9 +265,7 @@ function App() {
           if (dedup.action === 'replace') {
             // Replace the optimistic/PTY duplicate with the transcript version,
             // preserving the original id as React key to prevent remount flicker
-            const replaced = dedup.preserveId
-              ? { ...uiMessage, id: dedup.preserveId }
-              : uiMessage;
+            const replaced = dedup.preserveId ? { ...uiMessage, id: dedup.preserveId } : uiMessage;
             return prev.map((m, i) => (i === dedup.replaceIndex ? replaced : m));
           }
 
@@ -280,9 +284,7 @@ function App() {
         const structuredMsg = message.message;
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === structuredMsg.sessionId
-              ? { ...s, lastActiveAt: new Date().toISOString() }
-              : s,
+            s.id === structuredMsg.sessionId ? { ...s, lastActiveAt: new Date().toISOString() } : s,
           ),
         );
         break;
@@ -421,11 +423,17 @@ function App() {
           // Filter out transcript sessions that duplicate a daemon session
           // from the SAME connection (same cwd, keep daemon version)
           .reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) { acc.push(s); return acc; }
+            if (!s.cwd) {
+              acc.push(s);
+              return acc;
+            }
             const existingIdx = acc.findIndex(
               (other) => other.cwd === s.cwd && other.connectionId === s.connectionId,
             );
-            if (existingIdx === -1) { acc.push(s); return acc; }
+            if (existingIdx === -1) {
+              acc.push(s);
+              return acc;
+            }
             const existing = acc[existingIdx];
             if (s.source === 'daemon' && existing.source !== 'daemon') {
               acc[existingIdx] = s;
@@ -447,9 +455,7 @@ function App() {
           const otherConnSessions = prev.filter((s) => s.connectionId !== connectionId);
           // Keep the attached session for this connection (from hello_ack)
           const attachedSession = prev.find(
-            (s) =>
-              s.connectionId === connectionId &&
-              s.connectionStatus === 'connected',
+            (s) => s.connectionId === connectionId && s.connectionStatus === 'connected',
           );
           const discoveredIds = new Set(discovered.map((s) => s.id));
           // Start with sessions from other connections
@@ -462,7 +468,10 @@ function App() {
           // Ensure the hello_ack session is always marked connected
           if (helloAckSessionId) {
             for (let i = 0; i < result.length; i++) {
-              if (result[i].id === helloAckSessionId && result[i].connectionStatus !== 'connected') {
+              if (
+                result[i].id === helloAckSessionId &&
+                result[i].connectionStatus !== 'connected'
+              ) {
                 result[i] = { ...result[i], connectionStatus: 'connected', source: 'daemon' };
               }
             }
@@ -471,9 +480,15 @@ function App() {
           // project (same cwd), keep the daemon-sourced version (it routes
           // to the correct daemon). Drop the transcript-sourced duplicate.
           const deduped = result.reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) { acc.push(s); return acc; }
+            if (!s.cwd) {
+              acc.push(s);
+              return acc;
+            }
             const dupIdx = acc.findIndex((other) => other.cwd === s.cwd);
-            if (dupIdx === -1) { acc.push(s); return acc; }
+            if (dupIdx === -1) {
+              acc.push(s);
+              return acc;
+            }
             const existing = acc[dupIdx];
             // Prefer daemon over transcript source
             if (s.source === 'daemon' && existing.source !== 'daemon') {
@@ -572,9 +587,7 @@ function App() {
         } else {
           console.error(`Failed to resume session: ${message.error}`);
           // Use the target session ID so the error appears in the right session's chat
-          const errorSessionId = (targetSessionId ??
-            activeSessionIdRef.current ??
-            '') as UUID;
+          const errorSessionId = (targetSessionId ?? activeSessionIdRef.current ?? '') as UUID;
           const errorMsg: UIMessage = {
             id: generateId(),
             sessionId: errorSessionId,
@@ -690,6 +703,7 @@ function App() {
     unlockedIdentity,
     clientId: 'remi-web',
     clientVersion: '0.0.1',
+    autoReconnect: settings.autoReconnect,
   });
 
   // Keep refs in sync for use in handleMessage callbacks
@@ -724,7 +738,10 @@ function App() {
       let changed = false;
       const next = prev.map((s) => {
         const connStatus = connMap.get(s.connectionId);
-        if ((connStatus === 'disconnected' || connStatus === 'error') && s.connectionStatus !== 'disconnected') {
+        if (
+          (connStatus === 'disconnected' || connStatus === 'error') &&
+          s.connectionStatus !== 'disconnected'
+        ) {
           changed = true;
           return { ...s, connectionStatus: 'disconnected' as const, questionPending: false };
         }
@@ -1023,15 +1040,20 @@ function App() {
   );
 
   // Disconnect a connection and remove from persisted localStorage
-  const handleDisconnect = useCallback((connectionId: ConnectionId) => {
-    disconnectConnection(connectionId);
-    try {
-      const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
-      const urls: string[] = stored ? JSON.parse(stored) : [];
-      const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
-      localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
-    } catch (err) { console.warn('[App] Failed to update persisted connections:', err); }
-  }, [disconnectConnection]);
+  const handleDisconnect = useCallback(
+    (connectionId: ConnectionId) => {
+      disconnectConnection(connectionId);
+      try {
+        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+        const urls: string[] = stored ? JSON.parse(stored) : [];
+        const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
+        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
+      } catch (err) {
+        console.warn('[App] Failed to update persisted connections:', err);
+      }
+    },
+    [disconnectConnection],
+  );
 
   // Disconnect ALL connections and clear everything (back to connect screen)
   const handleDisconnectAll = useCallback(() => {
@@ -1042,7 +1064,9 @@ function App() {
     setQuestions(new Map());
     try {
       localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
-    } catch (err) { console.warn('[App] Failed to clear persisted connections:', err); }
+    } catch (err) {
+      console.warn('[App] Failed to clear persisted connections:', err);
+    }
   }, [disconnectAll]);
 
   const handleBulletExpand = useCallback(
@@ -1158,10 +1182,8 @@ function App() {
   // Derive error from the most recently errored connection (if any)
   const errorConnection = connections.find((c) => c.status === 'error');
   const error: string | null = errorConnection
-    ? errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`
+    ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
     : null;
-
-
 
   // Compute effective status for ConnectModal: show the latest connection's status
   const effectiveStatus = (() => {
@@ -1211,6 +1233,7 @@ function App() {
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
       onDetach={handleDetach}
+      showTimestamps={settings.showTimestamps}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">

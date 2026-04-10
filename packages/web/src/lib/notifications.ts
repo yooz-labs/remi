@@ -17,6 +17,7 @@ import { PushNotifications } from '@capacitor/push-notifications';
 import { isNative } from './platform';
 
 let localPermissionGranted = false;
+let soundEnabled = true;
 /** Use timestamp-based IDs to avoid collisions across app restarts */
 function nextNotificationId(): number {
   return (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000);
@@ -67,13 +68,15 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
       // Show as local notification since the app is in foreground
       if (localPermissionGranted) {
         LocalNotifications.schedule({
-          notifications: [{
-            title: notification.title ?? 'Remi',
-            body: notification.body ?? 'Your agent needs attention',
-            id: nextNotificationId(),
-            schedule: { at: new Date() },
-            sound: 'default',
-          }],
+          notifications: [
+            {
+              title: notification.title ?? 'Remi',
+              body: notification.body ?? 'Your agent needs attention',
+              id: nextNotificationId(),
+              schedule: { at: new Date() },
+              ...(soundEnabled ? { sound: 'default' } : {}),
+            },
+          ],
         }).catch((err) => console.warn('[Notifications] Failed to show push as local:', err));
       }
     });
@@ -98,6 +101,35 @@ export function getDeviceToken(): string | null {
   return deviceToken;
 }
 
+/** Set whether notification sounds are enabled (controls local notification sound field) */
+export function setSoundEnabled(enabled: boolean): void {
+  soundEnabled = enabled;
+}
+
+/**
+ * Check the current OS-level notification permission state.
+ * Returns 'granted', 'denied', or 'prompt' (not yet requested).
+ */
+export async function checkNotificationPermission(): Promise<'granted' | 'denied' | 'prompt'> {
+  if (!isNative()) return 'granted';
+  try {
+    const result = await PushNotifications.checkPermissions();
+    // 'prompt-with-rationale' is an Android state; treat it as 'prompt'
+    return result.receive === 'granted'
+      ? 'granted'
+      : result.receive === 'denied'
+        ? 'denied'
+        : 'prompt';
+  } catch {
+    return 'prompt';
+  }
+}
+
+/** Open the app's iOS Settings page so the user can manage notification permissions */
+export function openNotificationSettings(): void {
+  window.open('app-settings:', '_system');
+}
+
 /** Send a local notification for a question/permission prompt. */
 export async function notifyQuestion(sessionName: string, prompt: string): Promise<void> {
   if (!localPermissionGranted) return;
@@ -109,7 +141,7 @@ export async function notifyQuestion(sessionName: string, prompt: string): Promi
           body: prompt.length > 100 ? `${prompt.slice(0, 97)}...` : prompt,
           id: nextNotificationId(),
           schedule: { at: new Date() },
-          sound: 'default',
+          ...(soundEnabled ? { sound: 'default' } : {}),
           actionTypeId: 'QUESTION',
         },
       ],
@@ -130,7 +162,7 @@ export async function notifySessionComplete(sessionName: string): Promise<void> 
           body: 'The agent has completed its work.',
           id: nextNotificationId(),
           schedule: { at: new Date() },
-          sound: 'default',
+          ...(soundEnabled ? { sound: 'default' } : {}),
         },
       ],
     });
@@ -150,7 +182,7 @@ export async function notifySessionError(sessionName: string, error: string): Pr
           body: error.length > 100 ? `${error.slice(0, 97)}...` : error,
           id: nextNotificationId(),
           schedule: { at: new Date() },
-          sound: 'default',
+          ...(soundEnabled ? { sound: 'default' } : {}),
         },
       ],
     });

@@ -7,10 +7,10 @@
  */
 
 import type { AgentStatus, UIMessage } from '@/types';
-import type { ViewMode } from './ChatView';
 import { clsx } from 'clsx';
 import { ArrowDown, MessageSquare } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ViewMode } from './ChatView';
 import { ErrorBubble, MessageBubble, TypingIndicator } from './MessageBubble';
 
 interface MessageListProps {
@@ -21,6 +21,7 @@ interface MessageListProps {
   readonly onBulletExpand?: (bulletId: number) => void;
   readonly viewMode?: ViewMode;
   readonly keyboardVisible?: boolean;
+  readonly showTimestamps?: boolean;
   readonly className?: string;
 }
 
@@ -38,9 +39,10 @@ function DateSeparator({ date }: { readonly date: string }) {
 /** Collapsed inline summary for consecutive tool messages */
 function ToolSummary({ tools }: { readonly tools: readonly UIMessage[] }) {
   const names = [...new Set(tools.map((t) => t.tool).filter(Boolean))];
-  const label = names.length <= 3
-    ? names.join(', ')
-    : `${names.slice(0, 2).join(', ')} +${names.length - 2} more`;
+  const label =
+    names.length <= 3
+      ? names.join(', ')
+      : `${names.slice(0, 2).join(', ')} +${names.length - 2} more`;
 
   return (
     <div className="flex items-center gap-2 py-1 px-2">
@@ -93,7 +95,9 @@ function groupMessages(
     return messages.map((m) => ({ type: 'message', message: m }));
   }
 
-  const result: Array<{ type: 'message'; message: UIMessage } | { type: 'tools'; messages: UIMessage[] }> = [];
+  const result: Array<
+    { type: 'message'; message: UIMessage } | { type: 'tools'; messages: UIMessage[] }
+  > = [];
   let toolBatch: UIMessage[] = [];
 
   for (const msg of messages) {
@@ -123,6 +127,7 @@ export function MessageList({
   onBulletExpand,
   viewMode = 'compact',
   keyboardVisible = false,
+  showTimestamps = true,
   className,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -214,7 +219,12 @@ export function MessageList({
             return (
               <div key={message.id}>
                 {showDateSeparator && <DateSeparator date={formatDate(message.timestamp)} />}
-                <MessageBubble message={message} onBulletExpand={onBulletExpand} viewMode={viewMode} />
+                <MessageBubble
+                  message={message}
+                  onBulletExpand={onBulletExpand}
+                  viewMode={viewMode}
+                  showTimestamp={showTimestamps}
+                />
               </div>
             );
           })}

@@ -145,10 +145,7 @@ export interface AppSettings {
   readonly theme: 'light' | 'dark' | 'system';
   readonly fontSize: 'small' | 'medium' | 'large';
   readonly notifications: boolean;
-  /** When to send notifications: 'questions' (default) or 'all' (every message) */
-  readonly notifyOn: 'questions' | 'all';
   readonly sound: boolean;
-  readonly vibration: boolean;
   readonly autoReconnect: boolean;
   readonly showTimestamps: boolean;
 }
@@ -170,9 +167,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   fontSize: 'medium',
   notifications: true,
-  notifyOn: 'questions',
   sound: true,
-  vibration: true,
   autoReconnect: true,
   showTimestamps: true,
 };

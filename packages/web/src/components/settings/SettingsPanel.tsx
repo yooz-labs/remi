@@ -12,10 +12,12 @@ import {
   isIdentityEncrypted,
   removeIdentity,
 } from '@/lib/identity-client';
+import { checkNotificationPermission, openNotificationSettings } from '@/lib/notifications';
+import { isNative } from '@/lib/platform';
 import type { AppSettings } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { clsx } from 'clsx';
-import { Copy, Download, Key, Moon, Monitor, Shield, Sun, Upload, X } from 'lucide-react';
+import { Copy, Download, Key, Monitor, Moon, Shield, Sun, Upload, X } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 interface SettingsPanelProps {
@@ -211,9 +213,7 @@ function IdentitySection() {
               <Copy className="size-4" />
             </button>
           </div>
-          {copied && (
-            <p className="text-xs text-[var(--color-success)]">Copied to clipboard</p>
-          )}
+          {copied && <p className="text-xs text-[var(--color-success)]">Copied to clipboard</p>}
 
           {/* Action buttons */}
           <div className="flex gap-2">
@@ -242,14 +242,20 @@ function IdentitySection() {
           {!showGenerate && !showImport && (
             <div className="flex gap-2">
               <button
-                onClick={() => { setShowGenerate(true); setShowImport(false); }}
+                onClick={() => {
+                  setShowGenerate(true);
+                  setShowImport(false);
+                }}
                 className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)]"
               >
                 <Key className="size-3.5" />
                 Generate
               </button>
               <button
-                onClick={() => { setShowImport(true); setShowGenerate(false); }}
+                onClick={() => {
+                  setShowImport(true);
+                  setShowGenerate(false);
+                }}
                 className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-surface-light)] py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]"
               >
                 <Upload className="size-3.5" />
@@ -299,7 +305,11 @@ function IdentitySection() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setShowGenerate(false); setPassphrase(''); setConfirmPassphrase(''); }}
+                  onClick={() => {
+                    setShowGenerate(false);
+                    setPassphrase('');
+                    setConfirmPassphrase('');
+                  }}
                   className="rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-xs text-[var(--color-text-secondary)]"
                 >
                   Cancel
@@ -328,7 +338,10 @@ function IdentitySection() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setShowImport(false); setImportJson(''); }}
+                  onClick={() => {
+                    setShowImport(false);
+                    setImportJson('');
+                  }}
                   className="rounded-lg bg-[var(--color-surface-light)] px-3 py-2 text-xs text-[var(--color-text-secondary)]"
                 >
                   Cancel
@@ -339,9 +352,7 @@ function IdentitySection() {
         </div>
       )}
 
-      {feedback && (
-        <p className="mt-2 text-xs text-[var(--color-text-muted)]">{feedback}</p>
-      )}
+      {feedback && <p className="mt-2 text-xs text-[var(--color-text-muted)]">{feedback}</p>}
     </section>
   );
 }
@@ -413,7 +424,9 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
           {/* Font Size */}
           <section>
-            <h3 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">Font Size</h3>
+            <h3 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">
+              Font Size
+            </h3>
             <div className="flex gap-2">
               {(['small', 'medium', 'large'] as const).map((size) => (
                 <button
@@ -434,7 +447,9 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
 
           {/* Toggles */}
           <section>
-            <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">Preferences</h3>
+            <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
+              Preferences
+            </h3>
             <div className="space-y-1">
               <Toggle
                 label="Show timestamps"
@@ -444,7 +459,22 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
               <Toggle
                 label="Notifications"
                 checked={settings.notifications}
-                onChange={(v) => update({ notifications: v })}
+                onChange={async (v) => {
+                  if (!v) {
+                    update({ notifications: false });
+                    return;
+                  }
+                  if (!isNative()) {
+                    update({ notifications: true });
+                    return;
+                  }
+                  const permission = await checkNotificationPermission();
+                  if (permission === 'denied') {
+                    openNotificationSettings();
+                  } else {
+                    update({ notifications: true });
+                  }
+                }}
               />
               <Toggle
                 label="Sound"
