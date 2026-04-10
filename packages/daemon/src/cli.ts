@@ -1610,10 +1610,10 @@ async function createNewSession(
         sendAndRecord(msg);
         sessionRegistry.updateQuestion(questionSessionId, question);
 
-        // If no client is connected, trigger push notification to registered devices
-        const session = sessionRegistry.getSession(sessionId);
-        if (session && session.activeConnectionId === null && deviceTokens.size > 0) {
-          const sessionName = session.name || 'Agent';
+        // Always push to registered devices — iOS silences if user disabled notifications
+        if (deviceTokens.size > 0) {
+          const session = sessionRegistry.getSession(sessionId);
+          const sessionName = session?.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
           const pushSessionId = primarySessionId ?? sessionId;
           for (const dt of deviceTokens.values()) {

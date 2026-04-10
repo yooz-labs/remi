@@ -12,7 +12,6 @@ import { useConnectionManager, parseConnectionId } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
-import { notifyQuestion } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
@@ -361,11 +360,7 @@ function App() {
           prev.map((s) => (s.id === questionSessionId ? { ...s, questionPending: true } : s)),
         );
 
-        // Send local notification if user isn't viewing this session (skip during replay)
-        if (!isReplayingRef.current && (questionSessionId !== activeSessionIdRef.current || document.hidden)) {
-          const sessionName = sessionsRef.current.find((s) => s.id === questionSessionId)?.name || 'Agent';
-          notifyQuestion(sessionName, q.text);
-        }
+        // Push (APNS) is the notification channel — no local notification from WebSocket
         break;
       }
 
