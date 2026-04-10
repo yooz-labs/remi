@@ -851,9 +851,12 @@ function App() {
       // Reset unread count for the selected session
       setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, unreadCount: 0 } : s)));
 
-      // If this is an external transcript session we haven't loaded yet, request its history
+      // Request transcript history if we haven't already and there are no messages yet.
+      // This covers both external transcript sessions and daemon sessions (which use a
+      // Remi UUID as their ID — the daemon resolves it via its active watcher).
       const session = sessions.find((s) => s.id === id);
-      if (session?.source === 'transcript' && !loadedTranscriptsRef.current.has(id)) {
+      const hasMessages = messages.some((m) => m.sessionId === id);
+      if (session && !hasMessages && !loadedTranscriptsRef.current.has(id)) {
         loadedTranscriptsRef.current.add(id);
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, isLoadingTranscript: true } : s)),
@@ -861,7 +864,7 @@ function App() {
         requestTranscriptLoad(session.connectionId, id);
       }
     },
-    [sessions, requestTranscriptLoad],
+    [sessions, messages, requestTranscriptLoad],
   );
 
   const handleBack = useCallback(() => {
