@@ -111,4 +111,12 @@ describe('sendPushTrigger', () => {
     // (it will throw a network error, not a URL construction error).
     await expect(sendPushTrigger(undefined, 'tok', { title: 'T', body: 'B' })).rejects.toThrow(); // network error expected; not a URL parse error
   });
+
+  test('normalizes ws:// signaling URL to http:// for the push endpoint', async () => {
+    // Real usage: wss:// → https://. Test server is HTTP so use ws:// → http://.
+    const wsUrl = serverUrl.replace('http://', 'ws://');
+    await sendPushTrigger(wsUrl, 'tok', { title: 'T', body: 'B' });
+    if (!lastRequest) throw new Error('no request captured');
+    expect(lastRequest['body']).toBeTruthy();
+  });
 });

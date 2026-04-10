@@ -30,7 +30,9 @@ export async function sendPushTrigger(
   deviceToken: string,
   opts: PushTriggerOptions,
 ): Promise<void> {
-  const baseUrl = signalingUrl || DEFAULT_SIGNALING_URL;
+  // Normalize wss:// → https:// and ws:// → http:// so fetch works
+  const rawUrl = signalingUrl || DEFAULT_SIGNALING_URL;
+  const baseUrl = rawUrl.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
   // Strip any path (e.g. /connect) from the signaling URL since we need the root
   const url = `${new URL(baseUrl).origin}/push`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
