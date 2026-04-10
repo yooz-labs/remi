@@ -36,7 +36,13 @@ export async function sendPushTrigger(
     throw new Error(`Push trigger failed: ${response.status} ${text}`);
   }
 
-  // Log success for diagnostics (response body may include details)
-  const resultText = await response.text().catch(() => '');
-  console.debug(`[Push] Sent to ${url} for token ${deviceToken.slice(0, 20)}...: ${resultText}`);
+  // Read response body for diagnostics; body not consumed earlier on the success path
+  try {
+    const resultText = await response.text();
+    console.log(`[Push] Sent for token ${deviceToken.slice(0, 20)}...: ${resultText}`);
+  } catch (err) {
+    console.log(
+      `[Push] Sent for token ${deviceToken.slice(0, 20)}... (could not read response: ${err})`,
+    );
+  }
 }
