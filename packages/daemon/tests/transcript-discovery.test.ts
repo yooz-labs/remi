@@ -219,4 +219,35 @@ describe('TranscriptDiscovery', () => {
 
     expect(sessions).toHaveLength(0);
   });
+
+  test('findTranscriptBySessionId returns path for known session', () => {
+    const projectDir = makeProjectDir('/Users/test/find-by-id');
+    const filePath = writeTranscript(projectDir, 'known-session-abc', [makeUserEntry('hello')]);
+
+    const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
+    const result = discovery.findTranscriptBySessionId('known-session-abc');
+
+    expect(result).toBe(filePath);
+  });
+
+  test('findTranscriptBySessionId returns null for unknown session', () => {
+    makeProjectDir('/Users/test/find-by-id-miss');
+
+    const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
+    const result = discovery.findTranscriptBySessionId('nonexistent-session-xyz');
+
+    expect(result).toBeNull();
+  });
+
+  test('findTranscriptBySessionId finds correct session among multiple', () => {
+    const projectDir = makeProjectDir('/Users/test/find-by-id-multi');
+    writeTranscript(projectDir, 'session-one', [makeUserEntry('one')]);
+    const targetPath = writeTranscript(projectDir, 'session-two', [makeUserEntry('two')]);
+    writeTranscript(projectDir, 'session-three', [makeUserEntry('three')]);
+
+    const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
+    const result = discovery.findTranscriptBySessionId('session-two');
+
+    expect(result).toBe(targetPath);
+  });
 });
