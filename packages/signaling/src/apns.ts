@@ -33,6 +33,11 @@ export async function sendApnsPush(
   const apnsHost = payload.sandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
   const apnsUrl = `https://${apnsHost}/3/device/${payload.token}`;
 
+  // Guard against reserved APNS key collision in custom data
+  if (payload.data && 'aps' in payload.data) {
+    throw new Error('ApnsPayload.data must not contain reserved key "aps"');
+  }
+
   const response = await fetch(apnsUrl, {
     method: 'POST',
     headers: {

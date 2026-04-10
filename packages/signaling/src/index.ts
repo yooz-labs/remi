@@ -153,7 +153,8 @@ export default {
 
       // bundleId is always server-controlled (never from client)
       const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
-      // sandbox: use env var as global override, or trust the daemon's flag
+      // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
+      // override — the daemon does not send it today (payload is Record<string, string>).
       const sandbox = env.APNS_SANDBOX === 'true' || body.sandbox === true;
       // Custom data for notification tap navigation
       const data: Record<string, string> | undefined = body.sessionId
