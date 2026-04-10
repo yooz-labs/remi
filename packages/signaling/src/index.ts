@@ -32,6 +32,17 @@ interface Env {
   APNS_SANDBOX?: string;
 }
 
+/** Request body for the /push endpoint */
+interface PushRequestBody {
+  token?: string;
+  title?: string;
+  body?: string;
+  /** Remi session UUID; included in APNS custom data for notification tap navigation */
+  sessionId?: string;
+  /** Reserved for future per-request sandbox override; daemon does not send this today */
+  sandbox?: boolean;
+}
+
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
 const rateLimiter = new RateLimiter(10, 60_000);
 /** Per-IP rate limiter for push: 5 pushes per 60 seconds */
@@ -125,13 +136,7 @@ export default {
         );
       }
 
-      let body: {
-        token?: string;
-        title?: string;
-        body?: string;
-        sessionId?: string;
-        sandbox?: boolean;
-      };
+      let body: PushRequestBody;
       try {
         body = await request.json();
       } catch {
@@ -156,10 +161,9 @@ export default {
       // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
       // override — the daemon does not send it today (payload is Record<string, string>).
       const sandbox = env.APNS_SANDBOX === 'true' || body.sandbox === true;
-      // Custom data for notification tap navigation
-      const data: Record<string, string> | undefined = body.sessionId
-        ? { sessionId: body.sessionId }
-        : undefined;
+      // Custom data for notification tap navigation; reject empty strings to avoid unroutable taps
+      const data: Record<string, string> | undefined =
+        body.sessionId && body.sessionId.length > 0 ? { sessionId: body.sessionId } : undefined;
 
       let result: { success: boolean; error?: string };
       try {

@@ -8,7 +8,8 @@ interface ApnsPayload {
   title: string;
   body: string;
   bundleId: string;
-  /** Custom data fields included at top-level of APNS payload (sibling to aps) */
+  /** Custom data fields included at top-level of APNS payload (sibling to aps).
+   *  Must be flat string values — nested objects are dropped by iOS. */
   data?: Record<string, string>;
   /** Use APNS sandbox endpoint (development builds) */
   sandbox?: boolean;
