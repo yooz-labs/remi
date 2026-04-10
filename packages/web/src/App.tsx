@@ -111,6 +111,7 @@ function App() {
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
+  const messagesRef = useRef(messages);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
@@ -621,6 +622,17 @@ function App() {
           console.debug('[App] Auth error suppressed:', errorText);
           break;
         }
+        // Clear loading state for any session awaiting transcript load, and allow retry.
+        // The daemon does not echo sessionId in error responses, so we clear all loading sessions.
+        setSessions((prev) =>
+          prev.map((s) => {
+            if (s.isLoadingTranscript) {
+              loadedTranscriptsRef.current.delete(s.id);
+              return { ...s, isLoadingTranscript: false };
+            }
+            return s;
+          }),
+        );
         // Show non-auth errors to the user as system messages
         const targetSession = activeSessionIdRef.current;
         if (!targetSession) {
@@ -654,6 +666,10 @@ function App() {
   useEffect(() => {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Connection manager: manages N simultaneous WebSocket connections
   const {
@@ -855,7 +871,7 @@ function App() {
       // This covers both external transcript sessions and daemon sessions (which use a
       // Remi UUID as their ID — the daemon resolves it via its active watcher).
       const session = sessions.find((s) => s.id === id);
-      const hasMessages = messages.some((m) => m.sessionId === id);
+      const hasMessages = messagesRef.current.some((m) => m.sessionId === id);
       if (session && !hasMessages && !loadedTranscriptsRef.current.has(id)) {
         loadedTranscriptsRef.current.add(id);
         setSessions((prev) =>
@@ -864,7 +880,7 @@ function App() {
         requestTranscriptLoad(session.connectionId, id);
       }
     },
-    [sessions, messages, requestTranscriptLoad],
+    [sessions, requestTranscriptLoad],
   );
 
   const handleBack = useCallback(() => {
