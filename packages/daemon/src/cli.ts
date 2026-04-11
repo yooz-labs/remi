@@ -1429,7 +1429,11 @@ STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
 const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
 const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
-const TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
+// Telegram disabled: multi-daemon 409 conflicts (issue #285). Re-enable when addressed.
+const TELEGRAM_ENABLED = false;
+if (TELEGRAM_TOKEN) {
+  console.warn('[Telegram] Telegram notifications are currently disabled (multi-daemon conflict)');
+}
 const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
@@ -1532,6 +1536,10 @@ let hookConfigManager: HookConfigManager | null = null;
 
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
+
+// Watcher for live-sessions directory (pushes session list updates on new daemon startup)
+let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
+let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
@@ -1688,6 +1696,63 @@ async function createNewSession(
     // Before SessionStart fires, we let events through (claudeSessionId is null).
     let claudeSessionId: string | null = null;
 
+    // Extract transcript info from hook events. Most Claude Code hook events include
+    // session_id and transcript_path. When present, the first event gives us the
+    // transcript path, bypassing the slower mtime fallback.
+    //
+    // GUARD: When sibling daemons serve the same directory, all Claudes POST to all
+    // hook URLs (shared settings.local.json). So a sibling's event may arrive before
+    // our own Claude fires. In that case, skip hook-based discovery and let the
+    // mtime fallback handle it. For single-daemon directories (the common case),
+    // accept the first event immediately.
+    let hasSiblingInDir: boolean | null = null; // Computed once, then cached
+    function initFromHookEvent(input: {
+      session_id?: string;
+      transcript_path?: string;
+      hook_event_name?: string;
+    }): void {
+      if (claudeSessionId) return;
+      if (!input.session_id || !input.transcript_path) return;
+
+      if (hasSiblingInDir === null) {
+        hasSiblingInDir = liveSessionsRegistry
+          .listLive()
+          .some(
+            (e) =>
+              e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
+          );
+      }
+
+      if (hasSiblingInDir) {
+        // Cannot trust which Claude sent this event — defer to fallback
+        return;
+      }
+
+      try {
+        claudeSessionId = input.session_id;
+        log(
+          `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
+        );
+        sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+        // Cancel the fallback timer since we have the exact path
+        const fallbackTimer = transcriptFallbackTimers.get(sessionId);
+        if (fallbackTimer) {
+          clearInterval(fallbackTimer);
+          transcriptFallbackTimers.delete(sessionId);
+        }
+
+        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+          startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
+        }
+      } catch (err) {
+        logError(
+          `[Hooks] initFromHookEvent failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        claudeSessionId = null; // Reset so fallback can take over
+      }
+    }
+
     const hookBridge = new HookEventBridge(sessionId, {
       onStatusChange: (status: AgentStatus, context?: string) => {
         messageApi.handleStatusChange(status, context);
@@ -1696,37 +1761,74 @@ async function createNewSession(
         messageApi.handleQuestion(question);
       },
       onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
-        claudeSessionId = hookClaudeSessionId;
-        log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
-        sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+        // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude)
+        if (hasSiblingInDir === null) {
+          hasSiblingInDir = liveSessionsRegistry
+            .listLive()
+            .some(
+              (e) =>
+                e.projectPath === workingDirectory &&
+                e.sessionId !== sessionId &&
+                e.wsPort !== PORT,
+            );
+        }
+        if (hasSiblingInDir) return;
 
-        // Start transcript watcher immediately using the path from the hook
-        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
-          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+        try {
+          claudeSessionId = hookClaudeSessionId;
+          log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
+          sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+          if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+          }
+        } catch (err) {
+          logError(
+            `[Hooks] onSessionInfo failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          claudeSessionId = null;
         }
       },
     });
 
     const handlers = hookBridge.hookHandlers();
-    hookServer.on('SessionStart', (input) => handlers.onSessionStart?.(input));
+    // initFromHookEvent runs before the bridge handler: it covers events where
+    // onSessionInfo doesn't fire (PreToolUse, etc.). For SessionStart, both paths
+    // converge; guards prevent double-processing.
+    hookServer.on('SessionStart', (input) => {
+      initFromHookEvent(input);
+      handlers.onSessionStart?.(input);
+    });
+    // Filter: accept events only from our own Claude. Before claudeSessionId is known,
+    // block events when siblings exist (they could be from sibling's Claude).
+    const filterBySession = (input: { session_id?: string }): boolean => {
+      if (claudeSessionId) return input.session_id === claudeSessionId;
+      return !hasSiblingInDir; // No sibling → events can only be ours
+    };
+
     hookServer.on('PreToolUse', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
       handlers.onPreToolUse?.(input);
     });
     hookServer.on('PostToolUse', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
       handlers.onPostToolUse?.(input);
     });
     hookServer.on('Notification', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
       handlers.onNotification?.(input);
     });
     hookServer.on('PermissionRequest', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
       handlers.onPermissionRequest?.(input);
     });
     hookServer.on('Stop', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
       handlers.onStop?.(input);
     });
 
@@ -1842,9 +1944,9 @@ async function createNewSession(
     exitCode: null,
   });
 
-  // Transcript watcher: started by SessionStart hook (provides path directly).
-  // Safety net: if hook doesn't fire, poll for a NEW transcript file.
-  // Claude creates its transcript file after startup, so we must wait for it.
+  // Transcript watcher: normally started by hook event (provides path directly).
+  // When sibling daemons serve the same directory, hook events are skipped and
+  // this fallback becomes the primary discovery path.
   const startupTime = Date.now();
   const fallbackInterval = setInterval(() => {
     if (transcriptWatchers.has(sessionId)) {
@@ -1858,10 +1960,19 @@ async function createNewSession(
       return;
     }
     // Look for a transcript file that is actively being written to.
-    // Accept any transcript modified within the last 5 minutes (handles daemon
-    // restarts where the session was already running before startup).
+    // When sibling daemons serve the same directory, exclude transcripts they've
+    // already claimed (by claudeSessionId in sessions.json) to avoid double-watching.
     const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
-    const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
+    const siblingClaudeIds = new Set<string>();
+    for (const entry of sessionStore.list()) {
+      if (entry.remiSessionId !== sessionId && entry.claudeSessionId && !entry.exitedAt) {
+        siblingClaudeIds.add(entry.claudeSessionId);
+      }
+    }
+    const transcriptPath =
+      siblingClaudeIds.size > 0
+        ? transcriptDiscovery.findLatestTranscriptExcluding(workingDirectory, siblingClaudeIds)
+        : transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
@@ -1873,8 +1984,10 @@ async function createNewSession(
           extractClaudeSessionId(transcriptPath, sessionId);
           return;
         }
-      } catch {
-        /* stat failed, retry */
+      } catch (err) {
+        log(
+          `[Hooks] Fallback stat failed for ${transcriptPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     // Give up after 30 seconds
@@ -1915,17 +2028,14 @@ async function createNewSession(
 
 /** Extract Claude session ID from transcript filename and persist it. */
 function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
-  // Transcript filenames look like: <encoded-path>_<timestamp>_<claude-session-id>.jsonl
+  // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
+  // The underscore split is defensive in case a prefixed format is ever introduced.
   const basename = path.basename(transcriptPath, '.jsonl');
   const parts = basename.split('_');
-  // The Claude session ID is typically the last segment
-  if (parts.length >= 2) {
-    const candidateId = parts[parts.length - 1];
-    // Claude session IDs are UUIDs or similar identifiers
-    if (candidateId && candidateId.length >= 8) {
-      sessionStore.updateClaudeSessionId(sessionId, candidateId);
-      log(`Claude session ID: ${candidateId}`);
-    }
+  const candidateId = parts[parts.length - 1];
+  if (candidateId && candidateId.length >= 8) {
+    sessionStore.updateClaudeSessionId(sessionId, candidateId);
+    log(`Claude session ID: ${candidateId}`);
   }
 }
 
@@ -2166,7 +2276,14 @@ const sharedEvents = {
     let allSessions = [...daemonSessions];
 
     if (includeExternal) {
-      const managedIds = new Set(sessionRegistry.getActiveSessionIds());
+      const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+      // Also exclude by Claude session ID (JSONL filename UUID — different namespace from remi IDs)
+      for (const remiId of [...managedIds]) {
+        const stored = sessionStore.findByRemiSessionId(remiId as UUID);
+        if (stored?.claudeSessionId) {
+          managedIds.add(stored.claudeSessionId);
+        }
+      }
       const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
       allSessions = [...daemonSessions, ...externalSessions];
     }
@@ -2813,6 +2930,14 @@ async function cleanup(): Promise<void> {
     clearInterval(timer);
   }
   transcriptFallbackTimers.clear();
+  if (liveWatchDebounce) {
+    clearTimeout(liveWatchDebounce);
+    liveWatchDebounce = null;
+  }
+  if (liveSessionsWatcher) {
+    liveSessionsWatcher.close();
+    liveSessionsWatcher = null;
+  }
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
@@ -3154,6 +3279,48 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
     });
+
+    // Watch for new daemons registering in live-sessions and push updates to clients.
+    // This lets clients auto-connect when a sibling session starts in the same directory.
+    try {
+      liveSessionsWatcher = fs.watch(
+        liveSessionsRegistry.dirPath,
+        { persistent: false },
+        (_event) => {
+          // Debounce: macOS FSEvents fires multiple events per rename (tmp → final).
+          if (liveWatchDebounce) clearTimeout(liveWatchDebounce);
+          liveWatchDebounce = setTimeout(() => {
+            liveWatchDebounce = null;
+            try {
+              const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+              if (newPorts.length === 0) return;
+              // Include external sessions so the broadcast doesn't wipe transcript sessions
+              // that are already visible on the client (session_list_response replaces all
+              // sessions for this connection).
+              const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+              for (const remiId of [...managedIds]) {
+                const stored = sessionStore.findByRemiSessionId(remiId as UUID);
+                if (stored?.claudeSessionId) managedIds.add(stored.claudeSessionId);
+              }
+              const allSessions = [
+                ...sessionRegistry.listSessions(),
+                ...transcriptDiscovery.discoverSessions(managedIds),
+              ];
+              const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
+              registry.broadcast(msg);
+            } catch (err) {
+              logError(
+                `[LiveSessions] Error pushing session update: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }, 300);
+        },
+      );
+    } catch (err) {
+      logError(
+        `[LiveSessions] Could not watch live-sessions dir: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Create and start the primary PTY session

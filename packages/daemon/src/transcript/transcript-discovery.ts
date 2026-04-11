@@ -127,6 +127,26 @@ export class TranscriptDiscovery {
   }
 
   /**
+   * Find the most recent transcript for a project, skipping specific session IDs.
+   * Used when sibling daemons in the same directory have already claimed transcripts.
+   */
+  findLatestTranscriptExcluding(projectPath: string, excludeIds: Set<string>): string | null {
+    const transcriptDir = this.getProjectTranscriptDir(projectPath);
+    if (!fs.existsSync(transcriptDir)) return null;
+
+    const files = this.listJsonlFiles(transcriptDir);
+    if (files.length === 0) return null;
+
+    files.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
+    for (const file of files) {
+      if (!excludeIds.has(file.sessionId)) {
+        return file.filePath;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Find a transcript file path by its session ID (the UUID filename without .jsonl).
    * Returns the file path if found, null otherwise.
    */

@@ -33,62 +33,70 @@ Remote connectivity, relay, authentication, mDNS discovery, session persistence,
 | Parallel CI (spelling, lint, typecheck, test) | Done | PR #44 |
 | Pre-commit hook (lefthook + biome) | Done | PR #44 |
 
-### Phase 2: Session UX (NEXT)
-
-Make sessions feel like tmux, not like debugging infrastructure.
+### Phase 2: Session UX (PARTIAL)
 
 | Feature | Status | Issue |
 |---------|--------|-------|
-| Human-readable session names (`hostname/dir/branch`) | Todo | #45 |
-| Explicit `remi new` / `remi detach` / `remi kill` commands | Todo | #46 |
-| Session list shows name, status, duration, last activity | Todo | #47 |
+| Human-readable session names (`hostname/dir/branch`) | Done | #45 |
+| Explicit `remi new` / `remi detach` / `remi kill` commands | Partial | #46 |
+| Session list shows name, status, duration, last activity | Done (iOS) | #47 |
 | Orphan timeout configurable (`--timeout 30m`) | Todo | - |
 
-**Session Naming Convention:**
-Sessions should be named `hostname/directory/branch` instead of UUID hashes. For example:
-- `macbook/remi/main` - Remi project on macbook, main branch
-- `workstation/yooz-engine/feature-stt` - Engine project on workstation, feature branch
-- `macbook/remi/main:2` - Second session in the same context
+Session names display in iOS app as `dir/branch` (hostname stripped for brevity).
 
-The name is derived automatically from:
-- `os.hostname()` - machine name
-- Last component of the working directory
-- Current git branch or worktree name
-- Numeric suffix for duplicates
+### Phase 3: Chat Mode (PARTIAL)
 
-Users see these names in `remi ls`, `remi attach`, and the web client session list.
-
-### Phase 3: Chat Mode (NEXT)
-
-Transform the web client from a terminal mirror to a clean chat interface.
+iOS app ships a chat-style interface. Core pieces work; UX still rough.
 
 | Feature | Status | Issue |
 |---------|--------|-------|
-| Chat mode view (structured messages, no terminal rendering) | Todo | #48 |
-| Separate code blocks from conversation text | Todo | #48 |
+| Chat view (structured messages, no terminal rendering) | Done | #48 |
+| Tool chips (`Used Bash`, `$ cmd...`) | Done | - |
+| Question cards with tap-to-answer | Done (buggy) | #49 |
+| Session switcher | Done | #50 |
+| Push notifications infra (APNS bridge) | Built, untested | #286 |
+| Consistent history replay | In progress | #281 |
 | Collapsible tool-use sections | Todo | #48 |
-| Question cards with tap-to-answer | Todo | #49 |
-| Session switcher with unread badges | Todo | #50 |
-| Push notifications (Capacitor) | Todo | #51 |
+| Unread badges | Todo | #50 |
 
-**Chat mode design:**
-The daemon already sends structured `transcript_content` messages with role, content, and type information parsed from Claude's JSONL transcript. The web client currently renders everything through xterm.js (terminal emulator). Chat mode renders the same data as a messaging interface:
+**Known chat UX issues (blocking MVP):**
+- Chat history inconsistent: appears/disappears across reconnects
+- Zero-storage reconnect model not fully implemented (stream 200 msgs on connect, clear on disconnect)
+- Auth error messages leak into chat bubbles on localhost
+- Stale question cards don't clear after answer
+- Connection bars clutter header when all healthy
 
-- **Assistant messages** - Clean text with syntax-highlighted code blocks
-- **User messages** - What the user typed/approved
-- **Tool use** - Collapsible sections showing what Claude did (file reads, edits, commands)
-- **Questions** - Cards with the question text and response buttons (Yes/No/custom)
-- **Status** - Progress indicators (thinking, reading, writing)
-
-### Phase 4: Polish and Ship
+### Phase 4: iOS Polish Sprint (IN PROGRESS — Epic #267)
 
 | Feature | Status | Issue |
 |---------|--------|-------|
-| iOS app (Capacitor build + App Store) | Todo | - |
-| Android app (Capacitor build + Play Store) | Todo | - |
-| Homebrew formula | Todo | - |
-| Documentation site | Todo | - |
+| iOS Capacitor app (working build) | Done | - |
+| Auto-connect to all daemon ports | Done | - |
+| Hook system (25 events, PermissionRequest wired) | Done | - |
+| APNS push on question | Done | - |
+| APNS end-to-end test (physical device) | Todo | #286 |
+| Same-dir session confusion | In progress | #285 |
+| Auth prompt on localhost | Open | #257 |
+| Transcript history on daemon restart | Open | #280 |
+| Keyboard + scroll issues | Open | #226 |
+| Session disconnect/reconnect/resume | Open | #241 |
+| Android app | Future | - |
+| App Store submission | Future | - |
+| Homebrew formula | Future | - |
 | Voice interaction (STT/TTS via yooz-engine) | Future | - |
+
+### Phase 5: MVP Blockers (NEXT — must fix before calling it MVP)
+
+In priority order:
+
+1. **#285** Same-dir session confusion -- sessions sharing a project directory get crossed messages/questions
+2. **Chat consistency** -- zero-storage reconnect model; history reliable on every connect
+3. **#286** APNS end-to-end -- test push on physical device
+4. **#257** Auth on localhost -- suppress or auto-complete; new users shouldn't see auth prompts locally
+5. **#241** Session lifecycle -- working disconnect/reconnect/resume buttons
+6. **#238** Message display epic -- scope and ship Phase 1 of redesign
+
+**Not MVP:** #255 server-daemon arch, #153 remote spawn, #276 background location, voice, team features, session history search.
 
 ## Completed Work (Historical)
 

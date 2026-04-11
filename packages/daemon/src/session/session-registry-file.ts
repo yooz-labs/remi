@@ -54,6 +54,11 @@ export class SessionRegistryFile {
     this.dir = dir ?? LIVE_SESSIONS_DIR;
   }
 
+  /** Path to the live-sessions directory. */
+  get dirPath(): string {
+    return this.dir;
+  }
+
   /** Ensure the live-sessions directory exists. */
   private ensureDir(): void {
     if (!fs.existsSync(this.dir)) {

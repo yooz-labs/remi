@@ -106,6 +106,29 @@ feature/*   Short-lived branches off develop
 - **Hotfixes**: branch off `main`, PR to both `main` and `develop`
 - Never push directly to `main` or `develop`
 
+## Local Binary Installation
+
+The local `remi` binary is symlinked into PATH:
+
+```bash
+sudo ln -sf /Users/yahya/Documents/git/yooz/remi/dist/remi /opt/homebrew/bin/remi
+```
+
+**NOT Homebrew-managed** — it is a manual symlink pointing directly to `dist/remi`.
+After any build, the symlink picks up the new binary automatically; no reinstall needed.
+
+```bash
+# Build and verify
+bun run build:binary
+remi --version   # should reflect new version immediately
+```
+
+For PR/branch test builds, use `set` to assign a recognizable version:
+```bash
+./scripts/bump-version.sh set 0.4.23-p292.1
+bun run build:binary   # dist/remi updated; /opt/homebrew/bin/remi picks it up
+```
+
 ## Releasing
 
 **Always use the bump-version script for releases.** Never manually edit version numbers.
