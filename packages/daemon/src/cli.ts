@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.23-p292.1'; // REMI_COMPILED_VERSION
+      return '0.4.23-p292.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.23-p292.1'; // REMI_COMPILED_VERSION
+    return '0.4.23-p292.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1861,15 +1861,23 @@ async function createNewSession(
       transcriptFallbackTimers.delete(sessionId);
       return;
     }
-    // Look for a transcript file that is actively being written to.
-    // Accept any transcript modified within the last 5 minutes (handles daemon
-    // restarts where the session was already running before startup).
+    // Look for a transcript file created AFTER this daemon started (birthtimeMs check avoids
+    // picking up a sibling daemon's already-active file). Fall back to a 5-minute mtime
+    // window only when no other daemon is serving the same directory (handles restarts).
     const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
-        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
+        const createdAfterStart = stat.birthtimeMs >= startupTime;
+        const siblingInSameDir = liveSessionsRegistry
+          .listLive()
+          .some(
+            (e) =>
+              e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
+          );
+        const isRecentStale = !siblingInSameDir && Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
+        if (createdAfterStart || isRecentStale) {
           clearInterval(fallbackInterval);
           transcriptFallbackTimers.delete(sessionId);
           log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
@@ -1888,9 +1896,18 @@ async function createNewSession(
       if (transcriptPath) {
         try {
           const stat = fs.statSync(transcriptPath);
-          const isRecent =
-            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
-          if (isRecent) {
+          const createdAfterStart = stat.birthtimeMs >= startupTime;
+          const siblingInSameDir = liveSessionsRegistry
+            .listLive()
+            .some(
+              (e) =>
+                e.projectPath === workingDirectory &&
+                e.sessionId !== sessionId &&
+                e.wsPort !== PORT,
+            );
+          const isRecentStale =
+            !siblingInSameDir && Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
+          if (createdAfterStart || isRecentStale) {
             log('[Hooks] Transcript fallback: found recent transcript on final check.');
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
             extractClaudeSessionId(transcriptPath, sessionId);
@@ -1919,17 +1936,13 @@ async function createNewSession(
 
 /** Extract Claude session ID from transcript filename and persist it. */
 function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
-  // Transcript filenames look like: <encoded-path>_<timestamp>_<claude-session-id>.jsonl
+  // Filenames are either "uuid.jsonl" or "prefix_uuid.jsonl" — last segment is always the ID
   const basename = path.basename(transcriptPath, '.jsonl');
   const parts = basename.split('_');
-  // The Claude session ID is typically the last segment
-  if (parts.length >= 2) {
-    const candidateId = parts[parts.length - 1];
-    // Claude session IDs are UUIDs or similar identifiers
-    if (candidateId && candidateId.length >= 8) {
-      sessionStore.updateClaudeSessionId(sessionId, candidateId);
-      log(`Claude session ID: ${candidateId}`);
-    }
+  const candidateId = parts[parts.length - 1];
+  if (candidateId && candidateId.length >= 8) {
+    sessionStore.updateClaudeSessionId(sessionId, candidateId);
+    log(`Claude session ID: ${candidateId}`);
   }
 }
 
