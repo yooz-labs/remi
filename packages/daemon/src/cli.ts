@@ -1429,7 +1429,7 @@ STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
 const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
 const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
-// Telegram disabled: low priority; multi-daemon 409 conflicts not worth solving now.
+// Telegram disabled: multi-daemon 409 conflicts (issue #285). Re-enable when addressed.
 const TELEGRAM_ENABLED = false;
 const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
@@ -1536,6 +1536,7 @@ let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = nul
 
 // Watcher for live-sessions directory (pushes session list updates on new daemon startup)
 let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
+let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
@@ -1692,16 +1693,16 @@ async function createNewSession(
     // Before SessionStart fires, we let events through (claudeSessionId is null).
     let claudeSessionId: string | null = null;
 
-    // Extract transcript info from hook events. Every Claude Code hook event carries
-    // session_id + transcript_path, so even if SessionStart doesn't fire, any event
-    // gives us the transcript path.
+    // Extract transcript info from hook events. Most Claude Code hook events include
+    // session_id and transcript_path. When present, the first event gives us the
+    // transcript path, bypassing the slower mtime fallback.
     //
     // GUARD: When sibling daemons serve the same directory, all Claudes POST to all
     // hook URLs (shared settings.local.json). So a sibling's event may arrive before
     // our own Claude fires. In that case, skip hook-based discovery and let the
     // mtime fallback handle it. For single-daemon directories (the common case),
     // accept the first event immediately.
-    let hasSiblingInDir = false; // Cached on first check; used to suppress cross-talk
+    let hasSiblingInDir: boolean | null = null; // Computed once, then cached
     function initFromHookEvent(input: {
       session_id?: string;
       transcript_path?: string;
@@ -1710,33 +1711,42 @@ async function createNewSession(
       if (claudeSessionId) return;
       if (!input.session_id || !input.transcript_path) return;
 
-      hasSiblingInDir = liveSessionsRegistry
-        .listLive()
-        .some(
-          (e) =>
-            e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
-        );
+      if (hasSiblingInDir === null) {
+        hasSiblingInDir = liveSessionsRegistry
+          .listLive()
+          .some(
+            (e) =>
+              e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
+          );
+      }
 
       if (hasSiblingInDir) {
         // Cannot trust which Claude sent this event — defer to fallback
         return;
       }
 
-      claudeSessionId = input.session_id;
-      log(
-        `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
-      );
-      sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+      try {
+        claudeSessionId = input.session_id;
+        log(
+          `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
+        );
+        sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
 
-      // Cancel the fallback timer since we have the exact path
-      const fallbackTimer = transcriptFallbackTimers.get(sessionId);
-      if (fallbackTimer) {
-        clearInterval(fallbackTimer);
-        transcriptFallbackTimers.delete(sessionId);
-      }
+        // Cancel the fallback timer since we have the exact path
+        const fallbackTimer = transcriptFallbackTimers.get(sessionId);
+        if (fallbackTimer) {
+          clearInterval(fallbackTimer);
+          transcriptFallbackTimers.delete(sessionId);
+        }
 
-      if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
-        startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
+        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+          startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
+        }
+      } catch (err) {
+        logError(
+          `[Hooks] initFromHookEvent failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        claudeSessionId = null; // Reset so fallback can take over
       }
     }
 
@@ -1748,6 +1758,19 @@ async function createNewSession(
         messageApi.handleQuestion(question);
       },
       onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
+        // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude)
+        if (hasSiblingInDir === null) {
+          hasSiblingInDir = liveSessionsRegistry
+            .listLive()
+            .some(
+              (e) =>
+                e.projectPath === workingDirectory &&
+                e.sessionId !== sessionId &&
+                e.wsPort !== PORT,
+            );
+        }
+        if (hasSiblingInDir) return;
+
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
         sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
@@ -1760,6 +1783,9 @@ async function createNewSession(
     });
 
     const handlers = hookBridge.hookHandlers();
+    // initFromHookEvent runs before the bridge handler: it covers events where
+    // onSessionInfo doesn't fire (PreToolUse, etc.). For SessionStart, both paths
+    // converge; guards prevent double-processing.
     hookServer.on('SessionStart', (input) => {
       initFromHookEvent(input);
       handlers.onSessionStart?.(input);
@@ -1909,9 +1935,9 @@ async function createNewSession(
     exitCode: null,
   });
 
-  // Transcript watcher: started by SessionStart hook (provides path directly).
-  // Safety net: if hook doesn't fire, poll for a NEW transcript file.
-  // Claude creates its transcript file after startup, so we must wait for it.
+  // Transcript watcher: normally started by hook event (provides path directly).
+  // When sibling daemons serve the same directory, hook events are skipped and
+  // this fallback becomes the primary discovery path.
   const startupTime = Date.now();
   const fallbackInterval = setInterval(() => {
     if (transcriptWatchers.has(sessionId)) {
@@ -1991,7 +2017,8 @@ async function createNewSession(
 
 /** Extract Claude session ID from transcript filename and persist it. */
 function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
-  // Filenames are either "uuid.jsonl" or "prefix_uuid.jsonl" — last segment is always the ID
+  // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
+  // The underscore split is defensive in case a prefixed format is ever introduced.
   const basename = path.basename(transcriptPath, '.jsonl');
   const parts = basename.split('_');
   const candidateId = parts[parts.length - 1];
@@ -2892,6 +2919,10 @@ async function cleanup(): Promise<void> {
     clearInterval(timer);
   }
   transcriptFallbackTimers.clear();
+  if (liveWatchDebounce) {
+    clearTimeout(liveWatchDebounce);
+    liveWatchDebounce = null;
+  }
   if (liveSessionsWatcher) {
     liveSessionsWatcher.close();
     liveSessionsWatcher = null;
@@ -3240,7 +3271,6 @@ if (cliDaemonMode) {
 
     // Watch for new daemons registering in live-sessions and push updates to clients.
     // This lets clients auto-connect when a sibling session starts in the same directory.
-    let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
     try {
       liveSessionsWatcher = fs.watch(
         liveSessionsRegistry.dirPath,
@@ -3268,7 +3298,7 @@ if (cliDaemonMode) {
               const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
               registry.broadcast(msg);
             } catch (err) {
-              log(
+              logError(
                 `[LiveSessions] Error pushing session update: ${err instanceof Error ? err.message : String(err)}`,
               );
             }
@@ -3276,7 +3306,7 @@ if (cliDaemonMode) {
         },
       );
     } catch (err) {
-      log(
+      logError(
         `[LiveSessions] Could not watch live-sessions dir: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
