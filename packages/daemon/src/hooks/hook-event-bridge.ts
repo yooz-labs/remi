@@ -30,15 +30,28 @@ export interface HookBridgeEvents {
   onSessionInfo: (claudeSessionId: string, transcriptPath: string) => void;
 }
 
+/** Pending permission context waiting for Notification to arrive with options */
+interface PendingPermission {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  promptText: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
-  /** Timestamp of last PermissionRequest, used to suppress duplicate Notification */
-  private lastPermissionRequestAt = 0;
+  /** Pending PermissionRequest waiting for Notification with richer options */
+  private pendingPermission: PendingPermission | null = null;
+  /** How long to wait for Notification after PermissionRequest (ms) */
+  private readonly mergeWindowMs: number;
+  /** Timestamp of last PermissionRequest that emitted immediately (had suggestions) */
+  private lastImmediatePermissionAt = 0;
 
-  constructor(sessionId: UUID, events: HookBridgeEvents) {
+  constructor(sessionId: UUID, events: HookBridgeEvents, mergeWindowMs = 200) {
     this.sessionId = sessionId;
     this.events = events;
+    this.mergeWindowMs = mergeWindowMs;
   }
 
   /** Returns HookServerEvents handlers wired to this bridge */
@@ -68,13 +81,25 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      // Suppress if PermissionRequest already handled this prompt (within 2s window)
-      if (Date.now() - this.lastPermissionRequestAt < 2000) {
+      if (this.pendingPermission) {
+        // Notification arrived while we're waiting; merge tool context with parsed options
+        const pending = this.pendingPermission;
+        clearTimeout(pending.timer);
+        this.pendingPermission = null;
+
+        const question = this.buildMergedQuestion(pending.promptText, input.message);
+        this.events.onQuestion(question);
+        this.events.onStatusChange('waiting');
+      } else if (Date.now() - this.lastImmediatePermissionAt < 2000) {
+        // PermissionRequest already emitted with multi-choice options; suppress
+        // this duplicate Notification
         return;
+      } else {
+        // No pending PermissionRequest; standalone Notification
+        const question = this.buildPermissionQuestion(input.message);
+        this.events.onQuestion(question);
+        this.events.onStatusChange('waiting');
       }
-      const question = this.buildPermissionQuestion(input.message);
-      this.events.onQuestion(question);
-      this.events.onStatusChange('waiting');
     } else if (input.notification_type === 'idle_prompt') {
       this.events.onStatusChange('idle');
     } else {
@@ -103,15 +128,20 @@ export class HookEventBridge {
   }
 
   handlePermissionRequest(input: PermissionRequestHookInput): void {
-    this.lastPermissionRequestAt = Date.now();
+    // Cancel any previous pending merge (shouldn't happen, but be safe)
+    if (this.pendingPermission) {
+      clearTimeout(this.pendingPermission.timer);
+      this.pendingPermission = null;
+    }
 
-    // Build a rich question from the tool_name and permission_suggestions.
-    // If permission_suggestions are provided, use them as numbered options;
-    // otherwise fall back to a Yes/No question with tool context.
     const toolName = input.tool_name || 'unknown tool';
-    const promptText = `Allow ${toolName}?`;
+    const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
+    const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;
 
     if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
+      // PermissionRequest already has multi-choice options; emit immediately.
+      // Mark timestamp so we suppress the duplicate Notification that follows.
+      this.lastImmediatePermissionAt = Date.now();
       const options: QuestionOption[] = input.permission_suggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
@@ -132,11 +162,25 @@ export class HookEventBridge {
         allowsFreeText: false,
         isAnswered: false,
       });
+      this.events.onStatusChange('waiting');
     } else {
-      this.events.onQuestion(this.buildPermissionQuestion(promptText));
-    }
+      // No multi-choice suggestions from PermissionRequest.
+      // Wait briefly for Notification(permission_prompt) which carries the full
+      // numbered options text (e.g. "1) Yes\n2) Yes, always\n3) No").
+      const timer = setTimeout(() => {
+        // Notification didn't arrive in time; emit Yes/No fallback
+        this.pendingPermission = null;
+        this.events.onQuestion(this.buildPermissionQuestion(promptText));
+        this.events.onStatusChange('waiting');
+      }, this.mergeWindowMs);
 
-    this.events.onStatusChange('waiting');
+      this.pendingPermission = {
+        toolName,
+        toolInput: input.tool_input,
+        promptText,
+        timer,
+      };
+    }
   }
 
   handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {
@@ -169,6 +213,44 @@ export class HookEventBridge {
 
   handleSessionEnd(_input: SessionEndHookInput): void {
     this.events.onStatusChange('idle');
+  }
+
+  /** Clean up timers (call when session ends or bridge is destroyed) */
+  dispose(): void {
+    if (this.pendingPermission) {
+      clearTimeout(this.pendingPermission.timer);
+      this.pendingPermission = null;
+    }
+  }
+
+  /**
+   * Build a question by merging tool context from PermissionRequest with
+   * parsed options from a Notification message. Uses the Notification message
+   * for options (it has the full "1) Yes\n2) Yes, always\n3) No" text) and
+   * the PermissionRequest prompt for the question text (which has tool context).
+   */
+  private buildMergedQuestion(promptText: string, notificationMessage: string): Question {
+    const parsed = notificationMessage ? parseNumberedOptions(notificationMessage) : null;
+
+    if (parsed && parsed.options.length >= 2) {
+      const taggedOptions: QuestionOption[] = parsed.options.map((opt) => {
+        const lower = opt.label.toLowerCase();
+        const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
+        const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
+        return { ...opt, isYes, isNo };
+      });
+
+      return {
+        id: generateId(),
+        text: promptText,
+        options: taggedOptions,
+        allowsFreeText: false,
+        isAnswered: false,
+      };
+    }
+
+    // Notification didn't have parseable options either; fall back to Yes/No
+    return this.buildPermissionQuestion(promptText);
   }
 
   private buildPermissionQuestion(message: string): Question {
@@ -224,5 +306,49 @@ export class HookEventBridge {
       allowsFreeText: false,
       isAnswered: false,
     };
+  }
+
+  /** Extract a short summary from tool input for the question prompt. */
+  private summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string | null {
+    if (!toolInput || typeof toolInput !== 'object') return null;
+    const lower = toolName.toLowerCase();
+
+    const get = (key: string): unknown => toolInput[key];
+
+    // Bash: show the command
+    if (lower === 'bash' || lower === 'terminal') {
+      const cmd = get('command') ?? get('cmd');
+      if (typeof cmd === 'string') {
+        return cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd;
+      }
+    }
+
+    // Read/Write/Edit: show the file path
+    if (lower === 'read' || lower === 'write' || lower === 'edit') {
+      const path = get('file_path') ?? get('path');
+      if (typeof path === 'string') return path;
+    }
+
+    // Glob/Grep: show the pattern
+    if (lower === 'glob' || lower === 'grep') {
+      const pattern = get('pattern') ?? get('glob');
+      if (typeof pattern === 'string') return pattern;
+    }
+
+    // WebFetch: show the URL
+    if (lower.includes('fetch') || lower.includes('web')) {
+      const url = get('url');
+      if (typeof url === 'string') return url;
+    }
+
+    // Generic: try common field names
+    for (const key of ['command', 'file_path', 'path', 'url', 'description']) {
+      const val = get(key);
+      if (typeof val === 'string' && val.length > 0) {
+        return val.length > 120 ? `${val.slice(0, 117)}...` : val;
+      }
+    }
+
+    return null;
   }
 }

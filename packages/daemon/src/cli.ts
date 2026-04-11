@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.21'; // REMI_COMPILED_VERSION
+      return '0.4.22-dev.14'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.21'; // REMI_COMPILED_VERSION
+    return '0.4.22-dev.14'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -566,6 +566,7 @@ const cliNetwork = parsedArgs.network;
 const cliHost = parsedArgs.host;
 const cliDir = parsedArgs.dir;
 const cliRecent = parsedArgs.recent;
+const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
@@ -790,6 +791,7 @@ if (
     if (cliNoTelegram) extraArgs.push('--no-telegram');
     if (cliPermanentCode) extraArgs.push('--permanent-code');
     if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
+    if (cliPushSecret) extraArgs.push('--push-secret', cliPushSecret);
     if (cliOrphanTimeout !== undefined)
       extraArgs.push('--orphan-timeout', String(cliOrphanTimeout));
     await dm.startDaemon({ port: explicitPort, extraArgs });
@@ -1564,8 +1566,11 @@ async function createNewSession(
   passThrough = false,
 ): Promise<PTYSession> {
   const sendAndRecord = (message: ProtocolMessage) => {
+    // Always record under primarySessionId so replay works correctly.
+    // The client only knows primarySessionId (from hello_ack).
+    const recordId = primarySessionId ?? sessionId;
     sendMessage(sessionId, message);
-    sessionRegistry.recordOutgoingMessage(sessionId, message);
+    sessionRegistry.recordOutgoingMessage(recordId, message);
   };
 
   const messageApi = new MessageAPI(
@@ -1594,28 +1599,32 @@ async function createNewSession(
       },
       onQuestion: (question) => {
         log(`Question detected: ${question.text.substring(0, 50)}...`);
+        const questionSessionId = primarySessionId ?? sessionId;
         const msg: ProtocolMessage = {
           type: 'question',
           id: generateId(),
           timestamp: now(),
           question: question,
-          sessionId,
+          sessionId: questionSessionId,
         };
         sendAndRecord(msg);
-        sessionRegistry.updateQuestion(sessionId, question);
+        sessionRegistry.updateQuestion(questionSessionId, question);
 
-        // If no client is connected, trigger push notification to registered devices
-        const session = sessionRegistry.getSession(sessionId);
-        if (session && session.activeConnectionId === null && deviceTokens.size > 0) {
-          const sessionName = session.name || 'Agent';
+        // Always push to registered devices — iOS silences if user disabled notifications
+        if (deviceTokens.size > 0) {
+          const session = sessionRegistry.getSession(sessionId);
+          const sessionName = session?.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+          const pushSessionId = primarySessionId ?? sessionId;
           for (const dt of deviceTokens.values()) {
-            sendPushTrigger(
-              signalingUrl,
-              dt.token,
-              `${sessionName} needs input`,
-              question.text.slice(0, 100),
-            ).catch((err) => log(`Push notification failed: ${err}`));
+            sendPushTrigger(signalingUrl, dt.token, {
+              title: `${sessionName} needs input`,
+              body: question.text.slice(0, 100),
+              ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+              sessionId: pushSessionId,
+            })
+              .then(() => log(`Push notification sent for session ${pushSessionId}`))
+              .catch((err) => log(`Push notification failed: ${err}`));
           }
         }
       },
@@ -1658,6 +1667,9 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
+        // When hooks are active, questions come from HookEventBridge which merges
+        // PermissionRequest (tool context) with Notification (numbered options).
+        // PTY question detection is only needed when hooks are not available.
         if (!hookServer) {
           messageApi.handleQuestion(question);
         }
@@ -1708,6 +1720,10 @@ async function createNewSession(
     hookServer.on('Notification', (input) => {
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onNotification?.(input);
+    });
+    hookServer.on('PermissionRequest', (input) => {
+      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      handlers.onPermissionRequest?.(input);
     });
     hookServer.on('Stop', (input) => {
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
@@ -1841,12 +1857,15 @@ async function createNewSession(
       transcriptFallbackTimers.delete(sessionId);
       return;
     }
-    // Look for a transcript file created AFTER daemon startup
+    // Look for a transcript file that is actively being written to.
+    // Accept any transcript modified within the last 5 minutes (handles daemon
+    // restarts where the session was already running before startup).
+    const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
-        if (stat.mtimeMs >= startupTime) {
+        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
           clearInterval(fallbackInterval);
           transcriptFallbackTimers.delete(sessionId);
           log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
@@ -1865,10 +1884,10 @@ async function createNewSession(
       if (transcriptPath) {
         try {
           const stat = fs.statSync(transcriptPath);
-          if (stat.mtimeMs >= startupTime) {
-            logError(
-              '[Hooks] Transcript fallback timed out, but a fresh transcript was found on the final check.',
-            );
+          const isRecent =
+            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
+          if (isRecent) {
+            log('[Hooks] Transcript fallback: found recent transcript on final check.');
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
             extractClaudeSessionId(transcriptPath, sessionId);
             return;
@@ -2156,13 +2175,28 @@ const sharedEvents = {
       `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
         `(${daemonSessions.length} daemon, ${allSessions.length - daemonSessions.length} external)`,
     );
-    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId));
+    // Include other daemon ports on this machine so the app can auto-connect
+    const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId, livePorts));
   },
 
   onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
     log(`Transcript load request from ${connectionId} for session ${sessionId}`);
 
-    const filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
+    // First try finding by Claude session ID embedded in the filename
+    let filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
+
+    // If not found by Claude session ID, the request may be using a Remi UUID
+    // (daemon sessions are identified by Remi UUID, not Claude session ID).
+    // Check if an active watcher exists for this session ID and use its path.
+    if (!filePath) {
+      const activeWatcher = transcriptWatchers.get(sessionId as UUID);
+      if (activeWatcher) {
+        filePath = activeWatcher.filePath;
+        log(`[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via active watcher`);
+      }
+    }
+
     if (!filePath) {
       sendToConnection(
         connectionId,
@@ -2576,15 +2610,16 @@ const sharedEvents = {
 };
 
 // ---------------------------------------------------------------------------
-// Auth setup: auto based on bind host (default 0.0.0.0=on, localhost=off), --auth/--no-auth override
+// Auth setup: disabled by default. Enable with --auth flag.
+// Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
 const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
-// Priority: CLI flag > config file > auto (based on bind host)
+// Priority: CLI flag > config file > default (off)
 const configAuth = remiConfig.auth.enabled;
-const authEnabled = cliAuth ?? (configAuth === 'auto' ? !isLocalhostBind : configAuth);
+const authEnabled = cliAuth ?? (configAuth === 'auto' ? false : configAuth);
 
 let authenticator: Authenticator | undefined;
 let serverFingerprint: string | undefined;

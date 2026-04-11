@@ -5,6 +5,16 @@
  */
 
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
+
+/** Strip hostname prefix from session name for display */
+function formatSessionName(name: string): string {
+  let display = name.replace(/^[^:]+:/, '');
+  const slashIdx = display.indexOf('/');
+  if (slashIdx >= 0 && display.length > slashIdx + 16) {
+    display = `${display.slice(0, slashIdx + 16)}...`;
+  }
+  return display || name;
+}
 import { clsx } from 'clsx';
 import {
   AlertCircle,
@@ -181,7 +191,7 @@ export function ChatHeader({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <h1 className="truncate font-medium text-[var(--color-text)]">
-            {session.name || 'Claude Session'}
+            {formatSessionName(session.name || 'Claude Session')}
           </h1>
           <ConnectionIndicator status={session.connectionStatus} />
         </div>

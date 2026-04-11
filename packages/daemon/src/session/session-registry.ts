@@ -124,6 +124,8 @@ export class SessionRegistry {
   private readonly maxReplayHistory: number;
   /** Connections waiting for the active connection to disconnect */
   private readonly waitingConnections: UUID[] = [];
+  /** Buffer for messages received before session registration (from readExisting transcript) */
+  private preRegistrationBuffer: ProtocolMessage[] = [];
 
   constructor(config: SessionRegistryConfig = {}, events: SessionRegistryEvents = {}) {
     this.orphanTimeoutMs = config.orphanTimeoutMs ?? 5 * 60 * 1000; // 5 minutes
@@ -173,6 +175,12 @@ export class SessionRegistry {
       explicitlyDetached: false,
     };
 
+    // Flush pre-registration buffer (messages from readExisting transcript entries)
+    if (this.preRegistrationBuffer.length > 0) {
+      this.session.messageHistory.push(...this.preRegistrationBuffer);
+      this.preRegistrationBuffer = [];
+    }
+
     this.events.onSessionCreated?.(sessionId);
   }
 
@@ -203,12 +211,13 @@ export class SessionRegistry {
   }
 
   /**
-   * Get the session for a given connection.
+   * Get the session for a given connection (active or queued).
+   * Both the active CLI connection and queued app connections can interact.
    */
   getSessionForConnection(connectionId: UUID): ManagedSession | undefined {
-    if (this.session !== null && this.session.activeConnectionId === connectionId) {
-      return this.session;
-    }
+    if (this.session === null) return undefined;
+    if (this.session.activeConnectionId === connectionId) return this.session;
+    if (this.waitingConnections.includes(connectionId)) return this.session;
     return undefined;
   }
 
@@ -239,20 +248,24 @@ export class SessionRegistry {
       };
     }
 
-    // Check if session already has an active connection
+    // If session already has an active connection, still provide replay
+    // for read-only viewing. Queue for write promotion when active disconnects.
     if (this.session.activeConnectionId !== null) {
-      // Queue this connection for auto-promotion when the active one disconnects
       if (!this.waitingConnections.includes(connectionId)) {
         this.waitingConnections.push(connectionId);
       }
+      const MAX_REPLAY_MESSAGES = 200;
+      const replayMessages =
+        this.session.messageHistory.length > MAX_REPLAY_MESSAGES
+          ? this.session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
+          : [...this.session.messageHistory];
       return {
-        success: false,
-        isResume: false,
-        replayMessages: [],
+        success: true,
+        isResume: true,
+        replayMessages,
         currentStatus: this.session.currentStatus,
         currentQuestion: this.session.currentQuestion,
         nextBulletId: this.session.messageApi.bulletCount + 1,
-        error: 'Session already has active connection',
       };
     }
 
@@ -269,10 +282,15 @@ export class SessionRegistry {
     this.session.lastDisconnectedAt = null;
     this.session.explicitlyDetached = false;
 
-    // Get messages to replay (from after last delivered)
-    const replayMessages = this.session.messageHistory.slice(this.session.lastDeliveredIndex + 1);
+    // Always replay the last 200 messages for every new client.
+    // Each client needs full context, not just undelivered messages.
+    const MAX_REPLAY_MESSAGES = 200;
+    const replayMessages =
+      this.session.messageHistory.length > MAX_REPLAY_MESSAGES
+        ? this.session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
+        : [...this.session.messageHistory];
 
-    // Mark all as delivered now
+    // Mark all as delivered
     this.session.lastDeliveredIndex = this.session.messageHistory.length - 1;
 
     if (isResume) {
@@ -376,7 +394,15 @@ export class SessionRegistry {
    * Call this for every message sent to the client.
    */
   recordOutgoingMessage(sessionId: UUID, message: ProtocolMessage): void {
-    if (this.session === null || this.session.sessionId !== sessionId) {
+    if (this.session === null) {
+      // Session not yet registered; buffer for later (capped to prevent unbounded growth)
+      this.preRegistrationBuffer.push(message);
+      if (this.preRegistrationBuffer.length > this.maxReplayHistory) {
+        this.preRegistrationBuffer = this.preRegistrationBuffer.slice(-this.maxReplayHistory);
+      }
+      return;
+    }
+    if (this.session.sessionId !== sessionId) {
       return;
     }
 

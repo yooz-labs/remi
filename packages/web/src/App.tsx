@@ -8,11 +8,11 @@ import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
-import { useConnectionManager, parseConnectionId } from '@/hooks';
+import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
-import { cleanPreviewText, isToolOutputNoise, stripProtocolTags } from '@/lib/message-filter';
-import { notifyQuestion } from '@/lib/notifications';
+import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
+import { setSoundEnabled } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
@@ -77,7 +77,8 @@ function mapSessionStatus(status: string): 'executing' | 'idle' {
   return status === 'active' ? 'executing' : 'idle';
 }
 
-/** Update a session's last-active time, clear questionPending, and bump unread if not active */
+/** Update a session's last-active time and bump unread if not active.
+ *  Does NOT clear questionPending - that's only cleared when the question is answered. */
 function updateSessionActivity(
   sessions: UISession[],
   sessionId: UUID,
@@ -89,7 +90,6 @@ function updateSessionActivity(
       ? {
           ...s,
           lastActiveAt: new Date().toISOString(),
-          questionPending: false,
           unreadCount: s.id === activeId ? s.unreadCount : s.unreadCount + 1,
           preview: preview?.slice(0, 80) || s.preview,
         }
@@ -101,7 +101,7 @@ function App() {
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [question, setQuestion] = useState<UIQuestion | null>(null);
+  const [questions, setQuestions] = useState<Map<UUID, UIQuestion>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -111,8 +111,13 @@ function App() {
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
+  const messagesRef = useRef(messages);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
+  const lastQuestionIdRef = useRef<string | null>(null);
+  const isReplayingRef = useRef(false);
+  const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
+  const connectionsRef = useRef<readonly { connectionId: ConnectionId; status: string }[]>([]);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -122,6 +127,8 @@ function App() {
       '--font-size-base',
       fontSizeMap[settings.fontSize] ?? '16px',
     );
+
+    setSoundEnabled(settings.sound);
 
     localStorage.setItem(LOCALSTORAGE_SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
@@ -140,17 +147,24 @@ function App() {
           break;
         }
         setSessions((prev) => {
-          const exists = prev.some((s) => s.id === message.sessionId);
+          // On reconnect, remove stale sessions from this connection that have a different
+          // session ID (the daemon may have assigned a new session). Keep sessions from
+          // other connections and sessions matching the new ID untouched.
+          const cleaned = prev.filter(
+            (s) => s.connectionId !== connectionId || s.id === message.sessionId,
+          );
+
+          const exists = cleaned.some((s) => s.id === message.sessionId);
           if (exists) {
-            return prev.map((s) =>
+            return cleaned.map((s) =>
               s.id === message.sessionId
                 ? { ...s, connectionStatus: 'connected', connectionId }
                 : s,
             );
           }
-          if (message.isResume) return prev;
+          if (message.isResume) return cleaned;
           return [
-            ...prev,
+            ...cleaned,
             {
               id: message.sessionId,
               name: 'Claude Code Session',
@@ -172,14 +186,11 @@ function App() {
         const { sessionId, entryUuid, role, content, isUpdate } = message;
         const structuredMsg = message.message;
 
-        // Filter out tool output noise from agent messages (not updates or user messages)
-        if (!isUpdate && role === 'assistant' && isToolOutputNoise(structuredMsg.content || content)) {
-          break;
-        }
-
-        // Skip user messages that are entirely protocol tags (empty after stripping)
+        // Skip empty messages and strip protocol tags from user messages
+        const rawContent = structuredMsg.content || content;
+        if (!rawContent || !rawContent.trim()) break;
         if (!isUpdate && role === 'user') {
-          const stripped = stripProtocolTags(structuredMsg.content || content);
+          const stripped = stripProtocolTags(rawContent);
           if (!stripped) break;
         }
 
@@ -194,7 +205,10 @@ function App() {
                 i === idx
                   ? {
                       ...m,
-                      content: role === 'user' ? stripProtocolTags(structuredMsg.content) : structuredMsg.content,
+                      content:
+                        role === 'user'
+                          ? stripProtocolTags(structuredMsg.content)
+                          : structuredMsg.content,
                       isEditing: structuredMsg.isEditing,
                       tool: structuredMsg.tool,
                       bullets: uiBullets,
@@ -245,14 +259,13 @@ function App() {
             bullets: uiBullets.length > 0 ? uiBullets : undefined,
             firstBulletId: structuredMsg.firstBulletId,
             lastBulletId: structuredMsg.lastBulletId,
+            contentBlocks: message.contentBlocks,
           };
 
           if (dedup.action === 'replace') {
             // Replace the optimistic/PTY duplicate with the transcript version,
             // preserving the original id as React key to prevent remount flicker
-            const replaced = dedup.preserveId
-              ? { ...uiMessage, id: dedup.preserveId }
-              : uiMessage;
+            const replaced = dedup.preserveId ? { ...uiMessage, id: dedup.preserveId } : uiMessage;
             return prev.map((m, i) => (i === dedup.replaceIndex ? replaced : m));
           }
 
@@ -266,70 +279,12 @@ function App() {
       }
 
       case 'structured_agent_output': {
-        // Handle structured message with bullets (from PTY stream)
+        // PTY stream: use ONLY for status updates, NOT for message content.
+        // All chat messages come from transcript_content (clean JSONL data).
         const structuredMsg = message.message;
-
-        // Filter out tool output noise from agent messages
-        if (structuredMsg.sender === 'agent' && isToolOutputNoise(structuredMsg.content)) {
-          break;
-        }
-
-        const uiBullets = toBullets(structuredMsg.bullets);
-
-        setMessages((prev) => {
-          // Same-type dedup by message ID (streaming updates)
-          const existingIndex = prev.findIndex((m) => m.id === structuredMsg.id);
-          if (existingIndex >= 0) {
-            return prev.map((m, i) =>
-              i === existingIndex
-                ? {
-                    ...m,
-                    content: structuredMsg.content,
-                    isEditing: structuredMsg.isEditing,
-                    tool: structuredMsg.tool,
-                    bullets: uiBullets,
-                    firstBulletId: structuredMsg.firstBulletId,
-                    lastBulletId: structuredMsg.lastBulletId,
-                  }
-                : m,
-            );
-          }
-
-          // Cross-type dedup via extracted pure function
-          const dedup = deduplicateMessage(prev, {
-            sessionId: structuredMsg.sessionId,
-            sender: structuredMsg.sender,
-            content: structuredMsg.content,
-            source: 'pty',
-          });
-          if (dedup.action === 'skip') {
-            return prev;
-          }
-
-          const uiMessage: UIMessage = {
-            id: structuredMsg.id,
-            sessionId: structuredMsg.sessionId,
-            connectionId,
-            sender: structuredMsg.sender,
-            content: structuredMsg.content,
-            timestamp: structuredMsg.createdAt,
-            state: structuredMsg.state,
-            isEditing: structuredMsg.isEditing,
-            tool: structuredMsg.tool,
-            source: 'pty',
-            bullets: uiBullets,
-            firstBulletId: structuredMsg.firstBulletId,
-            lastBulletId: structuredMsg.lastBulletId,
-          };
-          return [...prev, uiMessage];
-        });
-
         setSessions((prev) =>
-          updateSessionActivity(
-            prev,
-            structuredMsg.sessionId,
-            activeSessionIdRef.current,
-            structuredMsg.content,
+          prev.map((s) =>
+            s.id === structuredMsg.sessionId ? { ...s, lastActiveAt: new Date().toISOString() } : s,
           ),
         );
         break;
@@ -340,21 +295,39 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
+        // If status moved from 'waiting' to something else, the question was answered elsewhere
+        if (sessionData.status !== 'waiting') {
+          setQuestions((prev) => {
+            if (!prev.has(sessionData.id)) return prev;
+            const next = new Map(prev);
+            next.delete(sessionData.id);
+            return next;
+          });
+        }
         break;
       }
 
       case 'question': {
         const q = message.question;
-        // Map daemon Question to UIQuestion
+        // Dedup: skip if we already have this question (can arrive from multiple connections or hook+PTY)
+        if (q.id === lastQuestionIdRef.current) {
+          break;
+        }
+        lastQuestionIdRef.current = q.id;
+        // Map daemon Question to UIQuestion.
+        // Use yes_no ONLY for exactly 2 options with clear yes+no.
+        // Use multi_option for 3+ options (even if they include yes/no).
+        // Use numbered for options without yes/no semantics.
         let questionType: UIQuestion['type'] = 'free_text';
         if (q.options.length > 0) {
-          const hasYesNo = q.options.some((o) => o.isYes || o.isNo);
-          if (hasYesNo) {
-            // Check for multi-option (yes/no plus extra options like all/quit)
-            const extraOptions = q.options.filter((o) => !o.isYes && !o.isNo);
-            questionType = extraOptions.length > 0 ? 'multi_option' : 'yes_no';
+          if (q.options.length === 2) {
+            const hasYes = q.options.some((o) => o.isYes);
+            const hasNo = q.options.some((o) => o.isNo);
+            questionType = hasYes && hasNo ? 'yes_no' : 'multi_option';
           } else {
-            questionType = 'numbered';
+            // 3+ options: always show all of them
+            const hasYesNo = q.options.some((o) => o.isYes || o.isNo);
+            questionType = hasYesNo ? 'multi_option' : 'numbered';
           }
         }
 
@@ -378,27 +351,29 @@ function App() {
           structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
           timestamp: new Date().toISOString(),
         };
-        setQuestion(uiQuestion);
+        setQuestions((prev) => {
+          const next = new Map(prev);
+          next.set(questionSessionId, uiQuestion);
+          return next;
+        });
 
         // Mark session as having a pending question
         setSessions((prev) =>
           prev.map((s) => (s.id === questionSessionId ? { ...s, questionPending: true } : s)),
         );
 
-        // Send local notification if user isn't viewing this session
-        if (questionSessionId !== activeSessionIdRef.current || document.hidden) {
-          const sessionName = sessionsRef.current.find((s) => s.id === questionSessionId)?.name || 'Agent';
-          notifyQuestion(sessionName, q.text);
-        }
+        // Push (APNS) is the notification channel — no local notification from WebSocket
         break;
       }
 
       case 'replay_batch': {
-        // Replay batches can arrive immediately after hello_ack on first attach.
-        // Dispatch them directly so early history is not dropped before refs/effects settle.
+        // Replay batches arrive on connect/reconnect. Suppress notifications during replay
+        // to prevent spamming the user with old events.
+        isReplayingRef.current = true;
         for (const replayMsg of message.messages) {
           handleMessage(connectionId, replayMsg);
         }
+        isReplayingRef.current = false;
         break;
       }
 
@@ -448,11 +423,17 @@ function App() {
           // Filter out transcript sessions that duplicate a daemon session
           // from the SAME connection (same cwd, keep daemon version)
           .reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) { acc.push(s); return acc; }
+            if (!s.cwd) {
+              acc.push(s);
+              return acc;
+            }
             const existingIdx = acc.findIndex(
               (other) => other.cwd === s.cwd && other.connectionId === s.connectionId,
             );
-            if (existingIdx === -1) { acc.push(s); return acc; }
+            if (existingIdx === -1) {
+              acc.push(s);
+              return acc;
+            }
             const existing = acc[existingIdx];
             if (s.source === 'daemon' && existing.source !== 'daemon') {
               acc[existingIdx] = s;
@@ -474,9 +455,7 @@ function App() {
           const otherConnSessions = prev.filter((s) => s.connectionId !== connectionId);
           // Keep the attached session for this connection (from hello_ack)
           const attachedSession = prev.find(
-            (s) =>
-              s.connectionId === connectionId &&
-              s.connectionStatus === 'connected',
+            (s) => s.connectionId === connectionId && s.connectionStatus === 'connected',
           );
           const discoveredIds = new Set(discovered.map((s) => s.id));
           // Start with sessions from other connections
@@ -489,7 +468,10 @@ function App() {
           // Ensure the hello_ack session is always marked connected
           if (helloAckSessionId) {
             for (let i = 0; i < result.length; i++) {
-              if (result[i].id === helloAckSessionId && result[i].connectionStatus !== 'connected') {
+              if (
+                result[i].id === helloAckSessionId &&
+                result[i].connectionStatus !== 'connected'
+              ) {
                 result[i] = { ...result[i], connectionStatus: 'connected', source: 'daemon' };
               }
             }
@@ -498,9 +480,15 @@ function App() {
           // project (same cwd), keep the daemon-sourced version (it routes
           // to the correct daemon). Drop the transcript-sourced duplicate.
           const deduped = result.reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) { acc.push(s); return acc; }
+            if (!s.cwd) {
+              acc.push(s);
+              return acc;
+            }
             const dupIdx = acc.findIndex((other) => other.cwd === s.cwd);
-            if (dupIdx === -1) { acc.push(s); return acc; }
+            if (dupIdx === -1) {
+              acc.push(s);
+              return acc;
+            }
             const existing = acc[dupIdx];
             // Prefer daemon over transcript source
             if (s.source === 'daemon' && existing.source !== 'daemon') {
@@ -516,6 +504,19 @@ function App() {
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
         });
+
+        // Auto-connect to other daemon ports on the same machine.
+        // Use setTimeout to run after this handler completes (avoids stale refs).
+        if (message.daemonPorts && message.daemonPorts.length > 0) {
+          const ports = [...message.daemonPorts];
+          const host = connectionId.replace(/:\d+$/, '');
+          setTimeout(() => {
+            for (const port of ports) {
+              const url = `ws://${host}:${port}/ws`;
+              connectDirectRef.current(url);
+            }
+          }, 100);
+        }
         break;
       }
 
@@ -552,9 +553,28 @@ function App() {
       }
 
       case 'create_session_response': {
-        // Log session creation failures. Success case currently unhandled.
-        if (!message.success) {
-          console.error(`Session creation rejected: ${message.error}`);
+        if (message.success && message.sessionId) {
+          // New session created; it will appear via hello_ack. Refresh session list.
+          const reqList = requestSessionListRef.current;
+          if (reqList) {
+            const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+            for (const conn of conns) {
+              reqList(conn.connectionId, conns.length === 1);
+            }
+          }
+        } else {
+          console.error(`Session creation failed: ${message.error}`);
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            connectionId: '' as ConnectionId,
+            sender: 'system',
+            content: `Failed to create session: ${message.error || 'unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
         }
         break;
       }
@@ -567,9 +587,7 @@ function App() {
         } else {
           console.error(`Failed to resume session: ${message.error}`);
           // Use the target session ID so the error appears in the right session's chat
-          const errorSessionId = (targetSessionId ??
-            activeSessionIdRef.current ??
-            '') as UUID;
+          const errorSessionId = (targetSessionId ?? activeSessionIdRef.current ?? '') as UUID;
           const errorMsg: UIMessage = {
             id: generateId(),
             sessionId: errorSessionId,
@@ -606,20 +624,40 @@ function App() {
       }
 
       case 'error': {
-        console.error('Daemon error:', message);
-        const errorSessionId = activeSessionIdRef.current;
-        if (errorSessionId) {
-          const errMsg: UIMessage = {
-            id: generateId(),
-            sessionId: errorSessionId,
-            sender: 'system',
-            content: `Daemon error: ${message.message ?? 'unknown'}`,
-            timestamp: new Date().toISOString(),
-            state: 'delivered',
-            isEditing: false,
-          };
-          setMessages((prev) => [...prev, errMsg]);
+        const errorText = message.message ?? 'unknown';
+        // Suppress auth errors (handled by the connection manager)
+        if (errorText.includes('Authentication required') || errorText.includes('AUTH_REQUIRED')) {
+          console.debug('[App] Auth error suppressed:', errorText);
+          break;
         }
+        // Clear loading state for any session awaiting transcript load, and allow retry.
+        // The daemon does not echo sessionId in error responses, so we clear all loading sessions.
+        setSessions((prev) =>
+          prev.map((s) => {
+            if (s.isLoadingTranscript) {
+              loadedTranscriptsRef.current.delete(s.id);
+              return { ...s, isLoadingTranscript: false };
+            }
+            return s;
+          }),
+        );
+        // Show non-auth errors to the user as system messages
+        const targetSession = activeSessionIdRef.current;
+        if (!targetSession) {
+          console.error('[App] Daemon error with no active session:', errorText);
+          break;
+        }
+        const errorMsg: UIMessage = {
+          id: message.id ?? generateId(),
+          sessionId: targetSession,
+          connectionId: connectionId,
+          sender: 'system',
+          content: errorText,
+          timestamp: message.timestamp ?? new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
         break;
       }
 
@@ -637,11 +675,16 @@ function App() {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   // Connection manager: manages N simultaneous WebSocket connections
   const {
     connections,
     connectDirect,
     disconnect: disconnectConnection,
+    disconnectAll,
     sendInput,
     sendAnswer,
     sendMessage: cmSendMessage,
@@ -649,6 +692,7 @@ function App() {
     requestSessionList,
     requestTranscriptLoad,
     requestResumeSession,
+    requestNewSession,
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,
@@ -659,11 +703,14 @@ function App() {
     unlockedIdentity,
     clientId: 'remi-web',
     clientVersion: '0.0.1',
+    autoReconnect: settings.autoReconnect,
   });
 
   // Keep refs in sync for use in handleMessage callbacks
   getSessionIdRef.current = getSessionId;
   sessionsRef.current = sessions;
+  requestSessionListRef.current = requestSessionList;
+  connectionsRef.current = connections;
 
   // Derived connection status
   const hasAnyConnected = connections.some((c) => c.status === 'connected');
@@ -691,7 +738,10 @@ function App() {
       let changed = false;
       const next = prev.map((s) => {
         const connStatus = connMap.get(s.connectionId);
-        if ((connStatus === 'disconnected' || connStatus === 'error') && s.connectionStatus !== 'disconnected') {
+        if (
+          (connStatus === 'disconnected' || connStatus === 'error') &&
+          s.connectionStatus !== 'disconnected'
+        ) {
           changed = true;
           return { ...s, connectionStatus: 'disconnected' as const, questionPending: false };
         }
@@ -703,9 +753,9 @@ function App() {
       });
       return changed ? next : prev;
     });
-    // Clear stale question if all connections are down
+    // Clear stale questions if all connections are down
     if (!hasAnyConnected && !isAnyConnecting) {
-      setQuestion(null);
+      setQuestions(new Map());
       setResumingSession(null);
     }
   }, [connections, hasAnyConnected, isAnyConnecting]);
@@ -719,10 +769,10 @@ function App() {
   useEffect(() => {
     for (const id of connectedIds) {
       if (!prevConnectedIdsRef.current.has(id)) {
-        // Only request external sessions when single connection (avoids
-        // cross-daemon duplicates that cause routing confusion)
-        const includeExternal = connectedIds.size === 1;
-        requestSessionList(id, includeExternal);
+        // Always include external (transcript-discovered) sessions.
+        // Cross-daemon duplicates are handled by the dedup logic in
+        // the session_list_response handler.
+        requestSessionList(id, true);
       }
     }
     prevConnectedIdsRef.current = connectedIds;
@@ -751,17 +801,29 @@ function App() {
   // Refresh session lists when app resumes from background
   useEffect(() => {
     const handleResume = () => {
-      const includeExternal = connectedIds.size === 1;
       for (const id of connectedIds) {
-        requestSessionList(id, includeExternal);
+        requestSessionList(id, true);
       }
     };
     document.addEventListener('app-resume', handleResume);
     return () => document.removeEventListener('app-resume', handleResume);
   }, [connectedIds, requestSessionList]);
 
+  // Navigate to session when user taps a push notification
+  useEffect(() => {
+    const handleNotificationTap = (e: Event) => {
+      const data = (e as CustomEvent).detail;
+      if (data?.sessionId) {
+        setActiveSessionId(data.sessionId);
+      }
+    };
+    document.addEventListener('push-notification-tap', handleNotificationTap);
+    return () => document.removeEventListener('push-notification-tap', handleNotificationTap);
+  }, []);
+
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
+  const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
   useEffect(() => {
     const handleToken = (e: Event) => {
       const token = (e as CustomEvent<string>).detail;
@@ -769,10 +831,28 @@ function App() {
       deviceTokenRef.current = token;
       for (const id of connectedIds) {
         cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+        tokenSentToRef.current.add(id);
       }
     };
     document.addEventListener('device-token', handleToken);
     return () => document.removeEventListener('device-token', handleToken);
+  }, [connectedIds, cmSendMessage]);
+
+  // Send cached device token to newly connected daemons
+  useEffect(() => {
+    if (!deviceTokenRef.current) return;
+    for (const id of connectedIds) {
+      if (!tokenSentToRef.current.has(id)) {
+        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios'));
+        tokenSentToRef.current.add(id);
+      }
+    }
+    // Clean up disconnected entries
+    for (const id of tokenSentToRef.current) {
+      if (!connectedIds.has(id)) {
+        tokenSentToRef.current.delete(id);
+      }
+    }
   }, [connectedIds, cmSendMessage]);
 
   // Get active session. Derive connectionStatus from live connection state
@@ -789,7 +869,7 @@ function App() {
       })()
     : undefined;
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
-  const sessionQuestion = question?.sessionId === activeSessionId ? question : null;
+  const sessionQuestion = activeSessionId ? (questions.get(activeSessionId) ?? null) : null;
 
   const handleSelectSession = useCallback(
     (id: UUID) => {
@@ -799,9 +879,12 @@ function App() {
       // Reset unread count for the selected session
       setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, unreadCount: 0 } : s)));
 
-      // If this is an external transcript session we haven't loaded yet, request its history
+      // Request transcript history if we haven't already and there are no messages yet.
+      // This covers both external transcript sessions and daemon sessions (which use a
+      // Remi UUID as their ID — the daemon resolves it via its active watcher).
       const session = sessions.find((s) => s.id === id);
-      if (session?.source === 'transcript' && !loadedTranscriptsRef.current.has(id)) {
+      const hasMessages = messagesRef.current.some((m) => m.sessionId === id);
+      if (session && !hasMessages && !loadedTranscriptsRef.current.has(id)) {
         loadedTranscriptsRef.current.add(id);
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, isLoadingTranscript: true } : s)),
@@ -837,10 +920,34 @@ function App() {
       // If there's an active question, send as answer
       if (sessionQuestion) {
         const sent = sendAnswer(connId, sessionQuestion.id, content);
-        if (!sent) return; // Don't transition question UI if send failed
+        if (!sent) {
+          const failMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionId,
+            connectionId: connId,
+            sender: 'system',
+            content: 'Failed to send answer: connection unavailable. Try again.',
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, failMsg]);
+          return;
+        }
         // Mark question as answered (card shows collapsed state briefly)
-        setQuestion({ ...sessionQuestion, answeredWith: content });
-        setTimeout(() => setQuestion(null), 1500);
+        setQuestions((prev) => {
+          const next = new Map(prev);
+          next.set(activeSessionId, { ...sessionQuestion, answeredWith: content });
+          return next;
+        });
+        setTimeout(() => {
+          setQuestions((prev) => {
+            if (!prev.has(activeSessionId)) return prev;
+            const next = new Map(prev);
+            next.delete(activeSessionId);
+            return next;
+          });
+        }, 1500);
         // Clear question-pending on the session
         setSessions((prev) =>
           prev.map((s) => (s.id === activeSessionId ? { ...s, questionPending: false } : s)),
@@ -933,15 +1040,34 @@ function App() {
   );
 
   // Disconnect a connection and remove from persisted localStorage
-  const handleDisconnect = useCallback((connectionId: ConnectionId) => {
-    disconnectConnection(connectionId);
+  const handleDisconnect = useCallback(
+    (connectionId: ConnectionId) => {
+      disconnectConnection(connectionId);
+      try {
+        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+        const urls: string[] = stored ? JSON.parse(stored) : [];
+        const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
+        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
+      } catch (err) {
+        console.warn('[App] Failed to update persisted connections:', err);
+      }
+    },
+    [disconnectConnection],
+  );
+
+  // Disconnect ALL connections and clear everything (back to connect screen)
+  const handleDisconnectAll = useCallback(() => {
+    disconnectAll();
+    setSessions([]);
+    setMessages([]);
+    setActiveSessionId(null);
+    setQuestions(new Map());
     try {
-      const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
-      const urls: string[] = stored ? JSON.parse(stored) : [];
-      const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
-      localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
-    } catch (err) { console.warn('[App] Failed to update persisted connections:', err); }
-  }, [disconnectConnection]);
+      localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
+    } catch (err) {
+      console.warn('[App] Failed to clear persisted connections:', err);
+    }
+  }, [disconnectAll]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
@@ -998,6 +1124,16 @@ function App() {
     [sessions, requestResumeSession, resumingSession],
   );
 
+  // Create new session on the first connected daemon
+  const handleNewSession = useCallback(
+    (directory?: string) => {
+      const conn = connections.find((c) => c.status === 'connected');
+      if (!conn) return;
+      requestNewSession(conn.connectionId, directory);
+    },
+    [connections, requestNewSession],
+  );
+
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
@@ -1046,13 +1182,7 @@ function App() {
   // Derive error from the most recently errored connection (if any)
   const errorConnection = connections.find((c) => c.status === 'error');
   const error: string | null = errorConnection
-    ? errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`
-    : null;
-
-  // Derive connectedHost from the first connected connection (for SessionList display)
-  const firstConnected = connections.find((c) => c.status === 'connected');
-  const connectedHost = firstConnected
-    ? firstConnected.connectionId.replace(/:\d+$/, '')
+    ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
     : null;
 
   // Compute effective status for ConnectModal: show the latest connection's status
@@ -1070,13 +1200,14 @@ function App() {
       sessions={sessions}
       activeSessionId={activeSessionId}
       connections={connections}
-      connectedHost={connectedHost}
       onSelectSession={handleSelectSession}
       onResumeSession={hasAnyConnected ? handleResumeSession : undefined}
       resumingSessionId={resumingSession}
       onConnect={() => setShowConnectModal(true)}
       onAddConnection={() => setShowConnectModal(true)}
       onDisconnect={handleDisconnect}
+      onDisconnectAll={handleDisconnectAll}
+      onNewSession={handleNewSession}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -1102,6 +1233,7 @@ function App() {
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
       onDetach={handleDetach}
+      showTimestamps={settings.showTimestamps}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">

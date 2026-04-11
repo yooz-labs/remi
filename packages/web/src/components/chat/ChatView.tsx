@@ -5,8 +5,8 @@
  * Supports two view modes: compact (plain text) and chat (parsed markdown/code).
  */
 
-import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { useKeyboard } from '@/hooks/useKeyboard';
+import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
 import { useState } from 'react';
 import { ChatHeader } from './ChatHeader';
@@ -34,6 +34,7 @@ interface ChatViewProps {
   readonly onExportText?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
   readonly onDetach?: () => void;
+  readonly showTimestamps?: boolean;
   readonly className?: string;
 }
 
@@ -54,6 +55,7 @@ export function ChatView({
   onExportText,
   onBulletExpand,
   onDetach,
+  showTimestamps = true,
   className,
 }: ChatViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
@@ -71,7 +73,10 @@ export function ChatView({
 
   return (
     <div
-      className={clsx('flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]', className)}
+      className={clsx(
+        'flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]',
+        className,
+      )}
       style={{ paddingBottom: keyboardVisible ? `${keyboardHeight}px` : undefined }}
     >
       <ChatHeader
@@ -96,6 +101,7 @@ export function ChatView({
         onBulletExpand={onBulletExpand}
         viewMode={viewMode}
         keyboardVisible={keyboardVisible}
+        showTimestamps={showTimestamps}
       />
 
       {/* Question card in chat mode */}

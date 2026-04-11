@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import type { AgentStatus, Question } from '@remi/shared';
 import { HookEventBridge } from '../../src/hooks/hook-event-bridge.ts';
 import type {
@@ -25,25 +25,40 @@ function makeCommon() {
 }
 
 describe('HookEventBridge', () => {
-  function createBridge() {
+  let activeBridge: HookEventBridge | null = null;
+
+  function createBridge(mergeWindowMs = 200) {
     const statuses: Array<{ status: AgentStatus; context?: string }> = [];
     const questions: Question[] = [];
     const sessionInfos: Array<{ claudeSessionId: string; transcriptPath: string }> = [];
 
-    const bridge = new HookEventBridge('session-1', {
-      onStatusChange: (status, context) => {
-        if (context !== undefined) {
-          statuses.push({ status, context });
-        } else {
-          statuses.push({ status });
-        }
+    const bridge = new HookEventBridge(
+      'session-1',
+      {
+        onStatusChange: (status, context) => {
+          if (context !== undefined) {
+            statuses.push({ status, context });
+          } else {
+            statuses.push({ status });
+          }
+        },
+        onQuestion: (q) => questions.push(q),
+        onSessionInfo: (id, path) =>
+          sessionInfos.push({ claudeSessionId: id, transcriptPath: path }),
       },
-      onQuestion: (q) => questions.push(q),
-      onSessionInfo: (id, path) => sessionInfos.push({ claudeSessionId: id, transcriptPath: path }),
-    });
+      mergeWindowMs,
+    );
 
+    activeBridge = bridge;
     return { bridge, statuses, questions, sessionInfos };
   }
+
+  afterEach(() => {
+    if (activeBridge) {
+      activeBridge.dispose();
+      activeBridge = null;
+    }
+  });
 
   it('maps PreToolUse to executing status with tool name', () => {
     const { bridge, statuses } = createBridge();
@@ -72,7 +87,7 @@ describe('HookEventBridge', () => {
     expect(statuses).toEqual([{ status: 'thinking' }]);
   });
 
-  it('maps Notification(permission_prompt) to question + waiting status', () => {
+  it('maps standalone Notification(permission_prompt) to question + waiting', () => {
     const { bridge, statuses, questions } = createBridge();
 
     bridge.handleNotification({
@@ -133,7 +148,7 @@ describe('HookEventBridge', () => {
     expect(sessionInfos[0]?.transcriptPath).toBe('/tmp/test.jsonl');
   });
 
-  it('provides default text for empty permission prompt', () => {
+  it('provides default text for empty standalone Notification', () => {
     const { bridge, questions } = createBridge();
 
     bridge.handleNotification({
@@ -160,26 +175,8 @@ describe('HookEventBridge', () => {
     expect(statuses).toEqual([{ status: 'executing', context: 'Edit' }]);
   });
 
-  it('maps PermissionRequest to question with tool_name context', () => {
+  it('maps PermissionRequest with permission_suggestions to numbered options immediately', () => {
     const { bridge, statuses, questions } = createBridge();
-
-    bridge.handlePermissionRequest({
-      ...makeCommon(),
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    } as PermissionRequestHookInput);
-
-    expect(statuses).toEqual([{ status: 'waiting' }]);
-    expect(questions.length).toBe(1);
-    expect(questions[0]?.text).toBe('Allow Bash?');
-    expect(questions[0]?.options.length).toBe(2);
-    expect(questions[0]?.options[0]?.isYes).toBe(true);
-    expect(questions[0]?.options[1]?.isNo).toBe(true);
-  });
-
-  it('maps PermissionRequest with permission_suggestions to numbered options', () => {
-    const { bridge, questions } = createBridge();
 
     bridge.handlePermissionRequest({
       ...makeCommon(),
@@ -189,6 +186,8 @@ describe('HookEventBridge', () => {
       permission_suggestions: ['Yes', 'Always', 'No'],
     } as PermissionRequestHookInput);
 
+    // Emitted immediately (no timer)
+    expect(statuses).toEqual([{ status: 'waiting' }]);
     expect(questions.length).toBe(1);
     expect(questions[0]?.options.length).toBe(3);
     expect(questions[0]?.options[0]?.label).toBe('Yes');
@@ -198,6 +197,21 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[1]?.isYes).toBe(true);
     expect(questions[0]?.options[2]?.label).toBe('No');
     expect(questions[0]?.options[2]?.isNo).toBe(true);
+  });
+
+  it('PermissionRequest without suggestions defers and waits for Notification', () => {
+    const { bridge, statuses, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    } as PermissionRequestHookInput);
+
+    // Nothing emitted yet; waiting for Notification
+    expect(statuses.length).toBe(0);
+    expect(questions.length).toBe(0);
   });
 
   it('maps PostToolUseFailure to executing status with error context', () => {
@@ -267,7 +281,7 @@ describe('HookEventBridge', () => {
     expect(statuses).toEqual([{ status: 'idle' }]);
   });
 
-  it('hookHandlers includes all new high-priority handlers', () => {
+  it('hookHandlers includes all high-priority handlers', () => {
     const { bridge } = createBridge();
     const handlers = bridge.hookHandlers();
 
@@ -279,8 +293,202 @@ describe('HookEventBridge', () => {
     expect(handlers.onSessionEnd).toBeDefined();
   });
 
+  describe('PermissionRequest + Notification merge', () => {
+    it('merges PermissionRequest (tool context) with Notification (numbered options)', () => {
+      const { bridge, questions, statuses } = createBridge();
+
+      // PermissionRequest fires first with no suggestions (e.g. Bash)
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test' },
+      } as PermissionRequestHookInput);
+
+      expect(questions.length).toBe(0); // Deferred
+
+      // Notification arrives with numbered options
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: "Do you want to proceed?\n1) Yes\n2) Yes, and don't ask again\n3) No",
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      // Question text comes from PermissionRequest (has tool context)
+      expect(questions[0]?.text).toBe('Allow Bash: npm test');
+      // Options come from Notification message (has numbered options)
+      expect(questions[0]?.options.length).toBe(3);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+      expect(questions[0]?.options[0]?.value).toBe('1');
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.label).toBe("Yes, and don't ask again");
+      expect(questions[0]?.options[1]?.value).toBe('2');
+      expect(questions[0]?.options[1]?.isYes).toBe(true);
+      expect(questions[0]?.options[2]?.label).toBe('No');
+      expect(questions[0]?.options[2]?.value).toBe('3');
+      expect(questions[0]?.options[2]?.isNo).toBe(true);
+      expect(statuses).toEqual([{ status: 'waiting' }]);
+    });
+
+    it('falls back to Yes/No if Notification does not arrive in time', async () => {
+      // Use a very short merge window to avoid slow tests
+      const { bridge, questions, statuses } = createBridge(10);
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' },
+      } as PermissionRequestHookInput);
+
+      expect(questions.length).toBe(0);
+
+      // Wait for the timer to fire
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.text).toBe('Allow Bash: rm -rf /');
+      expect(questions[0]?.options.length).toBe(2);
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
+      expect(statuses).toEqual([{ status: 'waiting' }]);
+    });
+
+    it('suppresses Notification after PermissionRequest with suggestions', () => {
+      const { bridge, questions } = createBridge();
+
+      // PermissionRequest with suggestions emits immediately
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Edit',
+        tool_input: { file_path: '/tmp/foo.ts' },
+        permission_suggestions: ['Yes', 'Always', 'No'],
+      } as PermissionRequestHookInput);
+
+      expect(questions.length).toBe(1);
+
+      // Notification arrives after; should be suppressed
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Allow Edit: /tmp/foo.ts?\n1) Yes\n2) Always\n3) No',
+      } as NotificationHookInput);
+
+      // Still only 1 question
+      expect(questions.length).toBe(1);
+    });
+
+    it('merges with Notification that has no parseable options (falls back to Yes/No)', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello' },
+      } as PermissionRequestHookInput);
+
+      // Notification with plain text, no numbered options
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Allow Bash?',
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      // Falls back to Yes/No using PermissionRequest prompt text
+      expect(questions[0]?.text).toBe('Allow Bash: echo hello');
+      expect(questions[0]?.options.length).toBe(2);
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
+    });
+
+    it('cancels previous pending merge if new PermissionRequest arrives', () => {
+      const { bridge, questions } = createBridge();
+
+      // First PermissionRequest (no suggestions)
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'cmd1' },
+      } as PermissionRequestHookInput);
+
+      // Second PermissionRequest before Notification arrives; replaces the first
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Edit',
+        tool_input: { file_path: '/tmp/bar.ts' },
+      } as PermissionRequestHookInput);
+
+      // Notification arrives; should merge with second PermissionRequest
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Proceed?\n1) Yes\n2) No',
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(1);
+      // Prompt text from the second PermissionRequest
+      expect(questions[0]?.text).toBe('Allow Edit: /tmp/bar.ts');
+    });
+
+    it('dispose cancels pending timer', async () => {
+      const { bridge, questions } = createBridge(10);
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo test' },
+      } as PermissionRequestHookInput);
+
+      bridge.dispose();
+
+      // Wait past the merge window
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Timer was cancelled; no question emitted
+      expect(questions.length).toBe(0);
+    });
+
+    it('standalone Notification works after merge window expires', async () => {
+      const { bridge, questions } = createBridge(10);
+
+      // PermissionRequest without suggestions
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo 1' },
+      } as PermissionRequestHookInput);
+
+      // Let timer fire (Yes/No fallback)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(questions.length).toBe(1);
+
+      // Later, a standalone Notification (not related to a PermissionRequest)
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Another question?\n1) A\n2) B\n3) C',
+      } as NotificationHookInput);
+
+      expect(questions.length).toBe(2);
+      expect(questions[1]?.options.length).toBe(3);
+    });
+  });
+
   describe('numbered option parsing in permission_prompt', () => {
-    it('parses multiline numbered options with parenthesis format', () => {
+    it('parses multiline numbered options with parenthesis format via standalone Notification', () => {
       const { bridge, questions } = createBridge();
 
       bridge.handleNotification({
@@ -342,7 +550,7 @@ describe('HookEventBridge', () => {
       expect(questions[0]?.options[2]?.label).toBe('No');
     });
 
-    it('falls back to Yes/No when no numbered options in message', () => {
+    it('falls back to Yes/No when no numbered options in standalone Notification', () => {
       const { bridge, questions } = createBridge();
 
       bridge.handleNotification({

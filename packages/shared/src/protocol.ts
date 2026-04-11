@@ -287,6 +287,8 @@ export interface SessionListResponseMessage {
   readonly sessions: readonly DiscoverableSession[];
   /** ID of the request this responds to */
   readonly requestId: UUID;
+  /** Other daemon ports on this machine (for auto-connect) */
+  readonly daemonPorts?: readonly number[];
 }
 
 /** Token usage information from a transcript entry */
@@ -319,6 +321,25 @@ export interface TranscriptContentMessage {
   readonly message: StructuredMessage;
   /** Whether this updates a previously sent entry */
   readonly isUpdate: boolean;
+  /** Raw content blocks from the transcript entry (Text, ToolUse, ToolResult) */
+  readonly contentBlocks?: readonly TranscriptContentBlock[];
+}
+
+/** A content block from the Claude Code transcript */
+export interface TranscriptContentBlock {
+  readonly type: 'text' | 'tool_use' | 'tool_result';
+  /** Text content (for type=text) */
+  readonly text?: string;
+  /** Tool use ID (for type=tool_use) */
+  readonly toolUseId?: string;
+  /** Tool name (for type=tool_use or tool_result) */
+  readonly toolName?: string;
+  /** Tool input as JSON string (for type=tool_use) */
+  readonly toolInput?: string;
+  /** Tool output (for type=tool_result, truncated) */
+  readonly toolOutput?: string;
+  /** Whether tool execution failed (for type=tool_result) */
+  readonly isError?: boolean;
 }
 
 /** Request to load transcript history for an external session */
@@ -893,6 +914,7 @@ export function createSessionListRequest(includeExternal?: boolean): SessionList
 export function createSessionListResponse(
   sessions: readonly DiscoverableSession[],
   requestId: UUID,
+  daemonPorts?: readonly number[],
 ): SessionListResponseMessage {
   return {
     type: 'session_list_response',
@@ -900,6 +922,7 @@ export function createSessionListResponse(
     timestamp: now(),
     sessions,
     requestId,
+    ...(daemonPorts && daemonPorts.length > 0 && { daemonPorts }),
   };
 }
 
@@ -918,6 +941,7 @@ export function createTranscriptContent(
     model?: string;
     hadThinking?: boolean;
     usage?: TranscriptUsage;
+    contentBlocks?: readonly TranscriptContentBlock[];
   },
 ): TranscriptContentMessage {
   return {
@@ -934,6 +958,8 @@ export function createTranscriptContent(
     ...(options?.model != null && options.model !== '' && { model: options.model }),
     ...(options?.hadThinking != null && { hadThinking: options.hadThinking }),
     ...(options?.usage != null && { usage: options.usage }),
+    ...(options?.contentBlocks != null &&
+      options.contentBlocks.length > 0 && { contentBlocks: options.contentBlocks }),
   };
 }
 

@@ -89,6 +89,8 @@ export interface UIMessage {
   readonly firstBulletId?: number;
   /** Last bullet ID in this message */
   readonly lastBulletId?: number;
+  /** Raw content blocks from transcript (Text, ToolUse, ToolResult) */
+  readonly contentBlocks?: readonly import('@remi/shared/protocol.ts').TranscriptContentBlock[];
 }
 
 /** Session information for the UI */
@@ -144,7 +146,6 @@ export interface AppSettings {
   readonly fontSize: 'small' | 'medium' | 'large';
   readonly notifications: boolean;
   readonly sound: boolean;
-  readonly vibration: boolean;
   readonly autoReconnect: boolean;
   readonly showTimestamps: boolean;
 }
@@ -167,7 +168,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'medium',
   notifications: true,
   sound: true,
-  vibration: true,
   autoReconnect: true,
   showTimestamps: true,
 };

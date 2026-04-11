@@ -321,6 +321,13 @@ describe('TranscriptWatcher', () => {
     watcher.stop();
   });
 
+  test('filePath getter returns the configured path', () => {
+    const filePath = createTempFile('getter-test.jsonl');
+    const watcher = new TranscriptWatcher({ filePath, readExisting: false });
+    expect(watcher.filePath).toBe(filePath);
+    watcher.stop();
+  });
+
   test('stop during waitForFile prevents watching from starting', async () => {
     const filePath = path.join(TEMP_DIR, 'stop-wait.jsonl');
     // File does NOT exist yet

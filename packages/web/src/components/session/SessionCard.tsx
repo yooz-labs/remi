@@ -7,14 +7,31 @@
 // Status icons are rendered via StatusDot, not used directly
 import { formatRelativeTime } from '@/lib/format-time';
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
+import type { ConnectionId } from '@/types';
 import { clsx } from 'clsx';
-import { RotateCcw } from 'lucide-react';
+import { Link2, Link2Off, MessageCircleQuestion, RotateCcw } from 'lucide-react';
+
+/** Strip hostname prefix and truncate branch for display.
+ *  "yahyas-mcm:remi/develop" -> "remi/develop"
+ *  "remi/very-long-branch-name-here" -> "remi/very-long-br..."
+ */
+function formatSessionName(name: string): string {
+  // Strip hostname: prefix (everything before the first colon that's followed by non-digit)
+  let display = name.replace(/^[^:]+:/, '');
+  // Truncate branch part if too long (keep folder, limit branch to 15 chars)
+  const slashIdx = display.indexOf('/');
+  if (slashIdx >= 0 && display.length > slashIdx + 16) {
+    display = `${display.slice(0, slashIdx + 16)}...`;
+  }
+  return display || name;
+}
 
 interface SessionCardProps {
   readonly session: UISession;
   readonly isActive: boolean;
   readonly onClick: () => void;
   readonly onResume?: ((sessionId: string) => void) | undefined;
+  readonly onDisconnect?: ((connectionId: ConnectionId) => void) | undefined;
   readonly isResuming?: boolean;
 }
 
@@ -55,12 +72,15 @@ export function SessionCard({
   isActive,
   onClick,
   onResume,
+  onDisconnect,
   isResuming,
 }: SessionCardProps) {
   const showResume =
     onResume &&
     session.canResume &&
     session.connectionStatus === 'disconnected';
+
+  const isConnected = session.connectionStatus === 'connected';
 
   return (
     <button
@@ -71,62 +91,79 @@ export function SessionCard({
         isActive && 'bg-[var(--color-surface-light)] ring-1 ring-[var(--color-primary)]/30',
       )}
     >
-      <div className="flex items-start gap-3">
-        {/* Status indicator */}
-        <div className="mt-1.5">
-          <StatusDot connectionStatus={session.connectionStatus} agentStatus={session.status} />
-        </div>
-
-        {/* Session info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="truncate font-medium text-[var(--color-text)]">
-              {session.name || 'Claude Session'}
-            </h3>
-            <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
-              {formatRelativeTime(session.lastActiveAt)}
-            </span>
-          </div>
-
-          {/* Preview or status */}
-          <p className="mt-0.5 truncate text-sm text-[var(--color-text-secondary)]">
-            {session.preview || getStatusText(session.status)}
-          </p>
-
-          {/* CWD if available */}
-          {session.cwd && (
-            <p className="mt-1 truncate text-xs text-[var(--color-text-muted)]">{session.cwd}</p>
-          )}
-
-          {/* Resume button for dead sessions */}
-          {showResume && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onResume(session.id);
-              }}
-              disabled={isResuming}
-              className={clsx(
-                'mt-2 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
-                isResuming
-                  ? 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)] cursor-wait'
-                  : 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] hover:bg-[var(--color-primary)]/20',
-              )}
-            >
-              <RotateCcw className={clsx('size-3', isResuming && 'animate-spin')} />
-              {isResuming ? 'Resuming...' : 'Resume'}
-            </button>
-          )}
-        </div>
-
-        {/* Unread badge */}
+      {/* Title line: status dot, name, disconnect */}
+      <div className="flex items-center gap-2">
+        <StatusDot connectionStatus={session.connectionStatus} agentStatus={session.status} />
+        <h3 className="flex-1 truncate font-medium text-[var(--color-text)]">
+          {formatSessionName(session.name || 'Claude Session')}
+        </h3>
+        {/* Question and unread badges */}
+        {session.questionPending && (
+          <MessageCircleQuestion className="size-4 shrink-0 text-[var(--color-warning)]" />
+        )}
         {session.unreadCount > 0 && (
-          <span className="flex size-5 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-medium text-white">
+          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-xs font-medium text-white">
             {session.unreadCount > 9 ? '9+' : session.unreadCount}
           </span>
         )}
+        {isConnected && onDisconnect && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDisconnect(session.connectionId);
+            }}
+            className="shrink-0 rounded-full p-1 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-elevated)] hover:text-[var(--color-error)]"
+            aria-label="Disconnect"
+          >
+            <Link2Off className="size-3.5" />
+          </button>
+        )}
+        {showResume && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onResume(session.id);
+            }}
+            disabled={isResuming}
+            className={clsx(
+              'shrink-0 rounded-full p-1 transition-colors',
+              isResuming
+                ? 'text-[var(--color-text-muted)] cursor-wait'
+                : 'text-[var(--color-primary)] hover:bg-[var(--color-primary)]/10',
+            )}
+            aria-label="Resume"
+          >
+            {isResuming
+              ? <RotateCcw className="size-3.5 animate-spin" />
+              : <Link2 className="size-3.5" />}
+          </button>
+        )}
       </div>
+
+      {/* Preview line: status/preview + timestamp */}
+      <div className="mt-1 flex items-center gap-2 pl-4.5">
+        <p className={clsx(
+          'flex-1 truncate text-sm',
+          session.questionPending
+            ? 'font-medium text-[var(--color-warning)]'
+            : 'text-[var(--color-text-secondary)]',
+        )}>
+          {session.questionPending
+            ? 'Needs your input'
+            : (session.preview || getStatusText(session.status))}
+        </p>
+        <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
+          {formatRelativeTime(session.lastActiveAt)}
+        </span>
+      </div>
+
+      {/* CWD if available */}
+      {session.cwd && (
+        <p className="mt-0.5 truncate pl-4.5 text-xs text-[var(--color-text-muted)]">{session.cwd}</p>
+      )}
+
     </button>
   );
 }

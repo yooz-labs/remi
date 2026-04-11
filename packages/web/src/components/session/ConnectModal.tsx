@@ -305,8 +305,8 @@ export function ConnectModal({
   const canConnect = mode === 'local' ? host.trim().length > 0 : code.length === 9;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 safe-area-bottom">
-      <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
           <h2 className="text-lg font-semibold text-[var(--color-text)]">Connect</h2>
