@@ -1429,7 +1429,8 @@ STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
 const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
 const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
-const TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
+// Telegram disabled: low priority; multi-daemon 409 conflicts not worth solving now.
+const TELEGRAM_ENABLED = false;
 const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
