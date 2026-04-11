@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.23-p292.4'; // REMI_COMPILED_VERSION
+      return '0.4.23-p292.5'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.23-p292.4'; // REMI_COMPILED_VERSION
+    return '0.4.23-p292.5'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1692,9 +1692,15 @@ async function createNewSession(
     // Before SessionStart fires, we let events through (claudeSessionId is null).
     let claudeSessionId: string | null = null;
 
-    // Extract transcript info from the FIRST hook event received. Every Claude Code
-    // hook event carries session_id + transcript_path, so even if SessionStart doesn't
-    // fire, PreToolUse/PostToolUse (which fire constantly) give us the transcript path.
+    // Extract transcript info from hook events. Every Claude Code hook event carries
+    // session_id + transcript_path, so even if SessionStart doesn't fire, any event
+    // gives us the transcript path.
+    //
+    // GUARD: When sibling daemons serve the same directory, all Claudes POST to all
+    // hook URLs (shared settings.local.json). So a sibling's event may arrive before
+    // our own Claude fires. In that case, skip hook-based discovery and let the
+    // mtime fallback handle it. For single-daemon directories (the common case),
+    // accept the first event immediately.
     function initFromHookEvent(input: {
       session_id?: string;
       transcript_path?: string;
@@ -1702,6 +1708,21 @@ async function createNewSession(
     }): void {
       if (claudeSessionId) return;
       if (!input.session_id || !input.transcript_path) return;
+
+      const hasSibling = liveSessionsRegistry
+        .listLive()
+        .some(
+          (e) =>
+            e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
+        );
+
+      if (hasSibling) {
+        // Cannot trust which Claude sent this event — defer to fallback
+        log(
+          `[Hooks] Sibling in same dir, deferring transcript to fallback (candidate: ${input.session_id})`,
+        );
+        return;
+      }
 
       claudeSessionId = input.session_id;
       log(
@@ -1899,10 +1920,19 @@ async function createNewSession(
       return;
     }
     // Look for a transcript file that is actively being written to.
-    // Accept any transcript modified after daemon startup or within 5 minutes
-    // (handles daemon restarts and session resumption).
+    // When sibling daemons serve the same directory, exclude transcripts they've
+    // already claimed (by claudeSessionId in sessions.json) to avoid double-watching.
     const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
-    const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
+    const siblingClaudeIds = new Set<string>();
+    for (const entry of sessionStore.list()) {
+      if (entry.remiSessionId !== sessionId && entry.claudeSessionId && !entry.exitedAt) {
+        siblingClaudeIds.add(entry.claudeSessionId);
+      }
+    }
+    const transcriptPath =
+      siblingClaudeIds.size > 0
+        ? transcriptDiscovery.findLatestTranscriptExcluding(workingDirectory, siblingClaudeIds)
+        : transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
