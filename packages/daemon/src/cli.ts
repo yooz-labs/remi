@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.23-p292.3'; // REMI_COMPILED_VERSION
+      return '0.4.23-p292.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.23-p292.3'; // REMI_COMPILED_VERSION
+    return '0.4.23-p292.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1692,6 +1692,35 @@ async function createNewSession(
     // Before SessionStart fires, we let events through (claudeSessionId is null).
     let claudeSessionId: string | null = null;
 
+    // Extract transcript info from the FIRST hook event received. Every Claude Code
+    // hook event carries session_id + transcript_path, so even if SessionStart doesn't
+    // fire, PreToolUse/PostToolUse (which fire constantly) give us the transcript path.
+    function initFromHookEvent(input: {
+      session_id?: string;
+      transcript_path?: string;
+      hook_event_name?: string;
+    }): void {
+      if (claudeSessionId) return;
+      if (!input.session_id || !input.transcript_path) return;
+
+      claudeSessionId = input.session_id;
+      log(
+        `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
+      );
+      sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+      // Cancel the fallback timer since we have the exact path
+      const fallbackTimer = transcriptFallbackTimers.get(sessionId);
+      if (fallbackTimer) {
+        clearInterval(fallbackTimer);
+        transcriptFallbackTimers.delete(sessionId);
+      }
+
+      if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+        startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
+      }
+    }
+
     const hookBridge = new HookEventBridge(sessionId, {
       onStatusChange: (status: AgentStatus, context?: string) => {
         messageApi.handleStatusChange(status, context);
@@ -1712,24 +1741,32 @@ async function createNewSession(
     });
 
     const handlers = hookBridge.hookHandlers();
-    hookServer.on('SessionStart', (input) => handlers.onSessionStart?.(input));
+    hookServer.on('SessionStart', (input) => {
+      initFromHookEvent(input);
+      handlers.onSessionStart?.(input);
+    });
     hookServer.on('PreToolUse', (input) => {
+      initFromHookEvent(input);
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onPreToolUse?.(input);
     });
     hookServer.on('PostToolUse', (input) => {
+      initFromHookEvent(input);
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onPostToolUse?.(input);
     });
     hookServer.on('Notification', (input) => {
+      initFromHookEvent(input);
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onNotification?.(input);
     });
     hookServer.on('PermissionRequest', (input) => {
+      initFromHookEvent(input);
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onPermissionRequest?.(input);
     });
     hookServer.on('Stop', (input) => {
+      initFromHookEvent(input);
       if (claudeSessionId && input.session_id !== claudeSessionId) return;
       handlers.onStop?.(input);
     });
