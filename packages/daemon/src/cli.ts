@@ -3171,16 +3171,39 @@ if (cliDaemonMode) {
 
     // Watch for new daemons registering in live-sessions and push updates to clients.
     // This lets clients auto-connect when a sibling session starts in the same directory.
+    let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
     try {
       liveSessionsWatcher = fs.watch(
         liveSessionsRegistry.dirPath,
         { persistent: false },
         (_event) => {
-          const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
-          if (newPorts.length === 0) return;
-          const daemonSessions = sessionRegistry.listSessions();
-          const msg = createSessionListResponse(daemonSessions, generateId() as UUID, newPorts);
-          registry.broadcast(msg);
+          // Debounce: macOS FSEvents fires multiple events per rename (tmp → final).
+          if (liveWatchDebounce) clearTimeout(liveWatchDebounce);
+          liveWatchDebounce = setTimeout(() => {
+            liveWatchDebounce = null;
+            try {
+              const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+              if (newPorts.length === 0) return;
+              // Include external sessions so the broadcast doesn't wipe transcript sessions
+              // that are already visible on the client (session_list_response replaces all
+              // sessions for this connection).
+              const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+              for (const remiId of [...managedIds]) {
+                const stored = sessionStore.findByRemiSessionId(remiId as UUID);
+                if (stored?.claudeSessionId) managedIds.add(stored.claudeSessionId);
+              }
+              const allSessions = [
+                ...sessionRegistry.listSessions(),
+                ...transcriptDiscovery.discoverSessions(managedIds),
+              ];
+              const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
+              registry.broadcast(msg);
+            } catch (err) {
+              log(
+                `[LiveSessions] Error pushing session update: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }, 300);
         },
       );
     } catch (err) {
