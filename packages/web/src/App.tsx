@@ -264,7 +264,7 @@ function App() {
             sender: newSender,
             content: resolvedContent,
             timestamp: structuredMsg.createdAt || message.timestamp,
-            state: 'delivered',
+            state: newSender === 'user' ? 'read' : 'delivered',
             isEditing: structuredMsg.isEditing,
             tool: structuredMsg.tool,
             entryUuid,
