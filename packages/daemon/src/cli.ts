@@ -1701,6 +1701,7 @@ async function createNewSession(
     // our own Claude fires. In that case, skip hook-based discovery and let the
     // mtime fallback handle it. For single-daemon directories (the common case),
     // accept the first event immediately.
+    let hasSiblingInDir = false; // Cached on first check; used to suppress cross-talk
     function initFromHookEvent(input: {
       session_id?: string;
       transcript_path?: string;
@@ -1709,18 +1710,15 @@ async function createNewSession(
       if (claudeSessionId) return;
       if (!input.session_id || !input.transcript_path) return;
 
-      const hasSibling = liveSessionsRegistry
+      hasSiblingInDir = liveSessionsRegistry
         .listLive()
         .some(
           (e) =>
             e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
         );
 
-      if (hasSibling) {
+      if (hasSiblingInDir) {
         // Cannot trust which Claude sent this event — defer to fallback
-        log(
-          `[Hooks] Sibling in same dir, deferring transcript to fallback (candidate: ${input.session_id})`,
-        );
         return;
       }
 
@@ -1766,29 +1764,36 @@ async function createNewSession(
       initFromHookEvent(input);
       handlers.onSessionStart?.(input);
     });
+    // Filter: accept events only from our own Claude. Before claudeSessionId is known,
+    // block events when siblings exist (they could be from sibling's Claude).
+    const filterBySession = (input: { session_id?: string }): boolean => {
+      if (claudeSessionId) return input.session_id === claudeSessionId;
+      return !hasSiblingInDir; // No sibling → events can only be ours
+    };
+
     hookServer.on('PreToolUse', (input) => {
       initFromHookEvent(input);
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      if (!filterBySession(input)) return;
       handlers.onPreToolUse?.(input);
     });
     hookServer.on('PostToolUse', (input) => {
       initFromHookEvent(input);
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      if (!filterBySession(input)) return;
       handlers.onPostToolUse?.(input);
     });
     hookServer.on('Notification', (input) => {
       initFromHookEvent(input);
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      if (!filterBySession(input)) return;
       handlers.onNotification?.(input);
     });
     hookServer.on('PermissionRequest', (input) => {
       initFromHookEvent(input);
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      if (!filterBySession(input)) return;
       handlers.onPermissionRequest?.(input);
     });
     hookServer.on('Stop', (input) => {
       initFromHookEvent(input);
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      if (!filterBySession(input)) return;
       handlers.onStop?.(input);
     });
 
