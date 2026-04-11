@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.23-p292.2'; // REMI_COMPILED_VERSION
+      return '0.4.23-p292.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.23-p292.2'; // REMI_COMPILED_VERSION
+    return '0.4.23-p292.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1861,23 +1861,15 @@ async function createNewSession(
       transcriptFallbackTimers.delete(sessionId);
       return;
     }
-    // Look for a transcript file created AFTER this daemon started (birthtimeMs check avoids
-    // picking up a sibling daemon's already-active file). Fall back to a 5-minute mtime
-    // window only when no other daemon is serving the same directory (handles restarts).
+    // Look for a transcript file that is actively being written to.
+    // Accept any transcript modified after daemon startup or within 5 minutes
+    // (handles daemon restarts and session resumption).
     const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
     const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
-        const createdAfterStart = stat.birthtimeMs >= startupTime;
-        const siblingInSameDir = liveSessionsRegistry
-          .listLive()
-          .some(
-            (e) =>
-              e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
-          );
-        const isRecentStale = !siblingInSameDir && Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
-        if (createdAfterStart || isRecentStale) {
+        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
           clearInterval(fallbackInterval);
           transcriptFallbackTimers.delete(sessionId);
           log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
@@ -1896,18 +1888,9 @@ async function createNewSession(
       if (transcriptPath) {
         try {
           const stat = fs.statSync(transcriptPath);
-          const createdAfterStart = stat.birthtimeMs >= startupTime;
-          const siblingInSameDir = liveSessionsRegistry
-            .listLive()
-            .some(
-              (e) =>
-                e.projectPath === workingDirectory &&
-                e.sessionId !== sessionId &&
-                e.wsPort !== PORT,
-            );
-          const isRecentStale =
-            !siblingInSameDir && Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
-          if (createdAfterStart || isRecentStale) {
+          const isRecent =
+            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
+          if (isRecent) {
             log('[Hooks] Transcript fallback: found recent transcript on final check.');
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
             extractClaudeSessionId(transcriptPath, sessionId);
