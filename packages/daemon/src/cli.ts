@@ -1533,6 +1533,9 @@ let hookConfigManager: HookConfigManager | null = null;
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
 
+// Watcher for live-sessions directory (pushes session list updates on new daemon startup)
+let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
+
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
@@ -2166,7 +2169,14 @@ const sharedEvents = {
     let allSessions = [...daemonSessions];
 
     if (includeExternal) {
-      const managedIds = new Set(sessionRegistry.getActiveSessionIds());
+      const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+      // Also exclude by Claude session ID (JSONL filename UUID — different namespace from remi IDs)
+      for (const remiId of [...managedIds]) {
+        const stored = sessionStore.findByRemiSessionId(remiId as UUID);
+        if (stored?.claudeSessionId) {
+          managedIds.add(stored.claudeSessionId);
+        }
+      }
       const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
       allSessions = [...daemonSessions, ...externalSessions];
     }
@@ -2813,6 +2823,10 @@ async function cleanup(): Promise<void> {
     clearInterval(timer);
   }
   transcriptFallbackTimers.clear();
+  if (liveSessionsWatcher) {
+    liveSessionsWatcher.close();
+    liveSessionsWatcher = null;
+  }
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
@@ -3154,6 +3168,26 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
     });
+
+    // Watch for new daemons registering in live-sessions and push updates to clients.
+    // This lets clients auto-connect when a sibling session starts in the same directory.
+    try {
+      liveSessionsWatcher = fs.watch(
+        liveSessionsRegistry.dirPath,
+        { persistent: false },
+        (_event) => {
+          const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+          if (newPorts.length === 0) return;
+          const daemonSessions = sessionRegistry.listSessions();
+          const msg = createSessionListResponse(daemonSessions, generateId() as UUID, newPorts);
+          registry.broadcast(msg);
+        },
+      );
+    } catch (err) {
+      log(
+        `[LiveSessions] Could not watch live-sessions dir: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Create and start the primary PTY session

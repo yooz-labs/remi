@@ -97,6 +97,19 @@ function updateSessionActivity(
   );
 }
 
+/** Append " (2)", " (3)", etc. to sessions that share the same display name.
+ *  The input array should already be sorted in priority order; the first session
+ *  with a given name keeps the bare name, subsequent ones are numbered. */
+function disambiguateSessions(sessions: UISession[]): UISession[] {
+  const counts = new Map<string, number>();
+  return sessions.map((s) => {
+    const base = s.name;
+    const n = (counts.get(base) ?? 0) + 1;
+    counts.set(base, n);
+    return n === 1 ? s : { ...s, name: `${base} (${n})` };
+  });
+}
+
 function App() {
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
@@ -420,16 +433,10 @@ function App() {
               canResume: showResume,
             };
           })
-          // Filter out transcript sessions that duplicate a daemon session
-          // from the SAME connection (same cwd, keep daemon version)
+          // Dedup: same session ID from daemon + transcript → keep daemon version.
+          // Different session IDs in the same cwd are kept (parallel/sequential sessions).
           .reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) {
-              acc.push(s);
-              return acc;
-            }
-            const existingIdx = acc.findIndex(
-              (other) => other.cwd === s.cwd && other.connectionId === s.connectionId,
-            );
+            const existingIdx = acc.findIndex((other) => other.id === s.id);
             if (existingIdx === -1) {
               acc.push(s);
               return acc;
@@ -476,33 +483,28 @@ function App() {
               }
             }
           }
-          // Cross-connection dedup: when two connections report the same
-          // project (same cwd), keep the daemon-sourced version (it routes
-          // to the correct daemon). Drop the transcript-sourced duplicate.
+          // Cross-connection dedup: same session ID from multiple connections →
+          // keep daemon-sourced version. Different IDs in same cwd → keep both.
           const deduped = result.reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) {
-              acc.push(s);
-              return acc;
-            }
-            const dupIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            const dupIdx = acc.findIndex((other) => other.id === s.id);
             if (dupIdx === -1) {
               acc.push(s);
               return acc;
             }
             const existing = acc[dupIdx];
-            // Prefer daemon over transcript source
             if (s.source === 'daemon' && existing.source !== 'daemon') {
               acc[dupIdx] = s;
             }
             return acc;
           }, []);
           // Sort: live first, then by last activity
-          return deduped.sort((a, b) => {
+          const sorted = deduped.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
             const bLive = b.connectionStatus === 'connected' ? 0 : 1;
             if (aLive !== bLive) return aLive - bLive;
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
+          return disambiguateSessions(sorted);
         });
 
         // Auto-connect to other daemon ports on the same machine.
