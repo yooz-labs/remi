@@ -162,7 +162,9 @@ export class WebSignalingClient {
   private peerRejoinLoop(): void {
     if (this.intentionallyClosed || this.state === 'connected') return;
     if (this.peerRejoinAttempts >= this.maxPeerRejoinAttempts) {
-      console.warn(`[SignalingClient] Peer rejoin attempts exhausted (${this.maxPeerRejoinAttempts})`);
+      console.warn(
+        `[SignalingClient] Peer rejoin attempts exhausted (${this.maxPeerRejoinAttempts})`,
+      );
       this.setState('disconnected');
       return;
     }

@@ -1,25 +1,101 @@
 @import "tailwindcss";
 
 /* Theme colors as @property so bare references work in Safari/WKWebView */
-@property --color-primary { syntax: "<color>"; inherits: true; initial-value: #0d9490; }
-@property --color-primary-dark { syntax: "<color>"; inherits: true; initial-value: #0b7f7a; }
-@property --color-surface { syntax: "<color>"; inherits: true; initial-value: #1a1d21; }
-@property --color-surface-light { syntax: "<color>"; inherits: true; initial-value: #242830; }
-@property --color-surface-elevated { syntax: "<color>"; inherits: true; initial-value: #2e323a; }
-@property --color-text { syntax: "<color>"; inherits: true; initial-value: #f0f2f5; }
-@property --color-text-secondary { syntax: "<color>"; inherits: true; initial-value: #9ca3af; }
-@property --color-text-muted { syntax: "<color>"; inherits: true; initial-value: #6b7280; }
-@property --color-border { syntax: "<color>"; inherits: true; initial-value: #343840; }
-@property --color-success { syntax: "<color>"; inherits: true; initial-value: #34d399; }
-@property --color-warning { syntax: "<color>"; inherits: true; initial-value: #f59e0b; }
-@property --color-error { syntax: "<color>"; inherits: true; initial-value: #ef4444; }
-@property --color-bubble-user { syntax: "<color>"; inherits: true; initial-value: #0d9490; }
-@property --color-bubble-assistant { syntax: "<color>"; inherits: true; initial-value: #2e323a; }
-@property --color-bubble-system { syntax: "<color>"; inherits: true; initial-value: #1e3a5f; }
-@property --color-status-sending { syntax: "<color>"; inherits: true; initial-value: #9ca3af; }
-@property --color-status-sent { syntax: "<color>"; inherits: true; initial-value: #38bdf8; }
-@property --color-status-delivered { syntax: "<color>"; inherits: true; initial-value: #34d399; }
-@property --color-status-read { syntax: "<color>"; inherits: true; initial-value: #0d9490; }
+@property --color-primary {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #0d9490;
+}
+@property --color-primary-dark {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #0b7f7a;
+}
+@property --color-surface {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #1a1d21;
+}
+@property --color-surface-light {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #242830;
+}
+@property --color-surface-elevated {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #2e323a;
+}
+@property --color-text {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #f0f2f5;
+}
+@property --color-text-secondary {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #9ca3af;
+}
+@property --color-text-muted {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #6b7280;
+}
+@property --color-border {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #343840;
+}
+@property --color-success {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #34d399;
+}
+@property --color-warning {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #f59e0b;
+}
+@property --color-error {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #ef4444;
+}
+@property --color-bubble-user {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #0d9490;
+}
+@property --color-bubble-assistant {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #2e323a;
+}
+@property --color-bubble-system {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #1e3a5f;
+}
+@property --color-status-sending {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #9ca3af;
+}
+@property --color-status-sent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #38bdf8;
+}
+@property --color-status-delivered {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #34d399;
+}
+@property --color-status-read {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #0d9490;
+}
 
 /* Theme variables */
 @theme {

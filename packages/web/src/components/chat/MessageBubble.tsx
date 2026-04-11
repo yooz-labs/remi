@@ -5,7 +5,6 @@
  */
 
 import type { UIBullet, UIMessage } from '@/types';
-import type { ViewMode } from './ChatView';
 import type { TranscriptContentBlock } from '@remi/shared/protocol.ts';
 import type { MessageState } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
@@ -23,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { ChatMessage, InlineMarkdown } from './ChatMessage';
+import type { ViewMode } from './ChatView';
 
 interface MessageBubbleProps {
   readonly message: UIMessage;
@@ -131,7 +131,9 @@ function ToolChip({ block }: { readonly block: TranscriptContentBlock }) {
         } else if (name === 'Grep' || name === 'grep_search') {
           summary = `Grep ${input.pattern || '...'}`;
         }
-      } catch { /* use plain name */ }
+      } catch {
+        /* use plain name */
+      }
     }
     return (
       <div className="my-1 flex items-center gap-1.5 rounded-md bg-[var(--color-surface-light)] px-2 py-1 text-xs text-[var(--color-text-muted)]">
@@ -155,7 +157,10 @@ function ToolChip({ block }: { readonly block: TranscriptContentBlock }) {
           )}
         >
           {block.isError ? <AlertCircle className="size-3" /> : <FileText className="size-3" />}
-          <span>{block.isError ? 'Error' : 'Output'}{block.toolName ? `: ${block.toolName}` : ''}</span>
+          <span>
+            {block.isError ? 'Error' : 'Output'}
+            {block.toolName ? `: ${block.toolName}` : ''}
+          </span>
           <ChevronDown className={clsx('size-3 transition-transform', expanded && 'rotate-180')} />
         </button>
         {expanded && block.toolOutput && (
@@ -198,7 +203,12 @@ function MessageContent({
     return (
       <div className="space-y-2">
         {message.bullets!.map((bullet) => (
-          <BulletItem key={bullet.bulletId} bullet={bullet} isUser={isUser} onExpand={onBulletExpand} />
+          <BulletItem
+            key={bullet.bulletId}
+            bullet={bullet}
+            isUser={isUser}
+            onExpand={onBulletExpand}
+          />
         ))}
       </div>
     );

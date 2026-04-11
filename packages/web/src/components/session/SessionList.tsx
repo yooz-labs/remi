@@ -9,7 +9,16 @@
 import type { ConnectionId, ConnectionState, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { AlertTriangle, ChevronDown, ChevronRight, Link2, Link2Off, Loader2, MessageSquarePlus, Settings } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Link2,
+  Link2Off,
+  Loader2,
+  MessageSquarePlus,
+  Settings,
+} from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { SessionCard } from './SessionCard';
 
@@ -62,9 +71,7 @@ export function SessionList({
 
   const hasConnections = connections.length > 0;
   // Derive display name from first connection (hostname without port)
-  const hostLabel = hasConnections
-    ? connections[0].connectionId.replace(/:\d+$/, '')
-    : null;
+  const hostLabel = hasConnections ? connections[0].connectionId.replace(/:\d+$/, '') : null;
 
   return (
     <div className={clsx('flex h-full flex-col bg-[var(--color-surface)]', className)}>
@@ -73,9 +80,7 @@ export function SessionList({
         <div className="flex items-center gap-2">
           <h1 className="text-lg font-semibold text-[var(--color-text)]">Remi</h1>
           {hostLabel && (
-            <span className="text-sm text-[var(--color-text-muted)]">
-              on {hostLabel}
-            </span>
+            <span className="text-sm text-[var(--color-text-muted)]">on {hostLabel}</span>
           )}
         </div>
         <div className="flex items-center gap-1">
@@ -109,34 +114,35 @@ export function SessionList({
       </header>
 
       {/* Connection status banners */}
-      {hasConnections && connections.some((c) => c.status === 'error' || c.status === 'reconnecting') && (
-        <div className="border-b border-[var(--color-border)] px-3 py-2 space-y-1">
-          {connections
-            .filter((c) => c.status === 'error' || c.status === 'reconnecting')
-            .map((c) => (
-              <div
-                key={c.connectionId}
-                className={clsx(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-xs',
-                  c.status === 'error'
-                    ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]'
-                    : 'bg-[var(--color-warning,#f59e0b)]/10 text-[var(--color-warning,#f59e0b)]',
-                )}
-              >
-                {c.status === 'error' ? (
-                  <AlertTriangle className="size-3.5 shrink-0" />
-                ) : (
-                  <Loader2 className="size-3.5 shrink-0 animate-spin" />
-                )}
-                <span className="truncate">
-                  {c.status === 'reconnecting'
-                    ? `Reconnecting to ${c.connectionId}...`
-                    : c.error || `Connection error: ${c.connectionId}`}
-                </span>
-              </div>
-            ))}
-        </div>
-      )}
+      {hasConnections &&
+        connections.some((c) => c.status === 'error' || c.status === 'reconnecting') && (
+          <div className="border-b border-[var(--color-border)] px-3 py-2 space-y-1">
+            {connections
+              .filter((c) => c.status === 'error' || c.status === 'reconnecting')
+              .map((c) => (
+                <div
+                  key={c.connectionId}
+                  className={clsx(
+                    'flex items-center gap-2 rounded-lg px-3 py-2 text-xs',
+                    c.status === 'error'
+                      ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]'
+                      : 'bg-[var(--color-warning,#f59e0b)]/10 text-[var(--color-warning,#f59e0b)]',
+                  )}
+                >
+                  {c.status === 'error' ? (
+                    <AlertTriangle className="size-3.5 shrink-0" />
+                  ) : (
+                    <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                  )}
+                  <span className="truncate">
+                    {c.status === 'reconnecting'
+                      ? `Reconnecting to ${c.connectionId}...`
+                      : c.error || `Connection error: ${c.connectionId}`}
+                  </span>
+                </div>
+              ))}
+          </div>
+        )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto safe-area-bottom">
@@ -204,7 +210,11 @@ export function SessionList({
                   onClick={() => setShowRecent(!showRecent)}
                   className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--color-text-muted)]"
                 >
-                  {showRecent ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                  {showRecent ? (
+                    <ChevronDown className="size-3.5" />
+                  ) : (
+                    <ChevronRight className="size-3.5" />
+                  )}
                   Recent ({recentSessions.length})
                 </button>
                 {showRecent && (

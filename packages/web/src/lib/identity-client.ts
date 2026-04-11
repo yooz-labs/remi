@@ -7,7 +7,13 @@
  */
 
 import type { KnownHost, RemiIdentity, UnlockedIdentity } from '@remi/shared';
-import { createIdentity, deserializeIdentity, isEncrypted, serializeIdentity, unlockIdentity } from '@remi/shared';
+import {
+  createIdentity,
+  deserializeIdentity,
+  isEncrypted,
+  serializeIdentity,
+  unlockIdentity,
+} from '@remi/shared';
 
 export type { KnownHost };
 

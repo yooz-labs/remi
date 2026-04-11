@@ -5,8 +5,8 @@
  * render iOS-specific or web-specific UI.
  */
 
-import { useMemo } from 'react';
 import { type Platform, getPlatform, isAndroid, isIOS, isNative, isWeb } from '@/lib/platform';
+import { useMemo } from 'react';
 
 interface PlatformInfo {
   readonly platform: Platform;

@@ -5,6 +5,36 @@ Document failed attempts, dead ends, and lessons learned during development.
 
 ---
 
+## CRITICAL: wss:// vs https:// — APNS push silently broken (fixed v0.4.22-dev.12)
+
+**Symptom:** Push notifications never arrived. Daemon logged `Push notification failed: TypeError [ERR_INVALID_ARG_VALUE]: protocol must be http:, https: or s3:` on every attempt. Went unnoticed because the error was caught and logged but not surfaced to the user.
+
+**Root cause:** The signaling URL is stored and passed as `wss://remi-signaling.yooz.workers.dev` (WebSocket protocol). `sendPushTrigger` passed it directly to `new URL(baseUrl).origin`, which preserves the `wss://` scheme. The resulting fetch URL was `wss://remi-signaling.yooz.workers.dev/push` — an invalid HTTP URL.
+
+**Fix:** Normalize at the top of any function that makes HTTP calls using a signaling URL:
+```typescript
+const baseUrl = rawUrl.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
+```
+
+**Rule:** The signaling URL is a WebSocket URL. Any code making HTTP calls to the signaling server MUST normalize the protocol first. Never assume the caller passes the right scheme.
+
+---
+
+## CRITICAL: WebCrypto ECDSA sign() returns raw r||s, NOT DER (fixed v0.4.22-dev.12)
+
+**Symptom:** APNS returned `403 InvalidProviderToken` on every push attempt. JWT was being generated and sent but Apple rejected it.
+
+**Root cause:** `crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, ...)` returns a **64-byte raw r||s signature** (IEEE P1363 format). The code assumed it returned DER-encoded output and applied a DER→raw conversion, corrupting the already-valid signature.
+
+**Fix:** Use the signature bytes directly — no conversion needed:
+```typescript
+const encodedSignature = base64UrlEncode(new Uint8Array(signature));
+```
+
+**Rule:** Never apply DER conversion to WebCrypto ECDSA output. This applies to Bun AND Cloudflare Workers — both return raw 64-byte IEEE P1363 format per the W3C spec. DER output is a Node.js `crypto` (not SubtleCrypto) behavior.
+
+---
+
 ## Lessons from Muxer (Swift iOS) Development
 
 ### Lesson: Terminal Parsing is Hard
