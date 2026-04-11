@@ -1431,6 +1431,9 @@ const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_le
 const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
 // Telegram disabled: multi-daemon 409 conflicts (issue #285). Re-enable when addressed.
 const TELEGRAM_ENABLED = false;
+if (TELEGRAM_TOKEN) {
+  console.warn('[Telegram] Telegram notifications are currently disabled (multi-daemon conflict)');
+}
 const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
@@ -1771,13 +1774,19 @@ async function createNewSession(
         }
         if (hasSiblingInDir) return;
 
-        claudeSessionId = hookClaudeSessionId;
-        log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
-        sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+        try {
+          claudeSessionId = hookClaudeSessionId;
+          log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
+          sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
 
-        // Start transcript watcher immediately using the path from the hook
-        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
-          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+          if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+          }
+        } catch (err) {
+          logError(
+            `[Hooks] onSessionInfo failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          claudeSessionId = null;
         }
       },
     });
@@ -1975,8 +1984,10 @@ async function createNewSession(
           extractClaudeSessionId(transcriptPath, sessionId);
           return;
         }
-      } catch {
-        /* stat failed, retry */
+      } catch (err) {
+        log(
+          `[Hooks] Fallback stat failed for ${transcriptPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     // Give up after 30 seconds
