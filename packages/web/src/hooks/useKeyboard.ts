@@ -6,9 +6,9 @@
  * Returns a no-op on non-native platforms (early-returns from the effect).
  */
 
+import { isNative } from '@/lib/platform';
 import { Keyboard } from '@capacitor/keyboard';
 import { useEffect, useState } from 'react';
-import { isNative } from '@/lib/platform';
 
 interface KeyboardState {
   readonly isVisible: boolean;
@@ -35,8 +35,12 @@ export function useKeyboard(): KeyboardState {
     hideListener.catch((err) => console.warn('[useKeyboard] hide listener failed:', err));
 
     return () => {
-      showListener.then((h) => h.remove()).catch((err) => console.warn('[useKeyboard] cleanup show:', err));
-      hideListener.then((h) => h.remove()).catch((err) => console.warn('[useKeyboard] cleanup hide:', err));
+      showListener
+        .then((h) => h.remove())
+        .catch((err) => console.warn('[useKeyboard] cleanup show:', err));
+      hideListener
+        .then((h) => h.remove())
+        .catch((err) => console.warn('[useKeyboard] cleanup hide:', err));
     };
   }, []);
 

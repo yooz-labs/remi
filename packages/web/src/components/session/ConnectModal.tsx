@@ -7,16 +7,7 @@
 
 import type { ConnectionStatus } from '@/types';
 import { clsx } from 'clsx';
-import {
-  AlertCircle,
-  CheckCircle2,
-  Globe,
-  Key,
-  Loader2,
-  Monitor,
-  Shield,
-  X,
-} from 'lucide-react';
+import { AlertCircle, CheckCircle2, Globe, Key, Loader2, Monitor, Shield, X } from 'lucide-react';
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react';
 
 interface ConnectModalProps {
@@ -131,9 +122,7 @@ function PassphraseView({
     try {
       await onSubmit(passphrase);
     } catch (err) {
-      setPassphraseError(
-        err instanceof Error ? err.message : 'Failed to unlock identity',
-      );
+      setPassphraseError(err instanceof Error ? err.message : 'Failed to unlock identity');
       setPassphrase('');
       inputRef.current?.focus();
     } finally {
@@ -170,9 +159,7 @@ function PassphraseView({
       </div>
 
       <label className="block">
-        <span className="mb-1 block text-sm text-[var(--color-text-secondary)]">
-          Passphrase
-        </span>
+        <span className="mb-1 block text-sm text-[var(--color-text-secondary)]">Passphrase</span>
         <input
           ref={inputRef}
           type="password"
@@ -207,11 +194,7 @@ function PassphraseView({
             : 'cursor-not-allowed bg-[var(--color-primary)]/50',
         )}
       >
-        {isSubmitting ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <Key className="size-4" />
-        )}
+        {isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Key className="size-4" />}
         {isSubmitting ? 'Unlocking...' : 'Unlock & Authenticate'}
       </button>
     </form>
@@ -231,8 +214,8 @@ export function ConnectModal({
   onPassphraseSubmit,
 }: ConnectModalProps) {
   const [mode, setMode] = useState<ConnectionMode>('local');
-  const [host, setHost] = useState(() =>
-    localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost',
+  const [host, setHost] = useState(
+    () => localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost',
   );
   const [code, setCode] = useState('');
   const hostInputRef = useRef<HTMLInputElement>(null);
@@ -376,8 +359,8 @@ export function ConnectModal({
                 />
               </label>
               <p className="text-xs text-[var(--color-text-muted)]">
-                Connect to discover active Claude sessions on this host.
-                Use hostname:port for non-default ports.
+                Connect to discover active Claude sessions on this host. Use hostname:port for
+                non-default ports.
               </p>
             </div>
           )}
@@ -392,7 +375,9 @@ export function ConnectModal({
                 <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
               </label>
               <p className="text-xs text-[var(--color-text-muted)]">
-                Enter the 8-digit code from <span className="font-mono text-[var(--color-text-secondary)]">remi code</span> for remote access.
+                Enter the 8-digit code from{' '}
+                <span className="font-mono text-[var(--color-text-secondary)]">remi code</span> for
+                remote access.
               </p>
             </div>
           )}
@@ -403,7 +388,8 @@ export function ConnectModal({
               className={clsx(
                 'mt-4 flex items-center gap-2 rounded-lg p-3',
                 error && 'bg-[var(--color-error)]/10 text-[var(--color-error)]',
-                (isConnecting || isAuthenticating) && 'bg-[var(--color-warning)]/10 text-[var(--color-warning)]',
+                (isConnecting || isAuthenticating) &&
+                  'bg-[var(--color-warning)]/10 text-[var(--color-warning)]',
                 isConnected && 'bg-[var(--color-success)]/10 text-[var(--color-success)]',
               )}
             >

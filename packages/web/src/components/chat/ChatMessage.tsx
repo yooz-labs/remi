@@ -20,19 +20,19 @@ interface ChatMessageProps {
 }
 
 /** Fenced code block with copy button */
-function CodeBlock({
-  language,
-  code,
-}: { readonly language: string; readonly code: string }) {
+function CodeBlock({ language, code }: { readonly language: string; readonly code: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch((err) => {
-      console.warn('Failed to copy to clipboard:', err);
-    });
+    navigator.clipboard
+      .writeText(code)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch((err) => {
+        console.warn('Failed to copy to clipboard:', err);
+      });
   }, [code]);
 
   return (
@@ -70,31 +70,49 @@ function CodeBlock({
 /** Markdown renderer components for react-markdown */
 const markdownComponents = {
   h1: ({ children, ...props }: React.ComponentProps<'h1'>) => (
-    <h1 className="text-lg font-bold mb-2 mt-3 text-[var(--color-text)]" {...props}>{children}</h1>
+    <h1 className="text-lg font-bold mb-2 mt-3 text-[var(--color-text)]" {...props}>
+      {children}
+    </h1>
   ),
   h2: ({ children, ...props }: React.ComponentProps<'h2'>) => (
-    <h2 className="text-base font-bold mb-1.5 mt-2.5 text-[var(--color-text)]" {...props}>{children}</h2>
+    <h2 className="text-base font-bold mb-1.5 mt-2.5 text-[var(--color-text)]" {...props}>
+      {children}
+    </h2>
   ),
   h3: ({ children, ...props }: React.ComponentProps<'h3'>) => (
-    <h3 className="text-sm font-bold mb-1 mt-2 text-[var(--color-text)]" {...props}>{children}</h3>
+    <h3 className="text-sm font-bold mb-1 mt-2 text-[var(--color-text)]" {...props}>
+      {children}
+    </h3>
   ),
   p: ({ children, ...props }: React.ComponentProps<'p'>) => (
-    <p className="mb-2 last:mb-0" {...props}>{children}</p>
+    <p className="mb-2 last:mb-0" {...props}>
+      {children}
+    </p>
   ),
   ul: ({ children, ...props }: React.ComponentProps<'ul'>) => (
-    <ul className="mb-2 ml-4 list-disc space-y-0.5" {...props}>{children}</ul>
+    <ul className="mb-2 ml-4 list-disc space-y-0.5" {...props}>
+      {children}
+    </ul>
   ),
   ol: ({ children, ...props }: React.ComponentProps<'ol'>) => (
-    <ol className="mb-2 ml-4 list-decimal space-y-0.5" {...props}>{children}</ol>
+    <ol className="mb-2 ml-4 list-decimal space-y-0.5" {...props}>
+      {children}
+    </ol>
   ),
   li: ({ children, ...props }: React.ComponentProps<'li'>) => (
-    <li className="text-sm leading-relaxed" {...props}>{children}</li>
+    <li className="text-sm leading-relaxed" {...props}>
+      {children}
+    </li>
   ),
   strong: ({ children, ...props }: React.ComponentProps<'strong'>) => (
-    <strong className="font-semibold" {...props}>{children}</strong>
+    <strong className="font-semibold" {...props}>
+      {children}
+    </strong>
   ),
   em: ({ children, ...props }: React.ComponentProps<'em'>) => (
-    <em className="italic" {...props}>{children}</em>
+    <em className="italic" {...props}>
+      {children}
+    </em>
   ),
   a: ({ children, href, ...props }: React.ComponentProps<'a'>) => (
     <a
@@ -120,25 +138,30 @@ const markdownComponents = {
   ),
   table: ({ children, ...props }: React.ComponentProps<'table'>) => (
     <div className="my-2 overflow-x-auto">
-      <table className="w-full text-xs border-collapse" {...props}>{children}</table>
+      <table className="w-full text-xs border-collapse" {...props}>
+        {children}
+      </table>
     </div>
   ),
   th: ({ children, ...props }: React.ComponentProps<'th'>) => (
-    <th className="border border-[var(--color-border)] bg-[var(--color-surface-light)] px-2 py-1 text-left font-semibold" {...props}>
+    <th
+      className="border border-[var(--color-border)] bg-[var(--color-surface-light)] px-2 py-1 text-left font-semibold"
+      {...props}
+    >
       {children}
     </th>
   ),
   td: ({ children, ...props }: React.ComponentProps<'td'>) => (
-    <td className="border border-[var(--color-border)] px-2 py-1" {...props}>{children}</td>
+    <td className="border border-[var(--color-border)] px-2 py-1" {...props}>
+      {children}
+    </td>
   ),
   code: ({ children, className, ...props }: React.ComponentProps<'code'>) => {
     const match = /language-(\w+)/.exec(className || '');
     const isBlock = !!(className && match);
 
     if (isBlock) {
-      return (
-        <CodeBlock language={match?.[1] || ''} code={String(children).replace(/\n$/, '')} />
-      );
+      return <CodeBlock language={match?.[1] || ''} code={String(children).replace(/\n$/, '')} />;
     }
 
     return (
@@ -170,13 +193,22 @@ const userMarkdownComponents = {
       return <CodeBlock language={match[1] || ''} code={String(children).replace(/\n$/, '')} />;
     }
     return (
-      <code className="rounded px-1.5 py-0.5 text-[0.85em] font-[family-name:--font-mono] bg-white/15" {...props}>
+      <code
+        className="rounded px-1.5 py-0.5 text-[0.85em] font-[family-name:--font-mono] bg-white/15"
+        {...props}
+      >
         {children}
       </code>
     );
   },
   a: ({ children, href, ...props }: React.ComponentProps<'a'>) => (
-    <a href={href} className="underline underline-offset-2" target="_blank" rel="noopener noreferrer" {...props}>
+    <a
+      href={href}
+      className="underline underline-offset-2"
+      target="_blank"
+      rel="noopener noreferrer"
+      {...props}
+    >
       {children}
     </a>
   ),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseContent, type ContentSegment } from '../../src/lib/parse-content';
+import { type ContentSegment, parseContent } from '../../src/lib/parse-content';
 
 describe('parseContent', () => {
   test('returns empty array for empty string', () => {
@@ -26,9 +26,7 @@ describe('parseContent', () => {
   describe('fenced code blocks', () => {
     test('parses code block without language', () => {
       const result = parseContent('```\nconsole.log("hi")\n```');
-      expect(result).toEqual([
-        { type: 'code_block', language: '', code: 'console.log("hi")' },
-      ]);
+      expect(result).toEqual([{ type: 'code_block', language: '', code: 'console.log("hi")' }]);
     });
 
     test('parses code block with language', () => {
@@ -177,13 +175,15 @@ describe('parseContent', () => {
 
       // Verify ordered list items exist
       const orderedItems = result.filter(
-        (s) => s.type === 'list_item' && (s as Extract<ContentSegment, { type: 'list_item' }>).ordered,
+        (s) =>
+          s.type === 'list_item' && (s as Extract<ContentSegment, { type: 'list_item' }>).ordered,
       );
       expect(orderedItems.length).toBe(2);
 
       // Verify unordered list items exist
       const unorderedItems = result.filter(
-        (s) => s.type === 'list_item' && !(s as Extract<ContentSegment, { type: 'list_item' }>).ordered,
+        (s) =>
+          s.type === 'list_item' && !(s as Extract<ContentSegment, { type: 'list_item' }>).ordered,
       );
       expect(unorderedItems.length).toBe(2);
     });

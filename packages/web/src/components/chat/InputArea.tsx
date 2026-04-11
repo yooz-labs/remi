@@ -4,8 +4,8 @@
  * Chat input with expanding textarea, send button, and quick actions.
  */
 
-import type { UIQuestion } from '@/types';
 import { hapticImpact } from '@/lib/haptics';
+import type { UIQuestion } from '@/types';
 import { clsx } from 'clsx';
 import { Send, StopCircle } from 'lucide-react';
 import {
@@ -44,7 +44,8 @@ function QuickResponse({
         'rounded-full px-4 py-2 text-sm font-medium transition-colors',
         variant === 'default' &&
           'bg-[var(--color-surface-elevated)] text-[var(--color-text)] hover:bg-[var(--color-surface-light)]',
-        variant === 'primary' && 'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)]',
+        variant === 'primary' &&
+          'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)]',
         variant === 'danger' &&
           'bg-[var(--color-error)]/10 text-[var(--color-error)] hover:bg-[var(--color-error)]/20',
       )}
