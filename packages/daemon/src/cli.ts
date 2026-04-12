@@ -1584,8 +1584,11 @@ let primarySessionId: UUID | null = null;
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications (persists across connection/disconnection)
-const deviceTokens = new Map<string, { token: string; platform: string; registeredAt: number }>();
+// Device tokens for push notifications (cleaned up on disconnect; re-registered on reconnect)
+const deviceTokens = new Map<
+  string,
+  { token: string; platform: string; registeredAt: number; connectionId: UUID }
+>();
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1676,8 +1679,12 @@ async function createNewSession(
         sendAndRecord(msg);
         sessionRegistry.updateQuestion(questionSessionId, question);
 
-        // Always push to registered devices — iOS silences if user disabled notifications
-        if (deviceTokens.size > 0) {
+        // Push to registered devices only when no client is actively viewing the session.
+        // If a client is attached, they see the question in the UI; no push needed.
+        const sessionForPush = sessionRegistry.getSession(questionSessionId);
+        const hasActiveClient =
+          sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
+        if (deviceTokens.size > 0 && !hasActiveClient) {
           const session = sessionRegistry.getSession(sessionId);
           const sessionName = session?.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
@@ -2267,6 +2274,16 @@ const sharedEvents = {
     log(`Client disconnected: ${connectionId}`);
     log(`   Reason: ${reason}`);
 
+    // Remove device tokens registered by this connection so push
+    // notifications stop after explicit disconnect. The client
+    // re-registers on reconnect, so this is safe.
+    for (const [key, dt] of deviceTokens) {
+      if (dt.connectionId === connectionId) {
+        deviceTokens.delete(key);
+        log(`Device token unregistered (disconnect): ${key.slice(0, 20)}...`);
+      }
+    }
+
     // Explicitly remove from waiting queue, then detach if active.
     // detachConnection also handles waiting removal, but this ensures
     // cleanup even if detachConnection's early-return path changes.
@@ -2590,7 +2607,7 @@ const sharedEvents = {
 
   onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string) => {
     log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
-    deviceTokens.set(token, { token, platform, registeredAt: Date.now() });
+    deviceTokens.set(token, { token, platform, registeredAt: Date.now(), connectionId });
   },
 
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
