@@ -148,10 +148,16 @@ export class AmbiguousSessionError extends Error {
 /**
  * Resolve a session by name or ID from query results.
  *
- * Resolution order: exact name -> prefix name -> exact ID -> prefix ID.
- * Throws `AmbiguousSessionError` if multiple matches exist at any resolution
- * level (exact name, prefix name, or prefix ID). Multiple exact ID matches
- * fall through to prefix ID matching (UUID collisions are near-impossible).
+ * Resolution order:
+ * 1. Exact name match
+ * 2. Prefix name match
+ * 3. Exact ID match
+ * 4. Prefix ID match
+ * 5. Stripped name match (hostname prefix removed, exact then prefix)
+ * 6. Branch segment match (after last `/`, exact then prefix)
+ * 7. Contains match (substring anywhere in name)
+ *
+ * Throws `AmbiguousSessionError` if multiple matches exist at any level.
  * Returns null if no match found.
  */
 export function resolveSession(
