@@ -48,48 +48,10 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
     console.warn('[Notifications] Local permission request failed:', err);
   }
 
-  // Register local notification action types. These mirror the UNNotificationCategory
-  // objects in AppDelegate.swift so that local notifications (including foreground
-  // re-creations of push notifications) show the same action buttons.
-  try {
-    await LocalNotifications.registerActionTypes({
-      types: [
-        {
-          id: 'REMI_YN',
-          actions: [
-            { id: 'OPT_0', title: 'Yes' },
-            { id: 'OPT_1', title: 'No', destructive: true },
-          ],
-        },
-        {
-          id: 'REMI_YNA',
-          actions: [
-            { id: 'OPT_0', title: 'Yes' },
-            { id: 'OPT_1', title: 'Yes, always' },
-            { id: 'OPT_2', title: 'No', destructive: true },
-          ],
-        },
-        {
-          id: 'REMI_MULTI',
-          actions: [
-            { id: 'OPT_0', title: 'Option 1' },
-            { id: 'OPT_1', title: 'Option 2' },
-            { id: 'OPT_2', title: 'Option 3' },
-            { id: 'OPT_3', title: 'Option 4' },
-          ],
-        },
-        {
-          id: 'QUESTION',
-          actions: [
-            { id: 'OPT_0', title: 'Yes' },
-            { id: 'OPT_1', title: 'No', destructive: true },
-          ],
-        },
-      ],
-    });
-  } catch (err) {
-    console.warn('[Notifications] Failed to register action types:', err);
-  }
+  // NOTE: Notification action types (REMI_YN, REMI_YNA, REMI_MULTI) are registered
+  // natively in AppDelegate.swift with .authenticationRequired. Do NOT call
+  // LocalNotifications.registerActionTypes() here; it uses setNotificationCategories
+  // which is a replace-all operation and would strip the native auth requirement.
 
   // Register for push notifications (APNS token)
   try {
