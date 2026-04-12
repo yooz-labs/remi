@@ -47,8 +47,10 @@ export class HookEventBridge {
   private readonly mergeWindowMs: number;
   /** Timestamp of last PermissionRequest that emitted immediately (had suggestions) */
   private lastImmediatePermissionAt = 0;
+  /** Timestamp of last timer-fallback question emitted; suppresses late Notification duplicates */
+  private lastFallbackPermissionAt = 0;
 
-  constructor(sessionId: UUID, events: HookBridgeEvents, mergeWindowMs = 200) {
+  constructor(sessionId: UUID, events: HookBridgeEvents, mergeWindowMs = 1500) {
     this.sessionId = sessionId;
     this.events = events;
     this.mergeWindowMs = mergeWindowMs;
@@ -93,6 +95,10 @@ export class HookEventBridge {
       } else if (Date.now() - this.lastImmediatePermissionAt < 2000) {
         // PermissionRequest already emitted with multi-choice options; suppress
         // this duplicate Notification
+        return;
+      } else if (Date.now() - this.lastFallbackPermissionAt < this.mergeWindowMs * 2) {
+        // Timer-fallback already emitted a question for this PermissionRequest; suppress
+        // late-arriving Notification to avoid a second push notification
         return;
       } else {
         // No pending PermissionRequest; standalone Notification
@@ -168,8 +174,10 @@ export class HookEventBridge {
       // Wait briefly for Notification(permission_prompt) which carries the full
       // numbered options text (e.g. "1) Yes\n2) Yes, always\n3) No").
       const timer = setTimeout(() => {
-        // Notification didn't arrive in time; emit Yes/No fallback
+        // Notification didn't arrive in time; emit Yes/No fallback.
+        // Record timestamp so a late-arriving Notification is suppressed.
         this.pendingPermission = null;
+        this.lastFallbackPermissionAt = Date.now();
         this.events.onQuestion(this.buildPermissionQuestion(promptText));
         this.events.onStatusChange('waiting');
       }, this.mergeWindowMs);
