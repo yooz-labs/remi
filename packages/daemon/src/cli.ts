@@ -46,6 +46,17 @@ let logFd: number | null = null;
 // Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
 let ptyStdoutFd: number | null = null;
 
+/**
+ * Select the APNS notification category based on the number of question options.
+ * iOS will render action buttons matching the category; watchOS mirrors them automatically.
+ */
+function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
+  if (options.length === 2) return 'REMI_YN';
+  if (options.length === 3) return 'REMI_YNA';
+  if (options.length === 4) return 'REMI_MULTI';
+  return undefined;
+}
+
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
 }
@@ -249,6 +260,7 @@ import {
 import type {
   AgentStatus,
   ProtocolMessage,
+  QuestionOption,
   RecentDirectory,
   UUID,
   UnlockedIdentity,
@@ -1670,12 +1682,17 @@ async function createNewSession(
           const sessionName = session?.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
           const pushSessionId = primarySessionId ?? sessionId;
+          const pushCategory = selectPushCategory(question.options);
+          const pushOptions = question.options.map((o) => o.value);
           for (const dt of deviceTokens.values()) {
             sendPushTrigger(signalingUrl, dt.token, {
               title: `${sessionName} needs input`,
               body: question.text.slice(0, 100),
               ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
               sessionId: pushSessionId,
+              questionId: question.id,
+              ...(pushCategory !== undefined ? { category: pushCategory } : {}),
+              ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
             })
               .then(() => log(`Push notification sent for session ${pushSessionId}`))
               .catch((err) => log(`Push notification failed: ${err}`));
@@ -2280,15 +2297,19 @@ const sharedEvents = {
     }
   },
 
-  onAnswer: async (connectionId: UUID, _questionId: UUID, answer: string) => {
-    log(`Answer from ${connectionId}: ${answer}`);
+  onAnswer: async (connectionId: UUID, sessionId: UUID, _questionId: UUID, answer: string) => {
+    log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
 
-    const session = sessionRegistry.getSessionForConnection(connectionId);
+    // Prefer lookup by sessionId (from push-action answers) so reconnected clients
+    // can answer even before the connection is fully mapped in the registry.
+    const session =
+      sessionRegistry.getSession(sessionId) ??
+      sessionRegistry.getSessionForConnection(connectionId);
     if (session) {
       await session.pty.submitInput(answer);
       sessionRegistry.updateQuestion(session.sessionId, null);
     } else {
-      log(`No session found for connection ${connectionId}`);
+      log(`No session found for connection ${connectionId} or session ${sessionId}`);
     }
   },
 

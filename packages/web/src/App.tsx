@@ -23,9 +23,11 @@ import type {
   UISession,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
+  createAnswer,
   createDetachSession,
   createRegisterDeviceToken,
   generateId,
@@ -823,6 +825,101 @@ function App() {
     return () => document.removeEventListener('push-notification-tap', handleNotificationTap);
   }, []);
 
+  // Stable refs for push-answer handler (avoids stale closures; connectDirectRef already declared above)
+  const pushAnswerSendRef = useRef(cmSendMessage);
+  useEffect(() => {
+    pushAnswerSendRef.current = cmSendMessage;
+  }, [cmSendMessage]);
+
+  // Handle push notification action button taps (lock screen / Apple Watch)
+  useEffect(() => {
+    const handlePushAnswer = async (e: Event) => {
+      const { sessionId, questionId, answer } = (
+        e as CustomEvent<{ sessionId: string; questionId: string; answer: string }>
+      ).detail;
+      if (!sessionId || !questionId || !answer) return;
+
+      // Find the session in our session list to get its connectionId
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      const connectionId = session?.connectionId;
+
+      // Check if the connection is already live
+      const conn = connectionId
+        ? connectionsRef.current.find((c) => c.connectionId === connectionId)
+        : undefined;
+      const isConnected = conn?.status === 'connected';
+
+      if (isConnected && connectionId) {
+        // Already connected — send immediately
+        pushAnswerSendRef.current(
+          connectionId,
+          createAnswer(sessionId as UUID, questionId as UUID, answer),
+        );
+        return;
+      }
+
+      // Not connected; try to reconnect using the stored URL
+      const connUrl = (conn as { url?: string } | undefined)?.url;
+      if (!connUrl) {
+        // No URL available — notify user that answer could not be delivered
+        LocalNotifications.schedule({
+          notifications: [
+            {
+              title: 'Answer not delivered',
+              body: 'Open Remi to respond to the question.',
+              id: (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000),
+              schedule: { at: new Date() },
+            },
+          ],
+        }).catch(() => undefined);
+        return;
+      }
+
+      // Attempt reconnect with 10s timeout
+      const targetConnId = connectDirectRef.current(connUrl);
+      const ANSWER_TIMEOUT_MS = 10_000;
+      const deadline = Date.now() + ANSWER_TIMEOUT_MS;
+      const delivered = await new Promise<boolean>((resolve) => {
+        const check = setInterval(() => {
+          const live = connectionsRef.current.find((c) => c.connectionId === targetConnId);
+          if (live?.status === 'connected') {
+            clearInterval(check);
+            const sent = pushAnswerSendRef.current(
+              targetConnId,
+              createAnswer(sessionId as UUID, questionId as UUID, answer),
+            );
+            resolve(sent);
+          } else if (Date.now() >= deadline) {
+            clearInterval(check);
+            resolve(false);
+          }
+        }, 250);
+      });
+
+      if (!delivered) {
+        LocalNotifications.schedule({
+          notifications: [
+            {
+              title: 'Answer not delivered',
+              body: 'Open Remi to respond to the question.',
+              id: (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000),
+              schedule: { at: new Date() },
+            },
+          ],
+        }).catch(() => undefined);
+      }
+    };
+
+    const listener = (e: Event) => {
+      handlePushAnswer(e).catch((err) =>
+        console.error('[App] push-notification-answer handler error:', err),
+      );
+    };
+    document.addEventListener('push-notification-answer', listener);
+    return () => document.removeEventListener('push-notification-answer', listener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
@@ -921,7 +1018,7 @@ function App() {
 
       // If there's an active question, send as answer
       if (sessionQuestion) {
-        const sent = sendAnswer(connId, sessionQuestion.id, content);
+        const sent = sendAnswer(connId, activeSessionId, sessionQuestion.id, content);
         if (!sent) {
           const failMsg: UIMessage = {
             id: generateId(),

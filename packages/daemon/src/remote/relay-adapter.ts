@@ -258,7 +258,12 @@ export class RelayAdapter implements ConnectionAdapter {
           console.warn('Invalid answer payload: missing questionId or answer');
           return;
         }
-        this.events.onAnswer?.(connectionId, msg['questionId'], msg['answer']);
+        this.events.onAnswer?.(
+          connectionId,
+          typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '',
+          msg['questionId'],
+          msg['answer'],
+        );
         break;
       case 'session_list_request':
         if (typeof msg['id'] !== 'string') {

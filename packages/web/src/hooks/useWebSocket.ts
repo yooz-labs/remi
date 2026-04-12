@@ -18,6 +18,7 @@ import type { UnlockedIdentity } from '@remi/shared';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
+  createAnswer,
   createBulletExpandRequest,
   createCreateSessionRequest,
   createHello,
@@ -27,8 +28,6 @@ import {
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
-  generateId,
-  now,
 } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -46,7 +45,7 @@ export interface UseWebSocketReturn {
   /** Send user input */
   sendInput: (sessionId: UUID, content: string) => boolean;
   /** Send an answer to a question */
-  sendAnswer: (questionId: UUID, answer: string) => boolean;
+  sendAnswer: (sessionId: UUID, questionId: UUID, answer: string) => boolean;
   /** Send raw message */
   sendMessage: (message: ProtocolMessage) => boolean;
   /** Request full content for a truncated bullet */
@@ -408,16 +407,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   }, []);
 
   // Send answer to a question
-  const sendAnswer = useCallback((questionId: UUID, answer: string): boolean => {
+  const sendAnswer = useCallback((sessionId: UUID, questionId: UUID, answer: string): boolean => {
     if (!clientRef.current) return false;
-    const msg: ProtocolMessage = {
-      type: 'answer',
-      id: generateId(),
-      timestamp: now(),
-      questionId,
-      answer,
-    };
-    return clientRef.current.send(msg);
+    return clientRef.current.send(createAnswer(sessionId, questionId, answer));
   }, []);
 
   // Send raw message

@@ -31,7 +31,7 @@ export interface AdapterEvents {
   onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
 
   /** Answer to question received */
-  onAnswer: (connectionId: UUID, questionId: UUID, answer: string) => void;
+  onAnswer: (connectionId: UUID, sessionId: UUID, questionId: UUID, answer: string) => void;
 
   /** Bullet expand request received */
   onBulletExpandRequest: (

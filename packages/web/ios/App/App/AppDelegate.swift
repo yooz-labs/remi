@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import UserNotifications
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -13,7 +14,53 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window.rootViewController = vc
         window.makeKeyAndVisible()
         self.window = window
+        registerNotificationCategories()
         return true
+    }
+
+    /// Register UNNotificationCategory objects for lock-screen / Apple Watch action buttons.
+    /// Capacitor owns UNUserNotificationCenter.delegate; do NOT override it here.
+    private func registerNotificationCategories() {
+        let auth: UNNotificationActionOptions = [.authenticationRequired]
+        let dest: UNNotificationActionOptions = [.authenticationRequired, .destructive]
+
+        // Two-option: Yes / No
+        let yn = UNNotificationCategory(
+            identifier: "REMI_YN",
+            actions: [
+                UNNotificationAction(identifier: "OPT_0", title: "Yes", options: auth),
+                UNNotificationAction(identifier: "OPT_1", title: "No",  options: dest),
+            ],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // Three-option: Yes / Yes, always / No
+        let yna = UNNotificationCategory(
+            identifier: "REMI_YNA",
+            actions: [
+                UNNotificationAction(identifier: "OPT_0", title: "Yes",         options: auth),
+                UNNotificationAction(identifier: "OPT_1", title: "Yes, always", options: auth),
+                UNNotificationAction(identifier: "OPT_2", title: "No",          options: dest),
+            ],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // Four-option: generic multi-choice (titles overridden at runtime by action data)
+        let multi = UNNotificationCategory(
+            identifier: "REMI_MULTI",
+            actions: [
+                UNNotificationAction(identifier: "OPT_0", title: "Option 1", options: auth),
+                UNNotificationAction(identifier: "OPT_1", title: "Option 2", options: auth),
+                UNNotificationAction(identifier: "OPT_2", title: "Option 3", options: auth),
+                UNNotificationAction(identifier: "OPT_3", title: "Option 4", options: auth),
+            ],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        UNUserNotificationCenter.current().setNotificationCategories([yn, yna, multi])
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
