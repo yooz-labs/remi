@@ -107,7 +107,7 @@ export interface LsClientOptions {
 
 export async function runLsClient(opts: LsClientOptions): Promise<void> {
   const sessions = await fetchSessions(opts.host, opts.port, opts.timeout);
-  renderSessionList(sessions, opts.port);
+  renderSessionList(sessions.map((session) => ({ session, port: opts.port })));
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,8 @@ export async function runHostLs(opts: HostLsOptions): Promise<void> {
 
   // Single port: render flat list (same as --host --port)
   if (results.length === 1) {
-    renderSessionList(allSessions, results[0]?.port);
+    const port = results[0]?.port ?? 0;
+    renderSessionList(allSessions.map((session) => ({ session, port })));
     return;
   }
 
@@ -543,36 +544,65 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
-function renderSessionList(sessions: readonly DiscoverableSession[], port?: number): void {
-  if (sessions.length === 0) {
+export interface SessionWithPort {
+  readonly session: DiscoverableSession;
+  readonly port: number;
+}
+
+function renderSessionList(entries: readonly SessionWithPort[]): void {
+  if (entries.length === 0) {
     console.log('No active sessions. Start one with: remi [claude-args...]');
     return;
   }
 
-  if (port !== undefined) {
-    console.log(`Daemon port: ${port}`);
+  const uniquePorts = new Set(entries.map((e) => e.port));
+  const multiPort = uniquePorts.size > 1;
+
+  if (!multiPort) {
+    console.log(`Daemon port: ${entries[0]?.port}`);
   }
 
-  // Fixed columns: STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 38
-  const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 38);
-  const header = `${'NAME'.padEnd(nameCol)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
-  console.log(header);
-  console.log('-'.repeat(header.length));
+  if (multiPort) {
+    // Fixed columns: PORT(8) + STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 46
+    const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 46);
+    const header = `${'NAME'.padEnd(nameCol)}${'PORT'.padEnd(8)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    console.log(header);
+    console.log('-'.repeat(header.length));
 
-  for (const s of sessions) {
-    const rawName = s.name ?? path.basename(s.projectPath);
-    const maxLen = nameCol - 2;
-    const name = rawName.length > maxLen ? `${rawName.slice(0, maxLen - 3)}...` : rawName;
-    const duration = formatDuration(s.createdAt);
-    const lastAct = formatAge(s.lastActivity);
-    const mark = s.canAttach ? ' *' : '';
+    for (const { session: s, port } of entries) {
+      const rawName = s.name ?? path.basename(s.projectPath);
+      const maxLen = nameCol - 2;
+      const name = rawName.length > maxLen ? `${rawName.slice(0, maxLen - 3)}...` : rawName;
+      const duration = formatDuration(s.createdAt);
+      const lastAct = formatAge(s.lastActivity);
+      const mark = s.canAttach ? ' *' : '';
 
-    console.log(
-      `${name.padEnd(nameCol)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
-    );
+      console.log(
+        `${name.padEnd(nameCol)}${String(port).padEnd(8)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+      );
+    }
+  } else {
+    // Fixed columns: STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 38
+    const nameCol = Math.max(MIN_NAME_WIDTH, getTerminalWidth() - 38);
+    const header = `${'NAME'.padEnd(nameCol)}${'STATUS'.padEnd(12)}${'DURATION'.padStart(10)}${'LAST ACTIVITY'.padStart(16)}`;
+    console.log(header);
+    console.log('-'.repeat(header.length));
+
+    for (const { session: s } of entries) {
+      const rawName = s.name ?? path.basename(s.projectPath);
+      const maxLen = nameCol - 2;
+      const name = rawName.length > maxLen ? `${rawName.slice(0, maxLen - 3)}...` : rawName;
+      const duration = formatDuration(s.createdAt);
+      const lastAct = formatAge(s.lastActivity);
+      const mark = s.canAttach ? ' *' : '';
+
+      console.log(
+        `${name.padEnd(nameCol)}${s.status.padEnd(12)}${duration.padStart(10)}${lastAct.padStart(16)}${mark}`,
+      );
+    }
   }
 
-  const attachable = sessions.filter((s) => s.canAttach);
+  const attachable = entries.filter((e) => e.session.canAttach);
   if (attachable.length > 0) {
     console.log('');
     console.log(
@@ -631,11 +661,11 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
       timeoutMs: timeout,
       logLabel: 'ls',
     });
-    const fallbackSessions = fallbackResults.flatMap((r) => r.sessions);
-    if (fallbackSessions.length > 0) {
-      const uniquePorts = new Set(fallbackResults.map((r) => r.port));
-      const sharedPort = uniquePorts.size === 1 ? fallbackResults[0]?.port : undefined;
-      renderSessionList(fallbackSessions, sharedPort);
+    const fallbackEntries = fallbackResults.flatMap((r) =>
+      r.sessions.map((session) => ({ session, port: r.port })),
+    );
+    if (fallbackEntries.length > 0) {
+      renderSessionList(fallbackEntries);
       return;
     }
     console.log('No active sessions. Start one with: remi [claude-args...]');
@@ -649,10 +679,10 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
     logLabel: 'ls',
   });
 
-  const allSessions: DiscoverableSession[] = results.flatMap((r) => r.sessions);
-  const uniquePorts = new Set(results.map((r) => r.port));
-  const sharedPort = uniquePorts.size === 1 ? results[0]?.port : undefined;
-  renderSessionList(allSessions, sharedPort);
+  const allEntries: SessionWithPort[] = results.flatMap((r) =>
+    r.sessions.map((session) => ({ session, port: r.port })),
+  );
+  renderSessionList(allEntries);
 }
 
 /**
