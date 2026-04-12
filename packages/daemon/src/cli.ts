@@ -894,23 +894,41 @@ if (cliSubcommand === 'kill') {
     process.exit(1);
   }
   let resolvedPort = resolved.port;
+  let killTarget = resolved.targetId;
 
   const { runKillClient } = await import('./cli/kill-client.ts');
   try {
     // Resolve port by querying all local daemon ports (session may be on any daemon)
     if (!cliPort && resolved.host === 'localhost') {
-      const allPorts = liveSessionsRegistry.getLivePorts();
+      const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
+      let allPorts = liveSessionsRegistry.getLivePorts();
+
+      // Fallback: probe default port range when registry is empty (matches ls behavior)
+      if (allPorts.length === 0) {
+        const { getDefaultPortRange } = await import('./cli/ls-client.ts');
+        allPorts = getDefaultPortRange();
+      }
+
       if (allPorts.length > 0) {
-        const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
         const results = await queryMultiplePorts({
           host: 'localhost',
           ports: allPorts,
           timeoutMs: 5000,
           logLabel: 'kill',
         });
-        const match = resolveSession(results, resolved.targetId);
+
+        if (results.length === 0) {
+          console.error(
+            `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
+          );
+          process.exit(1);
+        }
+
+        const match = resolveSession(results, killTarget);
         if (match) {
           resolvedPort = match.port;
+          // Use session ID directly to avoid TOCTOU race
+          killTarget = match.session.sessionId;
         }
       }
     }
@@ -918,7 +936,7 @@ if (cliSubcommand === 'kill') {
     await runKillClient({
       host: resolved.host,
       port: resolvedPort,
-      target: resolved.targetId,
+      target: killTarget,
     });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -941,14 +959,34 @@ if (cliSubcommand === 'detach') {
   }
 
   let resolvedPort = resolved.port;
+  let detachTarget = resolved.targetId;
 
-  // Resolve port from live registry if target matches a known local session
+  // Resolve port by querying all local daemon ports (session may be on any daemon)
   if (!cliPort && resolved.host === 'localhost') {
-    const liveMatch =
-      liveSessionsRegistry.findByName(resolved.targetId) ??
-      liveSessionsRegistry.findBySessionId(resolved.targetId);
-    if (liveMatch) {
-      resolvedPort = liveMatch.wsPort;
+    const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
+    let allPorts = liveSessionsRegistry.getLivePorts();
+    if (allPorts.length === 0) {
+      const { getDefaultPortRange } = await import('./cli/ls-client.ts');
+      allPorts = getDefaultPortRange();
+    }
+    if (allPorts.length > 0) {
+      const results = await queryMultiplePorts({
+        host: 'localhost',
+        ports: allPorts,
+        timeoutMs: 5000,
+        logLabel: 'detach',
+      });
+      if (results.length === 0) {
+        console.error(
+          `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
+        );
+        process.exit(1);
+      }
+      const match = resolveSession(results, detachTarget);
+      if (match) {
+        resolvedPort = match.port;
+        detachTarget = match.session.sessionId;
+      }
     }
   }
 
@@ -957,7 +995,7 @@ if (cliSubcommand === 'detach') {
     await runDetachClient({
       host: resolved.host,
       port: resolvedPort,
-      target: resolved.targetId,
+      target: detachTarget,
     });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
