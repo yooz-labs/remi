@@ -107,7 +107,7 @@ export interface LsClientOptions {
 
 export async function runLsClient(opts: LsClientOptions): Promise<void> {
   const sessions = await fetchSessions(opts.host, opts.port, opts.timeout);
-  renderSessionList(sessions);
+  renderSessionList(sessions, opts.port);
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ export async function runHostLs(opts: HostLsOptions): Promise<void> {
 
   // Single port: render flat list (same as --host --port)
   if (results.length === 1) {
-    renderSessionList(allSessions);
+    renderSessionList(allSessions, results[0]?.port);
     return;
   }
 
@@ -165,7 +165,8 @@ export async function runHostLs(opts: HostLsOptions): Promise<void> {
   for (const r of results) {
     for (const s of r.sessions) {
       const rawName = s.name ?? path.basename(s.projectPath);
-      const name = rawName.slice(0, nameCol - 2);
+      const maxLen = nameCol - 2;
+      const name = rawName.length > maxLen ? `${rawName.slice(0, maxLen - 3)}...` : rawName;
       const port = String(r.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
@@ -492,7 +493,8 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 
     for (const { daemon, session: s } of group.entries) {
       const rawName = s.name ?? path.basename(s.projectPath);
-      const name = rawName.slice(0, netNameCol - 2);
+      const maxLen = netNameCol - 2;
+      const name = rawName.length > maxLen ? `${rawName.slice(0, maxLen - 3)}...` : rawName;
       const port = String(daemon.port);
       const duration = formatDuration(s.createdAt);
       const lastAct = formatAge(s.lastActivity);
@@ -541,10 +543,14 @@ function renderNetworkSessionList(results: DaemonSessions[]): void {
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
-function renderSessionList(sessions: readonly DiscoverableSession[]): void {
+function renderSessionList(sessions: readonly DiscoverableSession[], port?: number): void {
   if (sessions.length === 0) {
     console.log('No active sessions. Start one with: remi [claude-args...]');
     return;
+  }
+
+  if (port !== undefined) {
+    console.log(`Daemon port: ${port}`);
   }
 
   // Fixed columns: STATUS(12) + DURATION(10) + LAST ACTIVITY(16) = 38
@@ -555,7 +561,8 @@ function renderSessionList(sessions: readonly DiscoverableSession[]): void {
 
   for (const s of sessions) {
     const rawName = s.name ?? path.basename(s.projectPath);
-    const name = rawName.slice(0, nameCol - 2);
+    const maxLen = nameCol - 2;
+    const name = rawName.length > maxLen ? `${rawName.slice(0, maxLen - 3)}...` : rawName;
     const duration = formatDuration(s.createdAt);
     const lastAct = formatAge(s.lastActivity);
     const mark = s.canAttach ? ' *' : '';
@@ -626,7 +633,9 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
     });
     const fallbackSessions = fallbackResults.flatMap((r) => r.sessions);
     if (fallbackSessions.length > 0) {
-      renderSessionList(fallbackSessions);
+      const uniquePorts = new Set(fallbackResults.map((r) => r.port));
+      const sharedPort = uniquePorts.size === 1 ? fallbackResults[0]?.port : undefined;
+      renderSessionList(fallbackSessions, sharedPort);
       return;
     }
     console.log('No active sessions. Start one with: remi [claude-args...]');
@@ -641,7 +650,9 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
   });
 
   const allSessions: DiscoverableSession[] = results.flatMap((r) => r.sessions);
-  renderSessionList(allSessions);
+  const uniquePorts = new Set(results.map((r) => r.port));
+  const sharedPort = uniquePorts.size === 1 ? results[0]?.port : undefined;
+  renderSessionList(allSessions, sharedPort);
 }
 
 /**

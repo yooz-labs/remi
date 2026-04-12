@@ -254,6 +254,115 @@ describe('resolveSession', () => {
     expect(resolved).not.toBeNull();
     expect(resolved?.session.sessionId).toBe(id);
   });
+
+  // Strategy 5: Stripped name (hostname removed)
+  test('resolves by stripped name (hostname prefix removed)', () => {
+    const results = [makeQueryResult('localhost', 18765, [makeSession('yahyas-mcm:remi/develop')])];
+    const resolved = resolveSession(results, 'remi/develop');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('yahyas-mcm:remi/develop');
+  });
+
+  test('resolves by stripped name prefix', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('yahyas-mcm:remi/develop'),
+        makeSession('yahyas-mcm:other-project/main'),
+      ]),
+    ];
+    const resolved = resolveSession(results, 'remi/dev');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('yahyas-mcm:remi/develop');
+  });
+
+  test('throws AmbiguousSessionError on ambiguous stripped name', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('host-a:remi/develop'),
+        makeSession('host-b:remi/develop'),
+      ]),
+    ];
+    expect(() => resolveSession(results, 'remi/develop')).toThrow(AmbiguousSessionError);
+  });
+
+  // Strategy 6: Branch segment match
+  test('resolves by branch segment (after last slash)', () => {
+    const results = [makeQueryResult('localhost', 18765, [makeSession('yahyas-mcm:remi/develop')])];
+    const resolved = resolveSession(results, 'develop');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('yahyas-mcm:remi/develop');
+  });
+
+  test('resolves by branch segment prefix', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('yahyas-mcm:remi/285-bug-multiple-sessions'),
+      ]),
+    ];
+    const resolved = resolveSession(results, '285-bug');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('yahyas-mcm:remi/285-bug-multiple-sessions');
+  });
+
+  test('throws AmbiguousSessionError on ambiguous branch segment', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('host:project-a/develop'),
+        makeSession('host:project-b/develop'),
+      ]),
+    ];
+    expect(() => resolveSession(results, 'develop')).toThrow(AmbiguousSessionError);
+  });
+
+  // Strategy 7: Contains match
+  test('resolves by contains match', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('yahyas-mcm:remi/285-bug-multiple-sessions-in-same-directory-get-confused'),
+      ]),
+    ];
+    const resolved = resolveSession(results, 'multiple-sessions');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe(
+      'yahyas-mcm:remi/285-bug-multiple-sessions-in-same-directory-get-confused',
+    );
+  });
+
+  test('throws AmbiguousSessionError on ambiguous contains match', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('yahyas-mcm:remi/285-bug-sessions-a'),
+        makeSession('yahyas-mcm:remi/285-bug-sessions-b'),
+      ]),
+    ];
+    expect(() => resolveSession(results, '285-bug')).toThrow(AmbiguousSessionError);
+  });
+
+  test('contains match skips sessions with undefined name', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession(undefined),
+        makeSession('yahyas-mcm:remi/feature-branch'),
+      ]),
+    ];
+    const resolved = resolveSession(results, 'feature');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('yahyas-mcm:remi/feature-branch');
+  });
+
+  // Existing strategies still take priority
+  test('exact name match takes priority over stripped name', () => {
+    const results = [
+      makeQueryResult('localhost', 18765, [
+        makeSession('remi/develop'),
+        makeSession('yahyas-mcm:remi/develop'),
+      ]),
+    ];
+    // "remi/develop" is an exact name match for the first session
+    const resolved = resolveSession(results, 'remi/develop');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.session.name).toBe('remi/develop');
+  });
 });
 
 // ---------------------------------------------------------------------------
