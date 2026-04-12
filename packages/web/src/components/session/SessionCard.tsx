@@ -13,15 +13,15 @@ import { Link2, Link2Off, MessageCircleQuestion, RotateCcw } from 'lucide-react'
 
 /** Strip hostname prefix and truncate branch for display.
  *  "yahyas-mcm:remi/develop" -> "remi/develop"
- *  "remi/very-long-branch-name-here" -> "remi/very-long-br..."
+ *  "remi/very-long-branch-name-here" -> "remi/very-long..."
  */
 function formatSessionName(name: string): string {
   // Strip hostname: prefix (everything before the first colon that's followed by non-digit)
   let display = name.replace(/^[^:]+:/, '');
-  // Truncate branch part if too long (keep folder, limit branch to 15 chars)
+  // Truncate branch part if too long (keep folder, limit branch to 10 chars)
   const slashIdx = display.indexOf('/');
-  if (slashIdx >= 0 && display.length > slashIdx + 16) {
-    display = `${display.slice(0, slashIdx + 16)}...`;
+  if (slashIdx >= 0 && display.length > slashIdx + 11) {
+    display = `${display.slice(0, slashIdx + 11)}...`;
   }
   return display || name;
 }
