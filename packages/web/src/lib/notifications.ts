@@ -45,6 +45,49 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
     console.warn('[Notifications] Local permission request failed:', err);
   }
 
+  // Register local notification action types. These mirror the UNNotificationCategory
+  // objects in AppDelegate.swift so that local notifications (including foreground
+  // re-creations of push notifications) show the same action buttons.
+  try {
+    await LocalNotifications.registerActionTypes({
+      types: [
+        {
+          id: 'REMI_YN',
+          actions: [
+            { id: 'OPT_0', title: 'Yes' },
+            { id: 'OPT_1', title: 'No', destructive: true },
+          ],
+        },
+        {
+          id: 'REMI_YNA',
+          actions: [
+            { id: 'OPT_0', title: 'Yes' },
+            { id: 'OPT_1', title: 'Yes, always' },
+            { id: 'OPT_2', title: 'No', destructive: true },
+          ],
+        },
+        {
+          id: 'REMI_MULTI',
+          actions: [
+            { id: 'OPT_0', title: 'Option 1' },
+            { id: 'OPT_1', title: 'Option 2' },
+            { id: 'OPT_2', title: 'Option 3' },
+            { id: 'OPT_3', title: 'Option 4' },
+          ],
+        },
+        {
+          id: 'QUESTION',
+          actions: [
+            { id: 'OPT_0', title: 'Yes' },
+            { id: 'OPT_1', title: 'No', destructive: true },
+          ],
+        },
+      ],
+    });
+  } catch (err) {
+    console.warn('[Notifications] Failed to register action types:', err);
+  }
+
   // Register for push notifications (APNS token)
   try {
     const pushResult = await PushNotifications.requestPermissions();
@@ -63,22 +106,36 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
       console.warn('[Notifications] Push registration failed:', err.error);
     });
 
-    // Handle incoming push notifications (when app is in foreground)
+    // Handle incoming push notifications (when app is in foreground).
+    // Re-create as a local notification, forwarding the APNS category and
+    // custom data so that action buttons appear and work correctly.
     await PushNotifications.addListener('pushNotificationReceived', (notification) => {
-      // Show as local notification since the app is in foreground
-      if (localPermissionGranted) {
-        LocalNotifications.schedule({
-          notifications: [
-            {
-              title: notification.title ?? 'Remi',
-              body: notification.body ?? 'Your agent needs attention',
-              id: nextNotificationId(),
-              schedule: { at: new Date() },
-              ...(soundEnabled ? { sound: 'default' } : {}),
-            },
-          ],
-        }).catch((err) => console.warn('[Notifications] Failed to show push as local:', err));
+      if (!localPermissionGranted) return;
+      const data = (notification.data ?? {}) as Record<string, string>;
+
+      // Determine actionTypeId: prefer the explicit category field mirrored
+      // into custom data by the signaling server; fall back to counting opt_N keys.
+      let actionTypeId: string | undefined = data['category'];
+      if (!actionTypeId) {
+        const optCount = Object.keys(data).filter((k) => k.startsWith('opt_')).length;
+        if (optCount === 2) actionTypeId = 'REMI_YN';
+        else if (optCount === 3) actionTypeId = 'REMI_YNA';
+        else if (optCount === 4) actionTypeId = 'REMI_MULTI';
       }
+
+      LocalNotifications.schedule({
+        notifications: [
+          {
+            title: notification.title ?? 'Remi',
+            body: notification.body ?? 'Your agent needs attention',
+            id: nextNotificationId(),
+            schedule: { at: new Date() },
+            ...(soundEnabled ? { sound: 'default' } : {}),
+            ...(actionTypeId ? { actionTypeId } : {}),
+            extra: data,
+          },
+        ],
+      }).catch((err) => console.warn('[Notifications] Failed to show push as local:', err));
     });
 
     // Handle notification action tap (action buttons or plain tap)
@@ -111,6 +168,39 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
     });
   } catch (err) {
     console.warn('[Notifications] Push registration setup failed:', err);
+  }
+
+  // Handle action button taps on local notifications (including foreground
+  // re-creations of push notifications). Mirrors the push action handler above.
+  try {
+    await LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
+      const data = (action.notification.extra ?? {}) as Record<string, string>;
+      const actionId: string = action.actionId ?? '';
+      console.debug('[Notifications] Local notification action:', actionId, data);
+
+      if (actionId.startsWith('OPT_')) {
+        const optKey = actionId.toLowerCase();
+        const answerValue = data[optKey];
+        if (answerValue !== undefined && data['sessionId'] && data['questionId']) {
+          document.dispatchEvent(
+            new CustomEvent('push-notification-answer', {
+              detail: {
+                sessionId: data['sessionId'],
+                questionId: data['questionId'],
+                answer: answerValue,
+              },
+            }),
+          );
+        } else {
+          console.warn('[Notifications] Local action tap missing data:', { optKey, data });
+        }
+      } else {
+        // Default tap (notification body)
+        document.dispatchEvent(new CustomEvent('push-notification-tap', { detail: data }));
+      }
+    });
+  } catch (err) {
+    console.warn('[Notifications] Local action listener setup failed:', err);
   }
 
   return localPermissionGranted;

@@ -182,6 +182,11 @@ export default {
         });
       }
       const category = body.category && body.category.length > 0 ? body.category : undefined;
+      // Mirror category into custom data so foreground handlers can read it
+      // without digging into the aps dict (Capacitor exposes data, not aps).
+      if (category) {
+        data['category'] = category;
+      }
 
       let result: { success: boolean; error?: string };
       try {
