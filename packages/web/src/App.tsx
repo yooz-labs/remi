@@ -897,7 +897,7 @@ function App() {
       let connUrl = conn?.url;
       if (!connUrl) {
         try {
-          const stored = localStorage.getItem('remi-connections');
+          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
           if (stored) {
             const urls: string[] = JSON.parse(stored);
             if (urls.length > 0) {
@@ -916,7 +916,11 @@ function App() {
 
       // Check if a connection to this URL is already being established (e.g. auto-connect on mount)
       const existingConn = connectionsRef.current.find(
-        (c) => c.url === connUrl && (c.status === 'connecting' || c.status === 'authenticating'),
+        (c) =>
+          c.url === connUrl &&
+          (c.status === 'connecting' ||
+            c.status === 'authenticating' ||
+            c.status === 'reconnecting'),
       );
       const targetConnId = existingConn
         ? existingConn.connectionId
