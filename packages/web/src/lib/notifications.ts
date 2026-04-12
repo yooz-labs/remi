@@ -81,13 +81,33 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
       }
     });
 
-    // Handle notification tap (when user taps a push notification to open the app)
+    // Handle notification action tap (action buttons or plain tap)
     await PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
-      const data = action.notification.data;
-      console.debug('[Notifications] Push notification tapped:', data);
-      // Dispatch a custom event so App.tsx can navigate to the relevant session
-      const event = new CustomEvent('push-notification-tap', { detail: data });
-      document.dispatchEvent(event);
+      const data = action.notification.data as Record<string, string>;
+      const actionId: string = action.actionIdentifier ?? '';
+      console.debug('[Notifications] Push notification action:', actionId, data);
+
+      if (actionId.startsWith('OPT_')) {
+        // Lock-screen / Apple Watch action button tapped
+        const optKey = actionId.toLowerCase(); // 'opt_0', 'opt_1', etc.
+        const answerValue = data[optKey];
+        if (answerValue !== undefined && data['sessionId'] && data['questionId']) {
+          document.dispatchEvent(
+            new CustomEvent('push-notification-answer', {
+              detail: {
+                sessionId: data['sessionId'],
+                questionId: data['questionId'],
+                answer: answerValue,
+              },
+            }),
+          );
+        } else {
+          console.warn('[Notifications] Action tap missing data:', { optKey, data });
+        }
+      } else {
+        // Default tap (notification body) — navigate to session
+        document.dispatchEvent(new CustomEvent('push-notification-tap', { detail: data }));
+      }
     });
   } catch (err) {
     console.warn('[Notifications] Push registration setup failed:', err);

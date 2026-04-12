@@ -39,6 +39,12 @@ interface PushRequestBody {
   body?: string;
   /** Remi session UUID; included in APNS custom data for notification tap navigation */
   sessionId?: string;
+  /** Question UUID so the client can send the right answer back */
+  questionId?: string;
+  /** APNS notification category identifier for action buttons */
+  category?: string;
+  /** Answer values for action buttons: mapped to opt_0, opt_1, ... in APNS data */
+  options?: string[];
   /** Reserved for future per-request sandbox override; daemon does not send this today */
   sandbox?: boolean;
 }
@@ -161,14 +167,34 @@ export default {
       // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
       // override — the daemon does not send it today (payload is Record<string, string>).
       const sandbox = env.APNS_SANDBOX === 'true' || body.sandbox === true;
-      // Custom data for notification tap navigation; reject empty strings to avoid unroutable taps
-      const data: Record<string, string> | undefined =
-        body.sessionId && body.sessionId.length > 0 ? { sessionId: body.sessionId } : undefined;
+      // Build custom data for notification payload (sibling to aps).
+      // Include sessionId, questionId, and per-option answer values (opt_0, opt_1, ...).
+      const data: Record<string, string> = {};
+      if (body.sessionId && body.sessionId.length > 0) {
+        data['sessionId'] = body.sessionId;
+      }
+      if (body.questionId && body.questionId.length > 0) {
+        data['questionId'] = body.questionId;
+      }
+      if (Array.isArray(body.options)) {
+        body.options.forEach((val, idx) => {
+          data[`opt_${idx}`] = String(val);
+        });
+      }
+      const category = body.category && body.category.length > 0 ? body.category : undefined;
 
       let result: { success: boolean; error?: string };
       try {
         result = await sendApnsPush(
-          { token: body.token, title: body.title, body: body.body, bundleId, sandbox, data },
+          {
+            token: body.token,
+            title: body.title,
+            body: body.body,
+            bundleId,
+            sandbox,
+            data: Object.keys(data).length > 0 ? data : undefined,
+            category,
+          },
           { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
         );
       } catch (err) {

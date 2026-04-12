@@ -94,6 +94,7 @@ export {
   createPong,
   createError,
   createQuestion,
+  createAnswer,
   createSessionUpdate,
   createReplayBatch,
   createBulletExpandRequest,

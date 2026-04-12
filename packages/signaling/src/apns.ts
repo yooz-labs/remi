@@ -13,6 +13,8 @@ interface ApnsPayload {
   data?: Record<string, string>;
   /** Use APNS sandbox endpoint (development builds) */
   sandbox?: boolean;
+  /** UNNotificationCategory identifier for action buttons (lock screen / Watch) */
+  category?: string;
 }
 
 interface ApnsConfig {
@@ -55,6 +57,7 @@ export async function sendApnsPush(
         },
         sound: 'default',
         badge: 1,
+        ...(payload.category ? { category: payload.category } : {}),
       },
       ...(payload.data ? payload.data : {}),
     }),

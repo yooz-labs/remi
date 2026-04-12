@@ -197,6 +197,7 @@ export interface AnswerMessage {
   readonly type: 'answer';
   readonly id: UUID;
   readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
   readonly questionId: UUID;
   readonly answer: string;
 }
@@ -816,6 +817,20 @@ export function createQuestion(question: Question, sessionId?: UUID): QuestionMe
     timestamp: now(),
     question,
     ...(sessionId !== undefined && { sessionId }),
+  };
+}
+
+/**
+ * Create an answer message for a question.
+ */
+export function createAnswer(sessionId: UUID, questionId: UUID, answer: string): AnswerMessage {
+  return {
+    type: 'answer',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionId,
+    answer,
   };
 }
 
