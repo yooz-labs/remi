@@ -84,7 +84,7 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
     // Handle notification action tap (action buttons or plain tap)
     await PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
       const data = action.notification.data as Record<string, string>;
-      const actionId: string = action.actionIdentifier ?? '';
+      const actionId: string = action.actionId ?? '';
       console.debug('[Notifications] Push notification action:', actionId, data);
 
       if (actionId.startsWith('OPT_')) {
