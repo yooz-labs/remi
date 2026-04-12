@@ -57,7 +57,7 @@ bun run build && npx cap sync android && npx cap open android
 See `.context/notification-and-session-flow.md` for the full flow diagram.
 
 **Question sources** (daemon side):
-- HookEventBridge: merges PermissionRequest + Notification hook events from Claude Code
+- HookEventBridge: emits questions from PermissionRequest hooks; suppresses redundant Notification
 - OutputProcessor: PTY output parsing (fallback when hooks unavailable)
 
 **Notification channel**: APNS push only (no local notifications for questions).
@@ -68,9 +68,9 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 **Key constraints discovered from real logs** (2026-04-12 analysis):
 - Bash PermissionRequest: `permission_suggestions=undefined` (no suggestions)
 - Notification message: plain text "Claude needs your permission to use Bash" (no numbered options)
-- `parseNumberedOptions` on either message returns null; always falls back to Yes/No
 - Claude Code ALWAYS offers 3 options for permissions: Yes / Yes, always / No
 - The numbered option text appears only in terminal UI, NOT in hook events
+- HookEventBridge emits default 3-option set immediately; no parsing or merge timer needed
 - Signaling server must be redeployed after any changes to `packages/signaling/`
 
 **Question detection (PTY fallback)**:

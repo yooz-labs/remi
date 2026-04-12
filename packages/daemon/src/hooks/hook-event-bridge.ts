@@ -91,6 +91,9 @@ export class HookEventBridge {
     if (input.notification_type === 'permission_prompt') {
       // PermissionRequest already emitted the question; suppress duplicate.
       if (Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS) {
+        console.debug(
+          `[HookEventBridge] Suppressed duplicate Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
+        );
         return;
       }
       // Standalone Notification without a preceding PermissionRequest.
@@ -203,9 +206,6 @@ export class HookEventBridge {
   handleSessionEnd(_input: SessionEndHookInput): void {
     this.events.onStatusChange('idle');
   }
-
-  /** Clean up (no-op now, kept for interface compatibility) */
-  dispose(): void {}
 
   /** Extract a short summary from tool input for the question prompt. */
   private summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string | null {

@@ -29,7 +29,7 @@ Claude Code
           - Calls: messageApi.handleQuestion(question)
 ```
 
-### HookEventBridge Merge Logic (CURRENT - BUGGY)
+### HookEventBridge Merge Logic (PREVIOUS - fixed in PR #302)
 
 ```
 PermissionRequest fires
@@ -61,7 +61,7 @@ PermissionRequest fires
   |                            -> DUPLICATE (different ID from fallback)
 ```
 
-**BUG**: Two failure modes:
+**BUG (fixed in PR #302)**: Two failure modes:
 1. Timer fires first -> Yes/No fallback emitted -> Notification suppressed -> options LOST -> always Yes/No
 2. Timer fires first -> Notification arrives late (>3s) -> BOTH questions emitted -> duplicate
 
@@ -81,8 +81,8 @@ onQuestion callback (cli.ts:1666)
         Includes: category, opt_0..opt_N answer values
 ```
 
-**BUG**: NO dedup here. Every call sends BOTH WebSocket + push. If HookEventBridge
-calls onQuestion twice, user gets 2 WebSocket messages + 2 push notifications.
+Dedup is handled at the HookEventBridge level (5s window per instance).
+The bridge ensures only one question is emitted per permission prompt.
 
 ## 3. Client Receives Question
 
@@ -197,9 +197,9 @@ Client receives hello_ack (App.tsx:158)
 
 | Bug | Root Cause | Location | Fix Status |
 |-----|-----------|----------|------------|
-| Duplicate questions | HookEventBridge emits 2 questions with different IDs | daemon/hooks/hook-event-bridge.ts | NOT FIXED |
-| Always Yes/No | Timer fallback promptText has no numbered options | daemon/hooks/hook-event-bridge.ts | NOT FIXED |
-| No dedup on push | cli.ts onQuestion sends push for every call | daemon/cli.ts:1666 | NOT FIXED |
+| Duplicate questions | HookEventBridge emits 2 questions with different IDs | daemon/hooks/hook-event-bridge.ts | FIXED (PR #302) |
+| Always Yes/No | Timer fallback promptText has no numbered options | daemon/hooks/hook-event-bridge.ts | FIXED (PR #302) |
+| No dedup on push | cli.ts onQuestion sends push for every call | daemon/cli.ts onQuestion | FIXED (PR #302, bridge-level dedup) |
 | APNS buttons not showing | Signaling not deployed with category | signaling/src/index.ts | NOT DEPLOYED (deploy failed, last deploy Apr 10, category added Apr 12) |
 | Session restart old history | hello_ack doesn't switch activeSessionId | web/src/App.tsx | FIXED (PR #300) |
 | Foreground push duplicate | Push re-created as local when connected | web/src/lib/notifications.ts | PR #301 (low priority, APNS is the channel) |
@@ -277,18 +277,19 @@ Drop the merge window entirely. For ALL PermissionRequest events:
 For standalone Notifications (no preceding PermissionRequest):
 - Also emit with default ["Yes", "Yes, always", "No"] (don't parse message)
 
-### Changes Needed
+### Changes Made (PR #302)
 
 **hook-event-bridge.ts:**
-- Remove merge timer and pendingPermission
-- PermissionRequest without suggestions: emit immediately with 3 default options
-- Notification after recent emit: suppress (existing dedup logic, just widen window)
+- Removed merge timer, pendingPermission, buildMergedQuestion, parseNumberedOptions import
+- PermissionRequest: always emits immediately (suggestions or default 3-option set)
+- Notification after recent emit: suppressed (5s dedup window with debug logging)
 
-**cli.ts onQuestion:**
-- Add per-session dedup (3s window) to prevent double push if dedup fails
+**cli.ts:**
+- No dedup at this layer; bridge-level dedup is sufficient
+- Avoids cross-session suppression issues from module-scoped state
 
 ### Why This Is Safe
 - Claude Code permission prompts always offer Yes/Yes always/No
 - The Notification message never has parseable options anyway
 - Eliminates all timing-dependent behavior
-- Eliminates duplicate questions (single emit point)
+- Eliminates duplicate questions (single emit point per bridge instance)
