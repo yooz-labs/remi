@@ -52,7 +52,28 @@ bun run build && npx cap sync android && npx cap open android
 | Direct Connection | Same WiFi, Tailscale, VPN, SSH tunnel |
 | Signaling + WebRTC | No direct access (STUN/TURN fallback) |
 
-## Question Detection
+## Question Detection and Notification Architecture
+
+See `.context/notification-and-session-flow.md` for the full flow diagram.
+
+**Question sources** (daemon side):
+- HookEventBridge: merges PermissionRequest + Notification hook events from Claude Code
+- OutputProcessor: PTY output parsing (fallback when hooks unavailable)
+
+**Notification channel**: APNS push only (no local notifications for questions).
+- Daemon sends WebSocket `question` message (in-app display) AND APNS push (lock screen)
+- Signaling server (Cloudflare Worker) relays push payloads to APNS
+- iOS categories (REMI_YN, REMI_YNA, REMI_MULTI) registered in AppDelegate.swift
+
+**Key constraints discovered from real logs** (2026-04-12 analysis):
+- Bash PermissionRequest: `permission_suggestions=undefined` (no suggestions)
+- Notification message: plain text "Claude needs your permission to use Bash" (no numbered options)
+- `parseNumberedOptions` on either message returns null; always falls back to Yes/No
+- Claude Code ALWAYS offers 3 options for permissions: Yes / Yes, always / No
+- The numbered option text appears only in terminal UI, NOT in hook events
+- Signaling server must be redeployed after any changes to `packages/signaling/`
+
+**Question detection (PTY fallback)**:
 
 | Pattern | Response |
 |---------|----------|

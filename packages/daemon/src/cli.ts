@@ -1581,6 +1581,8 @@ const sessionRegistry = new SessionRegistry(
 
 // The primary session ID (in wrapper mode, this is the one running in the terminal)
 let primarySessionId: UUID | null = null;
+// Per-session question dedup: timestamp of last emitted question
+let lastQuestionAt = 0;
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
@@ -1665,6 +1667,14 @@ async function createNewSession(
       },
       onQuestion: (question) => {
         log(`Question detected: ${question.text.substring(0, 50)}...`);
+        // Per-session dedup: skip if another question arrived within 3s.
+        // Safety net for duplicate hook events (e.g. PermissionRequest + Notification).
+        const questionNow = Date.now();
+        if (questionNow - lastQuestionAt < 3000) {
+          log(`Question suppressed (dedup): ${question.text.substring(0, 50)}...`);
+          return;
+        }
+        lastQuestionAt = questionNow;
         const questionSessionId = primarySessionId ?? sessionId;
         const msg: ProtocolMessage = {
           type: 'question',

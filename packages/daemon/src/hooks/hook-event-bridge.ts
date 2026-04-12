@@ -4,11 +4,20 @@
  * Maps hook events to the same AgentStatus and Question types that
  * the OutputProcessor previously produced from terminal parsing.
  * This is the hook-based replacement for terminal output parsing.
+ *
+ * Permission question flow (verified from real hook logs 2026-04-12):
+ *   - PermissionRequest fires with tool_name, tool_input, and optionally
+ *     permission_suggestions (e.g. ["Yes","Always","No"] for Edit).
+ *   - Notification(permission_prompt) fires shortly after with a plain-text
+ *     message like "Claude needs your permission to use Bash" (no numbered
+ *     options; those appear only in the terminal UI).
+ *   - We emit the question immediately from PermissionRequest using either
+ *     the provided suggestions or a default 3-option set, then suppress
+ *     the redundant Notification.
  */
 
 import { generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
-import { parseNumberedOptions } from '../parser/question-parser.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   NotificationHookInput,
@@ -30,30 +39,27 @@ export interface HookBridgeEvents {
   onSessionInfo: (claudeSessionId: string, transcriptPath: string) => void;
 }
 
-/** Pending permission context waiting for Notification to arrive with options */
-interface PendingPermission {
-  toolName: string;
-  toolInput: Record<string, unknown>;
-  promptText: string;
-  timer: ReturnType<typeof setTimeout>;
-}
+/** Default permission options. Claude Code always offers these for tool
+ *  permissions; the Notification hook message never contains numbered options. */
+const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
+  { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+  { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+  { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+];
+
+/** Dedup window: suppress Notification(permission_prompt) arriving within
+ *  this many ms after a PermissionRequest already emitted a question. */
+const PERMISSION_DEDUP_WINDOW_MS = 5000;
 
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
-  /** Pending PermissionRequest waiting for Notification with richer options */
-  private pendingPermission: PendingPermission | null = null;
-  /** How long to wait for Notification after PermissionRequest (ms) */
-  private readonly mergeWindowMs: number;
-  /** Timestamp of last PermissionRequest that emitted immediately (had suggestions) */
-  private lastImmediatePermissionAt = 0;
-  /** Timestamp of last timer-fallback question emitted; suppresses late Notification duplicates */
-  private lastFallbackPermissionAt = 0;
+  /** Timestamp of last question emitted from handlePermissionRequest */
+  private lastPermissionEmitAt = 0;
 
-  constructor(sessionId: UUID, events: HookBridgeEvents, mergeWindowMs = 1500) {
+  constructor(sessionId: UUID, events: HookBridgeEvents) {
     this.sessionId = sessionId;
     this.events = events;
-    this.mergeWindowMs = mergeWindowMs;
   }
 
   /** Returns HookServerEvents handlers wired to this bridge */
@@ -83,29 +89,22 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      if (this.pendingPermission) {
-        // Notification arrived while we're waiting; merge tool context with parsed options
-        const pending = this.pendingPermission;
-        clearTimeout(pending.timer);
-        this.pendingPermission = null;
-
-        const question = this.buildMergedQuestion(pending.promptText, input.message);
-        this.events.onQuestion(question);
-        this.events.onStatusChange('waiting');
-      } else if (Date.now() - this.lastImmediatePermissionAt < 2000) {
-        // PermissionRequest already emitted with multi-choice options; suppress
-        // this duplicate Notification
+      // PermissionRequest already emitted the question; suppress duplicate.
+      if (Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS) {
         return;
-      } else if (Date.now() - this.lastFallbackPermissionAt < this.mergeWindowMs * 2) {
-        // Timer-fallback already emitted a question for this PermissionRequest; suppress
-        // late-arriving Notification to avoid a second push notification
-        return;
-      } else {
-        // No pending PermissionRequest; standalone Notification
-        const question = this.buildPermissionQuestion(input.message);
-        this.events.onQuestion(question);
-        this.events.onStatusChange('waiting');
       }
+      // Standalone Notification without a preceding PermissionRequest.
+      // Emit with default 3-option set (message has no numbered options).
+      const question: Question = {
+        id: generateId(),
+        text: input.message || 'Allow this action?',
+        options: [...DEFAULT_PERMISSION_OPTIONS],
+        allowsFreeText: false,
+        isAnswered: false,
+      };
+      this.lastPermissionEmitAt = Date.now();
+      this.events.onQuestion(question);
+      this.events.onStatusChange('waiting');
     } else if (input.notification_type === 'idle_prompt') {
       this.events.onStatusChange('idle');
     } else {
@@ -134,21 +133,15 @@ export class HookEventBridge {
   }
 
   handlePermissionRequest(input: PermissionRequestHookInput): void {
-    // Cancel any previous pending merge (shouldn't happen, but be safe)
-    if (this.pendingPermission) {
-      clearTimeout(this.pendingPermission.timer);
-      this.pendingPermission = null;
-    }
-
     const toolName = input.tool_name || 'unknown tool';
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
     const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;
 
+    let options: QuestionOption[];
+
     if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
-      // PermissionRequest already has multi-choice options; emit immediately.
-      // Mark timestamp so we suppress the duplicate Notification that follows.
-      this.lastImmediatePermissionAt = Date.now();
-      const options: QuestionOption[] = input.permission_suggestions.map((suggestion, idx) => {
+      // Use the suggestions provided by Claude Code (e.g. Edit sends ["Yes","Always","No"])
+      options = input.permission_suggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
         const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
@@ -160,35 +153,23 @@ export class HookEventBridge {
           isNo,
         };
       });
-
-      this.events.onQuestion({
-        id: generateId(),
-        text: promptText,
-        options,
-        allowsFreeText: false,
-        isAnswered: false,
-      });
-      this.events.onStatusChange('waiting');
     } else {
-      // No multi-choice suggestions from PermissionRequest.
-      // Wait briefly for Notification(permission_prompt) which carries the full
-      // numbered options text (e.g. "1) Yes\n2) Yes, always\n3) No").
-      const timer = setTimeout(() => {
-        // Notification didn't arrive in time; emit Yes/No fallback.
-        // Record timestamp so a late-arriving Notification is suppressed.
-        this.pendingPermission = null;
-        this.lastFallbackPermissionAt = Date.now();
-        this.events.onQuestion(this.buildPermissionQuestion(promptText));
-        this.events.onStatusChange('waiting');
-      }, this.mergeWindowMs);
-
-      this.pendingPermission = {
-        toolName,
-        toolInput: input.tool_input,
-        promptText,
-        timer,
-      };
+      // No suggestions (e.g. Bash). Use default 3-option set.
+      // The Notification hook that follows has no numbered options either
+      // (just plain text like "Claude needs your permission to use Bash"),
+      // so waiting for it adds latency without gaining information.
+      options = [...DEFAULT_PERMISSION_OPTIONS];
     }
+
+    this.lastPermissionEmitAt = Date.now();
+    this.events.onQuestion({
+      id: generateId(),
+      text: promptText,
+      options,
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    this.events.onStatusChange('waiting');
   }
 
   handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {
@@ -223,98 +204,8 @@ export class HookEventBridge {
     this.events.onStatusChange('idle');
   }
 
-  /** Clean up timers (call when session ends or bridge is destroyed) */
-  dispose(): void {
-    if (this.pendingPermission) {
-      clearTimeout(this.pendingPermission.timer);
-      this.pendingPermission = null;
-    }
-  }
-
-  /**
-   * Build a question by merging tool context from PermissionRequest with
-   * parsed options from a Notification message. Uses the Notification message
-   * for options (it has the full "1) Yes\n2) Yes, always\n3) No" text) and
-   * the PermissionRequest prompt for the question text (which has tool context).
-   */
-  private buildMergedQuestion(promptText: string, notificationMessage: string): Question {
-    const parsed = notificationMessage ? parseNumberedOptions(notificationMessage) : null;
-
-    if (parsed && parsed.options.length >= 2) {
-      const taggedOptions: QuestionOption[] = parsed.options.map((opt) => {
-        const lower = opt.label.toLowerCase();
-        const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
-        const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
-        return { ...opt, isYes, isNo };
-      });
-
-      return {
-        id: generateId(),
-        text: promptText,
-        options: taggedOptions,
-        allowsFreeText: false,
-        isAnswered: false,
-      };
-    }
-
-    // Notification didn't have parseable options either; fall back to Yes/No
-    return this.buildPermissionQuestion(promptText);
-  }
-
-  private buildPermissionQuestion(message: string): Question {
-    // Try to parse numbered options from the message text.
-    // Claude Code sends messages like:
-    //   "Do you want to proceed?\n1) Yes\n2) Yes, and don't ask again\n3) No"
-    // or inline: "Allow? (1) Yes (2) Always (3) No"
-    const parsed = message ? parseNumberedOptions(message) : null;
-
-    if (parsed) {
-      // Tag yes/no semantics on parsed options
-      const taggedOptions: QuestionOption[] = parsed.options.map((opt) => {
-        const lower = opt.label.toLowerCase();
-        const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
-        const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
-        return {
-          ...opt,
-          isYes,
-          isNo,
-        };
-      });
-
-      return {
-        id: generateId(),
-        text: parsed.questionText,
-        options: taggedOptions,
-        allowsFreeText: false,
-        isAnswered: false,
-      };
-    }
-
-    // Fallback: simple Yes/No when no numbered options found
-    const yesOption: QuestionOption = {
-      label: 'Yes',
-      value: 'y',
-      isRecommended: true,
-      isYes: true,
-      isNo: false,
-    };
-
-    const noOption: QuestionOption = {
-      label: 'No',
-      value: 'n',
-      isRecommended: false,
-      isYes: false,
-      isNo: true,
-    };
-
-    return {
-      id: generateId(),
-      text: message || 'Allow this action?',
-      options: [yesOption, noOption],
-      allowsFreeText: false,
-      isAnswered: false,
-    };
-  }
+  /** Clean up (no-op now, kept for interface compatibility) */
+  dispose(): void {}
 
   /** Extract a short summary from tool input for the question prompt. */
   private summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string | null {
