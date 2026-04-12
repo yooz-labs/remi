@@ -895,26 +895,26 @@ if (cliSubcommand === 'kill') {
   }
   let resolvedPort = resolved.port;
 
-  // Resolve port by querying all local daemon ports (session may be on any daemon)
-  if (!cliPort && resolved.host === 'localhost') {
-    const allPorts = liveSessionsRegistry.getLivePorts();
-    if (allPorts.length > 0) {
-      const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
-      const results = await queryMultiplePorts({
-        host: 'localhost',
-        ports: allPorts,
-        timeoutMs: 5000,
-        logLabel: 'kill',
-      });
-      const match = resolveSession(results, resolved.targetId);
-      if (match) {
-        resolvedPort = match.port;
-      }
-    }
-  }
-
   const { runKillClient } = await import('./cli/kill-client.ts');
   try {
+    // Resolve port by querying all local daemon ports (session may be on any daemon)
+    if (!cliPort && resolved.host === 'localhost') {
+      const allPorts = liveSessionsRegistry.getLivePorts();
+      if (allPorts.length > 0) {
+        const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
+        const results = await queryMultiplePorts({
+          host: 'localhost',
+          ports: allPorts,
+          timeoutMs: 5000,
+          logLabel: 'kill',
+        });
+        const match = resolveSession(results, resolved.targetId);
+        if (match) {
+          resolvedPort = match.port;
+        }
+      }
+    }
+
     await runKillClient({
       host: resolved.host,
       port: resolvedPort,
