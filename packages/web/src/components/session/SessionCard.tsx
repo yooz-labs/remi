@@ -20,8 +20,8 @@ function formatSessionName(name: string): string {
   let display = name.replace(/^[^:]+:/, '');
   // Truncate branch part if too long (keep folder, limit branch to 10 chars)
   const slashIdx = display.indexOf('/');
-  if (slashIdx >= 0 && display.length > slashIdx + 10) {
-    display = `${display.slice(0, slashIdx + 10)}...`;
+  if (slashIdx >= 0 && display.length > slashIdx + 11) {
+    display = `${display.slice(0, slashIdx + 11)}...`;
   }
   return display || name;
 }
