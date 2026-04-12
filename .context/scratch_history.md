@@ -35,6 +35,51 @@ const encodedSignature = base64UrlEncode(new Uint8Array(signature));
 
 ---
 
+## APNS TooManyProviderTokenUpdates (429) — JWT not cached (fixed v0.4.23-dev.3)
+
+**Symptom:** Push notifications arriving only intermittently. Daemon log showed:
+```
+Push notification failed: Error: Push trigger failed: 502 {"success":false,"error":"APNS 429: {\"reason\":\"TooManyProviderTokenUpdates\"}"}
+```
+
+**Root cause:** `createApnsJwt()` in `packages/signaling/src/apns.ts` generated a fresh JWT on every single push request (`iat = Date.now()`). Apple rate-limits provider token updates to once per 20 minutes per key. Under normal Claude Code usage (frequent permission prompts), the limit is hit within minutes.
+
+**Fix (PR #293):** Module-level JWT cache in `apns.ts` keyed by `keyId`. Reuse cached token if `< 3000s` (50 min) old; regenerate otherwise. Cloudflare Worker module scope persists within isolate lifetime so the cache survives across requests on the same worker instance.
+
+**Rule:** APNS JWTs MUST be cached and reused. Never generate a new JWT per push request.
+
+---
+
+## Duplicate question messages in UI — merge window too narrow (fixed v0.4.23-dev.3)
+
+**Symptom:** Two separate question entries appear in the chat UI for a single Claude Code permission prompt. One shows the generic tool context ("Allow Bash: `<cmd>`"), the other shows the actual numbered options.
+
+**Root cause:** Two independent code paths in `HookEventBridge` can each emit a question:
+1. `handlePermissionRequest` — fires when `PermissionRequest` hook arrives. If `permission_suggestions.length < 2`, sets a pending merge + starts a 200ms timer. On timer expiry, emits a fallback Yes/No question.
+2. `handleNotification(permission_prompt)` — fires when the follow-up Notification arrives with full options text.
+
+With a 200ms merge window, the Notification frequently arrived after the timer fired. The fallback question emitted at T=200ms, then the Notification arrived at T=250ms with no suppression guard, emitting a second question.
+
+**Fix (PR #296):**
+- Widened merge window from 200ms → 1500ms (covers the real-world gap between PermissionRequest and Notification)
+- Added `lastFallbackPermissionAt` timestamp: after fallback fires, suppress any incoming `permission_prompt` Notification within `mergeWindowMs * 2` (3000ms)
+
+**Architecture note:** Question emission paths in the daemon:
+| Path | File | Guard |
+|------|------|-------|
+| PermissionRequest immediate (≥2 suggestions) | hook-event-bridge.ts:164 | Sets `lastImmediatePermissionAt`, 2s dedup |
+| PermissionRequest fallback timer | hook-event-bridge.ts:181 | Sets `lastFallbackPermissionAt`, 3s dedup |
+| Notification merged (pendingPermission exists) | hook-event-bridge.ts:92 | Clears timer, nulls pending |
+| Notification standalone | hook-event-bridge.ts:105 | Checked against both timestamps |
+| PTY output parsing | output-processor.ts | Disabled when `hookServer` active (`if (!hookServer)`) |
+| TranscriptMessageBridge | transcript-message-bridge.ts | Never emits questions (text content only) |
+
+**Known residual gap:** Device tokens are in-memory per daemon process. If a daemon restarts, it has no token until the app reconnects. Questions fired in the ~2-10s before app reconnection produce no push. Fix: persist tokens to `~/.remi/device-tokens.json`.
+
+**Rule:** The merge window must be wide enough to cover the real Claude Code event gap (~200-500ms under normal conditions, longer under load). Always add a post-fallback suppression window to catch late-arriving Notifications.
+
+---
+
 ## Lessons from Muxer (Swift iOS) Development
 
 ### Lesson: Terminal Parsing is Hard
