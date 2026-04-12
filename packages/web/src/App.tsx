@@ -16,6 +16,7 @@ import { setSoundEnabled } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
+  ConnectionState,
   UIBullet,
   UIMessage,
   UIQuestion,
@@ -132,7 +133,7 @@ function App() {
   const lastQuestionIdRef = useRef<string | null>(null);
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
-  const connectionsRef = useRef<readonly { connectionId: ConnectionId; status: string }[]>([]);
+  const connectionsRef = useRef<readonly ConnectionState[]>([]);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -852,11 +853,29 @@ function App() {
 
   // Handle push notification action button taps (lock screen / Apple Watch)
   useEffect(() => {
+    /** Notify user that the push answer could not be delivered */
+    const notifyFailure = () => {
+      LocalNotifications.schedule({
+        notifications: [
+          {
+            title: 'Answer not delivered',
+            body: 'Open Remi to respond to the question.',
+            id: (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000),
+            schedule: { at: new Date() },
+          },
+        ],
+      }).catch(() => undefined);
+    };
+
     const handlePushAnswer = async (e: Event) => {
       const { sessionId, questionId, answer } = (
         e as CustomEvent<{ sessionId: string; questionId: string; answer: string }>
       ).detail;
       if (!sessionId || !questionId || !answer) return;
+
+      console.debug('[App] handlePushAnswer:', { sessionId, questionId, answer });
+
+      const answerMsg = createAnswer(sessionId as UUID, questionId as UUID, answer);
 
       // Find the session in our session list to get its connectionId
       const session = sessionsRef.current.find((s) => s.id === sessionId);
@@ -866,36 +885,48 @@ function App() {
       const conn = connectionId
         ? connectionsRef.current.find((c) => c.connectionId === connectionId)
         : undefined;
-      const isConnected = conn?.status === 'connected';
 
-      if (isConnected && connectionId) {
-        // Already connected — send immediately
-        pushAnswerSendRef.current(
-          connectionId,
-          createAnswer(sessionId as UUID, questionId as UUID, answer),
-        );
-        return;
+      // Fast path: connection is live, try to send immediately
+      if (conn?.status === 'connected' && connectionId) {
+        const sent = pushAnswerSendRef.current(connectionId, answerMsg);
+        if (sent) return;
+        // Send returned false (dead socket); fall through to reconnect
       }
 
-      // Not connected; try to reconnect using the stored URL
-      const connUrl = (conn as { url?: string } | undefined)?.url;
+      // Resolve the daemon URL: from existing connection, or from localStorage (cold start)
+      let connUrl = conn?.url;
       if (!connUrl) {
-        // No URL available — notify user that answer could not be delivered
-        LocalNotifications.schedule({
-          notifications: [
-            {
-              title: 'Answer not delivered',
-              body: 'Open Remi to respond to the question.',
-              id: (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000),
-              schedule: { at: new Date() },
-            },
-          ],
-        }).catch(() => undefined);
+        try {
+          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+          if (stored) {
+            const urls: string[] = JSON.parse(stored);
+            if (urls.length > 0) {
+              connUrl = urls[0];
+            }
+          }
+        } catch {
+          // localStorage unavailable or corrupted; ignore
+        }
+      }
+
+      if (!connUrl) {
+        notifyFailure();
         return;
       }
 
-      // Attempt reconnect with 10s timeout
-      const targetConnId = connectDirectRef.current(connUrl);
+      // Check if a connection to this URL is already being established (e.g. auto-connect on mount)
+      const existingConn = connectionsRef.current.find(
+        (c) =>
+          c.url === connUrl &&
+          (c.status === 'connecting' ||
+            c.status === 'authenticating' ||
+            c.status === 'reconnecting'),
+      );
+      const targetConnId = existingConn
+        ? existingConn.connectionId
+        : connectDirectRef.current(connUrl);
+
+      // Wait for connection with 10s timeout, then send answer
       const ANSWER_TIMEOUT_MS = 10_000;
       const deadline = Date.now() + ANSWER_TIMEOUT_MS;
       const delivered = await new Promise<boolean>((resolve) => {
@@ -903,10 +934,7 @@ function App() {
           const live = connectionsRef.current.find((c) => c.connectionId === targetConnId);
           if (live?.status === 'connected') {
             clearInterval(check);
-            const sent = pushAnswerSendRef.current(
-              targetConnId,
-              createAnswer(sessionId as UUID, questionId as UUID, answer),
-            );
+            const sent = pushAnswerSendRef.current(targetConnId, answerMsg);
             resolve(sent);
           } else if (Date.now() >= deadline) {
             clearInterval(check);
@@ -916,16 +944,7 @@ function App() {
       });
 
       if (!delivered) {
-        LocalNotifications.schedule({
-          notifications: [
-            {
-              title: 'Answer not delivered',
-              body: 'Open Remi to respond to the question.',
-              id: (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000),
-              schedule: { at: new Date() },
-            },
-          ],
-        }).catch(() => undefined);
+        notifyFailure();
       }
     };
 
