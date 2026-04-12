@@ -18,6 +18,9 @@ import { isNative } from './platform';
 
 let localPermissionGranted = false;
 let soundEnabled = true;
+/** When true, foreground push notifications are suppressed (the question is
+ *  already visible in the chat UI via the WebSocket connection). */
+let suppressForegroundPush = false;
 /** Use timestamp-based IDs to avoid collisions across app restarts */
 function nextNotificationId(): number {
   return (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000);
@@ -109,8 +112,10 @@ export async function initNotifications(onToken?: TokenCallback): Promise<boolea
     // Handle incoming push notifications (when app is in foreground).
     // Re-create as a local notification, forwarding the APNS category and
     // custom data so that action buttons appear and work correctly.
+    // When the app is connected via WebSocket, the question already appears
+    // in the chat UI, so skip the duplicate banner.
     await PushNotifications.addListener('pushNotificationReceived', (notification) => {
-      if (!localPermissionGranted) return;
+      if (!localPermissionGranted || suppressForegroundPush) return;
       const data = (notification.data ?? {}) as Record<string, string>;
 
       // Determine actionTypeId: prefer the explicit category field mirrored
@@ -214,6 +219,12 @@ export function getDeviceToken(): string | null {
 /** Set whether notification sounds are enabled (controls local notification sound field) */
 export function setSoundEnabled(enabled: boolean): void {
   soundEnabled = enabled;
+}
+
+/** Suppress foreground push-to-local re-creation when the app is actively
+ *  connected via WebSocket (the question already shows in the chat UI). */
+export function setSuppressForegroundPush(suppress: boolean): void {
+  suppressForegroundPush = suppress;
 }
 
 /**

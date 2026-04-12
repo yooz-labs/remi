@@ -12,7 +12,7 @@ import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
-import { setSoundEnabled } from '@/lib/notifications';
+import { setSoundEnabled, setSuppressForegroundPush } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
@@ -781,6 +781,12 @@ function App() {
     }
     prevConnectedIdsRef.current = connectedIds;
   }, [connectedIds, requestSessionList]);
+
+  // Suppress foreground push-to-local notification banners when at least one
+  // WebSocket connection is live (the question already shows in the chat UI).
+  useEffect(() => {
+    setSuppressForegroundPush(connectedIds.size > 0);
+  }, [connectedIds]);
 
   // Auto-connect from localStorage on mount (run once)
   const connectDirectRef = useRef(connectDirect);
