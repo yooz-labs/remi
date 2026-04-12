@@ -219,6 +219,97 @@ export function resolveSession(
     );
   }
 
+  // 5. Stripped name match (remove hostname: prefix from session names)
+  // e.g. user types "remi/develop", matches "yahyas-mcm:remi/develop"
+  const strippedExact = entries.filter((e) => {
+    if (!e.session.name) return false;
+    const colonIdx = e.session.name.indexOf(':');
+    if (colonIdx < 0) return false;
+    return e.session.name.slice(colonIdx + 1) === nameOrId;
+  });
+  const strippedExactResult = toResult(strippedExact);
+  if (strippedExactResult) return strippedExactResult;
+  if (strippedExact.length > 1) {
+    throw new AmbiguousSessionError(
+      nameOrId,
+      strippedExact.map((e) => ({
+        name: e.session.name ?? e.session.sessionId.slice(0, 8),
+        port: e.port,
+      })),
+    );
+  }
+
+  const strippedPrefix = entries.filter((e) => {
+    if (!e.session.name) return false;
+    const colonIdx = e.session.name.indexOf(':');
+    if (colonIdx < 0) return false;
+    return e.session.name.slice(colonIdx + 1).startsWith(nameOrId);
+  });
+  const strippedPrefixResult = toResult(strippedPrefix);
+  if (strippedPrefixResult) return strippedPrefixResult;
+  if (strippedPrefix.length > 1) {
+    throw new AmbiguousSessionError(
+      nameOrId,
+      strippedPrefix.map((e) => ({
+        name: e.session.name ?? e.session.sessionId.slice(0, 8),
+        port: e.port,
+      })),
+    );
+  }
+
+  // 6. Branch segment match (everything after the last `/` in session name)
+  // e.g. user types "develop", matches "yahyas-mcm:remi/develop"
+  const branchExact = entries.filter((e) => {
+    if (!e.session.name) return false;
+    const lastSlash = e.session.name.lastIndexOf('/');
+    if (lastSlash < 0) return false;
+    return e.session.name.slice(lastSlash + 1) === nameOrId;
+  });
+  const branchExactResult = toResult(branchExact);
+  if (branchExactResult) return branchExactResult;
+  if (branchExact.length > 1) {
+    throw new AmbiguousSessionError(
+      nameOrId,
+      branchExact.map((e) => ({
+        name: e.session.name ?? e.session.sessionId.slice(0, 8),
+        port: e.port,
+      })),
+    );
+  }
+
+  const branchPrefix = entries.filter((e) => {
+    if (!e.session.name) return false;
+    const lastSlash = e.session.name.lastIndexOf('/');
+    if (lastSlash < 0) return false;
+    return e.session.name.slice(lastSlash + 1).startsWith(nameOrId);
+  });
+  const branchPrefixResult = toResult(branchPrefix);
+  if (branchPrefixResult) return branchPrefixResult;
+  if (branchPrefix.length > 1) {
+    throw new AmbiguousSessionError(
+      nameOrId,
+      branchPrefix.map((e) => ({
+        name: e.session.name ?? e.session.sessionId.slice(0, 8),
+        port: e.port,
+      })),
+    );
+  }
+
+  // 7. Contains match (final fallback)
+  // e.g. user types "285-bug", matches "yahyas-mcm:remi/285-bug-multiple-sessions..."
+  const contains = entries.filter((e) => e.session.name?.includes(nameOrId));
+  const containsResult = toResult(contains);
+  if (containsResult) return containsResult;
+  if (contains.length > 1) {
+    throw new AmbiguousSessionError(
+      nameOrId,
+      contains.map((e) => ({
+        name: e.session.name ?? e.session.sessionId.slice(0, 8),
+        port: e.port,
+      })),
+    );
+  }
+
   return null;
 }
 
