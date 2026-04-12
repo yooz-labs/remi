@@ -895,13 +895,21 @@ if (cliSubcommand === 'kill') {
   }
   let resolvedPort = resolved.port;
 
-  // Resolve port from live registry if target matches a known local session
+  // Resolve port by querying all local daemon ports (session may be on any daemon)
   if (!cliPort && resolved.host === 'localhost') {
-    const liveMatch =
-      liveSessionsRegistry.findByName(resolved.targetId) ??
-      liveSessionsRegistry.findBySessionId(resolved.targetId);
-    if (liveMatch) {
-      resolvedPort = liveMatch.wsPort;
+    const allPorts = liveSessionsRegistry.getLivePorts();
+    if (allPorts.length > 0) {
+      const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
+      const results = await queryMultiplePorts({
+        host: 'localhost',
+        ports: allPorts,
+        timeoutMs: 5000,
+        logLabel: 'kill',
+      });
+      const match = resolveSession(results, resolved.targetId);
+      if (match) {
+        resolvedPort = match.port;
+      }
     }
   }
 
