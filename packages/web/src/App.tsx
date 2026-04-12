@@ -194,6 +194,25 @@ function App() {
           ];
         });
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
+
+        // Auto-switch to new session when same connection restarts
+        const oldActive = activeSessionIdRef.current;
+        if (oldActive !== message.sessionId) {
+          const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
+          const shouldSwitch = !oldActive || oldSession?.connectionId === connectionId;
+          if (shouldSwitch) {
+            setActiveSessionId(message.sessionId);
+            if (oldActive) {
+              setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
+              setQuestions((prev) => {
+                if (!prev.has(oldActive)) return prev;
+                const next = new Map(prev);
+                next.delete(oldActive);
+                return next;
+              });
+            }
+          }
+        }
         break;
       }
 
