@@ -33,13 +33,8 @@ function resolveAnswerLabel(question: UIQuestion, answer: string): string {
   return answer;
 }
 
-/** Get a friendly label for common option values */
+/** Get display label for an option. Uses the label from the daemon directly. */
 function getOptionDisplayLabel(option: UIQuestionOption): string {
-  const lower = option.value.toLowerCase();
-  if (option.isYes) return 'Yes';
-  if (option.isNo) return 'No';
-  if (lower === 'a' || lower === 'all') return 'All';
-  if (lower === 'q' || lower === 'quit') return 'Quit';
   return option.label;
 }
 
