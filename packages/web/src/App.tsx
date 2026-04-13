@@ -342,6 +342,21 @@ function App() {
         break;
       }
 
+      case 'session_reset': {
+        // Claude restarted in the same directory; clear old messages and questions
+        const resetSessionId = message.sessionId;
+        if (resetSessionId) {
+          setMessages((prev) => prev.filter((m) => m.sessionId !== resetSessionId));
+          setQuestions((prev) => {
+            if (!prev.has(resetSessionId)) return prev;
+            const next = new Map(prev);
+            next.delete(resetSessionId);
+            return next;
+          });
+        }
+        break;
+      }
+
       case 'question': {
         const q = message.question;
         // Dedup: skip if we already have this question (can arrive from multiple connections or hook+PTY)
