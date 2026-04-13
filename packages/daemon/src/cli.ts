@@ -252,6 +252,7 @@ import {
   createResumeSessionResponse,
   createSessionHistoryResponse,
   createSessionListResponse,
+  createSessionReset,
   createStructuredAgentOutput,
   createTranscriptLoadComplete,
   generateId,
@@ -1781,8 +1782,24 @@ async function createNewSession(
       transcript_path?: string;
       hook_event_name?: string;
     }): void {
-      if (claudeSessionId) return;
-      if (!input.session_id || !input.transcript_path) return;
+      if (!input.session_id) return;
+
+      // Detect Claude restart: a different Claude session ID means Claude exited
+      // and restarted in the same directory. Tear down old watcher and notify clients.
+      if (claudeSessionId && claudeSessionId !== input.session_id) {
+        log(`[Hooks] Claude restarted: ${claudeSessionId} -> ${input.session_id}`);
+        const oldWatcher = transcriptWatchers.get(sessionId);
+        if (oldWatcher) {
+          oldWatcher.stop();
+          transcriptWatchers.delete(sessionId);
+        }
+        messageApi.reset();
+        sendAndRecord(createSessionReset(sessionId, 'claude_restarted'));
+        claudeSessionId = null;
+      }
+
+      if (claudeSessionId) return; // already initialized for this Claude session
+      if (!input.transcript_path) return;
 
       if (hasSiblingInDir === null) {
         hasSiblingInDir = liveSessionsRegistry
@@ -1843,6 +1860,21 @@ async function createNewSession(
             );
         }
         if (hasSiblingInDir) return;
+
+        // Detect Claude restart via onSessionInfo path
+        if (claudeSessionId && claudeSessionId !== hookClaudeSessionId) {
+          log(
+            `[Hooks] Claude restarted (SessionInfo): ${claudeSessionId} -> ${hookClaudeSessionId}`,
+          );
+          const oldWatcher = transcriptWatchers.get(sessionId);
+          if (oldWatcher) {
+            oldWatcher.stop();
+            transcriptWatchers.delete(sessionId);
+          }
+          messageApi.reset();
+          sendAndRecord(createSessionReset(sessionId, 'claude_restarted'));
+          claudeSessionId = null;
+        }
 
         try {
           claudeSessionId = hookClaudeSessionId;
