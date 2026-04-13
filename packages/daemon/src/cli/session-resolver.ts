@@ -178,6 +178,22 @@ export function resolveSession(
     return { session: match.session, port: match.port, host: match.host };
   }
 
+  // 0. Port number match: if input is all digits, match by port
+  if (/^\d+$/.test(nameOrId)) {
+    const port = Number.parseInt(nameOrId, 10);
+    const byPort = entries.filter((e) => e.port === port);
+    if (byPort.length === 1) return toResult(byPort);
+    if (byPort.length > 1) {
+      throw new AmbiguousSessionError(
+        nameOrId,
+        byPort.map((e) => ({
+          name: e.session.name ?? e.session.sessionId.slice(0, 8),
+          port: e.port,
+        })),
+      );
+    }
+  }
+
   // 1. Exact name match
   const exactName = entries.filter((e) => e.session.name === nameOrId);
   const exactNameResult = toResult(exactName);
