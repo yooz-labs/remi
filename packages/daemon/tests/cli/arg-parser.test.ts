@@ -677,3 +677,73 @@ describe('parseHostPath', () => {
     expect(parseHostPath('[::1]')).toEqual({ host: '[::1]' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Auto-approve flags
+// ---------------------------------------------------------------------------
+describe('parseArgs - auto-approve flags', () => {
+  test('--auto-approve sets autoApprove true', () => {
+    const r = parseArgs(['--auto-approve']);
+    expect(r.autoApprove).toBe(true);
+  });
+
+  test('--no-auto-approve sets autoApprove false', () => {
+    const r = parseArgs(['--no-auto-approve']);
+    expect(r.autoApprove).toBe(false);
+  });
+
+  test('auto-approve defaults to undefined', () => {
+    const r = parseArgs([]);
+    expect(r.autoApprove).toBeUndefined();
+  });
+
+  test('--auto-approve-model sets model', () => {
+    const r = parseArgs(['--auto-approve-model', 'qwen3.5:4b']);
+    expect(r.autoApproveModel).toBe('qwen3.5:4b');
+  });
+
+  test('--auto-approve-model without value errors', () => {
+    const r = parseArgs(['--auto-approve-model']);
+    expect(r.error).toContain('--auto-approve-model requires a value');
+  });
+
+  test('--auto-approve-provider sets provider', () => {
+    const r = parseArgs(['--auto-approve-provider', 'openrouter']);
+    expect(r.autoApproveProvider).toBe('openrouter');
+  });
+
+  test('--auto-approve-provider without value errors', () => {
+    const r = parseArgs(['--auto-approve-provider']);
+    expect(r.error).toContain('--auto-approve-provider requires a value');
+  });
+
+  test('--auto-approve-api-key sets api key', () => {
+    const r = parseArgs(['--auto-approve-api-key', 'sk-test-123']);
+    expect(r.autoApproveApiKey).toBe('sk-test-123');
+  });
+
+  test('--auto-approve-api-key without value errors', () => {
+    const r = parseArgs(['--auto-approve-api-key']);
+    expect(r.error).toContain('--auto-approve-api-key requires a value');
+  });
+
+  test('combined auto-approve flags', () => {
+    const r = parseArgs([
+      '--auto-approve',
+      '--auto-approve-model',
+      'gemma4:e2b',
+      '--auto-approve-provider',
+      'ollama',
+    ]);
+    expect(r.autoApprove).toBe(true);
+    expect(r.autoApproveModel).toBe('gemma4:e2b');
+    expect(r.autoApproveProvider).toBe('ollama');
+  });
+
+  test('auto-approve flags with new subcommand', () => {
+    const r = parseArgs(['new', '--auto-approve', '--auto-approve-model', 'llama3.2']);
+    expect(r.subcommand).toBe('new');
+    expect(r.autoApprove).toBe(true);
+    expect(r.autoApproveModel).toBe('llama3.2');
+  });
+});

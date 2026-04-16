@@ -88,6 +88,10 @@ export interface ParsedArgs {
   readonly recent: boolean;
   readonly pushSecret: string | undefined;
   readonly orphanTimeout: number | undefined;
+  readonly autoApprove: boolean | undefined;
+  readonly autoApproveModel: string | undefined;
+  readonly autoApproveProvider: string | undefined;
+  readonly autoApproveApiKey: string | undefined;
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
   readonly showHelp: boolean;
@@ -127,6 +131,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let pushSecret: string | undefined;
   let dir: string | undefined;
   let recent = false;
+  let autoApprove: boolean | undefined;
+  let autoApproveModel: string | undefined;
+  let autoApproveProvider: string | undefined;
+  let autoApproveApiKey: string | undefined;
   let showVersion = false;
   let showHelp = false;
   let error: string | undefined;
@@ -296,6 +304,31 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         host = nextArg;
         i++;
       }
+    } else if (arg === '--auto-approve') {
+      autoApprove = true;
+    } else if (arg === '--no-auto-approve') {
+      autoApprove = false;
+    } else if (arg === '--auto-approve-model') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-model requires a value.';
+      } else {
+        autoApproveModel = nextArg;
+        i++;
+      }
+    } else if (arg === '--auto-approve-provider') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-provider requires a value.';
+      } else {
+        autoApproveProvider = nextArg;
+        i++;
+      }
+    } else if (arg === '--auto-approve-api-key') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-api-key requires a value.';
+      } else {
+        autoApproveApiKey = nextArg;
+        i++;
+      }
     } else if (arg === '--version' || arg === '-v') {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -366,6 +399,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     pushSecret,
     dir,
     recent,
+    autoApprove,
+    autoApproveModel,
+    autoApproveProvider,
+    autoApproveApiKey,
     orphanTimeout,
     claudeArgs,
     showVersion,

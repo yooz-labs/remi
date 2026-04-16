@@ -62,6 +62,13 @@ export class HookEventBridge {
     this.events = events;
   }
 
+  /** Mark that a PermissionRequest was handled externally (e.g. by auto-approve).
+   *  Sets the dedup timestamp so the subsequent Notification(permission_prompt)
+   *  is suppressed instead of generating a phantom notification. */
+  markPermissionHandled(): void {
+    this.lastPermissionEmitAt = Date.now();
+  }
+
   /** Returns HookServerEvents handlers wired to this bridge */
   hookHandlers(): Partial<HookServerEvents> {
     return {

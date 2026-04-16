@@ -276,6 +276,7 @@ import {
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   CONFIG_PATH,
@@ -1497,6 +1498,27 @@ const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
+// Auto-approve service (optional, LLM-based permission evaluation)
+// ---------------------------------------------------------------------------
+let autoApproveService: AutoApproveService | null = null;
+{
+  const aaCfg = remiConfig.auto_approve;
+  const aaEnabled = parsedArgs.autoApprove ?? aaCfg.enabled;
+  if (aaEnabled) {
+    const provider = parsedArgs.autoApproveProvider ?? aaCfg.provider;
+    const model = parsedArgs.autoApproveModel ?? aaCfg.model;
+    const apiKey = parsedArgs.autoApproveApiKey ?? aaCfg.api_key;
+    const baseUrl = resolveProviderUrl(provider, aaCfg.base_url);
+
+    autoApproveService = new AutoApproveService(
+      { ...aaCfg, provider, model, api_key: apiKey, base_url: baseUrl, enabled: true },
+      writeToLog,
+    );
+    writeToLog(`[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // SIGTSTP protection: the daemon must never suspend itself.
 // When Claude Code handles Ctrl+Z (which spawns a subshell inside its PTY),
 // the terminal may propagate SIGTSTP to the process group. Ignoring it here
@@ -1962,9 +1984,40 @@ async function createNewSession(
       if (!filterBySession(input)) return;
       handlers.onNotification?.(input);
     });
-    hookServer.on('PermissionRequest', (input) => {
+    hookServer.on('PermissionRequest', async (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
+
+      // Auto-approve gate: evaluate before creating Question object.
+      // Intercepts at hook level, bypassing the mobile question UI entirely.
+      if (autoApproveService) {
+        // Mark dedup BEFORE evaluation so the Notification(permission_prompt)
+        // that fires ~100ms later is suppressed regardless of the LLM decision.
+        hookBridge.markPermissionHandled();
+        try {
+          const result = await autoApproveService.evaluate(input.tool_name, input.tool_input);
+          if (result.decision === 'approve') {
+            const session = sessionRegistry.getSession(sessionId);
+            if (session) {
+              await session.pty.submitInput('1');
+              sessionRegistry.updateStatus(sessionId, 'executing');
+            }
+            return;
+          }
+          if (result.decision === 'deny') {
+            const session = sessionRegistry.getSession(sessionId);
+            if (session) {
+              await session.pty.submitInput('3');
+            }
+            return;
+          }
+          // escalate: fall through to normal question flow
+        } catch (err) {
+          logError('[AutoApprove] Unexpected error, escalating to user:', err);
+          // Fall through to normal flow
+        }
+      }
+
       handlers.onPermissionRequest?.(input);
     });
     hookServer.on('Stop', (input) => {
