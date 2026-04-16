@@ -1777,6 +1777,31 @@ async function createNewSession(
     // mtime fallback handle it. For single-daemon directories (the common case),
     // accept the first event immediately.
     let hasSiblingInDir: boolean | null = null; // Computed once, then cached
+
+    // Safely tear down an existing transcript watcher, reset messages, and notify
+    // clients. Handles errors from stop() and sendAndRecord() so they never prevent
+    // the new watcher from being created. Shared by initFromHookEvent and onSessionInfo.
+    function teardownWatcher(reason: string, label: string): void {
+      const watcher = transcriptWatchers.get(sessionId);
+      if (!watcher) return;
+      transcriptWatchers.delete(sessionId); // Remove from map FIRST to unblock new watcher
+      try {
+        watcher.stop();
+      } catch (stopErr) {
+        logError(
+          `[Hooks] Failed to stop watcher (${label}): ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+        );
+      }
+      messageApi.reset();
+      try {
+        sendAndRecord(createSessionReset(sessionId, reason));
+      } catch (sendErr) {
+        logError(
+          `[Hooks] Failed to send ${reason} for ${sessionId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+        );
+      }
+    }
+
     function initFromHookEvent(input: {
       session_id?: string;
       transcript_path?: string;
@@ -1788,13 +1813,7 @@ async function createNewSession(
       // and restarted in the same directory. Tear down old watcher and notify clients.
       if (claudeSessionId && claudeSessionId !== input.session_id) {
         log(`[Hooks] Claude restarted: ${claudeSessionId} -> ${input.session_id}`);
-        const oldWatcher = transcriptWatchers.get(sessionId);
-        if (oldWatcher) {
-          oldWatcher.stop();
-          transcriptWatchers.delete(sessionId);
-        }
-        messageApi.reset();
-        sendAndRecord(createSessionReset(sessionId, 'claude_restarted'));
+        teardownWatcher('claude_restarted', 'restart');
         claudeSessionId = null;
       }
 
@@ -1827,6 +1846,19 @@ async function createNewSession(
         if (fallbackTimer) {
           clearInterval(fallbackTimer);
           transcriptFallbackTimers.delete(sessionId);
+        }
+
+        // If a fallback watcher claimed the slot with a different (stale) file,
+        // replace it with the authoritative hook-provided path.
+        const existingWatcher = transcriptWatchers.get(sessionId);
+        if (
+          existingWatcher &&
+          path.resolve(existingWatcher.filePath) !== path.resolve(input.transcript_path)
+        ) {
+          log(
+            `[Hooks] Replacing stale watcher: ${existingWatcher.filePath} -> ${input.transcript_path}`,
+          );
+          teardownWatcher('transcript_changed', 'stale-replace');
         }
 
         if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
@@ -1866,13 +1898,7 @@ async function createNewSession(
           log(
             `[Hooks] Claude restarted (SessionInfo): ${claudeSessionId} -> ${hookClaudeSessionId}`,
           );
-          const oldWatcher = transcriptWatchers.get(sessionId);
-          if (oldWatcher) {
-            oldWatcher.stop();
-            transcriptWatchers.delete(sessionId);
-          }
-          messageApi.reset();
-          sendAndRecord(createSessionReset(sessionId, 'claude_restarted'));
+          teardownWatcher('claude_restarted', 'restart-sessioninfo');
           claudeSessionId = null;
         }
 
@@ -1880,6 +1906,19 @@ async function createNewSession(
           claudeSessionId = hookClaudeSessionId;
           log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
           sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+          // If a fallback watcher claimed the slot with a different (stale) file,
+          // replace it with the authoritative hook-provided path.
+          const existingWatcher = transcriptWatchers.get(sessionId);
+          if (
+            existingWatcher &&
+            path.resolve(existingWatcher.filePath) !== path.resolve(transcriptPath)
+          ) {
+            log(
+              `[Hooks] Replacing stale watcher (SessionInfo): ${existingWatcher.filePath} -> ${transcriptPath}`,
+            );
+            teardownWatcher('transcript_changed', 'stale-replace-sessioninfo');
+          }
 
           if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
@@ -2128,8 +2167,8 @@ async function createNewSession(
   return ptySession;
 }
 
-/** Extract Claude session ID from transcript filename and persist it. */
-function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
+/** Extract Claude session ID from transcript filename and persist it. Returns the extracted ID or null. */
+function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): string | null {
   // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
   // The underscore split is defensive in case a prefixed format is ever introduced.
   const basename = path.basename(transcriptPath, '.jsonl');
@@ -2138,7 +2177,9 @@ function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
   if (candidateId && candidateId.length >= 8) {
     sessionStore.updateClaudeSessionId(sessionId, candidateId);
     log(`Claude session ID: ${candidateId}`);
+    return candidateId;
   }
+  return null;
 }
 
 /** Start watching a transcript file for a session. */
