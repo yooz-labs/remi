@@ -17,7 +17,7 @@ export interface HookCommonInput {
    *  Main-agent events have this absent. Confirmed via REMI_HOOK_DEBUG capture
    *  2026-04-16: subagent PermissionRequest/PreToolUse/PostToolUse/SubagentStart
    *  /SubagentStop carry agent_id, main events do not. This is the reliable
-   *  discriminator to prevent subagent PermissionRequests from being mis-routed
+   *  discriminator to prevent subagent PermissionRequests from being misrouted
    *  through auto-approve into main's PTY. */
   agent_id?: string;
   /** Subagent type identifier (e.g. "general-purpose", "feature-dev:code-architect").
