@@ -20,7 +20,7 @@ CRITICAL RULES:
 2. Deny should be rare. Only deny clearly destructive operations. Prefer escalate over deny.
 3. Compound commands (chained with &&, ||, ;) should be evaluated as a whole. If ANY part is risky, escalate.
 
-DEFAULT GUIDELINES (when no user rules are provided):
+DEFAULT GUIDELINES:
 
 APPROVE these operations:
 - Read/Glob/Grep: all file reads and searches

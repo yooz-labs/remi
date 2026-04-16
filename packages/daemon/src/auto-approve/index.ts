@@ -1,4 +1,4 @@
-export { AutoApproveService } from './auto-approve-service.ts';
+export { AutoApproveService, parseDecision } from './auto-approve-service.ts';
 export { resolveProviderUrl } from './llm-client.ts';
 export type {
   AutoApproveConfig,

@@ -1984,38 +1984,43 @@ async function createNewSession(
       if (!filterBySession(input)) return;
       handlers.onNotification?.(input);
     });
-    hookServer.on('PermissionRequest', async (input) => {
+    hookServer.on('PermissionRequest', (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
 
       // Auto-approve gate: evaluate before creating Question object.
       // Intercepts at hook level, bypassing the mobile question UI entirely.
       if (autoApproveService) {
-        // Mark dedup BEFORE evaluation so the Notification(permission_prompt)
-        // that fires ~100ms later is suppressed regardless of the LLM decision.
-        hookBridge.markPermissionHandled();
-        try {
-          const result = await autoApproveService.evaluate(input.tool_name, input.tool_input);
-          if (result.decision === 'approve') {
-            const session = sessionRegistry.getSession(sessionId);
-            if (session) {
-              await session.pty.submitInput('1');
-              sessionRegistry.updateStatus(sessionId, 'executing');
+        const aaService = autoApproveService;
+        aaService
+          .evaluate(input.tool_name, input.tool_input)
+          .then(async (result) => {
+            if (result.decision === 'approve' || result.decision === 'deny') {
+              // Suppress the Notification(permission_prompt) that follows shortly.
+              // Dedup window in HookEventBridge is 5000ms, well above typical latency.
+              hookBridge.markPermissionHandled();
+              const session = sessionRegistry.getSession(sessionId);
+              if (session) {
+                const value = result.decision === 'approve' ? '1' : '3';
+                await session.pty.submitInput(value);
+                sessionRegistry.updateStatus(
+                  sessionId,
+                  result.decision === 'approve' ? 'executing' : 'thinking',
+                );
+                return;
+              }
+              logError(
+                `[AutoApprove] Session ${sessionId} not found after ${result.decision}; escalating`,
+              );
             }
-            return;
-          }
-          if (result.decision === 'deny') {
-            const session = sessionRegistry.getSession(sessionId);
-            if (session) {
-              await session.pty.submitInput('3');
-            }
-            return;
-          }
-          // escalate: fall through to normal question flow
-        } catch (err) {
-          logError('[AutoApprove] Unexpected error, escalating to user:', err);
-          // Fall through to normal flow
-        }
+            // escalate or session-not-found: fall through to normal question flow
+            handlers.onPermissionRequest?.(input);
+          })
+          .catch((err) => {
+            logError('[AutoApprove] Unexpected error, escalating to user:', err);
+            handlers.onPermissionRequest?.(input);
+          });
+        return;
       }
 
       handlers.onPermissionRequest?.(input);

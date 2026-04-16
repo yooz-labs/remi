@@ -322,4 +322,32 @@ timeout = 5
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env['REMI_AUTO_APPROVE_API_KEY'];
   });
+
+  test('REMI_AUTO_APPROVE=false disables when config has enabled=true', () => {
+    const enabledConfig = {
+      ...DEFAULT_CONFIG,
+      auto_approve: { ...DEFAULT_CONFIG.auto_approve, enabled: true },
+    };
+    process.env['REMI_AUTO_APPROVE'] = 'false';
+    const config = applyEnvOverrides(enabledConfig);
+    expect(config.auto_approve.enabled).toBe(false);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE'];
+  });
+
+  test('REMI_AUTO_APPROVE_PROVIDER env override', () => {
+    process.env['REMI_AUTO_APPROVE_PROVIDER'] = 'openrouter';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.provider).toBe('openrouter');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_PROVIDER'];
+  });
+
+  test('REMI_AUTO_APPROVE_BASE_URL env override', () => {
+    process.env['REMI_AUTO_APPROVE_BASE_URL'] = 'http://custom:8080/v1';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.base_url).toBe('http://custom:8080/v1');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_BASE_URL'];
+  });
 });

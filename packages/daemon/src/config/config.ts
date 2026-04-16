@@ -221,6 +221,9 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
   if (env['REMI_AUTO_APPROVE_MODEL']) {
     (auto_approve as { model: string }).model = env['REMI_AUTO_APPROVE_MODEL'];
   }
+  if (env['REMI_AUTO_APPROVE_PROVIDER']) {
+    (auto_approve as { provider: string }).provider = env['REMI_AUTO_APPROVE_PROVIDER'];
+  }
   if (env['REMI_AUTO_APPROVE_API_KEY']) {
     (auto_approve as { api_key: string }).api_key = env['REMI_AUTO_APPROVE_API_KEY'];
   }

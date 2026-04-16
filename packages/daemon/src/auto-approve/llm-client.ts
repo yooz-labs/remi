@@ -83,7 +83,9 @@ export async function chatCompletion(
     });
 
     if (!response.ok) {
-      const body = await response.text().catch(() => '');
+      const body = await response
+        .text()
+        .catch((e) => `[body unreadable: ${e instanceof Error ? e.message : String(e)}]`);
       throw new Error(`LLM API error ${response.status}: ${body.slice(0, 200)}`);
     }
 
