@@ -2046,29 +2046,52 @@ async function createNewSession(
       return !hasSiblingInDir; // No sibling → events can only be ours
     };
 
+    // Subagent/team-member events carry `agent_id` (confirmed via
+    // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
+    // transcript, so session-id filtering cannot distinguish them. Drop these
+    // at the hook layer so status updates, auto-approve, question emission,
+    // and PTY injection all stay scoped to the main interactive session.
+    const isSubagentEvent = (input: { agent_id?: string }): boolean =>
+      typeof input.agent_id === 'string' && input.agent_id.length > 0;
+
     hookServer.on('PreToolUse', (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
+      if (isSubagentEvent(input)) return;
       handlers.onPreToolUse?.(input);
     });
     hookServer.on('PostToolUse', (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
+      if (isSubagentEvent(input)) return;
       handlers.onPostToolUse?.(input);
     });
     hookServer.on('Notification', (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
+      // Subagent notifications must not bubble up to the user (phantom prompts).
+      if (isSubagentEvent(input)) {
+        log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
+        return;
+      }
       handlers.onNotification?.(input);
     });
     hookServer.on('PermissionRequest', (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
 
-      // Subagent context: user can't answer while a Task is running (main agent
-      // is blocked waiting for subagent). During this window we must NEVER
-      // escalate to user — either auto-approve decides, or we default-deny
-      // rather than hang the subagent.
+      // Subagent PermissionRequest: Claude Code sets `agent_id` on events
+      // originating from Task/Agent-spawned subagents or team members. Those
+      // events share the main session_id and transcript but are handled
+      // internally by Claude Code — they MUST NOT be injected into our main PTY.
+      if (isSubagentEvent(input)) {
+        log(
+          `[Hooks] Dropped subagent PermissionRequest: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        );
+        return;
+      }
+
+      // Legacy nested-Task context (kept as secondary safety net).
       const inSubagent = hookBridge.isInSubagentContext();
       const sessionTag = sessionId.slice(0, 8);
 
