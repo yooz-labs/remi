@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
+import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
@@ -54,6 +55,7 @@ export interface RemiConfig {
   readonly auth: AuthConfig;
   readonly display: DisplayConfig;
   readonly telegram: TelegramConfig;
+  readonly auto_approve: AutoApproveConfig;
 }
 
 /** Built-in defaults used when no config file or CLI flags are provided */
@@ -80,6 +82,15 @@ export const DEFAULT_CONFIG: RemiConfig = {
     bot_token: '',
     authorized_chat_ids: [],
     authorized_user_ids: [],
+  },
+  auto_approve: {
+    enabled: false,
+    provider: 'ollama',
+    model: 'gemma4:e2b',
+    api_key: '',
+    base_url: 'http://localhost:11434/v1',
+    timeout: 10,
+    log_decisions: true,
   },
 };
 
@@ -108,6 +119,10 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
     telegram: mergeSection(
       base.telegram,
       partial['telegram'] as Record<string, unknown> | undefined,
+    ),
+    auto_approve: mergeSection(
+      base.auto_approve,
+      partial['auto_approve'] as Record<string, unknown> | undefined,
     ),
   };
 }
@@ -196,12 +211,33 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       .filter((n) => !Number.isNaN(n));
   }
 
+  // Auto-approve env vars
+  const auto_approve = { ...config.auto_approve };
+  if (env['REMI_AUTO_APPROVE'] === 'true') {
+    (auto_approve as { enabled: boolean }).enabled = true;
+  } else if (env['REMI_AUTO_APPROVE'] === 'false') {
+    (auto_approve as { enabled: boolean }).enabled = false;
+  }
+  if (env['REMI_AUTO_APPROVE_MODEL']) {
+    (auto_approve as { model: string }).model = env['REMI_AUTO_APPROVE_MODEL'];
+  }
+  if (env['REMI_AUTO_APPROVE_PROVIDER']) {
+    (auto_approve as { provider: string }).provider = env['REMI_AUTO_APPROVE_PROVIDER'];
+  }
+  if (env['REMI_AUTO_APPROVE_API_KEY']) {
+    (auto_approve as { api_key: string }).api_key = env['REMI_AUTO_APPROVE_API_KEY'];
+  }
+  if (env['REMI_AUTO_APPROVE_BASE_URL']) {
+    (auto_approve as { base_url: string }).base_url = env['REMI_AUTO_APPROVE_BASE_URL'];
+  }
+
   return {
     ...config,
     daemon,
     network,
     display,
     telegram,
+    auto_approve,
   };
 }
 
@@ -235,6 +271,15 @@ enabled = ${DEFAULT_CONFIG.telegram.enabled}
 bot_token = ""
 authorized_chat_ids = []
 authorized_user_ids = []
+
+# [auto_approve]
+# enabled = false
+# provider = "ollama"           # "ollama" | "openrouter" | custom base URL
+# model = "gemma4:e2b"
+# api_key = ""                  # Required for OpenRouter, empty for Ollama
+# base_url = "http://localhost:11434/v1"
+# timeout = 10                  # Seconds; falls through to user if exceeded
+# log_decisions = true
 `;
 }
 
@@ -290,6 +335,15 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  bot_token = "${config.telegram.bot_token ? '***' : ''}"`);
   lines.push(`  authorized_chat_ids = [${config.telegram.authorized_chat_ids.join(', ')}]`);
   lines.push(`  authorized_user_ids = [${config.telegram.authorized_user_ids.join(', ')}]`);
+  lines.push('');
+  lines.push('[auto_approve]');
+  lines.push(`  enabled = ${config.auto_approve.enabled}`);
+  lines.push(`  provider = "${config.auto_approve.provider}"`);
+  lines.push(`  model = "${config.auto_approve.model}"`);
+  lines.push(`  api_key = "${config.auto_approve.api_key ? '***' : ''}"`);
+  lines.push(`  base_url = "${config.auto_approve.base_url}"`);
+  lines.push(`  timeout = ${config.auto_approve.timeout}`);
+  lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
 
   return lines.join('\n');
 }

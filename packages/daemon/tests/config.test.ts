@@ -237,4 +237,117 @@ describe('formatConfig', () => {
     expect(output).toContain('***');
     expect(output).not.toContain('secret-token');
   });
+
+  test('includes auto_approve section', () => {
+    const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
+    expect(output).toContain('[auto_approve]');
+    expect(output).toContain('enabled = false');
+    expect(output).toContain('provider = "ollama"');
+  });
+
+  test('masks auto_approve api_key', () => {
+    const config = {
+      ...DEFAULT_CONFIG,
+      auto_approve: { ...DEFAULT_CONFIG.auto_approve, api_key: 'sk-secret' },
+    };
+    const output = formatConfig(config);
+    expect(output).toContain('api_key = "***"');
+    expect(output).not.toContain('sk-secret');
+  });
+});
+
+describe('auto_approve config', () => {
+  test('defaults are present', () => {
+    expect(DEFAULT_CONFIG.auto_approve).toEqual({
+      enabled: false,
+      provider: 'ollama',
+      model: 'gemma4:e2b',
+      api_key: '',
+      base_url: 'http://localhost:11434/v1',
+      timeout: 10,
+      log_decisions: true,
+    });
+  });
+
+  test('loads auto_approve from TOML', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      `
+[auto_approve]
+enabled = true
+provider = "openrouter"
+model = "anthropic/claude-3-haiku"
+api_key = "sk-test"
+timeout = 5
+`,
+    );
+
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.enabled).toBe(true);
+    expect(config.auto_approve.provider).toBe('openrouter');
+    expect(config.auto_approve.model).toBe('anthropic/claude-3-haiku');
+    expect(config.auto_approve.api_key).toBe('sk-test');
+    expect(config.auto_approve.timeout).toBe(5);
+    // Defaults preserved for unset fields
+    expect(config.auto_approve.base_url).toBe('http://localhost:11434/v1');
+    expect(config.auto_approve.log_decisions).toBe(true);
+  });
+
+  test('preserves auto_approve defaults when section missing', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve).toEqual(DEFAULT_CONFIG.auto_approve);
+  });
+
+  test('REMI_AUTO_APPROVE env override', () => {
+    process.env['REMI_AUTO_APPROVE'] = 'true';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.enabled).toBe(true);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE'];
+  });
+
+  test('REMI_AUTO_APPROVE_MODEL env override', () => {
+    process.env['REMI_AUTO_APPROVE_MODEL'] = 'gemma4:e2b';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.model).toBe('gemma4:e2b');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_MODEL'];
+  });
+
+  test('REMI_AUTO_APPROVE_API_KEY env override', () => {
+    process.env['REMI_AUTO_APPROVE_API_KEY'] = 'sk-override';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.api_key).toBe('sk-override');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_API_KEY'];
+  });
+
+  test('REMI_AUTO_APPROVE=false disables when config has enabled=true', () => {
+    const enabledConfig = {
+      ...DEFAULT_CONFIG,
+      auto_approve: { ...DEFAULT_CONFIG.auto_approve, enabled: true },
+    };
+    process.env['REMI_AUTO_APPROVE'] = 'false';
+    const config = applyEnvOverrides(enabledConfig);
+    expect(config.auto_approve.enabled).toBe(false);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE'];
+  });
+
+  test('REMI_AUTO_APPROVE_PROVIDER env override', () => {
+    process.env['REMI_AUTO_APPROVE_PROVIDER'] = 'openrouter';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.provider).toBe('openrouter');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_PROVIDER'];
+  });
+
+  test('REMI_AUTO_APPROVE_BASE_URL env override', () => {
+    process.env['REMI_AUTO_APPROVE_BASE_URL'] = 'http://custom:8080/v1';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.base_url).toBe('http://custom:8080/v1');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_BASE_URL'];
+  });
 });

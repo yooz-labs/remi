@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.23-dev.7'; // REMI_COMPILED_VERSION
+      return '0.4.23-p314.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.23-dev.7'; // REMI_COMPILED_VERSION
+    return '0.4.23-p314.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -276,6 +276,7 @@ import {
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   CONFIG_PATH,
@@ -1497,6 +1498,27 @@ const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
 
 // ---------------------------------------------------------------------------
+// Auto-approve service (optional, LLM-based permission evaluation)
+// ---------------------------------------------------------------------------
+let autoApproveService: AutoApproveService | null = null;
+{
+  const aaCfg = remiConfig.auto_approve;
+  const aaEnabled = parsedArgs.autoApprove ?? aaCfg.enabled;
+  if (aaEnabled) {
+    const provider = parsedArgs.autoApproveProvider ?? aaCfg.provider;
+    const model = parsedArgs.autoApproveModel ?? aaCfg.model;
+    const apiKey = parsedArgs.autoApproveApiKey ?? aaCfg.api_key;
+    const baseUrl = resolveProviderUrl(provider, aaCfg.base_url);
+
+    autoApproveService = new AutoApproveService(
+      { ...aaCfg, provider, model, api_key: apiKey, base_url: baseUrl, enabled: true },
+      writeToLog,
+    );
+    writeToLog(`[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // SIGTSTP protection: the daemon must never suspend itself.
 // When Claude Code handles Ctrl+Z (which spawns a subshell inside its PTY),
 // the terminal may propagate SIGTSTP to the process group. Ignoring it here
@@ -1965,6 +1987,42 @@ async function createNewSession(
     hookServer.on('PermissionRequest', (input) => {
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
+
+      // Auto-approve gate: evaluate before creating Question object.
+      // Intercepts at hook level, bypassing the mobile question UI entirely.
+      if (autoApproveService) {
+        const aaService = autoApproveService;
+        aaService
+          .evaluate(input.tool_name, input.tool_input)
+          .then(async (result) => {
+            if (result.decision === 'approve' || result.decision === 'deny') {
+              // Suppress the Notification(permission_prompt) that follows shortly.
+              // Dedup window in HookEventBridge is 5000ms, well above typical latency.
+              hookBridge.markPermissionHandled();
+              const session = sessionRegistry.getSession(sessionId);
+              if (session) {
+                const value = result.decision === 'approve' ? '1' : '3';
+                await session.pty.submitInput(value);
+                sessionRegistry.updateStatus(
+                  sessionId,
+                  result.decision === 'approve' ? 'executing' : 'thinking',
+                );
+                return;
+              }
+              logError(
+                `[AutoApprove] Session ${sessionId} not found after ${result.decision}; escalating`,
+              );
+            }
+            // escalate or session-not-found: fall through to normal question flow
+            handlers.onPermissionRequest?.(input);
+          })
+          .catch((err) => {
+            logError('[AutoApprove] Unexpected error, escalating to user:', err);
+            handlers.onPermissionRequest?.(input);
+          });
+        return;
+      }
+
       handlers.onPermissionRequest?.(input);
     });
     hookServer.on('Stop', (input) => {
