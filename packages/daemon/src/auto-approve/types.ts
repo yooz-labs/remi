@@ -24,7 +24,7 @@ export interface AutoApproveConfig {
   readonly enabled: boolean;
   /** Provider shortname or custom base URL: 'ollama', 'openrouter', or a URL */
   readonly provider: string;
-  /** Model name (e.g. 'qwen3.5:4b', 'anthropic/claude-3-haiku') */
+  /** Model name (e.g. 'gemma4:e2b', 'anthropic/claude-3-haiku') */
   readonly model: string;
   /** API key (empty for Ollama, required for OpenRouter) */
   readonly api_key: string;

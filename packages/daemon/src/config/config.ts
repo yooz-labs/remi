@@ -86,7 +86,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
   auto_approve: {
     enabled: false,
     provider: 'ollama',
-    model: 'qwen3.5:4b',
+    model: 'gemma4:e2b',
     api_key: '',
     base_url: 'http://localhost:11434/v1',
     timeout: 10,
@@ -275,7 +275,7 @@ authorized_user_ids = []
 # [auto_approve]
 # enabled = false
 # provider = "ollama"           # "ollama" | "openrouter" | custom base URL
-# model = "qwen3.5:4b"
+# model = "gemma4:e2b"
 # api_key = ""                  # Required for OpenRouter, empty for Ollama
 # base_url = "http://localhost:11434/v1"
 # timeout = 10                  # Seconds; falls through to user if exceeded

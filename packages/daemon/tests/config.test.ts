@@ -261,7 +261,7 @@ describe('auto_approve config', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
       provider: 'ollama',
-      model: 'qwen3.5:4b',
+      model: 'gemma4:e2b',
       api_key: '',
       base_url: 'http://localhost:11434/v1',
       timeout: 10,

@@ -313,7 +313,7 @@ export function formatHelp(version: string): string {
     bold('Auto-Approve (LLM):'),
     entry('--auto-approve', 'Enable LLM auto-approve for permissions'),
     entry('--no-auto-approve', 'Disable auto-approve (overrides config)'),
-    entry('--auto-approve-model M', 'LLM model (default: qwen3.5:4b)'),
+    entry('--auto-approve-model M', 'LLM model (default: gemma4:e2b)'),
     entry('--auto-approve-provider P', 'ollama | openrouter | custom URL'),
     entry('--auto-approve-api-key K', 'API key (OpenRouter, etc.)'),
     '',
