@@ -21,6 +21,9 @@ export interface PreToolUseHookInput extends HookCommonInput {
   hook_event_name: 'PreToolUse';
   tool_name: string;
   tool_input: Record<string, unknown>;
+  /** Unique ID for this tool invocation. Claude Code sends this so Pre/PostToolUse
+   *  pairs can be matched even when calls nest (e.g. Task inside another Task). */
+  tool_use_id?: string;
 }
 
 export interface PostToolUseHookInput extends HookCommonInput {
@@ -28,6 +31,7 @@ export interface PostToolUseHookInput extends HookCommonInput {
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_response: unknown;
+  tool_use_id?: string;
 }
 
 export interface NotificationHookInput extends HookCommonInput {
