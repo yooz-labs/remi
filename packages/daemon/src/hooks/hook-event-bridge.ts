@@ -32,6 +32,7 @@ import type {
   SubagentStartHookInput,
   SubagentStopHookInput,
 } from './hook-types.ts';
+import { SubagentContextTracker } from './subagent-context-tracker.ts';
 
 export interface HookBridgeEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
@@ -56,10 +57,18 @@ export class HookEventBridge {
   private readonly events: HookBridgeEvents;
   /** Timestamp of last question emitted from handlePermissionRequest */
   private lastPermissionEmitAt = 0;
+  /** Tracks subagent/team nesting depth to filter inter-agent questions. */
+  private readonly subagentContext = new SubagentContextTracker();
 
   constructor(sessionId: UUID, events: HookBridgeEvents) {
     this.sessionId = sessionId;
     this.events = events;
+  }
+
+  /** True when the main agent is inside a Task tool call (subagent running).
+   *  Callers can use this to short-circuit auto-approve entirely during team work. */
+  isInSubagentContext(): boolean {
+    return this.subagentContext.isInSubagentContext();
   }
 
   /** Mark that a PermissionRequest was handled externally (e.g. by auto-approve).
@@ -87,10 +96,12 @@ export class HookEventBridge {
   }
 
   handlePreToolUse(input: PreToolUseHookInput): void {
+    this.subagentContext.onPreToolUse(input.tool_name, input.tool_use_id);
     this.events.onStatusChange('executing', input.tool_name);
   }
 
-  handlePostToolUse(_input: PostToolUseHookInput): void {
+  handlePostToolUse(input: PostToolUseHookInput): void {
+    this.subagentContext.onPostToolUse(input.tool_name, input.tool_use_id);
     this.events.onStatusChange('thinking');
   }
 
@@ -100,6 +111,13 @@ export class HookEventBridge {
       if (Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS) {
         console.debug(
           `[HookEventBridge] Suppressed duplicate Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
+        );
+        return;
+      }
+      // Subagent/team context: don't bubble inter-agent questions to the user.
+      if (this.subagentContext.isInSubagentContext()) {
+        console.debug(
+          `[HookEventBridge] Suppressed subagent Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
         );
         return;
       }
@@ -143,6 +161,18 @@ export class HookEventBridge {
   }
 
   handlePermissionRequest(input: PermissionRequestHookInput): void {
+    // Subagent/team context: suppress inter-agent questions from reaching the user.
+    // The main agent is blocked waiting for Task to return and cannot generate
+    // questions during this window. Any PermissionRequest here is from a subagent.
+    if (this.subagentContext.isInSubagentContext()) {
+      console.debug(
+        `[HookEventBridge] Suppressed subagent PermissionRequest: tool=${input.tool_name}`,
+      );
+      // Still mark dedup so the follow-up Notification(permission_prompt) is suppressed too.
+      this.lastPermissionEmitAt = Date.now();
+      return;
+    }
+
     const toolName = input.tool_name || 'unknown tool';
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
     const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;

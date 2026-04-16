@@ -139,6 +139,20 @@ export class HookServer {
       });
     }
 
+    // Diagnostic dump: when REMI_HOOK_DEBUG=1, write every raw hook payload
+    // to ~/.remi/hook-diag.jsonl for inspecting what Claude Code actually sends.
+    // Used to investigate team/subagent event filtering (issue #316).
+    if (process.env['REMI_HOOK_DEBUG'] === '1') {
+      try {
+        const logLine = JSON.stringify({ _ts: new Date().toISOString(), ...body });
+        const logPath = `${process.env['HOME']}/.remi/hook-diag.jsonl`;
+        // Append synchronously so order is preserved across rapid events
+        require('node:fs').appendFileSync(logPath, `${logLine}\n`);
+      } catch {
+        // Diagnostic logging must never break the hook path
+      }
+    }
+
     const eventName = body['hook_event_name'] as string;
 
     if (!eventName) {

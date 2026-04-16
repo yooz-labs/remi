@@ -363,4 +363,151 @@ describe('HookEventBridge', () => {
       expect(questions[0]?.text).toBe('Allow Bash: ssh hallu "uv run pytest"');
     });
   });
+
+  describe('subagent context filtering (issue #316)', () => {
+    it('suppresses PermissionRequest while inside a Task tool call', () => {
+      const { bridge, questions } = createBridge();
+
+      // Main agent spawns subagent via Task
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'general-purpose', prompt: 'do stuff' },
+        tool_use_id: 'tu_task_1',
+      } as PreToolUseHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      // Subagent tries to run an unapproved Bash command — PermissionRequest fires
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'nmap --version' },
+      } as PermissionRequestHookInput);
+
+      // User should NOT see this question
+      expect(questions).toHaveLength(0);
+
+      // Task completes; context exits
+      bridge.handlePostToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_response: { result: 'done' },
+        tool_use_id: 'tu_task_1',
+      } as PostToolUseHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+
+      // Now a real user-facing PermissionRequest SHOULD pass through
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'dig example.com' },
+      } as PermissionRequestHookInput);
+
+      expect(questions).toHaveLength(1);
+      expect(questions[0]?.text).toContain('dig example.com');
+    });
+
+    it('suppresses Notification(permission_prompt) while in subagent context', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_1',
+      } as PreToolUseHookInput);
+
+      // Notification(permission_prompt) that would fire during subagent work
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Claude needs your permission to use Bash',
+      } as NotificationHookInput);
+
+      expect(questions).toHaveLength(0);
+    });
+
+    it('concurrent Task calls: context exits only when all complete', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_A',
+      } as PreToolUseHookInput);
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_B',
+      } as PreToolUseHookInput);
+
+      // Close A only
+      bridge.handlePostToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_response: {},
+        tool_use_id: 'tu_A',
+      } as PostToolUseHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(true); // B still running
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      } as PermissionRequestHookInput);
+      expect(questions).toHaveLength(0);
+
+      // Close B
+      bridge.handlePostToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_response: {},
+        tool_use_id: 'tu_B',
+      } as PostToolUseHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
+    it('nested non-Task tool uses do NOT enter context', () => {
+      const { bridge, questions } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu_b1',
+      } as PreToolUseHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+
+      // Normal PermissionRequest should still reach the user
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'sudo something' },
+      } as PermissionRequestHookInput);
+
+      expect(questions).toHaveLength(1);
+    });
+  });
 });
