@@ -34,4 +34,23 @@ export interface AutoApproveConfig {
   readonly timeout: number;
   /** Whether to log all decisions */
   readonly log_decisions: boolean;
+  /**
+   * Substring patterns that short-circuit to approve without calling the LLM.
+   * For Bash: matched against the command string (substring contains).
+   * For other tools: list the tool name (e.g. "Read", "Glob") for any invocation.
+   * Default: empty. Deny list is checked first and always wins.
+   */
+  readonly allow: readonly string[];
+  /**
+   * Substring patterns that short-circuit to deny without calling the LLM.
+   * Same matching rules as `allow`. Checked BEFORE allow; always wins.
+   * Default: empty.
+   */
+  readonly deny: readonly string[];
+  /**
+   * Natural-language guidance appended to the LLM system prompt.
+   * Lets users steer the LLM for ambiguous cases not covered by allow/deny.
+   * Empty string means no extra guidance (use default prompt only).
+   */
+  readonly instructions: string;
 }

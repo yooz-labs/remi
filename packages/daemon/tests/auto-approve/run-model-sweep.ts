@@ -322,6 +322,9 @@ function makeConfig(model: string): AutoApproveConfig {
     base_url: 'http://localhost:11434/v1',
     timeout: 60,
     log_decisions: false,
+    allow: [],
+    deny: [],
+    instructions: '',
   };
 }
 

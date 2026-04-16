@@ -92,6 +92,9 @@ export interface ParsedArgs {
   readonly autoApproveModel: string | undefined;
   readonly autoApproveProvider: string | undefined;
   readonly autoApproveApiKey: string | undefined;
+  readonly autoApproveAllow: readonly string[];
+  readonly autoApproveDeny: readonly string[];
+  readonly autoApproveInstructions: string | undefined;
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
   readonly showHelp: boolean;
@@ -135,6 +138,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let autoApproveModel: string | undefined;
   let autoApproveProvider: string | undefined;
   let autoApproveApiKey: string | undefined;
+  const autoApproveAllow: string[] = [];
+  const autoApproveDeny: string[] = [];
+  let autoApproveInstructions: string | undefined;
   let showVersion = false;
   let showHelp = false;
   let error: string | undefined;
@@ -329,6 +335,27 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         autoApproveApiKey = nextArg;
         i++;
       }
+    } else if (arg === '--auto-approve-allow') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-allow requires a value.';
+      } else {
+        autoApproveAllow.push(nextArg);
+        i++;
+      }
+    } else if (arg === '--auto-approve-deny') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-deny requires a value.';
+      } else {
+        autoApproveDeny.push(nextArg);
+        i++;
+      }
+    } else if (arg === '--auto-approve-instructions') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-instructions requires a value.';
+      } else {
+        autoApproveInstructions = nextArg;
+        i++;
+      }
     } else if (arg === '--version' || arg === '-v') {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -403,6 +430,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     autoApproveModel,
     autoApproveProvider,
     autoApproveApiKey,
+    autoApproveAllow,
+    autoApproveDeny,
+    autoApproveInstructions,
     orphanTimeout,
     claudeArgs,
     showVersion,

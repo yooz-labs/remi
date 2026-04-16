@@ -91,6 +91,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     base_url: 'http://localhost:11434/v1',
     timeout: 10,
     log_decisions: true,
+    allow: [],
+    deny: [],
+    instructions: '',
   },
 };
 
@@ -149,11 +152,61 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
 
   try {
     const parsed = parseToml(raw) as Record<string, unknown>;
-    return deepMerge(DEFAULT_CONFIG, parsed);
+    const merged = deepMerge(DEFAULT_CONFIG, parsed);
+    validateAutoApprove(merged.auto_approve, configPath);
+    return merged;
   } catch (err) {
     throw new Error(
       `Invalid TOML in ${configPath}: ${err instanceof Error ? err.message : String(err)}. Fix the syntax or delete the file to use defaults.`,
     );
+  }
+}
+
+/**
+ * Validate auto_approve config has correct runtime types.
+ *
+ * TOML doesn't enforce TypeScript types. A user writing `allow = "git"` (string
+ * instead of string[]) would produce a runtime value that matchPattern would
+ * iterate character-by-character, auto-approving almost every command. This
+ * validator refuses to start with such misconfigurations.
+ *
+ * Also warns about dangerously short patterns that would match too broadly.
+ */
+function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
+  const isStringArray = (v: unknown): v is readonly string[] =>
+    Array.isArray(v) && v.every((s) => typeof s === 'string');
+
+  if (!isStringArray(cfg.allow)) {
+    throw new Error(
+      `Invalid auto_approve.allow in ${configPath}: must be an array of strings. Example: allow = ["git status", "bun test"]`,
+    );
+  }
+  if (!isStringArray(cfg.deny)) {
+    throw new Error(
+      `Invalid auto_approve.deny in ${configPath}: must be an array of strings. Example: deny = ["rm -rf /", "sudo "]`,
+    );
+  }
+  if (typeof cfg.instructions !== 'string') {
+    throw new Error(
+      `Invalid auto_approve.instructions in ${configPath}: must be a string (use triple-quoted """ for multiline).`,
+    );
+  }
+
+  // Warn about dangerously short patterns that would match too broadly.
+  const MIN_PATTERN_LENGTH = 2;
+  for (const p of cfg.allow) {
+    if (p.trim().length < MIN_PATTERN_LENGTH) {
+      console.warn(
+        `[AutoApprove] Warning: allow pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will match many commands. Use a more specific pattern.`,
+      );
+    }
+  }
+  for (const p of cfg.deny) {
+    if (p.trim().length < MIN_PATTERN_LENGTH) {
+      console.warn(
+        `[AutoApprove] Warning: deny pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will block many commands. Use a more specific pattern.`,
+      );
+    }
   }
 }
 
@@ -230,6 +283,22 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
   if (env['REMI_AUTO_APPROVE_BASE_URL']) {
     (auto_approve as { base_url: string }).base_url = env['REMI_AUTO_APPROVE_BASE_URL'];
   }
+  if (env['REMI_AUTO_APPROVE_INSTRUCTIONS']) {
+    (auto_approve as { instructions: string }).instructions = env['REMI_AUTO_APPROVE_INSTRUCTIONS'];
+  }
+  // Comma- or newline-separated patterns. Env vars override (not append to) config.
+  if (env['REMI_AUTO_APPROVE_ALLOW']) {
+    (auto_approve as { allow: readonly string[] }).allow = env['REMI_AUTO_APPROVE_ALLOW']
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+  if (env['REMI_AUTO_APPROVE_DENY']) {
+    (auto_approve as { deny: readonly string[] }).deny = env['REMI_AUTO_APPROVE_DENY']
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
 
   return {
     ...config,
@@ -280,6 +349,18 @@ authorized_user_ids = []
 # base_url = "http://localhost:11434/v1"
 # timeout = 10                  # Seconds; falls through to user if exceeded
 # log_decisions = true
+#
+# User-defined rules. Substring matching for Bash, tool-name match for others.
+# Checked BEFORE the LLM. Deny is checked first and always wins.
+# allow = ["git status", "bun test", "bunx biome", "Read", "Glob", "Grep"]
+# deny = ["rm -rf /", "sudo ", "curl | sh", "| bash"]
+#
+# Natural-language guidance appended to the LLM system prompt:
+# instructions = """
+# Approve all bun test and biome runs.
+# Escalate anything touching .env or secrets/.
+# Deny any git push to main.
+# """
 `;
 }
 
@@ -344,6 +425,11 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  base_url = "${config.auto_approve.base_url}"`);
   lines.push(`  timeout = ${config.auto_approve.timeout}`);
   lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
+  lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
+  lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
+  const instr = config.auto_approve.instructions;
+  const instrDisplay = instr ? `"${instr.slice(0, 40)}${instr.length > 40 ? '...' : ''}"` : '""';
+  lines.push(`  instructions = ${instrDisplay}`);
 
   return lines.join('\n');
 }

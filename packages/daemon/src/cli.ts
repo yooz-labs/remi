@@ -1509,12 +1509,34 @@ let autoApproveService: AutoApproveService | null = null;
     const model = parsedArgs.autoApproveModel ?? aaCfg.model;
     const apiKey = parsedArgs.autoApproveApiKey ?? aaCfg.api_key;
     const baseUrl = resolveProviderUrl(provider, aaCfg.base_url);
+    // CLI allow/deny flags append to config lists; instructions override config.
+    const allow = [...aaCfg.allow, ...parsedArgs.autoApproveAllow];
+    const deny = [...aaCfg.deny, ...parsedArgs.autoApproveDeny];
+    const instructions = parsedArgs.autoApproveInstructions ?? aaCfg.instructions;
+    if (parsedArgs.autoApproveInstructions && aaCfg.instructions) {
+      writeToLog(
+        `[AutoApprove] CLI --auto-approve-instructions overrides TOML instructions (${aaCfg.instructions.length} chars discarded)`,
+      );
+    }
 
     autoApproveService = new AutoApproveService(
-      { ...aaCfg, provider, model, api_key: apiKey, base_url: baseUrl, enabled: true },
+      {
+        ...aaCfg,
+        provider,
+        model,
+        api_key: apiKey,
+        base_url: baseUrl,
+        enabled: true,
+        allow,
+        deny,
+        instructions,
+      },
       writeToLog,
     );
-    writeToLog(`[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}`);
+    const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
+    writeToLog(
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}`,
+    );
   }
 }
 
