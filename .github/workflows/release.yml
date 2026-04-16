@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   build:
+    # Skip binary build for pre-release tags (dev, pr, rc, alpha, beta, etc.).
+    # Only stable semver tags like v0.5.0 trigger the full release pipeline.
+    if: ${{ !contains(github.ref_name, '-') }}
     strategy:
       matrix:
         include:
