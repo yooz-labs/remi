@@ -1829,6 +1829,19 @@ async function createNewSession(
           transcriptFallbackTimers.delete(sessionId);
         }
 
+        // If a fallback watcher claimed the slot with a different (stale) file,
+        // replace it with the authoritative hook-provided path.
+        const existingWatcher = transcriptWatchers.get(sessionId);
+        if (existingWatcher && existingWatcher.filePath !== input.transcript_path) {
+          log(
+            `[Hooks] Replacing stale watcher: ${existingWatcher.filePath} -> ${input.transcript_path}`,
+          );
+          existingWatcher.stop();
+          transcriptWatchers.delete(sessionId);
+          messageApi.reset();
+          sendAndRecord(createSessionReset(sessionId, 'transcript_changed'));
+        }
+
         if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
           startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
         }
@@ -1880,6 +1893,19 @@ async function createNewSession(
           claudeSessionId = hookClaudeSessionId;
           log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
           sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+          // If a fallback watcher claimed the slot with a different (stale) file,
+          // replace it with the authoritative hook-provided path.
+          const existingWatcher = transcriptWatchers.get(sessionId);
+          if (existingWatcher && existingWatcher.filePath !== transcriptPath) {
+            log(
+              `[Hooks] Replacing stale watcher (SessionInfo): ${existingWatcher.filePath} -> ${transcriptPath}`,
+            );
+            existingWatcher.stop();
+            transcriptWatchers.delete(sessionId);
+            messageApi.reset();
+            sendAndRecord(createSessionReset(sessionId, 'transcript_changed'));
+          }
 
           if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
@@ -2128,8 +2154,8 @@ async function createNewSession(
   return ptySession;
 }
 
-/** Extract Claude session ID from transcript filename and persist it. */
-function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
+/** Extract Claude session ID from transcript filename and persist it. Returns the extracted ID or null. */
+function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): string | null {
   // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
   // The underscore split is defensive in case a prefixed format is ever introduced.
   const basename = path.basename(transcriptPath, '.jsonl');
@@ -2138,7 +2164,9 @@ function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
   if (candidateId && candidateId.length >= 8) {
     sessionStore.updateClaudeSessionId(sessionId, candidateId);
     log(`Claude session ID: ${candidateId}`);
+    return candidateId;
   }
+  return null;
 }
 
 /** Start watching a transcript file for a session. */
