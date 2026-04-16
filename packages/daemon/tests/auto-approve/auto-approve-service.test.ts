@@ -72,7 +72,7 @@ describe('parseDecision', () => {
   test('missing decision field escalates', () => {
     const r = parseDecision('{"reasoning":"no decision field"}');
     expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('Unparseable');
+    expect(r.reasoning).toContain('Unparsable');
   });
 
   test('missing reasoning field still works', () => {
@@ -89,7 +89,7 @@ describe('parseDecision', () => {
   test('invalid JSON escalates', () => {
     const r = parseDecision('this is not json at all');
     expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('Unparseable');
+    expect(r.reasoning).toContain('Unparsable');
   });
 
   test('empty string escalates', () => {

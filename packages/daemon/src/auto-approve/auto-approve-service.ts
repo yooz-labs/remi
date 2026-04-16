@@ -36,7 +36,7 @@ export function parseDecision(raw: string): { decision: AutoApproveDecision; rea
 
   return {
     decision: 'escalate',
-    reasoning: `Unparseable LLM response: ${raw.slice(0, 100)}`,
+    reasoning: `Unparsable LLM response: ${raw.slice(0, 100)}`,
   };
 }
 
