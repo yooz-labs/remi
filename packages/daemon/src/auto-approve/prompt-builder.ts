@@ -51,10 +51,17 @@ Respond with JSON ONLY. No markdown, no explanation outside JSON:
 
 /**
  * Build the chat messages for the auto-approve evaluation.
+ *
+ * @param toolName Claude Code tool name (Bash, Edit, etc.)
+ * @param toolInput Raw tool input from the PermissionRequest hook
+ * @param instructions Optional natural-language guidance from user config.
+ *                     Appended to the system prompt so the LLM considers
+ *                     user-specific conventions alongside the default rules.
  */
 export function buildPrompt(
   toolName: string,
   toolInput: Record<string, unknown>,
+  instructions?: string,
 ): readonly ChatMessage[] {
   const inputStr = JSON.stringify(toolInput, null, 2);
   // Truncate very large inputs to avoid sending huge payloads
@@ -62,8 +69,15 @@ export function buildPrompt(
 
   const userMessage = `Tool: ${toolName}\nInput: ${truncated}`;
 
+  // If the user provided instructions, append them as an additional section.
+  // They come AFTER the default guidelines so user rules can refine defaults.
+  const trimmedInstructions = instructions?.trim() ?? '';
+  const systemContent = trimmedInstructions
+    ? `${SYSTEM_PROMPT}\n\nUSER-SPECIFIC GUIDANCE (overrides/refines the defaults above):\n${trimmedInstructions}`
+    : SYSTEM_PROMPT;
+
   return [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemContent },
     { role: 'user', content: userMessage },
   ];
 }

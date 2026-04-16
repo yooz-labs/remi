@@ -266,6 +266,9 @@ describe('auto_approve config', () => {
       base_url: 'http://localhost:11434/v1',
       timeout: 10,
       log_decisions: true,
+      allow: [],
+      deny: [],
+      instructions: '',
     });
   });
 
@@ -349,5 +352,81 @@ timeout = 5
     expect(config.auto_approve.base_url).toBe('http://custom:8080/v1');
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env['REMI_AUTO_APPROVE_BASE_URL'];
+  });
+
+  test('loads allow/deny/instructions from TOML', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      `
+[auto_approve]
+enabled = true
+allow = ["git status", "bun test", "bunx biome"]
+deny = ["rm -rf /", "sudo "]
+instructions = """
+Approve all test runs.
+Escalate anything touching secrets.
+"""
+`,
+    );
+
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.allow).toEqual(['git status', 'bun test', 'bunx biome']);
+    expect(config.auto_approve.deny).toEqual(['rm -rf /', 'sudo ']);
+    expect(config.auto_approve.instructions).toContain('Approve all test runs');
+    expect(config.auto_approve.instructions).toContain('Escalate anything touching secrets');
+  });
+
+  test('allow/deny default to empty arrays', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nenabled = true\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.allow).toEqual([]);
+    expect(config.auto_approve.deny).toEqual([]);
+    expect(config.auto_approve.instructions).toBe('');
+  });
+
+  test('rejects allow as string (security: would match characters)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nallow = "git"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.allow/);
+  });
+
+  test('rejects deny as string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndeny = "rm"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.deny/);
+  });
+
+  test('rejects instructions as array', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ninstructions = ["line1", "line2"]\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.instructions/);
+  });
+
+  test('rejects allow with non-string elements', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nallow = ["git", 42]\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.allow/);
+  });
+
+  test('REMI_AUTO_APPROVE_ALLOW env var (comma-separated)', () => {
+    process.env['REMI_AUTO_APPROVE_ALLOW'] = 'git status, bun test , Read';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.allow).toEqual(['git status', 'bun test', 'Read']);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_ALLOW'];
+  });
+
+  test('REMI_AUTO_APPROVE_DENY env var (newline-separated, trimmed)', () => {
+    // Note: env vars strip surrounding whitespace. To use patterns with
+    // trailing spaces (like "sudo " disambiguation), use the config file.
+    process.env['REMI_AUTO_APPROVE_DENY'] = 'rm -rf /\nsudo -i\ncurl | sh';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.deny).toEqual(['rm -rf /', 'sudo -i', 'curl | sh']);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_DENY'];
+  });
+
+  test('REMI_AUTO_APPROVE_INSTRUCTIONS env var', () => {
+    process.env['REMI_AUTO_APPROVE_INSTRUCTIONS'] = 'Be careful with git push';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.instructions).toBe('Be careful with git push');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_INSTRUCTIONS'];
   });
 });

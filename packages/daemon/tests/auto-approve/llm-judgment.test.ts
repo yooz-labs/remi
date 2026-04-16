@@ -53,6 +53,9 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     base_url: 'http://localhost:11434/v1',
     timeout: 30,
     log_decisions: true,
+    allow: [],
+    deny: [],
+    instructions: '',
     ...overrides,
   };
 }

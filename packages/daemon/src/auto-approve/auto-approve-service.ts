@@ -10,6 +10,7 @@
 
 import { chatCompletion, resolveProviderUrl } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
+import { matchPattern } from './pattern-matcher.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import type { AutoApproveConfig, AutoApproveDecision, AutoApproveResult } from './types.ts';
 
@@ -44,6 +45,9 @@ export class AutoApproveService {
   private readonly llmConfig: LLMClientConfig;
   private readonly logFn: (msg: string) => void;
   private readonly logDecisions: boolean;
+  private readonly allow: readonly string[];
+  private readonly deny: readonly string[];
+  private readonly instructions: string;
   /** Prevents concurrent evaluations. Second request escalates immediately. */
   private evaluating = false;
 
@@ -56,6 +60,9 @@ export class AutoApproveService {
     };
     this.logFn = logFn;
     this.logDecisions = config.log_decisions;
+    this.allow = config.allow;
+    this.deny = config.deny;
+    this.instructions = config.instructions;
   }
 
   /**
@@ -76,39 +83,63 @@ export class AutoApproveService {
     const model = this.llmConfig.model;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
 
-    if (this.evaluating) {
-      this.logFn(`${prefix} Concurrent evaluation blocked, escalating to user`);
-      return {
-        decision: 'escalate',
-        reasoning: 'Concurrent evaluation in progress',
-        durationMs: 0,
-        model,
-      };
-    }
-
-    this.evaluating = true;
+    // Entire body wrapped in try/catch so the "never throws" contract holds
+    // even if matchPattern or other sync code fails (e.g. malformed config).
     try {
-      const messages = buildPrompt(toolName, toolInput);
-      const response = await chatCompletion(this.llmConfig, messages);
-      const durationMs = Date.now() - start;
-
-      const parsed = parseDecision(response.content);
-
-      const result: AutoApproveResult = {
-        decision: parsed.decision,
-        reasoning: parsed.reasoning,
-        durationMs,
-        model: response.model,
-      };
-
-      if (this.logDecisions) {
-        const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;
-        this.logFn(
-          `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) - ${result.reasoning}`,
-        );
+      // Deny list: checked first, always wins. No LLM call.
+      const denyMatch = matchPattern(toolName, toolInput, this.deny);
+      if (denyMatch !== null) {
+        const reasoning = `deny-matched pattern: "${denyMatch}"`;
+        this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
+        return { decision: 'deny', reasoning, durationMs: 0, model };
       }
 
-      return result;
+      // Allow list: bypasses LLM for known-safe operations.
+      const allowMatch = matchPattern(toolName, toolInput, this.allow);
+      if (allowMatch !== null) {
+        const reasoning = `allow-matched pattern: "${allowMatch}"`;
+        if (this.logDecisions) {
+          this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
+        }
+        return { decision: 'approve', reasoning, durationMs: 0, model };
+      }
+
+      if (this.evaluating) {
+        this.logFn(`${prefix} Concurrent evaluation blocked, escalating to user`);
+        return {
+          decision: 'escalate',
+          reasoning: 'Concurrent evaluation in progress',
+          durationMs: 0,
+          model,
+        };
+      }
+
+      this.evaluating = true;
+      try {
+        const messages = buildPrompt(toolName, toolInput, this.instructions);
+        const response = await chatCompletion(this.llmConfig, messages);
+        const durationMs = Date.now() - start;
+
+        const parsed = parseDecision(response.content);
+
+        const result: AutoApproveResult = {
+          decision: parsed.decision,
+          reasoning: parsed.reasoning,
+          durationMs,
+          model: response.model,
+        };
+
+        if (this.logDecisions) {
+          const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;
+          this.logFn(
+            `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) - ${result.reasoning}`,
+          );
+        }
+
+        return result;
+      } finally {
+        this.evaluating = false;
+      }
     } catch (err) {
       const durationMs = Date.now() - start;
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -124,8 +155,6 @@ export class AutoApproveService {
         durationMs,
         model,
       };
-    } finally {
-      this.evaluating = false;
     }
   }
 }

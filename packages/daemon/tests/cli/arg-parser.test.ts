@@ -746,4 +746,58 @@ describe('parseArgs - auto-approve flags', () => {
     expect(r.autoApprove).toBe(true);
     expect(r.autoApproveModel).toBe('llama3.2');
   });
+
+  test('--auto-approve-allow is repeatable', () => {
+    const r = parseArgs([
+      '--auto-approve-allow',
+      'git push',
+      '--auto-approve-allow',
+      'bun test',
+      '--auto-approve-allow',
+      'Read',
+    ]);
+    expect(r.autoApproveAllow).toEqual(['git push', 'bun test', 'Read']);
+  });
+
+  test('--auto-approve-deny is repeatable', () => {
+    const r = parseArgs(['--auto-approve-deny', 'rm -rf /', '--auto-approve-deny', 'sudo ']);
+    expect(r.autoApproveDeny).toEqual(['rm -rf /', 'sudo ']);
+  });
+
+  test('--auto-approve-allow defaults to empty array', () => {
+    const r = parseArgs([]);
+    expect(r.autoApproveAllow).toEqual([]);
+    expect(r.autoApproveDeny).toEqual([]);
+  });
+
+  test('--auto-approve-allow without value errors', () => {
+    const r = parseArgs(['--auto-approve-allow']);
+    expect(r.error).toContain('--auto-approve-allow requires a value');
+  });
+
+  test('--auto-approve-instructions sets guidance string', () => {
+    const r = parseArgs(['--auto-approve-instructions', 'Approve all bun test runs']);
+    expect(r.autoApproveInstructions).toBe('Approve all bun test runs');
+  });
+
+  test('--auto-approve-instructions without value errors', () => {
+    const r = parseArgs(['--auto-approve-instructions']);
+    expect(r.error).toContain('--auto-approve-instructions requires a value');
+  });
+
+  test('allow and deny flags mixed with other auto-approve flags', () => {
+    const r = parseArgs([
+      '--auto-approve',
+      '--auto-approve-allow',
+      'git status',
+      '--auto-approve-deny',
+      'sudo ',
+      '--auto-approve-instructions',
+      'Be conservative',
+    ]);
+    expect(r.autoApprove).toBe(true);
+    expect(r.autoApproveAllow).toEqual(['git status']);
+    expect(r.autoApproveDeny).toEqual(['sudo ']);
+    expect(r.autoApproveInstructions).toBe('Be conservative');
+  });
 });
