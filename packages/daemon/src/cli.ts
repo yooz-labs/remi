@@ -1874,6 +1874,10 @@ async function createNewSession(
 
       if (classification === 'foreign') {
         // Subagent or sibling daemon event. Drop to avoid hijacking our lock.
+        // Log for observability: if classifier misbehaves, we still see activity.
+        log(
+          `[Hooks] Dropped foreign ${input.hook_event_name ?? 'event'}: lock=${claudeSessionId?.slice(0, 8)} incoming=${input.session_id.slice(0, 8)}`,
+        );
         return;
       }
       if (classification === 'restart') {
@@ -1961,13 +1965,27 @@ async function createNewSession(
         }
         if (hasSiblingInDir) return;
 
-        // Detect Claude restart via onSessionInfo path
-        if (claudeSessionId && claudeSessionId !== hookClaudeSessionId) {
+        // Use the same classifier as initFromHookEvent so both paths share
+        // one rule for distinguishing foreign (subagent/sibling) from restart.
+        const classification = classifySessionEvent({
+          currentLock: claudeSessionId,
+          incomingSessionId: hookClaudeSessionId,
+          mainPtyRunning: sessionRegistry.getSession(sessionId)?.pty.isRunning ?? false,
+          mainSessionEnded,
+        });
+        if (classification === 'foreign') {
           log(
-            `[Hooks] Claude restarted (SessionInfo): ${claudeSessionId} -> ${hookClaudeSessionId}`,
+            `[Hooks] Dropped foreign SessionInfo: lock=${claudeSessionId?.slice(0, 8)} incoming=${hookClaudeSessionId.slice(0, 8)}`,
+          );
+          return;
+        }
+        if (classification === 'restart') {
+          log(
+            `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
           );
           teardownWatcher('claude_restarted', 'restart-sessioninfo');
           claudeSessionId = null;
+          mainSessionEnded = false;
         }
 
         try {
@@ -2005,6 +2023,19 @@ async function createNewSession(
     // onSessionInfo doesn't fire (PreToolUse, etc.). For SessionStart, both paths
     // converge; guards prevent double-processing.
     hookServer.on('SessionStart', (input) => {
+      // SessionStart with an explicit main-transition source (/clear /compact
+      // /resume) is the authoritative signal that our main Claude took a new
+      // session_id while our PTY kept running. Pre-empt the classifier by
+      // treating the old session as ended, so the classifier sees a 'restart'
+      // and cleanly switches the lock.
+      if (input.source === 'clear' || input.source === 'compact' || input.source === 'resume') {
+        if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
+          log(
+            `[Hooks] Main lifecycle transition (${input.source}): ${claudeSessionId} -> ${input.session_id}`,
+          );
+          mainSessionEnded = true; // classifier will pick this up as 'restart'
+        }
+      }
       initFromHookEvent(input);
       handlers.onSessionStart?.(input);
     });
