@@ -287,6 +287,7 @@ import {
 } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
+import { classifySessionEvent } from './hooks/session-lock-classifier.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
@@ -1811,6 +1812,17 @@ async function createNewSession(
     // Before SessionStart fires, we let events through (claudeSessionId is null).
     let claudeSessionId: string | null = null;
 
+    // Our PTY is the ground truth for "main interactive session". A hook event
+    // with a different session_id is NEVER our main:
+    //  - Subagent spawn (TaskCreate/TeamCreate) — different session_id, no own PTY
+    //  - Sibling daemon's Claude — different session_id, different PTY elsewhere
+    //  - Actual Claude restart in our PTY — only possible after our PTY exited
+    // So: while our PTY is running, treat any different session_id as foreign.
+    // Once our PTY exits, a new session_id represents a genuine new Claude.
+    // Flag set on explicit SessionEnd so we don't wait for PTY exit if Claude
+    // shut down cleanly.
+    let mainSessionEnded = false;
+
     // Extract transcript info from hook events. Most Claude Code hook events include
     // session_id and transcript_path. When present, the first event gives us the
     // transcript path, bypassing the slower mtime fallback.
@@ -1853,15 +1865,27 @@ async function createNewSession(
     }): void {
       if (!input.session_id) return;
 
-      // Detect Claude restart: a different Claude session ID means Claude exited
-      // and restarted in the same directory. Tear down old watcher and notify clients.
-      if (claudeSessionId && claudeSessionId !== input.session_id) {
-        log(`[Hooks] Claude restarted: ${claudeSessionId} -> ${input.session_id}`);
+      const classification = classifySessionEvent({
+        currentLock: claudeSessionId,
+        incomingSessionId: input.session_id,
+        mainPtyRunning: sessionRegistry.getSession(sessionId)?.pty.isRunning ?? false,
+        mainSessionEnded,
+      });
+
+      if (classification === 'foreign') {
+        // Subagent or sibling daemon event. Drop to avoid hijacking our lock.
+        return;
+      }
+      if (classification === 'restart') {
+        log(
+          `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
+        );
         teardownWatcher('claude_restarted', 'restart');
         claudeSessionId = null;
+        mainSessionEnded = false;
       }
-
-      if (claudeSessionId) return; // already initialized for this Claude session
+      // classification === 'match': either our tracked session or first-time lock.
+      if (claudeSessionId) return; // already initialized
       if (!input.transcript_path) return;
 
       if (hasSiblingInDir === null) {
@@ -2082,6 +2106,15 @@ async function createNewSession(
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
       handlers.onStop?.(input);
+    });
+    hookServer.on('SessionEnd', (input) => {
+      // Only mark our main as ended when the session_id matches what we locked.
+      // Foreign SessionEnds (subagents, siblings) must not unlock our tracking.
+      if (input.session_id && claudeSessionId && input.session_id === claudeSessionId) {
+        mainSessionEnded = true;
+      }
+      if (!filterBySession(input)) return;
+      handlers.onSessionEnd?.(input);
     });
 
     log(`[Hooks] Event bridge active for session ${sessionId}`);
