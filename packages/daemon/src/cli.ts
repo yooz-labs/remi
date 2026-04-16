@@ -2010,40 +2010,69 @@ async function createNewSession(
       initFromHookEvent(input);
       if (!filterBySession(input)) return;
 
+      // Subagent context: user can't answer while a Task is running (main agent
+      // is blocked waiting for subagent). During this window we must NEVER
+      // escalate to user — either auto-approve decides, or we default-deny
+      // rather than hang the subagent.
+      const inSubagent = hookBridge.isInSubagentContext();
+      const sessionTag = sessionId.slice(0, 8);
+
+      // Helper: inject an answer into the PTY. Returns true on success.
+      const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
+        const session = sessionRegistry.getSession(sessionId);
+        if (!session) {
+          logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
+          return false;
+        }
+        await session.pty.submitInput(value);
+        log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
+        sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
+        hookBridge.markPermissionHandled();
+        return true;
+      };
+
       // Auto-approve gate: evaluate before creating Question object.
-      // Intercepts at hook level, bypassing the mobile question UI entirely.
       if (autoApproveService) {
         const aaService = autoApproveService;
-        const sessionTag = sessionId.slice(0, 8);
         aaService
           .evaluate(input.tool_name, input.tool_input, sessionTag)
           .then(async (result) => {
-            if (result.decision === 'approve' || result.decision === 'deny') {
-              // Suppress the Notification(permission_prompt) that follows shortly.
-              // Dedup window in HookEventBridge is 5000ms, well above typical latency.
-              hookBridge.markPermissionHandled();
-              const session = sessionRegistry.getSession(sessionId);
-              if (session) {
-                const value = result.decision === 'approve' ? '1' : '3';
-                await session.pty.submitInput(value);
-                log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY`);
-                sessionRegistry.updateStatus(
-                  sessionId,
-                  result.decision === 'approve' ? 'executing' : 'thinking',
-                );
-                return;
-              }
-              logError(
-                `[AutoApprove ${sessionTag}] Session not found after ${result.decision}; escalating`,
-              );
+            if (result.decision === 'approve') {
+              await inject('1', 'approved');
+              return;
             }
-            // escalate or session-not-found: fall through to normal question flow
+            if (result.decision === 'deny') {
+              await inject('3', 'denied');
+              return;
+            }
+            // escalate: if we're in a subagent context, default-deny to avoid
+            // hanging the subagent. The user would not be able to answer anyway.
+            if (inSubagent) {
+              log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
+              await inject('3', 'subagent-escalate-default-deny');
+              return;
+            }
             handlers.onPermissionRequest?.(input);
           })
-          .catch((err) => {
-            logError(`[AutoApprove ${sessionTag}] Unexpected error, escalating:`, err);
+          .catch(async (err) => {
+            logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
+            if (inSubagent) {
+              // Error inside subagent context: default-deny to prevent hang
+              await inject('3', 'subagent-error-default-deny');
+              return;
+            }
             handlers.onPermissionRequest?.(input);
           });
+        return;
+      }
+
+      // No auto-approve. If in subagent context, still must not hang the subagent:
+      // default-deny rather than emit a question the user can't answer.
+      if (inSubagent) {
+        log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
+        inject('3', 'subagent-no-aa-default-deny').catch((err) => {
+          logError(`[${sessionTag}] Failed to inject default-deny:`, err);
+        });
         return;
       }
 

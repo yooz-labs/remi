@@ -147,6 +147,9 @@ export class HookEventBridge {
     // session is NOT actually stopping; it remains active.
     if (!input.stop_hook_active) {
       this.events.onStatusChange('idle');
+      // Agent turn is done; clear any orphaned subagent tracking so a dropped
+      // PostToolUse(Task) can't permanently block the user's permission prompts.
+      this.subagentContext.reset();
     }
   }
 
@@ -157,6 +160,8 @@ export class HookEventBridge {
       );
       return;
     }
+    // Reset tracker for a fresh session (also covers daemon restart mid-Task).
+    this.subagentContext.reset();
     this.events.onSessionInfo(input.session_id, input.transcript_path);
   }
 
@@ -225,6 +230,9 @@ export class HookEventBridge {
   }
 
   handleStopFailure(input: StopFailureHookInput): void {
+    // Stop failed: agent may be in an unknown state. Reset subagent tracking
+    // so orphaned Task IDs don't permanently block user permissions.
+    this.subagentContext.reset();
     // Emit a question so the user is notified of the stop failure
     const question: Question = {
       id: generateId(),
@@ -241,6 +249,7 @@ export class HookEventBridge {
   }
 
   handleSessionEnd(_input: SessionEndHookInput): void {
+    this.subagentContext.reset();
     this.events.onStatusChange('idle');
   }
 

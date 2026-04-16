@@ -509,5 +509,90 @@ describe('HookEventBridge', () => {
 
       expect(questions).toHaveLength(1);
     });
+
+    it('handleStop(stop_hook_active=false) resets orphan subagent state', () => {
+      const { bridge } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_orphan',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      // Agent turn stops without matching PostToolUse(Task)
+      bridge.handleStop({
+        ...makeCommon(),
+        hook_event_name: 'Stop',
+        stop_hook_active: false,
+      } as StopHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
+    it('handleSessionEnd resets orphan subagent state', () => {
+      const { bridge } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_orphan2',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      bridge.handleSessionEnd({
+        ...makeCommon(),
+        hook_event_name: 'SessionEnd',
+        reason: 'user_exit',
+      } as SessionEndHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
+    it('handleStopFailure resets orphan subagent state', () => {
+      const { bridge } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_orphan3',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      bridge.handleStopFailure({
+        ...makeCommon(),
+        hook_event_name: 'StopFailure',
+        error_type: 'network',
+        error: 'conn refused',
+      } as StopFailureHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
+    it('handleSessionStart resets any stale state from prior session', () => {
+      const { bridge } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_stale',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      bridge.handleSessionStart({
+        ...makeCommon(),
+        session_id: 'new-session-id',
+        transcript_path: '/tmp/new.jsonl',
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+        model: 'claude-opus',
+      } as SessionStartHookInput);
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
   });
 });

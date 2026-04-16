@@ -15,12 +15,25 @@ describe('SubagentContextTracker', () => {
     expect(t.depth()).toBe(1);
   });
 
+  test('Agent tool is also treated as nesting', () => {
+    const t = new SubagentContextTracker();
+    expect(t.onPreToolUse('Agent', 'tu_a1')).toBe(true);
+    expect(t.isInSubagentContext()).toBe(true);
+  });
+
   test('Task PostToolUse exits context', () => {
     const t = new SubagentContextTracker();
     t.onPreToolUse('Task', 'tu_1');
     expect(t.onPostToolUse('Task', 'tu_1')).toBe(true);
     expect(t.isInSubagentContext()).toBe(false);
     expect(t.depth()).toBe(0);
+  });
+
+  test('PostToolUse returns false when tool_use_id does not match an active entry', () => {
+    const t = new SubagentContextTracker();
+    t.onPreToolUse('Task', 'tu_1');
+    expect(t.onPostToolUse('Task', 'tu_2')).toBe(false); // wrong id
+    expect(t.depth()).toBe(1); // still in context
   });
 
   test('non-nesting tools do not affect depth', () => {
@@ -62,12 +75,22 @@ describe('SubagentContextTracker', () => {
     expect(t.isInSubagentContext()).toBe(false);
   });
 
-  test('missing tool_use_id does not track', () => {
+  test('missing tool_use_id does not track and returns false', () => {
     // If Claude Code ever omits tool_use_id, we gracefully degrade: no tracking.
-    // Better than crashing.
+    // Returns false so callers can observe the degradation. Warns once.
     const t = new SubagentContextTracker();
-    t.onPreToolUse('Task', undefined);
+    expect(t.onPreToolUse('Task', undefined)).toBe(false);
     expect(t.depth()).toBe(0);
+  });
+
+  test('asymmetric tool_use_id: Pre has id, Post without id leaks the entry', () => {
+    // Document behavior: mismatched tool_use_id between Pre and Post leaks
+    // the Pre's entry. The reset() on session boundaries in HookEventBridge
+    // is the safety net for this.
+    const t = new SubagentContextTracker();
+    t.onPreToolUse('Task', 'tu_pre');
+    expect(t.onPostToolUse('Task', undefined)).toBe(false);
+    expect(t.depth()).toBe(1); // leak; session lifecycle reset catches it
   });
 
   test('reset clears state', () => {

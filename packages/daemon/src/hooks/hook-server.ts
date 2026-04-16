@@ -6,6 +6,9 @@
  * to consume (status changes, question detection, session info).
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type {
   HookInput,
   NotificationHookInput,
@@ -54,6 +57,8 @@ export class HookServer {
   private readonly config: Required<HookServerConfig>;
   private readonly events: Partial<HookServerEvents>;
   private readonly listeners: Map<string, Listener<HookInput>[]> = new Map();
+  /** Whether we've already warned about REMI_HOOK_DEBUG write failures. Throttles spam. */
+  private diagLogWarned = false;
 
   constructor(config: HookServerConfig, events: Partial<HookServerEvents> = {}) {
     this.config = {
@@ -145,11 +150,19 @@ export class HookServer {
     if (process.env['REMI_HOOK_DEBUG'] === '1') {
       try {
         const logLine = JSON.stringify({ _ts: new Date().toISOString(), ...body });
-        const logPath = `${process.env['HOME']}/.remi/hook-diag.jsonl`;
-        // Append synchronously so order is preserved across rapid events
-        require('node:fs').appendFileSync(logPath, `${logLine}\n`);
-      } catch {
-        // Diagnostic logging must never break the hook path
+        const remiDir = path.join(os.homedir(), '.remi');
+        const logPath = path.join(remiDir, 'hook-diag.jsonl');
+        fs.mkdirSync(remiDir, { recursive: true });
+        fs.appendFileSync(logPath, `${logLine}\n`);
+      } catch (err) {
+        // Diagnostic logging must never break the hook path.
+        // But warn ONCE so an enabled flag producing no output is visible.
+        if (!this.diagLogWarned) {
+          this.diagLogWarned = true;
+          console.warn(
+            `[HookServer] REMI_HOOK_DEBUG enabled but writing failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
 

@@ -24,32 +24,42 @@
  * Tracks by tool_use_id to correctly handle concurrent/nested Task calls.
  */
 
-/** Tool names that spawn a nested agent context. */
-const NESTING_TOOLS: ReadonlySet<string> = new Set([
-  'Task', // standard subagent spawn
-  // Future: teammate-spawning tools. Add here as Claude Code evolves.
-]);
+/** Tool names that spawn a nested agent context.
+ *  - `Task`: standard Claude Code subagent spawn
+ *  - `Agent`: cc-ref reference name; include for safety in case variants ship
+ *  - Future tools: teammate-spawning, delegation, etc. Add here as Claude Code evolves.
+ *  When adding, also extend the regression tests. */
+const NESTING_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 
 export class SubagentContextTracker {
   /** Active tool_use_ids that are currently spawning nested agents. */
   private readonly active = new Set<string>();
+  /** Whether we've warned about a nesting tool firing without tool_use_id. Throttles spam. */
+  private warnedMissingId = false;
 
-  /** Record PreToolUse. Returns true if this started a nesting context. */
+  /** Record PreToolUse. Returns true iff a nesting context was actually started
+   *  (tool is in NESTING_TOOLS AND tool_use_id was present). */
   onPreToolUse(toolName: string, toolUseId: string | undefined): boolean {
     if (!NESTING_TOOLS.has(toolName)) return false;
-    if (toolUseId) {
-      this.active.add(toolUseId);
+    if (!toolUseId) {
+      if (!this.warnedMissingId) {
+        this.warnedMissingId = true;
+        console.warn(
+          `[SubagentContextTracker] ${toolName} fired without tool_use_id; nested-agent filtering disabled for this call`,
+        );
+      }
+      return false;
     }
+    this.active.add(toolUseId);
     return true;
   }
 
-  /** Record PostToolUse. Returns true if this ended a nesting context. */
+  /** Record PostToolUse. Returns true iff a nesting context was ended
+   *  (tool is in NESTING_TOOLS AND the tool_use_id matched an active entry). */
   onPostToolUse(toolName: string, toolUseId: string | undefined): boolean {
     if (!NESTING_TOOLS.has(toolName)) return false;
-    if (toolUseId) {
-      this.active.delete(toolUseId);
-    }
-    return true;
+    if (!toolUseId) return false;
+    return this.active.delete(toolUseId);
   }
 
   /** True when a subagent/team context is in-flight. */
