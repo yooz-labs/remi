@@ -61,13 +61,23 @@ export class AutoApproveService {
   /**
    * Evaluate a permission request. Never throws.
    * On any error, returns escalate so the user gets the question as normal.
+   *
+   * @param toolName Name of the Claude Code tool (Bash, Edit, etc.)
+   * @param toolInput Raw tool input from the PermissionRequest hook
+   * @param tag Optional short tag (e.g. sessionId prefix) to include in logs
+   *            so multi-session deployments can distinguish whose decision this is.
    */
-  async evaluate(toolName: string, toolInput: Record<string, unknown>): Promise<AutoApproveResult> {
+  async evaluate(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    tag?: string,
+  ): Promise<AutoApproveResult> {
     const start = Date.now();
     const model = this.llmConfig.model;
+    const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
 
     if (this.evaluating) {
-      this.logFn('[AutoApprove] Concurrent evaluation blocked, escalating to user');
+      this.logFn(`${prefix} Concurrent evaluation blocked, escalating to user`);
       return {
         decision: 'escalate',
         reasoning: 'Concurrent evaluation in progress',
@@ -92,9 +102,9 @@ export class AutoApproveService {
       };
 
       if (this.logDecisions) {
-        const prefix = result.decision === 'deny' ? '[AutoApprove] DENIED' : '[AutoApprove]';
+        const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;
         this.logFn(
-          `${prefix} ${toolName}: ${result.decision} (${durationMs}ms) - ${result.reasoning}`,
+          `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) - ${result.reasoning}`,
         );
       }
 
@@ -106,7 +116,7 @@ export class AutoApproveService {
       const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;
 
       // Always log errors regardless of logDecisions setting
-      this.logFn(`[AutoApprove] ERROR ${toolName}: ${reasoning} (${durationMs}ms)`);
+      this.logFn(`${prefix} ERROR ${toolName}: ${reasoning} (${durationMs}ms)`);
 
       return {
         decision: 'escalate',

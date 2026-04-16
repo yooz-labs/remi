@@ -1992,8 +1992,9 @@ async function createNewSession(
       // Intercepts at hook level, bypassing the mobile question UI entirely.
       if (autoApproveService) {
         const aaService = autoApproveService;
+        const sessionTag = sessionId.slice(0, 8);
         aaService
-          .evaluate(input.tool_name, input.tool_input)
+          .evaluate(input.tool_name, input.tool_input, sessionTag)
           .then(async (result) => {
             if (result.decision === 'approve' || result.decision === 'deny') {
               // Suppress the Notification(permission_prompt) that follows shortly.
@@ -2003,6 +2004,7 @@ async function createNewSession(
               if (session) {
                 const value = result.decision === 'approve' ? '1' : '3';
                 await session.pty.submitInput(value);
+                log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY`);
                 sessionRegistry.updateStatus(
                   sessionId,
                   result.decision === 'approve' ? 'executing' : 'thinking',
@@ -2010,14 +2012,14 @@ async function createNewSession(
                 return;
               }
               logError(
-                `[AutoApprove] Session ${sessionId} not found after ${result.decision}; escalating`,
+                `[AutoApprove ${sessionTag}] Session not found after ${result.decision}; escalating`,
               );
             }
             // escalate or session-not-found: fall through to normal question flow
             handlers.onPermissionRequest?.(input);
           })
           .catch((err) => {
-            logError('[AutoApprove] Unexpected error, escalating to user:', err);
+            logError(`[AutoApprove ${sessionTag}] Unexpected error, escalating:`, err);
             handlers.onPermissionRequest?.(input);
           });
         return;

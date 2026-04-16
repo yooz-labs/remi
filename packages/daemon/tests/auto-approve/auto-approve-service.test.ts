@@ -165,19 +165,18 @@ describe('AutoApproveService - error handling', () => {
 // ---------------------------------------------------------------------------
 describe('AutoApproveService - concurrency guard', () => {
   test('second concurrent evaluation escalates immediately', async () => {
-    // Use a slow-responding endpoint (unreachable port with long timeout)
+    // Use an unroutable IP so the first request stays in-flight long enough
+    // for the second to race against the concurrency flag.
     const service = new AutoApproveService(
-      makeConfig({ base_url: 'http://localhost:1', timeout: 10 }),
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 3 }),
       logFn,
     );
 
-    // Fire two evaluations concurrently
     const [first, second] = await Promise.all([
       service.evaluate('Bash', { command: 'ls' }),
       service.evaluate('Read', { file_path: '/tmp/test' }),
     ]);
 
-    // One should be a normal escalation (timeout/error), the other concurrent guard
     const decisions = [first, second];
     const concurrentResult = decisions.find(
       (d) => d.reasoning === 'Concurrent evaluation in progress',
@@ -185,7 +184,85 @@ describe('AutoApproveService - concurrency guard', () => {
     expect(concurrentResult).toBeDefined();
     expect(concurrentResult?.decision).toBe('escalate');
     expect(concurrentResult?.durationMs).toBe(0);
-  });
+  }, 10000);
+
+  test('two independent service instances do not share state', async () => {
+    // Regression: in a multi-session daemon, each session should have its own
+    // AutoApproveService instance so they do not serialize through one flag.
+    const serviceA = new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 3 }),
+      logFn,
+    );
+    const serviceB = new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.2', timeout: 3 }),
+      logFn,
+    );
+
+    // Both run concurrently; neither should trip the other's concurrency guard.
+    const [a, b] = await Promise.all([
+      serviceA.evaluate('Bash', { command: 'ls' }, 'sessA'),
+      serviceB.evaluate('Bash', { command: 'pwd' }, 'sessB'),
+    ]);
+
+    expect(a.decision).toBe('escalate');
+    expect(b.decision).toBe('escalate');
+    // Neither should hit the shared-state guard
+    expect(a.reasoning).not.toBe('Concurrent evaluation in progress');
+    expect(b.reasoning).not.toBe('Concurrent evaluation in progress');
+  }, 10000);
+});
+
+// ---------------------------------------------------------------------------
+// AutoApproveService - session tag in logs (multi-session visibility)
+// ---------------------------------------------------------------------------
+describe('AutoApproveService - session tag in logs', () => {
+  test('tag appears in concurrency-blocked log', async () => {
+    const logs: string[] = [];
+    const tagLogFn = (msg: string) => logs.push(msg);
+    const service = new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 3 }),
+      tagLogFn,
+    );
+
+    // Start one, race a second before it completes
+    const [,] = await Promise.all([
+      service.evaluate('Bash', { command: 'first' }, 'abc12345'),
+      service.evaluate('Bash', { command: 'second' }, 'abc12345'),
+    ]);
+
+    const hasTaggedBlock = logs.some((l) =>
+      l.includes('[AutoApprove abc12345] Concurrent evaluation blocked'),
+    );
+    expect(hasTaggedBlock).toBe(true);
+  }, 10000);
+
+  test('tag appears in error log on unreachable LLM', async () => {
+    const logs: string[] = [];
+    const tagLogFn = (msg: string) => logs.push(msg);
+    const service = new AutoApproveService(
+      makeConfig({ base_url: 'http://localhost:1', timeout: 2 }),
+      tagLogFn,
+    );
+
+    await service.evaluate('Bash', { command: 'ls' }, 'def67890');
+
+    const hasTaggedError = logs.some((l) => l.startsWith('[AutoApprove def67890] ERROR'));
+    expect(hasTaggedError).toBe(true);
+  }, 10000);
+
+  test('untagged call falls back to plain [AutoApprove] prefix', async () => {
+    const logs: string[] = [];
+    const tagLogFn = (msg: string) => logs.push(msg);
+    const service = new AutoApproveService(
+      makeConfig({ base_url: 'http://localhost:1', timeout: 2 }),
+      tagLogFn,
+    );
+
+    await service.evaluate('Bash', { command: 'ls' });
+
+    const hasUntagged = logs.some((l) => l.startsWith('[AutoApprove] ERROR'));
+    expect(hasUntagged).toBe(true);
+  }, 10000);
 });
 
 // ---------------------------------------------------------------------------
