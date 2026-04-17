@@ -176,6 +176,34 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   const isStringArray = (v: unknown): v is readonly string[] =>
     Array.isArray(v) && v.every((s) => typeof s === 'string');
 
+  const expectBool = (key: string, v: unknown): void => {
+    if (typeof v !== 'boolean') {
+      throw new Error(
+        `Invalid auto_approve.${key} in ${configPath}: must be a boolean (true/false), got ${typeof v === 'string' ? `string "${v}"` : typeof v}. Example: ${key} = ${key === 'enabled' ? 'true' : 'false'}`,
+      );
+    }
+  };
+  const expectString = (key: string, v: unknown): void => {
+    if (typeof v !== 'string') {
+      throw new Error(
+        `Invalid auto_approve.${key} in ${configPath}: must be a string, got ${typeof v}.`,
+      );
+    }
+  };
+
+  expectBool('enabled', cfg.enabled);
+  expectBool('log_decisions', cfg.log_decisions);
+  expectString('provider', cfg.provider);
+  expectString('model', cfg.model);
+  expectString('api_key', cfg.api_key);
+  expectString('base_url', cfg.base_url);
+
+  if (typeof cfg.timeout !== 'number' || !Number.isFinite(cfg.timeout) || cfg.timeout <= 0) {
+    throw new Error(
+      `Invalid auto_approve.timeout in ${configPath}: must be a positive number (seconds), got ${typeof cfg.timeout === 'string' ? `string "${cfg.timeout}"` : typeof cfg.timeout}. Example: timeout = 10`,
+    );
+  }
+
   if (!isStringArray(cfg.allow)) {
     throw new Error(
       `Invalid auto_approve.allow in ${configPath}: must be an array of strings. Example: allow = ["git status", "bun test"]`,

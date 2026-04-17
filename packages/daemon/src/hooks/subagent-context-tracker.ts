@@ -1,27 +1,27 @@
 /**
- * Tracks subagent/team execution depth for hook event filtering.
+ * Secondary safety net for synchronous Task-tool subagent wrapping.
  *
- * Claude Code hooks are configured at the project level (`.claude/settings.local.json`)
- * and fire for EVERY tool call, including tools invoked by subagents spawned via
- * the `Task` tool. Hook payloads themselves don't carry an `agent_id` field that
- * would let us distinguish subagent calls from main-agent calls.
+ * PRIMARY filter: cli.ts checks `input.agent_id` on every hook event and drops
+ * subagent/team events at the hook-server layer (Claude Code tags subagent
+ * events with `agent_id`, confirmed empirically 2026-04-16). That is the
+ * reliable mechanism for Task-subagent, TaskCreate (background), TeamCreate
+ * and team members.
  *
- * We infer context by counting nesting depth:
+ * This tracker covers edge cases where `agent_id` is absent: the
+ * Notification(permission_prompt) dedup fast-path in HookEventBridge, and any
+ * legacy Claude Code version that pre-dates the agent_id field. It counts
+ * active Task tool_use_ids as a proxy for "nested synchronous subagent run":
  *
- *   PreToolUse(Task)  -> depth++   (main agent spawns subagent)
+ *   PreToolUse(Task)  -> track use_id
  *     PreToolUse(Bash)              (subagent's internal tool call — nested)
  *     PostToolUse(Bash)
  *     ...
- *   PostToolUse(Task) -> depth--   (subagent finished)
+ *   PostToolUse(Task) -> drop use_id
  *
- * While depth > 0, any PermissionRequest or Notification(permission_prompt) is
- * likely a subagent-internal request. The main agent is blocked waiting for the
- * Task tool to return and cannot generate new permission prompts during this
- * window. Auto-approve still evaluates these (subagents need tool execution) but
- * we suppress user-facing notifications to prevent inter-agent questions from
- * bubbling up to the team leader.
- *
- * Tracks by tool_use_id to correctly handle concurrent/nested Task calls.
+ * Tracks by tool_use_id to correctly handle concurrent Task calls. Note: the
+ * active set represents CONCURRENT count, not a traditional call-stack depth.
+ * Async background Task/TaskCreate spawns return immediately without wrapping
+ * — `agent_id` is the only filter that catches those.
  */
 
 /** Tool names that spawn a nested agent context.
@@ -62,13 +62,13 @@ export class SubagentContextTracker {
     return this.active.delete(toolUseId);
   }
 
-  /** True when a subagent/team context is in-flight. */
+  /** True when at least one synchronous Task tool call is in-flight. */
   isInSubagentContext(): boolean {
     return this.active.size > 0;
   }
 
-  /** Current nesting depth (number of concurrent subagents). */
-  depth(): number {
+  /** Count of concurrent active Task tool_use_ids (NOT call-stack depth). */
+  activeCount(): number {
     return this.active.size;
   }
 
