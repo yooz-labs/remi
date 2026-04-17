@@ -2095,18 +2095,37 @@ async function createNewSession(
       const inSubagent = hookBridge.isInSubagentContext();
       const sessionTag = sessionId.slice(0, 8);
 
-      // Helper: inject an answer into the PTY. Returns true on success.
+      // Helper: inject an answer into the PTY. Returns true on success. On
+      // failure (session not found, PTY not running, submitInput throws) the
+      // helper never throws — it logs and returns false so callers can fall
+      // back to escalating the prompt to the user.
       const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
-        const session = sessionRegistry.getSession(sessionId);
-        if (!session) {
-          logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
+        try {
+          const session = sessionRegistry.getSession(sessionId);
+          if (!session) {
+            logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
+            return false;
+          }
+          await session.pty.submitInput(value);
+          log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
+          sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
+          hookBridge.markPermissionHandled();
+          return true;
+        } catch (err) {
+          logError(`[AutoApprove ${sessionTag}] inject("${value}") threw:`, err);
           return false;
         }
-        await session.pty.submitInput(value);
-        log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
-        sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
-        hookBridge.markPermissionHandled();
-        return true;
+      };
+
+      // Safe escalation to the user. Used when inject fails or when auto-approve
+      // is off and we're in main context. Wrapped so bridge/push failures don't
+      // leave the hook handler with a dangling unhandled rejection.
+      const escalateToUser = () => {
+        try {
+          handlers.onPermissionRequest?.(input);
+        } catch (err) {
+          logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
+        }
       };
 
       // Auto-approve gate: evaluate before creating Question object.
@@ -2116,30 +2135,36 @@ async function createNewSession(
           .evaluate(input.tool_name, input.tool_input, sessionTag)
           .then(async (result) => {
             if (result.decision === 'approve') {
-              await inject('1', 'approved');
+              if (!(await inject('1', 'approved'))) escalateToUser();
               return;
             }
             if (result.decision === 'deny') {
-              await inject('3', 'denied');
+              if (!(await inject('3', 'denied'))) escalateToUser();
               return;
             }
             // escalate: if we're in a subagent context, default-deny to avoid
             // hanging the subagent. The user would not be able to answer anyway.
             if (inSubagent) {
               log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
+              // If inject fails here, the subagent is hung regardless — no main
+              // PTY to escalate to. Log and accept.
               await inject('3', 'subagent-escalate-default-deny');
               return;
             }
-            handlers.onPermissionRequest?.(input);
+            escalateToUser();
           })
           .catch(async (err) => {
-            logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
-            if (inSubagent) {
-              // Error inside subagent context: default-deny to prevent hang
-              await inject('3', 'subagent-error-default-deny');
-              return;
+            // Last line of defense. Must not leave an unhandled rejection.
+            try {
+              logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
+              if (inSubagent) {
+                await inject('3', 'subagent-error-default-deny');
+                return;
+              }
+              escalateToUser();
+            } catch (inner) {
+              logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
             }
-            handlers.onPermissionRequest?.(input);
           });
         return;
       }
@@ -2154,7 +2179,7 @@ async function createNewSession(
         return;
       }
 
-      handlers.onPermissionRequest?.(input);
+      escalateToUser();
     });
     hookServer.on('Stop', (input) => {
       initFromHookEvent(input);

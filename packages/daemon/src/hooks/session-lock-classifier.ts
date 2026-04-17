@@ -1,19 +1,22 @@
 /**
  * Classifies hook events by session_id relative to our tracked main session.
  *
- * Background: Claude Code subagents (spawned via TaskCreate/TeamCreate/Task)
- * have DIFFERENT session_ids than their parent main session, but fire hooks to
- * the SAME hook server (shared .claude/settings.local.json). A naive "different
- * session_id == restart" rule hijacks our lock onto a subagent, breaking both
- * filter and routing:
- *   - Main's events get filtered out (session_id no longer matches)
- *   - Subagent's events pass the filter → auto-approve may inject into main's PTY
+ * Role in the filtering pipeline: subagent/team events actually SHARE the main
+ * session_id and are filtered upstream by the `agent_id` check in cli.ts (see
+ * `isSubagentEvent`). This classifier handles the remaining cases where
+ * session_id differs from our lock:
+ *
+ *   - Sibling Remi daemon in the same directory: its Claude fires hooks to us
+ *     via shared .claude/settings.local.json, with a different session_id.
+ *     Foreign — drop it.
+ *   - Genuine Claude restart inside our PTY: Claude exits and a new Claude
+ *     starts (e.g. user runs /clear or /compact, or Claude crashed and the
+ *     user relaunched).
  *
  * Ground truth: our PTY process IS the interactive main session. While our PTY
- * is running and main has not explicitly ended, any different session_id must
- * be a subagent or sibling-daemon event — foreign, drop it. If our PTY has
- * exited or main emitted SessionEnd, a new session_id represents a genuine
- * Claude restart.
+ * is running and main has not explicitly ended, a different session_id is a
+ * foreign event. If our PTY has exited or main emitted SessionEnd, a new
+ * session_id represents a genuine restart.
  */
 
 export type SessionEventClass = 'match' | 'foreign' | 'restart';

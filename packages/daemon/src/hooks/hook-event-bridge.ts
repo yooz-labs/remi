@@ -57,7 +57,8 @@ export class HookEventBridge {
   private readonly events: HookBridgeEvents;
   /** Timestamp of last question emitted from handlePermissionRequest */
   private lastPermissionEmitAt = 0;
-  /** Tracks subagent/team nesting depth to filter inter-agent questions. */
+  /** Tracks active Task tool_use_ids — secondary safety net for subagent
+   *  filtering (primary is agent_id check in cli.ts hook listeners). */
   private readonly subagentContext = new SubagentContextTracker();
 
   constructor(sessionId: UUID, events: HookBridgeEvents) {
