@@ -63,7 +63,7 @@ export interface ConnectionEvents {
   onUserInput: (sessionId: UUID, content: string, raw?: boolean) => void;
 
   /** Answer to question received */
-  onAnswer: (questionId: UUID, answer: string) => void;
+  onAnswer: (sessionId: UUID, questionId: UUID, answer: string) => void;
 
   /** Bullet expand request received */
   onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
@@ -418,7 +418,7 @@ export class Connection {
     this.sendAck(message.id, 'delivered');
 
     // Notify
-    this.events.onAnswer?.(message.questionId, message.answer);
+    this.events.onAnswer?.(message.sessionId, message.questionId, message.answer);
   }
 
   private handleBulletExpandRequest(message: BulletExpandRequestMessage): void {

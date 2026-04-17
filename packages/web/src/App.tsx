@@ -16,6 +16,7 @@ import { setSoundEnabled } from '@/lib/notifications';
 import type {
   AppSettings,
   ConnectionId,
+  ConnectionState,
   UIBullet,
   UIMessage,
   UIQuestion,
@@ -23,9 +24,11 @@ import type {
   UISession,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
+  createAnswer,
   createDetachSession,
   createRegisterDeviceToken,
   generateId,
@@ -97,6 +100,19 @@ function updateSessionActivity(
   );
 }
 
+/** Append " (2)", " (3)", etc. to sessions that share the same display name.
+ *  The input array should already be sorted in priority order; the first session
+ *  with a given name keeps the bare name, subsequent ones are numbered. */
+function disambiguateSessions(sessions: UISession[]): UISession[] {
+  const counts = new Map<string, number>();
+  return sessions.map((s) => {
+    const base = s.name;
+    const n = (counts.get(base) ?? 0) + 1;
+    counts.set(base, n);
+    return n === 1 ? s : { ...s, name: `${base} (${n})` };
+  });
+}
+
 function App() {
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
@@ -117,7 +133,7 @@ function App() {
   const lastQuestionIdRef = useRef<string | null>(null);
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
-  const connectionsRef = useRef<readonly { connectionId: ConnectionId; status: string }[]>([]);
+  const connectionsRef = useRef<readonly ConnectionState[]>([]);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -179,6 +195,25 @@ function App() {
           ];
         });
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
+
+        // Auto-switch to new session when same connection restarts
+        const oldActive = activeSessionIdRef.current;
+        if (oldActive !== message.sessionId) {
+          const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
+          const shouldSwitch = !oldActive || oldSession?.connectionId === connectionId;
+          if (shouldSwitch) {
+            setActiveSessionId(message.sessionId);
+            if (oldActive) {
+              setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
+              setQuestions((prev) => {
+                if (!prev.has(oldActive)) return prev;
+                const next = new Map(prev);
+                next.delete(oldActive);
+                return next;
+              });
+            }
+          }
+        }
         break;
       }
 
@@ -251,7 +286,7 @@ function App() {
             sender: newSender,
             content: resolvedContent,
             timestamp: structuredMsg.createdAt || message.timestamp,
-            state: 'delivered',
+            state: newSender === 'user' ? 'read' : 'delivered',
             isEditing: structuredMsg.isEditing,
             tool: structuredMsg.tool,
             entryUuid,
@@ -301,6 +336,21 @@ function App() {
             if (!prev.has(sessionData.id)) return prev;
             const next = new Map(prev);
             next.delete(sessionData.id);
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'session_reset': {
+        // Claude restarted in the same directory; clear old messages and questions
+        const resetSessionId = message.sessionId;
+        if (resetSessionId) {
+          setMessages((prev) => prev.filter((m) => m.sessionId !== resetSessionId));
+          setQuestions((prev) => {
+            if (!prev.has(resetSessionId)) return prev;
+            const next = new Map(prev);
+            next.delete(resetSessionId);
             return next;
           });
         }
@@ -420,16 +470,10 @@ function App() {
               canResume: showResume,
             };
           })
-          // Filter out transcript sessions that duplicate a daemon session
-          // from the SAME connection (same cwd, keep daemon version)
+          // Dedup: same session ID from daemon + transcript → keep daemon version.
+          // Different session IDs in the same cwd are kept (parallel/sequential sessions).
           .reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) {
-              acc.push(s);
-              return acc;
-            }
-            const existingIdx = acc.findIndex(
-              (other) => other.cwd === s.cwd && other.connectionId === s.connectionId,
-            );
+            const existingIdx = acc.findIndex((other) => other.id === s.id);
             if (existingIdx === -1) {
               acc.push(s);
               return acc;
@@ -476,33 +520,28 @@ function App() {
               }
             }
           }
-          // Cross-connection dedup: when two connections report the same
-          // project (same cwd), keep the daemon-sourced version (it routes
-          // to the correct daemon). Drop the transcript-sourced duplicate.
+          // Cross-connection dedup: same session ID from multiple connections →
+          // keep daemon-sourced version. Different IDs in same cwd → keep both.
           const deduped = result.reduce<UISession[]>((acc, s) => {
-            if (!s.cwd) {
-              acc.push(s);
-              return acc;
-            }
-            const dupIdx = acc.findIndex((other) => other.cwd === s.cwd);
+            const dupIdx = acc.findIndex((other) => other.id === s.id);
             if (dupIdx === -1) {
               acc.push(s);
               return acc;
             }
             const existing = acc[dupIdx];
-            // Prefer daemon over transcript source
             if (s.source === 'daemon' && existing.source !== 'daemon') {
               acc[dupIdx] = s;
             }
             return acc;
           }, []);
           // Sort: live first, then by last activity
-          return deduped.sort((a, b) => {
+          const sorted = deduped.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
             const bLive = b.connectionStatus === 'connected' ? 0 : 1;
             if (aLive !== bLive) return aLive - bLive;
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
+          return disambiguateSessions(sorted);
         });
 
         // Auto-connect to other daemon ports on the same machine.
@@ -821,6 +860,119 @@ function App() {
     return () => document.removeEventListener('push-notification-tap', handleNotificationTap);
   }, []);
 
+  // Stable refs for push-answer handler (avoids stale closures; connectDirectRef already declared above)
+  const pushAnswerSendRef = useRef(cmSendMessage);
+  useEffect(() => {
+    pushAnswerSendRef.current = cmSendMessage;
+  }, [cmSendMessage]);
+
+  // Handle push notification action button taps (lock screen / Apple Watch)
+  useEffect(() => {
+    /** Notify user that the push answer could not be delivered */
+    const notifyFailure = () => {
+      LocalNotifications.schedule({
+        notifications: [
+          {
+            title: 'Answer not delivered',
+            body: 'Open Remi to respond to the question.',
+            id: (Date.now() % 2_000_000_000) + Math.floor(Math.random() * 1000),
+            schedule: { at: new Date() },
+          },
+        ],
+      }).catch(() => undefined);
+    };
+
+    const handlePushAnswer = async (e: Event) => {
+      const { sessionId, questionId, answer } = (
+        e as CustomEvent<{ sessionId: string; questionId: string; answer: string }>
+      ).detail;
+      if (!sessionId || !questionId || !answer) return;
+
+      console.debug('[App] handlePushAnswer:', { sessionId, questionId, answer });
+
+      const answerMsg = createAnswer(sessionId as UUID, questionId as UUID, answer);
+
+      // Find the session in our session list to get its connectionId
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      const connectionId = session?.connectionId;
+
+      // Check if the connection is already live
+      const conn = connectionId
+        ? connectionsRef.current.find((c) => c.connectionId === connectionId)
+        : undefined;
+
+      // Fast path: connection is live, try to send immediately
+      if (conn?.status === 'connected' && connectionId) {
+        const sent = pushAnswerSendRef.current(connectionId, answerMsg);
+        if (sent) return;
+        // Send returned false (dead socket); fall through to reconnect
+      }
+
+      // Resolve the daemon URL: from existing connection, or from localStorage (cold start)
+      let connUrl = conn?.url;
+      if (!connUrl) {
+        try {
+          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+          if (stored) {
+            const urls: string[] = JSON.parse(stored);
+            if (urls.length > 0) {
+              connUrl = urls[0];
+            }
+          }
+        } catch {
+          // localStorage unavailable or corrupted; ignore
+        }
+      }
+
+      if (!connUrl) {
+        notifyFailure();
+        return;
+      }
+
+      // Check if a connection to this URL is already being established (e.g. auto-connect on mount)
+      const existingConn = connectionsRef.current.find(
+        (c) =>
+          c.url === connUrl &&
+          (c.status === 'connecting' ||
+            c.status === 'authenticating' ||
+            c.status === 'reconnecting'),
+      );
+      const targetConnId = existingConn
+        ? existingConn.connectionId
+        : connectDirectRef.current(connUrl);
+
+      // Wait for connection with 10s timeout, then send answer
+      const ANSWER_TIMEOUT_MS = 10_000;
+      const deadline = Date.now() + ANSWER_TIMEOUT_MS;
+      const delivered = await new Promise<boolean>((resolve) => {
+        const check = setInterval(() => {
+          const live = connectionsRef.current.find((c) => c.connectionId === targetConnId);
+          if (live?.status === 'connected') {
+            clearInterval(check);
+            const sent = pushAnswerSendRef.current(targetConnId, answerMsg);
+            resolve(sent);
+          } else if (Date.now() >= deadline) {
+            clearInterval(check);
+            resolve(false);
+          }
+        }, 250);
+      });
+
+      if (!delivered) {
+        notifyFailure();
+      }
+    };
+
+    const listener = (e: Event) => {
+      handlePushAnswer(e).catch((err) =>
+        console.error('[App] push-notification-answer handler error:', err),
+      );
+    };
+    document.addEventListener('push-notification-answer', listener);
+    return () => document.removeEventListener('push-notification-answer', listener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
@@ -919,7 +1071,7 @@ function App() {
 
       // If there's an active question, send as answer
       if (sessionQuestion) {
-        const sent = sendAnswer(connId, sessionQuestion.id, content);
+        const sent = sendAnswer(connId, activeSessionId, sessionQuestion.id, content);
         if (!sent) {
           const failMsg: UIMessage = {
             id: generateId(),

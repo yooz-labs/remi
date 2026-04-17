@@ -7,16 +7,21 @@
 
 /** Segment types that can appear in parsed content */
 export type ContentSegment =
-  | { readonly type: "text"; readonly text: string }
+  | { readonly type: 'text'; readonly text: string }
   | {
-      readonly type: "code_block";
+      readonly type: 'code_block';
       readonly language: string;
       readonly code: string;
     }
-  | { readonly type: "inline_code"; readonly code: string }
-  | { readonly type: "bold"; readonly text: string }
-  | { readonly type: "italic"; readonly text: string }
-  | { readonly type: "list_item"; readonly text: string; readonly ordered: boolean; readonly index: number };
+  | { readonly type: 'inline_code'; readonly code: string }
+  | { readonly type: 'bold'; readonly text: string }
+  | { readonly type: 'italic'; readonly text: string }
+  | {
+      readonly type: 'list_item';
+      readonly text: string;
+      readonly ordered: boolean;
+      readonly index: number;
+    };
 
 /**
  * Parse message content into structured segments.
@@ -44,9 +49,9 @@ export function parseContent(content: string): ContentSegment[] {
 
     // The code block itself
     segments.push({
-      type: "code_block",
-      language: match[1] || "",
-      code: match[2].replace(/\n$/, ""),
+      type: 'code_block',
+      language: match[1] || '',
+      code: match[2].replace(/\n$/, ''),
     });
 
     lastIndex = match.index + match[0].length;
@@ -67,15 +72,15 @@ export function parseContent(content: string): ContentSegment[] {
  */
 function parseInlineContent(text: string): ContentSegment[] {
   if (!text.trim()) {
-    if (text) return [{ type: "text", text }];
+    if (text) return [{ type: 'text', text }];
     return [];
   }
 
   const segments: ContentSegment[] = [];
 
   // Process line by line to detect list items
-  const lines = text.split("\n");
-  let currentText = "";
+  const lines = text.split('\n');
+  let currentText = '';
 
   for (const line of lines) {
     const trimmed = line.trimStart();
@@ -85,10 +90,10 @@ function parseInlineContent(text: string): ContentSegment[] {
     if (orderedMatch) {
       if (currentText) {
         segments.push(...parseInlineFormatting(currentText));
-        currentText = "";
+        currentText = '';
       }
       segments.push({
-        type: "list_item",
+        type: 'list_item',
         text: orderedMatch[2],
         ordered: true,
         index: Number.parseInt(orderedMatch[1], 10),
@@ -101,10 +106,10 @@ function parseInlineContent(text: string): ContentSegment[] {
     if (unorderedMatch) {
       if (currentText) {
         segments.push(...parseInlineFormatting(currentText));
-        currentText = "";
+        currentText = '';
       }
       segments.push({
-        type: "list_item",
+        type: 'list_item',
         text: unorderedMatch[1],
         ordered: false,
         index: 0,
@@ -113,7 +118,7 @@ function parseInlineContent(text: string): ContentSegment[] {
     }
 
     // Regular line
-    currentText += (currentText ? "\n" : "") + line;
+    currentText += (currentText ? '\n' : '') + line;
   }
 
   if (currentText) {
@@ -139,16 +144,16 @@ function parseInlineFormatting(text: string): ContentSegment[] {
   while (match !== null) {
     // Text before the match
     if (match.index > lastIndex) {
-      segments.push({ type: "text", text: text.slice(lastIndex, match.index) });
+      segments.push({ type: 'text', text: text.slice(lastIndex, match.index) });
     }
 
     const matched = match[0];
-    if (matched.startsWith("`")) {
-      segments.push({ type: "inline_code", code: matched.slice(1, -1) });
-    } else if (matched.startsWith("**")) {
-      segments.push({ type: "bold", text: matched.slice(2, -2) });
-    } else if (matched.startsWith("*")) {
-      segments.push({ type: "italic", text: matched.slice(1, -1) });
+    if (matched.startsWith('`')) {
+      segments.push({ type: 'inline_code', code: matched.slice(1, -1) });
+    } else if (matched.startsWith('**')) {
+      segments.push({ type: 'bold', text: matched.slice(2, -2) });
+    } else if (matched.startsWith('*')) {
+      segments.push({ type: 'italic', text: matched.slice(1, -1) });
     }
 
     lastIndex = match.index + matched.length;
@@ -157,7 +162,7 @@ function parseInlineFormatting(text: string): ContentSegment[] {
 
   // Remaining text
   if (lastIndex < text.length) {
-    segments.push({ type: "text", text: text.slice(lastIndex) });
+    segments.push({ type: 'text', text: text.slice(lastIndex) });
   }
 
   return segments;

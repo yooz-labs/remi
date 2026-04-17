@@ -17,7 +17,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.4.22'; // REMI_COMPILED_VERSION
+      return '0.5.1-dev.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +27,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.4.22'; // REMI_COMPILED_VERSION
+    return '0.5.1-dev.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -45,6 +45,17 @@ let logFd: number | null = null;
 // In wrapper mode, we save the real stdout file descriptor before overriding.
 // Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
 let ptyStdoutFd: number | null = null;
+
+/**
+ * Select the APNS notification category based on the number of question options.
+ * iOS will render action buttons matching the category; watchOS mirrors them automatically.
+ */
+function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
+  if (options.length === 2) return 'REMI_YN';
+  if (options.length === 3) return 'REMI_YNA';
+  if (options.length === 4) return 'REMI_MULTI';
+  return undefined;
+}
 
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
@@ -241,6 +252,7 @@ import {
   createResumeSessionResponse,
   createSessionHistoryResponse,
   createSessionListResponse,
+  createSessionReset,
   createStructuredAgentOutput,
   createTranscriptLoadComplete,
   generateId,
@@ -249,6 +261,7 @@ import {
 import type {
   AgentStatus,
   ProtocolMessage,
+  QuestionOption,
   RecentDirectory,
   UUID,
   UnlockedIdentity,
@@ -263,6 +276,7 @@ import {
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   CONFIG_PATH,
@@ -273,6 +287,7 @@ import {
 } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
+import { classifySessionEvent } from './hooks/session-lock-classifier.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
@@ -894,23 +909,49 @@ if (cliSubcommand === 'kill') {
     process.exit(1);
   }
   let resolvedPort = resolved.port;
-
-  // Resolve port from live registry if target matches a known local session
-  if (!cliPort && resolved.host === 'localhost') {
-    const liveMatch =
-      liveSessionsRegistry.findByName(resolved.targetId) ??
-      liveSessionsRegistry.findBySessionId(resolved.targetId);
-    if (liveMatch) {
-      resolvedPort = liveMatch.wsPort;
-    }
-  }
+  let killTarget = resolved.targetId;
 
   const { runKillClient } = await import('./cli/kill-client.ts');
   try {
+    // Resolve port by querying all local daemon ports (session may be on any daemon)
+    if (!cliPort && resolved.host === 'localhost') {
+      const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
+      let allPorts = liveSessionsRegistry.getLivePorts();
+
+      // Fallback: probe default port range when registry is empty (matches ls behavior)
+      if (allPorts.length === 0) {
+        const { getDefaultPortRange } = await import('./cli/ls-client.ts');
+        allPorts = getDefaultPortRange();
+      }
+
+      if (allPorts.length > 0) {
+        const results = await queryMultiplePorts({
+          host: 'localhost',
+          ports: allPorts,
+          timeoutMs: 5000,
+          logLabel: 'kill',
+        });
+
+        if (results.length === 0) {
+          console.error(
+            `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
+          );
+          process.exit(1);
+        }
+
+        const match = resolveSession(results, killTarget);
+        if (match) {
+          resolvedPort = match.port;
+          // Use session ID directly to avoid TOCTOU race
+          killTarget = match.session.sessionId;
+        }
+      }
+    }
+
     await runKillClient({
       host: resolved.host,
       port: resolvedPort,
-      target: resolved.targetId,
+      target: killTarget,
     });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -933,14 +974,34 @@ if (cliSubcommand === 'detach') {
   }
 
   let resolvedPort = resolved.port;
+  let detachTarget = resolved.targetId;
 
-  // Resolve port from live registry if target matches a known local session
+  // Resolve port by querying all local daemon ports (session may be on any daemon)
   if (!cliPort && resolved.host === 'localhost') {
-    const liveMatch =
-      liveSessionsRegistry.findByName(resolved.targetId) ??
-      liveSessionsRegistry.findBySessionId(resolved.targetId);
-    if (liveMatch) {
-      resolvedPort = liveMatch.wsPort;
+    const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
+    let allPorts = liveSessionsRegistry.getLivePorts();
+    if (allPorts.length === 0) {
+      const { getDefaultPortRange } = await import('./cli/ls-client.ts');
+      allPorts = getDefaultPortRange();
+    }
+    if (allPorts.length > 0) {
+      const results = await queryMultiplePorts({
+        host: 'localhost',
+        ports: allPorts,
+        timeoutMs: 5000,
+        logLabel: 'detach',
+      });
+      if (results.length === 0) {
+        console.error(
+          `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
+        );
+        process.exit(1);
+      }
+      const match = resolveSession(results, detachTarget);
+      if (match) {
+        resolvedPort = match.port;
+        detachTarget = match.session.sessionId;
+      }
     }
   }
 
@@ -949,7 +1010,7 @@ if (cliSubcommand === 'detach') {
     await runDetachClient({
       host: resolved.host,
       port: resolvedPort,
-      target: resolved.targetId,
+      target: detachTarget,
     });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -1429,9 +1490,56 @@ STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
 
 const MAX_BULLET_LENGTH = cliMaxBulletLength ?? remiConfig.display.max_bullet_length;
 const TELEGRAM_TOKEN = remiConfig.telegram.bot_token || undefined;
-const TELEGRAM_ENABLED = !cliNoTelegram && remiConfig.telegram.enabled && !!TELEGRAM_TOKEN;
+// Telegram disabled: multi-daemon 409 conflicts (issue #285). Re-enable when addressed.
+const TELEGRAM_ENABLED = false;
+if (TELEGRAM_TOKEN) {
+  console.warn('[Telegram] Telegram notifications are currently disabled (multi-daemon conflict)');
+}
 const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
+
+// ---------------------------------------------------------------------------
+// Auto-approve service (optional, LLM-based permission evaluation)
+// ---------------------------------------------------------------------------
+let autoApproveService: AutoApproveService | null = null;
+{
+  const aaCfg = remiConfig.auto_approve;
+  const aaEnabled = parsedArgs.autoApprove ?? aaCfg.enabled;
+  if (aaEnabled) {
+    const provider = parsedArgs.autoApproveProvider ?? aaCfg.provider;
+    const model = parsedArgs.autoApproveModel ?? aaCfg.model;
+    const apiKey = parsedArgs.autoApproveApiKey ?? aaCfg.api_key;
+    const baseUrl = resolveProviderUrl(provider, aaCfg.base_url);
+    // CLI allow/deny flags append to config lists; instructions override config.
+    const allow = [...aaCfg.allow, ...parsedArgs.autoApproveAllow];
+    const deny = [...aaCfg.deny, ...parsedArgs.autoApproveDeny];
+    const instructions = parsedArgs.autoApproveInstructions ?? aaCfg.instructions;
+    if (parsedArgs.autoApproveInstructions && aaCfg.instructions) {
+      writeToLog(
+        `[AutoApprove] CLI --auto-approve-instructions overrides TOML instructions (${aaCfg.instructions.length} chars discarded)`,
+      );
+    }
+
+    autoApproveService = new AutoApproveService(
+      {
+        ...aaCfg,
+        provider,
+        model,
+        api_key: apiKey,
+        base_url: baseUrl,
+        enabled: true,
+        allow,
+        deny,
+        instructions,
+      },
+      writeToLog,
+    );
+    const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
+    writeToLog(
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // SIGTSTP protection: the daemon must never suspend itself.
@@ -1522,8 +1630,11 @@ let primarySessionId: UUID | null = null;
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications (persists across connection/disconnection)
-const deviceTokens = new Map<string, { token: string; platform: string; registeredAt: number }>();
+// Device tokens for push notifications (cleaned up on disconnect; re-registered on reconnect)
+const deviceTokens = new Map<
+  string,
+  { token: string; platform: string; registeredAt: number; connectionId: UUID }
+>();
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1532,6 +1643,10 @@ let hookConfigManager: HookConfigManager | null = null;
 
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
+
+// Watcher for live-sessions directory (pushes session list updates on new daemon startup)
+let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
+let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
@@ -1610,18 +1725,27 @@ async function createNewSession(
         sendAndRecord(msg);
         sessionRegistry.updateQuestion(questionSessionId, question);
 
-        // Always push to registered devices — iOS silences if user disabled notifications
-        if (deviceTokens.size > 0) {
+        // Push to registered devices only when no client is actively viewing the session.
+        // If a client is attached, they see the question in the UI; no push needed.
+        const sessionForPush = sessionRegistry.getSession(questionSessionId);
+        const hasActiveClient =
+          sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
+        if (deviceTokens.size > 0 && !hasActiveClient) {
           const session = sessionRegistry.getSession(sessionId);
           const sessionName = session?.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
           const pushSessionId = primarySessionId ?? sessionId;
+          const pushCategory = selectPushCategory(question.options);
+          const pushOptions = question.options.map((o) => o.value);
           for (const dt of deviceTokens.values()) {
             sendPushTrigger(signalingUrl, dt.token, {
               title: `${sessionName} needs input`,
               body: question.text.slice(0, 100),
               ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
               sessionId: pushSessionId,
+              questionId: question.id,
+              ...(pushCategory !== undefined ? { category: pushCategory } : {}),
+              ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
             })
               .then(() => log(`Push notification sent for session ${pushSessionId}`))
               .catch((err) => log(`Push notification failed: ${err}`));
@@ -1688,6 +1812,138 @@ async function createNewSession(
     // Before SessionStart fires, we let events through (claudeSessionId is null).
     let claudeSessionId: string | null = null;
 
+    // Our PTY is the ground truth for "main interactive session". A hook event
+    // with a different session_id is NEVER our main:
+    //  - Subagent spawn (TaskCreate/TeamCreate) — different session_id, no own PTY
+    //  - Sibling daemon's Claude — different session_id, different PTY elsewhere
+    //  - Actual Claude restart in our PTY — only possible after our PTY exited
+    // So: while our PTY is running, treat any different session_id as foreign.
+    // Once our PTY exits, a new session_id represents a genuine new Claude.
+    // Flag set on explicit SessionEnd so we don't wait for PTY exit if Claude
+    // shut down cleanly.
+    let mainSessionEnded = false;
+
+    // Extract transcript info from hook events. Most Claude Code hook events include
+    // session_id and transcript_path. When present, the first event gives us the
+    // transcript path, bypassing the slower mtime fallback.
+    //
+    // GUARD: When sibling daemons serve the same directory, all Claudes POST to all
+    // hook URLs (shared settings.local.json). So a sibling's event may arrive before
+    // our own Claude fires. In that case, skip hook-based discovery and let the
+    // mtime fallback handle it. For single-daemon directories (the common case),
+    // accept the first event immediately.
+    let hasSiblingInDir: boolean | null = null; // Computed once, then cached
+
+    // Safely tear down an existing transcript watcher, reset messages, and notify
+    // clients. Handles errors from stop() and sendAndRecord() so they never prevent
+    // the new watcher from being created. Shared by initFromHookEvent and onSessionInfo.
+    function teardownWatcher(reason: string, label: string): void {
+      const watcher = transcriptWatchers.get(sessionId);
+      if (!watcher) return;
+      transcriptWatchers.delete(sessionId); // Remove from map FIRST to unblock new watcher
+      try {
+        watcher.stop();
+      } catch (stopErr) {
+        logError(
+          `[Hooks] Failed to stop watcher (${label}): ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+        );
+      }
+      messageApi.reset();
+      try {
+        sendAndRecord(createSessionReset(sessionId, reason));
+      } catch (sendErr) {
+        logError(
+          `[Hooks] Failed to send ${reason} for ${sessionId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+        );
+      }
+    }
+
+    function initFromHookEvent(input: {
+      session_id?: string;
+      transcript_path?: string;
+      hook_event_name?: string;
+    }): void {
+      if (!input.session_id) return;
+
+      const classification = classifySessionEvent({
+        currentLock: claudeSessionId,
+        incomingSessionId: input.session_id,
+        mainPtyRunning: sessionRegistry.getSession(sessionId)?.pty.isRunning ?? false,
+        mainSessionEnded,
+      });
+
+      if (classification === 'foreign') {
+        // Subagent or sibling daemon event. Drop to avoid hijacking our lock.
+        // Log for observability: if classifier misbehaves, we still see activity.
+        log(
+          `[Hooks] Dropped foreign ${input.hook_event_name ?? 'event'}: lock=${claudeSessionId?.slice(0, 8)} incoming=${input.session_id.slice(0, 8)}`,
+        );
+        return;
+      }
+      if (classification === 'restart') {
+        log(
+          `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
+        );
+        teardownWatcher('claude_restarted', 'restart');
+        claudeSessionId = null;
+        mainSessionEnded = false;
+      }
+      // classification === 'match': either our tracked session or first-time lock.
+      if (claudeSessionId) return; // already initialized
+      if (!input.transcript_path) return;
+
+      if (hasSiblingInDir === null) {
+        hasSiblingInDir = liveSessionsRegistry
+          .listLive()
+          .some(
+            (e) =>
+              e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
+          );
+      }
+
+      if (hasSiblingInDir) {
+        // Cannot trust which Claude sent this event — defer to fallback
+        return;
+      }
+
+      try {
+        claudeSessionId = input.session_id;
+        log(
+          `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
+        );
+        sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+        // Cancel the fallback timer since we have the exact path
+        const fallbackTimer = transcriptFallbackTimers.get(sessionId);
+        if (fallbackTimer) {
+          clearInterval(fallbackTimer);
+          transcriptFallbackTimers.delete(sessionId);
+        }
+
+        // If a fallback watcher claimed the slot with a different (stale) file,
+        // replace it with the authoritative hook-provided path.
+        const existingWatcher = transcriptWatchers.get(sessionId);
+        if (
+          existingWatcher &&
+          path.resolve(existingWatcher.filePath) !== path.resolve(input.transcript_path)
+        ) {
+          log(
+            `[Hooks] Replacing stale watcher: ${existingWatcher.filePath} -> ${input.transcript_path}`,
+          );
+          teardownWatcher('transcript_changed', 'stale-replace');
+        }
+
+        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+          startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
+        }
+      } catch (err) {
+        logError(
+          `[Hooks] initFromHookEvent failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        claudeSessionId = null; // Reset so fallback can take over
+      }
+    }
+
     const hookBridge = new HookEventBridge(sessionId, {
       onStatusChange: (status: AgentStatus, context?: string) => {
         messageApi.handleStatusChange(status, context);
@@ -1696,38 +1952,248 @@ async function createNewSession(
         messageApi.handleQuestion(question);
       },
       onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
-        claudeSessionId = hookClaudeSessionId;
-        log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
-        sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+        // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude)
+        if (hasSiblingInDir === null) {
+          hasSiblingInDir = liveSessionsRegistry
+            .listLive()
+            .some(
+              (e) =>
+                e.projectPath === workingDirectory &&
+                e.sessionId !== sessionId &&
+                e.wsPort !== PORT,
+            );
+        }
+        if (hasSiblingInDir) return;
 
-        // Start transcript watcher immediately using the path from the hook
-        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
-          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+        // Use the same classifier as initFromHookEvent so both paths share
+        // one rule for distinguishing foreign (subagent/sibling) from restart.
+        const classification = classifySessionEvent({
+          currentLock: claudeSessionId,
+          incomingSessionId: hookClaudeSessionId,
+          mainPtyRunning: sessionRegistry.getSession(sessionId)?.pty.isRunning ?? false,
+          mainSessionEnded,
+        });
+        if (classification === 'foreign') {
+          log(
+            `[Hooks] Dropped foreign SessionInfo: lock=${claudeSessionId?.slice(0, 8)} incoming=${hookClaudeSessionId.slice(0, 8)}`,
+          );
+          return;
+        }
+        if (classification === 'restart') {
+          log(
+            `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
+          );
+          teardownWatcher('claude_restarted', 'restart-sessioninfo');
+          claudeSessionId = null;
+          mainSessionEnded = false;
+        }
+
+        try {
+          claudeSessionId = hookClaudeSessionId;
+          log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
+          sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+          // If a fallback watcher claimed the slot with a different (stale) file,
+          // replace it with the authoritative hook-provided path.
+          const existingWatcher = transcriptWatchers.get(sessionId);
+          if (
+            existingWatcher &&
+            path.resolve(existingWatcher.filePath) !== path.resolve(transcriptPath)
+          ) {
+            log(
+              `[Hooks] Replacing stale watcher (SessionInfo): ${existingWatcher.filePath} -> ${transcriptPath}`,
+            );
+            teardownWatcher('transcript_changed', 'stale-replace-sessioninfo');
+          }
+
+          if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
+            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
+          }
+        } catch (err) {
+          logError(
+            `[Hooks] onSessionInfo failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          claudeSessionId = null;
         }
       },
     });
 
     const handlers = hookBridge.hookHandlers();
-    hookServer.on('SessionStart', (input) => handlers.onSessionStart?.(input));
+    // initFromHookEvent runs before the bridge handler: it covers events where
+    // onSessionInfo doesn't fire (PreToolUse, etc.). For SessionStart, both paths
+    // converge; guards prevent double-processing.
+    hookServer.on('SessionStart', (input) => {
+      // SessionStart with an explicit main-transition source (/clear /compact
+      // /resume) is the authoritative signal that our main Claude took a new
+      // session_id while our PTY kept running. Pre-empt the classifier by
+      // treating the old session as ended, so the classifier sees a 'restart'
+      // and cleanly switches the lock.
+      if (input.source === 'clear' || input.source === 'compact' || input.source === 'resume') {
+        if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
+          log(
+            `[Hooks] Main lifecycle transition (${input.source}): ${claudeSessionId} -> ${input.session_id}`,
+          );
+          mainSessionEnded = true; // classifier will pick this up as 'restart'
+        }
+      }
+      initFromHookEvent(input);
+      handlers.onSessionStart?.(input);
+    });
+    // Filter: accept events only from our own Claude. Before claudeSessionId is known,
+    // block events when siblings exist (they could be from sibling's Claude).
+    const filterBySession = (input: { session_id?: string }): boolean => {
+      if (claudeSessionId) return input.session_id === claudeSessionId;
+      return !hasSiblingInDir; // No sibling → events can only be ours
+    };
+
+    // Subagent/team-member events carry `agent_id` (confirmed via
+    // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
+    // transcript, so session-id filtering cannot distinguish them. Drop these
+    // at the hook layer so status updates, auto-approve, question emission,
+    // and PTY injection all stay scoped to the main interactive session.
+    const isSubagentEvent = (input: { agent_id?: string }): boolean =>
+      typeof input.agent_id === 'string' && input.agent_id.length > 0;
+
     hookServer.on('PreToolUse', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
+      if (isSubagentEvent(input)) return;
       handlers.onPreToolUse?.(input);
     });
     hookServer.on('PostToolUse', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
+      if (isSubagentEvent(input)) return;
       handlers.onPostToolUse?.(input);
     });
     hookServer.on('Notification', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
+      // Subagent notifications must not bubble up to the user (phantom prompts).
+      if (isSubagentEvent(input)) {
+        log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
+        return;
+      }
       handlers.onNotification?.(input);
     });
     hookServer.on('PermissionRequest', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
-      handlers.onPermissionRequest?.(input);
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
+
+      // Subagent PermissionRequest: Claude Code sets `agent_id` on events
+      // originating from Task/Agent-spawned subagents or team members. Those
+      // events share the main session_id and transcript but are handled
+      // internally by Claude Code — they MUST NOT be injected into our main PTY.
+      if (isSubagentEvent(input)) {
+        log(
+          `[Hooks] Dropped subagent PermissionRequest: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        );
+        return;
+      }
+
+      // Legacy nested-Task context (kept as secondary safety net).
+      const inSubagent = hookBridge.isInSubagentContext();
+      const sessionTag = sessionId.slice(0, 8);
+
+      // Helper: inject an answer into the PTY. Returns true on success. On
+      // failure (session not found, PTY not running, submitInput throws) the
+      // helper never throws — it logs and returns false so callers can fall
+      // back to escalating the prompt to the user.
+      const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
+        try {
+          const session = sessionRegistry.getSession(sessionId);
+          if (!session) {
+            logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
+            return false;
+          }
+          await session.pty.submitInput(value);
+          log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
+          sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
+          hookBridge.markPermissionHandled();
+          return true;
+        } catch (err) {
+          logError(`[AutoApprove ${sessionTag}] inject("${value}") threw:`, err);
+          return false;
+        }
+      };
+
+      // Safe escalation to the user. Used when inject fails or when auto-approve
+      // is off and we're in main context. Wrapped so bridge/push failures don't
+      // leave the hook handler with a dangling unhandled rejection.
+      const escalateToUser = () => {
+        try {
+          handlers.onPermissionRequest?.(input);
+        } catch (err) {
+          logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
+        }
+      };
+
+      // Auto-approve gate: evaluate before creating Question object.
+      if (autoApproveService) {
+        const aaService = autoApproveService;
+        aaService
+          .evaluate(input.tool_name, input.tool_input, sessionTag)
+          .then(async (result) => {
+            if (result.decision === 'approve') {
+              if (!(await inject('1', 'approved'))) escalateToUser();
+              return;
+            }
+            if (result.decision === 'deny') {
+              if (!(await inject('3', 'denied'))) escalateToUser();
+              return;
+            }
+            // escalate: if we're in a subagent context, default-deny to avoid
+            // hanging the subagent. The user would not be able to answer anyway.
+            if (inSubagent) {
+              log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
+              // If inject fails here, the subagent is hung regardless — no main
+              // PTY to escalate to. Log and accept.
+              await inject('3', 'subagent-escalate-default-deny');
+              return;
+            }
+            escalateToUser();
+          })
+          .catch(async (err) => {
+            // Last line of defense. Must not leave an unhandled rejection.
+            try {
+              logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
+              if (inSubagent) {
+                await inject('3', 'subagent-error-default-deny');
+                return;
+              }
+              escalateToUser();
+            } catch (inner) {
+              logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
+            }
+          });
+        return;
+      }
+
+      // No auto-approve. If in subagent context, still must not hang the subagent:
+      // default-deny rather than emit a question the user can't answer.
+      if (inSubagent) {
+        log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
+        inject('3', 'subagent-no-aa-default-deny').catch((err) => {
+          logError(`[${sessionTag}] Failed to inject default-deny:`, err);
+        });
+        return;
+      }
+
+      escalateToUser();
     });
     hookServer.on('Stop', (input) => {
-      if (claudeSessionId && input.session_id !== claudeSessionId) return;
+      initFromHookEvent(input);
+      if (!filterBySession(input)) return;
       handlers.onStop?.(input);
+    });
+    hookServer.on('SessionEnd', (input) => {
+      // Only mark our main as ended when the session_id matches what we locked.
+      // Foreign SessionEnds (subagents, siblings) must not unlock our tracking.
+      if (input.session_id && claudeSessionId && input.session_id === claudeSessionId) {
+        mainSessionEnded = true;
+      }
+      if (!filterBySession(input)) return;
+      handlers.onSessionEnd?.(input);
     });
 
     log(`[Hooks] Event bridge active for session ${sessionId}`);
@@ -1842,9 +2308,9 @@ async function createNewSession(
     exitCode: null,
   });
 
-  // Transcript watcher: started by SessionStart hook (provides path directly).
-  // Safety net: if hook doesn't fire, poll for a NEW transcript file.
-  // Claude creates its transcript file after startup, so we must wait for it.
+  // Transcript watcher: normally started by hook event (provides path directly).
+  // When sibling daemons serve the same directory, hook events are skipped and
+  // this fallback becomes the primary discovery path.
   const startupTime = Date.now();
   const fallbackInterval = setInterval(() => {
     if (transcriptWatchers.has(sessionId)) {
@@ -1858,10 +2324,19 @@ async function createNewSession(
       return;
     }
     // Look for a transcript file that is actively being written to.
-    // Accept any transcript modified within the last 5 minutes (handles daemon
-    // restarts where the session was already running before startup).
+    // When sibling daemons serve the same directory, exclude transcripts they've
+    // already claimed (by claudeSessionId in sessions.json) to avoid double-watching.
     const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
-    const transcriptPath = transcriptDiscovery.findLatestTranscript(workingDirectory);
+    const siblingClaudeIds = new Set<string>();
+    for (const entry of sessionStore.list()) {
+      if (entry.remiSessionId !== sessionId && entry.claudeSessionId && !entry.exitedAt) {
+        siblingClaudeIds.add(entry.claudeSessionId);
+      }
+    }
+    const transcriptPath =
+      siblingClaudeIds.size > 0
+        ? transcriptDiscovery.findLatestTranscriptExcluding(workingDirectory, siblingClaudeIds)
+        : transcriptDiscovery.findLatestTranscript(workingDirectory);
     if (transcriptPath) {
       try {
         const stat = fs.statSync(transcriptPath);
@@ -1873,8 +2348,10 @@ async function createNewSession(
           extractClaudeSessionId(transcriptPath, sessionId);
           return;
         }
-      } catch {
-        /* stat failed, retry */
+      } catch (err) {
+        log(
+          `[Hooks] Fallback stat failed for ${transcriptPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     // Give up after 30 seconds
@@ -1913,20 +2390,19 @@ async function createNewSession(
   return ptySession;
 }
 
-/** Extract Claude session ID from transcript filename and persist it. */
-function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): void {
-  // Transcript filenames look like: <encoded-path>_<timestamp>_<claude-session-id>.jsonl
+/** Extract Claude session ID from transcript filename and persist it. Returns the extracted ID or null. */
+function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): string | null {
+  // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
+  // The underscore split is defensive in case a prefixed format is ever introduced.
   const basename = path.basename(transcriptPath, '.jsonl');
   const parts = basename.split('_');
-  // The Claude session ID is typically the last segment
-  if (parts.length >= 2) {
-    const candidateId = parts[parts.length - 1];
-    // Claude session IDs are UUIDs or similar identifiers
-    if (candidateId && candidateId.length >= 8) {
-      sessionStore.updateClaudeSessionId(sessionId, candidateId);
-      log(`Claude session ID: ${candidateId}`);
-    }
+  const candidateId = parts[parts.length - 1];
+  if (candidateId && candidateId.length >= 8) {
+    sessionStore.updateClaudeSessionId(sessionId, candidateId);
+    log(`Claude session ID: ${candidateId}`);
+    return candidateId;
   }
+  return null;
 }
 
 /** Start watching a transcript file for a session. */
@@ -2094,6 +2570,16 @@ const sharedEvents = {
     log(`Client disconnected: ${connectionId}`);
     log(`   Reason: ${reason}`);
 
+    // Remove device tokens registered by this connection so push
+    // notifications stop after explicit disconnect. The client
+    // re-registers on reconnect, so this is safe.
+    for (const [key, dt] of deviceTokens) {
+      if (dt.connectionId === connectionId) {
+        deviceTokens.delete(key);
+        log(`Device token unregistered (disconnect): ${key.slice(0, 20)}...`);
+      }
+    }
+
     // Explicitly remove from waiting queue, then detach if active.
     // detachConnection also handles waiting removal, but this ensures
     // cleanup even if detachConnection's early-return path changes.
@@ -2124,15 +2610,19 @@ const sharedEvents = {
     }
   },
 
-  onAnswer: async (connectionId: UUID, _questionId: UUID, answer: string) => {
-    log(`Answer from ${connectionId}: ${answer}`);
+  onAnswer: async (connectionId: UUID, sessionId: UUID, _questionId: UUID, answer: string) => {
+    log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
 
-    const session = sessionRegistry.getSessionForConnection(connectionId);
+    // Prefer lookup by sessionId (from push-action answers) so reconnected clients
+    // can answer even before the connection is fully mapped in the registry.
+    const session =
+      sessionRegistry.getSession(sessionId) ??
+      sessionRegistry.getSessionForConnection(connectionId);
     if (session) {
       await session.pty.submitInput(answer);
       sessionRegistry.updateQuestion(session.sessionId, null);
     } else {
-      log(`No session found for connection ${connectionId}`);
+      log(`No session found for connection ${connectionId} or session ${sessionId}`);
     }
   },
 
@@ -2166,7 +2656,14 @@ const sharedEvents = {
     let allSessions = [...daemonSessions];
 
     if (includeExternal) {
-      const managedIds = new Set(sessionRegistry.getActiveSessionIds());
+      const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+      // Also exclude by Claude session ID (JSONL filename UUID — different namespace from remi IDs)
+      for (const remiId of [...managedIds]) {
+        const stored = sessionStore.findByRemiSessionId(remiId as UUID);
+        if (stored?.claudeSessionId) {
+          managedIds.add(stored.claudeSessionId);
+        }
+      }
       const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
       allSessions = [...daemonSessions, ...externalSessions];
     }
@@ -2406,7 +2903,7 @@ const sharedEvents = {
 
   onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string) => {
     log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
-    deviceTokens.set(token, { token, platform, registeredAt: Date.now() });
+    deviceTokens.set(token, { token, platform, registeredAt: Date.now(), connectionId });
   },
 
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
@@ -2813,6 +3310,14 @@ async function cleanup(): Promise<void> {
     clearInterval(timer);
   }
   transcriptFallbackTimers.clear();
+  if (liveWatchDebounce) {
+    clearTimeout(liveWatchDebounce);
+    liveWatchDebounce = null;
+  }
+  if (liveSessionsWatcher) {
+    liveSessionsWatcher.close();
+    liveSessionsWatcher = null;
+  }
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
@@ -3154,6 +3659,48 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
     });
+
+    // Watch for new daemons registering in live-sessions and push updates to clients.
+    // This lets clients auto-connect when a sibling session starts in the same directory.
+    try {
+      liveSessionsWatcher = fs.watch(
+        liveSessionsRegistry.dirPath,
+        { persistent: false },
+        (_event) => {
+          // Debounce: macOS FSEvents fires multiple events per rename (tmp → final).
+          if (liveWatchDebounce) clearTimeout(liveWatchDebounce);
+          liveWatchDebounce = setTimeout(() => {
+            liveWatchDebounce = null;
+            try {
+              const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+              if (newPorts.length === 0) return;
+              // Include external sessions so the broadcast doesn't wipe transcript sessions
+              // that are already visible on the client (session_list_response replaces all
+              // sessions for this connection).
+              const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+              for (const remiId of [...managedIds]) {
+                const stored = sessionStore.findByRemiSessionId(remiId as UUID);
+                if (stored?.claudeSessionId) managedIds.add(stored.claudeSessionId);
+              }
+              const allSessions = [
+                ...sessionRegistry.listSessions(),
+                ...transcriptDiscovery.discoverSessions(managedIds),
+              ];
+              const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
+              registry.broadcast(msg);
+            } catch (err) {
+              logError(
+                `[LiveSessions] Error pushing session update: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }, 300);
+        },
+      );
+    } catch (err) {
+      logError(
+        `[LiveSessions] Could not watch live-sessions dir: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Create and start the primary PTY session

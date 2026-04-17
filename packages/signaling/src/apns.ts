@@ -13,6 +13,8 @@ interface ApnsPayload {
   data?: Record<string, string>;
   /** Use APNS sandbox endpoint (development builds) */
   sandbox?: boolean;
+  /** UNNotificationCategory identifier for action buttons (lock screen / Watch) */
+  category?: string;
 }
 
 interface ApnsConfig {
@@ -55,6 +57,7 @@ export async function sendApnsPush(
         },
         sound: 'default',
         badge: 1,
+        ...(payload.category ? { category: payload.category } : {}),
       },
       ...(payload.data ? payload.data : {}),
     }),
@@ -68,11 +71,24 @@ export async function sendApnsPush(
   return { success: false, error: `APNS ${response.status}: ${errorBody}` };
 }
 
+/** Cache APNS JWTs per keyId: Apple rate-limits token updates to once per 20 min. */
+const jwtCache = new Map<string, { jwt: string; iat: number }>();
+/** Reuse a cached JWT if it is younger than 50 minutes (3000 s). */
+const JWT_MAX_AGE_S = 3000;
+
 /**
  * Create a JWT for APNS authentication.
  * Uses ES256 algorithm with the p8 private key.
+ * The JWT is cached per keyId and reused until it is 50 minutes old to avoid
+ * APNS TooManyProviderTokenUpdates (429) errors.
  */
 async function createApnsJwt(config: ApnsConfig): Promise<string> {
+  const nowS = Math.floor(Date.now() / 1000);
+  const cached = jwtCache.get(config.keyId);
+  if (cached && nowS - cached.iat < JWT_MAX_AGE_S) {
+    return cached.jwt;
+  }
+
   const header = {
     alg: 'ES256',
     kid: config.keyId,
@@ -80,7 +96,7 @@ async function createApnsJwt(config: ApnsConfig): Promise<string> {
 
   const payload = {
     iss: config.teamId,
-    iat: Math.floor(Date.now() / 1000),
+    iat: nowS,
   };
 
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
@@ -107,7 +123,9 @@ async function createApnsJwt(config: ApnsConfig): Promise<string> {
   // WebCrypto SubtleCrypto returns ECDSA signature in raw r||s format (IEEE P1363) — no conversion needed
   const encodedSignature = base64UrlEncode(new Uint8Array(signature));
 
-  return `${signingInput}.${encodedSignature}`;
+  const jwt = `${signingInput}.${encodedSignature}`;
+  jwtCache.set(config.keyId, { jwt, iat: nowS });
+  return jwt;
 }
 
 function base64UrlEncode(input: string | Uint8Array): string {

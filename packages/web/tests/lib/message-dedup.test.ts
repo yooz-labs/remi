@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { deduplicateMessage, type IncomingMessage } from '../../src/lib/message-dedup';
+import { type IncomingMessage, deduplicateMessage } from '../../src/lib/message-dedup';
 import type { UIMessage } from '../../src/types';
 
 function makeUIMessage(overrides: Partial<UIMessage> = {}): UIMessage {
@@ -32,9 +32,7 @@ describe('deduplicateMessage', () => {
   });
 
   test('transcript arriving replaces PTY duplicate (no entryUuid, same content)', () => {
-    const existing = [
-      makeUIMessage({ entryUuid: undefined, source: 'pty' }),
-    ];
+    const existing = [makeUIMessage({ entryUuid: undefined, source: 'pty' })];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
       sender: 'agent',
@@ -48,7 +46,12 @@ describe('deduplicateMessage', () => {
 
   test('transcript arriving replaces optimistic duplicate and preserves its id', () => {
     const existing = [
-      makeUIMessage({ id: 'optimistic-abc' as UIMessage['id'], sender: 'user', source: 'optimistic', entryUuid: undefined }),
+      makeUIMessage({
+        id: 'optimistic-abc' as UIMessage['id'],
+        sender: 'user',
+        source: 'optimistic',
+        entryUuid: undefined,
+      }),
     ];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
@@ -78,7 +81,11 @@ describe('deduplicateMessage', () => {
 
   test('transcript arriving does not replace message with different sessionId', () => {
     const existing = [
-      makeUIMessage({ sessionId: 'session-2' as UIMessage['sessionId'], entryUuid: undefined, source: 'pty' }),
+      makeUIMessage({
+        sessionId: 'session-2' as UIMessage['sessionId'],
+        entryUuid: undefined,
+        source: 'pty',
+      }),
     ];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
@@ -92,9 +99,7 @@ describe('deduplicateMessage', () => {
   });
 
   test('transcript arriving does not replace message that already has entryUuid', () => {
-    const existing = [
-      makeUIMessage({ entryUuid: 'existing-entry', source: 'transcript' }),
-    ];
+    const existing = [makeUIMessage({ entryUuid: 'existing-entry', source: 'transcript' })];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
       sender: 'agent',
@@ -109,7 +114,12 @@ describe('deduplicateMessage', () => {
   test('transcript replaces correct index among multiple messages', () => {
     const existing = [
       makeUIMessage({ id: 'msg-0' as UIMessage['id'], content: 'First', source: 'pty' }),
-      makeUIMessage({ id: 'msg-1' as UIMessage['id'], content: 'Hello world', entryUuid: undefined, source: 'pty' }),
+      makeUIMessage({
+        id: 'msg-1' as UIMessage['id'],
+        content: 'Hello world',
+        entryUuid: undefined,
+        source: 'pty',
+      }),
       makeUIMessage({ id: 'msg-2' as UIMessage['id'], content: 'Third', source: 'pty' }),
     ];
     const incoming: IncomingMessage = {
@@ -124,9 +134,7 @@ describe('deduplicateMessage', () => {
   });
 
   test('sender mismatch prevents dedup', () => {
-    const existing = [
-      makeUIMessage({ sender: 'user', entryUuid: undefined, source: 'pty' }),
-    ];
+    const existing = [makeUIMessage({ sender: 'user', entryUuid: undefined, source: 'pty' })];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
       sender: 'agent',
@@ -141,9 +149,7 @@ describe('deduplicateMessage', () => {
   // --- PTY arriving ---
 
   test('PTY arriving skips when transcript duplicate exists', () => {
-    const existing = [
-      makeUIMessage({ entryUuid: 'entry-1', source: 'transcript' }),
-    ];
+    const existing = [makeUIMessage({ entryUuid: 'entry-1', source: 'transcript' })];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
       sender: 'agent',
@@ -169,9 +175,7 @@ describe('deduplicateMessage', () => {
   });
 
   test('PTY arriving adds when existing messages have no entryUuid', () => {
-    const existing = [
-      makeUIMessage({ entryUuid: undefined, source: 'pty' }),
-    ];
+    const existing = [makeUIMessage({ entryUuid: undefined, source: 'pty' })];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',
       sender: 'agent',
@@ -184,7 +188,12 @@ describe('deduplicateMessage', () => {
 
   test('PTY arriving skips when optimistic duplicate exists', () => {
     const existing = [
-      makeUIMessage({ id: 'opt-1' as UIMessage['id'], sender: 'user', source: 'optimistic', entryUuid: undefined }),
+      makeUIMessage({
+        id: 'opt-1' as UIMessage['id'],
+        sender: 'user',
+        source: 'optimistic',
+        entryUuid: undefined,
+      }),
     ];
     const incoming: IncomingMessage = {
       sessionId: 'session-1',

@@ -16,6 +16,12 @@ export interface PushTriggerOptions {
   pushSecret?: string;
   /** Remi session UUID included in APNS custom data for tap-to-navigate */
   sessionId?: string;
+  /** Question UUID so the client can send the right answer back */
+  questionId?: string;
+  /** APNS notification category ('REMI_YN' | 'REMI_YNA' | 'REMI_MULTI') for action buttons */
+  category?: string;
+  /** Answer values for action buttons: opt_0, opt_1, ... */
+  options?: string[];
 }
 
 /**
@@ -39,13 +45,22 @@ export async function sendPushTrigger(
   if (opts.pushSecret) {
     headers['Authorization'] = `Bearer ${opts.pushSecret}`;
   }
-  const payload: Record<string, string> = {
+  const payload: Record<string, unknown> = {
     token: deviceToken,
     title: opts.title,
     body: opts.body,
   };
   if (opts.sessionId) {
     payload['sessionId'] = opts.sessionId;
+  }
+  if (opts.questionId) {
+    payload['questionId'] = opts.questionId;
+  }
+  if (opts.category) {
+    payload['category'] = opts.category;
+  }
+  if (opts.options && opts.options.length > 0) {
+    payload['options'] = opts.options;
   }
   const response = await fetch(url, {
     method: 'POST',

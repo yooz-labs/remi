@@ -13,15 +13,15 @@ import { Link2, Link2Off, MessageCircleQuestion, RotateCcw } from 'lucide-react'
 
 /** Strip hostname prefix and truncate branch for display.
  *  "yahyas-mcm:remi/develop" -> "remi/develop"
- *  "remi/very-long-branch-name-here" -> "remi/very-long-br..."
+ *  "remi/very-long-branch-name-here" -> "remi/very-long..."
  */
 function formatSessionName(name: string): string {
   // Strip hostname: prefix (everything before the first colon that's followed by non-digit)
   let display = name.replace(/^[^:]+:/, '');
-  // Truncate branch part if too long (keep folder, limit branch to 15 chars)
+  // Truncate branch part if too long (keep folder, limit branch to 10 chars)
   const slashIdx = display.indexOf('/');
-  if (slashIdx >= 0 && display.length > slashIdx + 16) {
-    display = `${display.slice(0, slashIdx + 16)}...`;
+  if (slashIdx >= 0 && display.length > slashIdx + 11) {
+    display = `${display.slice(0, slashIdx + 11)}...`;
   }
   return display || name;
 }
@@ -75,10 +75,7 @@ export function SessionCard({
   onDisconnect,
   isResuming,
 }: SessionCardProps) {
-  const showResume =
-    onResume &&
-    session.canResume &&
-    session.connectionStatus === 'disconnected';
+  const showResume = onResume && session.canResume && session.connectionStatus === 'disconnected';
 
   const isConnected = session.connectionStatus === 'connected';
 
@@ -135,24 +132,28 @@ export function SessionCard({
             )}
             aria-label="Resume"
           >
-            {isResuming
-              ? <RotateCcw className="size-3.5 animate-spin" />
-              : <Link2 className="size-3.5" />}
+            {isResuming ? (
+              <RotateCcw className="size-3.5 animate-spin" />
+            ) : (
+              <Link2 className="size-3.5" />
+            )}
           </button>
         )}
       </div>
 
       {/* Preview line: status/preview + timestamp */}
       <div className="mt-1 flex items-center gap-2 pl-4.5">
-        <p className={clsx(
-          'flex-1 truncate text-sm',
-          session.questionPending
-            ? 'font-medium text-[var(--color-warning)]'
-            : 'text-[var(--color-text-secondary)]',
-        )}>
+        <p
+          className={clsx(
+            'flex-1 truncate text-sm',
+            session.questionPending
+              ? 'font-medium text-[var(--color-warning)]'
+              : 'text-[var(--color-text-secondary)]',
+          )}
+        >
           {session.questionPending
             ? 'Needs your input'
-            : (session.preview || getStatusText(session.status))}
+            : session.preview || getStatusText(session.status)}
         </p>
         <span className="shrink-0 text-xs text-[var(--color-text-muted)]">
           {formatRelativeTime(session.lastActiveAt)}
@@ -161,9 +162,10 @@ export function SessionCard({
 
       {/* CWD if available */}
       {session.cwd && (
-        <p className="mt-0.5 truncate pl-4.5 text-xs text-[var(--color-text-muted)]">{session.cwd}</p>
+        <p className="mt-0.5 truncate pl-4.5 text-xs text-[var(--color-text-muted)]">
+          {session.cwd}
+        </p>
       )}
-
     </button>
   );
 }

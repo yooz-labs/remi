@@ -76,6 +76,7 @@ export type {
   DetachSessionMessage,
   DetachSessionAckMessage,
   RegisterDeviceTokenMessage,
+  SessionResetMessage,
 } from './protocol.ts';
 
 export {
@@ -94,6 +95,7 @@ export {
   createPong,
   createError,
   createQuestion,
+  createAnswer,
   createSessionUpdate,
   createReplayBatch,
   createBulletExpandRequest,
@@ -119,6 +121,7 @@ export {
   createDetachSession,
   createDetachSessionAck,
   createRegisterDeviceToken,
+  createSessionReset,
   MessageIdTracker,
 } from './protocol.ts';
 

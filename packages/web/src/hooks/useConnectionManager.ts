@@ -20,6 +20,7 @@ import type { UnlockedIdentity } from '@remi/shared';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
+  createAnswer,
   createBulletExpandRequest,
   createCreateSessionRequest,
   createHello,
@@ -29,8 +30,6 @@ import {
   createSessionListRequest,
   createTranscriptLoadRequest,
   createUserInput,
-  generateId,
-  now,
 } from '@remi/shared/protocol.ts';
 import type { UUID } from '@remi/shared/types.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -87,7 +86,12 @@ export interface UseConnectionManagerReturn {
   /** Send user input routed to the correct connection */
   sendInput: (connectionId: ConnectionId, sessionId: UUID, content: string) => boolean;
   /** Send answer to a question via the correct connection */
-  sendAnswer: (connectionId: ConnectionId, questionId: UUID, answer: string) => boolean;
+  sendAnswer: (
+    connectionId: ConnectionId,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+  ) => boolean;
   /** Send a raw protocol message to a specific connection */
   sendMessage: (connectionId: ConnectionId, message: ProtocolMessage) => boolean;
   /** Request bullet expand via a specific connection */
@@ -528,15 +532,8 @@ export function useConnectionManager(
   );
 
   const sendAnswer = useCallback(
-    (connectionId: ConnectionId, questionId: UUID, answer: string): boolean => {
-      const msg: ProtocolMessage = {
-        type: 'answer',
-        id: generateId(),
-        timestamp: now(),
-        questionId,
-        answer,
-      };
-      return sendToConnection(connectionId, msg);
+    (connectionId: ConnectionId, sessionId: UUID, questionId: UUID, answer: string): boolean => {
+      return sendToConnection(connectionId, createAnswer(sessionId, questionId, answer));
     },
     [sendToConnection],
   );

@@ -108,6 +108,11 @@ export class PTYSession {
     return this.state === 'running';
   }
 
+  /** Get child process PID (null if not started) */
+  get childPid(): number | null {
+    return this.process?.pid ?? null;
+  }
+
   /** Get exit code (null if not exited or killed by signal) */
   get processExitCode(): number | null {
     return this.exitCode;

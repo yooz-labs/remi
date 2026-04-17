@@ -98,7 +98,8 @@ export type ProtocolMessage =
   | ResumeSessionResponseMessage
   | DetachSessionMessage
   | DetachSessionAckMessage
-  | RegisterDeviceTokenMessage;
+  | RegisterDeviceTokenMessage
+  | SessionResetMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -197,6 +198,7 @@ export interface AnswerMessage {
   readonly type: 'answer';
   readonly id: UUID;
   readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
   readonly questionId: UUID;
   readonly answer: string;
 }
@@ -530,6 +532,17 @@ export interface RegisterDeviceTokenMessage {
   readonly platform: 'ios' | 'android';
 }
 
+/** Notification that a Claude session restarted within the same Remi session */
+export interface SessionResetMessage {
+  readonly type: 'session_reset';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Remi session ID that was reset */
+  readonly sessionId: UUID;
+  /** Reason for the reset */
+  readonly reason: string;
+}
+
 /** A recent project directory aggregated from session history */
 export interface RecentDirectory {
   /** Absolute path */
@@ -638,6 +651,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'detach_session',
     'detach_session_ack',
     'register_device_token',
+    'session_reset',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -816,6 +830,20 @@ export function createQuestion(question: Question, sessionId?: UUID): QuestionMe
     timestamp: now(),
     question,
     ...(sessionId !== undefined && { sessionId }),
+  };
+}
+
+/**
+ * Create an answer message for a question.
+ */
+export function createAnswer(sessionId: UUID, questionId: UUID, answer: string): AnswerMessage {
+  return {
+    type: 'answer',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionId,
+    answer,
   };
 }
 
@@ -1238,6 +1266,19 @@ export function createRegisterDeviceToken(
     timestamp: now(),
     token,
     platform,
+  };
+}
+
+/**
+ * Create a session reset notification (Claude restarted within the same Remi session).
+ */
+export function createSessionReset(sessionId: UUID, reason: string): SessionResetMessage {
+  return {
+    type: 'session_reset',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    reason,
   };
 }
 

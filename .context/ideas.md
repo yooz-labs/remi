@@ -97,11 +97,14 @@ Think of Remi as "WhatsApp for your terminal agent":
 **Concept:** Get notified when Claude asks a question, even with app closed
 **User Value:** Don't miss important decisions while away
 **Implementation:**
-- Daemon sends push via APNs/FCM
+- Daemon sends push via APNs (APNS bridge built in iOS Capacitor app)
+- Always-push on question (WS local notification removed)
+- Push-client in daemon sends to signaling server which forwards to device
 - Notification shows question text
-- Actionable buttons for Yes/No
-**Complexity:** High (requires push server)
-**Priority:** Nice-to-have (Phase 5)
+- Actionable lock-screen replies: future (#278)
+**Status:** Infrastructure built and wired. End-to-end test on physical device pending (#286).
+**Complexity:** High (done)
+**Priority:** MVP-blocking
 
 ### Feature: Code Diff Gallery
 **Concept:** Visual timeline of file changes during session

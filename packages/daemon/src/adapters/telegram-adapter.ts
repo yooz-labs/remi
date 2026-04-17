@@ -770,7 +770,7 @@ export class TelegramAdapter implements ConnectionAdapter {
     }
 
     // Notify daemon of answer
-    this.events.onAnswer?.(session.connectionId, questionId, answer);
+    this.events.onAnswer?.(session.connectionId, session.sessionId, questionId, answer);
 
     // Acknowledge the callback
     await ctx.answerCallbackQuery('Sent!');

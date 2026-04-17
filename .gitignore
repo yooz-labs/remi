@@ -55,9 +55,7 @@ android/
 *.aab
 
 # Context and MCP
-.context/
 .mcp.json
-.serena/
 
 # Xcode workspace user data
 **/project.xcworkspace/
@@ -67,6 +65,9 @@ android/
 tmp/
 temp/
 *.tmp
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
 
 # Logs
 logs/
