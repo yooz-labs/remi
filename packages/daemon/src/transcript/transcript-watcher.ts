@@ -12,6 +12,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import type {
   AssistantEntry,
   ContentBlock,
@@ -211,9 +212,7 @@ export class TranscriptWatcher {
     } catch (watchErr) {
       // If directory watching fails, fall back to polling only
       this.events.onError?.(
-        new Error(
-          `fs.watch on directory failed, using polling: ${watchErr instanceof Error ? watchErr.message : String(watchErr)}`,
-        ),
+        new Error(`fs.watch on directory failed, using polling: ${errorToString(watchErr)}`),
       );
       this.pollTimer = setInterval(() => {
         if (fs.existsSync(this.config.filePath)) {
@@ -245,9 +244,7 @@ export class TranscriptWatcher {
     } catch (error) {
       // fs.watch not available on this platform; fall back to polling only
       this.events.onError?.(
-        new Error(
-          `fs.watch unavailable, using polling: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+        new Error(`fs.watch unavailable, using polling: ${errorToString(error)}`),
       );
     }
 

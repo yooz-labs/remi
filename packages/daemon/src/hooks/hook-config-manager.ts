@@ -12,6 +12,7 @@
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import { HOOK_EVENT_NAMES } from './hook-types.ts';
 
 interface HookEntry {
@@ -55,16 +56,14 @@ export class HookConfigManager {
     try {
       await this.purgeStaleHooks();
     } catch (err) {
-      console.warn(
-        `Failed to purge stale hooks: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
-      );
+      console.warn(`Failed to purge stale hooks: ${errorToString(err)}. Continuing with install.`);
     }
 
     try {
       this.purgeInvalidEventNames();
     } catch (err) {
       console.warn(
-        `Failed to purge invalid event names: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
+        `Failed to purge invalid event names: ${errorToString(err)}. Continuing with install.`,
       );
     }
 

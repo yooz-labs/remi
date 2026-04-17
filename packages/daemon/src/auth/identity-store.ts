@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import type {
   AuthorizedKey,
   AuthorizedKeysFile,
@@ -69,7 +70,7 @@ export class IdentityStore {
       return deserializeIdentity(raw);
     } catch (err) {
       throw new Error(
-        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${err instanceof Error ? err.message : String(err)}`,
+        `Identity file exists at ${this.identityPath} but is corrupt or unreadable: ${errorToString(err)}`,
       );
     }
   }
@@ -117,7 +118,7 @@ export class IdentityStore {
       parsed = JSON.parse(raw) as Record<string, unknown>;
     } catch (err) {
       throw new Error(
-        `Authorized keys file is corrupt (${this.authorizedKeysPath}): ${err instanceof Error ? err.message : String(err)}`,
+        `Authorized keys file is corrupt (${this.authorizedKeysPath}): ${errorToString(err)}`,
       );
     }
     if (parsed['version'] !== 1 || !Array.isArray(parsed['keys'])) {

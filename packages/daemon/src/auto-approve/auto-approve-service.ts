@@ -8,6 +8,7 @@
  * is never blocked by an LLM failure.
  */
 
+import { errorToString } from '@remi/shared';
 import { chatCompletion, resolveProviderUrl } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
 import { matchPattern } from './pattern-matcher.ts';
@@ -142,7 +143,7 @@ export class AutoApproveService {
       }
     } catch (err) {
       const durationMs = Date.now() - start;
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = errorToString(err);
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;
 

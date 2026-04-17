@@ -18,6 +18,7 @@ import type {
   Timestamp,
   UUID,
 } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
@@ -344,7 +345,7 @@ export class SessionRegistry {
         } catch (err) {
           // Callback failed (e.g., promoted connection unreachable).
           // Log the error and detach so the loop can try the next waiter.
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = errorToString(err);
           console.error(
             `[SessionRegistry] Promotion callback failed for ${nextConnectionId}: ${msg}`,
           );

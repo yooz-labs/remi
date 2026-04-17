@@ -15,6 +15,7 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import type { DiscoverableSession, ProtocolMessage, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
 import { resolveSession as sharedResolveSession } from './session-resolver.ts';
@@ -40,7 +41,7 @@ export async function runDetachClient(opts: DetachClientOptions): Promise<void> 
     try {
       ws = new WebSocket(url);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }

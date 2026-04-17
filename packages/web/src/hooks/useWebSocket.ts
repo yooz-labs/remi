@@ -12,6 +12,7 @@ import {
   trustHost,
   unlockStoredIdentity,
 } from '@/lib/identity-client';
+import { errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
@@ -199,7 +200,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           }
         } catch (err) {
           setError(
-            new Error(`Identity setup failed: ${err instanceof Error ? err.message : String(err)}`),
+            new Error(`Identity setup failed: ${errorToString(err)}`),
           );
           client.disconnect();
           return;
@@ -211,7 +212,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         const response = await signChallenge(identity, challenge);
         client.send(response);
       } catch (err) {
-        setError(new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`));
+        setError(new Error(`Auth failed: ${errorToString(err)}`));
         client.disconnect();
       }
     },
@@ -254,7 +255,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       } catch (err) {
         setError(
           new Error(
-            `Server verification error: ${err instanceof Error ? err.message : String(err)}`,
+            `Server verification error: ${errorToString(err)}`,
           ),
         );
         client.disconnect();
@@ -335,7 +336,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     signChallenge(identity, pending.challenge)
       .then((response) => client.send(response))
       .catch((err) => {
-        setError(new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`));
+        setError(new Error(`Auth failed: ${errorToString(err)}`));
         client.disconnect();
       });
   }, []);

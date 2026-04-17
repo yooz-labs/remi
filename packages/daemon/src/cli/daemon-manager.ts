@@ -10,6 +10,7 @@ import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
@@ -179,7 +180,7 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       console.error('Another daemon appears to be starting. Check with `remi status`.');
     } else {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`Failed to write PID file: ${msg}`);
     }
     fs.closeSync(logFd);
@@ -238,7 +239,7 @@ export function stopDaemon(): void {
   try {
     process.kill(pid, 'SIGTERM');
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to send SIGTERM: ${msg}`);
     process.exit(1);
   }
@@ -264,7 +265,7 @@ export function stopDaemon(): void {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'ESRCH') {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`Warning: SIGKILL failed: ${msg}`);
       console.error('The daemon process may still be running.');
     }
@@ -307,7 +308,7 @@ export function showDaemonLogs(lines = 50): void {
     const output = execSync(`tail -n ${lines} "${LOG_FILE}"`, { encoding: 'utf-8' });
     console.log(output);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to read daemon log: ${msg}`);
   }
 }
@@ -356,7 +357,7 @@ export async function spawnRemiDaemon(
     });
   } catch (err) {
     fs.closeSync(logFd);
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     throw new Error(`Failed to spawn daemon (command: ${command}): ${msg}`);
   }
 
