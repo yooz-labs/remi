@@ -166,3 +166,9 @@ export {
   createAuthorizedKey,
   createAuthorizedKeysFile,
 } from './identity.ts';
+
+// Error helpers
+export { errorToString } from './error-utils.ts';
+
+// Async helpers
+export { sleep } from './async-utils.ts';

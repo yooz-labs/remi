@@ -7,6 +7,7 @@
  */
 
 import * as os from 'node:os';
+import { errorToString } from '@remi/shared';
 import {
   createHello,
   createSessionHistoryRequest,
@@ -41,7 +42,7 @@ export async function fetchRecentDirectories(
     try {
       ws = new WebSocket(url);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }

@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { errorToString } from '@remi/shared';
 import {
   createDetachSession,
   createHello,
@@ -323,7 +324,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
           })
           .catch((err) => {
             clearTimeout(connectionTimer);
-            writeOutput(`\n[auth failed: ${err instanceof Error ? err.message : String(err)}]\n`);
+            writeOutput(`\n[auth failed: ${errorToString(err)}]\n`);
             finish({ exitCode: 1, reason: 'error' });
           });
         return;

@@ -14,6 +14,7 @@ import {
   trustHost,
   unlockStoredIdentity,
 } from '@/lib/identity-client';
+import { errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
@@ -250,7 +251,7 @@ export function useConnectionManager(
           }
         } catch (err) {
           mc.error = new Error(
-            `Identity setup failed: ${err instanceof Error ? err.message : String(err)}`,
+            `Identity setup failed: ${errorToString(err)}`,
           );
           mc.client.disconnect();
           syncState();
@@ -262,7 +263,7 @@ export function useConnectionManager(
         const response = await signChallenge(identity, challenge);
         mc.client.send(response);
       } catch (err) {
-        mc.error = new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
+        mc.error = new Error(`Auth failed: ${errorToString(err)}`);
         mc.client.disconnect();
         syncState();
       }
@@ -304,7 +305,7 @@ export function useConnectionManager(
         }
       } catch (err) {
         mc.error = new Error(
-          `Server verification error: ${err instanceof Error ? err.message : String(err)}`,
+          `Server verification error: ${errorToString(err)}`,
         );
         mc.client.disconnect();
         syncState();
@@ -610,7 +611,7 @@ export function useConnectionManager(
       signChallenge(identity, mc.pendingChallenge.challenge)
         .then((response) => mc.client.send(response))
         .catch((err) => {
-          mc.error = new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
+          mc.error = new Error(`Auth failed: ${errorToString(err)}`);
           mc.client.disconnect();
           syncState();
         });

@@ -1,4 +1,5 @@
 import * as os from 'node:os';
+import { errorToString } from '@remi/shared';
 import type { Bonjour, Service } from 'bonjour-service';
 import { MDNS_SERVICE_TYPE } from './constants.ts';
 
@@ -54,7 +55,7 @@ export class MdnsPublisher {
 
       this.running = true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`[mDNS] Failed to start publisher: ${msg}`);
       this.forceCleanup();
       throw err;
@@ -80,7 +81,7 @@ export class MdnsPublisher {
         });
       } catch (err) {
         clearTimeout(timer);
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errorToString(err);
         console.error(`[mDNS] Error during shutdown: ${msg}`);
         this.forceCleanup();
         resolve();

@@ -1,3 +1,4 @@
+import { errorToString } from '@remi/shared';
 /**
  * Minimal OpenAI-compatible chat completions client using raw fetch().
  *
@@ -83,9 +84,7 @@ export async function chatCompletion(
     });
 
     if (!response.ok) {
-      const body = await response
-        .text()
-        .catch((e) => `[body unreadable: ${e instanceof Error ? e.message : String(e)}]`);
+      const body = await response.text().catch((e) => `[body unreadable: ${errorToString(e)}]`);
       throw new Error(`LLM API error ${response.status}: ${body.slice(0, 200)}`);
     }
 

@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import type {
   HookInput,
   NotificationHookInput,
@@ -160,7 +161,7 @@ export class HookServer {
         if (!this.diagLogWarned) {
           this.diagLogWarned = true;
           console.warn(
-            `[HookServer] REMI_HOOK_DEBUG enabled but writing failed: ${err instanceof Error ? err.message : String(err)}`,
+            `[HookServer] REMI_HOOK_DEBUG enabled but writing failed: ${errorToString(err)}`,
           );
         }
       }

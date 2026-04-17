@@ -7,6 +7,7 @@
  */
 
 import * as os from 'node:os';
+import { errorToString } from '@remi/shared';
 import type { DiscoverableSession } from '@remi/shared';
 
 // ---------------------------------------------------------------------------
@@ -380,12 +381,12 @@ export async function discoverNetworkDaemons(
 
   const [daemons, vpnPeers] = await Promise.all([
     discoverDaemons({ timeoutMs: browseTimeoutMs }).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`[${logLabel}] mDNS discovery failed: ${msg}`);
       return [] as import('../mdns/mdns-browser.ts').DiscoveredDaemon[];
     }),
     discoverVpnPeers({ port: defaultPort, probeTimeoutMs }).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`[${logLabel}] VPN discovery failed: ${msg}`);
       return [] as {
         peer: { hostname: string; ip: string; os: string; provider: string };

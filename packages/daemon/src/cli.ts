@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 
 // Version constant - read once at startup with fallback for compiled binaries
 const REMI_VERSION = (() => {
@@ -390,7 +391,7 @@ function resolveShellPath(): void {
         if (entry) allEntries.add(entry);
       }
     } catch (err) {
-      logError(`[PATH] ${label} shell failed: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`[PATH] ${label} shell failed: ${errorToString(err)}`);
     }
   }
 
@@ -495,7 +496,7 @@ let remiConfig: RemiConfig;
 try {
   remiConfig = applyEnvOverrides(loadConfig());
 } catch (err) {
-  console.error(err instanceof Error ? err.message : String(err));
+  console.error(errorToString(err));
   process.exit(1);
 }
 
@@ -507,7 +508,7 @@ if (parsedArgs.subcommand === 'config') {
       const created = initConfigFile();
       console.log(`Config file created: ${created}`);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
   } else if (configArg === 'path') {
@@ -536,9 +537,7 @@ if (parsedArgs.subcommand === 'reload') {
       if (code === 'ESRCH') {
         console.error(`Process ${entry.pid} not found (stale session entry)`);
       } else {
-        console.error(
-          `Failed to signal PID ${entry.pid}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        console.error(`Failed to signal PID ${entry.pid}: ${errorToString(err)}`);
       }
     }
   }
@@ -610,7 +609,7 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
       defaultPort: DEFAULT_BASE_PORT,
     });
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     if (err instanceof TargetParseError && err.suggestion) {
       console.error(`  Run: remi ${cliSubcommand} ${err.suggestion}`);
     }
@@ -837,7 +836,7 @@ if (cliSubcommand === 'ls') {
         localPorts: liveSessionsRegistry.getLivePorts(),
       });
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
   } else if (explicitPort) {
@@ -846,7 +845,7 @@ if (cliSubcommand === 'ls') {
     try {
       await runLsClient({ host: cliHost ?? 'localhost', port: explicitPort });
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
   } else if (cliHost) {
@@ -855,7 +854,7 @@ if (cliSubcommand === 'ls') {
     try {
       await runHostLs({ host: cliHost, ports: getDefaultPortRange() });
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
   } else {
@@ -864,7 +863,7 @@ if (cliSubcommand === 'ls') {
     try {
       await runMultiPortLs({ registry: liveSessionsRegistry });
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
   }
@@ -885,7 +884,7 @@ if (cliSubcommand === 'recent') {
         port: explicitPort ?? DEFAULT_BASE_PORT,
       });
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
   } else {
@@ -954,7 +953,7 @@ if (cliSubcommand === 'kill') {
       target: killTarget,
     });
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     process.exit(1);
   }
   process.exit(0);
@@ -1013,7 +1012,7 @@ if (cliSubcommand === 'detach') {
       target: detachTarget,
     });
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     process.exit(1);
   }
   process.exit(0);
@@ -1058,9 +1057,7 @@ if (cliSubcommand === 'attach') {
         }
       }
     } catch (err) {
-      console.error(
-        `Cannot connect to ${resolvedHost}:${resolvedPort}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.error(`Cannot connect to ${resolvedHost}:${resolvedPort}: ${errorToString(err)}`);
       process.exit(1);
     }
   } else if (!targetSessionId) {
@@ -1131,7 +1128,7 @@ if (cliSubcommand === 'attach') {
         console.error(err.message);
         process.exit(1);
       }
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       const { classifyQueryError } = await import('./cli/session-resolver.ts');
       if (classifyQueryError(msg) === 'unexpected') {
         log(`[Attach] Failed to query daemon for name resolution: ${msg}`);
@@ -1255,7 +1252,7 @@ if (cliSubcommand === 'attach') {
             if (err instanceof AmbiguousSessionError) {
               throw err; // Already handled above
             }
-            const reason = err instanceof Error ? err.message : String(err);
+            const reason = errorToString(err);
             log(`[Attach] Network discovery error for "${targetHostname}": ${reason}`);
             console.error(`Network discovery failed: ${reason}`);
           }
@@ -1289,7 +1286,7 @@ if (cliSubcommand === 'attach') {
     });
     process.exit(result.exitCode);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     process.exit(1);
   }
 }
@@ -1405,7 +1402,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
     try {
       dirs = await fetchRecentDirectories(effectiveHost, resolvedPort);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
     if (dirs.length === 0) {
@@ -1429,7 +1426,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
     });
     process.exit(result.exitCode);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     process.exit(1);
   }
 }
@@ -1664,7 +1661,7 @@ async function startMdnsIfNeeded(
     logFn('[mDNS] Advertising on local network');
     return publisher;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     logFn(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
     return null;
   }
@@ -1844,17 +1841,13 @@ async function createNewSession(
       try {
         watcher.stop();
       } catch (stopErr) {
-        logError(
-          `[Hooks] Failed to stop watcher (${label}): ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
-        );
+        logError(`[Hooks] Failed to stop watcher (${label}): ${errorToString(stopErr)}`);
       }
       messageApi.reset();
       try {
         sendAndRecord(createSessionReset(sessionId, reason));
       } catch (sendErr) {
-        logError(
-          `[Hooks] Failed to send ${reason} for ${sessionId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-        );
+        logError(`[Hooks] Failed to send ${reason} for ${sessionId}: ${errorToString(sendErr)}`);
       }
     }
 
@@ -1938,7 +1931,7 @@ async function createNewSession(
         }
       } catch (err) {
         logError(
-          `[Hooks] initFromHookEvent failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          `[Hooks] initFromHookEvent failed for session ${sessionId}: ${errorToString(err)}`,
         );
         claudeSessionId = null; // Reset so fallback can take over
       }
@@ -2010,9 +2003,7 @@ async function createNewSession(
             startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
           }
         } catch (err) {
-          logError(
-            `[Hooks] onSessionInfo failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          logError(`[Hooks] onSessionInfo failed for ${sessionId}: ${errorToString(err)}`);
           claudeSessionId = null;
         }
       },
@@ -2228,10 +2219,7 @@ async function createNewSession(
             if (code === 'EPIPE' || code === 'EIO') {
               logError(`Terminal write failed (${code}), detaching local terminal`);
             } else {
-              logError(
-                `Unexpected terminal write error (${code}):`,
-                err instanceof Error ? err.message : String(err),
-              );
+              logError(`Unexpected terminal write error (${code}):`, errorToString(err));
             }
             // Clean up stdin to avoid dangling raw-mode reader
             if (process.stdin.isTTY) {
@@ -2276,7 +2264,7 @@ async function createNewSession(
           cleanup()
             .then(() => process.exit(code ?? 0))
             .catch((err) => {
-              logError(`[PTY] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+              logError(`[PTY] Cleanup failed: ${errorToString(err)}`);
               process.exit(1);
             });
         }
@@ -2349,9 +2337,7 @@ async function createNewSession(
           return;
         }
       } catch (err) {
-        log(
-          `[Hooks] Fallback stat failed for ${transcriptPath}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log(`[Hooks] Fallback stat failed for ${transcriptPath}: ${errorToString(err)}`);
       }
     }
     // Give up after 30 seconds
@@ -2599,7 +2585,7 @@ const sharedEvents = {
         try {
           session.pty.write(content);
         } catch (err) {
-          log(`[PTY] raw write failed: ${err instanceof Error ? err.message : String(err)}`);
+          log(`[PTY] raw write failed: ${errorToString(err)}`);
         }
       } else {
         // Structured input from web/mobile client: append Enter
@@ -2819,7 +2805,7 @@ const sharedEvents = {
         spawningPorts.delete(freePort);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       logError(`Failed to spawn daemon: ${msg}`);
       sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
     }
@@ -3067,7 +3053,7 @@ const sharedEvents = {
         );
       }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
+      const msg = errorToString(error);
       logError('Failed to resume session:', msg);
       sessionRegistry.closeSession(newSessionId, 'forced');
       sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
@@ -3130,7 +3116,7 @@ if (authEnabled) {
       const newIdentity = await identityStore.generate();
       console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to auto-generate identity: ${detail}`);
       console.error('Check permissions on ~/.remi or generate manually with "remi keygen".');
       process.exit(1);
@@ -3160,7 +3146,7 @@ if (authEnabled) {
     try {
       unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to unlock identity: ${detail}`);
       console.error('Wrong passphrase?');
       process.exit(1);
@@ -3170,7 +3156,7 @@ if (authEnabled) {
     try {
       unlockedIdentity = await unlockIdentity(storedIdentity);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to unlock identity: ${detail}`);
       console.error('Identity file may be corrupt. Run "remi keygen --force" to regenerate.');
       process.exit(1);
@@ -3285,9 +3271,7 @@ async function cleanup(): Promise<void> {
     try {
       hookConfigManager.uninstall();
     } catch (err) {
-      logError(
-        `[Hooks] Failed to uninstall hook config: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logError(`[Hooks] Failed to uninstall hook config: ${errorToString(err)}`);
     }
     hookConfigManager = null;
   }
@@ -3296,7 +3280,7 @@ async function cleanup(): Promise<void> {
     try {
       await mdnsPublisher.stop();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       logError(`[mDNS] Error during cleanup: ${msg}`);
     }
     mdnsPublisher = null;
@@ -3345,7 +3329,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAllExcept(['websocket']);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to start adapters: ${msg}`);
     await registry.stopAll();
     process.exit(1);
@@ -3379,7 +3363,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAdapter('websocket');
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to start WebSocket on port ${PORT}: ${msg}`);
     console.error('Use --port to specify a different port, or stop existing sessions.');
     await registry.stopAll();
@@ -3408,7 +3392,7 @@ if (cliDaemonMode) {
     HOOK_PORT = hookServer.port;
     console.log(`  Hook server listening on port ${HOOK_PORT}`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(
       `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
     );
@@ -3420,7 +3404,7 @@ if (cliDaemonMode) {
       hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
       await hookConfigManager.install();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
       hookConfigManager = null;
     }
@@ -3449,7 +3433,7 @@ if (cliDaemonMode) {
       }
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to create session: ${msg}`);
     liveSessionsRegistry.unregister(sessionId);
     await registry.stopAll();
@@ -3498,9 +3482,7 @@ if (cliDaemonMode) {
       applyEnvOverrides(loadConfig());
       console.log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
-      console.error(
-        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.error(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
 } else {
@@ -3518,10 +3500,7 @@ if (cliDaemonMode) {
     try {
       const tmpLog = path.join(os.tmpdir(), `remi-${process.pid}.log`);
       logFd = fs.openSync(tmpLog, 'a');
-      fs.writeSync(
-        logFd,
-        `[remi] Primary log file failed: ${logErr instanceof Error ? logErr.message : String(logErr)}\n`,
-      );
+      fs.writeSync(logFd, `[remi] Primary log file failed: ${errorToString(logErr)}\n`);
       fs.writeSync(2, `[remi] Logging to ${tmpLog} (primary log unavailable)\n`);
     } catch {
       // Last resort: write one message to stderr before it gets overridden
@@ -3573,9 +3552,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAllExcept(['websocket']);
   } catch (err) {
-    logError(
-      `Failed to start background adapters: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logError(`Failed to start background adapters: ${errorToString(err)}`);
   }
 
   // Phase 2: Probe for available WebSocket port, then start
@@ -3589,9 +3566,7 @@ if (cliDaemonMode) {
       try {
         await registry.unregister('websocket');
       } catch (teardownErr) {
-        logError(
-          `Failed to tear down WebSocket adapter: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}`,
-        );
+        logError(`Failed to tear down WebSocket adapter: ${errorToString(teardownErr)}`);
       }
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
@@ -3613,7 +3588,7 @@ if (cliDaemonMode) {
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
     }
   }
@@ -3640,7 +3615,7 @@ if (cliDaemonMode) {
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     logError(
       `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
     );
@@ -3689,17 +3664,13 @@ if (cliDaemonMode) {
               const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
               registry.broadcast(msg);
             } catch (err) {
-              logError(
-                `[LiveSessions] Error pushing session update: ${err instanceof Error ? err.message : String(err)}`,
-              );
+              logError(`[LiveSessions] Error pushing session update: ${errorToString(err)}`);
             }
           }, 300);
         },
       );
     } catch (err) {
-      logError(
-        `[LiveSessions] Could not watch live-sessions dir: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
     }
   }
 
@@ -3728,9 +3699,7 @@ if (cliDaemonMode) {
       try {
         fs.writeSync(ptyStdoutFd, `Session: ${managedSession.name}\r\n`);
       } catch (err) {
-        log(
-          `[Wrapper] Failed to write session name: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log(`[Wrapper] Failed to write session name: ${errorToString(err)}`);
       }
     }
   }
@@ -3742,7 +3711,7 @@ if (cliDaemonMode) {
       try {
         ptySession.write(text);
       } catch (err) {
-        log(`[PTY] write failed: ${err instanceof Error ? err.message : String(err)}`);
+        log(`[PTY] write failed: ${errorToString(err)}`);
       }
     }
   }
@@ -3753,9 +3722,7 @@ if (cliDaemonMode) {
         try {
           fs.writeSync(ptyStdoutFd, '\r\n[detached]\r\n');
         } catch (err) {
-          log(
-            `[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          log(`[Detach] Failed to write detach message: ${errorToString(err)}`);
         }
       }
       detachLocalTerminal('keybinding');
@@ -3783,7 +3750,7 @@ if (cliDaemonMode) {
         ptySession.resize({ cols, rows });
       }
     } catch (err) {
-      log(`[PTY] resize failed: ${err instanceof Error ? err.message : String(err)}`);
+      log(`[PTY] resize failed: ${errorToString(err)}`);
     }
   });
 
@@ -3801,9 +3768,7 @@ if (cliDaemonMode) {
       try {
         process.stdin.setRawMode(false);
       } catch (err) {
-        log(
-          `[Detach] setRawMode restore failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log(`[Detach] setRawMode restore failed: ${errorToString(err)}`);
       }
     }
     process.stdin.pause();
@@ -3819,9 +3784,7 @@ if (cliDaemonMode) {
         cleanup()
           .then(() => process.exit(0))
           .catch((err) => {
-            logError(
-              `[SIGHUP] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
+            logError(`[SIGHUP] Cleanup failed: ${errorToString(err)}`);
             process.exit(1);
           });
       }, SIGHUP_TIMEOUT_MS);
@@ -3837,7 +3800,7 @@ if (cliDaemonMode) {
       cleanup()
         .then(() => process.exit(0))
         .catch((err) => {
-          logError(`[Detach] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          logError(`[Detach] Cleanup failed: ${errorToString(err)}`);
           process.exit(1);
         });
     }
@@ -3857,9 +3820,7 @@ if (cliDaemonMode) {
       applyEnvOverrides(loadConfig());
       log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
-      logError(
-        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logError(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
 
@@ -3887,7 +3848,7 @@ if (cliDaemonMode) {
     try {
       await cleanup();
     } catch (err) {
-      logError(`[SIGTERM] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`[SIGTERM] Cleanup failed: ${errorToString(err)}`);
     }
     process.exit(0);
   });
