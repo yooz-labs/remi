@@ -193,6 +193,7 @@ import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
+import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
@@ -328,33 +329,7 @@ if (parsedArgs.subcommand === 'config') {
 
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
-  const liveSessions = new SessionRegistryFile().listLive();
-  if (liveSessions.length === 0) {
-    console.error('No running daemons found.');
-    process.exit(1);
-  }
-  let reloaded = 0;
-  for (const entry of liveSessions) {
-    try {
-      process.kill(entry.pid, 'SIGUSR1');
-      console.log(`Sent reload signal to ${entry.name} (PID ${entry.pid}, port ${entry.wsPort})`);
-      reloaded++;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') {
-        console.error(`Process ${entry.pid} not found (stale session entry)`);
-      } else {
-        console.error(`Failed to signal PID ${entry.pid}: ${errorToString(err)}`);
-      }
-    }
-  }
-  if (reloaded > 0) {
-    console.log(`Reloaded ${reloaded} daemon(s).`);
-    process.exit(0);
-  } else {
-    console.error('Failed to reload any daemons (all session entries appear stale).');
-    process.exit(1);
-  }
+  process.exit(runReloadCommand());
 }
 
 // Destructure into existing variable names for zero downstream changes
