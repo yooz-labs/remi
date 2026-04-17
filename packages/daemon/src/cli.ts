@@ -414,45 +414,23 @@ WantedBy=default.target`;
   process.exit(0);
 }
 
-// Handle key management subcommands
-if (cliSubcommand === 'keygen') {
-  const { runKeygen } = await import('./cli/keygen.ts');
-  await runKeygen({
-    passphrase: process.env['REMI_PASSPHRASE'],
-    usePassphrase: cliUsePassphrase,
-    decrypt: cliDecrypt,
-    encrypt: cliEncrypt,
-    force: cliForce,
-  });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'export-key') {
-  const { runKeyExport } = await import('./cli/key-export.ts');
-  runKeyExport({ publicOnly: cliPublicOnly });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'import-key') {
-  const { runKeyImport } = await import('./cli/key-import.ts');
-  await runKeyImport({ file: cliSubcommandArg, force: cliForce });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'authorize') {
-  const { runAuthorize } = await import('./cli/authorize.ts');
-  await runAuthorize({
-    input: cliSubcommandArg,
-    label: cliLabel,
-    remove: cliRemoveFingerprint,
-  });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'keys') {
-  const { runListKeys } = await import('./cli/authorize.ts');
-  runListKeys();
-  process.exit(0);
+// Handle key management subcommands (keygen, export-key, import-key, authorize, keys)
+{
+  const { isKeysSubcommand, runKeysCommand } = await import('./cli/cmd-keys.ts');
+  if (isKeysSubcommand(cliSubcommand)) {
+    process.exit(
+      await runKeysCommand(cliSubcommand, {
+        ...(cliSubcommandArg !== undefined && { subcommandArg: cliSubcommandArg }),
+        ...(cliUsePassphrase !== undefined && { usePassphrase: cliUsePassphrase }),
+        ...(cliDecrypt !== undefined && { decrypt: cliDecrypt }),
+        ...(cliEncrypt !== undefined && { encrypt: cliEncrypt }),
+        ...(cliForce !== undefined && { force: cliForce }),
+        ...(cliPublicOnly !== undefined && { publicOnly: cliPublicOnly }),
+        ...(cliLabel !== undefined && { label: cliLabel }),
+        ...(cliRemoveFingerprint !== undefined && { removeFingerprint: cliRemoveFingerprint }),
+      }),
+    );
+  }
 }
 
 // Handle 'code' subcommand: show or refresh the persistent connection code
