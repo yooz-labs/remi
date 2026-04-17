@@ -66,37 +66,49 @@ iOS app ships a chat-style interface. Core pieces work; UX still rough.
 - Stale question cards don't clear after answer
 - Connection bars clutter header when all healthy
 
-### Phase 4: iOS Polish Sprint (IN PROGRESS — Epic #267)
+### Phase 4: iOS Polish Sprint (SHIPPED — Epic #267 closed)
+
+P0 regressions (#269, #270, #264) and P1 polish (#271, #261, #262, #263, #268, #272, #265, #258, #235, #227) all shipped through dev.3–dev.8. One P2 item (#266 double text input) remains open but non-blocking.
+
+### Phase 5: Auto-Approve + Session Reliability (SHIPPED in v0.5.1)
+
+Shipping now as v0.5.1 stable (PR #323 merged 2026-04-17):
+
+| Feature | Status | PR / Issue |
+|---------|--------|------------|
+| LLM auto-approve (Ollama, OpenRouter, any OpenAI-compat) | Done | #314 / #175 |
+| User allow/deny/instructions in config | Done | #317 / #315 |
+| Subagent/team hook filtering via `agent_id` | Done | #322 / #316 |
+| PTY-liveness session classifier | Done | #320 / #319 |
+| Config file system `~/.remi/config.toml` | Done | #314 / #150 |
+| PermissionRequest hook with suggestions | Done | — / #178 |
+| Release-blocker hardening (inject fallback, config type validation) | Done | #324 / — |
+
+### Phase 6: MVP Blockers (NEXT — post v0.5.1)
+
+Priority order. Everything ≤ MVP-blocking only; polish and refactors listed separately.
+
+1. **#286** APNS end-to-end -- push works in dev but never verified on a physical device; without it lock-screen questions are dead on arrival.
+2. **#287** Wrapper hot-reload -- running daemons keep old binary after build; fails silently until restart. High user-confusion cost during iteration.
+3. **#321** Sibling-daemon-same-dir permanently blocks hook lock -- any user who runs two daemons in the same dir gets a silent no-op.
+4. **#280** Daemon should reload transcript history on restart -- users lose past chat on restart.
+5. **#257** Auth prompt on localhost -- localhost should not require auth; suppress or auto-complete.
+6. **#241** Session lifecycle (Phase 3) -- disconnect / reconnect / resume buttons wired up end-to-end.
+7. **#238** Message display redesign epic -- scope and ship Phase 1.
+
+### Phase 7: Product Readiness (LATER)
 
 | Feature | Status | Issue |
 |---------|--------|-------|
-| iOS Capacitor app (working build) | Done | - |
-| Auto-connect to all daemon ports | Done | - |
-| Hook system (25 events, PermissionRequest wired) | Done | - |
-| APNS push on question | Done | - |
-| APNS end-to-end test (physical device) | Todo | #286 |
-| Same-dir session confusion | In progress | #285 |
-| Auth prompt on localhost | Open | #257 |
-| Transcript history on daemon restart | Open | #280 |
-| Keyboard + scroll issues | Open | #226 |
-| Session disconnect/reconnect/resume | Open | #241 |
 | Android app | Future | - |
 | App Store submission | Future | - |
-| Homebrew formula | Future | - |
+| Homebrew formula | Done | - |
 | Voice interaction (STT/TTS via yooz-engine) | Future | - |
+| Server-daemon architecture | Future | #255 |
+| Remote daemon spawning (`remi new --host`) | Future | #153 |
+| iOS background persistence | Future | #276 |
 
-### Phase 5: MVP Blockers (NEXT — must fix before calling it MVP)
-
-In priority order:
-
-1. **#285** Same-dir session confusion -- sessions sharing a project directory get crossed messages/questions
-2. **Chat consistency** -- zero-storage reconnect model; history reliable on every connect
-3. **#286** APNS end-to-end -- test push on physical device
-4. **#257** Auth on localhost -- suppress or auto-complete; new users shouldn't see auth prompts locally
-5. **#241** Session lifecycle -- working disconnect/reconnect/resume buttons
-6. **#238** Message display epic -- scope and ship Phase 1 of redesign
-
-**Not MVP:** #255 server-daemon arch, #153 remote spawn, #276 background location, voice, team features, session history search.
+**Deferred polish (P2/P3, not MVP-blocking):** #266, #226 (keyboard/scroll), #234 (image attach), #233 (keyboard shortcuts), #253 (toggle memory), #207 (notify third-party detach), #256 (kill-by-port), #168/#169/#170 (refactors), #129 (Xcode Cloud CI), #176 (subagent summaries), #174 (read-only UX), #203 (WorktreeCreate blocks subagent), #278 (lock-screen reply), #298 (interactive notification actions).
 
 ## Completed Work (Historical)
 
