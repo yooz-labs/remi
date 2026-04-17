@@ -187,6 +187,40 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.isNo).toBe(true);
   });
 
+  // Matrix of inputs that must NOT reach the `.toLowerCase()` path and must
+  // fall back to the default 3-option set. Observed in the wild as
+  // "suggestion.toLowerCase is not a function".
+  const badSuggestionCases: Array<[string, unknown]> = [
+    ['all non-string entries', [null, 42, { label: 'Yes' }]],
+    ['mixed valid + null', ['Yes', null, 'No']],
+    ['mixed valid + empty string', ['Yes', '', 'No']],
+    ['single valid element (below min length 2)', ['Yes']],
+    ['empty array', []],
+    ['string passed directly (not an array)', 'Yes'],
+    ['number passed directly (not an array)', 7],
+    ['array-like object', { 0: 'Yes', 1: 'No', length: 2 }],
+  ];
+  for (const [label, value] of badSuggestionCases) {
+    it(`PermissionRequest falls back to default options: ${label}`, () => {
+      const { bridge, statuses, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Edit',
+        tool_input: {},
+        permission_suggestions: value as unknown as string[],
+      } as PermissionRequestHookInput);
+
+      expect(statuses).toEqual([{ status: 'waiting' }]);
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.options.length).toBe(3);
+      expect(questions[0]?.options[0]?.label).toBe('Yes');
+      expect(questions[0]?.options[1]?.label).toBe('Yes, always');
+      expect(questions[0]?.options[2]?.label).toBe('No');
+    });
+  }
+
   it('PermissionRequest without suggestions emits immediately with default 3 options', () => {
     const { bridge, statuses, questions } = createBridge();
 
