@@ -95,21 +95,7 @@ interface RemiStatus {
   branch: string;
 }
 
-function detectGitInfo(): { repo: string; branch: string } {
-  try {
-    const cwd = process.cwd();
-    const repo = path.basename(cwd);
-    const headFile = path.join(cwd, '.git', 'HEAD');
-    if (fs.existsSync(headFile)) {
-      const head = fs.readFileSync(headFile, 'utf-8').trim();
-      const branch = head.startsWith('ref: refs/heads/') ? head.slice(16) : head.slice(0, 8);
-      return { repo, branch };
-    }
-    return { repo, branch: '?' };
-  } catch {
-    return { repo: path.basename(process.cwd()), branch: '?' };
-  }
-}
+import { detectGitInfo, loadDotenvFile } from './cli/startup-env.ts';
 
 const gitInfo = detectGitInfo();
 
@@ -167,29 +153,7 @@ function cleanupStatusFile(): void {
   }
 }
 
-// Load .env file if present
-const envPath = path.join(process.cwd(), '.env');
-if (fs.existsSync(envPath)) {
-  const envContent = fs.readFileSync(envPath, 'utf-8');
-  for (const line of envContent.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIndex = trimmed.indexOf('=');
-    if (eqIndex > 0) {
-      const key = trimmed.slice(0, eqIndex).trim();
-      let value = trimmed.slice(eqIndex + 1).trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
-      }
-      if (!process.env[key]) {
-        process.env[key] = value;
-      }
-    }
-  }
-}
+loadDotenvFile();
 
 import {
   createBulletExpandResponse,
