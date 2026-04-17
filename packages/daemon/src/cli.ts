@@ -571,35 +571,21 @@ if (
   cliSubcommand === 'status' ||
   cliSubcommand === 'logs'
 ) {
-  const dm = await import('./cli/daemon-manager.ts');
-
-  if (cliSubcommand === 'start') {
-    // Only pass port if user explicitly set --port flag.
-    // Do NOT inherit REMI_PORT from env (it's set by wrapper sessions and
-    // would conflict). The daemon finds its own free port.
-    const explicitPort = cliPort;
-    const extraArgs: string[] = [];
-    if (cliBindHost) extraArgs.push('--bind', cliBindHost);
-    if (cliAuth === true) extraArgs.push('--auth');
-    if (cliAuth === false) extraArgs.push('--no-auth');
-    if (cliNoMdns) extraArgs.push('--no-mdns');
-    if (cliNoRelay) extraArgs.push('--no-relay');
-    if (cliNoTelegram) extraArgs.push('--no-telegram');
-    if (cliPermanentCode) extraArgs.push('--permanent-code');
-    if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
-    if (cliPushSecret) extraArgs.push('--push-secret', cliPushSecret);
-    if (cliOrphanTimeout !== undefined)
-      extraArgs.push('--orphan-timeout', String(cliOrphanTimeout));
-    await dm.startDaemon({ port: explicitPort, extraArgs });
-  } else if (cliSubcommand === 'stop') {
-    dm.stopDaemon();
-  } else if (cliSubcommand === 'status') {
-    dm.showDaemonStatus();
-  } else {
-    dm.showDaemonLogs();
-  }
-
-  process.exit(0);
+  const { runDaemonLifecycleCommand } = await import('./cli/cmd-daemon.ts');
+  process.exit(
+    await runDaemonLifecycleCommand(cliSubcommand, {
+      ...(cliPort !== undefined && { port: cliPort }),
+      ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
+      ...(cliAuth !== undefined && { auth: cliAuth }),
+      noMdns: cliNoMdns,
+      noRelay: cliNoRelay,
+      noTelegram: cliNoTelegram,
+      permanentCode: cliPermanentCode,
+      ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
+      ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
+      ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
+    }),
+  );
 }
 
 // Live sessions registry: shared by subcommands and daemon/wrapper mode.
