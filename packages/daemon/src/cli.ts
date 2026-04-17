@@ -609,61 +609,13 @@ if (cliSubcommand === 'kill') {
 
 // Handle 'detach' subcommand: detach from a session without killing it
 if (cliSubcommand === 'detach') {
-  if (!resolved.targetId) {
-    console.error('Usage: remi detach <session-name-or-id>');
-    console.error('  Detach from a session without killing it (tmux-style).');
-    console.error('  The session remains alive and can be re-attached with `remi attach`.');
-    console.error('  Examples: remi detach my-session');
-    console.error('            remi detach host:port/session-name');
-    console.error('  Tip: When attached interactively, press Ctrl+B d to detach.');
-    console.error('Run `remi ls` to see live sessions.');
-    process.exit(1);
-  }
-
-  let resolvedPort = resolved.port;
-  let detachTarget = resolved.targetId;
-
-  // Resolve port by querying all local daemon ports (session may be on any daemon)
-  if (!cliPort && resolved.host === 'localhost') {
-    const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
-    let allPorts = liveSessionsRegistry.getLivePorts();
-    if (allPorts.length === 0) {
-      const { getDefaultPortRange } = await import('./cli/ls-client.ts');
-      allPorts = getDefaultPortRange();
-    }
-    if (allPorts.length > 0) {
-      const results = await queryMultiplePorts({
-        host: 'localhost',
-        ports: allPorts,
-        timeoutMs: 5000,
-        logLabel: 'detach',
-      });
-      if (results.length === 0) {
-        console.error(
-          `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
-        );
-        process.exit(1);
-      }
-      const match = resolveSession(results, detachTarget);
-      if (match) {
-        resolvedPort = match.port;
-        detachTarget = match.session.sessionId;
-      }
-    }
-  }
-
-  const { runDetachClient } = await import('./cli/detach-client.ts');
-  try {
-    await runDetachClient({
-      host: resolved.host,
-      port: resolvedPort,
-      target: detachTarget,
-    });
-  } catch (err) {
-    console.error(errorToString(err));
-    process.exit(1);
-  }
-  process.exit(0);
+  const { runDetachCommand } = await import('./cli/cmd-detach.ts');
+  process.exit(
+    await runDetachCommand(resolved, {
+      getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      explicitPort: cliPort,
+    }),
+  );
 }
 
 // Handle 'attach' subcommand: attach terminal to an orphaned session
