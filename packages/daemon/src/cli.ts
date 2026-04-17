@@ -41,7 +41,6 @@ const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 // Status file is per-port so multiple wrapper sessions don't overwrite each other.
 // The statusline script uses $REMI_PORT to read the correct file.
 let STATUS_FILE = path.join(REMI_DIR, 'status.json'); // Updated after PORT is resolved
-let logFd: number | null = null;
 
 // In wrapper mode, we save the real stdout file descriptor before overriding.
 // Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
@@ -60,22 +59,6 @@ function selectPushCategory(options: readonly QuestionOption[]): string | undefi
 
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
-}
-
-function openLogFile(): number {
-  ensureRemiDir();
-  const fd = fs.openSync(LOG_FILE, 'a');
-  fs.writeSync(fd, `\n--- Remi session started at ${new Date().toISOString()} ---\n`);
-  return fd;
-}
-
-function writeToLog(msg: string): void {
-  if (logFd === null) return;
-  try {
-    fs.writeSync(logFd, `${msg}\n`);
-  } catch {
-    // Silently drop: in wrapper mode, terminal cleanliness is non-negotiable
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +178,7 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
@@ -3213,20 +3197,8 @@ if (cliDaemonMode) {
   // (via fs.writeSync to stdout fd) can reach the actual terminal.
   ptyStdoutFd = 1; // stdout file descriptor
 
-  try {
-    logFd = openLogFile();
-  } catch (logErr) {
-    // Fall back to a temp file so diagnostics are not completely lost
-    try {
-      const tmpLog = path.join(os.tmpdir(), `remi-${process.pid}.log`);
-      logFd = fs.openSync(tmpLog, 'a');
-      fs.writeSync(logFd, `[remi] Primary log file failed: ${errorToString(logErr)}\n`);
-      fs.writeSync(2, `[remi] Logging to ${tmpLog} (primary log unavailable)\n`);
-    } catch {
-      // Last resort: write one message to stderr before it gets overridden
-      fs.writeSync(2, '[remi] WARNING: All logging disabled (cannot open any log file)\n');
-    }
-  }
+  ensureRemiDir();
+  startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
 
   // Layer 1: Override console methods (catches Bun's native console path)
   const toLog = (...args: unknown[]) => writeToLog(args.map(String).join(' '));
@@ -3249,16 +3221,7 @@ if (cliDaemonMode) {
   process.stderr.write = streamToLog as typeof process.stderr.write;
 
   // Close log fd as the very last thing on process exit
-  process.on('exit', () => {
-    if (logFd !== null) {
-      try {
-        fs.closeSync(logFd);
-      } catch {
-        // ignore
-      }
-      logFd = null;
-    }
-  });
+  process.on('exit', endLogFileSession);
 
   // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
   installStatusLine(REMI_DIR);
