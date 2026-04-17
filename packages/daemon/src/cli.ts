@@ -65,76 +65,33 @@ function ensureRemiDir(): void {
 // Status file for status line integration
 // Guard: only writes in wrapper mode (wrapperMode is set during arg parsing)
 // ---------------------------------------------------------------------------
-type RemiSessionStatus = AgentStatus | 'starting';
-
-interface RemiStatus {
-  pid: number;
-  connections: number;
-  sessionStatus: RemiSessionStatus;
-  adapters: string[];
-  wsPort: number;
-  sessionId: UUID | null;
-  repo: string;
-  branch: string;
-}
-
 import { detectGitInfo, loadDotenvFile } from './cli/startup-env.ts';
+import { type RemiStatus, StatusWriter } from './cli/status-writer.ts';
 
 const gitInfo = detectGitInfo();
 
-const remiStatus: RemiStatus = {
-  pid: process.pid,
-  connections: 0,
-  sessionStatus: 'starting',
-  adapters: [],
-  wsPort: 0,
-  sessionId: null,
-  repo: gitInfo.repo,
-  branch: gitInfo.branch,
-};
+const statusWriter = new StatusWriter(
+  {
+    pid: process.pid,
+    connections: 0,
+    sessionStatus: 'starting',
+    adapters: [],
+    wsPort: 0,
+    sessionId: null,
+    repo: gitInfo.repo,
+    branch: gitInfo.branch,
+  },
+  {
+    getTargetFile: () => (cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE),
+    isEnabled: () => wrapperMode || cliDaemonMode,
+    writeLog: writeToLog,
+  },
+);
 
-let statusWriteErrorLogged = false;
-let statusWriteTimer: ReturnType<typeof setTimeout> | null = null;
-
-function updateRemiStatus(patch: Partial<RemiStatus>): void {
-  Object.assign(remiStatus, patch);
-  scheduleStatusWrite();
-}
-
-function scheduleStatusWrite(): void {
-  if (statusWriteTimer) return;
-  statusWriteTimer = setTimeout(() => {
-    statusWriteTimer = null;
-    writeStatus();
-  }, 300);
-}
-
-function writeStatus(): void {
-  if (!wrapperMode && !cliDaemonMode) return;
-  // Daemon mode writes to daemon-status.json; wrapper writes to status.json
-  const targetFile = cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE;
-  // Atomic write: write to temp file then rename to avoid readers seeing partial JSON
-  const tmpFile = `${targetFile}.tmp`;
-  try {
-    fs.writeFileSync(tmpFile, JSON.stringify(remiStatus));
-    fs.renameSync(tmpFile, targetFile);
-    statusWriteErrorLogged = false;
-  } catch (err) {
-    if (!statusWriteErrorLogged) {
-      writeToLog(`[error] Failed to write status file: ${err}`);
-      statusWriteErrorLogged = true;
-    }
-  }
-}
-
-function cleanupStatusFile(): void {
-  const targetFile = cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE;
-  try {
-    fs.unlinkSync(targetFile);
-  } catch {
-    // File may not exist during cleanup
-  }
-}
+/** Thin back-compat aliases so existing cli.ts call sites keep working. */
+const remiStatus: Readonly<RemiStatus> = statusWriter.state;
+const updateRemiStatus = (patch: Partial<RemiStatus>): void => statusWriter.update(patch);
+const cleanupStatusFile = (): void => statusWriter.cleanup();
 
 loadDotenvFile();
 
