@@ -533,29 +533,16 @@ if (cliSubcommand === 'ls') {
 
 // Handle 'recent' subcommand: browse recent project directories
 if (cliSubcommand === 'recent') {
-  const explicitPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined);
-
-  if (cliHost || explicitPort) {
-    // Remote mode: query a daemon via WebSocket
-    const { runRecentClient } = await import('./cli/recent-client.ts');
-    try {
-      await runRecentClient({
-        host: cliHost ?? 'localhost',
-        port: explicitPort ?? DEFAULT_BASE_PORT,
-      });
-    } catch (err) {
-      console.error(errorToString(err));
-      process.exit(1);
-    }
-  } else {
-    // Local mode: read SessionStore directly
-    const store = new SessionStore();
-    const { renderRecentDirectories } = await import('./cli/recent-client.ts');
-    const directories = getRecentDirectories(store, 20);
-    renderRecentDirectories(directories);
-  }
-  process.exit(0);
+  const { runRecentCommand } = await import('./cli/cmd-recent.ts');
+  process.exit(
+    await runRecentCommand(
+      {
+        ...(cliPort !== undefined && { port: cliPort }),
+        ...(cliHost !== undefined && { host: cliHost }),
+      },
+      () => getRecentDirectories(new SessionStore(), 20),
+    ),
+  );
 }
 
 // Handle 'kill' subcommand: kill a session by name or ID
