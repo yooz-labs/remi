@@ -117,7 +117,6 @@ import type {
   AgentStatus,
   ProtocolMessage,
   QuestionOption,
-  RecentDirectory,
   UUID,
   UnlockedIdentity,
 } from '@remi/shared';
@@ -194,32 +193,7 @@ function logError(...args: unknown[]): void {
 
 import { resolveShellPath } from './cli/shell-path.ts';
 
-// ---------------------------------------------------------------------------
-// Resolve directory helper
-// ---------------------------------------------------------------------------
-function resolveDirectory(
-  inputPath: string | null | undefined,
-): { resolved: string } | { error: string } {
-  if (!inputPath) {
-    return { resolved: process.cwd() };
-  }
-
-  let resolved = inputPath;
-  if (resolved.startsWith('~/')) {
-    resolved = path.join(os.homedir(), resolved.slice(2));
-  } else if (resolved === '~') {
-    resolved = os.homedir();
-  }
-  resolved = path.resolve(resolved);
-  if (!fs.existsSync(resolved)) {
-    return { error: `Directory not found: ${resolved}` };
-  }
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) {
-    return { error: `Not a directory: ${resolved}` };
-  }
-  return { resolved };
-}
+import { resolveDirectory } from './cli/path-resolver.ts';
 
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
@@ -1747,35 +1721,7 @@ const registry = new AdapterRegistry({
   },
 });
 
-function getRecentDirectories(store: SessionStore, limit: number): RecentDirectory[] {
-  const sessions = store.list();
-  const dirMap = new Map<string, { count: number; lastUsed: string }>();
-
-  for (const s of sessions) {
-    const dir = s.projectPath;
-    const existing = dirMap.get(dir);
-    if (existing) {
-      existing.count++;
-      if (s.startedAt > existing.lastUsed) {
-        existing.lastUsed = s.startedAt;
-      }
-    } else {
-      dirMap.set(dir, { count: 1, lastUsed: s.startedAt });
-    }
-  }
-
-  const entries = Array.from(dirMap.entries())
-    .map(([directory, { count, lastUsed }]) => ({
-      directory,
-      lastUsed,
-      sessionCount: count,
-      displayName: path.basename(directory),
-    }))
-    .sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1))
-    .slice(0, limit);
-
-  return entries;
-}
+import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
   return registry.sendRaw(connectionId, message);
