@@ -167,56 +167,6 @@ function cleanupStatusFile(): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Status line script (embedded, written to ~/.remi/statusline.sh)
-// Requires 'jq' to be installed on the host system.
-// ---------------------------------------------------------------------------
-const STATUSLINE_SCRIPT = `#!/bin/bash
-input=$(cat)
-REMI=""
-# REMI_PORT is set by remi when spawning Claude; status file is per-port
-REMI_STATUS_FILE="${REMI_DIR}/status-\$REMI_PORT.json"
-if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
-  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
-    CLIENT_INFO="no clients"
-    [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
-    REMI="remi :\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${S_STATUS}"
-  fi
-fi
-IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
-echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
-`;
-
-function installStatusLine(): void {
-  try {
-    ensureRemiDir();
-    const scriptPath = path.join(REMI_DIR, 'statusline.sh');
-    fs.writeFileSync(scriptPath, STATUSLINE_SCRIPT, { mode: 0o755 });
-
-    // Auto-configure Claude Code settings if no statusLine key exists in
-    // ~/.claude/settings.json. Preserves all other settings but rewrites the file.
-    const claudeSettingsFile = path.join(os.homedir(), '.claude', 'settings.json');
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(claudeSettingsFile)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
-      } catch {
-        console.error(`[warn] Claude settings file is corrupted: ${claudeSettingsFile}`);
-        return;
-      }
-    }
-    if (!settings['statusLine']) {
-      fs.mkdirSync(path.dirname(claudeSettingsFile), { recursive: true });
-      settings['statusLine'] = { type: 'command', command: scriptPath };
-      fs.writeFileSync(claudeSettingsFile, `${JSON.stringify(settings, null, 2)}\n`);
-    }
-  } catch (err) {
-    // console.error works in both wrapper and daemon mode
-    console.error(`[warn] Failed to install status line: ${err}`);
-  }
-}
-
 // Load .env file if present
 const envPath = path.join(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
@@ -279,6 +229,7 @@ import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import { installStatusLine } from './cli/statusline-installer.ts';
 import {
   CONFIG_PATH,
   applyEnvOverrides,
@@ -3378,7 +3329,7 @@ if (cliDaemonMode) {
   primarySessionId = sessionId;
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
-  installStatusLine();
+  installStatusLine(REMI_DIR);
 
   // Start hook server for Claude Code event detection (port 0 = OS-assigned)
   try {
@@ -3541,7 +3492,7 @@ if (cliDaemonMode) {
   });
 
   // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
-  installStatusLine();
+  installStatusLine(REMI_DIR);
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   primarySessionId = sessionId;
