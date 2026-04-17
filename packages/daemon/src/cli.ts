@@ -255,96 +255,7 @@ function logError(...args: unknown[]): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shell PATH resolution (for LaunchAgent/systemd where PATH is minimal)
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the user's full PATH from their login shell.
- * LaunchAgents and systemd services inherit a minimal PATH that doesn't
- * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
- *
- * Strategy:
- * 1. Run both login shell (`zsh -l`) and interactive login shell (`zsh -l -i`)
- * 2. Merge all discovered entries (login shell may have .zprofile paths,
- *    interactive may have .zshrc paths like Homebrew or nvm)
- * 3. Merge well-known tool directories as a final fallback
- * 4. Verify `claude` is findable; warn if not
- */
-function resolveShellPath(): void {
-  const shell = process.env['SHELL'] || '/bin/zsh';
-  const currentEntries = (process.env['PATH'] || '').split(':').filter(Boolean);
-  const allEntries = new Set(currentEntries);
-
-  // Run both shells and merge all discovered PATH entries.
-  // Login shell sources .zprofile; interactive login shell also sources .zshrc.
-  const attempts: Array<{ flags: string[]; label: string }> = [
-    { flags: ['-l', '-c', 'echo $PATH'], label: 'login' },
-    { flags: ['-l', '-i', '-c', 'echo $PATH'], label: 'interactive login' },
-  ];
-
-  let anyShellSucceeded = false;
-  for (const { flags, label } of attempts) {
-    try {
-      const result = Bun.spawnSync([shell, ...flags], {
-        env: process.env,
-        timeout: 5000,
-      });
-      if (result.exitCode !== 0) {
-        const stderr = result.stderr?.toString().trim() || '(no stderr)';
-        log(`[PATH] ${label} shell exited with code ${result.exitCode}: ${stderr}`);
-        continue;
-      }
-      const shellPath = result.stdout?.toString().trim();
-      if (!shellPath) {
-        log(`[PATH] ${label} shell returned empty PATH`);
-        continue;
-      }
-
-      anyShellSucceeded = true;
-      for (const entry of shellPath.split(':')) {
-        if (entry) allEntries.add(entry);
-      }
-    } catch (err) {
-      logError(`[PATH] ${label} shell failed: ${errorToString(err)}`);
-    }
-  }
-
-  // Fallback: merge well-known directories if no shell succeeded
-  if (!anyShellSucceeded) {
-    const home = os.homedir();
-    const wellKnownDirs = [
-      '/opt/homebrew/bin',
-      '/opt/homebrew/sbin',
-      `${home}/.bun/bin`,
-      `${home}/.local/bin`,
-      '/usr/local/bin',
-    ];
-    for (const d of wellKnownDirs) {
-      if (!allEntries.has(d) && fs.existsSync(d)) allEntries.add(d);
-    }
-    log('[PATH] Shell resolution failed, merged well-known directories');
-  }
-
-  const merged = [...allEntries].join(':');
-  if (merged !== (process.env['PATH'] || '')) {
-    process.env['PATH'] = merged;
-    log(`[PATH] Resolved ${allEntries.size} entries (was ${currentEntries.length})`);
-  }
-
-  // Verify claude is findable after PATH resolution
-  try {
-    const which = Bun.spawnSync(['which', 'claude'], { env: process.env, timeout: 2000 });
-    if (which.exitCode !== 0) {
-      logError(
-        '[PATH] WARNING: "claude" not found in PATH after resolution. ' +
-          'Session creation will fail. Ensure claude is installed and in PATH.',
-      );
-    }
-  } catch {
-    // which command itself failed; non-fatal
-  }
-}
+import { resolveShellPath } from './cli/shell-path.ts';
 
 // ---------------------------------------------------------------------------
 // Resolve directory helper
@@ -3235,7 +3146,7 @@ async function cleanup(): Promise<void> {
 // In wrapper mode the terminal provides the PATH, but resolveShellPath
 // merges (never drops existing entries) so it's safe to call, and ensures
 // remote session creation works even after the terminal is detached (SIGHUP).
-resolveShellPath();
+resolveShellPath({ log, error: logError });
 
 if (cliDaemonMode) {
   console.log('Starting Remi daemon...');
