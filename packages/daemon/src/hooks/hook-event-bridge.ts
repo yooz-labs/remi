@@ -185,9 +185,19 @@ export class HookEventBridge {
 
     let options: QuestionOption[];
 
-    if (input.permission_suggestions && input.permission_suggestions.length >= 2) {
+    // Only trust permission_suggestions if every entry is a usable string.
+    // Some Claude Code versions / tool paths have been observed sending non-string
+    // entries (null, numbers, objects), which crashed `suggestion.toLowerCase()`
+    // and bubbled up as a "[AutoApprove] Unexpected error" in callers.
+    const suggestions = input.permission_suggestions;
+    const suggestionsUsable =
+      Array.isArray(suggestions) &&
+      suggestions.length >= 2 &&
+      suggestions.every((s) => typeof s === 'string' && s.length > 0);
+
+    if (suggestionsUsable) {
       // Use the suggestions provided by Claude Code (e.g. Edit sends ["Yes","Always","No"])
-      options = input.permission_suggestions.map((suggestion, idx) => {
+      options = suggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
         const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
@@ -204,6 +214,14 @@ export class HookEventBridge {
       // The Notification hook that follows has no numbered options either
       // (just plain text like "Claude needs your permission to use Bash"),
       // so waiting for it adds latency without gaining information.
+      // When `permission_suggestions` is present but fails validation, log it so
+      // upstream regressions in Claude Code don't go undetected; the genuine
+      // "no suggestions" path (undefined) stays quiet.
+      if (suggestions !== undefined) {
+        console.warn(
+          `[HookEventBridge] PermissionRequest had unusable permission_suggestions (tool=${toolName}, value=${JSON.stringify(suggestions)}); using default options`,
+        );
+      }
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 
