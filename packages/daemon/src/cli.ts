@@ -577,48 +577,17 @@ const liveSessionsRegistry = new SessionRegistryFile();
 
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
-  const explicitPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined);
-  if (cliNetwork) {
-    const { runNetworkLs } = await import('./cli/ls-client.ts');
-    try {
-      await runNetworkLs({
-        localPort: explicitPort ?? DEFAULT_BASE_PORT,
-        localPorts: liveSessionsRegistry.getLivePorts(),
-      });
-    } catch (err) {
-      console.error(errorToString(err));
-      process.exit(1);
-    }
-  } else if (explicitPort) {
-    // Explicit port: query single daemon on given (or default) host
-    const { runLsClient } = await import('./cli/ls-client.ts');
-    try {
-      await runLsClient({ host: cliHost ?? 'localhost', port: explicitPort });
-    } catch (err) {
-      console.error(errorToString(err));
-      process.exit(1);
-    }
-  } else if (cliHost) {
-    // Host without port: probe the standard port range on that host
-    const { runHostLs, getDefaultPortRange } = await import('./cli/ls-client.ts');
-    try {
-      await runHostLs({ host: cliHost, ports: getDefaultPortRange() });
-    } catch (err) {
-      console.error(errorToString(err));
-      process.exit(1);
-    }
-  } else {
-    // No explicit port: discover all local remi sessions via live registry
-    const { runMultiPortLs } = await import('./cli/ls-client.ts');
-    try {
-      await runMultiPortLs({ registry: liveSessionsRegistry });
-    } catch (err) {
-      console.error(errorToString(err));
-      process.exit(1);
-    }
-  }
-  process.exit(0);
+  const { runLsCommand } = await import('./cli/cmd-ls.ts');
+  process.exit(
+    await runLsCommand(
+      {
+        ...(cliPort !== undefined && { port: cliPort }),
+        ...(cliHost !== undefined && { host: cliHost }),
+        network: cliNetwork,
+      },
+      liveSessionsRegistry,
+    ),
+  );
 }
 
 // Handle 'recent' subcommand: browse recent project directories
