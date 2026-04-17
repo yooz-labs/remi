@@ -543,25 +543,8 @@ if (cliSubcommand === 'keys') {
 // Handle 'code' subcommand: show or refresh the persistent connection code
 if (cliSubcommand === 'code') {
   const { CodeStore } = await import('./remote/code-store.ts');
-  const codeStore = new CodeStore();
-  if (cliCodeRefresh) {
-    const newCode = codeStore.refresh();
-    console.log(`New permanent connection code: ${newCode}`);
-    console.log('Restart the daemon for the new code to take effect.');
-  } else {
-    const code = codeStore.load();
-    if (code) {
-      console.log(`Permanent connection code: ${code}`);
-      console.log('Use --permanent-code flag when starting daemon to enable this code.');
-    } else {
-      const newCode = codeStore.refresh();
-      console.log(`Permanent connection code: ${newCode} (newly generated)`);
-      console.log('Use --permanent-code flag when starting daemon to enable this code.');
-    }
-  }
-  console.log('\nNote: By default, codes rotate on each reconnect. Use --permanent-code to');
-  console.log('persist a fixed code (requires Ed25519 authentication for relay connections).');
-  process.exit(0);
+  const { runCodeCommand } = await import('./cli/cmd-code.ts');
+  process.exit(runCodeCommand(new CodeStore(), { refresh: cliCodeRefresh }));
 }
 
 // Handle daemon lifecycle commands: start, stop, status, logs
