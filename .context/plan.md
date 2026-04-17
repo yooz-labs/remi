@@ -84,7 +84,39 @@ Shipping now as v0.5.1 stable (PR #323 merged 2026-04-17):
 | PermissionRequest hook with suggestions | Done | — / #178 |
 | Release-blocker hardening (inject fallback, config type validation) | Done | #324 / — |
 
-### Phase 6: MVP Blockers (NEXT — post v0.5.1)
+### Phase 6: Codebase Cleanup Epic (P0 — NEXT)
+
+26,502 lines across 181 source files have accumulated through rapid iteration. Before tackling more MVP features we need a clean base — duplicates gone, mega-files split, shared logic factored out. The cost of leaving this compounds with every future change.
+
+**Known hotspots** (line counts):
+- `packages/daemon/src/cli.ts` — **3894** (5.3× the next file). Monolithic subcommand dispatch + 718-line `createNewSession`.
+- `packages/shared/src/protocol.ts` — 1333. Likely splittable per message group.
+- `packages/daemon/src/adapters/telegram-adapter.ts` — 900. Handlers + config + client mixed.
+- `packages/daemon/src/cli/ls-client.ts` — 709.
+- `packages/web/src/hooks/useConnectionManager.ts` — 679.
+- `packages/daemon/src/session/session-registry.ts` — 615.
+- `packages/daemon/src/server/connection.ts` — 531.
+- `packages/web/src/hooks/useWebSocket.ts` — 495.
+
+**Approach**:
+1. **Step 1 — Thorough review** (pre-refactor): map duplicate patterns across packages, identify cross-file dead code, list every file > 300 lines with a split-plan, surface "silent failure" code smells. Deliverable: `.context/cleanup-audit.md`.
+2. **Step 2 — File-at-a-time refactor**: one PR per extracted module. Tests must pass after each. No behavior changes allowed in the cleanup PRs; any discovered bugs get their own issue + PR.
+3. **Step 3 — Verify** via test counts, coverage, and smoke runs on every PR.
+
+**Order of attack** (driven by risk):
+- `cli.ts` subcommand extraction (lowest risk, mechanical moves).
+- `cli.ts` utility helper extraction (status-line, log, git-detect).
+- `cli.ts` hook-listener extraction from `createNewSession` (highest risk; has test coverage in hooks/).
+- `telegram-adapter.ts` split (low risk; adapter-scoped).
+- `protocol.ts` split (last; shared dependency between daemon + web).
+
+**Explicit guardrails**:
+- No bundled behavior changes.
+- Every PR green on CI before merge.
+- Don't touch code that lacks test coverage without first adding a characterization test.
+- Never delete "unused" code without grepping every package.
+
+### Phase 7: MVP Blockers (after cleanup)
 
 Priority order. Everything ≤ MVP-blocking only; polish and refactors listed separately.
 
@@ -96,7 +128,7 @@ Priority order. Everything ≤ MVP-blocking only; polish and refactors listed se
 6. **#241** Session lifecycle (Phase 3) -- disconnect / reconnect / resume buttons wired up end-to-end.
 7. **#238** Message display redesign epic -- scope and ship Phase 1.
 
-### Phase 7: Product Readiness (LATER)
+### Phase 8: Product Readiness (LATER)
 
 | Feature | Status | Issue |
 |---------|--------|-------|
