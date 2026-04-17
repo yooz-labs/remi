@@ -192,15 +192,10 @@ import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { runConfigCommand } from './cli/cmd-config.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
-import {
-  CONFIG_PATH,
-  applyEnvOverrides,
-  formatConfig,
-  initConfigFile,
-  loadConfig,
-} from './config/index.ts';
+import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { classifySessionEvent } from './hooks/session-lock-classifier.ts';
@@ -328,21 +323,7 @@ try {
 
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {
-  const configArg = parsedArgs.subcommandArg;
-  if (configArg === 'init') {
-    try {
-      const created = initConfigFile();
-      console.log(`Config file created: ${created}`);
-    } catch (err) {
-      console.error(errorToString(err));
-      process.exit(1);
-    }
-  } else if (configArg === 'path') {
-    console.log(CONFIG_PATH);
-  } else {
-    console.log(formatConfig(remiConfig));
-  }
-  process.exit(0);
+  process.exit(runConfigCommand(parsedArgs.subcommandArg, remiConfig));
 }
 
 // Handle 'reload' subcommand
