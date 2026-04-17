@@ -214,6 +214,14 @@ export class HookEventBridge {
       // The Notification hook that follows has no numbered options either
       // (just plain text like "Claude needs your permission to use Bash"),
       // so waiting for it adds latency without gaining information.
+      // When `permission_suggestions` is present but fails validation, log it so
+      // upstream regressions in Claude Code don't go undetected; the genuine
+      // "no suggestions" path (undefined) stays quiet.
+      if (suggestions !== undefined) {
+        console.warn(
+          `[HookEventBridge] PermissionRequest had unusable permission_suggestions (tool=${toolName}, value=${JSON.stringify(suggestions)}); using default options`,
+        );
+      }
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 
