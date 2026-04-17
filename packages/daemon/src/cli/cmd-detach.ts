@@ -2,12 +2,12 @@
  * Handler for `remi detach <session>` — detach from a session without
  * killing it (tmux-style). The session remains alive and can be re-attached.
  *
- * Complex branch: if the caller gave us a session name on localhost without
- * an explicit port, we probe every known local daemon to find which one
- * owns the session.
+ * Localhost + no explicit port: uses the shared resolveLocalSession helper
+ * to probe known daemons and map the target name/id to a specific port.
  */
 
 import { errorToString } from '@remi/shared';
+import { resolveLocalSession } from './resolve-local-session.ts';
 import type { PortQueryResult, ResolvedSession } from './session-resolver.ts';
 import type { ResolvedTarget } from './target-resolver.ts';
 
@@ -51,10 +51,6 @@ const defaultLoader = async (): Promise<DetachCommandHelpers> => {
   };
 };
 
-/**
- * Print the detach-subcommand usage to stderr. Lifted verbatim from the old
- * inline block so behavior is identical.
- */
 function printUsage(err: (msg: string) => void): void {
   err('Usage: remi detach <session-name-or-id>');
   err('  Detach from a session without killing it (tmux-style).');
@@ -81,32 +77,27 @@ export async function runDetachCommand(
 
   const helpers = await loadHelpers();
 
-  // If the user asked for a localhost target without an explicit port,
-  // probe every known local daemon port to find the session.
   if (deps.explicitPort === undefined && target.host === 'localhost') {
-    let allPorts = deps.getLivePorts();
-    if (allPorts.length === 0) {
-      allPorts = helpers.getDefaultPortRange();
+    const resolution = await resolveLocalSession(
+      { target: detachTarget, logLabel: 'detach' },
+      {
+        getLivePorts: deps.getLivePorts,
+        queryMultiplePorts: helpers.queryMultiplePorts,
+        resolveSession: helpers.resolveSession,
+        getDefaultPortRange: helpers.getDefaultPortRange,
+      },
+    );
+    if (resolution.status === 'no-daemons') {
+      io.err(
+        `Cannot reach any remi daemon (tried ${resolution.probedCount} port(s)). Is a daemon running?`,
+      );
+      return 1;
     }
-    if (allPorts.length > 0) {
-      const results = await helpers.queryMultiplePorts({
-        host: 'localhost',
-        ports: allPorts,
-        timeoutMs: 5000,
-        logLabel: 'detach',
-      });
-      if (results.length === 0) {
-        io.err(
-          `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
-        );
-        return 1;
-      }
-      const match = helpers.resolveSession(results, detachTarget);
-      if (match) {
-        resolvedPort = match.port;
-        detachTarget = match.session.sessionId;
-      }
+    if (resolution.status === 'resolved') {
+      resolvedPort = resolution.port;
+      detachTarget = resolution.target;
     }
+    // 'no-ports' and 'unresolved' both fall through to the original target.
   }
 
   try {

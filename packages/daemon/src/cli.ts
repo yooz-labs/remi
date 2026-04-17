@@ -547,64 +547,13 @@ if (cliSubcommand === 'recent') {
 
 // Handle 'kill' subcommand: kill a session by name or ID
 if (cliSubcommand === 'kill') {
-  if (!resolved.targetId) {
-    console.error('Usage: remi kill <session-name-or-id>');
-    console.error('  Examples: remi kill my-session');
-    console.error('            remi kill host:port/session-name');
-    console.error('            remi kill my-session --host 192.168.1.1');
-    console.error('Run `remi ls` to see live sessions.');
-    process.exit(1);
-  }
-  let resolvedPort = resolved.port;
-  let killTarget = resolved.targetId;
-
-  const { runKillClient } = await import('./cli/kill-client.ts');
-  try {
-    // Resolve port by querying all local daemon ports (session may be on any daemon)
-    if (!cliPort && resolved.host === 'localhost') {
-      const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
-      let allPorts = liveSessionsRegistry.getLivePorts();
-
-      // Fallback: probe default port range when registry is empty (matches ls behavior)
-      if (allPorts.length === 0) {
-        const { getDefaultPortRange } = await import('./cli/ls-client.ts');
-        allPorts = getDefaultPortRange();
-      }
-
-      if (allPorts.length > 0) {
-        const results = await queryMultiplePorts({
-          host: 'localhost',
-          ports: allPorts,
-          timeoutMs: 5000,
-          logLabel: 'kill',
-        });
-
-        if (results.length === 0) {
-          console.error(
-            `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
-          );
-          process.exit(1);
-        }
-
-        const match = resolveSession(results, killTarget);
-        if (match) {
-          resolvedPort = match.port;
-          // Use session ID directly to avoid TOCTOU race
-          killTarget = match.session.sessionId;
-        }
-      }
-    }
-
-    await runKillClient({
-      host: resolved.host,
-      port: resolvedPort,
-      target: killTarget,
-    });
-  } catch (err) {
-    console.error(errorToString(err));
-    process.exit(1);
-  }
-  process.exit(0);
+  const { runKillCommand } = await import('./cli/cmd-kill.ts');
+  process.exit(
+    await runKillCommand(resolved, {
+      getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      explicitPort: cliPort,
+    }),
+  );
 }
 
 // Handle 'detach' subcommand: detach from a session without killing it
