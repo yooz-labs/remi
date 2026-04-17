@@ -187,6 +187,27 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.isNo).toBe(true);
   });
 
+  it('PermissionRequest with malformed suggestions falls back to default options', () => {
+    const { bridge, statuses, questions } = createBridge();
+
+    // Non-string entries (null, number, object) must not crash the bridge.
+    // Observed in the wild as "suggestion.toLowerCase is not a function".
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Edit',
+      tool_input: {},
+      permission_suggestions: [null, 42, { label: 'Yes' }] as unknown as string[],
+    } as PermissionRequestHookInput);
+
+    expect(statuses).toEqual([{ status: 'waiting' }]);
+    expect(questions.length).toBe(1);
+    expect(questions[0]?.options.length).toBe(3);
+    expect(questions[0]?.options[0]?.label).toBe('Yes');
+    expect(questions[0]?.options[1]?.label).toBe('Yes, always');
+    expect(questions[0]?.options[2]?.label).toBe('No');
+  });
+
   it('PermissionRequest without suggestions emits immediately with default 3 options', () => {
     const { bridge, statuses, questions } = createBridge();
 
