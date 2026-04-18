@@ -854,8 +854,11 @@ const sessionRegistry = new SessionRegistry(
   },
 );
 
-// The primary session ID (in wrapper mode, this is the one running in the terminal)
-let primarySessionId: UUID | null = null;
+// The primary session ID (in wrapper mode, this is the one running in the terminal).
+// Stored in cli/session-state.ts so extracted handler modules can read it via
+// getPrimarySessionId() without closing over a cli.ts-local `let` that flips
+// after handler registration.
+import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts';
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
@@ -912,7 +915,7 @@ async function createNewSession(
   const sendAndRecord = (message: ProtocolMessage) => {
     // Always record under primarySessionId so replay works correctly.
     // The client only knows primarySessionId (from hello_ack).
-    const recordId = primarySessionId ?? sessionId;
+    const recordId = getPrimarySessionId() ?? sessionId;
     sendMessage(sessionId, message);
     sessionRegistry.recordOutgoingMessage(recordId, message);
   };
@@ -943,7 +946,7 @@ async function createNewSession(
       },
       onQuestion: (question) => {
         log(`Question detected: ${question.text.substring(0, 50)}...`);
-        const questionSessionId = primarySessionId ?? sessionId;
+        const questionSessionId = getPrimarySessionId() ?? sessionId;
         const msg: ProtocolMessage = {
           type: 'question',
           id: generateId(),
@@ -963,7 +966,7 @@ async function createNewSession(
           const session = sessionRegistry.getSession(sessionId);
           const sessionName = session?.name || 'Agent';
           const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-          const pushSessionId = primarySessionId ?? sessionId;
+          const pushSessionId = getPrimarySessionId() ?? sessionId;
           const pushCategory = selectPushCategory(question.options);
           const pushOptions = question.options.map((o) => o.value);
           for (const dt of deviceTokens.values()) {
@@ -1700,16 +1703,17 @@ const sharedEvents = {
     updateRemiStatus({ connections: remiStatus.connections + 1 });
 
     const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
+    const currentPrimary = getPrimarySessionId();
 
     // Unified connection flow: one session per daemon, both modes behave the same.
     // If a resumeSessionId is provided, validate it matches our session.
-    if (resumeSessionId && primarySessionId && resumeSessionId !== primarySessionId) {
-      log(`Resume ID mismatch: requested ${resumeSessionId}, daemon has ${primarySessionId}`);
+    if (resumeSessionId && currentPrimary && resumeSessionId !== currentPrimary) {
+      log(`Resume ID mismatch: requested ${resumeSessionId}, daemon has ${currentPrimary}`);
       sendToConnection(
         connectionId,
         createError(
           'SESSION_NOT_FOUND',
-          `Session ${resumeSessionId} not found on this daemon. Active session: ${primarySessionId}.`,
+          `Session ${resumeSessionId} not found on this daemon. Active session: ${currentPrimary}.`,
         ),
       );
       return;
@@ -1717,15 +1721,14 @@ const sharedEvents = {
 
     // Try to attach to the primary (only) session
     const isQueryMode = metadata.platformData?.['mode'] === 'query';
-    if (primarySessionId) {
+    if (currentPrimary) {
       // Only auto-attach if the client wants to attach (not a utility client like ls/kill)
       if (!isQueryMode) {
-        const targetSession = primarySessionId;
-        const result = sessionRegistry.attachConnection(targetSession, connectionId);
+        const result = sessionRegistry.attachConnection(currentPrimary, connectionId);
         if (result.success) {
           sendToConnection(
             connectionId,
-            createHelloAck('1.0.0', targetSession, {
+            createHelloAck('1.0.0', currentPrimary, {
               isResume: result.replayMessages.length > 0,
               replayCount: result.replayMessages.length,
               nextBulletId: result.nextBulletId,
@@ -1734,18 +1737,18 @@ const sharedEvents = {
           if (result.replayMessages.length > 0) {
             sendToConnection(
               connectionId,
-              createReplayBatch(targetSession, result.replayMessages, true),
+              createReplayBatch(currentPrimary, result.replayMessages, true),
             );
           }
           cancelOrphanTimeout();
-          log(`Attached connection ${connectionId} to session ${targetSession}`);
+          log(`Attached connection ${connectionId} to session ${currentPrimary}`);
           return;
         }
       }
 
       // Query mode or attach failed (session busy); send hello_ack without attach
       // so utility clients (ls, kill) can still send requests
-      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
+      sendToConnection(connectionId, createHelloAck('1.0.0', currentPrimary));
       log(
         `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
       );
@@ -2511,8 +2514,9 @@ async function cleanup(): Promise<void> {
   cleanupStatusFile();
 
   // Remove from live sessions directory
-  if (primarySessionId) {
-    liveSessionsRegistry.unregister(primarySessionId);
+  const primary = getPrimarySessionId();
+  if (primary) {
+    liveSessionsRegistry.unregister(primary);
   }
 }
 
@@ -2579,7 +2583,7 @@ if (cliDaemonMode) {
   // Create the daemon's single session (one session per daemon)
   const workingDirectory = cliDir ? path.resolve(cliDir) : process.cwd();
   const sessionId = sessionRegistry.createSessionId();
-  primarySessionId = sessionId;
+  setPrimarySessionId(sessionId);
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
   installStatusLine(REMI_DIR);
@@ -2727,7 +2731,7 @@ if (cliDaemonMode) {
   installStatusLine(REMI_DIR);
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
-  primarySessionId = sessionId;
+  setPrimarySessionId(sessionId);
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
