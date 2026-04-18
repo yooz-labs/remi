@@ -99,7 +99,6 @@ import {
   createHelloAck,
   createRawPtyOutput,
   createReplayBatch,
-  createResumeSessionResponse,
   createSessionListResponse,
   createSessionReset,
   createStructuredAgentOutput,
@@ -131,6 +130,10 @@ import {
   createCreateSessionHandlers,
 } from './cli/handlers/create-session-events.ts';
 import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
+import {
+  type ResumeSessionHandlers,
+  createResumeSessionHandlers,
+} from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
 import {
   type TranscriptHandlers,
@@ -1728,6 +1731,14 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   send: sendToConnection,
 });
 
+const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  sessionRegistry,
+  sessionStore,
+  transcriptDiscovery,
+  createNewSession,
+  send: sendToConnection,
+});
+
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
   liveSessionsRegistry,
   spawningPorts,
@@ -1766,173 +1777,7 @@ const sharedEvents = {
   ...connectionHandlers,
   ...transcriptHandlers,
   ...createSessionHandlers_,
-  onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
-    log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
-
-    // If the target matches our active session, try to attach
-    const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
-    if (existingSession) {
-      const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
-      if (result.success) {
-        sendToConnection(
-          connectionId,
-          createResumeSessionResponse(true, requestId, targetSessionId as UUID),
-        );
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', targetSessionId as UUID, {
-            isResume: true,
-            replayCount: result.replayMessages.length,
-            nextBulletId: result.nextBulletId,
-          }),
-        );
-        if (result.replayMessages.length > 0) {
-          sendToConnection(
-            connectionId,
-            createReplayBatch(targetSessionId as UUID, result.replayMessages, true),
-          );
-        }
-        log(`Session ${targetSessionId} still alive; attached connection`);
-        return;
-      }
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(false, requestId, undefined, result.error),
-      );
-      return;
-    }
-
-    // Session not alive in registry. One session per daemon, so we cannot
-    // spawn a new session if one already exists.
-    if (sessionRegistry.activeSession !== null) {
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          "This daemon already has an active session. Use 'remi new' to start a new daemon for resume.",
-        ),
-      );
-      return;
-    }
-
-    // No active session; attempt transcript-based resume by spawning a new PTY.
-    let claudeSessionId: string | null = null;
-    let projectPath: string | null = null;
-
-    const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
-    if (storedByRemi) {
-      claudeSessionId = storedByRemi.claudeSessionId;
-      projectPath = storedByRemi.projectPath;
-    }
-
-    if (!claudeSessionId) {
-      const storedByClaude = sessionStore.findByClaudeSessionId(targetSessionId);
-      if (storedByClaude) {
-        claudeSessionId = storedByClaude.claudeSessionId;
-        projectPath = storedByClaude.projectPath;
-      }
-    }
-
-    if (!claudeSessionId) {
-      const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
-      if (transcriptPath) {
-        claudeSessionId = targetSessionId;
-        const dirName = path.basename(path.dirname(transcriptPath));
-        projectPath = dirName.replace(/-/g, '/');
-      }
-    }
-
-    if (!claudeSessionId) {
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          `Session ${targetSessionId} not found. No Claude session ID available for resume.`,
-        ),
-      );
-      return;
-    }
-
-    if (!projectPath) {
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          'Cannot resume: original project path is unknown.',
-        ),
-      );
-      return;
-    }
-
-    const dirResult = resolveDirectory(projectPath);
-    if ('error' in dirResult) {
-      const hint = projectPath?.includes('/')
-        ? ' Path may be inaccurate for projects with dashes in their name.'
-        : '';
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          `Project directory not found: ${projectPath}.${hint}`,
-        ),
-      );
-      return;
-    }
-    const workingDirectory = dirResult.resolved;
-
-    const newSessionId = sessionRegistry.createSessionId();
-    log(
-      `Resuming Claude session ${claudeSessionId} as new Remi session ${newSessionId} in ${workingDirectory}`,
-    );
-
-    try {
-      await createNewSession(
-        newSessionId,
-        workingDirectory,
-        (sid, msg) => {
-          const session = sessionRegistry.getSession(sid);
-          if (session?.activeConnectionId) {
-            sendToConnection(session.activeConnectionId, msg);
-          }
-        },
-        ['--resume', claudeSessionId],
-      );
-
-      const result = sessionRegistry.attachConnection(newSessionId, connectionId);
-
-      if (result.success) {
-        sendToConnection(connectionId, createResumeSessionResponse(true, requestId, newSessionId));
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', newSessionId, {
-            isResume: false,
-            replayCount: 0,
-            nextBulletId: 1,
-          }),
-        );
-        log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);
-      } else {
-        sessionRegistry.closeSession(newSessionId, 'forced');
-        sendToConnection(
-          connectionId,
-          createResumeSessionResponse(false, requestId, undefined, result.error),
-        );
-      }
-    } catch (error) {
-      const msg = errorToString(error);
-      logError('Failed to resume session:', msg);
-      sessionRegistry.closeSession(newSessionId, 'forced');
-      sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
-    }
-  },
+  ...resumeSessionHandlers,
 };
 
 // ---------------------------------------------------------------------------
