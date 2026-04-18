@@ -39,14 +39,18 @@ export interface MessageApiSetupDeps {
   sessionRegistry: SessionRegistry;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   deviceTokens: Map<string, DeviceTokenEntry>;
-  /** Resolved lazily because these come from a dynamic config. */
+  /**
+   * Called on every question emission so the caller can swap config sources
+   * without re-wiring the factory. MUST be synchronous and non-throwing: it
+   * runs inside the MessageAPI onQuestion callback with no try/catch around it.
+   */
   pushConfig: () => PushConfig;
   updateRemiStatus: (patch: { sessionStatus: AgentStatus }) => void;
   maxBulletLength: number;
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
 }
 
-export interface MessageApiForSession {
+export interface MessageApiHandle {
   messageApi: MessageAPI;
   sendAndRecord: (message: ProtocolMessage) => void;
 }
@@ -66,7 +70,7 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
 export function createMessageApiForSession(
   deps: MessageApiSetupDeps,
   sessionId: UUID,
-): MessageApiForSession {
+): MessageApiHandle {
   const {
     sessionRegistry,
     transcriptWatchers,

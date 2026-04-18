@@ -168,13 +168,13 @@ describe('createMessageApiForSession', () => {
     const { messageApi } = build(sessionId);
     messageApi.handleQuestion(questionWith([yesOpt, noOpt]));
 
-    // Push would require a real HTTP request to the fake signaling URL.
-    // We can't observe the attempt directly here (sendPushTrigger is imported
-    // into the production module), but we CAN observe that the in-app
-    // question message was sent. The push branch is guarded by hasActiveClient
-    // so with a connection attached, the for-loop is skipped. A separate test
-    // (no attached client) exercises the opposite branch without actually
-    // completing the network call.
+    // Push would fire a real HTTP request to the fake signaling URL if the
+    // hasActiveClient branch were bypassed. sendPushTrigger is imported
+    // statically by the production module, so tests can't observe that call
+    // directly without a mock. What we CAN assert: the in-app question
+    // message still went out, and activeConnectionId is non-null (the
+    // condition guarding the push for-loop). A follow-up that injects
+    // sendPushTrigger via deps would let us assert the opposite branch.
     const questions = sendCalls.filter((c) => c.message.type === 'question');
     expect(questions).toHaveLength(1);
     expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).not.toBeNull();
@@ -223,5 +223,107 @@ describe('createMessageApiForSession', () => {
         resolve();
       }, 10);
     });
+  });
+
+  test('sendAndRecord records under sessionId when no primary is set', () => {
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    // Deliberately do NOT call setPrimarySessionId.
+
+    const { sendAndRecord } = build(sessionId);
+    sendAndRecord({
+      type: 'session_update',
+      id: generateId(),
+      timestamp: now(),
+      session: {
+        id: sessionId,
+        name: '',
+        startedAt: now(),
+        status: 'idle',
+        isActive: false,
+      },
+    });
+
+    expect(sendCalls).toHaveLength(1);
+    // Fallback: recorded under sessionId (the only registered session).
+    expect(sessionRegistry.getSession(sessionId)?.messageHistory.length).toBe(1);
+  });
+
+  test('onQuestion falls back to sessionId for the emitted message when no primary is set', () => {
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+
+    const { messageApi } = build(sessionId);
+    messageApi.handleQuestion(questionWith([yesOpt, noOpt]));
+
+    const questionMsg = sendCalls.find((c) => c.message.type === 'question');
+    expect(questionMsg).toBeDefined();
+    // Question is routed to the caller's sendMessage bound to sessionId, and
+    // the inner message.sessionId falls back to sessionId when primary is null.
+    expect(questionMsg?.sessionId).toBe(sessionId);
+    expect((questionMsg?.message as { sessionId: UUID }).sessionId).toBe(sessionId);
+  });
+
+  test('onStructuredMessage emits structured_agent_output with isUpdate=false', () => {
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+
+    const { messageApi } = build(sessionId);
+    messageApi.handleMessage({
+      id: '33333333-3333-3333-3333-333333333333' as UUID,
+      sessionId,
+      sender: 'agent',
+      content: 'hello world',
+      createdAt: now(),
+      state: 'delivered',
+      stateChangedAt: now(),
+      isEditing: false,
+    });
+
+    const structured = sendCalls.filter((c) => c.message.type === 'structured_agent_output');
+    expect(structured.length).toBeGreaterThanOrEqual(1);
+    // The first emission on a new message is a create, not an update.
+    expect((structured[0]?.message as { isUpdate: boolean }).isUpdate).toBe(false);
+  });
+
+  test('onStructuredMessageUpdate emits structured_agent_output with isUpdate=true', () => {
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+
+    const { messageApi } = build(sessionId);
+    const msgId = '44444444-4444-4444-4444-444444444444' as UUID;
+    messageApi.handleMessage({
+      id: msgId,
+      sessionId,
+      sender: 'agent',
+      content: 'first',
+      createdAt: now(),
+      state: 'delivered',
+      stateChangedAt: now(),
+      isEditing: true,
+    });
+    // Reset captures so we can assert the update cleanly.
+    sendCalls.length = 0;
+    messageApi.handleMessageUpdate(msgId, 'first and more');
+
+    const updates = sendCalls.filter((c) => c.message.type === 'structured_agent_output');
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+    expect((updates[0]?.message as { isUpdate: boolean }).isUpdate).toBe(true);
   });
 });
