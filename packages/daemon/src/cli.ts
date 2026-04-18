@@ -46,17 +46,6 @@ let STATUS_FILE = path.join(REMI_DIR, 'status.json'); // Updated after PORT is r
 // Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
 let ptyStdoutFd: number | null = null;
 
-/**
- * Select the APNS notification category based on the number of question options.
- * iOS will render action buttons matching the category; watchOS mirrors them automatically.
- */
-function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
-  if (options.length === 2) return 'REMI_YN';
-  if (options.length === 3) return 'REMI_YNA';
-  if (options.length === 4) return 'REMI_MULTI';
-  return undefined;
-}
-
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
 }
@@ -101,20 +90,12 @@ import {
   createReplayBatch,
   createSessionListResponse,
   createSessionReset,
-  createStructuredAgentOutput,
   generateId,
-  now,
 } from '@remi/shared';
-import type {
-  AgentStatus,
-  ProtocolMessage,
-  QuestionOption,
-  UUID,
-  UnlockedIdentity,
-} from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
-import { MessageAPI } from './api/index.ts';
+import type { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
@@ -141,6 +122,7 @@ import {
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { startTranscriptWatcher as startTranscriptWatcherImpl } from './cli/transcript-watcher-setup.ts';
@@ -148,7 +130,6 @@ import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { classifySessionEvent } from './hooks/session-lock-classifier.ts';
-import { sendPushTrigger } from './notifications/push-client.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, PTYSession } from './pty/index.ts';
 import {
@@ -915,104 +896,20 @@ async function createNewSession(
   extraArgs: string[] = [],
   passThrough = false,
 ): Promise<PTYSession> {
-  const sendAndRecord = (message: ProtocolMessage) => {
-    // Always record under primarySessionId so replay works correctly.
-    // The client only knows primarySessionId (from hello_ack).
-    const recordId = getPrimarySessionId() ?? sessionId;
-    sendMessage(sessionId, message);
-    sessionRegistry.recordOutgoingMessage(recordId, message);
-  };
-
-  const messageApi = new MessageAPI(
+  const { messageApi, sendAndRecord } = createMessageApiForSession(
     {
-      sessionId: sessionId,
-      initialBulletId: 1,
+      sessionRegistry,
+      transcriptWatchers,
+      deviceTokens,
+      pushConfig: () => ({
+        signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+        ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      }),
+      updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
+      sendMessage,
     },
-    {
-      onStructuredMessage: (structured) => {
-        try {
-          sendAndRecord(createStructuredAgentOutput(structured, false));
-        } catch (err) {
-          logError(`[Session ${sessionId}] Failed to send structured message:`, err);
-        }
-      },
-      onStructuredMessageUpdate: (_messageId, structured, changedBulletIds) => {
-        try {
-          sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
-        } catch (err) {
-          logError(`[Session ${sessionId}] Failed to send structured message update:`, err);
-        }
-      },
-      onMessageFinalized: (msgId) => {
-        log(`Message ${msgId} finalized`);
-      },
-      onQuestion: (question) => {
-        log(`Question detected: ${question.text.substring(0, 50)}...`);
-        const questionSessionId = getPrimarySessionId() ?? sessionId;
-        const msg: ProtocolMessage = {
-          type: 'question',
-          id: generateId(),
-          timestamp: now(),
-          question: question,
-          sessionId: questionSessionId,
-        };
-        sendAndRecord(msg);
-        sessionRegistry.updateQuestion(questionSessionId, question);
-
-        // Push to registered devices only when no client is actively viewing the session.
-        // If a client is attached, they see the question in the UI; no push needed.
-        const sessionForPush = sessionRegistry.getSession(questionSessionId);
-        const hasActiveClient =
-          sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
-        if (deviceTokens.size > 0 && !hasActiveClient) {
-          const session = sessionRegistry.getSession(sessionId);
-          const sessionName = session?.name || 'Agent';
-          const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-          const pushSessionId = getPrimarySessionId() ?? sessionId;
-          const pushCategory = selectPushCategory(question.options);
-          const pushOptions = question.options.map((o) => o.value);
-          for (const dt of deviceTokens.values()) {
-            sendPushTrigger(signalingUrl, dt.token, {
-              title: `${sessionName} needs input`,
-              body: question.text.slice(0, 100),
-              ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-              sessionId: pushSessionId,
-              questionId: question.id,
-              ...(pushCategory !== undefined ? { category: pushCategory } : {}),
-              ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
-            })
-              .then(() => log(`Push notification sent for session ${pushSessionId}`))
-              .catch((err) => log(`Push notification failed: ${err}`));
-          }
-        }
-      },
-      onStatusChange: (status: AgentStatus, context?: string) => {
-        log(`Status: ${status}${context ? ` (${context})` : ''}`);
-        const msg: ProtocolMessage = {
-          type: 'session_update',
-          id: generateId(),
-          timestamp: now(),
-          session: {
-            id: sessionId,
-            name: '',
-            startedAt: now(),
-            status,
-            isActive: status !== 'idle',
-          },
-        };
-        sendAndRecord(msg);
-        sessionRegistry.updateStatus(sessionId, status);
-        updateRemiStatus({ sessionStatus: status });
-
-        const watcher = transcriptWatchers.get(sessionId);
-        if (watcher) {
-          watcher.forceRead().catch((err) => {
-            logError(`[Transcript] forceRead failed for session ${sessionId}:`, err);
-          });
-        }
-      },
-    },
+    sessionId,
   );
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
