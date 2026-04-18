@@ -142,10 +142,8 @@ import {
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
-import {
-  extractClaudeSessionId as extractClaudeSessionIdImpl,
-  startTranscriptWatcher as startTranscriptWatcherImpl,
-} from './cli/transcript-watcher-setup.ts';
+import { startTranscriptFallback } from './cli/transcript-fallback.ts';
+import { startTranscriptWatcher as startTranscriptWatcherImpl } from './cli/transcript-watcher-setup.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
@@ -1536,92 +1534,25 @@ async function createNewSession(
     exitCode: null,
   });
 
-  // Transcript watcher: normally started by hook event (provides path directly).
-  // When sibling daemons serve the same directory, hook events are skipped and
-  // this fallback becomes the primary discovery path.
-  const startupTime = Date.now();
-  const fallbackInterval = setInterval(() => {
-    if (transcriptWatchers.has(sessionId)) {
-      clearInterval(fallbackInterval);
-      transcriptFallbackTimers.delete(sessionId);
-      return;
-    }
-    if (!sessionRegistry.hasSession(sessionId)) {
-      clearInterval(fallbackInterval);
-      transcriptFallbackTimers.delete(sessionId);
-      return;
-    }
-    // Look for a transcript file that is actively being written to.
-    // When sibling daemons serve the same directory, exclude transcripts they've
-    // already claimed (by claudeSessionId in sessions.json) to avoid double-watching.
-    const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
-    const siblingClaudeIds = new Set<string>();
-    for (const entry of sessionStore.list()) {
-      if (entry.remiSessionId !== sessionId && entry.claudeSessionId && !entry.exitedAt) {
-        siblingClaudeIds.add(entry.claudeSessionId);
-      }
-    }
-    const transcriptPath =
-      siblingClaudeIds.size > 0
-        ? transcriptDiscovery.findLatestTranscriptExcluding(workingDirectory, siblingClaudeIds)
-        : transcriptDiscovery.findLatestTranscript(workingDirectory);
-    if (transcriptPath) {
-      try {
-        const stat = fs.statSync(transcriptPath);
-        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
-          clearInterval(fallbackInterval);
-          transcriptFallbackTimers.delete(sessionId);
-          log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
-          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-          extractClaudeSessionId(transcriptPath, sessionId);
-          return;
-        }
-      } catch (err) {
-        log(`[Hooks] Fallback stat failed for ${transcriptPath}: ${errorToString(err)}`);
-      }
-    }
-    // Give up after 30 seconds
-    if (Date.now() - startupTime > 30000) {
-      clearInterval(fallbackInterval);
-      transcriptFallbackTimers.delete(sessionId);
-      if (transcriptPath) {
-        try {
-          const stat = fs.statSync(transcriptPath);
-          const isRecent =
-            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
-          if (isRecent) {
-            log('[Hooks] Transcript fallback: found recent transcript on final check.');
-            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-            extractClaudeSessionId(transcriptPath, sessionId);
-            return;
-          }
-
-          logError(
-            `[Hooks] Transcript fallback timed out without a fresh transcript. Skipping stale file: ${transcriptPath}`,
-          );
-          return;
-        } catch {
-          logError(
-            '[Hooks] Transcript fallback timed out and transcript stat failed on final check.',
-          );
-          return;
-        }
-      }
-
-      logError('[Hooks] Transcript fallback timed out without any transcript file.');
-    }
-  }, 2000);
-  transcriptFallbackTimers.set(sessionId, fallbackInterval);
+  startTranscriptFallback(
+    {
+      sessionRegistry,
+      sessionStore,
+      transcriptDiscovery,
+      transcriptWatchers,
+      transcriptFallbackTimers,
+    },
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord,
+  );
 
   return ptySession;
 }
 
-// Thin wrappers over cli/transcript-watcher-setup.ts that bind the cli.ts-local
-// state (sessionStore, transcriptWatchers map) so call sites inside
-// createNewSession and the fallback-poll block don't change.
-function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): string | null {
-  return extractClaudeSessionIdImpl({ sessionStore }, transcriptPath, sessionId);
-}
+// Thin wrapper over cli/transcript-watcher-setup.ts binding transcriptWatchers
+// so the 2 call sites inside the hook bridge stay unchanged.
 function startTranscriptWatcher(
   sessionId: UUID,
   transcriptPath: string,
