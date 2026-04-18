@@ -30,7 +30,7 @@ function fakeMessageAPI(): MessageAPI {
 }
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
-const OTHER_CID = 'othr0000-0000-0000-0000-000000000000' as UUID;
+const OTHER_CID = '0a000000-0000-0000-0000-000000000002' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 const BOGUS = 'bogu0000-0000-0000-0000-000000000000' as UUID;
 
@@ -106,7 +106,7 @@ describe('createSessionHandlers', () => {
     test('omits the current daemon port from daemonPorts', () => {
       // Register one session entry for a DIFFERENT port alongside ours.
       liveSessionsRegistry.register({
-        sessionId: 'othr1234-1234-1234-1234-123456789012',
+        sessionId: '0a001234-1234-1234-1234-123456789012',
         wsPort: 9999,
         pid: process.pid,
         hookPort: 0,
