@@ -96,7 +96,6 @@ const cleanupStatusFile = (): void => statusWriter.cleanup();
 loadDotenvFile();
 
 import {
-  createCreateSessionResponse,
   createHelloAck,
   createRawPtyOutput,
   createReplayBatch,
@@ -127,6 +126,10 @@ import {
   type ConnectionHandlers,
   createConnectionHandlers,
 } from './cli/handlers/connection-events.ts';
+import {
+  type CreateSessionHandlers,
+  createCreateSessionHandlers,
+} from './cli/handlers/create-session-events.ts';
 import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
 import {
@@ -1725,6 +1728,25 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   send: sendToConnection,
 });
 
+const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
+  liveSessionsRegistry,
+  spawningPorts,
+  basePort: remiConfig.daemon.base_port,
+  portRange: remiConfig.daemon.port_range,
+  // Lazy: bindHost is declared after sharedEvents is wired up, so compute
+  // the inherited-args array on each spawn rather than capturing it here.
+  inheritedArgs: () => {
+    const args: string[] = [];
+    if (cliAuth === true) args.push('--auth');
+    if (cliAuth === false) args.push('--no-auth');
+    if (cliNoRelay) args.push('--no-relay');
+    if (cliNoMdns) args.push('--no-mdns');
+    if (bindHost !== '0.0.0.0') args.push('--bind', bindHost);
+    return args;
+  },
+  send: sendToConnection,
+});
+
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
   deviceTokens,
@@ -1743,78 +1765,7 @@ const sharedEvents = {
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
-  onCreateSessionRequest: async (
-    connectionId: UUID,
-    directory: string | undefined,
-    requestId: UUID,
-  ) => {
-    // One session per daemon. Spawn a new daemon process for the new session.
-    log(`Create session request from ${connectionId}, spawning new daemon`);
-
-    try {
-      const { spawnRemiDaemon } = await import('./cli/daemon-manager.ts');
-      const { findAvailableTcpPort } = await import('./session/port-utils.ts');
-
-      // Include in-flight spawn ports to prevent TOCTOU race on concurrent requests
-      const liveUsed = new Set([
-        ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
-        ...spawningPorts,
-      ]);
-      const freePort = await findAvailableTcpPort(
-        remiConfig.daemon.base_port,
-        remiConfig.daemon.port_range,
-        liveUsed,
-      );
-      if (freePort === null) {
-        const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
-        sendToConnection(
-          connectionId,
-          createCreateSessionResponse(
-            false,
-            requestId,
-            undefined,
-            `All ports in range ${remiConfig.daemon.base_port}-${rangeEnd} are in use.`,
-          ),
-        );
-        return;
-      }
-
-      // Forward parent's flags so spawned daemon has matching config
-      const inheritedArgs: string[] = [];
-      if (cliAuth === true) inheritedArgs.push('--auth');
-      if (cliAuth === false) inheritedArgs.push('--no-auth');
-      if (cliNoRelay) inheritedArgs.push('--no-relay');
-      if (cliNoMdns) inheritedArgs.push('--no-mdns');
-      if (bindHost !== '0.0.0.0') inheritedArgs.push('--bind', bindHost);
-
-      log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
-      spawningPorts.add(freePort);
-      try {
-        const result = await spawnRemiDaemon(freePort, directory, inheritedArgs);
-
-        sendToConnection(
-          connectionId,
-          createCreateSessionResponse(
-            true,
-            requestId,
-            result.sessionId as UUID,
-            undefined,
-            result.port,
-          ),
-        );
-        log(
-          `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
-        );
-      } finally {
-        spawningPorts.delete(freePort);
-      }
-    } catch (err) {
-      const msg = errorToString(err);
-      logError(`Failed to spawn daemon: ${msg}`);
-      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
-    }
-  },
-
+  ...createSessionHandlers_,
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
     log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
 
