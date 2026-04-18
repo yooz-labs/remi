@@ -117,12 +117,7 @@ import type {
   UnlockedIdentity,
 } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
-import {
-  type AdapterMetadata,
-  AdapterRegistry,
-  TelegramAdapter,
-  WebSocketAdapter,
-} from './adapters/index.ts';
+import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { MessageAPI } from './api/index.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
@@ -130,6 +125,10 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import {
+  type ConnectionHandlers,
+  createConnectionHandlers,
+} from './cli/handlers/connection-events.ts';
 import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
@@ -1718,96 +1717,23 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   send: sendToConnection,
 });
 
+const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
+  sessionRegistry,
+  deviceTokens,
+  trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
+  untrackConnection: (id) => registry.untrackConnection(id),
+  onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),
+  onConnectionRemoved: () =>
+    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
+  cancelOrphanTimeout,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
   ...trivialHandlers,
   ...inputHandlers,
   ...sessionHandlers,
-  onConnect: async (connectionId: UUID, metadata: AdapterMetadata) => {
-    log(`Client connected: ${connectionId} (${metadata.adapterType})`);
-
-    registry.trackConnection(connectionId, metadata.adapterType);
-    updateRemiStatus({ connections: remiStatus.connections + 1 });
-
-    const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
-    const currentPrimary = getPrimarySessionId();
-
-    // Unified connection flow: one session per daemon, both modes behave the same.
-    // If a resumeSessionId is provided, validate it matches our session.
-    if (resumeSessionId && currentPrimary && resumeSessionId !== currentPrimary) {
-      log(`Resume ID mismatch: requested ${resumeSessionId}, daemon has ${currentPrimary}`);
-      sendToConnection(
-        connectionId,
-        createError(
-          'SESSION_NOT_FOUND',
-          `Session ${resumeSessionId} not found on this daemon. Active session: ${currentPrimary}.`,
-        ),
-      );
-      return;
-    }
-
-    // Try to attach to the primary (only) session
-    const isQueryMode = metadata.platformData?.['mode'] === 'query';
-    if (currentPrimary) {
-      // Only auto-attach if the client wants to attach (not a utility client like ls/kill)
-      if (!isQueryMode) {
-        const result = sessionRegistry.attachConnection(currentPrimary, connectionId);
-        if (result.success) {
-          sendToConnection(
-            connectionId,
-            createHelloAck('1.0.0', currentPrimary, {
-              isResume: result.replayMessages.length > 0,
-              replayCount: result.replayMessages.length,
-              nextBulletId: result.nextBulletId,
-            }),
-          );
-          if (result.replayMessages.length > 0) {
-            sendToConnection(
-              connectionId,
-              createReplayBatch(currentPrimary, result.replayMessages, true),
-            );
-          }
-          cancelOrphanTimeout();
-          log(`Attached connection ${connectionId} to session ${currentPrimary}`);
-          return;
-        }
-      }
-
-      // Query mode or attach failed (session busy); send hello_ack without attach
-      // so utility clients (ls, kill) can still send requests
-      sendToConnection(connectionId, createHelloAck('1.0.0', currentPrimary));
-      log(
-        `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
-      );
-      return;
-    }
-
-    // No session available
-    sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
-  },
-
-  onDisconnect: async (connectionId: UUID, reason: string) => {
-    log(`Client disconnected: ${connectionId}`);
-    log(`   Reason: ${reason}`);
-
-    // Remove device tokens registered by this connection so push
-    // notifications stop after explicit disconnect. The client
-    // re-registers on reconnect, so this is safe.
-    for (const [key, dt] of deviceTokens) {
-      if (dt.connectionId === connectionId) {
-        deviceTokens.delete(key);
-        log(`Device token unregistered (disconnect): ${key.slice(0, 20)}...`);
-      }
-    }
-
-    // Explicitly remove from waiting queue, then detach if active.
-    // detachConnection also handles waiting removal, but this ensures
-    // cleanup even if detachConnection's early-return path changes.
-    sessionRegistry.removeWaitingConnection(connectionId);
-    sessionRegistry.detachConnection(connectionId);
-    registry.untrackConnection(connectionId);
-    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
-  },
-
+  ...connectionHandlers,
   onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
     log(`Transcript load request from ${connectionId} for session ${sessionId}`);
 
