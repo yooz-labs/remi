@@ -370,6 +370,9 @@ export function setupHookBridge(
       return;
     }
 
+    // Legacy nested-Task context kept as a secondary safety net for the
+    // rare case where agent_id is absent but the hook bridge's nested-task
+    // tracker caught the descent.
     const inSubagent = hookBridge.isInSubagentContext();
     const sessionTag = sessionId.slice(0, 8);
 
