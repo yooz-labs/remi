@@ -97,10 +97,8 @@ loadDotenvFile();
 
 import {
   createCreateSessionResponse,
-  createDetachSessionAck,
   createError,
   createHelloAck,
-  createKillSessionResponse,
   createRawPtyOutput,
   createReplayBatch,
   createResumeSessionResponse,
@@ -133,6 +131,7 @@ import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
+import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
@@ -1707,9 +1706,22 @@ const inputHandlers: InputHandlers = createInputHandlers({
   send: sendToConnection,
 });
 
+const sessionHandlers: SessionHandlers = createSessionHandlers({
+  sessionRegistry,
+  sessionStore,
+  transcriptDiscovery,
+  liveSessionsRegistry,
+  currentPort: () => PORT,
+  untrackConnection: (id) => registry.untrackConnection(id),
+  onConnectionRemoved: () =>
+    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
+  send: sendToConnection,
+});
+
 const sharedEvents = {
   ...trivialHandlers,
   ...inputHandlers,
+  ...sessionHandlers,
   onConnect: async (connectionId: UUID, metadata: AdapterMetadata) => {
     log(`Client connected: ${connectionId} (${metadata.adapterType})`);
 
@@ -1794,33 +1806,6 @@ const sharedEvents = {
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
-  },
-
-  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => {
-    const daemonSessions = sessionRegistry.listSessions();
-
-    let allSessions = [...daemonSessions];
-
-    if (includeExternal) {
-      const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-      // Also exclude by Claude session ID (JSONL filename UUID — different namespace from remi IDs)
-      for (const remiId of [...managedIds]) {
-        const stored = sessionStore.findByRemiSessionId(remiId as UUID);
-        if (stored?.claudeSessionId) {
-          managedIds.add(stored.claudeSessionId);
-        }
-      }
-      const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
-      allSessions = [...daemonSessions, ...externalSessions];
-    }
-
-    log(
-      `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
-        `(${daemonSessions.length} daemon, ${allSessions.length - daemonSessions.length} external)`,
-    );
-    // Include other daemon ports on this machine so the app can auto-connect
-    const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
-    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId, livePorts));
   },
 
   onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
@@ -1969,82 +1954,6 @@ const sharedEvents = {
       logError(`Failed to spawn daemon: ${msg}`);
       sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
     }
-  },
-
-  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => {
-    log(`Kill session request from ${connectionId} for session ${sessionId}`);
-
-    const session = sessionRegistry.getSession(sessionId);
-    if (!session) {
-      sendToConnection(
-        connectionId,
-        createKillSessionResponse(false, requestId, `Session ${sessionId} not found`),
-      );
-      return;
-    }
-
-    const sessionName = session.name;
-    log(`Killing session: ${sessionName} (${sessionId})`);
-
-    // Notify attached client before destroying the session
-    if (session.activeConnectionId && session.activeConnectionId !== connectionId) {
-      sendToConnection(
-        session.activeConnectionId,
-        createError('SESSION_ENDED', 'Session killed by remote request'),
-      );
-    }
-
-    const hadActiveClient =
-      session.activeConnectionId !== null && session.activeConnectionId !== connectionId;
-    sessionRegistry.closeSession(sessionId, 'forced');
-    sendToConnection(connectionId, createKillSessionResponse(true, requestId));
-    if (hadActiveClient) {
-      log(`Session killed: ${sessionName} (disconnected attached client)`);
-    } else {
-      log(`Session killed: ${sessionName}`);
-    }
-  },
-
-  onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID) => {
-    log(`Detach session request from ${connectionId} for session ${sessionId}`);
-
-    const session = sessionRegistry.getSession(sessionId);
-    if (!session) {
-      sendToConnection(
-        connectionId,
-        createDetachSessionAck(sessionId, false, `Session ${sessionId} not found`),
-      );
-      return;
-    }
-
-    const activeConnId = session.activeConnectionId;
-    if (activeConnId === null) {
-      sendToConnection(
-        connectionId,
-        createDetachSessionAck(sessionId, false, 'Session is already detached'),
-      );
-      return;
-    }
-
-    // Send ack to the requesting connection (may be the active client or
-    // a separate query-mode client like `remi detach <session>`)
-    const ackSent = sendToConnection(connectionId, createDetachSessionAck(sessionId, true));
-    if (!ackSent) {
-      log(`Warning: detach ack could not be delivered to ${connectionId}`);
-    }
-
-    // Detach the ACTIVE connection (not necessarily the requesting one).
-    // Only untrack/decrement here for third-party detach (connectionId !== activeConnId).
-    // For self-detach, onDisconnect will handle cleanup when the WebSocket closes.
-    sessionRegistry.detachConnection(activeConnId, true);
-    if (activeConnId !== connectionId) {
-      registry.untrackConnection(activeConnId);
-      updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
-    }
-
-    log(
-      `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
-    );
   },
 
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
