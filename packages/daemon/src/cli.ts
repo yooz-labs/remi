@@ -44,7 +44,14 @@ let STATUS_FILE = path.join(REMI_DIR, 'status.json'); // Updated after PORT is r
 
 // In wrapper mode, we save the real stdout file descriptor before overriding.
 // Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
-let ptyStdoutFd: number | null = null;
+// State lives in cli/wrapper-state.ts so extracted phases can read/write it
+// without closing over a cli.ts-local `let` that flips across call sites.
+import {
+  getPtyStdoutFd,
+  isWrapperDetached,
+  setPtyStdoutFd,
+  setWrapperDetached,
+} from './cli/wrapper-state.ts';
 
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
@@ -86,7 +93,6 @@ loadDotenvFile();
 
 import {
   createHelloAck,
-  createRawPtyOutput,
   createReplayBatch,
   createSessionListResponse,
   createSessionReset,
@@ -123,6 +129,7 @@ import {
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
+import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { startTranscriptWatcher as startTranscriptWatcherImpl } from './cli/transcript-watcher-setup.ts';
@@ -131,7 +138,7 @@ import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
 import { classifySessionEvent } from './hooks/session-lock-classifier.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
-import { PTYManager, PTYSession } from './pty/index.ts';
+import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
@@ -150,7 +157,7 @@ import { configureLogger, isWrapperMode, log, logError, setWrapperMode } from '.
 
 configureLogger({ writeLog: writeToLog });
 
-let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
+// wrapperDetached lives in cli/wrapper-state.ts (see top of file).
 let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
 
 /** Cancel the SIGHUP orphan timeout when a remote client attaches. */
@@ -1325,89 +1332,16 @@ async function createNewSession(
     log(`[Hooks] Event bridge active for session ${sessionId}`);
   }
 
-  // Determine terminal size
-  const termSize = passThrough
-    ? {
-        cols: process.stdout.columns || 120,
-        rows: process.stdout.rows || 40,
-      }
-    : { cols: 120, rows: 40 };
-
-  const ptySession = new PTYSession(
+  const ptySession = createPtySessionForSession(
     {
-      command: 'claude',
-      args: extraArgs,
-      cwd: workingDirectory,
-      size: termSize,
-      env: { REMI_PORT: String(remiStatus.wsPort) },
+      sessionRegistry,
+      sessionStore,
+      outputProcessor,
+      wsPort: remiStatus.wsPort,
+      sendMessage,
+      cleanup,
     },
-    {
-      onRawData: (data: Uint8Array) => {
-        // Write to local terminal (wrapper pass-through mode)
-        if (passThrough && ptyStdoutFd !== null && !wrapperDetached) {
-          try {
-            fs.writeSync(ptyStdoutFd, data);
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            ptyStdoutFd = null;
-            wrapperDetached = true;
-            if (code === 'EPIPE' || code === 'EIO') {
-              logError(`Terminal write failed (${code}), detaching local terminal`);
-            } else {
-              logError(`Unexpected terminal write error (${code}):`, errorToString(err));
-            }
-            // Clean up stdin to avoid dangling raw-mode reader
-            if (process.stdin.isTTY) {
-              try {
-                process.stdin.setRawMode(false);
-              } catch {
-                // stdin may already be unusable
-              }
-            }
-            process.stdin.pause();
-            process.stdin.removeAllListeners('data');
-            process.stdin.unref();
-          }
-        }
-
-        // Send raw PTY bytes to the actively attached CLI client (if any)
-        const session = sessionRegistry.getSession(sessionId);
-        if (session?.activeConnectionId) {
-          const base64Data = Buffer.from(data).toString('base64');
-          const msg = createRawPtyOutput(base64Data, sessionId);
-          sendMessage(sessionId, msg);
-        }
-      },
-      onData: (output: string) => {
-        try {
-          outputProcessor.process(output);
-        } catch (err) {
-          logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
-        }
-      },
-      onExit: (code: number | null) => {
-        try {
-          outputProcessor.flush();
-        } catch (err) {
-          logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
-        }
-        log(`PTY ${ptySession.id} exited with code ${code}`);
-        sessionRegistry.handlePTYExit(sessionId);
-        sessionStore.markExited(sessionId, code);
-
-        if (passThrough) {
-          cleanup()
-            .then(() => process.exit(code ?? 0))
-            .catch((err) => {
-              logError(`[PTY] Cleanup failed: ${errorToString(err)}`);
-              process.exit(1);
-            });
-        }
-      },
-      onError: (error: Error) => {
-        logError(`PTY ${ptySession.id} error:`, error);
-      },
-    },
+    { sessionId, workingDirectory, extraArgs, passThrough },
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1966,7 +1900,7 @@ if (cliDaemonMode) {
   // console.log uses a native path that bypasses process.stdout.write,
   // so we must override both layers. Only the PTY raw byte pass-through
   // (via fs.writeSync to stdout fd) can reach the actual terminal.
-  ptyStdoutFd = 1; // stdout file descriptor
+  setPtyStdoutFd(1); // stdout file descriptor
 
   ensureRemiDir();
   startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
@@ -2147,13 +2081,16 @@ if (cliDaemonMode) {
   );
 
   // Print session name to terminal (useful for 'remi new' and general awareness)
-  if (ptyStdoutFd !== null) {
-    const managedSession = sessionRegistry.getSession(sessionId);
-    if (managedSession) {
-      try {
-        fs.writeSync(ptyStdoutFd, `Session: ${managedSession.name}\r\n`);
-      } catch (err) {
-        log(`[Wrapper] Failed to write session name: ${errorToString(err)}`);
+  {
+    const stdoutFd = getPtyStdoutFd();
+    if (stdoutFd !== null) {
+      const managedSession = sessionRegistry.getSession(sessionId);
+      if (managedSession) {
+        try {
+          fs.writeSync(stdoutFd, `Session: ${managedSession.name}\r\n`);
+        } catch (err) {
+          log(`[Wrapper] Failed to write session name: ${errorToString(err)}`);
+        }
       }
     }
   }
@@ -2172,9 +2109,10 @@ if (cliDaemonMode) {
 
   const detachScanner = new DetachScanner({
     onDetach: () => {
-      if (ptyStdoutFd !== null) {
+      const stdoutFd = getPtyStdoutFd();
+      if (stdoutFd !== null) {
         try {
-          fs.writeSync(ptyStdoutFd, '\r\n[detached]\r\n');
+          fs.writeSync(stdoutFd, '\r\n[detached]\r\n');
         } catch (err) {
           log(`[Detach] Failed to write detach message: ${errorToString(err)}`);
         }
@@ -2214,8 +2152,8 @@ if (cliDaemonMode) {
   const SIGHUP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
-    if (wrapperDetached) return;
-    wrapperDetached = true;
+    if (isWrapperDetached()) return;
+    setWrapperDetached(true);
 
     // Stop reading from stdin
     if (process.stdin.isTTY) {
@@ -2232,7 +2170,7 @@ if (cliDaemonMode) {
       // Terminal closed: keep running for 30 minutes so remote clients can attach.
       // After the timeout, shut down to avoid accumulating orphaned sessions.
       process.stdin.unref();
-      ptyStdoutFd = null;
+      setPtyStdoutFd(null);
       sighupTimeoutId = setTimeout(() => {
         log('[SIGHUP] Orphan timeout reached (30m), shutting down');
         cleanup()
@@ -2280,7 +2218,7 @@ if (cliDaemonMode) {
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
   process.on('SIGINT', () => {
-    if (wrapperDetached) return; // No local terminal to forward from
+    if (isWrapperDetached()) return; // No local terminal to forward from
     if (ptySession.isRunning) {
       try {
         // Send Ctrl+C (0x03) to the PTY
