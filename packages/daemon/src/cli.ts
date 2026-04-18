@@ -83,7 +83,7 @@ const statusWriter = new StatusWriter(
   },
   {
     getTargetFile: () => (cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE),
-    isEnabled: () => wrapperMode || cliDaemonMode,
+    isEnabled: () => isWrapperMode() || cliDaemonMode,
     writeLog: writeToLog,
   },
 );
@@ -162,7 +162,10 @@ import type { AssistantEntry } from './transcript/index.ts';
 // ---------------------------------------------------------------------------
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
 // ---------------------------------------------------------------------------
-let wrapperMode = true; // Default to wrapper mode
+import { configureLogger, isWrapperMode, log, logError, setWrapperMode } from './cli/logger.ts';
+
+configureLogger({ writeLog: writeToLog });
+
 let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
 let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
 
@@ -172,22 +175,6 @@ function cancelOrphanTimeout(): void {
     clearTimeout(sighupTimeoutId);
     sighupTimeoutId = null;
     log('[SIGHUP] Orphan timeout cancelled: remote client attached');
-  }
-}
-
-function log(...args: unknown[]): void {
-  if (wrapperMode) {
-    writeToLog(args.map(String).join(' '));
-  } else {
-    console.log(...args);
-  }
-}
-
-function logError(...args: unknown[]): void {
-  if (wrapperMode) {
-    writeToLog(`[error] ${args.map(String).join(' ')}`);
-  } else {
-    console.error(...args);
   }
 }
 
@@ -282,7 +269,7 @@ const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
 if (cliDaemonMode) {
-  wrapperMode = false;
+  setWrapperMode(false);
 }
 
 // ---------------------------------------------------------------------------
