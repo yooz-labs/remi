@@ -57,18 +57,32 @@ export interface PtySessionSetupArgs {
   passThrough: boolean;
 }
 
+/**
+ * Compute the PTY terminal size. Headless daemon PTYs are a deterministic
+ * 120x40 so output parsing is reproducible; wrapper-mode PTYs prefer the
+ * host terminal's `stdout.columns`/`rows` and fall back to 120x40 if those
+ * are unavailable (e.g., stdout not a TTY).
+ */
+export function computeTermSize(passThrough: boolean): { cols: number; rows: number } {
+  if (!passThrough) return { cols: 120, rows: 40 };
+  return {
+    cols: process.stdout.columns || 120,
+    rows: process.stdout.rows || 40,
+  };
+}
+
 export function createPtySessionForSession(
-  deps: PtySessionSetupDeps,
-  args: PtySessionSetupArgs,
+  deps: Readonly<PtySessionSetupDeps>,
+  args: Readonly<PtySessionSetupArgs>,
 ): PTYSession {
   const { sessionRegistry, sessionStore, outputProcessor, wsPort, sendMessage, cleanup } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough } = args;
 
-  // Only wrapper-mode PTYs inherit the host terminal's size; headless daemon
-  // PTYs use a deterministic 120x40 size so output parsing is reproducible.
-  const termSize = passThrough
-    ? { cols: process.stdout.columns || 120, rows: process.stdout.rows || 40 }
-    : { cols: 120, rows: 40 };
+  if (!Number.isInteger(wsPort) || wsPort <= 0) {
+    throw new Error(`Invalid wsPort: ${wsPort}. Must be a positive integer.`);
+  }
+
+  const termSize = computeTermSize(passThrough);
 
   const ptySession: PTYSession = new PTYSession(
     {

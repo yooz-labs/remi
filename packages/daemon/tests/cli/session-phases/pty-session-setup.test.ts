@@ -4,7 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import { createPtySessionForSession } from '../../../src/cli/session-phases/pty-session-setup.ts';
+import {
+  computeTermSize,
+  createPtySessionForSession,
+} from '../../../src/cli/session-phases/pty-session-setup.ts';
 import { __resetWrapperStateForTests } from '../../../src/cli/wrapper-state.ts';
 import { OutputProcessor } from '../../../src/parser/output-processor.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -13,13 +16,37 @@ import { SessionStore } from '../../../src/session/session-store.ts';
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
 
 /**
- * These tests don't actually start the PTY (ptySession.start() would
- * spawn a real `claude` process). They exercise the factory-construction
- * code path: that PTYSession is configured with the right shape and that
- * our injected deps are captured correctly. Runtime callback behavior is
- * observed by calling PTY methods that do NOT require the process to be
- * running (e.g., `.id`).
+ * These tests don't actually start the PTY (ptySession.start() would spawn a
+ * real `claude` process). They cover the factory-construction surface plus
+ * the `computeTermSize` helper. Runtime callback behavior is exercised by
+ * the Docker integration suite (`tests/integration/run-tests.sh`) where a
+ * real shell stands in for Claude.
  */
+describe('computeTermSize', () => {
+  test('returns deterministic 120x40 for headless (non-passThrough) mode', () => {
+    expect(computeTermSize(false)).toEqual({ cols: 120, rows: 40 });
+  });
+
+  test('pass-through mode reads process.stdout dims with 120x40 fallback', () => {
+    const size = computeTermSize(true);
+    // process.stdout.columns/rows may be defined or undefined depending on
+    // where tests run. Either way, the function must return finite numbers
+    // and fall back to 120x40 when the TTY dims are unavailable.
+    expect(size.cols).toBeGreaterThan(0);
+    expect(size.rows).toBeGreaterThan(0);
+    if (process.stdout.columns) {
+      expect(size.cols).toBe(process.stdout.columns);
+    } else {
+      expect(size.cols).toBe(120);
+    }
+    if (process.stdout.rows) {
+      expect(size.rows).toBe(process.stdout.rows);
+    } else {
+      expect(size.rows).toBe(40);
+    }
+  });
+});
+
 describe('createPtySessionForSession', () => {
   let tmpDir: string;
   let sessionRegistry: SessionRegistry;
@@ -73,17 +100,25 @@ describe('createPtySessionForSession', () => {
     expect(pty.childPid).toBeNull();
   });
 
-  test('headless PTY gets a deterministic 120x40 size; pass-through inherits stdout dims', () => {
-    const headless = build(false);
-    // PTYSession.config is private; we can only verify via the public id/state.
-    // The deterministic-size invariant is enforced by termSize branching in
-    // the factory, and is reflected in the constructed PTYSession's config
-    // which we can't introspect without exposing it. This test exists to
-    // document the expectation; the underlying config is covered by the
-    // inline review of the extraction diff.
-    expect(headless).toBeDefined();
-    const wrapper = build(true);
-    expect(wrapper).toBeDefined();
+  test('rejects a non-positive wsPort at factory entry', () => {
+    expect(() =>
+      createPtySessionForSession(
+        {
+          sessionRegistry,
+          sessionStore,
+          outputProcessor,
+          wsPort: 0,
+          sendMessage: () => {},
+          cleanup: async () => {},
+        },
+        {
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          extraArgs: [],
+          passThrough: false,
+        },
+      ),
+    ).toThrow(/wsPort/);
   });
 
   test('distinct PTY instances carry distinct ids', () => {
