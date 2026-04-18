@@ -97,7 +97,6 @@ loadDotenvFile();
 
 import {
   createCreateSessionResponse,
-  createError,
   createHelloAck,
   createRawPtyOutput,
   createReplayBatch,
@@ -105,7 +104,6 @@ import {
   createSessionListResponse,
   createSessionReset,
   createStructuredAgentOutput,
-  createTranscriptLoadComplete,
   generateId,
   now,
 } from '@remi/shared';
@@ -131,6 +129,10 @@ import {
 } from './cli/handlers/connection-events.ts';
 import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
+import {
+  type TranscriptHandlers,
+  createTranscriptHandlers,
+} from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
@@ -1717,6 +1719,12 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   send: sendToConnection,
 });
 
+const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
+  transcriptDiscovery,
+  transcriptWatchers,
+  send: sendToConnection,
+});
+
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
   deviceTokens,
@@ -1734,82 +1742,7 @@ const sharedEvents = {
   ...inputHandlers,
   ...sessionHandlers,
   ...connectionHandlers,
-  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
-    log(`Transcript load request from ${connectionId} for session ${sessionId}`);
-
-    // First try finding by Claude session ID embedded in the filename
-    let filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
-
-    // If not found by Claude session ID, the request may be using a Remi UUID
-    // (daemon sessions are identified by Remi UUID, not Claude session ID).
-    // Check if an active watcher exists for this session ID and use its path.
-    if (!filePath) {
-      const activeWatcher = transcriptWatchers.get(sessionId as UUID);
-      if (activeWatcher) {
-        filePath = activeWatcher.filePath;
-        log(`[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via active watcher`);
-      }
-    }
-
-    if (!filePath) {
-      sendToConnection(
-        connectionId,
-        createError('NOT_FOUND', `Transcript for session ${sessionId} not found`),
-      );
-      return;
-    }
-
-    // Create a temporary MessageAPI and bridge to read the transcript
-    const messageApi = new MessageAPI({ sessionId: sessionId as UUID });
-    let messageCount = 0;
-
-    const bridge = new TranscriptMessageBridge({ sessionId: sessionId as UUID }, messageApi, {
-      onTranscriptContent: (message) => {
-        messageCount++;
-        sendToConnection(connectionId, message);
-      },
-    });
-
-    const watcher = new TranscriptWatcher(
-      {
-        filePath,
-        readExisting: true,
-        pollIntervalMs: 0, // We only want to read existing, not watch
-      },
-      {
-        onAssistantMessage: (entry: AssistantEntry) => {
-          bridge.handleAssistantEntry(entry);
-        },
-        onUserMessage: (entry) => {
-          bridge.handleUserEntry(entry);
-        },
-        onError: (error) => {
-          logError(`[TranscriptLoad] Error reading ${sessionId}:`, error.message);
-        },
-      },
-    );
-
-    // Read the transcript file, then send completion
-    watcher
-      .start()
-      .then(() => {
-        // Stop the watcher immediately since we only needed to read existing entries
-        watcher.stop();
-        log(`Transcript load complete for ${sessionId}: ${messageCount} messages`);
-        sendToConnection(
-          connectionId,
-          createTranscriptLoadComplete(sessionId, messageCount, requestId),
-        );
-      })
-      .catch((error) => {
-        logError(`[TranscriptLoad] Failed to read ${sessionId}:`, error);
-        sendToConnection(
-          connectionId,
-          createError('LOAD_FAILED', `Failed to load transcript: ${error.message}`),
-        );
-      });
-  },
-
+  ...transcriptHandlers,
   onCreateSessionRequest: async (
     connectionId: UUID,
     directory: string | undefined,
