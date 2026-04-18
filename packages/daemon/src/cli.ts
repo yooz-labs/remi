@@ -132,8 +132,8 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
-import { createInputHandlers } from './cli/handlers/input-events.ts';
-import { createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
+import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
@@ -1695,14 +1695,14 @@ const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean
   return registry.sendRaw(connectionId, message);
 };
 
-const trivialHandlers = createTrivialHandlers({
+const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   deviceTokens,
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
 });
 
-const inputHandlers = createInputHandlers({
+const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   send: sendToConnection,
 });

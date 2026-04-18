@@ -8,10 +8,13 @@ import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 
 /**
- * Minimal PTY/MessageAPI fakes matching the pattern used in
- * `tests/session-registry.test.ts` (registerSession needs both). Real
- * PTYSession would spawn a shell; real MessageAPI would install callbacks.
- * These fakes only cover the surface the handlers actually call.
+ * Minimal PTY/MessageAPI fakes, loosely inspired by the cast-through-unknown
+ * pattern in `tests/session-registry.test.ts` (`createMockPTY` / `createMockMessageAPI`).
+ * Extended here to capture writes/submits so handlers can be asserted on
+ * observable behavior. Real PTYSession would spawn a shell; real MessageAPI
+ * would install callbacks. These fakes cover only the surface the handlers
+ * actually call: `write`, `submitInput`, `close` (called by
+ * `sessionRegistry.shutdown()` in `afterEach`), and `getFullBulletContent`.
  */
 function fakePTY(capture: {
   writes: string[];
@@ -103,7 +106,12 @@ describe('createInputHandlers', () => {
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       const handlers = createInputHandlers({ sessionRegistry, send });
 
-      await handlers.onUserInput(CID, 's' as UUID, 'ignored', false);
+      await handlers.onUserInput(
+        CID,
+        'nosn0000-0000-0000-0000-000000000000' as UUID,
+        'ignored',
+        false,
+      );
 
       expect(logs.some((m) => m.includes('No session found for connection'))).toBe(true);
     });
@@ -173,12 +181,46 @@ describe('createInputHandlers', () => {
         fakeMessageAPI(new Map()),
       );
       sessionRegistry.attachConnection(sessionId, CID);
+      // Pre-seed a question so we can assert the fallback path clears it on
+      // the REAL session's id, not on the bogus arg it was handed.
+      sessionRegistry.updateQuestion(sessionId, {
+        id: QID,
+        text: 'proceed?',
+        options: [
+          { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
 
       const handlers = createInputHandlers({ sessionRegistry, send });
-      // Pass a bogus sessionId — handler should still find the session via connection
-      await handlers.onAnswer(CID, 'bogus0000-0000-0000-0000-000000000000' as UUID, QID, 'hello');
+      // Pass a bogus sessionId, handler should still find the session via connection
+      await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'hello');
 
       expect(ptyCapture.submits).toEqual(['hello']);
+      // Question must be cleared on the real session id, not the bogus one.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
+    });
+
+    test('submits and leaves currentQuestion null when no question was pending', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      // No updateQuestion call, currentQuestion stays null from registerSession.
+
+      const handlers = createInputHandlers({ sessionRegistry, send });
+      await handlers.onAnswer(CID, sessionId, QID, 'hi');
+
+      expect(ptyCapture.submits).toEqual(['hi']);
+      // Push-action answers can arrive after a state resync, so a null clear
+      // on an already-null slot must remain safe and a no-op for the client.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
     });
 
     test('logs when neither sessionId nor connectionId maps to a session', async () => {

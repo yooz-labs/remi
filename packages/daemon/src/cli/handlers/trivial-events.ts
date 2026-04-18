@@ -31,6 +31,8 @@ export interface TrivialHandlerDeps {
   send: SendToConnection;
 }
 
+export type TrivialHandlers = ReturnType<typeof createTrivialHandlers>;
+
 export function createTrivialHandlers(deps: TrivialHandlerDeps) {
   const { deviceTokens, sessionStore, sessionRegistry, send } = deps;
 

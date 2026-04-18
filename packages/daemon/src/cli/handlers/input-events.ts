@@ -1,12 +1,12 @@
 /**
  * sharedEvents handlers for client-to-PTY input flows:
- *   onUserInput       — terminal keystrokes (raw or line-buffered)
- *   onAnswer          — response to a pending Question
- *   onBulletExpandRequest — expand a truncated bullet from the MessageAPI
+ *   onUserInput, terminal keystrokes (raw or line-buffered)
+ *   onAnswer, response to a pending Question
+ *   onBulletExpandRequest, expand a truncated bullet from the MessageAPI
  *
  * All three look up a session from `sessionRegistry` and interact with its
  * PTY or MessageAPI. onBulletExpandRequest is the only one that writes back
- * to the caller, so `send` is only required when that handler is in use.
+ * to the caller, so `send` is only invoked by that handler.
  */
 
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
@@ -20,6 +20,8 @@ export interface InputHandlerDeps {
   sessionRegistry: SessionRegistry;
   send: SendToConnection;
 }
+
+export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
 export function createInputHandlers(deps: InputHandlerDeps) {
   const { sessionRegistry, send } = deps;
