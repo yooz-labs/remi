@@ -96,7 +96,6 @@ const cleanupStatusFile = (): void => statusWriter.cleanup();
 loadDotenvFile();
 
 import {
-  createBulletExpandResponse,
   createCreateSessionResponse,
   createDetachSessionAck,
   createError,
@@ -133,6 +132,7 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import { createInputHandlers } from './cli/handlers/input-events.ts';
 import { createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
@@ -1702,8 +1702,14 @@ const trivialHandlers = createTrivialHandlers({
   send: sendToConnection,
 });
 
+const inputHandlers = createInputHandlers({
+  sessionRegistry,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
   ...trivialHandlers,
+  ...inputHandlers,
   onConnect: async (connectionId: UUID, metadata: AdapterMetadata) => {
     log(`Client connected: ${connectionId} (${metadata.adapterType})`);
 
@@ -1788,67 +1794,6 @@ const sharedEvents = {
     sessionRegistry.detachConnection(connectionId);
     registry.untrackConnection(connectionId);
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
-  },
-
-  onUserInput: async (connectionId: UUID, _sessionId: UUID, content: string, raw?: boolean) => {
-    log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
-
-    const session = sessionRegistry.getSessionForConnection(connectionId);
-    if (session) {
-      if (raw) {
-        // Raw terminal input from attach client: write directly without Enter
-        try {
-          session.pty.write(content);
-        } catch (err) {
-          log(`[PTY] raw write failed: ${errorToString(err)}`);
-        }
-      } else {
-        // Structured input from web/mobile client: append Enter
-        await session.pty.submitInput(content);
-      }
-    } else {
-      log(`No session found for connection ${connectionId}`);
-    }
-  },
-
-  onAnswer: async (connectionId: UUID, sessionId: UUID, _questionId: UUID, answer: string) => {
-    log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
-
-    // Prefer lookup by sessionId (from push-action answers) so reconnected clients
-    // can answer even before the connection is fully mapped in the registry.
-    const session =
-      sessionRegistry.getSession(sessionId) ??
-      sessionRegistry.getSessionForConnection(connectionId);
-    if (session) {
-      await session.pty.submitInput(answer);
-      sessionRegistry.updateQuestion(session.sessionId, null);
-    } else {
-      log(`No session found for connection ${connectionId} or session ${sessionId}`);
-    }
-  },
-
-  onBulletExpandRequest: (
-    connectionId: UUID,
-    sessionId: UUID,
-    bulletId: number,
-    requestId: UUID,
-  ) => {
-    const session = sessionRegistry.getSession(sessionId);
-    if (!session) {
-      sendToConnection(connectionId, createError('NOT_FOUND', `Session ${sessionId} not found`));
-      return;
-    }
-
-    const fullContent = session.messageApi.getFullBulletContent(bulletId);
-    if (fullContent === null) {
-      sendToConnection(
-        connectionId,
-        createError('CONTENT_EXPIRED', `Content for bullet ${bulletId} not found or expired`),
-      );
-      return;
-    }
-
-    sendToConnection(connectionId, createBulletExpandResponse(bulletId, fullContent, requestId));
   },
 
   onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => {
