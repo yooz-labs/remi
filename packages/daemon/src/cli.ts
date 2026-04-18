@@ -105,7 +105,6 @@ import {
   createRawPtyOutput,
   createReplayBatch,
   createResumeSessionResponse,
-  createSessionHistoryResponse,
   createSessionListResponse,
   createSessionReset,
   createStructuredAgentOutput,
@@ -134,6 +133,7 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import { createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
@@ -1695,7 +1695,15 @@ const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean
   return registry.sendRaw(connectionId, message);
 };
 
+const trivialHandlers = createTrivialHandlers({
+  deviceTokens,
+  sessionStore,
+  sessionRegistry,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
+  ...trivialHandlers,
   onConnect: async (connectionId: UUID, metadata: AdapterMetadata) => {
     log(`Client connected: ${connectionId} (${metadata.adapterType})`);
 
@@ -2094,11 +2102,6 @@ const sharedEvents = {
     );
   },
 
-  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string) => {
-    log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
-    deviceTokens.set(token, { token, platform, registeredAt: Date.now(), connectionId });
-  },
-
   onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
     log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
 
@@ -2265,37 +2268,6 @@ const sharedEvents = {
       sessionRegistry.closeSession(newSessionId, 'forced');
       sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
     }
-  },
-
-  onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => {
-    log(`Session history request from ${connectionId}, limit: ${limit ?? 'default'}`);
-    try {
-      const clampedLimit = Math.max(1, limit ?? 20);
-      const directories = getRecentDirectories(sessionStore, clampedLimit);
-      sendToConnection(connectionId, createSessionHistoryResponse(directories, requestId));
-    } catch (err) {
-      log(`Failed to get recent directories: ${err instanceof Error ? err.message : err}`);
-      sendToConnection(connectionId, createSessionHistoryResponse([], requestId));
-    }
-  },
-
-  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => {
-    const session = sessionRegistry.getSessionForConnection(connectionId);
-    if (session) {
-      try {
-        session.pty.resize({ cols, rows });
-      } catch (err) {
-        log(
-          `Failed to resize PTY for connection ${connectionId}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    } else {
-      log(`Terminal resize ignored: no session for connection ${connectionId}`);
-    }
-  },
-
-  onError: (connectionId: UUID, error: Error) => {
-    logError(`Error from ${connectionId}:`, error);
   },
 };
 
