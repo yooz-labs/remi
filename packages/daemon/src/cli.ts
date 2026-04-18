@@ -142,6 +142,10 @@ import {
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
+import {
+  extractClaudeSessionId as extractClaudeSessionIdImpl,
+  startTranscriptWatcher as startTranscriptWatcherImpl,
+} from './cli/transcript-watcher-setup.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
@@ -158,12 +162,7 @@ import {
   type StoredSession,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
-import {
-  TranscriptDiscovery,
-  TranscriptMessageBridge,
-  TranscriptWatcher,
-} from './transcript/index.ts';
-import type { AssistantEntry } from './transcript/index.ts';
+import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 
 // ---------------------------------------------------------------------------
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
@@ -1617,66 +1616,25 @@ async function createNewSession(
   return ptySession;
 }
 
-/** Extract Claude session ID from transcript filename and persist it. Returns the extracted ID or null. */
+// Thin wrappers over cli/transcript-watcher-setup.ts that bind the cli.ts-local
+// state (sessionStore, transcriptWatchers map) so call sites inside
+// createNewSession and the fallback-poll block don't change.
 function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): string | null {
-  // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
-  // The underscore split is defensive in case a prefixed format is ever introduced.
-  const basename = path.basename(transcriptPath, '.jsonl');
-  const parts = basename.split('_');
-  const candidateId = parts[parts.length - 1];
-  if (candidateId && candidateId.length >= 8) {
-    sessionStore.updateClaudeSessionId(sessionId, candidateId);
-    log(`Claude session ID: ${candidateId}`);
-    return candidateId;
-  }
-  return null;
+  return extractClaudeSessionIdImpl({ sessionStore }, transcriptPath, sessionId);
 }
-
-/** Start watching a transcript file for a session. */
 function startTranscriptWatcher(
   sessionId: UUID,
   transcriptPath: string,
   messageApi: MessageAPI,
   sendAndRecord: (message: ProtocolMessage) => void,
 ): void {
-  log(`[Transcript] Watching: ${transcriptPath}`);
-  log(`[Transcript] File exists: ${fs.existsSync(transcriptPath)}`);
-
-  const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
-    onTranscriptContent: (message) => {
-      log(`[Transcript] Delivering content (${message.type}) to clients`);
-      sendAndRecord(message);
-    },
-  });
-
-  const watcher = new TranscriptWatcher(
-    {
-      filePath: transcriptPath,
-      readExisting: true,
-      pollIntervalMs: 1000,
-    },
-    {
-      onAssistantMessage: (entry: AssistantEntry) => {
-        log(
-          `[Transcript] Assistant entry: ${entry.uuid?.slice(0, 8)} (${entry.message?.content?.length ?? 0} blocks)`,
-        );
-        bridge.handleAssistantEntry(entry);
-      },
-      onUserMessage: (entry) => {
-        log(`[Transcript] User entry: ${entry.uuid?.slice(0, 8)}`);
-        bridge.handleUserEntry(entry);
-      },
-      onError: (error) => {
-        logError(`[Transcript] Error for session ${sessionId}:`, error.message);
-      },
-    },
+  startTranscriptWatcherImpl(
+    { transcriptWatchers },
+    sessionId,
+    transcriptPath,
+    messageApi,
+    sendAndRecord,
   );
-
-  transcriptWatchers.set(sessionId, watcher);
-  watcher.start().catch((error) => {
-    logError(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
-  });
-  log(`[Transcript] Watcher started for session ${sessionId}`);
 }
 
 // ---------------------------------------------------------------------------
