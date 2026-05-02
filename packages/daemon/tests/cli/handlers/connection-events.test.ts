@@ -3,7 +3,6 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
-import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import {
   __resetSessionStateForTests,
@@ -32,7 +31,6 @@ const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 
 describe('createConnectionHandlers', () => {
   let sessionRegistry: SessionRegistry;
-  let deviceTokens: Map<string, DeviceTokenEntry>;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
   let trackedConnections: Array<{ id: UUID; type: string }>;
   let untrackedConnections: UUID[];
@@ -47,7 +45,6 @@ describe('createConnectionHandlers', () => {
 
   beforeEach(() => {
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
-    deviceTokens = new Map();
     sendCalls = [];
     trackedConnections = [];
     untrackedConnections = [];
@@ -66,7 +63,6 @@ describe('createConnectionHandlers', () => {
   function makeHandlers() {
     return createConnectionHandlers({
       sessionRegistry,
-      deviceTokens,
       trackConnection: (id, type) => {
         trackedConnections.push({ id, type });
       },
@@ -168,24 +164,13 @@ describe('createConnectionHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
     });
 
-    test('purges device tokens belonging to the disconnecting connection only', async () => {
-      deviceTokens.set('mine-token', {
-        token: 'mine-token',
-        platform: 'ios',
-        registeredAt: Date.now(),
-        connectionId: CID,
-      });
-      deviceTokens.set('keep-token', {
-        token: 'keep-token',
-        platform: 'ios',
-        registeredAt: Date.now(),
-        connectionId: '0a000000-0000-0000-0000-000000000042' as UUID,
-      });
-
-      await makeHandlers().onDisconnect(CID, 'client closed');
-
-      expect(deviceTokens.has('mine-token')).toBe(false);
-      expect(deviceTokens.has('keep-token')).toBe(true);
-    });
+    // The "device tokens persist across disconnect" invariant for #286 is
+    // enforced structurally: ConnectionHandlerDeps no longer exposes a
+    // deviceTokens map at all, so onDisconnect cannot mutate token state.
+    // Adding a behavioral test here would be tautological — the token map is
+    // neither passed in nor reachable from this handler. The behavioral test
+    // (push fires while no client is attached) belongs in
+    // message-api-setup.test.ts and requires injecting sendPushTrigger via
+    // deps; tracked separately as a follow-up.
   });
 });

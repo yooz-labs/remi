@@ -1088,7 +1088,6 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
-  deviceTokens,
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),

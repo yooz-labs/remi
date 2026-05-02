@@ -46,13 +46,23 @@ function fakePTY(submits: string[]): PTYSession {
   } as unknown as PTYSession;
 }
 
-function fakeMessageAPI(resetCalls: { n: number }): MessageAPI {
+interface MessageApiCallLog {
+  resetCalls: { n: number };
+  statusCalls: string[];
+  questionCalls: number;
+}
+
+function fakeMessageAPI(log: MessageApiCallLog): MessageAPI {
   return {
     handleMessage: () => {},
-    handleStatusChange: () => {},
-    handleQuestion: () => {},
+    handleStatusChange: (status: string) => {
+      log.statusCalls.push(status);
+    },
+    handleQuestion: () => {
+      log.questionCalls += 1;
+    },
     reset: () => {
-      resetCalls.n += 1;
+      log.resetCalls.n += 1;
     },
   } as unknown as MessageAPI;
 }
@@ -70,7 +80,7 @@ describe('setupHookBridge', () => {
   let transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   let hookServer: RecordingHookServer;
   let ptySubmits: string[];
-  let resetCalls: { n: number };
+  let messageApiLog: MessageApiCallLog;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hook-bridge-'));
@@ -81,7 +91,7 @@ describe('setupHookBridge', () => {
     transcriptFallbackTimers = new Map();
     hookServer = new RecordingHookServer();
     ptySubmits = [];
-    resetCalls = { n: 0 };
+    messageApiLog = { resetCalls: { n: 0 }, statusCalls: [], questionCalls: 0 };
     configureLogger({ writeLog: () => {} });
   });
 
@@ -92,7 +102,12 @@ describe('setupHookBridge', () => {
   });
 
   function build(opts: { autoApprove?: boolean } = {}) {
-    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), fakeMessageAPI(resetCalls));
+    sessionRegistry.registerSession(
+      SID,
+      tmpDir,
+      fakePTY(ptySubmits),
+      fakeMessageAPI(messageApiLog),
+    );
 
     // Minimal AutoApproveService stub. Only invoked when opts.autoApprove is
     // true; then we hand back a service whose `.evaluate` resolves to
@@ -120,7 +135,7 @@ describe('setupHookBridge', () => {
         hookServer: hookServer as unknown as HookServer,
         sessionId: SID,
         workingDirectory: tmpDir,
-        messageApi: fakeMessageAPI(resetCalls),
+        messageApi: fakeMessageAPI(messageApiLog),
         sendAndRecord: () => {},
       },
     );
@@ -188,6 +203,106 @@ describe('setupHookBridge', () => {
     expect(sessionRegistry.getSession(SID)?.currentStatus).toBe('executing');
   });
 
+  test('regression #321: sibling daemon dying re-enables hook lock acquisition AND filterBySession recovers', () => {
+    // Pre-seed a sibling entry so the first hook event sees siblings present.
+    const siblingFile = path.join(liveSessionsRegistry.dirPath, 'sibling-1.json');
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      siblingFile,
+      JSON.stringify({
+        sessionId: 'sibling-session-id',
+        pid: process.pid, // alive (must be a live pid so listLive doesn't drop it)
+        wsPort: 18999, // different from currentPort()=8765
+        hookPort: 18000,
+        projectPath: tmpDir, // SAME directory as our session under test
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    build();
+
+    // First hook event arrives while sibling exists -> must NOT lock onto
+    // claude-A; events are deferred to the mtime fallback. PreToolUse during
+    // this window must also be filtered out (the headline #321 symptom: no
+    // [AutoApprove], no status updates).
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+    expect(transcriptWatchers.has(SID)).toBe(false);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-A',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    // filterBySession with no lock + sibling => drops everything; status
+    // never advances. This was the user-visible failure in #321.
+    expect(messageApiLog.statusCalls).toEqual([]);
+
+    // Sibling daemon dies (file removed).
+    fs.unlinkSync(siblingFile);
+
+    // Next hook event must now lock onto claude-A and start the watcher.
+    // Pre-#321-fix: the cached `hasSiblingInDir=true` from the first call
+    // permanently blocked init even after the sibling was gone.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+    expect(transcriptWatchers.has(SID)).toBe(true);
+
+    // And filterBySession must now accept further events. PreToolUse maps to
+    // 'executing' via HookEventBridge.handleStatusChange.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-A',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('regression #321: sibling appearing after lock acquisition does not re-engage the guard', () => {
+    // Once we hold a session lock, a sibling daemon spinning up later must
+    // not flip filterBySession into the pre-lock branch and start dropping
+    // events. claudeSessionId-based filtering takes precedence.
+    build();
+
+    // Acquire the lock cleanly with no siblings present.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+    expect(transcriptWatchers.has(SID)).toBe(true);
+
+    // A sibling appears now (e.g. user opens another remi in the same dir).
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'late-sibling.json'),
+      JSON.stringify({
+        sessionId: 'late-sibling-id',
+        pid: process.pid,
+        wsPort: 18999,
+        hookPort: 18000,
+        projectPath: tmpDir,
+        name: 'late-sibling',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Our own Claude's events must still flow through filterBySession because
+    // session_id matches claudeSessionId; the sibling guard never reads.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-A',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
   test('SessionStart with source=clear pre-empts classifier and tears down watcher', () => {
     build();
 
@@ -221,6 +336,6 @@ describe('setupHookBridge', () => {
     // watcher MAY be registered immediately after (for claude-B), so we
     // assert only the tear-down signals, not the final map state.
     expect(stopCalls.length).toBeGreaterThanOrEqual(1);
-    expect(resetCalls.n).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
   });
 });
