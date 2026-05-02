@@ -218,6 +218,39 @@ export const HOOK_EVENT_NAMES = [
 
 export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
 
+/**
+ * Subset of hook events that remi actually consumes — these are the only
+ * events written into `.claude/settings.local.json` by HookConfigManager.
+ *
+ * The remaining HOOK_EVENT_NAMES entries (`WorktreeCreate`, `WorktreeRemove`,
+ * `UserPromptSubmit`, etc.) are accepted by HookServer for forward
+ * compatibility, but registering them in Claude Code's settings turns every
+ * such event into a synchronous HTTP roundtrip that gates the underlying
+ * Claude Code action. The most painful symptom: a stale (or just slow)
+ * remi daemon makes Claude Code unable to create a worktree, even though
+ * remi has no business gating that operation. See issue #203.
+ *
+ * Treat this list as the source of truth for "things remi cares about." If
+ * you add a new typed handler in HookServer.dispatch or a dynamic listener
+ * in setupHookBridge, also add the event name here so the registration
+ * actually fires.
+ */
+export const REMI_REGISTERED_HOOK_EVENTS = [
+  'PreToolUse',
+  'PostToolUse',
+  'Notification',
+  'Stop',
+  'SessionStart',
+  'PermissionRequest',
+  'PostToolUseFailure',
+  'SubagentStart',
+  'SubagentStop',
+  'StopFailure',
+  'SessionEnd',
+] as const satisfies readonly HookEventName[];
+
+export type RemiRegisteredHookEvent = (typeof REMI_REGISTERED_HOOK_EVENTS)[number];
+
 /** Type guard for valid hook event names */
 export function isValidHookEvent(name: string): name is HookEventName {
   return (HOOK_EVENT_NAMES as readonly string[]).includes(name);
