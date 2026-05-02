@@ -18,6 +18,7 @@ import { errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
+import { collectPendingChallengeConnections } from './connection-manager-helpers';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
@@ -593,35 +594,42 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
-  // Provide identity for a connection waiting on passphrase
+  // Provide identity for a connection waiting on passphrase.
+  //
+  // After the user unlocks once, ALL connections with a pending challenge
+  // get signed silently — including sibling daemons we auto-discovered or
+  // restored from localStorage on launch (#257). Without this, the modal
+  // would re-prompt for every sibling port even though the same identity
+  // would unlock all of them.
   const provideIdentity = useCallback(
     (connectionId: ConnectionId, identity: UnlockedIdentity) => {
       identityRef.current = identity;
 
-      const mc = getMc(connectionId);
-      if (!mc) {
+      const pending = collectPendingChallengeConnections(connectionsMapRef.current.values());
+      if (pending.length === 0) {
         console.warn(
-          `[ConnectionManager] Cannot provide identity: connection "${connectionId}" not found`,
+          `[ConnectionManager] No pending auth challenge for "${connectionId}" or any sibling`,
         );
-        return;
-      }
-      if (!mc.pendingChallenge) {
-        console.warn(`[ConnectionManager] No pending auth challenge for "${connectionId}"`);
+        syncState();
         return;
       }
 
-      mc.needsPassphrase = false;
+      for (const mc of pending) {
+        // Type guard already established by collectPendingChallengeConnections
+        const challenge = mc.pendingChallenge?.challenge;
+        if (!challenge) continue;
+        mc.needsPassphrase = false;
+        signChallenge(identity, challenge)
+          .then((response) => mc.client.send(response))
+          .catch((err) => {
+            mc.error = new Error(`Auth failed: ${errorToString(err)}`);
+            mc.client.disconnect();
+            syncState();
+          });
+      }
       syncState();
-
-      signChallenge(identity, mc.pendingChallenge.challenge)
-        .then((response) => mc.client.send(response))
-        .catch((err) => {
-          mc.error = new Error(`Auth failed: ${errorToString(err)}`);
-          mc.client.disconnect();
-          syncState();
-        });
     },
-    [getMc, syncState],
+    [syncState],
   );
 
   // Get hello_ack session ID directly from mutable state (avoids React state timing issues)
