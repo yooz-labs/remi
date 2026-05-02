@@ -29,6 +29,7 @@
  * when a hookServer is configured.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createSessionReset, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
@@ -109,8 +110,24 @@ export function setupHookBridge(
 
   // ---- Helpers ------------------------------------------------------------
 
-  const hasSiblingInDir = (): boolean =>
-    liveSessionsRegistry
+  const hasSiblingInDir = (): boolean => {
+    // listLive() catches readdir/parse errors internally and returns []
+    // (review on PR #358 surfaced the silent-failure risk: an empty array
+    // could mean "no siblings" OR "I couldn't tell". Probe the directory
+    // ourselves first so any enumeration failure flips the answer to the
+    // safe default of "siblings present" — preventing the daemon from
+    // latching onto a stranger's Claude during a transient I/O hiccup).
+    try {
+      fs.readdirSync(liveSessionsRegistry.dirPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return false; // dir not yet created => first daemon
+      logError(
+        `[Hooks] Could not enumerate live-sessions; assuming sibling present: ${errorToString(err)}`,
+      );
+      return true;
+    }
+    return liveSessionsRegistry
       .listLive()
       .some(
         (e) =>
@@ -118,6 +135,7 @@ export function setupHookBridge(
           e.sessionId !== sessionId &&
           e.wsPort !== currentPort(),
       );
+  };
 
   /**
    * Safely tear down an existing transcript watcher, reset messages, and
