@@ -149,7 +149,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       if (helloSentRef.current) return;
       helloSentRef.current = true;
       const resumeId = lastSessionIdRef.current ?? undefined;
-      client.send(createHello(clientId, clientVersion, directoryRef.current, resumeId));
+      client.send(
+        createHello(clientId, clientVersion, {
+          directory: directoryRef.current,
+          resumeSessionId: resumeId,
+        }),
+      );
     },
     [clientId, clientVersion],
   );

@@ -204,7 +204,12 @@ export function useConnectionManager(
       if (mc.helloSent) return;
       mc.helloSent = true;
       const resumeId = mc.sessionId ?? undefined;
-      mc.client.send(createHello(clientId, clientVersion, mc.directory, resumeId));
+      mc.client.send(
+        createHello(clientId, clientVersion, {
+          directory: mc.directory,
+          resumeSessionId: resumeId,
+        }),
+      );
     },
     [clientId, clientVersion],
   );

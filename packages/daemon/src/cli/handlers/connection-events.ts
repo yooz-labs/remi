@@ -57,7 +57,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
 
-      const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
+      const resumeSessionId = metadata.platformData?.resumeSessionId ?? undefined;
       const currentPrimary = getPrimarySessionId();
 
       // Unified connection flow: one session per daemon, both modes behave the same.
@@ -75,7 +75,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       }
 
       // Try to attach to the primary (only) session.
-      const isQueryMode = metadata.platformData?.['mode'] === 'query';
+      const isQueryMode = metadata.platformData?.mode === 'query';
       if (currentPrimary) {
         // Only auto-attach if the client wants to attach, not a utility client like ls/kill.
         if (!isQueryMode) {

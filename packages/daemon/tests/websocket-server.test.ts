@@ -455,7 +455,9 @@ describe('WebSocketServer', () => {
       const ws = new WebSocket(`ws://localhost:${testPort + 12}/ws`);
 
       ws.onopen = () => {
-        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', undefined, resumeId)));
+        ws.send(
+          serialize(createHello('test-client' as UUID, '1.0.0', { resumeSessionId: resumeId })),
+        );
       };
 
       const received = await Promise.race([
@@ -488,7 +490,9 @@ describe('WebSocketServer', () => {
       const ws = new WebSocket(`ws://localhost:${testPort + 13}/ws`);
 
       ws.onopen = () => {
-        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', '/my/project')));
+        ws.send(
+          serialize(createHello('test-client' as UUID, '1.0.0', { directory: '/my/project' })),
+        );
       };
 
       const received = await Promise.race([
@@ -499,6 +503,72 @@ describe('WebSocketServer', () => {
       ]);
 
       expect(received).toBe('/my/project');
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('passes mode through onClientConnect for query-mode clients', async () => {
+      const receivedPromise = new Promise<'query' | undefined>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 14 },
+          {
+            onClientConnect: (connection) => {
+              resolve(connection.connectionMode);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 14}/ws`);
+
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', { mode: 'query' })));
+      };
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 5000),
+        ),
+      ]);
+
+      expect(received).toBe('query');
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('connectionMode is undefined when hello omits mode', async () => {
+      const receivedPromise = new Promise<'query' | undefined>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 15 },
+          {
+            onClientConnect: (connection) => {
+              resolve(connection.connectionMode);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 15}/ws`);
+
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      };
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 5000),
+        ),
+      ]);
+
+      expect(received).toBeUndefined();
 
       ws.close();
       await server.stop();

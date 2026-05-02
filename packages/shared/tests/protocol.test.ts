@@ -1066,31 +1066,35 @@ describe('Message factory functions', () => {
 
   describe('createHello() with optional params', () => {
     test('includes directory when provided', () => {
-      const msg = createHello('client-1', '1.0.0', '/home/user/project');
+      const msg = createHello('client-1', '1.0.0', { directory: '/home/user/project' });
       expect(msg.directory).toBe('/home/user/project');
     });
 
     test('includes resumeSessionId when provided', () => {
       const sessionId = generateId();
-      const msg = createHello('client-1', '1.0.0', undefined, sessionId);
+      const msg = createHello('client-1', '1.0.0', { resumeSessionId: sessionId });
       expect(msg.resumeSessionId).toBe(sessionId);
     });
 
     test('includes lastReceivedIndex when provided', () => {
-      const msg = createHello('client-1', '1.0.0', undefined, undefined, 42);
+      const msg = createHello('client-1', '1.0.0', { lastReceivedIndex: 42 });
       expect(msg.lastReceivedIndex).toBe(42);
     });
 
     test('includes all optional params together', () => {
       const sessionId = generateId();
-      const msg = createHello('client-1', '1.0.0', '/path', sessionId, 10);
+      const msg = createHello('client-1', '1.0.0', {
+        directory: '/path',
+        resumeSessionId: sessionId,
+        lastReceivedIndex: 10,
+      });
       expect(msg.directory).toBe('/path');
       expect(msg.resumeSessionId).toBe(sessionId);
       expect(msg.lastReceivedIndex).toBe(10);
     });
 
     test('includes mode when provided', () => {
-      const msg = createHello('client-1', '1.0.0', undefined, undefined, undefined, 'query');
+      const msg = createHello('client-1', '1.0.0', { mode: 'query' });
       expect(msg.mode).toBe('query');
     });
 
@@ -1101,12 +1105,25 @@ describe('Message factory functions', () => {
     });
 
     test('mode survives serialize/deserialize round-trip', () => {
-      const msg = createHello('client-1', '1.0.0', undefined, undefined, undefined, 'query');
+      const msg = createHello('client-1', '1.0.0', { mode: 'query' });
       const serialized = serialize(msg);
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('hello');
       expect((deserialized as typeof msg).mode).toBe('query');
+    });
+
+    test('explicit undefined options field is treated like missing', () => {
+      const msg = createHello('client-1', '1.0.0', {
+        directory: undefined,
+        resumeSessionId: undefined,
+        lastReceivedIndex: undefined,
+        mode: undefined,
+      });
+      expect('directory' in msg).toBe(false);
+      expect('resumeSessionId' in msg).toBe(false);
+      expect('lastReceivedIndex' in msg).toBe(false);
+      expect('mode' in msg).toBe(false);
     });
   });
 
