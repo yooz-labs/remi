@@ -594,22 +594,30 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
-  // Provide identity for a connection waiting on passphrase.
+  // Provide identity for connections waiting on passphrase, and seed the
+  // identity ref synchronously for any future auto-connect (#257).
   //
   // After the user unlocks once, ALL connections with a pending challenge
   // get signed silently — including sibling daemons we auto-discovered or
-  // restored from localStorage on launch (#257). Without this, the modal
-  // would re-prompt for every sibling port even though the same identity
-  // would unlock all of them.
+  // restored from localStorage on launch. Without this, the modal would
+  // re-prompt for every sibling port even though the same identity unlocks
+  // all of them. The pre-flight modal path also calls this with no pending
+  // connection (empty connectionId) so the WebSocket opened just after gets
+  // a populated identity ref before the daemon's challenge arrives.
   const provideIdentity = useCallback(
     (connectionId: ConnectionId, identity: UnlockedIdentity) => {
       identityRef.current = identity;
 
       const pending = collectPendingChallengeConnections(connectionsMapRef.current.values());
       if (pending.length === 0) {
-        console.warn(
-          `[ConnectionManager] No pending auth challenge for "${connectionId}" or any sibling`,
-        );
+        // No-op when called as a pre-flight seed (empty connectionId).
+        // Warn only if a real connectionId was passed, since that means
+        // the caller expected a pending challenge and there was none.
+        if (connectionId) {
+          console.warn(
+            `[ConnectionManager] No pending auth challenge for "${connectionId}" or any sibling`,
+          );
+        }
         syncState();
         return;
       }

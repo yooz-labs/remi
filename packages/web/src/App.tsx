@@ -1162,9 +1162,12 @@ function App() {
       try {
         const identity = await unlockStoredIdentity(passphrase);
         setUnlockedIdentity(identity);
-        if (passphraseConnectionId) {
-          provideIdentity(passphraseConnectionId, identity);
-        }
+        // Seed the connection manager's identity ref synchronously, even if
+        // there is no pending connection yet (preflight path, #257). This
+        // avoids a race where the just-unlocked identity hasn't been pushed
+        // through useEffect by the time the WebSocket opens and gets
+        // challenged.
+        provideIdentity(passphraseConnectionId ?? ('' as ConnectionId), identity);
       } catch (err) {
         console.error('Failed to unlock identity:', err);
         throw err;
