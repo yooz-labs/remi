@@ -906,16 +906,30 @@ let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = nul
  * Start the on-disk binary watcher. Idempotent — repeated calls are no-ops.
  * Polls every 60s; on the first detected change, broadcasts a single
  * `daemon_update_available` to every attached client and stops itself.
+ *
+ * Skips activation when `process.execPath` does not look like the compiled
+ * remi binary. `bun run packages/daemon/src/cli.ts` (dev) or an npm-wrapper
+ * install that invokes a runtime (bun, node) directly would otherwise have
+ * the watcher tracking the runtime instead of remi — and a `brew upgrade
+ * bun` would silently misfire as "remi update available". The guard mirrors
+ * `daemon-manager.ts`'s existing endsWith('/remi') convention. Issue #287
+ * review (PR #370).
  */
 function startBinaryUpdateWatcher(): void {
   if (updateWatcher) return;
+  const execPath = process.execPath;
+  const isRemiBinary = execPath.endsWith('/remi') || execPath.endsWith('\\remi');
+  if (!isRemiBinary) {
+    log(`[update] Watcher disabled: execPath ${execPath} is not the remi binary`);
+    return;
+  }
   updateWatcher = startUpdateWatcher({
-    binaryPath: process.execPath,
+    binaryPath: execPath,
     intervalMs: 60_000,
     onUpdateDetected: () => {
-      log(`[update] Newer remi binary detected at ${process.execPath}; notifying clients`);
+      log(`[update] Newer remi binary detected at ${execPath}; notifying clients`);
       try {
-        registry.broadcast(createDaemonUpdateAvailable(REMI_VERSION, process.execPath));
+        registry.broadcast(createDaemonUpdateAvailable(REMI_VERSION, execPath));
       } catch (err) {
         logError(`[update] broadcast failed: ${errorToString(err)}`);
       }
