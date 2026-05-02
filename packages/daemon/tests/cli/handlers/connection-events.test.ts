@@ -66,7 +66,6 @@ describe('createConnectionHandlers', () => {
   function makeHandlers() {
     return createConnectionHandlers({
       sessionRegistry,
-      deviceTokens,
       trackConnection: (id, type) => {
         trackedConnections.push({ id, type });
       },
@@ -168,7 +167,12 @@ describe('createConnectionHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
     });
 
-    test('purges device tokens belonging to the disconnecting connection only', async () => {
+    test('regression #286: device tokens persist across disconnect so APNS push still fires for the suspended app', async () => {
+      // The point of APNS push is to reach an iOS app that has been suspended
+      // by the OS — at which point the WebSocket has already dropped. If the
+      // disconnect handler tossed the token, push would always be a no-op.
+      // See connection-events.ts onDisconnect for the rationale and the
+      // explicit-disconnect follow-up tracked in #308.
       deviceTokens.set('mine-token', {
         token: 'mine-token',
         platform: 'ios',
@@ -184,7 +188,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onDisconnect(CID, 'client closed');
 
-      expect(deviceTokens.has('mine-token')).toBe(false);
+      expect(deviceTokens.has('mine-token')).toBe(true);
       expect(deviceTokens.has('keep-token')).toBe(true);
     });
   });

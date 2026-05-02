@@ -3,9 +3,10 @@
  *   onConnect    - tracks a new connection, sends helloAck (optionally with
  *                  replay), and auto-attaches to the primary session unless
  *                  the client declared query mode
- *   onDisconnect - cleans up device tokens, detaches from the session
- *                  registry, untracks on the AdapterRegistry, and decrements
- *                  the StatusWriter connection count
+ *   onDisconnect - detaches from the session registry, untracks on the
+ *                  AdapterRegistry, and decrements the StatusWriter
+ *                  connection count. Device tokens deliberately persist:
+ *                  see the inline note for the APNS rationale.
  *
  * The two handlers share the same "who owns a connection" machinery so they
  * live in one module, with a single dep bundle, to keep the wiring in cli.ts
@@ -19,11 +20,10 @@ import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
-import type { DeviceTokenEntry, SendToConnection } from './trivial-events.ts';
+import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
   sessionRegistry: SessionRegistry;
-  deviceTokens: Map<string, DeviceTokenEntry>;
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -42,7 +42,6 @@ export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
 export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
   const {
     sessionRegistry,
-    deviceTokens,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -116,15 +115,12 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       log(`Client disconnected: ${connectionId}`);
       log(`   Reason: ${reason}`);
 
-      // Remove device tokens registered by this connection so push
-      // notifications stop after explicit disconnect. The client
-      // re-registers on reconnect, so this is safe.
-      for (const [key, dt] of deviceTokens) {
-        if (dt.connectionId === connectionId) {
-          deviceTokens.delete(key);
-          log(`Device token unregistered (disconnect): ${key.slice(0, 20)}...`);
-        }
-      }
+      // Device tokens persist across disconnect on purpose: APNS push exists
+      // precisely to deliver a notification while the iOS app is suspended
+      // (i.e. disconnected). Removing the token on every drop made push a
+      // no-op for the suspended-app case (issue #286). Tokens stay until
+      // an explicit unregister_device_token message arrives or APNS reports
+      // the token as bad. See #308 for the explicit-disconnect follow-up.
 
       // Explicitly remove from the waiting queue, then detach if active.
       // detachConnection also handles waiting removal, but this ensures
