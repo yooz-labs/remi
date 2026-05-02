@@ -4,7 +4,7 @@
  *
  * Three concerns are tangled here and kept together because they all depend
  * on the same per-session locks (claudeSessionId, mainSessionEnded,
- * hasSiblingInDir):
+ * hasSiblingInDir()):
  *
  *   1. **Session filtering.** Claude Code fires hook events that may belong
  *      to our PTY, a subagent inside it, or a sibling daemon's PTY in the
@@ -102,13 +102,14 @@ export function setupHookBridge(
   // GUARD: when sibling daemons serve the same directory, all Claudes POST
   // to all hook URLs (shared settings.local.json), so a sibling's event may
   // arrive before our own Claude fires. Skip hook-based discovery and let
-  // the mtime fallback handle it. For single-daemon directories (the common
-  // case), accept the first event immediately.
-  let hasSiblingInDir: boolean | null = null;
+  // the mtime fallback handle it. Re-evaluated per event so a sibling dying
+  // (or a fresh sibling appearing) is reflected immediately. Issue #321:
+  // a stale `null`-once cache wedged this state and permanently disabled
+  // hook-driven discovery for both daemons.
 
   // ---- Helpers ------------------------------------------------------------
 
-  const computeHasSibling = (): boolean =>
+  const hasSiblingInDir = (): boolean =>
     liveSessionsRegistry
       .listLive()
       .some(
@@ -175,11 +176,7 @@ export function setupHookBridge(
     if (claudeSessionId) return; // already initialized
     if (!input.transcript_path) return;
 
-    if (hasSiblingInDir === null) {
-      hasSiblingInDir = computeHasSibling();
-    }
-
-    if (hasSiblingInDir) {
+    if (hasSiblingInDir()) {
       // Cannot trust which Claude sent this event; defer to fallback.
       return;
     }
@@ -237,10 +234,7 @@ export function setupHookBridge(
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
       // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude).
-      if (hasSiblingInDir === null) {
-        hasSiblingInDir = computeHasSibling();
-      }
-      if (hasSiblingInDir) return;
+      if (hasSiblingInDir()) return;
 
       // Use the same classifier as initFromHookEvent so both paths share
       // one rule for distinguishing foreign (subagent/sibling) from restart.
@@ -304,7 +298,7 @@ export function setupHookBridge(
   // sibling's Claude).
   const filterBySession = (input: { session_id?: string }): boolean => {
     if (claudeSessionId) return input.session_id === claudeSessionId;
-    return !hasSiblingInDir;
+    return !hasSiblingInDir();
   };
 
   // Subagent/team-member events carry `agent_id` (confirmed via

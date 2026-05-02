@@ -188,6 +188,48 @@ describe('setupHookBridge', () => {
     expect(sessionRegistry.getSession(SID)?.currentStatus).toBe('executing');
   });
 
+  test('regression #321: sibling daemon dying re-enables hook lock acquisition', () => {
+    // Pre-seed a sibling entry so the first hook event sees siblings present.
+    const siblingFile = path.join(liveSessionsRegistry.dirPath, 'sibling-1.json');
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      siblingFile,
+      JSON.stringify({
+        sessionId: 'sibling-session-id',
+        pid: process.pid, // alive (must be a live pid so listLive doesn't drop it)
+        wsPort: 18999, // different from currentPort()=8765
+        hookPort: 18000,
+        projectPath: tmpDir, // SAME directory as our session under test
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    build();
+
+    // First hook event arrives while sibling exists -> must NOT lock onto
+    // claude-A; events are deferred to the mtime fallback.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+    expect(transcriptWatchers.has(SID)).toBe(false);
+
+    // Sibling daemon dies (file removed).
+    fs.unlinkSync(siblingFile);
+
+    // Next hook event must now lock onto claude-A and start the watcher.
+    // Pre-#321-fix: the cached `hasSiblingInDir=true` from the first call
+    // permanently blocked init even after the sibling was gone.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+    expect(transcriptWatchers.has(SID)).toBe(true);
+  });
+
   test('SessionStart with source=clear pre-empts classifier and tears down watcher', () => {
     build();
 
