@@ -4,6 +4,26 @@
  * Used to decide whether an inbound connection is from the local machine,
  * which lets us safely skip auth challenges for loopback peers even when
  * the daemon is bound to 0.0.0.0 with auth otherwise enabled.
+ *
+ * SECURITY NOTE — same-host reverse proxy.
+ * The loopback bypass keys off the actual TCP peer address (read via
+ * Bun.serve's `server.requestIP(req)`, never from a header) so over-the-
+ * wire spoofing is not possible. HOWEVER: if remi is ever fronted by a
+ * same-host reverse proxy (nginx, caddy, cloudflared, etc.), every
+ * proxied request — including from genuinely remote attackers — arrives
+ * on `127.0.0.1` and would be classified as loopback here. That would
+ * silently bypass auth for the entire internet.
+ *
+ * If you introduce a same-host proxy in front of remi, you MUST either
+ *   1) drop the loopback exemption entirely, or
+ *   2) replace the TCP-peer check with a proxy-aware policy (PROXY
+ *      protocol parsing, a trusted-CIDR allowlist for the proxy with
+ *      auth required for everyone else, or terminate TLS in remi
+ *      directly so the TCP peer remains authoritative).
+ *
+ * Today remi is run directly on its bind port and the bypass is safe.
+ * This comment exists so the next person who shapes the deployment
+ * notices the assumption before regretting it.
  */
 
 /**
