@@ -760,13 +760,32 @@ let autoApproveService: AutoApproveService | null = null;
 }
 
 // ---------------------------------------------------------------------------
-// SIGTSTP / Ctrl+Z handling lives in `cli/suspend-handler.ts` and is wired
-// up only in wrapper mode (where stdin is in raw mode and we own a local
-// terminal). Non-wrapper invocations (`remi daemon`, `remi ls`, etc.) get
-// the kernel default for SIGTSTP, which is fine -- they are either headless
-// daemons (no controlling tty) or short-lived clients where suspend is
-// acceptable.
+// SIGTSTP / Ctrl+Z handling.
+//
+// Wrapper mode (`remi <args>`): the wrapper installs `cli/suspend-handler.ts`
+// later, after the PTY is up. That handler tears down raw mode and self-sends
+// SIGSTOP for a real shell-job suspend.
+//
+// Daemon mode (`remi daemon`): we MUST never let the daemon suspend itself.
+// If a foreground daemon receives `kill -TSTP <pid>` (or the controlling
+// terminal sends SIGTSTP for any reason), the kernel default would stop the
+// process, dropping every WebSocket client and halting APNS push. We install
+// an unconditional no-op listener here so the kernel default never fires.
+// REGRESSION GUARD (PR #364 review): a previous refactor deleted this
+// listener and only installed the wrapper-mode handler; foreground `remi
+// daemon` then suspended on `kill -TSTP`. Do not remove this without
+// replacing it with an equivalent guard.
+//
+// Other non-wrapper invocations (`remi ls`, `remi attach`, etc.) are
+// short-lived clients where the kernel default for SIGTSTP is acceptable.
 // ---------------------------------------------------------------------------
+if (cliDaemonMode) {
+  process.on('SIGTSTP', () => {
+    // Intentionally ignored. The daemon must remain running to serve remote
+    // clients; suspending it would drop WebSocket sessions and APNS pushes.
+    writeToLog('[signal] SIGTSTP received and ignored (daemon must not suspend)');
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Core components
