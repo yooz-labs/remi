@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ProtocolMessage, UUID } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
@@ -21,9 +21,10 @@ function fakePTY(): PTYSession {
   } as unknown as PTYSession;
 }
 
-function fakeMessageAPI(): MessageAPI {
+function fakeMessageAPI(bulletCount = 0): MessageAPI {
   return {
     getFullBulletContent: () => null,
+    bulletCount,
   } as unknown as MessageAPI;
 }
 
@@ -148,6 +149,155 @@ describe('createConnectionHandlers', () => {
       expect(msg.code).toBe('SESSION_NOT_FOUND');
       // Attach should NOT have happened.
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
+    });
+
+    test('attaches when resumeSessionId matches the primary session', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { resumeSessionId: sessionId },
+      });
+
+      // No error; helloAck sent and attach succeeded.
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as { type: string; sessionId?: UUID };
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBe(sessionId);
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(cancelOrphanCalls).toBe(1);
+    });
+
+    test('helloAck reports replay metadata and replayBatch follows when history exists', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI(3));
+      setPrimarySessionId(sessionId);
+
+      // Attach + detach to leave a "previous session" with history; the next
+      // attach goes through the resume path with replayMessages populated.
+      const previousConn = generateId();
+      sessionRegistry.attachConnection(sessionId, previousConn);
+      const m1: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
+      const m2: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
+      sessionRegistry.recordOutgoingMessage(sessionId, m1);
+      sessionRegistry.recordOutgoingMessage(sessionId, m2);
+      sessionRegistry.detachConnection(previousConn);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: {},
+      });
+
+      expect(sendCalls).toHaveLength(2);
+      const ack = sendCalls[0]?.message as {
+        type: string;
+        isResume?: boolean;
+        replayCount?: number;
+        nextBulletId?: number;
+      };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.isResume).toBe(true);
+      expect(ack.replayCount).toBe(2);
+      expect(ack.nextBulletId).toBe(4);
+
+      const replay = sendCalls[1]?.message as {
+        type: string;
+        messages?: readonly ProtocolMessage[];
+      };
+      expect(replay.type).toBe('replay_batch');
+      expect(replay.messages?.length).toBe(2);
+    });
+
+    test('second concurrent connection is queued and still receives helloAck + replay', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI(2));
+      setPrimarySessionId(sessionId);
+
+      // First connection takes the active slot.
+      const firstConn = generateId();
+      sessionRegistry.attachConnection(sessionId, firstConn);
+      const recorded: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
+      sessionRegistry.recordOutgoingMessage(sessionId, recorded);
+
+      // Second connection arrives while the first is still active.
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: {},
+      });
+
+      // Active connection is still the first; CID is queued.
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
+      expect(sessionRegistry.waitingConnectionCount).toBe(1);
+
+      // Queued client still gets helloAck + replay so it can render history.
+      expect(sendCalls).toHaveLength(2);
+      const ack = sendCalls[0]?.message as {
+        type: string;
+        isResume?: boolean;
+        replayCount?: number;
+      };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.isResume).toBe(true);
+      expect(ack.replayCount).toBe(1);
+
+      const replay = sendCalls[1]?.message as {
+        type: string;
+        messages?: readonly ProtocolMessage[];
+      };
+      expect(replay.type).toBe('replay_batch');
+      expect(replay.messages?.length).toBe(1);
+    });
+
+    test('query-mode connection does not displace an existing active connection', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      const firstConn = generateId();
+      sessionRegistry.attachConnection(sessionId, firstConn);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { mode: 'query' },
+      });
+
+      // Active connection stays; query-mode client did not grab the slot or
+      // queue (utility clients ls/kill should not contend for write access).
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
+      expect(sessionRegistry.waitingConnectionCount).toBe(0);
+      expect(sendCalls).toHaveLength(1);
+      const ack = sendCalls[0]?.message as { type: string; isResume?: boolean };
+      expect(ack.type).toBe('hello_ack');
+      // Plain helloAck (no resume info) since we skipped attachConnection.
+      expect(ack.isResume).toBeUndefined();
+      expect(cancelOrphanCalls).toBe(0);
+    });
+
+    test('omitted platformData is treated like no metadata fields', async () => {
+      // Adapters with no platform-specific extras (e.g. simple ones) may pass
+      // metadata without a platformData field at all. The handler must not
+      // crash and should auto-attach exactly like an empty platformData.
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, { adapterType: 'websocket' });
+
+      expect(sendCalls).toHaveLength(1);
+      expect((sendCalls[0]?.message as { type: string }).type).toBe('hello_ack');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+    });
+
+    test('tracks the connection on the AdapterRegistry before any branch decision', async () => {
+      // No primary session = NO_SESSION error path; tracking still happens.
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'telegram',
+        platformData: {},
+      });
+      expect(trackedConnections).toEqual([{ id: CID, type: 'telegram' }]);
+      expect(connectionAddedCount).toBe(1);
     });
   });
 
