@@ -92,6 +92,7 @@ const cleanupStatusFile = (): void => statusWriter.cleanup();
 loadDotenvFile();
 
 import {
+  createDaemonUpdateAvailable,
   createHelloAck,
   createReplayBatch,
   createSessionListResponse,
@@ -132,6 +133,7 @@ import { createPtySessionForSession } from './cli/session-phases/pty-session-set
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
+import { startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
@@ -878,6 +880,12 @@ let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after s
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
 
+// Watches `dist/remi` (or whatever process.execPath resolves to) for a fresh
+// build and notifies attached clients so users know to restart their session.
+// Initialised in both wrapper and daemon modes after the WebSocket server
+// is up; cleaned up alongside hookServer in cleanup(). Issue #287.
+let updateWatcher: import('./cli/update-watcher.ts').UpdateWatcher | null = null;
+
 // Best-effort synchronous cleanup on any exit path. SIGINT/SIGTERM already
 // run the async cleanup() which calls hookConfigManager.uninstall(); this
 // handler is the last line of defense for `process.exit()` calls and
@@ -893,6 +901,28 @@ process.on('exit', () => {
 
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
+
+/**
+ * Start the on-disk binary watcher. Idempotent — repeated calls are no-ops.
+ * Polls every 60s; on the first detected change, broadcasts a single
+ * `daemon_update_available` to every attached client and stops itself.
+ */
+function startBinaryUpdateWatcher(): void {
+  if (updateWatcher) return;
+  updateWatcher = startUpdateWatcher({
+    binaryPath: process.execPath,
+    intervalMs: 60_000,
+    onUpdateDetected: () => {
+      log(`[update] Newer remi binary detected at ${process.execPath}; notifying clients`);
+      try {
+        registry.broadcast(createDaemonUpdateAvailable(REMI_VERSION, process.execPath));
+      } catch (err) {
+        logError(`[update] broadcast failed: ${errorToString(err)}`);
+      }
+    },
+    onError: (err) => logError(`[update] ${err.message}`),
+  });
+}
 
 // Watcher for live-sessions directory (pushes session list updates on new daemon startup)
 let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
@@ -1321,6 +1351,11 @@ async function cleanup(): Promise<void> {
     hookConfigManager = null;
   }
 
+  if (updateWatcher) {
+    updateWatcher.stop();
+    updateWatcher = null;
+  }
+
   if (mdnsPublisher) {
     try {
       await mdnsPublisher.stop();
@@ -1466,6 +1501,10 @@ if (cliDaemonMode) {
     name: path.basename(workingDirectory),
     startedAt: new Date().toISOString(),
   });
+
+  // Notify attached clients when a new dist/remi build replaces this binary
+  // on disk so they know to restart their session (#287).
+  startBinaryUpdateWatcher();
 
   // Create the PTY session
   try {
@@ -1659,6 +1698,10 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
     });
+
+    // Notify attached clients when a new dist/remi build replaces this binary
+    // on disk so they know to restart their session (#287).
+    startBinaryUpdateWatcher();
 
     // Watch for new daemons registering in live-sessions and push updates to clients.
     // This lets clients auto-connect when a sibling session starts in the same directory.
