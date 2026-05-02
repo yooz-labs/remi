@@ -13,6 +13,7 @@ import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
+import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import type {
   AppSettings,
   ConnectionId,
@@ -892,54 +893,38 @@ function App() {
 
       const answerMsg = createAnswer(sessionId as UUID, questionId as UUID, answer);
 
-      // Find the session in our session list to get its connectionId
-      const session = sessionsRef.current.find((s) => s.id === sessionId);
-      const connectionId = session?.connectionId;
+      // Read the persisted URL list once; pass into the pure resolver.
+      let storedUrls: string[] = [];
+      try {
+        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+        if (stored) storedUrls = JSON.parse(stored) as string[];
+      } catch {
+        // localStorage unavailable or corrupted; resolver treats empty as cold-start.
+      }
 
-      // Check if the connection is already live
-      const conn = connectionId
-        ? connectionsRef.current.find((c) => c.connectionId === connectionId)
-        : undefined;
+      const target = resolvePushAnswerTarget({
+        sessionId,
+        sessions: sessionsRef.current,
+        connections: connectionsRef.current,
+        storedUrls,
+      });
 
-      // Fast path: connection is live, try to send immediately
-      if (conn?.status === 'connected' && connectionId) {
-        const sent = pushAnswerSendRef.current(connectionId, answerMsg);
+      if (target.kind === 'live' && target.connectionId) {
+        const sent = pushAnswerSendRef.current(target.connectionId as ConnectionId, answerMsg);
         if (sent) return;
-        // Send returned false (dead socket); fall through to reconnect
+        // Send returned false (dead socket); fall through and let the
+        // reconnect path below pick this URL up.
       }
 
-      // Resolve the daemon URL: from existing connection, or from localStorage (cold start)
-      let connUrl = conn?.url;
-      if (!connUrl) {
-        try {
-          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
-          if (stored) {
-            const urls: string[] = JSON.parse(stored);
-            if (urls.length > 0) {
-              connUrl = urls[0];
-            }
-          }
-        } catch {
-          // localStorage unavailable or corrupted; ignore
-        }
-      }
-
-      if (!connUrl) {
+      if (target.kind === 'unreachable' || !target.url) {
         notifyFailure();
         return;
       }
 
-      // Check if a connection to this URL is already being established (e.g. auto-connect on mount)
-      const existingConn = connectionsRef.current.find(
-        (c) =>
-          c.url === connUrl &&
-          (c.status === 'connecting' ||
-            c.status === 'authenticating' ||
-            c.status === 'reconnecting'),
-      );
-      const targetConnId = existingConn
-        ? existingConn.connectionId
-        : connectDirectRef.current(connUrl);
+      const targetConnId: ConnectionId =
+        target.kind === 'pending' && target.connectionId
+          ? (target.connectionId as ConnectionId)
+          : connectDirectRef.current(target.url);
 
       // Wait for connection with 10s timeout, then send answer
       const ANSWER_TIMEOUT_MS = 10_000;
