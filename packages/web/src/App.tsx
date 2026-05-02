@@ -1412,6 +1412,7 @@ function App() {
         error={error}
         needsPassphrase={needsPassphrase}
         hasIdentity={hasIdentity()}
+        hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
       />
