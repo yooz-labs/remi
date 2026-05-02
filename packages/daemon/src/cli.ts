@@ -878,6 +878,19 @@ let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after s
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
 
+// Best-effort synchronous cleanup on any exit path. SIGINT/SIGTERM already
+// run the async cleanup() which calls hookConfigManager.uninstall(); this
+// handler is the last line of defense for `process.exit()` calls and
+// uncaught exceptions, so a daemon that crashes does not leave stale
+// hook URLs in `.claude/settings.local.json` that gate Claude Code
+// (issue #203). SIGKILL still leaves entries by definition; the next
+// startup's purgeStaleHooks recovers from that.
+process.on('exit', () => {
+  if (hookConfigManager) {
+    hookConfigManager.uninstallSync();
+  }
+});
+
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
 

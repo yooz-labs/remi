@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { HookConfigManager } from '../../src/hooks/hook-config-manager.ts';
-import { HOOK_EVENT_NAMES } from '../../src/hooks/hook-types.ts';
+import { HOOK_EVENT_NAMES, REMI_REGISTERED_HOOK_EVENTS } from '../../src/hooks/hook-types.ts';
 
 describe('HookConfigManager', () => {
   let tmpDir: string;
@@ -36,23 +36,28 @@ describe('HookConfigManager', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude'))).toBe(true);
   });
 
-  it('writes hook config with all required events', async () => {
+  it('writes hook config only for events remi consumes (issue #203)', async () => {
     await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
     expect(settings.hooks).toBeDefined();
     const events = Object.keys(settings.hooks);
 
-    // Verify all events are registered (22 after Claude Code removed 3)
-    expect(HOOK_EVENT_NAMES.length).toBe(22);
-    for (const event of HOOK_EVENT_NAMES) {
+    // The narrowed list — registering every HOOK_EVENT_NAMES entry would
+    // make every Claude Code action (worktree create, prompt submit, etc.)
+    // gate on a synchronous HTTP call to a possibly-dead remi.
+    for (const event of REMI_REGISTERED_HOOK_EVENTS) {
       expect(events).toContain(event);
     }
-    // No extra events beyond what HOOK_EVENT_NAMES defines
-    expect(events.length).toBe(HOOK_EVENT_NAMES.length);
+    expect(events.length).toBe(REMI_REGISTERED_HOOK_EVENTS.length);
+    // None of the explicitly-skipped events should appear:
+    expect(events).not.toContain('WorktreeCreate');
+    expect(events).not.toContain('WorktreeRemove');
+    expect(events).not.toContain('UserPromptSubmit');
+    expect(events).not.toContain('PreCompact');
   });
 
-  it('each event has an HTTP hook entry with the correct URL', async () => {
+  it('each registered event has an HTTP hook entry with the correct URL', async () => {
     await manager.install();
     const settings = readSettings() as {
       hooks: Record<
@@ -61,7 +66,7 @@ describe('HookConfigManager', () => {
       >;
     };
 
-    for (const event of HOOK_EVENT_NAMES) {
+    for (const event of REMI_REGISTERED_HOOK_EVENTS) {
       const matchers = settings.hooks[event] as Array<{
         hooks: Array<{ type: string; url: string; timeout: number }>;
       }>;
@@ -76,12 +81,63 @@ describe('HookConfigManager', () => {
     }
   });
 
+  it('regression #203: install() drops legacy remi entries for events it no longer registers', async () => {
+    // Simulate a settings file written by an older remi that registered the
+    // full HOOK_EVENT_NAMES list (which still includes WorktreeCreate). Our
+    // own URL on a non-registered event should be pruned on next install
+    // so Claude Code stops gating worktree creation on us.
+    const legacyHooks: Record<
+      string,
+      Array<{ hooks: Array<{ type: string; url: string; timeout: number }> }>
+    > = {};
+    for (const event of HOOK_EVENT_NAMES) {
+      legacyHooks[event] = [{ hooks: [{ type: 'http', url: hookUrl, timeout: 5 }] }];
+    }
+    // Plus a user hook on WorktreeCreate to make sure we DON'T touch it.
+    legacyHooks['WorktreeCreate'] = [
+      { hooks: [{ type: 'http', url: hookUrl, timeout: 5 }] },
+      { hooks: [{ type: 'http', url: 'http://user-tool.example.com/wt', timeout: 5 }] },
+    ];
+    writeSettings({ hooks: legacyHooks });
+
+    await manager.install();
+
+    const settings = readSettings() as {
+      hooks: Record<
+        string,
+        Array<{ hooks: Array<{ type: string; url: string; timeout: number }> }>
+      >;
+    };
+
+    // Our URL is gone from WorktreeCreate; the user hook stays.
+    const wt = settings.hooks['WorktreeCreate'];
+    expect(wt).toBeDefined();
+    const wtHookUrls = wt?.flatMap((m) => m.hooks.map((h) => h.url)) ?? [];
+    expect(wtHookUrls).not.toContain(hookUrl);
+    expect(wtHookUrls).toContain('http://user-tool.example.com/wt');
+
+    // WorktreeRemove had only our entry → key removed entirely.
+    expect(settings.hooks['WorktreeRemove']).toBeUndefined();
+    expect(settings.hooks['UserPromptSubmit']).toBeUndefined();
+    expect(settings.hooks['PreCompact']).toBeUndefined();
+
+    // Registered events keep their entry.
+    for (const event of REMI_REGISTERED_HOOK_EVENTS) {
+      expect(settings.hooks[event]).toBeDefined();
+    }
+  });
+
+  it('uninstallSync() removes our entries and never throws', () => {
+    // No prior install → uninstallSync must be a no-op.
+    expect(() => manager.uninstallSync()).not.toThrow();
+  });
+
   it('does not duplicate hooks on repeated install', async () => {
     await manager.install();
     await manager.install();
     const settings = readSettings() as { hooks: Record<string, unknown[]> };
 
-    for (const event of HOOK_EVENT_NAMES) {
+    for (const event of REMI_REGISTERED_HOOK_EVENTS) {
       expect(settings.hooks[event]?.length).toBe(1);
     }
   });
