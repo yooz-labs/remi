@@ -117,6 +117,10 @@ export function ChatView({
         question={inputQuestion}
         isAgentBusy={isAgentBusy}
         disabled={!isConnected}
+        // Session-scoped draft persistence so a half-typed message survives
+        // app suspension on iOS (#226) and switching to a different session
+        // doesn't leak the draft across.
+        draftKey={`remi-draft-${session.id}`}
         placeholder={
           !isConnected
             ? 'Not connected'
