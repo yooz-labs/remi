@@ -30,7 +30,7 @@ async function runTest() {
 
     ws1.onopen = () => {
       console.log('  Connected, sending hello...');
-      const hello = createHello(CLIENT_ID, '1.0.0', process.cwd());
+      const hello = createHello(CLIENT_ID, '1.0.0', { directory: process.cwd() });
       ws1.send(JSON.stringify(hello));
     };
 

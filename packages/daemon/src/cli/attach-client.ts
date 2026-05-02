@@ -163,7 +163,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
   function sendHello(): void {
     const clientId = generateId();
-    ws.send(serialize(createHello(clientId, '1.0.0', undefined, sessionId as UUID)));
+    ws.send(serialize(createHello(clientId, '1.0.0', { resumeSessionId: sessionId as UUID })));
   }
 
   return new Promise<AttachClientResult>((resolve) => {

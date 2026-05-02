@@ -29,29 +29,33 @@ describe('Protocol factory functions', () => {
     });
 
     test('includes directory when provided', () => {
-      const msg = createHello('client-1' as UUID, '1.0.0', '/some/path');
+      const msg = createHello('client-1' as UUID, '1.0.0', { directory: '/some/path' });
       expect(msg.directory).toBe('/some/path');
     });
 
     test('includes empty string directory', () => {
-      const msg = createHello('client-1' as UUID, '1.0.0', '');
+      const msg = createHello('client-1' as UUID, '1.0.0', { directory: '' });
       // Empty string is a valid directory (cwd)
       expect('directory' in msg).toBe(true);
     });
 
     test('includes resumeSessionId when provided', () => {
       const sessionId = 'abc-123' as UUID;
-      const msg = createHello('client-1' as UUID, '1.0.0', undefined, sessionId);
+      const msg = createHello('client-1' as UUID, '1.0.0', { resumeSessionId: sessionId });
       expect(msg.resumeSessionId).toBe(sessionId);
     });
 
     test('includes lastReceivedIndex when provided', () => {
-      const msg = createHello('client-1' as UUID, '1.0.0', undefined, undefined, 42);
+      const msg = createHello('client-1' as UUID, '1.0.0', { lastReceivedIndex: 42 });
       expect(msg.lastReceivedIndex).toBe(42);
     });
 
     test('round-trips through serialize/deserialize', () => {
-      const original = createHello('client-1' as UUID, '1.0.0', '/dir', 'sess-1' as UUID, 5);
+      const original = createHello('client-1' as UUID, '1.0.0', {
+        directory: '/dir',
+        resumeSessionId: 'sess-1' as UUID,
+        lastReceivedIndex: 5,
+      });
       const serialized = serialize(original);
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();

@@ -77,6 +77,7 @@ export type {
   DetachSessionAckMessage,
   RegisterDeviceTokenMessage,
   SessionResetMessage,
+  CreateHelloOptions,
 } from './protocol.ts';
 
 export {

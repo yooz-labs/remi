@@ -657,17 +657,30 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
   return validTypes.includes(obj['type'] as string);
 }
 
+/** Optional fields for {@link createHello}. */
+export interface CreateHelloOptions {
+  /** Working directory for the Claude Code session. */
+  readonly directory?: string | undefined;
+  /** Session ID to resume (for reconnecting to an existing session). */
+  readonly resumeSessionId?: UUID | undefined;
+  /** Index of last received message (for efficient replay). */
+  readonly lastReceivedIndex?: number | undefined;
+  /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach. */
+  readonly mode?: 'query' | undefined;
+}
+
 /**
  * Create a hello message.
+ *
+ * Optional fields are passed via the `options` object so adding new optionals
+ * never requires threading `undefined` through positional callsites.
  */
 export function createHello(
   clientId: UUID,
   clientVersion: string,
-  directory?: string,
-  resumeSessionId?: UUID,
-  lastReceivedIndex?: number,
-  mode?: 'query',
+  options: CreateHelloOptions = {},
 ): HelloMessage {
+  const { directory, resumeSessionId, lastReceivedIndex, mode } = options;
   return {
     type: 'hello',
     id: generateId(),

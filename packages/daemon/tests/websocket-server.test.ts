@@ -455,7 +455,9 @@ describe('WebSocketServer', () => {
       const ws = new WebSocket(`ws://localhost:${testPort + 12}/ws`);
 
       ws.onopen = () => {
-        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', undefined, resumeId)));
+        ws.send(
+          serialize(createHello('test-client' as UUID, '1.0.0', { resumeSessionId: resumeId })),
+        );
       };
 
       const received = await Promise.race([
@@ -488,7 +490,9 @@ describe('WebSocketServer', () => {
       const ws = new WebSocket(`ws://localhost:${testPort + 13}/ws`);
 
       ws.onopen = () => {
-        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', '/my/project')));
+        ws.send(
+          serialize(createHello('test-client' as UUID, '1.0.0', { directory: '/my/project' })),
+        );
       };
 
       const received = await Promise.race([
