@@ -5,6 +5,8 @@
  * or use a connection code for remote access via WebRTC.
  */
 
+import { useKeyboard } from '@/hooks/useKeyboard';
+import { keyboardBackdropStyle } from '@/lib/keyboard-style';
 import type { ConnectionStatus } from '@/types';
 import { clsx } from 'clsx';
 import { AlertCircle, CheckCircle2, Globe, Key, Loader2, Monitor, Shield, X } from 'lucide-react';
@@ -226,6 +228,13 @@ export function ConnectModal({
   );
   const [code, setCode] = useState('');
   const hostInputRef = useRef<HTMLInputElement>(null);
+  // Track the iOS keyboard so we can lift the modal above it (#226 part 1).
+  // Capacitor's keyboardWillShow fires synchronously enough that the modal
+  // reflows before the OS animates the keyboard in, avoiding the "input
+  // disappears behind the keyboard" flash. Style derivation is in
+  // keyboardBackdropStyle so it can be unit-tested.
+  const keyboard = useKeyboard();
+  const backdropStyle = keyboardBackdropStyle(keyboard);
 
   // Reset on close
   useEffect(() => {
@@ -251,7 +260,11 @@ export function ConnectModal({
   // Show passphrase view when auth is needed
   if (needsPassphrase && onPassphraseSubmit) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div
+        data-testid="connect-modal-backdrop"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        style={backdropStyle}
+      >
         <div className="w-full max-w-md rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
           <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
             <h2 className="text-lg font-semibold text-[var(--color-text)]">Authenticate</h2>
@@ -295,7 +308,18 @@ export function ConnectModal({
   const canConnect = mode === 'local' ? host.trim().length > 0 : code.length === 9;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <div
+      data-testid="connect-modal-backdrop"
+      className={clsx(
+        'fixed inset-0 z-50 flex justify-center bg-black/60 p-4',
+        // When the keyboard is open, anchor the modal to the top of the
+        // remaining visible area (paired with backdropStyle's padding-bottom
+        // equal to the keyboard height) so the input never sits behind the
+        // keyboard on short screens.
+        keyboard.isVisible ? 'items-start pt-8' : 'items-center',
+      )}
+      style={backdropStyle}
+    >
       <div className="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
