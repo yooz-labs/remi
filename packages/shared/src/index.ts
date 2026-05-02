@@ -77,6 +77,7 @@ export type {
   DetachSessionAckMessage,
   RegisterDeviceTokenMessage,
   SessionResetMessage,
+  DaemonUpdateAvailableMessage,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -123,6 +124,7 @@ export {
   createDetachSessionAck,
   createRegisterDeviceToken,
   createSessionReset,
+  createDaemonUpdateAvailable,
   MessageIdTracker,
 } from './protocol.ts';
 
