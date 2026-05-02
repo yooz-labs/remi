@@ -82,6 +82,13 @@ function CodeInput({
       disabled={disabled}
       placeholder="ABCD-1234"
       maxLength={9}
+      // Connection codes are uppercase alphanumerics — strip iOS dictation
+      // and predictive entry the same way the host field does (#266).
+      autoCorrect="off"
+      autoCapitalize="characters"
+      spellCheck={false}
+      autoComplete="off"
+      inputMode="text"
       className={clsx(
         'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
         'text-center text-2xl font-mono tracking-widest',
@@ -349,6 +356,16 @@ export function ConnectModal({
                   onKeyDown={handleKeyDown}
                   disabled={isConnecting}
                   placeholder="localhost"
+                  // iOS WKWebView keyboards otherwise insert dictation
+                  // suggestions alongside the typed string, producing the
+                  // doubled-text seen in #266 ("localhostlocalhost"). For a
+                  // hostname these affordances are pure noise; turn them off
+                  // and ask for the URL keyboard.
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  autoComplete="off"
+                  inputMode="url"
                   className={clsx(
                     'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
                     'text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
