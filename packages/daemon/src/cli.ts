@@ -130,6 +130,7 @@ import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
+import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
@@ -759,16 +760,32 @@ let autoApproveService: AutoApproveService | null = null;
 }
 
 // ---------------------------------------------------------------------------
-// SIGTSTP protection: the daemon must never suspend itself.
-// When Claude Code handles Ctrl+Z (which spawns a subshell inside its PTY),
-// the terminal may propagate SIGTSTP to the process group. Ignoring it here
-// keeps the daemon, WebSocket server, and all remote connections alive.
+// SIGTSTP / Ctrl+Z handling.
+//
+// Wrapper mode (`remi <args>`): the wrapper installs `cli/suspend-handler.ts`
+// later, after the PTY is up. That handler tears down raw mode and self-sends
+// SIGSTOP for a real shell-job suspend.
+//
+// Daemon mode (`remi daemon`): we MUST never let the daemon suspend itself.
+// If a foreground daemon receives `kill -TSTP <pid>` (or the controlling
+// terminal sends SIGTSTP for any reason), the kernel default would stop the
+// process, dropping every WebSocket client and halting APNS push. We install
+// an unconditional no-op listener here so the kernel default never fires.
+// REGRESSION GUARD (PR #364 review): a previous refactor deleted this
+// listener and only installed the wrapper-mode handler; foreground `remi
+// daemon` then suspended on `kill -TSTP`. Do not remove this without
+// replacing it with an equivalent guard.
+//
+// Other non-wrapper invocations (`remi ls`, `remi attach`, etc.) are
+// short-lived clients where the kernel default for SIGTSTP is acceptable.
 // ---------------------------------------------------------------------------
-process.on('SIGTSTP', () => {
-  // Intentionally ignored. The PTY child handles Ctrl+Z on its own; the
-  // daemon process must remain running to serve remote clients.
-  writeToLog('[signal] SIGTSTP received and ignored (daemon must not suspend)');
-});
+if (cliDaemonMode) {
+  process.on('SIGTSTP', () => {
+    // Intentionally ignored. The daemon must remain running to serve remote
+    // clients; suspending it would drop WebSocket sessions and APNS pushes.
+    writeToLog('[signal] SIGTSTP received and ignored (daemon must not suspend)');
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -1714,6 +1731,19 @@ if (cliDaemonMode) {
     }
   }
 
+  // Ctrl+Z handler (issue #361). Installed before the DetachScanner so the
+  // scanner can route the `0x1A` byte directly into `requestSuspend()`. The
+  // SIGCONT path re-enters raw mode; restoring the data listener is
+  // unnecessary because Bun keeps it attached across the SIGSTOP boundary.
+  const suspendController = installSuspendHandler({
+    onResume: () => {
+      // Re-attach to stdin: setRawMode(true) is done inside the handler;
+      // here we just ensure stdin is flowing again. `process.stdin.resume()`
+      // is idempotent.
+      process.stdin.resume();
+    },
+  });
+
   const detachScanner = new DetachScanner({
     onDetach: () => {
       const stdoutFd = getPtyStdoutFd();
@@ -1724,10 +1754,15 @@ if (cliDaemonMode) {
           log(`[Detach] Failed to write detach message: ${errorToString(err)}`);
         }
       }
+      // detachLocalTerminal disposes the suspend controller as part of its
+      // teardown, so no extra cleanup is needed here.
       detachLocalTerminal('keybinding');
     },
     onData: (data) => {
       writeToPty(data.toString());
+    },
+    onSuspend: () => {
+      suspendController.requestSuspend();
     },
     timeoutMs: 1000,
   });
@@ -1761,6 +1796,10 @@ if (cliDaemonMode) {
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
     if (isWrapperDetached()) return;
     setWrapperDetached(true);
+
+    // Tear down the wrapper-mode SIGTSTP/SIGCONT listeners; once the local
+    // terminal is gone there is no value in suspending the process.
+    suspendController.dispose();
 
     // Stop reading from stdin
     if (process.stdin.isTTY) {
