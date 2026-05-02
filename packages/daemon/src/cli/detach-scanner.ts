@@ -8,9 +8,15 @@
  * Supports both legacy raw byte (0x02) and kitty keyboard protocol
  * encoding (ESC[98;5u) for Ctrl+B, since Claude Code enables the kitty
  * protocol on the terminal.
+ *
+ * Optional Ctrl+Z (`0x1A`) interception: when `onSuspend` is provided
+ * the scanner consumes the byte instead of forwarding it, so the
+ * caller can drive the SIGTSTP/SIGCONT suspend dance (issue #361).
+ * When `onSuspend` is undefined the byte passes through unchanged.
  */
 
 const CTRL_B = 0x02;
+const CTRL_Z = 0x1a;
 const DEFAULT_TIMEOUT_MS = 1000;
 
 // Kitty keyboard protocol: Ctrl+B = ESC[98;5u = bytes 1b 5b 39 38 3b 35 75
@@ -23,6 +29,12 @@ export interface DetachScannerOptions {
   readonly onData: (data: Buffer) => void;
   /** Timeout in ms after a lone Ctrl+B or ESC before forwarding it. Default: 1000 */
   readonly timeoutMs?: number | undefined;
+  /**
+   * Optional handler for Ctrl+Z (`0x1A`). When provided, the scanner
+   * intercepts the byte and invokes this callback instead of forwarding.
+   * When omitted, Ctrl+Z is forwarded to the PTY (default).
+   */
+  readonly onSuspend?: (() => void) | undefined;
 }
 
 export class DetachScanner {
@@ -33,6 +45,7 @@ export class DetachScanner {
   private escTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly onDetach: () => void;
   private readonly onData: (data: Buffer) => void;
+  private readonly onSuspend: (() => void) | undefined;
   private readonly timeoutMs: number;
   // Store the original bytes (legacy 0x02 or kitty sequence) that triggered
   // ctrlBPending so we can forward them if 'd' does not follow within the timeout
@@ -42,6 +55,7 @@ export class DetachScanner {
   constructor(opts: DetachScannerOptions) {
     this.onDetach = opts.onDetach;
     this.onData = opts.onData;
+    this.onSuspend = opts.onSuspend;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
@@ -128,7 +142,21 @@ export class DetachScanner {
 
         // Not a detach sequence: forward buffered Ctrl+B and this byte
         this.onData(Buffer.from(this.ctrlBBytes));
+        // If Ctrl+Z follows Ctrl+B, route it through the suspend handler
+        // (when one is configured) so the byte does not reach the PTY.
+        if (byte === CTRL_Z && this.onSuspend) {
+          this.onSuspend();
+          continue;
+        }
         this.onData(Buffer.from([byte]));
+        continue;
+      }
+
+      // Ctrl+Z: when a suspend handler is wired, intercept the byte and
+      // invoke it; without a handler, fall through to the normal forward
+      // path (preserves backward-compatible PTY behavior).
+      if (byte === CTRL_Z && this.onSuspend) {
+        this.onSuspend();
         continue;
       }
 
@@ -158,9 +186,17 @@ export class DetachScanner {
         continue;
       }
 
-      // Scan ahead for the next special byte in this chunk
+      // Scan ahead for the next special byte in this chunk. When a suspend
+      // handler is wired, Ctrl+Z is also a special byte that breaks the run
+      // so it can be intercepted on the next iteration.
+      const interceptCtrlZ = this.onSuspend !== undefined;
       let end = i + 1;
-      while (end < chunk.length && chunk[end] !== CTRL_B && chunk[end] !== 0x1b) {
+      while (
+        end < chunk.length &&
+        chunk[end] !== CTRL_B &&
+        chunk[end] !== 0x1b &&
+        !(interceptCtrlZ && chunk[end] === CTRL_Z)
+      ) {
         end++;
       }
       // Forward the normal bytes as a batch
