@@ -101,7 +101,13 @@ describe('setupHookBridge', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function build(opts: { autoApprove?: boolean } = {}) {
+  function build(
+    opts: {
+      autoApprove?: boolean;
+      autoApproveDecision?: 'approve' | 'deny' | 'escalate';
+      autoApproveDelayMs?: number;
+    } = {},
+  ) {
     sessionRegistry.registerSession(
       SID,
       tmpDir,
@@ -110,11 +116,20 @@ describe('setupHookBridge', () => {
     );
 
     // Minimal AutoApproveService stub. Only invoked when opts.autoApprove is
-    // true; then we hand back a service whose `.evaluate` resolves to
-    // 'approve' so the auto-approve inject path exercises.
+    // true; default decision is 'approve' (existing tests rely on this).
+    // `autoApproveDelayMs` simulates LLM eval latency so dedup-window tests
+    // can fire Notification while evaluate() is still in flight (#379).
     const autoApproveService = opts.autoApprove
       ? ({
-          evaluate: async () => ({ decision: 'approve', reason: 'test-autoapprove' }),
+          evaluate: async () => {
+            if (opts.autoApproveDelayMs && opts.autoApproveDelayMs > 0) {
+              await new Promise((r) => setTimeout(r, opts.autoApproveDelayMs));
+            }
+            return {
+              decision: opts.autoApproveDecision ?? 'approve',
+              reason: 'test-autoapprove',
+            };
+          },
         } as unknown as import('../../../src/auto-approve/index.ts').AutoApproveService)
       : null;
 
@@ -337,5 +352,87 @@ describe('setupHookBridge', () => {
     // assert only the tear-down signals, not the final map state.
     expect(stopCalls.length).toBeGreaterThanOrEqual(1);
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression #379 / #377: pre-emptive Notification dedup during slow
+  // auto-approve evaluation. The PermissionRequest hook handler must mark
+  // the bridge as "handling permission" BEFORE invoking aaService.evaluate,
+  // so a Notification(permission_prompt) arriving while the LLM is still
+  // running is suppressed instead of emitting a phantom Question (which
+  // would fire a duplicate APNS push the user can't dismiss).
+  // -------------------------------------------------------------------------
+
+  test('regression #379: slow auto-approve approve does NOT leak a Notification question', async () => {
+    // 80ms eval delay simulates ollama latency. Notification fires inside
+    // the window; without the pre-emptive markPermissionHandled, this
+    // Notification would emit a 3-option question and trigger a push.
+    build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 80 });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-379',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-379',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Notification fires ~10ms after PermissionRequest in real Claude Code;
+    // schedule it well within the eval window so the race is exercised.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-379',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    // Wait for evaluate() + inject() to fully resolve.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // Approved: PTY received "1" once.
+    expect(ptySubmits).toEqual(['1']);
+    // Notification path must have been suppressed by the pre-emptive dedup.
+    // Total questions emitted: zero (the auto-approve path is silent on success).
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('regression #379: escalate path emits the canonical Question exactly once', async () => {
+    // When auto-approve cannot decide (e.g. 'escalate'), the user MUST see
+    // a question. The Notification arriving during eval must still be
+    // suppressed; the canonical question comes from handlePermissionRequest
+    // via escalateToUser. Net: questionCalls === 1.
+    build({ autoApprove: true, autoApproveDecision: 'escalate', autoApproveDelayMs: 80 });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-379b',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-379b',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-379b',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // No injection happened (escalate, main context).
+    expect(ptySubmits).toEqual([]);
+    // Exactly one question: the escalation, not the suppressed Notification.
+    expect(messageApiLog.questionCalls).toBe(1);
   });
 });

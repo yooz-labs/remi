@@ -422,6 +422,19 @@ export function setupHookBridge(
 
     // Auto-approve gate: evaluate before creating a Question object.
     if (autoApproveService) {
+      // Pre-emptively mark this PermissionRequest as in-flight so the
+      // Notification(permission_prompt) hook that Claude Code emits a few ms
+      // later is suppressed by the bridge's dedup window. Without this, slow
+      // LLM evaluation (>tens of ms) lets Notification slip through and emit
+      // a phantom Question with the default 3-option set, firing a push for
+      // a prompt auto-approve is about to handle silently. See #379 (race)
+      // and #377 (resulting duplicate push).
+      // The inject() path below ALSO calls markPermissionHandled() on success,
+      // which refreshes the timestamp; the escalateToUser() path emits the
+      // canonical question via handlePermissionRequest, which itself sets
+      // lastPermissionEmitAt. Calling here is purely additive coverage for
+      // the eval-in-progress window.
+      hookBridge.markPermissionHandled();
       const aaService = autoApproveService;
       aaService
         .evaluate(input.tool_name, input.tool_input, sessionTag)

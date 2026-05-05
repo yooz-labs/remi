@@ -72,9 +72,15 @@ export class HookEventBridge {
     return this.subagentContext.isInSubagentContext();
   }
 
-  /** Mark that a PermissionRequest was handled externally (e.g. by auto-approve).
-   *  Sets the dedup timestamp so the subsequent Notification(permission_prompt)
-   *  is suppressed instead of generating a phantom notification. */
+  /** Mark that a PermissionRequest is being handled externally (e.g. by
+   *  auto-approve). Sets the dedup timestamp so the subsequent
+   *  Notification(permission_prompt) is suppressed instead of generating a
+   *  phantom notification.
+   *
+   *  Callers should invoke this BEFORE starting a slow operation (e.g. LLM
+   *  evaluation) so the dedup window is open when Notification arrives,
+   *  AND again after the operation resolves successfully (to refresh the
+   *  timestamp in case the operation outlived the original window). */
   markPermissionHandled(): void {
     this.lastPermissionEmitAt = Date.now();
   }
