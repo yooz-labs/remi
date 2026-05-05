@@ -412,28 +412,29 @@ export function setupHookBridge(
     // Safe escalation to the user. Used when inject fails or when auto-approve
     // is off and we're in main context. Wrapped so bridge/push failures don't
     // leave the hook handler with a dangling unhandled rejection.
+    // On throw we clear the pre-emptive dedup mark so the trailing
+    // Notification(permission_prompt) can surface a fallback question
+    // instead of being silently suppressed for 5 s.
     const escalateToUser = () => {
       try {
         handlers.onPermissionRequest?.(input);
       } catch (err) {
         logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
+        hookBridge.clearPermissionHandled();
       }
     };
 
     // Auto-approve gate: evaluate before creating a Question object.
     if (autoApproveService) {
-      // Pre-emptively mark this PermissionRequest as in-flight so the
-      // Notification(permission_prompt) hook that Claude Code emits a few ms
-      // later is suppressed by the bridge's dedup window. Without this, slow
-      // LLM evaluation (>tens of ms) lets Notification slip through and emit
-      // a phantom Question with the default 3-option set, firing a push for
-      // a prompt auto-approve is about to handle silently. See #379 (race)
-      // and #377 (resulting duplicate push).
-      // The inject() path below ALSO calls markPermissionHandled() on success,
-      // which refreshes the timestamp; the escalateToUser() path emits the
-      // canonical question via handlePermissionRequest, which itself sets
-      // lastPermissionEmitAt. Calling here is purely additive coverage for
-      // the eval-in-progress window.
+      // Pre-empt the Notification(permission_prompt) dedup window before
+      // kicking off async evaluation: Claude Code emits Notification ~10 ms
+      // after PermissionRequest, well inside any LLM eval latency, and
+      // without this mark a phantom 3-option question + push would fire
+      // for a prompt auto-approve is about to handle silently.
+      // Refresh after eval is the inject()/handlePermissionRequest's
+      // responsibility; this call only covers the eval-in-progress gap.
+      // Failure paths must call clearPermissionHandled() to keep the
+      // Notification fallback usable.
       hookBridge.markPermissionHandled();
       const aaService = autoApproveService;
       aaService
@@ -469,6 +470,10 @@ export function setupHookBridge(
             escalateToUser();
           } catch (inner) {
             logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
+            // Both eval AND escalation failed: clear the dedup mark so the
+            // trailing Notification(permission_prompt) becomes the fallback
+            // question. Otherwise the user sees nothing for 5 s.
+            hookBridge.clearPermissionHandled();
           }
         });
       return;

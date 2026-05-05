@@ -52,7 +52,11 @@ interface MessageApiCallLog {
   questionCalls: number;
 }
 
-function fakeMessageAPI(log: MessageApiCallLog): MessageAPI {
+function fakeMessageAPI(
+  log: MessageApiCallLog,
+  opts: { throwOnQuestionTimes?: number } = {},
+): MessageAPI {
+  let throwsLeft = opts.throwOnQuestionTimes ?? 0;
   return {
     handleMessage: () => {},
     handleStatusChange: (status: string) => {
@@ -60,11 +64,28 @@ function fakeMessageAPI(log: MessageApiCallLog): MessageAPI {
     },
     handleQuestion: () => {
       log.questionCalls += 1;
+      if (throwsLeft > 0) {
+        throwsLeft -= 1;
+        throw new Error('test: handleQuestion synthetic failure');
+      }
     },
     reset: () => {
       log.resetCalls.n += 1;
     },
   } as unknown as MessageAPI;
+}
+
+/** Poll a predicate until true or timeout. Used in lieu of fixed-duration
+ *  setTimeout waits in async tests so we don't depend on CI scheduler luck. */
+async function until(predicate: () => boolean, timeoutMs = 1000, pollMs = 5): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  if (!predicate()) {
+    throw new Error(`until() timed out after ${timeoutMs}ms`);
+  }
 }
 
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
@@ -106,24 +127,35 @@ describe('setupHookBridge', () => {
       autoApprove?: boolean;
       autoApproveDecision?: 'approve' | 'deny' | 'escalate';
       autoApproveDelayMs?: number;
+      autoApproveThrows?: boolean;
+      throwOnQuestionTimes?: number;
     } = {},
   ) {
     sessionRegistry.registerSession(
       SID,
       tmpDir,
       fakePTY(ptySubmits),
-      fakeMessageAPI(messageApiLog),
+      fakeMessageAPI(
+        messageApiLog,
+        opts.throwOnQuestionTimes !== undefined
+          ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
+          : {},
+      ),
     );
 
     // Minimal AutoApproveService stub. Only invoked when opts.autoApprove is
     // true; default decision is 'approve' (existing tests rely on this).
     // `autoApproveDelayMs` simulates LLM eval latency so dedup-window tests
     // can fire Notification while evaluate() is still in flight (#379).
+    // `autoApproveThrows` exercises the outer .catch() handler.
     const autoApproveService = opts.autoApprove
       ? ({
           evaluate: async () => {
             if (opts.autoApproveDelayMs && opts.autoApproveDelayMs > 0) {
               await new Promise((r) => setTimeout(r, opts.autoApproveDelayMs));
+            }
+            if (opts.autoApproveThrows) {
+              throw new Error('test: ollama down');
             }
             return {
               decision: opts.autoApproveDecision ?? 'approve',
@@ -150,7 +182,12 @@ describe('setupHookBridge', () => {
         hookServer: hookServer as unknown as HookServer,
         sessionId: SID,
         workingDirectory: tmpDir,
-        messageApi: fakeMessageAPI(messageApiLog),
+        messageApi: fakeMessageAPI(
+          messageApiLog,
+          opts.throwOnQuestionTimes !== undefined
+            ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
+            : {},
+        ),
         sendAndRecord: () => {},
       },
     );
@@ -392,12 +429,45 @@ describe('setupHookBridge', () => {
     });
 
     // Wait for evaluate() + inject() to fully resolve.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await until(() => ptySubmits.length >= 1);
 
     // Approved: PTY received "1" once.
     expect(ptySubmits).toEqual(['1']);
     // Notification path must have been suppressed by the pre-emptive dedup.
     // Total questions emitted: zero (the auto-approve path is silent on success).
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('regression #379: slow auto-approve DENY does NOT leak a Notification question', async () => {
+    // Mirror of the approve test; the deny path also injects (with "3")
+    // and must benefit from the same pre-emptive dedup. Without it, the
+    // mid-flight Notification would emit a phantom approve-style 3-option
+    // question while the daemon was about to silently deny.
+    build({ autoApprove: true, autoApproveDecision: 'deny', autoApproveDelayMs: 80 });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-379-deny',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-379-deny',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-379-deny',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    await until(() => ptySubmits.length >= 1);
+
+    expect(ptySubmits).toEqual(['3']);
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
@@ -428,11 +498,90 @@ describe('setupHookBridge', () => {
       message: 'Claude needs your permission to use Bash',
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await until(() => messageApiLog.questionCalls >= 1);
 
     // No injection happened (escalate, main context).
     expect(ptySubmits).toEqual([]);
     // Exactly one question: the escalation, not the suppressed Notification.
     expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('regression #379: evaluate() throws -> escalates to user, Notification suppressed', async () => {
+    // Outer .catch() runs when ollama dies mid-eval. Main-session context
+    // hits escalateToUser -> handlePermissionRequest emits canonical Q. The
+    // Notification fired during the eval window must still be suppressed.
+    build({ autoApprove: true, autoApproveThrows: true, autoApproveDelayMs: 80 });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-379c',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-379c',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-379c',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    await until(() => messageApiLog.questionCalls >= 1);
+
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('regression #381 audit: escalate throws -> dedup mark cleared so Notification fallback fires', async () => {
+    // Silent-failure-hunter B2: if escalateToUser() throws (push fan-out
+    // failure, WS send on a half-closed adapter, etc.) the user used to be
+    // left with NOTHING — pre-emptive dedup suppressed the trailing
+    // Notification. Now the catch handler clears the dedup mark, so the
+    // Notification fallback gets to surface a question.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'escalate',
+      autoApproveDelayMs: 30,
+      throwOnQuestionTimes: 1, // first onQuestion (escalation) throws; Notification fallback succeeds
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-381a',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-381a',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait until escalation has been attempted (questionCalls increments
+    // even when the call throws — fakeMessageAPI counts on entry).
+    await until(() => messageApiLog.questionCalls >= 1);
+
+    // Now fire the Notification AFTER escalation has thrown. Without the
+    // clearPermissionHandled() call in escalateToUser's catch, the dedup
+    // mark would still be active and this Notification would be suppressed.
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-381a',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    await until(() => messageApiLog.questionCalls >= 2);
+
+    // Two attempts: 1 escalation (threw), 1 Notification fallback (succeeded
+    // for counting purposes; throwOnQuestion fires on every call but the
+    // counter increments before the throw so we observe the call).
+    expect(messageApiLog.questionCalls).toBe(2);
   });
 });
