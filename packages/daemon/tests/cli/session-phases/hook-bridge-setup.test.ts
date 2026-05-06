@@ -129,6 +129,7 @@ describe('setupHookBridge', () => {
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
       throwOnQuestionTimes?: number;
+      injectAckTimeoutMs?: number;
     } = {},
   ) {
     sessionRegistry.registerSession(
@@ -189,6 +190,9 @@ describe('setupHookBridge', () => {
             : {},
         ),
         sendAndRecord: () => {},
+        ...(opts.injectAckTimeoutMs !== undefined
+          ? { injectAckTimeoutMs: opts.injectAckTimeoutMs }
+          : {}),
       },
     );
   }
@@ -583,5 +587,152 @@ describe('setupHookBridge', () => {
     // for counting purposes; throwOnQuestion fires on every call but the
     // counter increments before the throw so we observe the call).
     expect(messageApiLog.questionCalls).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #382: PTY inject ack timeout. submitInput is fire-and-forget, so a
+  // stuck PTY can swallow the byte while inject() reports success. Combined
+  // with the pre-emptive dedup mark (#379/#381), the user would see no
+  // PTY answer, no question, and no APNS push -- a hard regression compared
+  // to the pre-#381 phantom-Notification behaviour. The fix registers a
+  // PendingAck around submitInput and escalates if no follow-up hook event
+  // arrives within the timeout.
+  // -------------------------------------------------------------------------
+
+  test('regression #382: approve + PostToolUse arrives in time -> no escalation', async () => {
+    // Happy path: the auto-approve injects "1", Claude proceeds with the
+    // tool call, PostToolUse fires within the ack window. No timeout, no
+    // escalation. questionCalls stays at 0.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'approve',
+      injectAckTimeoutMs: 100, // tight window so the test fails fast on regression
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-382a',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-382a',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await until(() => ptySubmits.length >= 1);
+    expect(ptySubmits).toEqual(['1']);
+
+    // Simulate Claude advancing past the prompt: PostToolUse for the tool.
+    hookServer.fire('PostToolUse', {
+      session_id: 'claude-locked-382a',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_use_id: 'tool-use-382a',
+      tool_input: { command: 'ls' },
+      tool_output: { exit_code: 0 },
+    });
+
+    // Wait past the ack timeout to confirm no late escalation fires.
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('regression #382: approve + no follow-up event -> ack timeout escalates', async () => {
+    // Silent PTY scenario: inject reports success but no PreToolUse /
+    // PostToolUse / Stop arrives. The ack timer fires, clears the dedup
+    // mark, and emits the canonical question via escalateToUser.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'approve',
+      injectAckTimeoutMs: 50,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-382b',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-382b',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await until(() => ptySubmits.length >= 1);
+    expect(ptySubmits).toEqual(['1']);
+
+    // No follow-up event: ack timer should fire and emit a fallback Q.
+    await until(() => messageApiLog.questionCalls >= 1, 500);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('regression #382: deny + Stop arrives in time -> no escalation', async () => {
+    // Mirror of the approve happy path for the deny branch. Stop is the
+    // expected ack signal when Claude abandons the requested tool.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'deny',
+      injectAckTimeoutMs: 100,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-382c',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-382c',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await until(() => ptySubmits.length >= 1);
+    expect(ptySubmits).toEqual(['3']);
+
+    hookServer.fire('Stop', {
+      session_id: 'claude-locked-382c',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+    });
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('regression #382: ack timeout AFTER Notification dedup expired -> single escalation', async () => {
+    // Verifies the timeout path also clears the dedup mark, so a delayed
+    // Notification (well after the 5s window) still surfaces if it arrives.
+    // This is the silent-failure recovery: even if Claude eventually
+    // re-prompts via a fresh Notification long after the inject was lost,
+    // the user gets a question.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'approve',
+      injectAckTimeoutMs: 50,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-382d',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-382d',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait for ack timeout -> escalation -> exactly one question.
+    await until(() => messageApiLog.questionCalls >= 1, 500);
+    expect(messageApiLog.questionCalls).toBe(1);
+    // PTY received "1" (auto-approve injected before the silent failure
+    // was detected); the escalation is the safety net.
+    expect(ptySubmits).toEqual(['1']);
   });
 });
