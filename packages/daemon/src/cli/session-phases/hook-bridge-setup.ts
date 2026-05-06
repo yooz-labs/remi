@@ -62,8 +62,8 @@ export interface HookBridgeArgs {
   workingDirectory: string;
   messageApi: MessageAPI;
   sendAndRecord: (message: ProtocolMessage) => void;
-  /** Override the default 1000ms inject ack timeout (#382). Tests use a
-   *  short value to exercise the timeout path quickly. */
+  /** Override the default inject ack timeout. Tests use a short value to
+   *  exercise the timeout path without slowing the suite. */
   injectAckTimeoutMs?: number;
 }
 
@@ -112,7 +112,7 @@ export function setupHookBridge(
   // a stale `null`-once cache wedged this state and permanently disabled
   // hook-driven discovery for both daemons.
 
-  // ---- Inject ack tracking (issue #382) -----------------------------------
+  // ---- Inject ack tracking ------------------------------------------------
   //
   // session.pty.submitInput() is fire-and-forget: it writes the byte (and
   // 50 ms later the carriage return) without confirming Claude consumed
@@ -121,18 +121,19 @@ export function setupHookBridge(
   // mark, leaving the user with no PTY answer, no question, and no push.
   //
   // To detect this, we register a PendingAck right before submitInput. Any
-  // qualifying hook event (PreToolUse, PostToolUse, Stop, SessionEnd) for
-  // our session resolves it -- those are ground truth that Claude
-  // advanced past the prompt. If no such event arrives
-  // within PERMISSION_INJECT_ACK_TIMEOUT_MS, the ack times out and we
-  // assume the inject was lost: clear the dedup mark and escalate so the
-  // user actually sees the question on iOS.
+  // qualifying hook event for our session resolves it (see ackAllPending()
+  // call sites below) -- those are ground truth that Claude advanced past
+  // the prompt. If no such event arrives within the ack timeout, we assume
+  // the inject was lost: clear the dedup mark and escalate so the user
+  // actually sees the question on iOS.
   //
   // The PendingAck Set is per-session (closure-scoped). Multiple injects
   // in flight share the set; ackAllPending() resolves them all on any
-  // qualifying event. False positives (e.g. resolving an unrelated ack
-  // because a different tool's PostToolUse fired first) are benign --
-  // they just skip the timeout-driven escalation we'd have done anyway.
+  // qualifying event. KNOWN LIMITATION: with two injects in flight, the
+  // qualifying event for inject-A also resolves inject-B's ack -- if
+  // inject-B's PTY write was actually lost, the silent failure is masked.
+  // Same-tick double-prompts are rare; per-tool_use_id correlation is the
+  // long-term fix.
 
   type PendingAck = {
     timer: ReturnType<typeof setTimeout> | null;
@@ -416,7 +417,6 @@ export function setupHookBridge(
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
-    // Claude advanced past the prompt: resolve any pending inject acks.
     ackAllPending();
     handlers.onPreToolUse?.(input);
   });
@@ -424,7 +424,6 @@ export function setupHookBridge(
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
-    // Claude advanced past the prompt: resolve any pending inject acks.
     ackAllPending();
     handlers.onPostToolUse?.(input);
   });
@@ -435,6 +434,14 @@ export function setupHookBridge(
     if (isSubagentEvent(input)) {
       log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
       return;
+    }
+    // permission_prompt is the same prompt our inject is answering; do
+    // NOT treat it as ack. All other notification types (idle_prompt,
+    // auth_success, etc.) are evidence Claude moved on -- without this,
+    // an Edit-style approve where Claude doesn't re-emit PreToolUse
+    // would time out into a phantom escalation.
+    if (input.notification_type !== 'permission_prompt') {
+      ackAllPending();
     }
     handlers.onNotification?.(input);
   });
@@ -464,10 +471,9 @@ export function setupHookBridge(
     // returns false so callers can fall back to escalating the prompt.
     //
     // Registers a PendingAck around the submitInput call. The next
-    // qualifying hook event (PreToolUse / PostToolUse / Stop / SessionEnd)
-    // for our session resolves it. If the timeout fires first, the inject
-    // is treated as silently lost -- the dedup mark is cleared and we
-    // escalate so the user still gets a question. See #382.
+    // qualifying hook event for our session resolves it. If the timeout
+    // fires first, the inject is treated as silently lost -- the dedup
+    // mark is cleared and we escalate so the user still gets a question.
     const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
       let ack: PendingAck | null = null;
       try {
@@ -480,6 +486,16 @@ export function setupHookBridge(
         // races with submitInput (Claude responding faster than the 50 ms
         // CR delay) finds the ack already pending and resolves it cleanly.
         ack = startPendingAck(() => {
+          // Suppress the phantom escalation if our session has already
+          // ended (Claude exited, PTY torn down, etc.). Without this
+          // gate the timer fires a stale question + push for a session
+          // that no longer exists.
+          if (mainSessionEnded || claudeSessionId === null) {
+            log(
+              `[AutoApprove ${sessionTag}] inject ack timeout fired post-teardown; suppressing phantom escalation`,
+            );
+            return;
+          }
           log(
             `[AutoApprove ${sessionTag}] inject("${value}") ack timeout (${PERMISSION_INJECT_ACK_TIMEOUT_MS}ms); clearing dedup + escalating`,
           );
@@ -586,8 +602,6 @@ export function setupHookBridge(
   hookServer.on('Stop', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
-    // Claude advanced past the prompt (or denied path completed): resolve
-    // any pending inject acks.
     ackAllPending();
     handlers.onStop?.(input);
   });
@@ -598,9 +612,8 @@ export function setupHookBridge(
       mainSessionEnded = true;
     }
     if (!filterBySession(input)) return;
-    // Session ending is a hard signal Claude is no longer waiting at the
-    // prompt; resolve any pending inject acks so their timeouts don't fire
-    // a phantom escalation post-shutdown.
+    // Resolve pending acks before SessionEnd handlers run; otherwise a
+    // timeout could fire a phantom escalation after shutdown.
     ackAllPending();
     handlers.onSessionEnd?.(input);
   });

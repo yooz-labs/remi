@@ -33,14 +33,18 @@ class RecordingHookServer {
   }
 }
 
-/** PTYSession fake that tracks submitInput calls (drives the auto-approve inject assertions). */
-function fakePTY(submits: string[]): PTYSession {
+/** PTYSession fake that tracks submitInput calls (drives the auto-approve inject assertions).
+ *  When throws=true, submitInput rejects to exercise the inject() cancellation path. */
+function fakePTY(submits: string[], opts: { throws?: boolean } = {}): PTYSession {
   return {
     id: generateId(),
     isRunning: true,
     write: () => {},
     submitInput: async (content: string) => {
       submits.push(content);
+      if (opts.throws) {
+        throw new Error('test: submitInput synthetic failure');
+      }
     },
     close: async () => {},
   } as unknown as PTYSession;
@@ -130,12 +134,13 @@ describe('setupHookBridge', () => {
       autoApproveThrows?: boolean;
       throwOnQuestionTimes?: number;
       injectAckTimeoutMs?: number;
+      submitInputThrows?: boolean;
     } = {},
   ) {
     sessionRegistry.registerSession(
       SID,
       tmpDir,
-      fakePTY(ptySubmits),
+      fakePTY(ptySubmits, opts.submitInputThrows ? { throws: true } : {}),
       fakeMessageAPI(
         messageApiLog,
         opts.throwOnQuestionTimes !== undefined
@@ -606,7 +611,7 @@ describe('setupHookBridge', () => {
     build({
       autoApprove: true,
       autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100, // tight window so the test fails fast on regression
+      injectAckTimeoutMs: 100,
     });
 
     hookServer.fire('SessionStart', {
@@ -634,9 +639,11 @@ describe('setupHookBridge', () => {
       tool_output: { exit_code: 0 },
     });
 
-    // Wait past the ack timeout to confirm no late escalation fires.
-    await new Promise((r) => setTimeout(r, 150));
-
+    // Wait past 2.5x the ack timeout to leave headroom for CI scheduler
+    // jitter (a Bun timer + microtask flush on a loaded macOS runner has
+    // shown >40 ms drift). If a late timeout escalation slips through,
+    // questionCalls becomes 1 and this assertion fails.
+    await new Promise((r) => setTimeout(r, 250));
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
@@ -647,7 +654,7 @@ describe('setupHookBridge', () => {
     build({
       autoApprove: true,
       autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 50,
+      injectAckTimeoutMs: 100,
     });
 
     hookServer.fire('SessionStart', {
@@ -666,7 +673,7 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual(['1']);
 
     // No follow-up event: ack timer should fire and emit a fallback Q.
-    await until(() => messageApiLog.questionCalls >= 1, 500);
+    await until(() => messageApiLog.questionCalls >= 1, 1000);
     expect(messageApiLog.questionCalls).toBe(1);
   });
 
@@ -700,39 +707,116 @@ describe('setupHookBridge', () => {
       stop_hook_active: false,
     });
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 250));
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  test('regression #382: ack timeout AFTER Notification dedup expired -> single escalation', async () => {
-    // Verifies the timeout path also clears the dedup mark, so a delayed
-    // Notification (well after the 5s window) still surfaces if it arrives.
-    // This is the silent-failure recovery: even if Claude eventually
-    // re-prompts via a fresh Notification long after the inject was lost,
-    // the user gets a question.
+  // (The previous "ack timeout AFTER Notification dedup expired" test was
+  // dropped: the timeout path's explicit clearPermissionHandled() is
+  // defensive -- handlePermissionRequest immediately re-arms
+  // lastPermissionEmitAt when escalateToUser emits, so a late Notification
+  // is correctly suppressed as a duplicate of the canonical escalation.
+  // The meaningful "timeout -> escalation fires" behavior is covered by
+  // the "approve + no follow-up event" test above.)
+
+  test('regression #382: submitInput throws -> ack cancelled, single escalation only', async () => {
+    // inject() catch path: cancel pendingAck before returning false so the
+    // caller's escalateToUser fires once, not once + a stale timeout
+    // escalation a second later.
     build({
       autoApprove: true,
       autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 50,
+      injectAckTimeoutMs: 100,
+      submitInputThrows: true,
     });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382d',
+      session_id: 'claude-locked-382e',
       transcript_path: path.join(tmpDir, 't.jsonl'),
       hook_event_name: 'SessionStart',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382d',
+      session_id: 'claude-locked-382e',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    // Wait for ack timeout -> escalation -> exactly one question.
+    // PTY recorded the byte (fakePTY pushes BEFORE throwing) but inject
+    // returned false; caller escalates once via the inject-failure path.
     await until(() => messageApiLog.questionCalls >= 1, 500);
     expect(messageApiLog.questionCalls).toBe(1);
-    // PTY received "1" (auto-approve injected before the silent failure
-    // was detected); the escalation is the safety net.
+
+    // Wait past the ack timeout to confirm no SECOND escalation lands.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('regression #382: default ack timeout is non-trivial (no override -> no fast escalation)', async () => {
+    // Pins the args.injectAckTimeoutMs ?? 1000 fallback. If a refactor
+    // dropped the default and the field became required (or undefined
+    // -> setTimeout interpreted as 1ms), the timer would fire almost
+    // immediately and escalate during this 200 ms quiet window.
+    build({ autoApprove: true, autoApproveDecision: 'approve' }); // no injectAckTimeoutMs
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-382f',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-382f',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await until(() => ptySubmits.length >= 1);
     expect(ptySubmits).toEqual(['1']);
+
+    // 200 ms is a fraction of the 1000 ms default; no escalation expected.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('regression #382: Notification(idle_prompt) resolves the ack (Edit-style approve)', async () => {
+    // When auto-approve approves an Edit (the same tool that triggered
+    // the prompt), Claude doesn't fire a fresh PreToolUse. The next
+    // signal that "Claude moved on" is often a Notification(idle_prompt).
+    // Code-reviewer flagged this as a phantom-escalation gap; this test
+    // pins ackAllPending() being called from the Notification handler
+    // when the type is anything other than permission_prompt.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'approve',
+      injectAckTimeoutMs: 100,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-382g',
+      transcript_path: path.join(tmpDir, 't.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-382g',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/x.ts', old_str: 'a', new_str: 'b' },
+    });
+
+    await until(() => ptySubmits.length >= 1);
+    expect(ptySubmits).toEqual(['1']);
+
+    // idle_prompt is a "Claude moved on" signal -- must ack the pending
+    // inject so the timer doesn't fire a phantom escalation.
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-382g',
+      hook_event_name: 'Notification',
+      notification_type: 'idle_prompt',
+      message: '',
+    });
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(messageApiLog.questionCalls).toBe(0);
   });
 });
