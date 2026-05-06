@@ -101,6 +101,7 @@ import {
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
+import { looksLikeDefaultPermissionQuestion } from './api/question-dedup.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
@@ -136,6 +137,7 @@ import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
+import type { HookEventBridge } from './hooks/hook-event-bridge.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
@@ -993,6 +995,11 @@ async function createNewSession(
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
   // guard so terminal-only failures still reach remote clients.
+  // Hook bridge is created below (only when hookServer is active). The PTY
+  // onQuestion callback closes over this binding so it can suppress emissions
+  // during subagent contexts and skip duplicate Yes/Yes-always/No prompts.
+  let hookBridge: HookEventBridge | null = null;
+
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
     {
@@ -1001,13 +1008,19 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
-        // PTY question parser runs as a SECONDARY source alongside hooks.
-        // Hooks only emit a default 3-option permission question (Yes/Yes-always/No)
-        // when permission_suggestions is undefined; the PTY parser sees the actual
-        // numbered options on screen and can upgrade Y/N or 4+ option prompts that
-        // hooks miss entirely (free-text prompts, multi-choice questions). Issue #378.
-        // MessageAPI.handleQuestion deduplicates on prompt-text fingerprint, so
-        // a PTY emission matching the hook's question is suppressed automatically.
+        // PTY parser runs as a secondary source so Y/N, multi-choice, and
+        // free-text prompts (which hooks never carry) reach the user with
+        // their real options. We still gate two cases:
+        //   1. Subagent prompts are confined to the subagent — the user
+        //      cannot answer them without breaking Task semantics.
+        //   2. The hook's hardcoded Yes/Yes-always/No is already emitted by
+        //      HookEventBridge for any tool permission. PTY sees the same
+        //      three options on screen but with different surrounding text,
+        //      so the dedup window cannot catch them — drop here by shape.
+        if (hookBridge !== null) {
+          if (hookBridge.isInSubagentContext()) return;
+          if (looksLikeDefaultPermissionQuestion(question)) return;
+        }
         messageApi.handleQuestion(question);
       },
       onStatusChange: (status, context) => {
@@ -1019,7 +1032,7 @@ async function createNewSession(
   );
 
   if (hookServer) {
-    setupHookBridge(
+    const handle = setupHookBridge(
       {
         sessionRegistry,
         sessionStore,
@@ -1031,6 +1044,7 @@ async function createNewSession(
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord },
     );
+    hookBridge = handle.bridge;
   }
 
   const ptySession = createPtySessionForSession(

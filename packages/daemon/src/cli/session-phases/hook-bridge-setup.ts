@@ -67,10 +67,17 @@ export interface HookBridgeArgs {
   injectAckTimeoutMs?: number;
 }
 
+export interface HookBridgeHandle {
+  /** Live bridge instance. Callers can read `isInSubagentContext()` to gate
+   *  alternate question sources (e.g. PTY parser) so subagent prompts are
+   *  not surfaced to the user. */
+  bridge: HookEventBridge;
+}
+
 export function setupHookBridge(
   deps: Readonly<HookBridgeDeps>,
   args: Readonly<HookBridgeArgs>,
-): void {
+): HookBridgeHandle {
   const {
     sessionRegistry,
     sessionStore,
@@ -619,4 +626,6 @@ export function setupHookBridge(
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
+
+  return { bridge: hookBridge };
 }

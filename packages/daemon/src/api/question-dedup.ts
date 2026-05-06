@@ -1,26 +1,21 @@
 /**
- * QuestionDedup - merges questions arriving from multiple sources.
+ * QuestionDedup - safety net against rapid duplicate emissions.
  *
- * Both the hook bridge (PermissionRequest/Notification) and the PTY
- * OutputProcessor can emit a question for the same prompt. Without
- * dedup the client gets two messages for one prompt, or, conversely,
- * a richer PTY-parsed question is masked by the hook's hardcoded 3-option
- * default (issue #378).
+ * Tracks only the most recently emitted question. When a same-fingerprint
+ * question arrives within the dedup window, it is dropped UNLESS it is
+ * richer (more options, or gains allowsFreeText) — that is allowed through
+ * as an upgrade and replaces the baseline.
  *
- * Rules (windowMs, default 5s):
- *   - Different prompt fingerprint                       -> emit.
- *   - Same fingerprint, new is richer (more options or
- *     gains allowsFreeText)                              -> emit (upgrade).
- *   - Same fingerprint, new is same/poorer, in window    -> suppress.
- *   - Same fingerprint, new is same/poorer, out of window-> emit.
+ * Single-slot tracking is deliberate: callers (`MessageAPI`) are expected
+ * to clear the state on every meaningful boundary (status change away from
+ * 'waiting', session reset). The window is a safety net against same-tick
+ * re-renders, not a long-lived cache.
  *
- * The hook bridge fires first (within ~10ms of Claude's prompt). The
- * OutputProcessor parses terminal text ~50-200ms later. If the hook only
- * had a default 3-option set but the terminal shows numbered options
- * (e.g. 4-choice "which file?"), the PTY emission upgrades the question.
- *
- * Fingerprinting normalizes case + whitespace and truncates to 80 chars
- * so minor terminal redraw differences don't defeat the dedup.
+ * The fingerprint normalizes case + whitespace and truncates to 80 chars,
+ * so minor terminal redraw differences don't defeat the dedup. Genuinely
+ * distinct prompts that happen to share an 80-char prefix are an accepted
+ * collision risk; keeping it short bounds memory and matches real prompts
+ * which are usually <80 chars after normalization.
  */
 
 import type { Question } from '@remi/shared';
@@ -54,7 +49,12 @@ export class QuestionDedup {
       const richer =
         question.options.length > last.optionCount ||
         (question.allowsFreeText && !last.allowsFreeText);
-      if (!richer) return false;
+      if (!richer) {
+        console.debug(
+          `[QuestionDedup] Suppressed (lastOpts=${last.optionCount}, newOpts=${question.options.length}, ageMs=${t - last.emittedAt}): ${question.text.slice(0, 80)}`,
+        );
+        return false;
+      }
     }
 
     this.last = {
@@ -74,4 +74,24 @@ export class QuestionDedup {
 
 function fingerprint(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+/**
+ * True when a parsed question matches the shape of Claude Code's hardcoded
+ * 3-option permission prompt (Yes / Yes-always / No). Used to drop redundant
+ * PTY-parsed permission emissions when the hook bridge has already produced
+ * the same question — text fingerprints differ between the two sources
+ * (hook builds "Allow Bash: ls", PTY extracts whatever appears above the
+ * numbered list), so structural matching is safer than text dedup alone.
+ */
+export function looksLikeDefaultPermissionQuestion(question: {
+  options: ReadonlyArray<{ label: string }>;
+  allowsFreeText: boolean;
+}): boolean {
+  if (question.allowsFreeText) return false;
+  if (question.options.length !== 3) return false;
+  const labels = question.options.map((o) => (o.label ?? '').toLowerCase().trim());
+  const first = labels[0] ?? '';
+  const last = labels[2] ?? '';
+  return first.startsWith('yes') && last.startsWith('no');
 }

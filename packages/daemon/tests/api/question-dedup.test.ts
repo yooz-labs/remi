@@ -6,19 +6,20 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { Question, QuestionOption } from '@remi/shared';
-import { QuestionDedup } from '../../src/api/question-dedup.ts';
+import { QuestionDedup, looksLikeDefaultPermissionQuestion } from '../../src/api/question-dedup.ts';
 
 function opt(label: string, value: string): QuestionOption {
   return { label, value, isRecommended: false, isYes: false, isNo: false };
 }
 
+let nextId = 0;
 function q(text: string, optionCount: number, allowsFreeText = false): Question {
   const options: QuestionOption[] = [];
   for (let i = 1; i <= optionCount; i++) {
     options.push(opt(`Option ${i}`, String(i)));
   }
   return {
-    id: `id-${Math.random()}`,
+    id: `id-${++nextId}`,
     text,
     options,
     allowsFreeText,
@@ -125,5 +126,104 @@ describe('QuestionDedup', () => {
     t += 100;
     // Different suffix beyond char 80 — same fingerprint, suppressed
     expect(dedup.shouldEmit(q(`${base} suffix2`, 3))).toBe(false);
+  });
+
+  test('whitespace normalization handles tabs and newlines', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    expect(dedup.shouldEmit(q('Allow Bash: ls -la', 3))).toBe(true);
+    t += 100;
+    expect(dedup.shouldEmit(q('Allow\tBash:\n  ls -la', 3))).toBe(false);
+  });
+
+  test('PTY-first then poorer hook within window: hook is suppressed', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    expect(dedup.shouldEmit(q('Pick a file', 5))).toBe(true);
+    t += 100;
+    expect(dedup.shouldEmit(q('Pick a file', 3))).toBe(false);
+  });
+
+  test('A then B then A within window: third A re-emits (single-slot)', () => {
+    // Document the single-slot limitation. B overwrites A's baseline, so a
+    // returning A is treated as fresh. This is acceptable because the dedup
+    // is a same-tick safety net; cross-question dedup is not its job.
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    expect(dedup.shouldEmit(q('Allow Bash: ls', 3))).toBe(true);
+    t += 100;
+    expect(dedup.shouldEmit(q('Allow Edit: foo', 3))).toBe(true);
+    t += 100;
+    expect(dedup.shouldEmit(q('Allow Bash: ls', 3))).toBe(true);
+  });
+
+  test('boundary: exactly windowMs ago is treated as expired (strict <)', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    expect(dedup.shouldEmit(q('Allow Bash: ls', 3))).toBe(true);
+    t += 5000;
+    expect(dedup.shouldEmit(q('Allow Bash: ls', 3))).toBe(true);
+  });
+});
+
+describe('looksLikeDefaultPermissionQuestion', () => {
+  test('matches Yes / Yes always / No', () => {
+    const question = {
+      options: [{ label: 'Yes' }, { label: 'Yes, always' }, { label: 'No' }],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
+  });
+
+  test('matches Yes / Yes-and-do-not-ask / No (real Claude wording)', () => {
+    const question = {
+      options: [
+        { label: 'Yes' },
+        { label: "Yes, and don't ask again this session" },
+        { label: 'No, and tell Claude what to do differently' },
+      ],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
+  });
+
+  test('matches case-insensitively with whitespace', () => {
+    const question = {
+      options: [{ label: '  YES  ' }, { label: 'yes ALWAYS' }, { label: 'no thanks' }],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
+  });
+
+  test('does not match 3-option non-permission list', () => {
+    const question = {
+      options: [{ label: 'dev' }, { label: 'staging' }, { label: 'prod' }],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
+  });
+
+  test('does not match 2-option Y/N', () => {
+    const question = {
+      options: [{ label: 'Yes' }, { label: 'No' }],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
+  });
+
+  test('does not match 4+ option multi-choice', () => {
+    const question = {
+      options: [{ label: 'Yes' }, { label: 'Yes, always' }, { label: 'Maybe' }, { label: 'No' }],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
+  });
+
+  test('does not match free-text prompts', () => {
+    const question = {
+      options: [{ label: 'Yes' }, { label: 'Yes, always' }, { label: 'No' }],
+      allowsFreeText: true,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
   });
 });

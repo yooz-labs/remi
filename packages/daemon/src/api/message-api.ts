@@ -210,10 +210,8 @@ export class MessageAPI {
   }
 
   /**
-   * Emit a question to subscribers, deduping against recently-emitted ones.
-   * Hook bridge and PTY OutputProcessor both call this; same-fingerprint
-   * lower-rank emissions within the dedup window are suppressed. See
-   * QuestionDedup for the upgrade rules.
+   * Emit a question, deduping against recent emissions. See QuestionDedup
+   * for upgrade rules.
    */
   handleQuestion(question: Question): void {
     if (!this.questionDedup.shouldEmit(question)) return;
@@ -221,6 +219,14 @@ export class MessageAPI {
   }
 
   handleStatusChange(status: AgentStatus, context?: string): void {
+    // Question dedup baseline is meaningful only while the user is being
+    // prompted. Once status leaves 'waiting' (idle/thinking/executing) the
+    // current question is either answered or stale, so the next emission
+    // should be evaluated fresh — otherwise the next session's first prompt
+    // can collide with the prior session's answered prompt within the window.
+    if (status !== 'waiting') {
+      this.questionDedup.reset();
+    }
     this.events.onStatusChange?.(status, context);
   }
 }
