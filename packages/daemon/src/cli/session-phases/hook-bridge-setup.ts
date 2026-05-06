@@ -184,12 +184,16 @@ export function setupHookBridge(
   };
 
   /**
-   * Cancel any in-flight auto-approve LLM eval. Called alongside
-   * ackAllPending() on hook events that confirm Claude advanced past a
-   * prompt (PreToolUse / PostToolUse / Stop / SessionEnd) — at that point
-   * the user has already answered (probably in the local terminal) and a
-   * stale LLM result would either inject into the wrong PTY position or
-   * emit a phantom question. Issue #387.
+   * Cancel any in-flight auto-approve LLM eval. Called on hook events that
+   * unambiguously confirm Claude advanced past a prompt: PreToolUse /
+   * PostToolUse / Stop / SessionEnd. At that point the user has already
+   * answered (probably in the local terminal) and a stale LLM result would
+   * either inject into the wrong PTY position or emit a phantom question.
+   *
+   * Deliberately NOT called on Notification events: idle_prompt can fire
+   * while a permission eval is still legitimately in flight, and
+   * auth_success / elicitation_dialog don't carry "user answered" semantics
+   * either.
    */
   const cancelStaleAutoApprove = (reason: string): void => {
     if (autoApproveService === null) return;
@@ -465,8 +469,11 @@ export function setupHookBridge(
     // an Edit-style approve where Claude doesn't re-emit PreToolUse
     // would time out into a phantom escalation.
     if (input.notification_type !== 'permission_prompt') {
+      // Ack pending injects (idle/auth/elicitation are evidence Claude
+      // moved on after our PTY write), but do NOT cancel a live LLM eval:
+      // idle_prompt in particular can fire concurrently with a still-valid
+      // PermissionRequest evaluation we want to complete normally.
       ackAllPending();
-      cancelStaleAutoApprove(`Notification(${input.notification_type})`);
     }
     handlers.onNotification?.(input);
   });
@@ -575,11 +582,11 @@ export function setupHookBridge(
         .then(async (result) => {
           if (result.decision === 'cancelled') {
             // User already advanced past the prompt (terminal answer or
-            // hook event confirmed the tool ran). Do nothing: no inject,
-            // no escalate. The pre-emptive markPermissionHandled() on the
-            // dedup window also cleared once Claude moved on, so the
-            // trailing Notification(permission_prompt), if any, is a
-            // separate event that the bridge will handle on its merits.
+            // hook event confirmed the tool ran). Do not inject, do not
+            // escalate. Clear the pre-emptive dedup mark we set above so a
+            // genuinely independent Notification(permission_prompt) within
+            // the 5 s window is not silently suppressed.
+            hookBridge.clearPermissionHandled();
             log(`[AutoApprove ${sessionTag}] Decision dropped: ${result.reasoning}`);
             return;
           }

@@ -126,16 +126,22 @@ export class AutoApproveService {
       this.currentAbortController = new AbortController();
       const externalSignal = this.currentAbortController.signal;
       const timeoutMs = this.llmConfig.timeoutMs;
+      // Hold the race timer handle so we can clear it whichever side wins.
+      // Without clearTimeout, a successful chatCompletion at t=200ms would
+      // leave a timer scheduled at t=timeoutMs that fires on the NEXT eval
+      // and aborts a healthy call (currentAbortController is shared instance
+      // state).
+      let raceTimer: ReturnType<typeof setTimeout> | null = null;
       try {
         const messages = buildPrompt(toolName, toolInput, this.instructions);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
-        // timeoutMs. The race timer also calls abort() best-effort to release
-        // socket resources.
+        // timeoutMs. The race timer also calls abort() so a fetch that does
+        // honor the signal releases socket resources promptly.
         const response = await Promise.race([
           chatCompletion(this.llmConfig, messages, externalSignal),
           new Promise<never>((_, reject) => {
-            setTimeout(() => {
+            raceTimer = setTimeout(() => {
               this.currentAbortController?.abort();
               reject(new DOMException(`Hard kill after ${timeoutMs}ms`, 'AbortError'));
             }, timeoutMs);
@@ -159,8 +165,15 @@ export class AutoApproveService {
           );
         }
 
+        // Clear cancelReason on success so a cancel() that raced with the
+        // resolved response (set the flag, but the success path won the
+        // microtask race) cannot leak into the NEXT eval's catch block and
+        // turn a real timeout into a phantom 'cancelled'. The catch path
+        // does its own read-and-clear.
+        this.cancelReason = null;
         return result;
       } finally {
+        if (raceTimer !== null) clearTimeout(raceTimer);
         this.evaluating = false;
         this.currentAbortController = null;
       }

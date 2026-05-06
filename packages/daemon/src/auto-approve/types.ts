@@ -7,12 +7,9 @@
 
 /**
  * Possible decisions returned by AutoApproveService.evaluate().
- *
- * - 'approve' / 'deny' / 'escalate' come from the LLM (or pattern match).
- * - 'cancelled' indicates the eval was aborted by the bridge after the user
- *   already advanced past the prompt (e.g. answered in the local terminal
- *   while the LLM was still cold-loading). Bridge handlers must treat this
- *   as a no-op: do not inject, do not escalate, do not notify.
+ * 'cancelled' is set ONLY when AutoApproveService.cancel() aborted an
+ * in-flight call; it cannot come from the LLM. See cancel() docs for
+ * the bridge-side contract.
  */
 export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'cancelled';
 
