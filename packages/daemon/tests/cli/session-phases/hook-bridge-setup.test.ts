@@ -839,7 +839,7 @@ describe('setupHookBridge', () => {
     hookServer.fire('SessionStart', {
       session_id: 'claude-locked-pre',
       hook_event_name: 'SessionStart',
-      transcript_path: '/tmp/x.jsonl',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
       source: 'startup',
       model: 'test',
     });
@@ -858,7 +858,7 @@ describe('setupHookBridge', () => {
     hookServer.fire('SessionStart', {
       session_id: 'claude-locked-post',
       hook_event_name: 'SessionStart',
-      transcript_path: '/tmp/x.jsonl',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
       source: 'startup',
       model: 'test',
     });
@@ -878,7 +878,7 @@ describe('setupHookBridge', () => {
     hookServer.fire('SessionStart', {
       session_id: 'claude-locked-stop',
       hook_event_name: 'SessionStart',
-      transcript_path: '/tmp/x.jsonl',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
       source: 'startup',
       model: 'test',
     });
@@ -896,7 +896,7 @@ describe('setupHookBridge', () => {
     hookServer.fire('SessionStart', {
       session_id: 'claude-locked-end',
       hook_event_name: 'SessionStart',
-      transcript_path: '/tmp/x.jsonl',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
       source: 'startup',
       model: 'test',
     });
@@ -916,7 +916,7 @@ describe('setupHookBridge', () => {
     hookServer.fire('SessionStart', {
       session_id: 'claude-locked-idle',
       hook_event_name: 'SessionStart',
-      transcript_path: '/tmp/x.jsonl',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
       source: 'startup',
       model: 'test',
     });
@@ -939,7 +939,7 @@ describe('setupHookBridge', () => {
     hookServer.fire('SessionStart', {
       session_id: 'claude-locked-cancel',
       hook_event_name: 'SessionStart',
-      transcript_path: '/tmp/x.jsonl',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
       source: 'startup',
       model: 'test',
     });
