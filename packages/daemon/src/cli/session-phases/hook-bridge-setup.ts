@@ -183,6 +183,21 @@ export function setupHookBridge(
     }
   };
 
+  /**
+   * Cancel any in-flight auto-approve LLM eval. Called alongside
+   * ackAllPending() on hook events that confirm Claude advanced past a
+   * prompt (PreToolUse / PostToolUse / Stop / SessionEnd) — at that point
+   * the user has already answered (probably in the local terminal) and a
+   * stale LLM result would either inject into the wrong PTY position or
+   * emit a phantom question. Issue #387.
+   */
+  const cancelStaleAutoApprove = (reason: string): void => {
+    if (autoApproveService === null) return;
+    if (autoApproveService.cancel(reason)) {
+      log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
+    }
+  };
+
   // ---- Helpers ------------------------------------------------------------
 
   const hasSiblingInDir = (): boolean => {
@@ -425,6 +440,7 @@ export function setupHookBridge(
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
     ackAllPending();
+    cancelStaleAutoApprove('PreToolUse');
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -432,6 +448,7 @@ export function setupHookBridge(
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
     ackAllPending();
+    cancelStaleAutoApprove('PostToolUse');
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
@@ -449,6 +466,7 @@ export function setupHookBridge(
     // would time out into a phantom escalation.
     if (input.notification_type !== 'permission_prompt') {
       ackAllPending();
+      cancelStaleAutoApprove(`Notification(${input.notification_type})`);
     }
     handlers.onNotification?.(input);
   });
@@ -555,6 +573,16 @@ export function setupHookBridge(
       aaService
         .evaluate(input.tool_name, input.tool_input, sessionTag)
         .then(async (result) => {
+          if (result.decision === 'cancelled') {
+            // User already advanced past the prompt (terminal answer or
+            // hook event confirmed the tool ran). Do nothing: no inject,
+            // no escalate. The pre-emptive markPermissionHandled() on the
+            // dedup window also cleared once Claude moved on, so the
+            // trailing Notification(permission_prompt), if any, is a
+            // separate event that the bridge will handle on its merits.
+            log(`[AutoApprove ${sessionTag}] Decision dropped: ${result.reasoning}`);
+            return;
+          }
           if (result.decision === 'approve') {
             if (!(await inject('1', 'approved'))) escalateToUser();
             return;
@@ -610,6 +638,7 @@ export function setupHookBridge(
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     ackAllPending();
+    cancelStaleAutoApprove('Stop');
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
@@ -622,6 +651,7 @@ export function setupHookBridge(
     // Resolve pending acks before SessionEnd handlers run; otherwise a
     // timeout could fire a phantom escalation after shutdown.
     ackAllPending();
+    cancelStaleAutoApprove('SessionEnd');
     handlers.onSessionEnd?.(input);
   });
 

@@ -168,6 +168,7 @@ describe('setupHookBridge', () => {
               reason: 'test-autoapprove',
             };
           },
+          cancel: () => false,
         } as unknown as import('../../../src/auto-approve/index.ts').AutoApproveService)
       : null;
 

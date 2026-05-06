@@ -90,7 +90,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     model: 'gemma4:e2b',
     api_key: '',
     base_url: 'http://localhost:11434/v1',
-    timeout: 10,
+    timeout: 30,
     log_decisions: true,
     allow: [],
     deny: [],
@@ -376,7 +376,8 @@ authorized_user_ids = []
 # model = "gemma4:e2b"
 # api_key = ""                  # Required for OpenRouter, empty for Ollama
 # base_url = "http://localhost:11434/v1"
-# timeout = 10                  # Seconds; falls through to user if exceeded
+# timeout = 30                  # Seconds; falls through to user if exceeded
+                                # (covers cold model load on local Ollama)
 # log_decisions = true
 #
 # User-defined rules. Substring matching for Bash, tool-name match for others.

@@ -51,6 +51,13 @@ export class AutoApproveService {
   private readonly instructions: string;
   /** Prevents concurrent evaluations. Second request escalates immediately. */
   private evaluating = false;
+  /** Active LLM call's controller; cleared in the eval finally block. cancel()
+   *  aborts via this. Held alongside `evaluating` so they share the same
+   *  lifecycle window. */
+  private currentAbortController: AbortController | null = null;
+  /** Set by cancel() so the catch block can distinguish a user-driven abort
+   *  (Claude advanced past the prompt) from a timeout abort. */
+  private cancelReason: string | null = null;
 
   constructor(config: AutoApproveConfig, logFn: (msg: string) => void) {
     this.llmConfig = {
@@ -116,9 +123,24 @@ export class AutoApproveService {
       }
 
       this.evaluating = true;
+      this.currentAbortController = new AbortController();
+      const externalSignal = this.currentAbortController.signal;
+      const timeoutMs = this.llmConfig.timeoutMs;
       try {
         const messages = buildPrompt(toolName, toolInput, this.instructions);
-        const response = await chatCompletion(this.llmConfig, messages);
+        // Hard kill via Promise.race: even if fetch ignores the abort signal
+        // (provider hang, Bun runtime quirk), evaluate() returns within
+        // timeoutMs. The race timer also calls abort() best-effort to release
+        // socket resources.
+        const response = await Promise.race([
+          chatCompletion(this.llmConfig, messages, externalSignal),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => {
+              this.currentAbortController?.abort();
+              reject(new DOMException(`Hard kill after ${timeoutMs}ms`, 'AbortError'));
+            }, timeoutMs);
+          }),
+        ]);
         const durationMs = Date.now() - start;
 
         const parsed = parseDecision(response.content);
@@ -140,13 +162,24 @@ export class AutoApproveService {
         return result;
       } finally {
         this.evaluating = false;
+        this.currentAbortController = null;
       }
     } catch (err) {
       const durationMs = Date.now() - start;
       const errorMsg = errorToString(err);
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
-      const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;
+      // cancelReason is set ONLY by cancel(); a timeout abort leaves it null.
+      // Read-and-clear so the next eval starts fresh.
+      const cancelledReason = this.cancelReason;
+      this.cancelReason = null;
 
+      if (isAbort && cancelledReason !== null) {
+        const reasoning = `Cancelled: ${cancelledReason}`;
+        this.logFn(`${prefix} CANCELLED ${toolName}: ${reasoning} (${durationMs}ms)`);
+        return { decision: 'cancelled', reasoning, durationMs, model };
+      }
+
+      const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;
       // Always log errors regardless of logDecisions setting
       this.logFn(`${prefix} ERROR ${toolName}: ${reasoning} (${durationMs}ms)`);
 
@@ -157,5 +190,21 @@ export class AutoApproveService {
         model,
       };
     }
+  }
+
+  /**
+   * Abort any in-flight LLM evaluation. Called by the hook bridge when
+   * Claude advances past the prompt (PreToolUse / PostToolUse / Stop /
+   * SessionEnd) so a slow LLM call cannot return a stale decision after
+   * the user already answered in the local terminal.
+   *
+   * Returns true if a call was actually cancelled, false if there was no
+   * in-flight eval (idempotent, safe to call always).
+   */
+  cancel(reason: string): boolean {
+    if (this.currentAbortController === null) return false;
+    this.cancelReason = reason;
+    this.currentAbortController.abort();
+    return true;
   }
 }

@@ -54,14 +54,25 @@ export function resolveProviderUrl(provider: string, fallbackUrl: string): strin
 /**
  * Send a chat completion request to an OpenAI-compatible endpoint.
  * Throws on network errors, timeouts, or non-200 responses.
+ *
+ * If `externalSignal` is provided and aborts before the request completes,
+ * the fetch is aborted and the abort propagates as a DOMException
+ * (name='AbortError'). Callers can distinguish a timeout from an external
+ * cancel by inspecting their own signal, not the thrown error.
  */
 export async function chatCompletion(
   config: LLMClientConfig,
   messages: readonly ChatMessage[],
+  externalSignal?: AbortSignal,
 ): Promise<LLMResponse> {
   const url = `${config.baseUrl}/chat/completions`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  const onExternalAbort = (): void => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -107,5 +118,6 @@ export async function chatCompletion(
     };
   } finally {
     clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
 }

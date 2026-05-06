@@ -5,8 +5,16 @@
  * an LLM (via OpenAI-compatible API) to decide: approve, deny, or escalate.
  */
 
-/** The three possible LLM decisions */
-export type AutoApproveDecision = 'approve' | 'deny' | 'escalate';
+/**
+ * Possible decisions returned by AutoApproveService.evaluate().
+ *
+ * - 'approve' / 'deny' / 'escalate' come from the LLM (or pattern match).
+ * - 'cancelled' indicates the eval was aborted by the bridge after the user
+ *   already advanced past the prompt (e.g. answered in the local terminal
+ *   while the LLM was still cold-loading). Bridge handlers must treat this
+ *   as a no-op: do not inject, do not escalate, do not notify.
+ */
+export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'cancelled';
 
 /** Result from the auto-approve evaluation */
 export interface AutoApproveResult {
