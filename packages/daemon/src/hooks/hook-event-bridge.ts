@@ -72,11 +72,29 @@ export class HookEventBridge {
     return this.subagentContext.isInSubagentContext();
   }
 
-  /** Mark that a PermissionRequest was handled externally (e.g. by auto-approve).
-   *  Sets the dedup timestamp so the subsequent Notification(permission_prompt)
-   *  is suppressed instead of generating a phantom notification. */
+  /** Mark that a PermissionRequest is being handled externally (e.g. by
+   *  auto-approve). Sets the dedup timestamp so the subsequent
+   *  Notification(permission_prompt) is suppressed instead of generating a
+   *  phantom notification.
+   *
+   *  Call this BEFORE starting a slow op (e.g. LLM evaluation) so the
+   *  Notification arriving mid-flight is suppressed. Callers must ensure
+   *  the timestamp is refreshed if the op can outlive PERMISSION_DEDUP_WINDOW_MS,
+   *  either by re-invoking this method or via a downstream write to
+   *  lastPermissionEmitAt (e.g. handlePermissionRequest does this on the
+   *  escalation path). */
   markPermissionHandled(): void {
     this.lastPermissionEmitAt = Date.now();
+  }
+
+  /** Clear the dedup mark so the NEXT Notification(permission_prompt) is
+   *  treated as a fresh standalone notification. Use when an externally-
+   *  handled PermissionRequest path FAILS (escalation throws, catch handler
+   *  exhausts) so the Notification fallback can still surface a question
+   *  to the user. Without this, a swallowed escalation leaves the bridge
+   *  silently suppressed for the rest of the dedup window. */
+  clearPermissionHandled(): void {
+    this.lastPermissionEmitAt = 0;
   }
 
   /** Returns HookServerEvents handlers wired to this bridge */
