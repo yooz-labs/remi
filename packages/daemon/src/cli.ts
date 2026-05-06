@@ -1001,12 +1001,14 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
-        // When hooks are active, questions come from HookEventBridge which merges
-        // PermissionRequest (tool context) with Notification (numbered options).
-        // PTY question detection is only needed when hooks are not available.
-        if (!hookServer) {
-          messageApi.handleQuestion(question);
-        }
+        // PTY question parser runs as a SECONDARY source alongside hooks.
+        // Hooks only emit a default 3-option permission question (Yes/Yes-always/No)
+        // when permission_suggestions is undefined; the PTY parser sees the actual
+        // numbered options on screen and can upgrade Y/N or 4+ option prompts that
+        // hooks miss entirely (free-text prompts, multi-choice questions). Issue #378.
+        // MessageAPI.handleQuestion deduplicates on prompt-text fingerprint, so
+        // a PTY emission matching the hook's question is suppressed automatically.
+        messageApi.handleQuestion(question);
       },
       onStatusChange: (status, context) => {
         if (!hookServer) {

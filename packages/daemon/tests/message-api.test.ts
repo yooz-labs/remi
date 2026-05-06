@@ -257,4 +257,76 @@ describe('MessageAPI', () => {
       expect(events.onStatusChange).toHaveBeenCalledWith('thinking', 'Planning...');
     });
   });
+
+  describe('handleQuestion dedup (issue #378)', () => {
+    test('suppresses duplicate question with same prompt and option count', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Allow Bash: ls',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+      const q2 = { ...q1, id: 'q-2' };
+
+      api.handleQuestion(q1);
+      api.handleQuestion(q2);
+
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+    });
+
+    test('emits upgrade when later question has more options', () => {
+      const hookQ = {
+        id: 'q-hook',
+        text: 'Pick a file',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+      const ptyQ = {
+        id: 'q-pty',
+        text: 'Pick a file',
+        options: [
+          { label: 'a.ts', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'b.ts', value: '2', isRecommended: false, isYes: false, isNo: false },
+          { label: 'c.ts', value: '3', isRecommended: false, isYes: false, isNo: false },
+          { label: 'd.ts', value: '4', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+
+      api.handleQuestion(hookQ);
+      api.handleQuestion(ptyQ);
+
+      expect(events.onQuestion).toHaveBeenCalledTimes(2);
+    });
+
+    test('reset() clears dedup state', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Continue?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      } as const;
+
+      api.handleQuestion(q1);
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+      api.handleQuestion({ ...q1, id: 'q-2' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+
+      api.reset();
+      api.handleQuestion({ ...q1, id: 'q-3' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(2);
+    });
+  });
 });

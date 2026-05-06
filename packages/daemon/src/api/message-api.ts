@@ -9,6 +9,7 @@ import type { AgentStatus, Message, Question, StructuredMessage, UUID } from '@r
 import { now } from '@remi/shared';
 import { BulletEngine } from '../parser/bullet-engine.ts';
 import { BulletContentRegistry } from './bullet-content-registry.ts';
+import { QuestionDedup } from './question-dedup.ts';
 
 /** Events emitted by MessageAPI to adapters */
 export interface MessageAPIEvents {
@@ -59,6 +60,7 @@ export class MessageAPI {
   private readonly events: Partial<MessageAPIEvents>;
   private readonly messages: Map<UUID, StructuredMessage> = new Map();
   private readonly sessionId: UUID;
+  private readonly questionDedup = new QuestionDedup();
 
   constructor(config: MessageAPIConfig, events: Partial<MessageAPIEvents> = {}) {
     this.sessionId = config.sessionId;
@@ -204,10 +206,17 @@ export class MessageAPI {
     this.bulletEngine.reset();
     this.messages.clear();
     this.contentRegistry.clear();
+    this.questionDedup.reset();
   }
 
-  // Pass-through methods for other events
+  /**
+   * Emit a question to subscribers, deduping against recently-emitted ones.
+   * Hook bridge and PTY OutputProcessor both call this; same-fingerprint
+   * lower-rank emissions within the dedup window are suppressed. See
+   * QuestionDedup for the upgrade rules.
+   */
   handleQuestion(question: Question): void {
+    if (!this.questionDedup.shouldEmit(question)) return;
     this.events.onQuestion?.(question);
   }
 
