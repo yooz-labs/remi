@@ -109,8 +109,20 @@ See `.context/plan.md` for the detailed development roadmap.
 
 ## License
 
-MIT
+Source code is licensed under [**PolyForm Shield 1.0.0**](LICENSE.md). You can:
+
+- Read, fork, modify, and use it for any purpose **except** building a competing product.
+- Embed it in apps that aren't direct Remi substitutes.
+- Contribute back via PRs.
+
+You cannot offer a re-skinned commercial fork of Remi. For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+
+For commercial-use or dual-license inquiries: **dev@yooz.info**.
+
+## Contributing
+
+PRs welcome. Sign your commits with `Signed-off-by: Your Name <you@example.com>` (DCO style); see [`CONTRIBUTING.md`](CONTRIBUTING.md). Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ---
 
-*Part of the [Yooz](https://github.com/yooz-labs) ecosystem. Local-first, privacy-first, no compromises.*
+*Part of the [Yooz ecosystem](https://github.com/yooz-labs). Sovereign Intelligence. Built for the skeptical.*
