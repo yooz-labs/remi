@@ -1,6 +1,6 @@
 {
   "name": "remi",
-  "version": "0.5.3-dev.1",
+  "version": "0.5.3-dev.2",
   "private": true,
   "license": "UNLICENSED",
   "workspaces": ["packages/*"],
