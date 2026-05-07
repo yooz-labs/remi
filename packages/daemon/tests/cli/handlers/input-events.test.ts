@@ -203,7 +203,7 @@ describe('createInputHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
     });
 
-    test('submits and leaves currentQuestion null when no question was pending', async () => {
+    test('drops answer when no question is pending (stale APNS push answer)', async () => {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(
@@ -212,15 +212,45 @@ describe('createInputHandlers', () => {
         fakePTY(ptyCapture),
         fakeMessageAPI(new Map()),
       );
-      // No updateQuestion call, currentQuestion stays null from registerSession.
+      // No updateQuestion call: currentQuestion stays null. APNS tokens persist
+      // across disconnect (#286), so a delayed lock-screen tap can deliver an
+      // answer for a question that has already been auto-approved or replaced.
+      // The handler must NOT submit anything to the live PTY in that case.
 
       const handlers = createInputHandlers({ sessionRegistry, send });
       await handlers.onAnswer(CID, sessionId, QID, 'hi');
 
-      expect(ptyCapture.submits).toEqual(['hi']);
-      // Push-action answers can arrive after a state resync, so a null clear
-      // on an already-null slot must remain safe and a no-op for the client.
+      expect(ptyCapture.submits).toEqual([]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
+    });
+
+    test('drops answer when questionId does not match active question', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.updateQuestion(sessionId, {
+        id: QID,
+        text: 'current?',
+        options: [
+          { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const stale = 'stal0000-0000-0000-0000-000000000000' as UUID;
+      const handlers = createInputHandlers({ sessionRegistry, send });
+      await handlers.onAnswer(CID, sessionId, stale, 'yes');
+
+      expect(ptyCapture.submits).toEqual([]);
+      // Active question stays in place; only the matching answer should clear it.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestion?.id).toBe(QID);
     });
 
     test('logs when neither sessionId nor connectionId maps to a session', async () => {

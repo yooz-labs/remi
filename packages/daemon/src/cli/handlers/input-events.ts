@@ -58,7 +58,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     onAnswer: async (
       connectionId: UUID,
       sessionId: UUID,
-      _questionId: UUID,
+      questionId: UUID,
       answer: string,
     ): Promise<void> => {
       log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
@@ -70,6 +70,18 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         sessionRegistry.getSessionForConnection(connectionId);
       if (!session) {
         log(`No session found for connection ${connectionId} or session ${sessionId}`);
+        return;
+      }
+
+      // Drop stale answers. APNS tokens persist across disconnect (#286), so a
+      // delayed lock-screen tap can deliver an answer for a question that has
+      // since been auto-approved or replaced. Without this guard, the digit
+      // would inject into whatever Claude prompt is currently live.
+      const active = session.currentQuestion;
+      if (active === null || active.id !== questionId) {
+        log(
+          `Ignoring stale answer: questionId ${questionId} does not match active ${active?.id ?? 'none'}`,
+        );
         return;
       }
 

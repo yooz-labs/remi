@@ -13,16 +13,29 @@
  */
 export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'cancelled';
 
-/** Result from the auto-approve evaluation */
-export interface AutoApproveResult {
-  readonly decision: AutoApproveDecision;
-  /** LLM's explanation (for audit log) */
+/**
+ * LLM-produced (or pattern-matched) decision: approve / deny / escalate.
+ * `model` is the model that produced the verdict (or the configured model for
+ * pattern-matched decisions, since downstream telemetry treats them uniformly).
+ */
+export interface AutoApproveDecisionResult {
+  readonly decision: 'approve' | 'deny' | 'escalate';
   readonly reasoning: string;
-  /** How long the LLM call took */
   readonly durationMs: number;
-  /** Which model was used */
   readonly model: string;
 }
+
+/**
+ * Control-plane outcome: cancel() aborted the in-flight call, no decision
+ * exists. `model` is intentionally omitted — there is no verdict to attribute.
+ */
+export interface AutoApproveCancelledResult {
+  readonly decision: 'cancelled';
+  readonly reasoning: string;
+  readonly durationMs: number;
+}
+
+export type AutoApproveResult = AutoApproveDecisionResult | AutoApproveCancelledResult;
 
 /** Configuration for the auto-approve feature */
 export interface AutoApproveConfig {

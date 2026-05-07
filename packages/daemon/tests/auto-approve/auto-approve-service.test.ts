@@ -586,7 +586,7 @@ describeOllama('AutoApproveService - real Ollama integration', () => {
     const result = await service.evaluate('Bash', { command: 'git status' });
     expect(['approve', 'escalate']).toContain(result.decision);
     expect(result.reasoning).toBeTruthy();
-    expect(result.model).toBeTruthy();
+    if (result.decision !== 'cancelled') expect(result.model).toBeTruthy();
     expect(result.durationMs).toBeGreaterThan(0);
   }, 60000);
 
