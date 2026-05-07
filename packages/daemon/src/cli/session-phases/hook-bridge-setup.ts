@@ -1,6 +1,6 @@
 /**
- * Sub-phase C of createNewSession: wire the Claude Code hook event stream
- * into our PTY's MessageAPI.
+ * Wire the Claude Code hook event stream into our PTY's MessageAPI during
+ * createNewSession.
  *
  * Three concerns are tangled here and kept together because they all depend
  * on the same per-session locks (claudeSessionId, mainSessionEnded,

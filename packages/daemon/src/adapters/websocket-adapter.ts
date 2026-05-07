@@ -97,6 +97,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
           adapterType: this.type,
           displayName: `ws-${connection.id.slice(0, 8)}`,
           platformData: {
+            kind: 'websocket',
             directory: connection.connectionDirectory,
             resumeSessionId: connection.connectionResumeSessionId,
             mode: connection.connectionMode,

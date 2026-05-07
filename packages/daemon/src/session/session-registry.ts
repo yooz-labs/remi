@@ -212,13 +212,15 @@ export class SessionRegistry {
   }
 
   /**
-   * Get the session for a given connection (active or queued).
-   * Both the active CLI connection and queued app connections can interact.
+   * Get the session for a given connection — only when that connection holds
+   * the exclusive write lock. Queued connections receive replay history via
+   * attachConnection() but cannot write to the PTY: input/answer/resize from
+   * a queued client would race the active client's session. They are auto-
+   * promoted on disconnect (FIFO).
    */
   getSessionForConnection(connectionId: UUID): ManagedSession | undefined {
     if (this.session === null) return undefined;
     if (this.session.activeConnectionId === connectionId) return this.session;
-    if (this.waitingConnections.includes(connectionId)) return this.session;
     return undefined;
   }
 
@@ -249,8 +251,9 @@ export class SessionRegistry {
       };
     }
 
-    // If session already has an active connection, still provide replay
-    // for read-only viewing. Queue for write promotion when active disconnects.
+    // If session already has an active connection, provide replay history
+    // (read-only) and queue for write promotion when active disconnects.
+    // Writes from queued connections are blocked at getSessionForConnection.
     if (this.session.activeConnectionId !== null) {
       if (!this.waitingConnections.includes(connectionId)) {
         this.waitingConnections.push(connectionId);

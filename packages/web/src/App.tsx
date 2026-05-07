@@ -40,6 +40,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
 const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
+// Maps sessionId -> daemon URL last seen serving that session. Read on
+// cold-start push answers so multi-daemon users do not silently answer the
+// wrong daemon. Issue #389 review.
+const LOCALSTORAGE_SESSION_DAEMONS_KEY = 'remi-session-daemons';
+
+function rememberSessionDaemon(sessionId: string, url: string): void {
+  try {
+    const stored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
+    const map = stored ? (JSON.parse(stored) as Record<string, string>) : {};
+    if (map[sessionId] === url) return;
+    map[sessionId] = url;
+    localStorage.setItem(LOCALSTORAGE_SESSION_DAEMONS_KEY, JSON.stringify(map));
+  } catch (err) {
+    console.warn('[App] Failed to persist session-daemon map:', err);
+  }
+}
 
 function loadSettings(): AppSettings {
   try {
@@ -196,6 +212,12 @@ function App() {
           ];
         });
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
+
+        // Pin sessionId -> daemon URL so cold-start push answers route to the
+        // right daemon when multiple are paired. Look up the connection's URL
+        // synchronously from the latest snapshot.
+        const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
+        if (conn?.url) rememberSessionDaemon(message.sessionId, conn.url);
 
         // Auto-switch to new session when same connection restarts
         const oldActive = activeSessionIdRef.current;
@@ -663,6 +685,33 @@ function App() {
         break;
       }
 
+      case 'daemon_update_available': {
+        // Daemon binary updated on disk but the running wrapper still hosts
+        // the user's PTY. Surface a system message in every active session so
+        // they can restart at a safe checkpoint. Issue #287.
+        const banner =
+          `Daemon binary updated on disk (running ${message.currentVersion}). ` +
+          `Detach and restart the session to pick up the new version.`;
+        setSessions((prev) => {
+          if (prev.length === 0) return prev;
+          setMessages((m) => [
+            ...m,
+            ...prev.map((s) => ({
+              id: generateId(),
+              sessionId: s.id,
+              connectionId,
+              sender: 'system' as const,
+              content: banner,
+              timestamp: message.timestamp,
+              state: 'delivered' as const,
+              isEditing: false,
+            })),
+          ]);
+          return prev;
+        });
+        break;
+      }
+
       case 'error': {
         const errorText = message.message ?? 'unknown';
         // Suppress auth errors (handled by the connection manager)
@@ -880,7 +929,12 @@ function App() {
             schedule: { at: new Date() },
           },
         ],
-      }).catch(() => undefined);
+      }).catch((err) => {
+        // Last-line fallback in the suspended-app path; if scheduling
+        // itself fails (permissions revoked, plugin unavailable) the user
+        // would otherwise see no signal that the push answer was lost.
+        console.error('[App] LocalNotifications.schedule failed:', err);
+      });
     };
 
     const handlePushAnswer = async (e: Event) => {
@@ -893,11 +947,15 @@ function App() {
 
       const answerMsg = createAnswer(sessionId as UUID, questionId as UUID, answer);
 
-      // Read the persisted URL list once; pass into the pure resolver.
+      // Read the persisted URL list and per-session daemon map once; pass
+      // into the pure resolver.
       let storedUrls: string[] = [];
+      let sessionUrlMap: Record<string, string> = {};
       try {
         const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
         if (stored) storedUrls = JSON.parse(stored) as string[];
+        const mapStored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
+        if (mapStored) sessionUrlMap = JSON.parse(mapStored) as Record<string, string>;
       } catch {
         // localStorage unavailable or corrupted; resolver treats empty as cold-start.
       }
@@ -907,13 +965,21 @@ function App() {
         sessions: sessionsRef.current,
         connections: connectionsRef.current,
         storedUrls,
+        sessionUrlMap,
       });
 
       if (target.kind === 'live' && target.connectionId) {
         const sent = pushAnswerSendRef.current(target.connectionId as ConnectionId, answerMsg);
         if (sent) return;
-        // Send returned false (dead socket); fall through and let the
-        // reconnect path below pick this URL up.
+        // Send returned false (dead socket the heartbeat hasn't noticed yet).
+        // Tear down the stale connection before reconnecting; otherwise the
+        // FIFO exclusive-lock queue holds the duplicate forever.
+        console.warn('[App] live send returned false; tearing down dead socket');
+        try {
+          disconnectConnection(target.connectionId as ConnectionId);
+        } catch (err) {
+          console.warn('[App] disconnect-before-reconnect failed:', err);
+        }
       }
 
       if (target.kind === 'unreachable' || !target.url) {

@@ -58,14 +58,21 @@ export interface ResolvedAnswerTarget {
  * Look up the answer's session in `sessions`, find its connection in
  * `connections`, and decide what to do. The function does NOT mutate or
  * dispatch anything — it just reports the decision.
+ *
+ * Cold-start ownership: when no in-memory session matches (the typical
+ * case after the app was killed and a lock-screen tap brings it back),
+ * prefer `sessionUrlMap[sessionId]` over `storedUrls[0]`. With multiple
+ * daemons paired, picking the first stored URL silently delivers the
+ * answer to the wrong daemon; the per-session map fixes that.
  */
 export function resolvePushAnswerTarget(input: {
   readonly sessionId: string;
   readonly sessions: readonly SessionRef[];
   readonly connections: readonly ConnectionRef[];
   readonly storedUrls: readonly string[];
+  readonly sessionUrlMap?: Readonly<Record<string, string>>;
 }): ResolvedAnswerTarget {
-  const { sessionId, sessions, connections, storedUrls } = input;
+  const { sessionId, sessions, connections, storedUrls, sessionUrlMap } = input;
 
   const session = sessions.find((s) => s.id === sessionId);
   const connectionId = session?.connectionId ?? undefined;
@@ -92,8 +99,9 @@ export function resolvePushAnswerTarget(input: {
     }
   }
 
-  // 3. Cold start: no session-bound URL, fall back to localStorage.
-  const cold = storedUrls[0];
+  // 3. Cold start: prefer the URL we last saw this sessionId on. Falling back
+  // to storedUrls[0] for multi-daemon users would route to the wrong daemon.
+  const cold = sessionUrlMap?.[sessionId] ?? storedUrls[0];
   if (!cold) return { kind: 'unreachable' };
 
   const inflight = connections.find(

@@ -1,9 +1,10 @@
 /**
  * Error formatting helpers shared across daemon, web, shared, signaling.
  *
- * Consolidates the ~99 instances of the `err instanceof Error ? err.message : String(err)`
- * pattern scattered through the codebase. Prefer `errorToString(e)` at every
- * catch boundary that needs to surface a message to logs or UI.
+ * Use `errorToString(e)` at every catch boundary that needs to surface a
+ * message to logs or UI. Replaces ad-hoc `err instanceof Error ? err.message
+ * : String(err)` patterns and handles non-Error throws (strings, null,
+ * objects with a `.message`) consistently.
  */
 
 /** Extract a human-readable string from an unknown caught value. */

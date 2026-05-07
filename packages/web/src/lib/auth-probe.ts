@@ -66,14 +66,27 @@ export async function probeAuthInfo(
 
   try {
     const res = await fetch(httpUrl, { signal: controller.signal });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.debug(`[auth-probe] non-OK response from ${httpUrl}: ${res.status}`);
+      return null;
+    }
     const data = (await res.json()) as Partial<AuthInfo>;
-    if (typeof data.authRequired !== 'boolean') return null;
+    if (typeof data.authRequired !== 'boolean') {
+      console.debug(`[auth-probe] malformed response from ${httpUrl} (missing authRequired)`);
+      return null;
+    }
     return {
       authRequired: data.authRequired,
       fingerprint: typeof data.fingerprint === 'string' ? data.fingerprint : null,
     };
-  } catch {
+  } catch (err) {
+    // Three failure modes collapse into one null return; logging at debug
+    // level lets `iOS web logs` distinguish "daemon unreachable" (network)
+    // from "daemon /auth-info broken" (5xx, malformed JSON), which look
+    // identical otherwise and confuse #257 debugging.
+    const name = (err as { name?: unknown } | null)?.name;
+    const reason = name === 'AbortError' ? 'timeout/aborted' : 'network or parse error';
+    console.debug(`[auth-probe] ${reason} probing ${httpUrl}: ${(err as Error).message ?? err}`);
     return null;
   } finally {
     clearTimeout(timeoutId);
