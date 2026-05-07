@@ -129,12 +129,15 @@ describe('setupHookBridge', () => {
   function build(
     opts: {
       autoApprove?: boolean;
-      autoApproveDecision?: 'approve' | 'deny' | 'escalate';
+      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled';
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
       throwOnQuestionTimes?: number;
       injectAckTimeoutMs?: number;
       submitInputThrows?: boolean;
+      /** Test sink for cancel() invocations from the bridge. Each entry is
+       *  the `reason` string the bridge passed. */
+      cancelLog?: string[];
     } = {},
   ) {
     sessionRegistry.registerSession(
@@ -165,8 +168,14 @@ describe('setupHookBridge', () => {
             }
             return {
               decision: opts.autoApproveDecision ?? 'approve',
-              reason: 'test-autoapprove',
+              reasoning: 'test-autoapprove',
+              durationMs: opts.autoApproveDelayMs ?? 0,
+              model: 'test-model',
             };
+          },
+          cancel: (reason: string) => {
+            opts.cancelLog?.push(reason);
+            return false;
           },
         } as unknown as import('../../../src/auto-approve/index.ts').AutoApproveService)
       : null;
@@ -818,5 +827,132 @@ describe('setupHookBridge', () => {
 
     await new Promise((r) => setTimeout(r, 250));
     expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #387: cancel stale auto-approve LLM eval on advance signals
+  // -------------------------------------------------------------------------
+
+  test('PreToolUse cancels stale auto-approve LLM eval', () => {
+    const cancelLog: string[] = [];
+    build({ autoApprove: true, cancelLog });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-pre',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-locked-pre',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(cancelLog).toContain('PreToolUse');
+  });
+
+  test('PostToolUse cancels stale auto-approve LLM eval', () => {
+    const cancelLog: string[] = [];
+    build({ autoApprove: true, cancelLog });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-post',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    hookServer.fire('PostToolUse', {
+      session_id: 'claude-locked-post',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_response: 'ok',
+    });
+    expect(cancelLog).toContain('PostToolUse');
+  });
+
+  test('Stop cancels stale auto-approve LLM eval', () => {
+    const cancelLog: string[] = [];
+    build({ autoApprove: true, cancelLog });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-stop',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    hookServer.fire('Stop', {
+      session_id: 'claude-locked-stop',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+    });
+    expect(cancelLog).toContain('Stop');
+  });
+
+  test('SessionEnd cancels stale auto-approve LLM eval', () => {
+    const cancelLog: string[] = [];
+    build({ autoApprove: true, cancelLog });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-end',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    hookServer.fire('SessionEnd', {
+      session_id: 'claude-locked-end',
+      hook_event_name: 'SessionEnd',
+      reason: 'user',
+    });
+    expect(cancelLog).toContain('SessionEnd');
+  });
+
+  test('Notification(idle_prompt) does NOT cancel auto-approve eval', () => {
+    // idle_prompt can fire concurrently with a still-valid permission eval;
+    // cancelling here would defeat auto-approve for slow LLMs.
+    const cancelLog: string[] = [];
+    build({ autoApprove: true, cancelLog });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-idle',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-idle',
+      hook_event_name: 'Notification',
+      notification_type: 'idle_prompt',
+      message: '',
+    });
+    expect(cancelLog).toHaveLength(0);
+  });
+
+  test('cancelled decision: bridge does not inject and does not escalate', async () => {
+    // The bridge fixture's `evaluate` returns `decision: 'cancelled'`
+    // immediately; the bridge's .then() must take the no-op branch.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'cancelled',
+    });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-cancel',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-cancel',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    // Drain microtasks so the .then() runs.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toHaveLength(0); // no inject
+    expect(messageApiLog.questionCalls).toBe(0); // no escalate
   });
 });

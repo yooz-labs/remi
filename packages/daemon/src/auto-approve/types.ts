@@ -5,8 +5,13 @@
  * an LLM (via OpenAI-compatible API) to decide: approve, deny, or escalate.
  */
 
-/** The three possible LLM decisions */
-export type AutoApproveDecision = 'approve' | 'deny' | 'escalate';
+/**
+ * Possible decisions returned by AutoApproveService.evaluate().
+ * 'cancelled' is set ONLY when AutoApproveService.cancel() aborted an
+ * in-flight call; it cannot come from the LLM. See cancel() docs for
+ * the bridge-side contract.
+ */
+export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'cancelled';
 
 /** Result from the auto-approve evaluation */
 export interface AutoApproveResult {
