@@ -215,13 +215,18 @@ describe('createInputHandlers', () => {
       // No updateQuestion call: currentQuestion stays null. APNS tokens persist
       // across disconnect (#286), so a delayed lock-screen tap can deliver an
       // answer for a question that has already been auto-approved or replaced.
-      // The handler must NOT submit anything to the live PTY in that case.
+      // The handler must NOT submit anything to the live PTY in that case, and
+      // must signal the drop back to the iOS client so the user is not left
+      // wondering whether their tap landed.
 
       const handlers = createInputHandlers({ sessionRegistry, send });
       await handlers.onAnswer(CID, sessionId, QID, 'hi');
 
       expect(ptyCapture.submits).toEqual([]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
+      const errors = sendCalls.filter((c) => c.message.type === 'error');
+      expect(errors).toHaveLength(1);
+      expect((errors[0]?.message as unknown as { code: string }).code).toBe('STALE_ANSWER');
     });
 
     test('drops answer when questionId does not match active question', async () => {
@@ -251,6 +256,14 @@ describe('createInputHandlers', () => {
       expect(ptyCapture.submits).toEqual([]);
       // Active question stays in place; only the matching answer should clear it.
       expect(sessionRegistry.getSession(sessionId)?.currentQuestion?.id).toBe(QID);
+      const errors = sendCalls.filter((c) => c.message.type === 'error');
+      expect(errors).toHaveLength(1);
+      const errMsg = errors[0]?.message as unknown as {
+        code: string;
+        details?: { activeQuestionId: string | null };
+      };
+      expect(errMsg.code).toBe('STALE_ANSWER');
+      expect(errMsg.details?.activeQuestionId).toBe(QID);
     });
 
     test('logs when neither sessionId nor connectionId maps to a session', async () => {

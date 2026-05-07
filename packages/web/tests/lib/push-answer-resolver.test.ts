@@ -127,4 +127,76 @@ describe('resolvePushAnswerTarget (#278)', () => {
       }),
     ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
   });
+
+  describe('cold-start sessionUrlMap (PR #389 fix)', () => {
+    test('sessionUrlMap[sessionId] wins over storedUrls[0] for the right daemon', () => {
+      // Multi-daemon user wakes from suspend with a push answer for s2 (last
+      // seen on daemon-b). Without the per-session map, we would route to
+      // storedUrls[0] (daemon-a) and silently answer the wrong session.
+      expect(
+        resolvePushAnswerTarget({
+          sessionId: 's2',
+          sessions: [],
+          connections: [],
+          storedUrls: ['ws://daemon-a/ws', 'ws://daemon-b/ws'],
+          sessionUrlMap: { s2: 'ws://daemon-b/ws' },
+        }),
+      ).toEqual({ kind: 'reconnect', url: 'ws://daemon-b/ws' });
+    });
+
+    test('sessionUrlMap entry mid-connect — reuses the in-flight attempt', () => {
+      expect(
+        resolvePushAnswerTarget({
+          sessionId: 's2',
+          sessions: [],
+          connections: [conn('c-boot', 'ws://daemon-b/ws', 'connecting')],
+          storedUrls: ['ws://daemon-a/ws', 'ws://daemon-b/ws'],
+          sessionUrlMap: { s2: 'ws://daemon-b/ws' },
+        }),
+      ).toEqual({ kind: 'pending', connectionId: 'c-boot', url: 'ws://daemon-b/ws' });
+    });
+
+    test('sessionUrlMap missing the requested sessionId — falls back to storedUrls[0]', () => {
+      // s-other was never paired; the map has nothing useful so the legacy
+      // cold-start fallback applies.
+      expect(
+        resolvePushAnswerTarget({
+          sessionId: 's-other',
+          sessions: [],
+          connections: [],
+          storedUrls: ['ws://daemon-a/ws'],
+          sessionUrlMap: { s2: 'ws://daemon-b/ws' },
+        }),
+      ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
+    });
+
+    test('sessionUrlMap entry not in storedUrls — still reconnects (daemon de-paired but session known)', () => {
+      // The user removed daemon-b from their stored list but a push answer for
+      // a session it served just arrived. Use the mapped URL anyway: declining
+      // would silently misroute to daemon-a. The ensuing reconnect may fail;
+      // that is preferable to delivering to the wrong daemon.
+      expect(
+        resolvePushAnswerTarget({
+          sessionId: 's2',
+          sessions: [],
+          connections: [],
+          storedUrls: ['ws://daemon-a/ws'],
+          sessionUrlMap: { s2: 'ws://daemon-b/ws' },
+        }),
+      ).toEqual({ kind: 'reconnect', url: 'ws://daemon-b/ws' });
+    });
+
+    test('omitting sessionUrlMap behaves like the legacy cold-start path', () => {
+      // Backwards-compat: callers that have not yet adopted the map should
+      // see exactly the previous behavior.
+      expect(
+        resolvePushAnswerTarget({
+          sessionId: 's-unknown',
+          sessions: [],
+          connections: [],
+          storedUrls: ['ws://daemon-a/ws'],
+        }),
+      ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
+    });
+  });
 });

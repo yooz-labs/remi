@@ -689,26 +689,25 @@ function App() {
         // Daemon binary updated on disk but the running wrapper still hosts
         // the user's PTY. Surface a system message in every active session so
         // they can restart at a safe checkpoint. Issue #287.
+        // Read sessions from the ref (kept in sync below) instead of inside a
+        // setState updater — StrictMode runs updaters twice in dev, so nesting
+        // setMessages inside setSessions would queue duplicate banners.
+        const currentSessions = sessionsRef.current;
+        if (currentSessions.length === 0) break;
         const banner =
           `Daemon binary updated on disk (running ${message.currentVersion}). ` +
           `Detach and restart the session to pick up the new version.`;
-        setSessions((prev) => {
-          if (prev.length === 0) return prev;
-          setMessages((m) => [
-            ...m,
-            ...prev.map((s) => ({
-              id: generateId(),
-              sessionId: s.id,
-              connectionId,
-              sender: 'system' as const,
-              content: banner,
-              timestamp: message.timestamp,
-              state: 'delivered' as const,
-              isEditing: false,
-            })),
-          ]);
-          return prev;
-        });
+        const banners = currentSessions.map((s) => ({
+          id: generateId(),
+          sessionId: s.id,
+          connectionId,
+          sender: 'system' as const,
+          content: banner,
+          timestamp: message.timestamp,
+          state: 'delivered' as const,
+          isEditing: false,
+        }));
+        setMessages((m) => [...m, ...banners]);
         break;
       }
 
