@@ -8,7 +8,7 @@
 import { generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
-import { isLoopbackAddress } from './peer-helpers.ts';
+import { shouldSkipAuthForPeer } from './peer-helpers.ts';
 
 /** Server configuration */
 export interface ServerConfig {
@@ -226,9 +226,9 @@ export class WebSocketServer {
         // See ConnectModal in packages/web for the consumer (#257).
         if (url.pathname === '/auth-info') {
           const peer = server.requestIP(req);
-          const peerLoopback = isLoopbackAddress(peer?.address);
           const authenticator = self.config.connection?.authenticator;
-          const authRequired = !!authenticator && !peerLoopback;
+          const authRequired =
+            !shouldSkipAuthForPeer(!!authenticator, peer?.address) && !!authenticator;
           return new Response(
             JSON.stringify({
               authRequired,
@@ -381,7 +381,7 @@ export class WebSocketServer {
     // being on the same machine. Drop the authenticator from this peer's
     // connection so it never receives an auth_challenge.
     let perConnectionConfig = this.config.connection;
-    if (perConnectionConfig?.authenticator && isLoopbackAddress(ws.data.peerAddress)) {
+    if (shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress)) {
       perConnectionConfig = { ...perConnectionConfig, authenticator: undefined };
     }
 

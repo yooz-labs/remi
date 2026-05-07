@@ -48,6 +48,17 @@ export interface UpdateWatcher {
   readonly baselineMtimeMs: number | null;
 }
 
+/**
+ * True when execPath looks like the compiled remi binary (vs a runtime such
+ * as bun/node hosting the dev source). Only paths ending in `/remi` (POSIX)
+ * or `\remi` (Windows) qualify; everything else would have the watcher
+ * track the runtime, so a `brew upgrade bun` would silently misfire as a
+ * remi update. Issue #287.
+ */
+export function isRemiBinaryPath(execPath: string): boolean {
+  return execPath.endsWith('/remi') || execPath.endsWith('\\remi');
+}
+
 /** Start watching. Returns an UpdateWatcher with a `stop()` method. */
 export function startUpdateWatcher(deps: UpdateWatcherDeps): UpdateWatcher {
   const onError = deps.onError ?? (() => {});
@@ -70,7 +81,11 @@ export function startUpdateWatcher(deps: UpdateWatcherDeps): UpdateWatcher {
       // ENOENT: binary was removed (during a build that swaps the file).
       // The next iteration will see the new file. Don't escalate.
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') onError(new Error(errorToString(err)));
+      if (code !== 'ENOENT') {
+        onError(
+          new Error(`update-watcher: poll failed for ${deps.binaryPath}: ${errorToString(err)}`),
+        );
+      }
       return;
     }
 

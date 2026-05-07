@@ -166,10 +166,15 @@ describe('setupHookBridge', () => {
             if (opts.autoApproveThrows) {
               throw new Error('test: ollama down');
             }
+            const decision = opts.autoApproveDecision ?? 'approve';
+            const durationMs = opts.autoApproveDelayMs ?? 0;
+            if (decision === 'cancelled') {
+              return { decision, reasoning: 'test-autoapprove', durationMs };
+            }
             return {
-              decision: opts.autoApproveDecision ?? 'approve',
+              decision,
               reasoning: 'test-autoapprove',
-              durationMs: opts.autoApproveDelayMs ?? 0,
+              durationMs,
               model: 'test-model',
             };
           },

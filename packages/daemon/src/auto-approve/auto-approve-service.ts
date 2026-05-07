@@ -23,6 +23,7 @@ const VALID_DECISIONS = new Set<AutoApproveDecision>(['approve', 'deny', 'escala
  * Exported for unit testing.
  */
 export function parseDecision(raw: string): { decision: AutoApproveDecision; reasoning: string } {
+  let parseErr: unknown = null;
   try {
     const parsed = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null) {
@@ -32,13 +33,17 @@ export function parseDecision(raw: string): { decision: AutoApproveDecision; rea
         return { decision: decisionStr as AutoApproveDecision, reasoning };
       }
     }
-  } catch {
-    // JSON parse failed, escalate
+  } catch (err) {
+    // Capture the SyntaxError so the escalation reasoning explains WHY the
+    // raw text could not be parsed (markdown fences, "json\n{...}\n" prefix,
+    // etc. are common with local LLMs and benefit from a class hint).
+    parseErr = err;
   }
 
+  const errHint = parseErr ? ` [${(parseErr as Error).name}: ${(parseErr as Error).message}]` : '';
   return {
     decision: 'escalate',
-    reasoning: `Unparsable LLM response: ${raw.slice(0, 100)}`,
+    reasoning: `Unparsable LLM response: ${raw.slice(0, 100)}${errHint}`,
   };
 }
 
@@ -180,7 +185,15 @@ export class AutoApproveService {
     } catch (err) {
       const durationMs = Date.now() - start;
       const errorMsg = errorToString(err);
-      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      // Bun's fetch can throw plain Error or wrap a TypeError on abort, not
+      // always DOMException. Detect by the conventional `name === 'AbortError'`
+      // on the error or its `cause` so the signal-shape choice in any runtime
+      // routes through the cancel/timeout branch instead of the generic
+      // 'Error: ...' escalate. Without this, the stale-decision regression
+      // (#387) silently re-occurs on Bun.
+      const errName = (err as { name?: unknown } | null)?.name;
+      const causeName = (err as { cause?: { name?: unknown } } | null)?.cause?.name;
+      const isAbort = errName === 'AbortError' || causeName === 'AbortError';
       // cancelReason is set ONLY by cancel(); a timeout abort leaves it null.
       // Read-and-clear so the next eval starts fresh.
       const cancelledReason = this.cancelReason;
@@ -189,7 +202,7 @@ export class AutoApproveService {
       if (isAbort && cancelledReason !== null) {
         const reasoning = `Cancelled: ${cancelledReason}`;
         this.logFn(`${prefix} CANCELLED ${toolName}: ${reasoning} (${durationMs}ms)`);
-        return { decision: 'cancelled', reasoning, durationMs, model };
+        return { decision: 'cancelled', reasoning, durationMs };
       }
 
       const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;

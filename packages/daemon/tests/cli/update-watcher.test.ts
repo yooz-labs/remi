@@ -2,7 +2,30 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { startUpdateWatcher } from '../../src/cli/update-watcher.ts';
+import { isRemiBinaryPath, startUpdateWatcher } from '../../src/cli/update-watcher.ts';
+
+describe('isRemiBinaryPath (#287 guard)', () => {
+  test('matches POSIX-style remi binary paths', () => {
+    expect(isRemiBinaryPath('/opt/homebrew/bin/remi')).toBe(true);
+    expect(isRemiBinaryPath('/usr/local/bin/remi')).toBe(true);
+    expect(isRemiBinaryPath('./dist/remi')).toBe(true);
+  });
+
+  test('matches Windows-style remi binary paths', () => {
+    expect(isRemiBinaryPath('C:\\Program Files\\remi\\remi')).toBe(true);
+  });
+
+  test('rejects bun/node runtime paths so brew upgrade bun does not misfire', () => {
+    expect(isRemiBinaryPath('/opt/homebrew/bin/bun')).toBe(false);
+    expect(isRemiBinaryPath('/usr/local/bin/node')).toBe(false);
+    expect(isRemiBinaryPath('/usr/local/bin/npx')).toBe(false);
+  });
+
+  test('rejects paths that merely contain remi as a directory name', () => {
+    expect(isRemiBinaryPath('/Users/me/remi/dist/something-else')).toBe(false);
+    expect(isRemiBinaryPath('/Users/me/remi/dist/remix')).toBe(false);
+  });
+});
 
 describe('startUpdateWatcher (#287)', () => {
   let tmpDir: string;

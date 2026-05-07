@@ -1,5 +1,5 @@
 /**
- * Sub-phase A of createNewSession: build the MessageAPI + its callbacks.
+ * Build the MessageAPI + its callbacks for createNewSession.
  *
  * The MessageAPI owns bullet assembly, question detection, and status flow.
  * This module wires it to:
@@ -13,7 +13,7 @@
  *     viewing the session (attached clients see the question in-app)
  *
  * Returns both the configured MessageAPI and the `sendAndRecord` closure
- * because later sub-phases (hook bridge, PTY setup) also dispatch through
+ * because the hook bridge and PTY setup also dispatch through
  * it and need the same replay semantics (record under the primary session
  * id so replays re-emit with the id the client knows).
  */

@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { isLoopbackAddress } from '../src/server/peer-helpers.ts';
+import { isLoopbackAddress, shouldSkipAuthForPeer } from '../src/server/peer-helpers.ts';
 
 describe('isLoopbackAddress', () => {
   test('returns false for null/undefined/empty', () => {
@@ -83,5 +83,33 @@ describe('isLoopbackAddress', () => {
       expect(isLoopbackAddress('localhost.attacker.com')).toBe(false);
       expect(isLoopbackAddress('mylocalhost')).toBe(false);
     });
+  });
+});
+
+describe('shouldSkipAuthForPeer (#257 + positive control)', () => {
+  test('skips auth for loopback peers when authenticator is configured', () => {
+    expect(shouldSkipAuthForPeer(true, '127.0.0.1')).toBe(true);
+    expect(shouldSkipAuthForPeer(true, '::1')).toBe(true);
+    expect(shouldSkipAuthForPeer(true, 'localhost')).toBe(true);
+  });
+
+  test('does NOT skip auth for non-loopback peers (positive control)', () => {
+    // Without this regression test, a "skip everyone" bug — i.e. someone
+    // simplifying the gate to `if (authenticator) skip` — would not fail.
+    expect(shouldSkipAuthForPeer(true, '192.168.1.5')).toBe(false);
+    expect(shouldSkipAuthForPeer(true, '10.0.0.1')).toBe(false);
+    expect(shouldSkipAuthForPeer(true, '203.0.113.5')).toBe(false);
+    expect(shouldSkipAuthForPeer(true, '2001:db8::1')).toBe(false);
+    expect(shouldSkipAuthForPeer(true, 'example.com')).toBe(false);
+  });
+
+  test('returns false when no authenticator is configured (bypass is moot)', () => {
+    expect(shouldSkipAuthForPeer(false, '127.0.0.1')).toBe(false);
+    expect(shouldSkipAuthForPeer(false, '192.168.1.5')).toBe(false);
+  });
+
+  test('returns false on null/undefined peer (defensive)', () => {
+    expect(shouldSkipAuthForPeer(true, null)).toBe(false);
+    expect(shouldSkipAuthForPeer(true, undefined)).toBe(false);
   });
 });

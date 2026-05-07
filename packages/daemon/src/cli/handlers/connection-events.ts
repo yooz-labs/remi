@@ -57,7 +57,14 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
 
-      const resumeSessionId = metadata.platformData?.resumeSessionId ?? undefined;
+      // resumeSessionId and mode are only carried by the websocket adapter.
+      // Telegram and relay clients have no equivalent (their adapter selects
+      // session ownership differently).
+      const platformData = metadata.platformData;
+      const resumeSessionId =
+        platformData?.kind === 'websocket'
+          ? (platformData.resumeSessionId ?? undefined)
+          : undefined;
       const currentPrimary = getPrimarySessionId();
 
       // Unified connection flow: one session per daemon, both modes behave the same.
@@ -75,7 +82,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       }
 
       // Try to attach to the primary (only) session.
-      const isQueryMode = metadata.platformData?.mode === 'query';
+      const isQueryMode = platformData?.kind === 'websocket' && platformData.mode === 'query';
       if (currentPrimary) {
         // Only auto-attach if the client wants to attach, not a utility client like ls/kill.
         if (!isQueryMode) {

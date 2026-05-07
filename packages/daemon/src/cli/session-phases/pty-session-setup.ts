@@ -1,5 +1,5 @@
 /**
- * Sub-phase D of createNewSession: construct the PTYSession and wire its
+ * Construct the PTYSession and wire its
  * four callbacks (onRawData, onData, onExit, onError).
  *
  * The Claude Code CLI is spawned in a PTY so output fidelity matches a real

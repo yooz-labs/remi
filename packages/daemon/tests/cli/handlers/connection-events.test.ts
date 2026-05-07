@@ -87,7 +87,7 @@ describe('createConnectionHandlers', () => {
     test('tracks connection and sends NO_SESSION when no primary session exists', async () => {
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: {},
+        platformData: { kind: 'websocket' },
       });
 
       expect(trackedConnections).toEqual([{ id: CID, type: 'websocket' }]);
@@ -105,7 +105,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: {},
+        platformData: { kind: 'websocket' },
       });
 
       expect(sendCalls).toHaveLength(1);
@@ -122,7 +122,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: { mode: 'query' },
+        platformData: { kind: 'websocket', mode: 'query' },
       });
 
       expect(sendCalls).toHaveLength(1);
@@ -139,6 +139,7 @@ describe('createConnectionHandlers', () => {
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
         platformData: {
+          kind: 'websocket',
           resumeSessionId: 'mism0000-0000-0000-0000-000000000000' as UUID,
         },
       });
@@ -158,7 +159,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: { resumeSessionId: sessionId },
+        platformData: { kind: 'websocket', resumeSessionId: sessionId },
       });
 
       // No error; helloAck sent and attach succeeded.
@@ -187,7 +188,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: {},
+        platformData: { kind: 'websocket' },
       });
 
       expect(sendCalls).toHaveLength(2);
@@ -224,7 +225,7 @@ describe('createConnectionHandlers', () => {
       // Second connection arrives while the first is still active.
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: {},
+        platformData: { kind: 'websocket' },
       });
 
       // Active connection is still the first; CID is queued.
@@ -260,7 +261,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: { mode: 'query' },
+        platformData: { kind: 'websocket', mode: 'query' },
       });
 
       // Active connection stays; query-mode client did not grab the slot or
@@ -294,7 +295,7 @@ describe('createConnectionHandlers', () => {
       // No primary session = NO_SESSION error path; tracking still happens.
       await makeHandlers().onConnect(CID, {
         adapterType: 'telegram',
-        platformData: {},
+        platformData: { kind: 'websocket' },
       });
       expect(trackedConnections).toEqual([{ id: CID, type: 'telegram' }]);
       expect(connectionAddedCount).toBe(1);
@@ -314,13 +315,23 @@ describe('createConnectionHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
     });
 
-    // The "device tokens persist across disconnect" invariant for #286 is
-    // enforced structurally: ConnectionHandlerDeps no longer exposes a
-    // deviceTokens map at all, so onDisconnect cannot mutate token state.
-    // Adding a behavioral test here would be tautological — the token map is
-    // neither passed in nor reachable from this handler. The behavioral test
-    // (push fires while no client is attached) belongs in
-    // message-api-setup.test.ts and requires injecting sendPushTrigger via
-    // deps; tracked separately as a follow-up.
+    test('does not reach into deviceTokens on disconnect (regression #286)', async () => {
+      // The connection-events handler must not be able to clean up APNS
+      // device tokens on disconnect — push notifications are the suspended-
+      // app path, so dropping tokens at WS close kills the only case they
+      // exist for. The argument is structural: ConnectionHandlerDeps does
+      // not surface a deviceTokens map. Lock that with a static-source check
+      // so a future refactor that re-adds the field (and a delete() call)
+      // fails this test rather than silently regressing the user-visible
+      // suspended-app push case.
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const handlerPath = path.resolve(
+        import.meta.dir,
+        '../../../src/cli/handlers/connection-events.ts',
+      );
+      const source = fs.readFileSync(handlerPath, 'utf8');
+      expect(source).not.toMatch(/deviceTokens/);
+    });
   });
 });

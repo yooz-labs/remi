@@ -21,7 +21,7 @@
  *      auth required for everyone else, or terminate TLS in remi
  *      directly so the TCP peer remains authoritative).
  *
- * Today remi is run directly on its bind port and the bypass is safe.
+ * The bypass is safe only while remi terminates the TCP connection itself.
  * This comment exists so the next person who shapes the deployment
  * notices the assumption before regretting it.
  */
@@ -62,6 +62,23 @@ export function isLoopbackAddress(host: string | null | undefined): boolean {
   }
 
   return isIPv4Loopback(lower);
+}
+
+/**
+ * Decide whether a connection from `peerAddress` should bypass an otherwise-
+ * configured authenticator (i.e. skip auth_challenge). Centralizes the
+ * loopback exemption used by both the WS upgrade and the /auth-info probe so
+ * the two paths cannot drift.
+ *
+ * Returns `true` only when an authenticator is configured AND the peer is on
+ * a loopback address. Non-loopback peers always require auth when an
+ * authenticator is configured; without an authenticator the bypass is moot.
+ */
+export function shouldSkipAuthForPeer(
+  hasAuthenticator: boolean,
+  peerAddress: string | null | undefined,
+): boolean {
+  return hasAuthenticator && isLoopbackAddress(peerAddress);
 }
 
 /** True for any address in 127.0.0.0/8. */

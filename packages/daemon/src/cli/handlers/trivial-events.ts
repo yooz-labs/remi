@@ -2,10 +2,6 @@
  * Small, self-contained sharedEvents handlers that operate on isolated pieces
  * of daemon state. Each handler has a single input/output surface and no
  * cross-handler coupling, which is why they extract cleanly as a group.
- *
- * Larger or state-entangled handlers (onConnect, onAnswer, onResumeSessionRequest,
- * createNewSession orchestration) live separately and will move out in their own
- * PRs.
  */
 
 import { createSessionHistoryResponse, errorToString } from '@remi/shared';

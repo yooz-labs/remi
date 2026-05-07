@@ -122,6 +122,29 @@ describe('SessionRegistry', () => {
       const session = registry.getSessionForConnection(connectionId);
       expect(session?.sessionId).toBe(sessionId);
     });
+
+    test('getSessionForConnection returns undefined for queued (read-only) connection', () => {
+      // Exclusive write lock: only the active connection sees the session via
+      // this lookup. Queued connections receive replay through attachConnection
+      // but cannot write input/answer/resize that would race the active
+      // client. Locking this contract prevents a future refactor from silently
+      // re-introducing the input-race bug.
+      const sessionId = generateId();
+      const activeConnId = generateId();
+      const queuedConnId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, activeConnId);
+
+      // Second attach: queued.
+      const queuedAttach = registry.attachConnection(sessionId, queuedConnId);
+      expect(queuedAttach.success).toBe(true);
+      expect(queuedAttach.replayMessages).toBeDefined();
+
+      // Active still owns the session for writes.
+      expect(registry.getSessionForConnection(activeConnId)?.sessionId).toBe(sessionId);
+      // Queued must NOT.
+      expect(registry.getSessionForConnection(queuedConnId)).toBeUndefined();
+    });
   });
 
   describe('detachConnection()', () => {

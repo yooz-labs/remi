@@ -1,7 +1,4 @@
-/**
- * Async helpers shared across packages. Thin on purpose — every new helper
- * should justify its existence.
- */
+/** Async helpers shared across packages. */
 
 /** Resolves after `ms` milliseconds. Never rejects. */
 export function sleep(ms: number): Promise<void> {

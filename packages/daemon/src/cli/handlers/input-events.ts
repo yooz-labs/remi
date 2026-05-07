@@ -5,8 +5,8 @@
  *   onBulletExpandRequest, expand a truncated bullet from the MessageAPI
  *
  * All three look up a session from `sessionRegistry` and interact with its
- * PTY or MessageAPI. onBulletExpandRequest is the only one that writes back
- * to the caller, so `send` is only invoked by that handler.
+ * PTY or MessageAPI. `send` writes back error responses on onAnswer (when an
+ * answer is dropped because the question changed) and onBulletExpandRequest.
  */
 
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
@@ -58,7 +58,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     onAnswer: async (
       connectionId: UUID,
       sessionId: UUID,
-      _questionId: UUID,
+      questionId: UUID,
       answer: string,
     ): Promise<void> => {
       log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
@@ -70,6 +70,32 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         sessionRegistry.getSessionForConnection(connectionId);
       if (!session) {
         log(`No session found for connection ${connectionId} or session ${sessionId}`);
+        send(
+          connectionId,
+          createError('SESSION_NOT_FOUND', `Session ${sessionId} not found on this daemon`),
+        );
+        return;
+      }
+
+      // Drop stale answers. APNS tokens persist across disconnect (#286), so a
+      // delayed lock-screen tap can deliver an answer for a question that has
+      // since been auto-approved or replaced. Without this guard, the digit
+      // would inject into whatever Claude prompt is currently live. Surface
+      // the drop to the client so the iOS user gets a "not delivered" signal
+      // instead of silent failure.
+      const active = session.currentQuestion;
+      if (active === null || active.id !== questionId) {
+        log(
+          `Ignoring stale answer: questionId ${questionId} does not match active ${active?.id ?? 'none'}`,
+        );
+        send(
+          connectionId,
+          createError('STALE_ANSWER', 'The question this answer was for is no longer active', {
+            sessionId,
+            questionId,
+            activeQuestionId: active?.id ?? null,
+          }),
+        );
         return;
       }
 

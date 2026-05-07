@@ -134,7 +134,7 @@ import { createPtySessionForSession } from './cli/session-phases/pty-session-set
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
-import { startUpdateWatcher } from './cli/update-watcher.ts';
+import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import type { HookEventBridge } from './hooks/hook-event-bridge.ts';
@@ -871,7 +871,10 @@ import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications (cleaned up on disconnect; re-registered on reconnect)
+// Device tokens for push notifications. INTENTIONALLY persisted across
+// WebSocket disconnect — push notifications are the suspended-app path, so
+// dropping on disconnect breaks the only case they exist for. Cleanup happens
+// at process exit only. Issue #286.
 const deviceTokens = new Map<
   string,
   { token: string; platform: string; registeredAt: number; connectionId: UUID }
@@ -920,8 +923,7 @@ let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = nul
 function startBinaryUpdateWatcher(): void {
   if (updateWatcher) return;
   const execPath = process.execPath;
-  const isRemiBinary = execPath.endsWith('/remi') || execPath.endsWith('\\remi');
-  if (!isRemiBinary) {
+  if (!isRemiBinaryPath(execPath)) {
     log(`[update] Watcher disabled: execPath ${execPath} is not the remi binary`);
     return;
   }
