@@ -14,9 +14,11 @@ import {
   trustHost,
   unlockStoredIdentity,
 } from '@/lib/identity-client';
+import { errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
+import { collectPendingChallengeConnections } from './connection-manager-helpers';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
@@ -203,7 +205,12 @@ export function useConnectionManager(
       if (mc.helloSent) return;
       mc.helloSent = true;
       const resumeId = mc.sessionId ?? undefined;
-      mc.client.send(createHello(clientId, clientVersion, mc.directory, resumeId));
+      mc.client.send(
+        createHello(clientId, clientVersion, {
+          directory: mc.directory,
+          resumeSessionId: resumeId,
+        }),
+      );
     },
     [clientId, clientVersion],
   );
@@ -250,7 +257,7 @@ export function useConnectionManager(
           }
         } catch (err) {
           mc.error = new Error(
-            `Identity setup failed: ${err instanceof Error ? err.message : String(err)}`,
+            `Identity setup failed: ${errorToString(err)}`,
           );
           mc.client.disconnect();
           syncState();
@@ -262,7 +269,7 @@ export function useConnectionManager(
         const response = await signChallenge(identity, challenge);
         mc.client.send(response);
       } catch (err) {
-        mc.error = new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
+        mc.error = new Error(`Auth failed: ${errorToString(err)}`);
         mc.client.disconnect();
         syncState();
       }
@@ -304,7 +311,7 @@ export function useConnectionManager(
         }
       } catch (err) {
         mc.error = new Error(
-          `Server verification error: ${err instanceof Error ? err.message : String(err)}`,
+          `Server verification error: ${errorToString(err)}`,
         );
         mc.client.disconnect();
         syncState();
@@ -587,35 +594,50 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
-  // Provide identity for a connection waiting on passphrase
+  // Provide identity for connections waiting on passphrase, and seed the
+  // identity ref synchronously for any future auto-connect (#257).
+  //
+  // After the user unlocks once, ALL connections with a pending challenge
+  // get signed silently — including sibling daemons we auto-discovered or
+  // restored from localStorage on launch. Without this, the modal would
+  // re-prompt for every sibling port even though the same identity unlocks
+  // all of them. The pre-flight modal path also calls this with no pending
+  // connection (empty connectionId) so the WebSocket opened just after gets
+  // a populated identity ref before the daemon's challenge arrives.
   const provideIdentity = useCallback(
     (connectionId: ConnectionId, identity: UnlockedIdentity) => {
       identityRef.current = identity;
 
-      const mc = getMc(connectionId);
-      if (!mc) {
-        console.warn(
-          `[ConnectionManager] Cannot provide identity: connection "${connectionId}" not found`,
-        );
-        return;
-      }
-      if (!mc.pendingChallenge) {
-        console.warn(`[ConnectionManager] No pending auth challenge for "${connectionId}"`);
+      const pending = collectPendingChallengeConnections(connectionsMapRef.current.values());
+      if (pending.length === 0) {
+        // No-op when called as a pre-flight seed (empty connectionId).
+        // Warn only if a real connectionId was passed, since that means
+        // the caller expected a pending challenge and there was none.
+        if (connectionId) {
+          console.warn(
+            `[ConnectionManager] No pending auth challenge for "${connectionId}" or any sibling`,
+          );
+        }
+        syncState();
         return;
       }
 
-      mc.needsPassphrase = false;
+      for (const mc of pending) {
+        // Type guard already established by collectPendingChallengeConnections
+        const challenge = mc.pendingChallenge?.challenge;
+        if (!challenge) continue;
+        mc.needsPassphrase = false;
+        signChallenge(identity, challenge)
+          .then((response) => mc.client.send(response))
+          .catch((err) => {
+            mc.error = new Error(`Auth failed: ${errorToString(err)}`);
+            mc.client.disconnect();
+            syncState();
+          });
+      }
       syncState();
-
-      signChallenge(identity, mc.pendingChallenge.challenge)
-        .then((response) => mc.client.send(response))
-        .catch((err) => {
-          mc.error = new Error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
-          mc.client.disconnect();
-          syncState();
-        });
     },
-    [getMc, syncState],
+    [syncState],
   );
 
   // Get hello_ack session ID directly from mutable state (avoids React state timing issues)

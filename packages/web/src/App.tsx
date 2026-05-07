@@ -13,6 +13,7 @@ import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
+import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import type {
   AppSettings,
   ConnectionId,
@@ -39,6 +40,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
 const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
+// Maps sessionId -> daemon URL last seen serving that session. Read on
+// cold-start push answers so multi-daemon users do not silently answer the
+// wrong daemon. Issue #389 review.
+const LOCALSTORAGE_SESSION_DAEMONS_KEY = 'remi-session-daemons';
+
+function rememberSessionDaemon(sessionId: string, url: string): void {
+  try {
+    const stored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
+    const map = stored ? (JSON.parse(stored) as Record<string, string>) : {};
+    if (map[sessionId] === url) return;
+    map[sessionId] = url;
+    localStorage.setItem(LOCALSTORAGE_SESSION_DAEMONS_KEY, JSON.stringify(map));
+  } catch (err) {
+    console.warn('[App] Failed to persist session-daemon map:', err);
+  }
+}
 
 function loadSettings(): AppSettings {
   try {
@@ -195,6 +212,12 @@ function App() {
           ];
         });
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
+
+        // Pin sessionId -> daemon URL so cold-start push answers route to the
+        // right daemon when multiple are paired. Look up the connection's URL
+        // synchronously from the latest snapshot.
+        const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
+        if (conn?.url) rememberSessionDaemon(message.sessionId, conn.url);
 
         // Auto-switch to new session when same connection restarts
         const oldActive = activeSessionIdRef.current;
@@ -662,6 +685,32 @@ function App() {
         break;
       }
 
+      case 'daemon_update_available': {
+        // Daemon binary updated on disk but the running wrapper still hosts
+        // the user's PTY. Surface a system message in every active session so
+        // they can restart at a safe checkpoint. Issue #287.
+        // Read sessions from the ref (kept in sync below) instead of inside a
+        // setState updater — StrictMode runs updaters twice in dev, so nesting
+        // setMessages inside setSessions would queue duplicate banners.
+        const currentSessions = sessionsRef.current;
+        if (currentSessions.length === 0) break;
+        const banner =
+          `Daemon binary updated on disk (running ${message.currentVersion}). ` +
+          `Detach and restart the session to pick up the new version.`;
+        const banners = currentSessions.map((s) => ({
+          id: generateId(),
+          sessionId: s.id,
+          connectionId,
+          sender: 'system' as const,
+          content: banner,
+          timestamp: message.timestamp,
+          state: 'delivered' as const,
+          isEditing: false,
+        }));
+        setMessages((m) => [...m, ...banners]);
+        break;
+      }
+
       case 'error': {
         const errorText = message.message ?? 'unknown';
         // Suppress auth errors (handled by the connection manager)
@@ -879,7 +928,12 @@ function App() {
             schedule: { at: new Date() },
           },
         ],
-      }).catch(() => undefined);
+      }).catch((err) => {
+        // Last-line fallback in the suspended-app path; if scheduling
+        // itself fails (permissions revoked, plugin unavailable) the user
+        // would otherwise see no signal that the push answer was lost.
+        console.error('[App] LocalNotifications.schedule failed:', err);
+      });
     };
 
     const handlePushAnswer = async (e: Event) => {
@@ -892,54 +946,50 @@ function App() {
 
       const answerMsg = createAnswer(sessionId as UUID, questionId as UUID, answer);
 
-      // Find the session in our session list to get its connectionId
-      const session = sessionsRef.current.find((s) => s.id === sessionId);
-      const connectionId = session?.connectionId;
-
-      // Check if the connection is already live
-      const conn = connectionId
-        ? connectionsRef.current.find((c) => c.connectionId === connectionId)
-        : undefined;
-
-      // Fast path: connection is live, try to send immediately
-      if (conn?.status === 'connected' && connectionId) {
-        const sent = pushAnswerSendRef.current(connectionId, answerMsg);
-        if (sent) return;
-        // Send returned false (dead socket); fall through to reconnect
+      // Read the persisted URL list and per-session daemon map once; pass
+      // into the pure resolver.
+      let storedUrls: string[] = [];
+      let sessionUrlMap: Record<string, string> = {};
+      try {
+        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+        if (stored) storedUrls = JSON.parse(stored) as string[];
+        const mapStored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
+        if (mapStored) sessionUrlMap = JSON.parse(mapStored) as Record<string, string>;
+      } catch {
+        // localStorage unavailable or corrupted; resolver treats empty as cold-start.
       }
 
-      // Resolve the daemon URL: from existing connection, or from localStorage (cold start)
-      let connUrl = conn?.url;
-      if (!connUrl) {
+      const target = resolvePushAnswerTarget({
+        sessionId,
+        sessions: sessionsRef.current,
+        connections: connectionsRef.current,
+        storedUrls,
+        sessionUrlMap,
+      });
+
+      if (target.kind === 'live' && target.connectionId) {
+        const sent = pushAnswerSendRef.current(target.connectionId as ConnectionId, answerMsg);
+        if (sent) return;
+        // Send returned false (dead socket the heartbeat hasn't noticed yet).
+        // Tear down the stale connection before reconnecting; otherwise the
+        // FIFO exclusive-lock queue holds the duplicate forever.
+        console.warn('[App] live send returned false; tearing down dead socket');
         try {
-          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
-          if (stored) {
-            const urls: string[] = JSON.parse(stored);
-            if (urls.length > 0) {
-              connUrl = urls[0];
-            }
-          }
-        } catch {
-          // localStorage unavailable or corrupted; ignore
+          disconnectConnection(target.connectionId as ConnectionId);
+        } catch (err) {
+          console.warn('[App] disconnect-before-reconnect failed:', err);
         }
       }
 
-      if (!connUrl) {
+      if (target.kind === 'unreachable' || !target.url) {
         notifyFailure();
         return;
       }
 
-      // Check if a connection to this URL is already being established (e.g. auto-connect on mount)
-      const existingConn = connectionsRef.current.find(
-        (c) =>
-          c.url === connUrl &&
-          (c.status === 'connecting' ||
-            c.status === 'authenticating' ||
-            c.status === 'reconnecting'),
-      );
-      const targetConnId = existingConn
-        ? existingConn.connectionId
-        : connectDirectRef.current(connUrl);
+      const targetConnId: ConnectionId =
+        target.kind === 'pending' && target.connectionId
+          ? (target.connectionId as ConnectionId)
+          : connectDirectRef.current(target.url);
 
       // Wait for connection with 10s timeout, then send answer
       const ANSWER_TIMEOUT_MS = 10_000;
@@ -1162,9 +1212,12 @@ function App() {
       try {
         const identity = await unlockStoredIdentity(passphrase);
         setUnlockedIdentity(identity);
-        if (passphraseConnectionId) {
-          provideIdentity(passphraseConnectionId, identity);
-        }
+        // Seed the connection manager's identity ref synchronously, even if
+        // there is no pending connection yet (preflight path, #257). This
+        // avoids a race where the just-unlocked identity hasn't been pushed
+        // through useEffect by the time the WebSocket opens and gets
+        // challenged.
+        provideIdentity(passphraseConnectionId ?? ('' as ConnectionId), identity);
       } catch (err) {
         console.error('Failed to unlock identity:', err);
         throw err;
@@ -1412,6 +1465,7 @@ function App() {
         error={error}
         needsPassphrase={needsPassphrase}
         hasIdentity={hasIdentity()}
+        hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
       />

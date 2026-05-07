@@ -25,6 +25,14 @@ interface InputAreaProps {
   readonly question?: UIQuestion | null;
   readonly isAgentBusy?: boolean;
   readonly className?: string;
+  /**
+   * When provided, the typed-but-unsent draft is persisted to localStorage
+   * under this key and restored across reloads / app suspensions. Pass a
+   * session-scoped value (e.g. `remi-draft-${sessionId}`) so drafts don't
+   * leak between sessions. Issue #226: iOS dropped the draft when the app
+   * was backgrounded; persistence + hydration fixes that.
+   */
+  readonly draftKey?: string;
 }
 
 /** Quick response button for yes/no and numbered options */
@@ -63,11 +71,48 @@ export function InputArea({
   question,
   isAgentBusy = false,
   className,
+  draftKey,
 }: InputAreaProps) {
-  const [value, setValue] = useState('');
+  // Hydrate draft from localStorage when a draftKey is provided. The lazy
+  // initializer runs only on mount; subsequent draftKey changes (session
+  // switches) re-hydrate via the effect below.
+  const [value, setValue] = useState<string>(() => {
+    if (!draftKey) return '';
+    try {
+      return localStorage.getItem(draftKey) ?? '';
+    } catch {
+      return '';
+    }
+  });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
+
+  // Re-hydrate when the active session (and therefore draftKey) changes.
+  useEffect(() => {
+    if (!draftKey) return;
+    try {
+      setValue(localStorage.getItem(draftKey) ?? '');
+    } catch {
+      setValue('');
+    }
+  }, [draftKey]);
+
+  // Persist on every keystroke. Empty drafts remove the key so localStorage
+  // doesn't grow unboundedly with one entry per session that was once
+  // visited.
+  useEffect(() => {
+    if (!draftKey) return;
+    try {
+      if (value) {
+        localStorage.setItem(draftKey, value);
+      } else {
+        localStorage.removeItem(draftKey);
+      }
+    } catch {
+      // Storage may be full or disabled (private mode); drop silently.
+    }
+  }, [value, draftKey]);
 
   // Scroll input into view when focused on iOS (keyboard pushes content up)
   const handleFocus = useCallback(() => {

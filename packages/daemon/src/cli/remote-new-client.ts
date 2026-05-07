@@ -16,6 +16,7 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { runAttachClient } from './attach-client.ts';
 import { performAuthHandshake } from './auth-helper.ts';
@@ -48,7 +49,7 @@ async function createRemoteSession(
     try {
       ws = new WebSocket(url);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }

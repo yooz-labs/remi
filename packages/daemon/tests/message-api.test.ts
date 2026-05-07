@@ -257,4 +257,135 @@ describe('MessageAPI', () => {
       expect(events.onStatusChange).toHaveBeenCalledWith('thinking', 'Planning...');
     });
   });
+
+  describe('handleQuestion dedup', () => {
+    test('suppresses duplicate question with same prompt and option count', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Allow Bash: ls',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+      const q2 = { ...q1, id: 'q-2' };
+
+      api.handleQuestion(q1);
+      api.handleQuestion(q2);
+
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+      const survivor = events.onQuestion.mock.calls[0]?.[0] as { id: string };
+      expect(survivor.id).toBe('q-1');
+    });
+
+    test('emits upgrade when later question has more options', () => {
+      const hookQ = {
+        id: 'q-hook',
+        text: 'Pick a file',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+      const ptyQ = {
+        id: 'q-pty',
+        text: 'Pick a file',
+        options: [
+          { label: 'a.ts', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'b.ts', value: '2', isRecommended: false, isYes: false, isNo: false },
+          { label: 'c.ts', value: '3', isRecommended: false, isYes: false, isNo: false },
+          { label: 'd.ts', value: '4', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+
+      api.handleQuestion(hookQ);
+      api.handleQuestion(ptyQ);
+
+      expect(events.onQuestion).toHaveBeenCalledTimes(2);
+      const upgraded = events.onQuestion.mock.calls[1]?.[0] as {
+        id: string;
+        options: ReadonlyArray<unknown>;
+      };
+      expect(upgraded.id).toBe('q-pty');
+      expect(upgraded.options).toHaveLength(4);
+    });
+
+    test('reset() clears dedup state', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Continue?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      } as const;
+
+      api.handleQuestion(q1);
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+      api.handleQuestion({ ...q1, id: 'q-2' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+
+      api.reset();
+      api.handleQuestion({ ...q1, id: 'q-3' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(2);
+    });
+
+    test('status change away from waiting clears dedup baseline', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Allow Bash: ls',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+
+      api.handleQuestion(q1);
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+
+      // Same question within window — suppressed.
+      api.handleQuestion({ ...q1, id: 'q-2' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+
+      // User answered, status leaves 'waiting' — baseline clears.
+      api.handleStatusChange('thinking');
+
+      // Same prompt re-arrives (next session, replay, etc.) — must emit.
+      api.handleQuestion({ ...q1, id: 'q-3' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(2);
+      const second = events.onQuestion.mock.calls[1]?.[0] as { id: string };
+      expect(second.id).toBe('q-3');
+    });
+
+    test('status change to waiting does NOT clear dedup baseline', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Allow Bash: ls',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+
+      api.handleQuestion(q1);
+      api.handleStatusChange('waiting');
+      // Same question still suppressed — bridge often emits status='waiting'
+      // immediately after a question, dedup baseline must persist.
+      api.handleQuestion({ ...q1, id: 'q-2' });
+      expect(events.onQuestion).toHaveBeenCalledTimes(1);
+    });
+  });
 });

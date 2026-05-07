@@ -14,6 +14,7 @@ import {
   sign,
   unlockIdentity,
 } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import type { ProtocolMessage, UnlockedIdentity } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
 
@@ -47,7 +48,7 @@ export async function performAuthHandshake(
       const newIdentity = await store.generate();
       console.error(`Client identity created (fingerprint: ${newIdentity.fingerprint})`);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       throw new Error(
         `Failed to auto-generate client identity: ${detail}. Check permissions on ~/.remi or generate manually with "remi keygen".`,
       );
@@ -71,14 +72,14 @@ export async function performAuthHandshake(
     try {
       identity = await unlockIdentity(storedIdentity, envPassphrase);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       throw new Error(`Failed to unlock identity: ${detail}. Wrong passphrase?`);
     }
   } else {
     try {
       identity = await unlockIdentity(storedIdentity);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       throw new Error(
         `Failed to unlock identity: ${detail}. Identity file may be corrupt. Run "remi keygen --force" to regenerate.`,
       );
@@ -92,7 +93,7 @@ export async function performAuthHandshake(
     const response = createAuthResponse(identity.publicKeyRaw, signature, identity.fingerprint);
     ws.send(serialize(response));
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorToString(err);
     throw new Error(`Failed to sign auth challenge: ${detail}`);
   }
 

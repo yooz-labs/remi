@@ -11,6 +11,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import { isProcessAlive } from './process-alive.ts';
 
@@ -68,9 +69,7 @@ export class SessionStore {
       return data.sessions;
     } catch (err) {
       if (!(err instanceof SyntaxError)) {
-        console.warn(
-          `[sessions] Unexpected error reading sessions: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        console.warn(`[sessions] Unexpected error reading sessions: ${errorToString(err)}`);
       }
       return [];
     }
@@ -158,9 +157,7 @@ export class SessionStore {
       const { sessions } = this.doPurge();
       return sessions.sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
     } catch (purgeErr) {
-      console.warn(
-        `[sessions] Purge failed: ${purgeErr instanceof Error ? purgeErr.message : String(purgeErr)}`,
-      );
+      console.warn(`[sessions] Purge failed: ${errorToString(purgeErr)}`);
       try {
         return this.read().sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1));
       } catch {

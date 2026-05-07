@@ -7,6 +7,42 @@
 
 import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
 
+/**
+ * Adapter-specific metadata, discriminated by `kind`.
+ *
+ * Each adapter populates exactly one variant; the daemon narrows on `kind`
+ * before reading transport-specific fields. Without the discriminator, any
+ * adapter could set any field (websocket setting `chatId`, etc.) and the
+ * type checker would smile — discriminating locks the contract per adapter.
+ */
+export interface WebSocketPlatformData {
+  readonly kind: 'websocket';
+  /** Working directory the client requested for the Claude Code session. */
+  readonly directory?: string | null;
+  /** Session ID the client wants to resume. */
+  readonly resumeSessionId?: UUID | null;
+  /**
+   * `'query'` means the client is a utility (ls, kill, etc.) that should not
+   * auto-attach. `'attach'` (or undefined) means auto-attach if a primary
+   * session exists.
+   */
+  readonly mode?: 'query' | 'attach' | undefined;
+}
+
+export interface TelegramPlatformData {
+  readonly kind: 'telegram';
+  readonly chatId: number;
+  readonly topicId: number;
+  readonly directory?: string | null;
+}
+
+export interface RelayPlatformData {
+  readonly kind: 'relay';
+  readonly code: string | null;
+}
+
+export type AdapterPlatformData = WebSocketPlatformData | TelegramPlatformData | RelayPlatformData;
+
 /** Metadata about a connection */
 export interface AdapterMetadata {
   /** Type of adapter (websocket, telegram, etc.) */
@@ -15,8 +51,8 @@ export interface AdapterMetadata {
   /** Human-readable name for the connection */
   readonly displayName?: string;
 
-  /** Platform-specific metadata */
-  readonly platformData?: Record<string, unknown>;
+  /** Adapter-specific metadata. Each adapter populates exactly one variant. */
+  readonly platformData?: AdapterPlatformData;
 }
 
 /** Events emitted from adapter to daemon */

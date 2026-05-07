@@ -9,6 +9,7 @@ import type { AgentStatus, Message, Question, StructuredMessage, UUID } from '@r
 import { now } from '@remi/shared';
 import { BulletEngine } from '../parser/bullet-engine.ts';
 import { BulletContentRegistry } from './bullet-content-registry.ts';
+import { QuestionDedup } from './question-dedup.ts';
 
 /** Events emitted by MessageAPI to adapters */
 export interface MessageAPIEvents {
@@ -59,6 +60,7 @@ export class MessageAPI {
   private readonly events: Partial<MessageAPIEvents>;
   private readonly messages: Map<UUID, StructuredMessage> = new Map();
   private readonly sessionId: UUID;
+  private readonly questionDedup = new QuestionDedup();
 
   constructor(config: MessageAPIConfig, events: Partial<MessageAPIEvents> = {}) {
     this.sessionId = config.sessionId;
@@ -204,14 +206,27 @@ export class MessageAPI {
     this.bulletEngine.reset();
     this.messages.clear();
     this.contentRegistry.clear();
+    this.questionDedup.reset();
   }
 
-  // Pass-through methods for other events
+  /**
+   * Emit a question, deduping against recent emissions. See QuestionDedup
+   * for upgrade rules.
+   */
   handleQuestion(question: Question): void {
+    if (!this.questionDedup.shouldEmit(question)) return;
     this.events.onQuestion?.(question);
   }
 
   handleStatusChange(status: AgentStatus, context?: string): void {
+    // Question dedup baseline is meaningful only while the user is being
+    // prompted. Once status leaves 'waiting' (idle/thinking/executing) the
+    // current question is either answered or stale, so the next emission
+    // should be evaluated fresh — otherwise the next session's first prompt
+    // can collide with the prior session's answered prompt within the window.
+    if (status !== 'waiting') {
+      this.questionDedup.reset();
+    }
     this.events.onStatusChange?.(status, context);
   }
 }

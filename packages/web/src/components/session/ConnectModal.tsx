@@ -5,6 +5,10 @@
  * or use a connection code for remote access via WebRTC.
  */
 
+import { useKeyboard } from '@/hooks/useKeyboard';
+import { probeAuthInfo } from '@/lib/auth-probe';
+import { isIdentityEncrypted } from '@/lib/identity-client';
+import { keyboardBackdropStyle } from '@/lib/keyboard-style';
 import type { ConnectionStatus } from '@/types';
 import { clsx } from 'clsx';
 import { AlertCircle, CheckCircle2, Globe, Key, Loader2, Monitor, Shield, X } from 'lucide-react';
@@ -21,6 +25,12 @@ interface ConnectModalProps {
   readonly hasIdentity?: boolean;
   readonly serverFingerprint?: string | null;
   readonly onPassphraseSubmit?: (passphrase: string) => Promise<void>;
+  /**
+   * True if the parent already holds an unlocked identity for this session.
+   * When set, the inline pre-flight prompt is skipped because the daemon
+   * challenge will be answered silently from the cache (#257).
+   */
+  readonly hasUnlockedIdentity?: boolean;
 }
 
 type ConnectionMode = 'local' | 'remote';
@@ -82,6 +92,13 @@ function CodeInput({
       disabled={disabled}
       placeholder="ABCD-1234"
       maxLength={9}
+      // Connection codes are uppercase alphanumerics — strip iOS dictation
+      // and predictive entry the same way the host field does (#266).
+      autoCorrect="off"
+      autoCapitalize="characters"
+      spellCheck={false}
+      autoComplete="off"
+      inputMode="text"
       className={clsx(
         'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
         'text-center text-2xl font-mono tracking-widest',
@@ -212,6 +229,7 @@ export function ConnectModal({
   hasIdentity: hasId,
   serverFingerprint,
   onPassphraseSubmit,
+  hasUnlockedIdentity = false,
 }: ConnectModalProps) {
   const [mode, setMode] = useState<ConnectionMode>('local');
   const [host, setHost] = useState(
@@ -219,21 +237,41 @@ export function ConnectModal({
   );
   const [code, setCode] = useState('');
   const hostInputRef = useRef<HTMLInputElement>(null);
+  // Track the iOS keyboard so we can lift the modal above it (#226 part 1).
+  // Capacitor's keyboardWillShow fires synchronously enough that the modal
+  // reflows before the OS animates the keyboard in, avoiding the "input
+  // disappears behind the keyboard" flash. Style derivation is in
+  // keyboardBackdropStyle so it can be unit-tested.
+  const keyboard = useKeyboard();
+  const backdropStyle = keyboardBackdropStyle(keyboard);
+
+  // Pre-flight passphrase state (#257):
+  //   When the daemon advertises authRequired=true via /auth-info, surface
+  //   the passphrase prompt INSIDE the connect modal before opening the
+  //   WebSocket. This avoids the "connecting then suddenly asking for a
+  //   passphrase" jolt and makes auth feel like part of the connect step.
+  const [preflightPending, setPreflightPending] = useState<{
+    wsUrl: string;
+    fingerprint: string | null;
+  } | null>(null);
+  const [isProbing, setIsProbing] = useState(false);
 
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
       setCode('');
       setHost(localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost');
+      setPreflightPending(null);
+      setIsProbing(false);
     }
   }, [isOpen]);
 
   // Auto-focus host input when modal opens
   useEffect(() => {
-    if (isOpen && mode === 'local') {
+    if (isOpen && mode === 'local' && !preflightPending) {
       setTimeout(() => hostInputRef.current?.focus(), 100);
     }
-  }, [isOpen, mode]);
+  }, [isOpen, mode, preflightPending]);
 
   if (!isOpen) return null;
 
@@ -241,15 +279,29 @@ export function ConnectModal({
   const isAuthenticating = connectionStatus === 'authenticating';
   const isConnected = connectionStatus === 'connected';
 
-  // Show passphrase view when auth is needed
-  if (needsPassphrase && onPassphraseSubmit) {
+  // Show passphrase view when auth is needed: either the WebSocket is
+  // already mid-handshake and got an auth_challenge (post-connect), or the
+  // pre-flight probe surfaced auth required up-front.
+  const showPassphraseView =
+    (needsPassphrase || preflightPending != null) && onPassphraseSubmit != null;
+  const passphraseFingerprint =
+    serverFingerprint ?? preflightPending?.fingerprint ?? null;
+
+  if (showPassphraseView && onPassphraseSubmit) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div
+        data-testid="connect-modal-backdrop"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        style={backdropStyle}
+      >
         <div className="w-full max-w-md rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
           <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
             <h2 className="text-lg font-semibold text-[var(--color-text)]">Authenticate</h2>
             <button
-              onClick={onClose}
+              onClick={() => {
+                setPreflightPending(null);
+                onClose();
+              }}
               className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
               aria-label="Close"
             >
@@ -258,9 +310,19 @@ export function ConnectModal({
           </div>
           <div className="p-4">
             <PassphraseView
-              serverFingerprint={serverFingerprint}
+              serverFingerprint={passphraseFingerprint}
               hasIdentity={hasId}
-              onSubmit={onPassphraseSubmit}
+              onSubmit={async (passphrase) => {
+                await onPassphraseSubmit(passphrase);
+                // Pre-flight: now that the identity is unlocked, open the
+                // WebSocket. The daemon will challenge, but the cached
+                // identity signs silently — no second prompt.
+                if (preflightPending) {
+                  const { wsUrl } = preflightPending;
+                  setPreflightPending(null);
+                  onConnectDirect(wsUrl);
+                }
+              }}
             />
           </div>
         </div>
@@ -268,10 +330,37 @@ export function ConnectModal({
     );
   }
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (mode === 'local') {
       const wsUrl = buildWsUrl(host);
       localStorage.setItem(LOCALSTORAGE_HOST_KEY, host.trim());
+
+      // Pre-flight probe (#257). When the local identity is encrypted and
+      // the user hasn't already unlocked it this session, ask the daemon
+      // whether it will challenge us. If yes, surface PassphraseView inside
+      // this modal BEFORE opening the WebSocket. Best-effort: any probe
+      // failure falls back to the legacy post-connect auth flow.
+      let identityEncrypted = false;
+      try {
+        identityEncrypted = isIdentityEncrypted();
+      } catch {
+        identityEncrypted = false;
+      }
+
+      if (identityEncrypted && !hasUnlockedIdentity && onPassphraseSubmit) {
+        setIsProbing(true);
+        let info: Awaited<ReturnType<typeof probeAuthInfo>> = null;
+        try {
+          info = await probeAuthInfo(wsUrl);
+        } finally {
+          setIsProbing(false);
+        }
+        if (info?.authRequired) {
+          setPreflightPending({ wsUrl, fingerprint: info.fingerprint });
+          return;
+        }
+      }
+
       onConnectDirect(wsUrl);
     } else if (onConnectCode) {
       onConnectCode(code);
@@ -279,16 +368,27 @@ export function ConnectModal({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && canConnect && !isConnecting) {
+    if (e.key === 'Enter' && canConnect && !isConnecting && !isProbing) {
       e.preventDefault();
-      handleConnect();
+      void handleConnect();
     }
   };
 
   const canConnect = mode === 'local' ? host.trim().length > 0 : code.length === 9;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <div
+      data-testid="connect-modal-backdrop"
+      className={clsx(
+        'fixed inset-0 z-50 flex justify-center bg-black/60 p-4',
+        // When the keyboard is open, anchor the modal to the top of the
+        // remaining visible area (paired with backdropStyle's padding-bottom
+        // equal to the keyboard height) so the input never sits behind the
+        // keyboard on short screens.
+        keyboard.isVisible ? 'items-start pt-8' : 'items-center',
+      )}
+      style={backdropStyle}
+    >
       <div className="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
@@ -349,6 +449,16 @@ export function ConnectModal({
                   onKeyDown={handleKeyDown}
                   disabled={isConnecting}
                   placeholder="localhost"
+                  // iOS WKWebView keyboards otherwise insert dictation
+                  // suggestions alongside the typed string, producing the
+                  // doubled-text seen in #266 ("localhostlocalhost"). For a
+                  // hostname these affordances are pure noise; turn them off
+                  // and ask for the URL keyboard.
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  autoComplete="off"
+                  inputMode="url"
                   className={clsx(
                     'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
                     'text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
@@ -426,21 +536,29 @@ export function ConnectModal({
             Cancel
           </button>
           <button
-            onClick={handleConnect}
-            disabled={!canConnect || isConnecting || isAuthenticating || isConnected}
+            onClick={() => {
+              void handleConnect();
+            }}
+            disabled={
+              !canConnect || isConnecting || isAuthenticating || isConnected || isProbing
+            }
             className={clsx(
               'flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-white transition-colors',
-              canConnect && !isConnecting && !isAuthenticating && !isConnected
+              canConnect && !isConnecting && !isAuthenticating && !isConnected && !isProbing
                 ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)]'
                 : 'cursor-not-allowed bg-[var(--color-primary)]/50',
             )}
           >
-            {isConnecting || isAuthenticating ? (
+            {isConnecting || isAuthenticating || isProbing ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Monitor className="size-4" />
             )}
-            {isConnecting || isAuthenticating ? 'Discovering...' : 'Connect'}
+            {isProbing
+              ? 'Checking...'
+              : isConnecting || isAuthenticating
+                ? 'Discovering...'
+                : 'Connect'}
           </button>
         </div>
       </div>

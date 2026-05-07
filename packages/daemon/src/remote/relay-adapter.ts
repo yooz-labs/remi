@@ -137,7 +137,7 @@ export class RelayAdapter implements ConnectionAdapter {
         const metadata: AdapterMetadata = {
           adapterType: this.type,
           displayName: 'Remote Client',
-          platformData: { code: this.connectionCode },
+          platformData: { kind: 'relay', code: this.connectionCode },
         };
         this.events.onConnect?.(connectionId, metadata);
       }
@@ -215,7 +215,7 @@ export class RelayAdapter implements ConnectionAdapter {
       const metadata: AdapterMetadata = {
         adapterType: this.type,
         displayName: 'Remote Client (authenticated)',
-        platformData: { code: this.connectionCode },
+        platformData: { kind: 'relay', code: this.connectionCode },
       };
       this.events.onConnect?.(this.clientConnectionId, metadata);
     } else {

@@ -9,6 +9,7 @@
  * - GET /health: Health check
  */
 
+import { errorToString } from '@remi/shared';
 import { sendApnsPush } from './apns.ts';
 import { normalizeCode } from './code-generator.ts';
 import { ConnectionRoom } from './connection-room.ts';
@@ -198,7 +199,7 @@ export default {
           { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errorToString(err);
         result = { success: false, error: `APNS internal error: ${msg}` };
       }
 

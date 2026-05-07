@@ -162,3 +162,77 @@ describe('DetachScanner', () => {
     expect(result[0]).toBe(CTRL_Z);
   });
 });
+
+describe('DetachScanner with onSuspend (issue #361)', () => {
+  let detached: boolean;
+  let forwarded: Buffer[];
+  let suspendCount: number;
+  let scanner: DetachScanner;
+
+  beforeEach(() => {
+    detached = false;
+    forwarded = [];
+    suspendCount = 0;
+    scanner = new DetachScanner({
+      onDetach: () => {
+        detached = true;
+      },
+      onData: (buf) => {
+        forwarded.push(Buffer.from(buf));
+      },
+      onSuspend: () => {
+        suspendCount++;
+      },
+      timeoutMs: 1000,
+    });
+  });
+
+  afterEach(() => {
+    scanner.destroy();
+  });
+
+  function getForwarded(): Buffer {
+    return Buffer.concat(forwarded);
+  }
+
+  test('Ctrl+Z alone calls onSuspend and is not forwarded', () => {
+    const CTRL_Z = 0x1a;
+    scanner.write(Buffer.from([CTRL_Z]));
+    expect(suspendCount).toBe(1);
+    expect(forwarded.length).toBe(0);
+    expect(detached).toBe(false);
+  });
+
+  test('Ctrl+Z surrounded by normal bytes is intercepted; neighbors pass through', () => {
+    const CTRL_Z = 0x1a;
+    scanner.write(Buffer.from([0x61, 0x62, CTRL_Z, 0x63, 0x64])); // "ab" + Ctrl+Z + "cd"
+    expect(suspendCount).toBe(1);
+    const result = getForwarded();
+    expect(result.toString()).toBe('abcd');
+  });
+
+  test('multiple Ctrl+Z bytes each trigger onSuspend', () => {
+    const CTRL_Z = 0x1a;
+    scanner.write(Buffer.from([CTRL_Z, CTRL_Z, 0x61, CTRL_Z]));
+    expect(suspendCount).toBe(3);
+    expect(getForwarded().toString()).toBe('a');
+  });
+
+  test('Ctrl+B then Ctrl+Z: Ctrl+B forwards, Ctrl+Z suspends', () => {
+    scanner.write(Buffer.from([CTRL_B, 0x1a]));
+    expect(suspendCount).toBe(1);
+    expect(detached).toBe(false);
+    const result = getForwarded();
+    expect(result.length).toBe(1);
+    expect(result[0]).toBe(CTRL_B);
+  });
+
+  test('Ctrl+Z does not break Ctrl+B d detection when interleaved', () => {
+    const CTRL_Z = 0x1a;
+    // "ab" + Ctrl+Z + Ctrl+B + 'd'  -> "ab" forwarded, suspend fired, then detach
+    scanner.write(Buffer.from([0x61, 0x62, CTRL_Z, CTRL_B, 0x64]));
+    expect(suspendCount).toBe(1);
+    expect(detached).toBe(true);
+    expect(getForwarded().toString()).toBe('ab');
+  });
+});

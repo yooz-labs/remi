@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'node:fs';
+import { errorToString } from '@remi/shared';
 import { deserializeIdentity } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
 
@@ -50,7 +51,7 @@ export async function runKeyImport(options: KeyImportOptions = {}): Promise<void
     console.log('Identity imported successfully.');
     console.log(`  Fingerprint: ${identity.fingerprint}`);
   } catch (err) {
-    console.error(`Failed to import identity: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Failed to import identity: ${errorToString(err)}`);
     process.exit(1);
   }
 }

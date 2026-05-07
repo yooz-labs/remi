@@ -99,7 +99,8 @@ export type ProtocolMessage =
   | DetachSessionMessage
   | DetachSessionAckMessage
   | RegisterDeviceTokenMessage
-  | SessionResetMessage;
+  | SessionResetMessage
+  | DaemonUpdateAvailableMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -532,6 +533,30 @@ export interface RegisterDeviceTokenMessage {
   readonly platform: 'ios' | 'android';
 }
 
+/**
+ * Daemon notifies attached clients that a newer remi binary is on disk.
+ *
+ * The running wrapper is locked to its startup-time code and cannot be
+ * hot-swapped without disrupting the user's PTY session. This message
+ * lets the client surface a "restart this session to pick up vNEW"
+ * banner so the user knows their fix landed but is not yet live.
+ *
+ * Fired at most once per wrapper lifetime by the on-disk binary watcher
+ * (cli/update-watcher.ts). Issue #287.
+ */
+export interface DaemonUpdateAvailableMessage {
+  readonly type: 'daemon_update_available';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Version this wrapper is running. */
+  readonly currentVersion: string;
+  /**
+   * Path of the binary detected as updated. Useful for diagnostics if
+   * the user has multiple remi installs (Homebrew vs npm vs symlink).
+   */
+  readonly binaryPath: string;
+}
+
 /** Notification that a Claude session restarted within the same Remi session */
 export interface SessionResetMessage {
   readonly type: 'session_reset';
@@ -651,23 +676,37 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'detach_session',
     'detach_session_ack',
     'register_device_token',
+    'daemon_update_available',
     'session_reset',
   ];
 
   return validTypes.includes(obj['type'] as string);
 }
 
+/** Optional fields for {@link createHello}. */
+export interface CreateHelloOptions {
+  /** Working directory for the Claude Code session. */
+  readonly directory?: string | undefined;
+  /** Session ID to resume (for reconnecting to an existing session). */
+  readonly resumeSessionId?: UUID | undefined;
+  /** Index of last received message (for efficient replay). */
+  readonly lastReceivedIndex?: number | undefined;
+  /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach. */
+  readonly mode?: 'query' | undefined;
+}
+
 /**
  * Create a hello message.
+ *
+ * Optional fields are passed via the `options` object so adding new optionals
+ * never requires threading `undefined` through positional callsites.
  */
 export function createHello(
   clientId: UUID,
   clientVersion: string,
-  directory?: string,
-  resumeSessionId?: UUID,
-  lastReceivedIndex?: number,
-  mode?: 'query',
+  options: CreateHelloOptions = {},
 ): HelloMessage {
+  const { directory, resumeSessionId, lastReceivedIndex, mode } = options;
   return {
     type: 'hello',
     id: generateId(),
@@ -1266,6 +1305,24 @@ export function createRegisterDeviceToken(
     timestamp: now(),
     token,
     platform,
+  };
+}
+
+/**
+ * Create a daemon-update-available notification. Daemon fires this once
+ * when its on-disk binary has been replaced (issue #287); the client
+ * surfaces a "restart to pick up update" prompt.
+ */
+export function createDaemonUpdateAvailable(
+  currentVersion: string,
+  binaryPath: string,
+): DaemonUpdateAvailableMessage {
+  return {
+    type: 'daemon_update_available',
+    id: generateId(),
+    timestamp: now(),
+    currentVersion,
+    binaryPath,
   };
 }
 

@@ -9,6 +9,7 @@
  */
 
 import { isEncrypted, rekeyIdentity } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
 import { promptPassphrase } from './prompt-passphrase.ts';
 
@@ -52,7 +53,7 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
       console.log(`  Fingerprint: ${rekeyed.fingerprint}`);
       console.log(`  Stored at:   ${store.identityPath}`);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to decrypt identity: ${detail}. Wrong passphrase?`);
       process.exit(1);
     }
@@ -92,7 +93,7 @@ export async function runKeygen(options: KeygenOptions = {}): Promise<void> {
       console.log(`  Fingerprint: ${rekeyed.fingerprint}`);
       console.log(`  Stored at:   ${store.identityPath}`);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to encrypt identity: ${detail}`);
       process.exit(1);
     }

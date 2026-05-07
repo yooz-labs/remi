@@ -12,7 +12,8 @@
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
-import { HOOK_EVENT_NAMES } from './hook-types.ts';
+import { errorToString } from '@remi/shared';
+import { HOOK_EVENT_NAMES, REMI_REGISTERED_HOOK_EVENTS } from './hook-types.ts';
 
 interface HookEntry {
   type: 'http';
@@ -55,16 +56,22 @@ export class HookConfigManager {
     try {
       await this.purgeStaleHooks();
     } catch (err) {
-      console.warn(
-        `Failed to purge stale hooks: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
-      );
+      console.warn(`Failed to purge stale hooks: ${errorToString(err)}. Continuing with install.`);
     }
 
     try {
       this.purgeInvalidEventNames();
     } catch (err) {
       console.warn(
-        `Failed to purge invalid event names: ${err instanceof Error ? err.message : String(err)}. Continuing with install.`,
+        `Failed to purge invalid event names: ${errorToString(err)}. Continuing with install.`,
+      );
+    }
+
+    try {
+      this.pruneNonRegisteredOwnHooks();
+    } catch (err) {
+      console.warn(
+        `Failed to prune legacy remi hooks: ${errorToString(err)}. Continuing with install.`,
       );
     }
 
@@ -79,7 +86,13 @@ export class HookConfigManager {
       timeout: 5,
     };
 
-    for (const event of HOOK_EVENT_NAMES) {
+    // Register only the subset of events remi actually consumes. Registering
+    // every event in HOOK_EVENT_NAMES forces Claude Code into a synchronous
+    // HTTP call to remi for every Worktree/UserPrompt/etc. event — and a
+    // failed call gates the underlying action (issue #203). The narrower
+    // list keeps Claude Code's worktree creation, prompt submission, and
+    // compaction unblocked when remi is slow, dead, or restarting.
+    for (const event of REMI_REGISTERED_HOOK_EVENTS) {
       if (!settings.hooks[event]) {
         settings.hooks[event] = [];
       }
@@ -145,7 +158,7 @@ export class HookConfigManager {
     const settings = this.readSettings();
     if (!settings.hooks) return false;
 
-    return HOOK_EVENT_NAMES.every((event) => {
+    return REMI_REGISTERED_HOOK_EVENTS.every((event) => {
       const matchers = settings.hooks?.[event];
       return matchers?.some((m) =>
         m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
@@ -205,6 +218,71 @@ export class HookConfigManager {
     );
     if (modified) {
       this.writeSettings(settings);
+    }
+  }
+
+  /**
+   * Remove our own hook URL from events that newer remi versions no longer
+   * register (e.g. an older remi wrote WorktreeCreate / UserPromptSubmit /
+   * PreCompact entries — the new install path skips them, so they would
+   * stay forever, gating Claude Code on a remi that never plans to respond).
+   *
+   * Only removes our exact hook URL; user-configured hooks for those
+   * events are preserved. If removing our entry leaves the event with no
+   * matchers, the event key is deleted entirely.
+   */
+  private pruneNonRegisteredOwnHooks(): void {
+    if (!fs.existsSync(this.settingsPath)) return;
+
+    const settings = this.readSettings();
+    if (!settings.hooks) return;
+
+    const registered = new Set<string>(REMI_REGISTERED_HOOK_EVENTS);
+    let modified = false;
+
+    for (const event of Object.keys(settings.hooks)) {
+      if (registered.has(event)) continue;
+      const matchers = settings.hooks[event];
+      if (!matchers) continue;
+      const filtered = matchers
+        .map((m) => ({
+          ...m,
+          hooks: Array.isArray(m.hooks)
+            ? m.hooks.filter((h) => !(h.type === 'http' && h.url === this.hookUrl))
+            : m.hooks,
+        }))
+        .filter((m) => Array.isArray(m.hooks) && m.hooks.length > 0);
+      if (filtered.length !== matchers.length) {
+        if (filtered.length === 0) {
+          Reflect.deleteProperty(settings.hooks, event);
+        } else {
+          settings.hooks[event] = filtered;
+        }
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      if (settings.hooks && Object.keys(settings.hooks).length === 0) {
+        Reflect.deleteProperty(settings, 'hooks');
+      }
+      this.writeSettings(settings);
+    }
+  }
+
+  /**
+   * Synchronous best-effort uninstall. Called from `process.on('exit')` so
+   * that even abnormal shutdowns (uncaught exceptions, callers explicitly
+   * calling `process.exit`) leave the project's settings clean. Cannot
+   * await anything; must not throw. SIGKILL still leaves entries behind
+   * by definition, but the next remi startup's `purgeStaleHooks` cleans
+   * those up anyway.
+   */
+  uninstallSync(): void {
+    try {
+      this.uninstall();
+    } catch {
+      // Exit handler must not throw; the next install() will retry.
     }
   }
 

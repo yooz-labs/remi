@@ -264,7 +264,7 @@ describe('auto_approve config', () => {
       model: 'gemma4:e2b',
       api_key: '',
       base_url: 'http://localhost:11434/v1',
-      timeout: 10,
+      timeout: 30,
       log_decisions: true,
       allow: [],
       deny: [],

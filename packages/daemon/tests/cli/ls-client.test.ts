@@ -87,6 +87,9 @@ describe('runLsClient', () => {
     // biome-ignore lint/style/noNonNullAssertion: length checked above
     const hello = deserialize(receivedMessages[0]!);
     expect(hello?.type).toBe('hello');
+    // ls is a utility client; it must declare query mode so the daemon does
+    // not auto-attach (which would steal the active slot from a real client).
+    expect((hello as { mode?: string } | null)?.mode).toBe('query');
     // biome-ignore lint/style/noNonNullAssertion: length checked above
     const listReq = deserialize(receivedMessages[1]!);
     expect(listReq?.type).toBe('session_list_request');

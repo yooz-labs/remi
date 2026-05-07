@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 
 // Version constant - read once at startup with fallback for compiled binaries
 const REMI_VERSION = (() => {
@@ -17,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.5.2'; // REMI_COMPILED_VERSION
+      return '0.5.2-dev.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -27,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.5.2'; // REMI_COMPILED_VERSION
+    return '0.5.2-dev.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -40,257 +41,106 @@ const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 // Status file is per-port so multiple wrapper sessions don't overwrite each other.
 // The statusline script uses $REMI_PORT to read the correct file.
 let STATUS_FILE = path.join(REMI_DIR, 'status.json'); // Updated after PORT is resolved
-let logFd: number | null = null;
 
 // In wrapper mode, we save the real stdout file descriptor before overriding.
 // Raw PTY bytes are written directly via fs.writeSync to avoid decode/encode.
-let ptyStdoutFd: number | null = null;
-
-/**
- * Select the APNS notification category based on the number of question options.
- * iOS will render action buttons matching the category; watchOS mirrors them automatically.
- */
-function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
-  if (options.length === 2) return 'REMI_YN';
-  if (options.length === 3) return 'REMI_YNA';
-  if (options.length === 4) return 'REMI_MULTI';
-  return undefined;
-}
+// State lives in cli/wrapper-state.ts so extracted phases can read/write it
+// without closing over a cli.ts-local `let` that flips across call sites.
+import {
+  getPtyStdoutFd,
+  isWrapperDetached,
+  setPtyStdoutFd,
+  setWrapperDetached,
+} from './cli/wrapper-state.ts';
 
 function ensureRemiDir(): void {
   fs.mkdirSync(REMI_DIR, { recursive: true });
-}
-
-function openLogFile(): number {
-  ensureRemiDir();
-  const fd = fs.openSync(LOG_FILE, 'a');
-  fs.writeSync(fd, `\n--- Remi session started at ${new Date().toISOString()} ---\n`);
-  return fd;
-}
-
-function writeToLog(msg: string): void {
-  if (logFd === null) return;
-  try {
-    fs.writeSync(logFd, `${msg}\n`);
-  } catch {
-    // Silently drop: in wrapper mode, terminal cleanliness is non-negotiable
-  }
 }
 
 // ---------------------------------------------------------------------------
 // Status file for status line integration
 // Guard: only writes in wrapper mode (wrapperMode is set during arg parsing)
 // ---------------------------------------------------------------------------
-type RemiSessionStatus = AgentStatus | 'starting';
-
-interface RemiStatus {
-  pid: number;
-  connections: number;
-  sessionStatus: RemiSessionStatus;
-  adapters: string[];
-  wsPort: number;
-  sessionId: UUID | null;
-  repo: string;
-  branch: string;
-}
-
-function detectGitInfo(): { repo: string; branch: string } {
-  try {
-    const cwd = process.cwd();
-    const repo = path.basename(cwd);
-    const headFile = path.join(cwd, '.git', 'HEAD');
-    if (fs.existsSync(headFile)) {
-      const head = fs.readFileSync(headFile, 'utf-8').trim();
-      const branch = head.startsWith('ref: refs/heads/') ? head.slice(16) : head.slice(0, 8);
-      return { repo, branch };
-    }
-    return { repo, branch: '?' };
-  } catch {
-    return { repo: path.basename(process.cwd()), branch: '?' };
-  }
-}
+import { detectGitInfo, loadDotenvFile } from './cli/startup-env.ts';
+import { type RemiStatus, StatusWriter } from './cli/status-writer.ts';
 
 const gitInfo = detectGitInfo();
 
-const remiStatus: RemiStatus = {
-  pid: process.pid,
-  connections: 0,
-  sessionStatus: 'starting',
-  adapters: [],
-  wsPort: 0,
-  sessionId: null,
-  repo: gitInfo.repo,
-  branch: gitInfo.branch,
-};
+const statusWriter = new StatusWriter(
+  {
+    pid: process.pid,
+    connections: 0,
+    sessionStatus: 'starting',
+    adapters: [],
+    wsPort: 0,
+    sessionId: null,
+    repo: gitInfo.repo,
+    branch: gitInfo.branch,
+  },
+  {
+    getTargetFile: () => (cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE),
+    isEnabled: () => isWrapperMode() || cliDaemonMode,
+    writeLog: writeToLog,
+  },
+);
 
-let statusWriteErrorLogged = false;
-let statusWriteTimer: ReturnType<typeof setTimeout> | null = null;
+/** Thin back-compat aliases so existing cli.ts call sites keep working. */
+const remiStatus: Readonly<RemiStatus> = statusWriter.state;
+const updateRemiStatus = (patch: Partial<RemiStatus>): void => statusWriter.update(patch);
+const cleanupStatusFile = (): void => statusWriter.cleanup();
 
-function updateRemiStatus(patch: Partial<RemiStatus>): void {
-  Object.assign(remiStatus, patch);
-  scheduleStatusWrite();
-}
-
-function scheduleStatusWrite(): void {
-  if (statusWriteTimer) return;
-  statusWriteTimer = setTimeout(() => {
-    statusWriteTimer = null;
-    writeStatus();
-  }, 300);
-}
-
-function writeStatus(): void {
-  if (!wrapperMode && !cliDaemonMode) return;
-  // Daemon mode writes to daemon-status.json; wrapper writes to status.json
-  const targetFile = cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE;
-  // Atomic write: write to temp file then rename to avoid readers seeing partial JSON
-  const tmpFile = `${targetFile}.tmp`;
-  try {
-    fs.writeFileSync(tmpFile, JSON.stringify(remiStatus));
-    fs.renameSync(tmpFile, targetFile);
-    statusWriteErrorLogged = false;
-  } catch (err) {
-    if (!statusWriteErrorLogged) {
-      writeToLog(`[error] Failed to write status file: ${err}`);
-      statusWriteErrorLogged = true;
-    }
-  }
-}
-
-function cleanupStatusFile(): void {
-  const targetFile = cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE;
-  try {
-    fs.unlinkSync(targetFile);
-  } catch {
-    // File may not exist during cleanup
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Status line script (embedded, written to ~/.remi/statusline.sh)
-// Requires 'jq' to be installed on the host system.
-// ---------------------------------------------------------------------------
-const STATUSLINE_SCRIPT = `#!/bin/bash
-input=$(cat)
-REMI=""
-# REMI_PORT is set by remi when spawning Claude; status file is per-port
-REMI_STATUS_FILE="${REMI_DIR}/status-\$REMI_PORT.json"
-if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
-  if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
-    CLIENT_INFO="no clients"
-    [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
-    REMI="remi :\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${S_STATUS}"
-  fi
-fi
-IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
-echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
-`;
-
-function installStatusLine(): void {
-  try {
-    ensureRemiDir();
-    const scriptPath = path.join(REMI_DIR, 'statusline.sh');
-    fs.writeFileSync(scriptPath, STATUSLINE_SCRIPT, { mode: 0o755 });
-
-    // Auto-configure Claude Code settings if no statusLine key exists in
-    // ~/.claude/settings.json. Preserves all other settings but rewrites the file.
-    const claudeSettingsFile = path.join(os.homedir(), '.claude', 'settings.json');
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(claudeSettingsFile)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(claudeSettingsFile, 'utf-8'));
-      } catch {
-        console.error(`[warn] Claude settings file is corrupted: ${claudeSettingsFile}`);
-        return;
-      }
-    }
-    if (!settings['statusLine']) {
-      fs.mkdirSync(path.dirname(claudeSettingsFile), { recursive: true });
-      settings['statusLine'] = { type: 'command', command: scriptPath };
-      fs.writeFileSync(claudeSettingsFile, `${JSON.stringify(settings, null, 2)}\n`);
-    }
-  } catch (err) {
-    // console.error works in both wrapper and daemon mode
-    console.error(`[warn] Failed to install status line: ${err}`);
-  }
-}
-
-// Load .env file if present
-const envPath = path.join(process.cwd(), '.env');
-if (fs.existsSync(envPath)) {
-  const envContent = fs.readFileSync(envPath, 'utf-8');
-  for (const line of envContent.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIndex = trimmed.indexOf('=');
-    if (eqIndex > 0) {
-      const key = trimmed.slice(0, eqIndex).trim();
-      let value = trimmed.slice(eqIndex + 1).trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
-      }
-      if (!process.env[key]) {
-        process.env[key] = value;
-      }
-    }
-  }
-}
+loadDotenvFile();
 
 import {
-  createBulletExpandResponse,
-  createCreateSessionResponse,
-  createDetachSessionAck,
-  createError,
+  createDaemonUpdateAvailable,
   createHelloAck,
-  createKillSessionResponse,
-  createRawPtyOutput,
   createReplayBatch,
-  createResumeSessionResponse,
-  createSessionHistoryResponse,
   createSessionListResponse,
-  createSessionReset,
-  createStructuredAgentOutput,
-  createTranscriptLoadComplete,
   generateId,
-  now,
 } from '@remi/shared';
-import type {
-  AgentStatus,
-  ProtocolMessage,
-  QuestionOption,
-  RecentDirectory,
-  UUID,
-  UnlockedIdentity,
-} from '@remi/shared';
+import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
-import {
-  type AdapterMetadata,
-  AdapterRegistry,
-  TelegramAdapter,
-  WebSocketAdapter,
-} from './adapters/index.ts';
-import { MessageAPI } from './api/index.ts';
+import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
+import { looksLikeDefaultPermissionQuestion } from './api/question-dedup.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { runConfigCommand } from './cli/cmd-config.ts';
+import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
-  CONFIG_PATH,
-  applyEnvOverrides,
-  formatConfig,
-  initConfigFile,
-  loadConfig,
-} from './config/index.ts';
+  type ConnectionHandlers,
+  createConnectionHandlers,
+} from './cli/handlers/connection-events.ts';
+import {
+  type CreateSessionHandlers,
+  createCreateSessionHandlers,
+} from './cli/handlers/create-session-events.ts';
+import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
+import {
+  type ResumeSessionHandlers,
+  createResumeSessionHandlers,
+} from './cli/handlers/resume-session-events.ts';
+import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
+import {
+  type TranscriptHandlers,
+  createTranscriptHandlers,
+} from './cli/handlers/transcript-events.ts';
+import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
+import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
+import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
+import { installStatusLine } from './cli/statusline-installer.ts';
+import { installSuspendHandler } from './cli/suspend-handler.ts';
+import { startTranscriptFallback } from './cli/transcript-fallback.ts';
+import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
+import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
-import { HookConfigManager, HookEventBridge, HookServer } from './hooks/index.ts';
-import { classifySessionEvent } from './hooks/session-lock-classifier.ts';
-import { sendPushTrigger } from './notifications/push-client.ts';
+import type { HookEventBridge } from './hooks/hook-event-bridge.ts';
+import { HookConfigManager, HookServer } from './hooks/index.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
-import { PTYManager, PTYSession } from './pty/index.ts';
+import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
@@ -300,18 +150,16 @@ import {
   type StoredSession,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
-import {
-  TranscriptDiscovery,
-  TranscriptMessageBridge,
-  TranscriptWatcher,
-} from './transcript/index.ts';
-import type { AssistantEntry } from './transcript/index.ts';
+import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 
 // ---------------------------------------------------------------------------
 // Logging: In wrapper mode, all daemon logs go to ~/.remi/remi.log
 // ---------------------------------------------------------------------------
-let wrapperMode = true; // Default to wrapper mode
-let wrapperDetached = false; // Set when local terminal is detached (SIGHUP or Ctrl+B d)
+import { configureLogger, isWrapperMode, log, logError, setWrapperMode } from './cli/logger.ts';
+
+configureLogger({ writeLog: writeToLog });
+
+// wrapperDetached lives in cli/wrapper-state.ts (see top of file).
 let sighupTimeoutId: ReturnType<typeof setTimeout> | null = null; // Orphan shutdown timer after SIGHUP
 
 /** Cancel the SIGHUP orphan timeout when a remote client attaches. */
@@ -323,139 +171,9 @@ function cancelOrphanTimeout(): void {
   }
 }
 
-function log(...args: unknown[]): void {
-  if (wrapperMode) {
-    writeToLog(args.map(String).join(' '));
-  } else {
-    console.log(...args);
-  }
-}
+import { resolveShellPath } from './cli/shell-path.ts';
 
-function logError(...args: unknown[]): void {
-  if (wrapperMode) {
-    writeToLog(`[error] ${args.map(String).join(' ')}`);
-  } else {
-    console.error(...args);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Shell PATH resolution (for LaunchAgent/systemd where PATH is minimal)
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the user's full PATH from their login shell.
- * LaunchAgents and systemd services inherit a minimal PATH that doesn't
- * include user-installed tools (e.g. ~/.local/bin, Homebrew, ~/.bun/bin).
- *
- * Strategy:
- * 1. Run both login shell (`zsh -l`) and interactive login shell (`zsh -l -i`)
- * 2. Merge all discovered entries (login shell may have .zprofile paths,
- *    interactive may have .zshrc paths like Homebrew or nvm)
- * 3. Merge well-known tool directories as a final fallback
- * 4. Verify `claude` is findable; warn if not
- */
-function resolveShellPath(): void {
-  const shell = process.env['SHELL'] || '/bin/zsh';
-  const currentEntries = (process.env['PATH'] || '').split(':').filter(Boolean);
-  const allEntries = new Set(currentEntries);
-
-  // Run both shells and merge all discovered PATH entries.
-  // Login shell sources .zprofile; interactive login shell also sources .zshrc.
-  const attempts: Array<{ flags: string[]; label: string }> = [
-    { flags: ['-l', '-c', 'echo $PATH'], label: 'login' },
-    { flags: ['-l', '-i', '-c', 'echo $PATH'], label: 'interactive login' },
-  ];
-
-  let anyShellSucceeded = false;
-  for (const { flags, label } of attempts) {
-    try {
-      const result = Bun.spawnSync([shell, ...flags], {
-        env: process.env,
-        timeout: 5000,
-      });
-      if (result.exitCode !== 0) {
-        const stderr = result.stderr?.toString().trim() || '(no stderr)';
-        log(`[PATH] ${label} shell exited with code ${result.exitCode}: ${stderr}`);
-        continue;
-      }
-      const shellPath = result.stdout?.toString().trim();
-      if (!shellPath) {
-        log(`[PATH] ${label} shell returned empty PATH`);
-        continue;
-      }
-
-      anyShellSucceeded = true;
-      for (const entry of shellPath.split(':')) {
-        if (entry) allEntries.add(entry);
-      }
-    } catch (err) {
-      logError(`[PATH] ${label} shell failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  // Fallback: merge well-known directories if no shell succeeded
-  if (!anyShellSucceeded) {
-    const home = os.homedir();
-    const wellKnownDirs = [
-      '/opt/homebrew/bin',
-      '/opt/homebrew/sbin',
-      `${home}/.bun/bin`,
-      `${home}/.local/bin`,
-      '/usr/local/bin',
-    ];
-    for (const d of wellKnownDirs) {
-      if (!allEntries.has(d) && fs.existsSync(d)) allEntries.add(d);
-    }
-    log('[PATH] Shell resolution failed, merged well-known directories');
-  }
-
-  const merged = [...allEntries].join(':');
-  if (merged !== (process.env['PATH'] || '')) {
-    process.env['PATH'] = merged;
-    log(`[PATH] Resolved ${allEntries.size} entries (was ${currentEntries.length})`);
-  }
-
-  // Verify claude is findable after PATH resolution
-  try {
-    const which = Bun.spawnSync(['which', 'claude'], { env: process.env, timeout: 2000 });
-    if (which.exitCode !== 0) {
-      logError(
-        '[PATH] WARNING: "claude" not found in PATH after resolution. ' +
-          'Session creation will fail. Ensure claude is installed and in PATH.',
-      );
-    }
-  } catch {
-    // which command itself failed; non-fatal
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Resolve directory helper
-// ---------------------------------------------------------------------------
-function resolveDirectory(
-  inputPath: string | null | undefined,
-): { resolved: string } | { error: string } {
-  if (!inputPath) {
-    return { resolved: process.cwd() };
-  }
-
-  let resolved = inputPath;
-  if (resolved.startsWith('~/')) {
-    resolved = path.join(os.homedir(), resolved.slice(2));
-  } else if (resolved === '~') {
-    resolved = os.homedir();
-  }
-  resolved = path.resolve(resolved);
-  if (!fs.existsSync(resolved)) {
-    return { error: `Directory not found: ${resolved}` };
-  }
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) {
-    return { error: `Not a directory: ${resolved}` };
-  }
-  return { resolved };
-}
+import { resolveDirectory } from './cli/path-resolver.ts';
 
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
@@ -495,60 +213,18 @@ let remiConfig: RemiConfig;
 try {
   remiConfig = applyEnvOverrides(loadConfig());
 } catch (err) {
-  console.error(err instanceof Error ? err.message : String(err));
+  console.error(errorToString(err));
   process.exit(1);
 }
 
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {
-  const configArg = parsedArgs.subcommandArg;
-  if (configArg === 'init') {
-    try {
-      const created = initConfigFile();
-      console.log(`Config file created: ${created}`);
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else if (configArg === 'path') {
-    console.log(CONFIG_PATH);
-  } else {
-    console.log(formatConfig(remiConfig));
-  }
-  process.exit(0);
+  process.exit(runConfigCommand(parsedArgs.subcommandArg, remiConfig));
 }
 
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
-  const liveSessions = new SessionRegistryFile().listLive();
-  if (liveSessions.length === 0) {
-    console.error('No running daemons found.');
-    process.exit(1);
-  }
-  let reloaded = 0;
-  for (const entry of liveSessions) {
-    try {
-      process.kill(entry.pid, 'SIGUSR1');
-      console.log(`Sent reload signal to ${entry.name} (PID ${entry.pid}, port ${entry.wsPort})`);
-      reloaded++;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') {
-        console.error(`Process ${entry.pid} not found (stale session entry)`);
-      } else {
-        console.error(
-          `Failed to signal PID ${entry.pid}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-  }
-  if (reloaded > 0) {
-    console.log(`Reloaded ${reloaded} daemon(s).`);
-    process.exit(0);
-  } else {
-    console.error('Failed to reload any daemons (all session entries appear stale).');
-    process.exit(1);
-  }
+  process.exit(runReloadCommand());
 }
 
 // Destructure into existing variable names for zero downstream changes
@@ -586,7 +262,7 @@ const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
 if (cliDaemonMode) {
-  wrapperMode = false;
+  setWrapperMode(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,7 +286,7 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
       defaultPort: DEFAULT_BASE_PORT,
     });
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     if (err instanceof TargetParseError && err.suggestion) {
       console.error(`  Run: remi ${cliSubcommand} ${err.suggestion}`);
     }
@@ -718,69 +394,30 @@ WantedBy=default.target`;
   process.exit(0);
 }
 
-// Handle key management subcommands
-if (cliSubcommand === 'keygen') {
-  const { runKeygen } = await import('./cli/keygen.ts');
-  await runKeygen({
-    passphrase: process.env['REMI_PASSPHRASE'],
-    usePassphrase: cliUsePassphrase,
-    decrypt: cliDecrypt,
-    encrypt: cliEncrypt,
-    force: cliForce,
-  });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'export-key') {
-  const { runKeyExport } = await import('./cli/key-export.ts');
-  runKeyExport({ publicOnly: cliPublicOnly });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'import-key') {
-  const { runKeyImport } = await import('./cli/key-import.ts');
-  await runKeyImport({ file: cliSubcommandArg, force: cliForce });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'authorize') {
-  const { runAuthorize } = await import('./cli/authorize.ts');
-  await runAuthorize({
-    input: cliSubcommandArg,
-    label: cliLabel,
-    remove: cliRemoveFingerprint,
-  });
-  process.exit(0);
-}
-
-if (cliSubcommand === 'keys') {
-  const { runListKeys } = await import('./cli/authorize.ts');
-  runListKeys();
-  process.exit(0);
+// Handle key management subcommands (keygen, export-key, import-key, authorize, keys)
+{
+  const { isKeysSubcommand, runKeysCommand } = await import('./cli/cmd-keys.ts');
+  if (isKeysSubcommand(cliSubcommand)) {
+    process.exit(
+      await runKeysCommand(cliSubcommand, {
+        ...(cliSubcommandArg !== undefined && { subcommandArg: cliSubcommandArg }),
+        ...(cliUsePassphrase !== undefined && { usePassphrase: cliUsePassphrase }),
+        ...(cliDecrypt !== undefined && { decrypt: cliDecrypt }),
+        ...(cliEncrypt !== undefined && { encrypt: cliEncrypt }),
+        ...(cliForce !== undefined && { force: cliForce }),
+        ...(cliPublicOnly !== undefined && { publicOnly: cliPublicOnly }),
+        ...(cliLabel !== undefined && { label: cliLabel }),
+        ...(cliRemoveFingerprint !== undefined && { removeFingerprint: cliRemoveFingerprint }),
+      }),
+    );
+  }
 }
 
 // Handle 'code' subcommand: show or refresh the persistent connection code
 if (cliSubcommand === 'code') {
   const { CodeStore } = await import('./remote/code-store.ts');
-  const codeStore = new CodeStore();
-  if (cliCodeRefresh) {
-    const newCode = codeStore.refresh();
-    console.log(`New permanent connection code: ${newCode}`);
-    console.log('Restart the daemon for the new code to take effect.');
-  } else {
-    const code = codeStore.load();
-    if (code) {
-      console.log(`Permanent connection code: ${code}`);
-      console.log('Use --permanent-code flag when starting daemon to enable this code.');
-    } else {
-      const newCode = codeStore.refresh();
-      console.log(`Permanent connection code: ${newCode} (newly generated)`);
-      console.log('Use --permanent-code flag when starting daemon to enable this code.');
-    }
-  }
-  console.log('\nNote: By default, codes rotate on each reconnect. Use --permanent-code to');
-  console.log('persist a fixed code (requires Ed25519 authentication for relay connections).');
-  process.exit(0);
+  const { runCodeCommand } = await import('./cli/cmd-code.ts');
+  process.exit(runCodeCommand(new CodeStore(), { refresh: cliCodeRefresh }));
 }
 
 // Handle daemon lifecycle commands: start, stop, status, logs
@@ -790,35 +427,21 @@ if (
   cliSubcommand === 'status' ||
   cliSubcommand === 'logs'
 ) {
-  const dm = await import('./cli/daemon-manager.ts');
-
-  if (cliSubcommand === 'start') {
-    // Only pass port if user explicitly set --port flag.
-    // Do NOT inherit REMI_PORT from env (it's set by wrapper sessions and
-    // would conflict). The daemon finds its own free port.
-    const explicitPort = cliPort;
-    const extraArgs: string[] = [];
-    if (cliBindHost) extraArgs.push('--bind', cliBindHost);
-    if (cliAuth === true) extraArgs.push('--auth');
-    if (cliAuth === false) extraArgs.push('--no-auth');
-    if (cliNoMdns) extraArgs.push('--no-mdns');
-    if (cliNoRelay) extraArgs.push('--no-relay');
-    if (cliNoTelegram) extraArgs.push('--no-telegram');
-    if (cliPermanentCode) extraArgs.push('--permanent-code');
-    if (cliSignalingUrl) extraArgs.push('--signaling-url', cliSignalingUrl);
-    if (cliPushSecret) extraArgs.push('--push-secret', cliPushSecret);
-    if (cliOrphanTimeout !== undefined)
-      extraArgs.push('--orphan-timeout', String(cliOrphanTimeout));
-    await dm.startDaemon({ port: explicitPort, extraArgs });
-  } else if (cliSubcommand === 'stop') {
-    dm.stopDaemon();
-  } else if (cliSubcommand === 'status') {
-    dm.showDaemonStatus();
-  } else {
-    dm.showDaemonLogs();
-  }
-
-  process.exit(0);
+  const { runDaemonLifecycleCommand } = await import('./cli/cmd-daemon.ts');
+  process.exit(
+    await runDaemonLifecycleCommand(cliSubcommand, {
+      ...(cliPort !== undefined && { port: cliPort }),
+      ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
+      ...(cliAuth !== undefined && { auth: cliAuth }),
+      noMdns: cliNoMdns,
+      noRelay: cliNoRelay,
+      noTelegram: cliNoTelegram,
+      permanentCode: cliPermanentCode,
+      ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
+      ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
+      ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
+    }),
+  );
 }
 
 // Live sessions registry: shared by subcommands and daemon/wrapper mode.
@@ -827,471 +450,70 @@ const liveSessionsRegistry = new SessionRegistryFile();
 
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
-  const explicitPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined);
-  if (cliNetwork) {
-    const { runNetworkLs } = await import('./cli/ls-client.ts');
-    try {
-      await runNetworkLs({
-        localPort: explicitPort ?? DEFAULT_BASE_PORT,
-        localPorts: liveSessionsRegistry.getLivePorts(),
-      });
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else if (explicitPort) {
-    // Explicit port: query single daemon on given (or default) host
-    const { runLsClient } = await import('./cli/ls-client.ts');
-    try {
-      await runLsClient({ host: cliHost ?? 'localhost', port: explicitPort });
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else if (cliHost) {
-    // Host without port: probe the standard port range on that host
-    const { runHostLs, getDefaultPortRange } = await import('./cli/ls-client.ts');
-    try {
-      await runHostLs({ host: cliHost, ports: getDefaultPortRange() });
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else {
-    // No explicit port: discover all local remi sessions via live registry
-    const { runMultiPortLs } = await import('./cli/ls-client.ts');
-    try {
-      await runMultiPortLs({ registry: liveSessionsRegistry });
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  }
-  process.exit(0);
+  const { runLsCommand } = await import('./cli/cmd-ls.ts');
+  process.exit(
+    await runLsCommand(
+      {
+        ...(cliPort !== undefined && { port: cliPort }),
+        ...(cliHost !== undefined && { host: cliHost }),
+        network: cliNetwork,
+      },
+      liveSessionsRegistry,
+    ),
+  );
 }
 
 // Handle 'recent' subcommand: browse recent project directories
 if (cliSubcommand === 'recent') {
-  const explicitPort =
-    cliPort ?? (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : undefined);
-
-  if (cliHost || explicitPort) {
-    // Remote mode: query a daemon via WebSocket
-    const { runRecentClient } = await import('./cli/recent-client.ts');
-    try {
-      await runRecentClient({
-        host: cliHost ?? 'localhost',
-        port: explicitPort ?? DEFAULT_BASE_PORT,
-      });
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  } else {
-    // Local mode: read SessionStore directly
-    const store = new SessionStore();
-    const { renderRecentDirectories } = await import('./cli/recent-client.ts');
-    const directories = getRecentDirectories(store, 20);
-    renderRecentDirectories(directories);
-  }
-  process.exit(0);
+  const { runRecentCommand } = await import('./cli/cmd-recent.ts');
+  process.exit(
+    await runRecentCommand(
+      {
+        ...(cliPort !== undefined && { port: cliPort }),
+        ...(cliHost !== undefined && { host: cliHost }),
+      },
+      () => getRecentDirectories(new SessionStore(), 20),
+    ),
+  );
 }
 
 // Handle 'kill' subcommand: kill a session by name or ID
 if (cliSubcommand === 'kill') {
-  if (!resolved.targetId) {
-    console.error('Usage: remi kill <session-name-or-id>');
-    console.error('  Examples: remi kill my-session');
-    console.error('            remi kill host:port/session-name');
-    console.error('            remi kill my-session --host 192.168.1.1');
-    console.error('Run `remi ls` to see live sessions.');
-    process.exit(1);
-  }
-  let resolvedPort = resolved.port;
-  let killTarget = resolved.targetId;
-
-  const { runKillClient } = await import('./cli/kill-client.ts');
-  try {
-    // Resolve port by querying all local daemon ports (session may be on any daemon)
-    if (!cliPort && resolved.host === 'localhost') {
-      const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
-      let allPorts = liveSessionsRegistry.getLivePorts();
-
-      // Fallback: probe default port range when registry is empty (matches ls behavior)
-      if (allPorts.length === 0) {
-        const { getDefaultPortRange } = await import('./cli/ls-client.ts');
-        allPorts = getDefaultPortRange();
-      }
-
-      if (allPorts.length > 0) {
-        const results = await queryMultiplePorts({
-          host: 'localhost',
-          ports: allPorts,
-          timeoutMs: 5000,
-          logLabel: 'kill',
-        });
-
-        if (results.length === 0) {
-          console.error(
-            `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
-          );
-          process.exit(1);
-        }
-
-        const match = resolveSession(results, killTarget);
-        if (match) {
-          resolvedPort = match.port;
-          // Use session ID directly to avoid TOCTOU race
-          killTarget = match.session.sessionId;
-        }
-      }
-    }
-
-    await runKillClient({
-      host: resolved.host,
-      port: resolvedPort,
-      target: killTarget,
-    });
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
-  process.exit(0);
+  const { runKillCommand } = await import('./cli/cmd-kill.ts');
+  process.exit(
+    await runKillCommand(resolved, {
+      getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      explicitPort: cliPort,
+    }),
+  );
 }
 
 // Handle 'detach' subcommand: detach from a session without killing it
 if (cliSubcommand === 'detach') {
-  if (!resolved.targetId) {
-    console.error('Usage: remi detach <session-name-or-id>');
-    console.error('  Detach from a session without killing it (tmux-style).');
-    console.error('  The session remains alive and can be re-attached with `remi attach`.');
-    console.error('  Examples: remi detach my-session');
-    console.error('            remi detach host:port/session-name');
-    console.error('  Tip: When attached interactively, press Ctrl+B d to detach.');
-    console.error('Run `remi ls` to see live sessions.');
-    process.exit(1);
-  }
-
-  let resolvedPort = resolved.port;
-  let detachTarget = resolved.targetId;
-
-  // Resolve port by querying all local daemon ports (session may be on any daemon)
-  if (!cliPort && resolved.host === 'localhost') {
-    const { queryMultiplePorts, resolveSession } = await import('./cli/session-resolver.ts');
-    let allPorts = liveSessionsRegistry.getLivePorts();
-    if (allPorts.length === 0) {
-      const { getDefaultPortRange } = await import('./cli/ls-client.ts');
-      allPorts = getDefaultPortRange();
-    }
-    if (allPorts.length > 0) {
-      const results = await queryMultiplePorts({
-        host: 'localhost',
-        ports: allPorts,
-        timeoutMs: 5000,
-        logLabel: 'detach',
-      });
-      if (results.length === 0) {
-        console.error(
-          `Cannot reach any remi daemon (tried ${allPorts.length} port(s)). Is a daemon running?`,
-        );
-        process.exit(1);
-      }
-      const match = resolveSession(results, detachTarget);
-      if (match) {
-        resolvedPort = match.port;
-        detachTarget = match.session.sessionId;
-      }
-    }
-  }
-
-  const { runDetachClient } = await import('./cli/detach-client.ts');
-  try {
-    await runDetachClient({
-      host: resolved.host,
-      port: resolvedPort,
-      target: detachTarget,
-    });
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
-  process.exit(0);
+  const { runDetachCommand } = await import('./cli/cmd-detach.ts');
+  process.exit(
+    await runDetachCommand(resolved, {
+      getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      explicitPort: cliPort,
+    }),
+  );
 }
 
 // Handle 'attach' subcommand: attach terminal to an orphaned session
 if (cliSubcommand === 'attach') {
-  const store = new SessionStore();
-  let targetSessionId = resolved.targetId;
-  let resolvedPort = resolved.port;
-  let resolvedHost = resolved.host;
-
-  const hasExplicitRemoteTarget =
-    resolvedHost !== 'localhost' ||
-    (resolvedHost === 'localhost' && cliSubcommandArg?.includes(':'));
-  if (!targetSessionId && hasExplicitRemoteTarget) {
-    // host:port without session ID (auto-attach to session on that port)
-    try {
-      const { fetchSessions } = await import('./cli/ls-client.ts');
-      const sessions = await fetchSessions(resolvedHost, resolvedPort, 5000);
-      if (sessions.length === 0) {
-        console.error(`No sessions found at ${resolvedHost}:${resolvedPort}.`);
-        process.exit(1);
-      } else if (sessions.length === 1) {
-        // biome-ignore lint/style/noNonNullAssertion: length checked above
-        targetSessionId = sessions[0]!.sessionId;
-      } else {
-        // Multiple sessions on this port; pick the one with canAttach or most recent
-        const attachable = sessions.filter((s) => s.canAttach);
-        if (attachable.length === 1) {
-          // biome-ignore lint/style/noNonNullAssertion: length checked above
-          targetSessionId = attachable[0]!.sessionId;
-        } else {
-          console.error(`Multiple sessions at ${resolvedHost}:${resolvedPort}:`);
-          for (const s of sessions) {
-            console.error(`  ${s.name ?? s.sessionId.slice(0, 8)}`);
-          }
-          console.error(
-            `Specify the session: remi attach ${resolvedHost}:${resolvedPort}/${sessions[0]?.name ?? sessions[0]?.sessionId.slice(0, 8)}`,
-          );
-          process.exit(1);
-        }
-      }
-    } catch (err) {
-      console.error(
-        `Cannot connect to ${resolvedHost}:${resolvedPort}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      process.exit(1);
-    }
-  } else if (!targetSessionId) {
-    // Auto-attach: prefer live registry, fall back to session store
-    const liveSessions = liveSessionsRegistry.listLive();
-    if (liveSessions.length > 0) {
-      // Pick most recent live session
-      // biome-ignore lint/style/noNonNullAssertion: length checked above
-      const latest = liveSessions[0]!; // Already sorted by startedAt desc
-      targetSessionId = latest.sessionId;
-      resolvedPort = cliPort ?? latest.wsPort;
-    } else {
-      // Fall back to session store (for backward compat)
-      const sessions = store.list();
-      const active = sessions.filter((s) => s.exitedAt === null);
-      if (active.length === 0) {
-        console.error('No active sessions found. Run `remi ls` to see live sessions.');
-        process.exit(1);
-      }
-      const latest = active.reduce((a, b) =>
-        new Date(b.startedAt).getTime() > new Date(a.startedAt).getTime() ? b : a,
-      );
-      targetSessionId = latest.remiSessionId;
-      resolvedPort = cliPort ?? latest.port;
-    }
-  } else {
-    // Try name-based resolution: first check live registry for port, then query daemon(s)
-    const {
-      AmbiguousSessionError,
-      FETCH_SESSIONS_TIMEOUT_MS,
-      discoverNetworkDaemons,
-      findEndpointsByHostname,
-      queryMultiplePorts,
-      resolveSession,
-    } = await import('./cli/session-resolver.ts');
-
-    let resolvedByName = false;
-
-    // Check live registry for name match (fast, no network)
-    const liveMatch = liveSessionsRegistry.findByName(targetSessionId);
-    if (liveMatch) {
-      resolvedPort = cliPort ?? liveMatch.wsPort;
-    }
-
-    // Query all live ports (or single port if explicitly set) for session name resolution
-    const portsToQuery = cliPort || cliHost ? [resolvedPort] : liveSessionsRegistry.getLivePorts();
-
-    if (portsToQuery.length === 0) {
-      portsToQuery.push(resolvedPort); // fall back to default
-    }
-
-    try {
-      const queryResults = await queryMultiplePorts({
-        host: resolvedHost,
-        ports: portsToQuery,
-        timeoutMs: FETCH_SESSIONS_TIMEOUT_MS,
-        logLabel: 'attach',
-      });
-
-      const resolved = resolveSession(queryResults, targetSessionId as string);
-      if (resolved) {
-        targetSessionId = resolved.session.sessionId;
-        resolvedPort = cliPort ?? resolved.port;
-        resolvedByName = true;
-      }
-    } catch (err) {
-      if (err instanceof AmbiguousSessionError) {
-        console.error(err.message);
-        process.exit(1);
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      const { classifyQueryError } = await import('./cli/session-resolver.ts');
-      if (classifyQueryError(msg) === 'unexpected') {
-        log(`[Attach] Failed to query daemon for name resolution: ${msg}`);
-      }
-    }
-
-    if (!resolvedByName) {
-      // Prefix-match session ID from local store
-      const all = store.list();
-      const matches = all.filter(
-        (s) =>
-          s.remiSessionId === targetSessionId ||
-          s.remiSessionId.startsWith(targetSessionId as string),
-      );
-      if (matches.length === 1) {
-        // biome-ignore lint/style/noNonNullAssertion: length checked above
-        const match = matches[0]!;
-        resolvedPort = cliPort ?? match.port;
-        targetSessionId = match.remiSessionId;
-      } else if (matches.length > 1) {
-        console.error(
-          `Ambiguous session ID "${targetSessionId}" matches ${matches.length} sessions:`,
-        );
-        for (const m of matches) {
-          console.error(`  ${m.remiSessionId.slice(0, 8)}  port=${m.port}`);
-        }
-        console.error('Provide a longer prefix to disambiguate.');
-        process.exit(1);
-      } else if (!cliHost) {
-        // Not found locally; discover via mDNS + VPN (Tailscale, etc.).
-        // Session names are "hostname:dir/branch" (possibly with ":N" dedup suffix).
-        // The first colon always separates the hostname.
-        const target = targetSessionId as string;
-        let foundRemote = false;
-        const nameColonIdx = target.indexOf(':');
-        if (nameColonIdx > 0) {
-          const targetHostname = target.slice(0, nameColonIdx);
-          try {
-            console.error(`Resolving "${target}" via network discovery...`);
-
-            const discovery = await discoverNetworkDaemons({
-              defaultPort: resolvedPort,
-              logLabel: 'attach',
-            });
-
-            // Log discovery results for diagnostics
-            if (discovery.endpoints.length > 0) {
-              const hosts = [...new Set(discovery.endpoints.map((e) => e.hostname))];
-              console.error(
-                `\x1b[2mFound ${discovery.endpoints.length} daemon(s); ` +
-                  `hosts: [${hosts.join(', ')}]\x1b[0m`,
-              );
-            } else {
-              console.error('No daemons discovered (0 mDNS, 0 VPN). Is Tailscale running?');
-            }
-
-            const hostEndpoints = findEndpointsByHostname(discovery, targetHostname);
-
-            if (hostEndpoints.length > 0) {
-              // Scan default range plus any non-default ports discovery reported
-              const { getDefaultPortRange } = await import('./cli/ls-client.ts');
-              const discoveredPorts = hostEndpoints.map((e) => e.port);
-              const allHostPorts = [
-                ...new Set([...getDefaultPortRange(), ...discoveredPorts]),
-              ].sort((a, b) => a - b);
-              const remoteHost = hostEndpoints[0]?.host ?? targetHostname;
-              const remoteHostname = hostEndpoints[0]?.hostname ?? targetHostname;
-
-              const portResults = await queryMultiplePorts({
-                host: remoteHost,
-                ports: allHostPorts,
-                timeoutMs: FETCH_SESSIONS_TIMEOUT_MS,
-                logLabel: 'attach',
-              });
-
-              if (portResults.length === 0) {
-                console.error(
-                  `Daemon found on ${remoteHostname} but could not query any port. Check connectivity to ${remoteHost}.`,
-                );
-                process.exit(1);
-              }
-
-              try {
-                const remoteResolved = resolveSession(portResults, target);
-                if (remoteResolved) {
-                  targetSessionId = remoteResolved.session.sessionId;
-                  resolvedHost = remoteResolved.host;
-                  resolvedPort = remoteResolved.port;
-                  foundRemote = true;
-                  console.error(
-                    `Found on ${remoteHostname} (${remoteResolved.host}:${remoteResolved.port})`,
-                  );
-                } else {
-                  console.error(
-                    `Daemon found on ${remoteHostname} but no session matches "${target}".`,
-                  );
-                  const available = portResults
-                    .flatMap((r) => r.sessions)
-                    .map((s) => s.name ?? s.sessionId.slice(0, 8))
-                    .join(', ');
-                  if (available) console.error(`  Available sessions: ${available}`);
-                }
-              } catch (resolveErr) {
-                if (resolveErr instanceof AmbiguousSessionError) {
-                  console.error(
-                    `Ambiguous: ${resolveErr.matches.length} sessions match on ${remoteHostname}`,
-                  );
-                  for (const m of resolveErr.matches) {
-                    console.error(`  ${m.name} (port ${m.port})`);
-                  }
-                  process.exit(1);
-                }
-                throw resolveErr;
-              }
-            } else {
-              console.error(
-                `No daemon found for hostname "${targetHostname}" on the network or VPN.`,
-              );
-            }
-          } catch (err) {
-            if (err instanceof AmbiguousSessionError) {
-              throw err; // Already handled above
-            }
-            const reason = err instanceof Error ? err.message : String(err);
-            log(`[Attach] Network discovery error for "${targetHostname}": ${reason}`);
-            console.error(`Network discovery failed: ${reason}`);
-          }
-        }
-        if (!foundRemote) {
-          console.error(
-            `No session found matching "${target}". Run \`remi ls --network\` to see available sessions.`,
-          );
-          process.exit(1);
-        }
-      } else {
-        console.error(
-          `No session found matching "${targetSessionId}". Run \`remi ls\` to see live sessions.`,
-        );
-        process.exit(1);
-      }
-    }
-  }
-
-  if (!targetSessionId) {
-    console.error('No session to attach to. Run `remi ls` to see live sessions.');
-    process.exit(1);
-  }
-
-  const { runAttachClient } = await import('./cli/attach-client.ts');
-  try {
-    const result = await runAttachClient({
-      host: resolvedHost,
-      port: resolvedPort,
-      sessionId: targetSessionId,
-    });
-    process.exit(result.exitCode);
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
+  const { runAttachCommand } = await import('./cli/cmd-attach.ts');
+  process.exit(
+    await runAttachCommand(
+      resolved,
+      {
+        ...(cliPort !== undefined && { port: cliPort }),
+        ...(cliHost !== undefined && { host: cliHost }),
+        ...(cliSubcommandArg !== undefined && { subcommandArg: cliSubcommandArg }),
+      },
+      { store: new SessionStore(), registry: liveSessionsRegistry },
+      { out: console.log, err: console.error, log },
+    ),
+  );
 }
 
 // Handle --sessions quickly
@@ -1405,7 +627,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
     try {
       dirs = await fetchRecentDirectories(effectiveHost, resolvedPort);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errorToString(err));
       process.exit(1);
     }
     if (dirs.length === 0) {
@@ -1429,7 +651,7 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
     });
     process.exit(result.exitCode);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     process.exit(1);
   }
 }
@@ -1542,16 +764,32 @@ let autoApproveService: AutoApproveService | null = null;
 }
 
 // ---------------------------------------------------------------------------
-// SIGTSTP protection: the daemon must never suspend itself.
-// When Claude Code handles Ctrl+Z (which spawns a subshell inside its PTY),
-// the terminal may propagate SIGTSTP to the process group. Ignoring it here
-// keeps the daemon, WebSocket server, and all remote connections alive.
+// SIGTSTP / Ctrl+Z handling.
+//
+// Wrapper mode (`remi <args>`): the wrapper installs `cli/suspend-handler.ts`
+// later, after the PTY is up. That handler tears down raw mode and self-sends
+// SIGSTOP for a real shell-job suspend.
+//
+// Daemon mode (`remi daemon`): we MUST never let the daemon suspend itself.
+// If a foreground daemon receives `kill -TSTP <pid>` (or the controlling
+// terminal sends SIGTSTP for any reason), the kernel default would stop the
+// process, dropping every WebSocket client and halting APNS push. We install
+// an unconditional no-op listener here so the kernel default never fires.
+// REGRESSION GUARD (PR #364 review): a previous refactor deleted this
+// listener and only installed the wrapper-mode handler; foreground `remi
+// daemon` then suspended on `kill -TSTP`. Do not remove this without
+// replacing it with an equivalent guard.
+//
+// Other non-wrapper invocations (`remi ls`, `remi attach`, etc.) are
+// short-lived clients where the kernel default for SIGTSTP is acceptable.
 // ---------------------------------------------------------------------------
-process.on('SIGTSTP', () => {
-  // Intentionally ignored. The PTY child handles Ctrl+Z on its own; the
-  // daemon process must remain running to serve remote clients.
-  writeToLog('[signal] SIGTSTP received and ignored (daemon must not suspend)');
-});
+if (cliDaemonMode) {
+  process.on('SIGTSTP', () => {
+    // Intentionally ignored. The daemon must remain running to serve remote
+    // clients; suspending it would drop WebSocket sessions and APNS pushes.
+    writeToLog('[signal] SIGTSTP received and ignored (daemon must not suspend)');
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Core components
@@ -1625,12 +863,18 @@ const sessionRegistry = new SessionRegistry(
   },
 );
 
-// The primary session ID (in wrapper mode, this is the one running in the terminal)
-let primarySessionId: UUID | null = null;
+// The primary session ID (in wrapper mode, this is the one running in the terminal).
+// Stored in cli/session-state.ts so extracted handler modules can read it via
+// getPrimarySessionId() without closing over a cli.ts-local `let` that flips
+// after handler registration.
+import { getPrimarySessionId, setPrimarySessionId } from './cli/session-state.ts';
 // Ports being claimed by in-flight daemon spawn requests (prevents TOCTOU race)
 const spawningPorts = new Set<number>();
 
-// Device tokens for push notifications (cleaned up on disconnect; re-registered on reconnect)
+// Device tokens for push notifications. INTENTIONALLY persisted across
+// WebSocket disconnect — push notifications are the suspended-app path, so
+// dropping on disconnect breaks the only case they exist for. Cleanup happens
+// at process exit only. Issue #286.
 const deviceTokens = new Map<
   string,
   { token: string; platform: string; registeredAt: number; connectionId: UUID }
@@ -1641,8 +885,62 @@ let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after s
 let hookServer: HookServer | null = null;
 let hookConfigManager: HookConfigManager | null = null;
 
+// Watches `dist/remi` (or whatever process.execPath resolves to) for a fresh
+// build and notifies attached clients so users know to restart their session.
+// Initialised in both wrapper and daemon modes after the WebSocket server
+// is up; cleaned up alongside hookServer in cleanup(). Issue #287.
+let updateWatcher: import('./cli/update-watcher.ts').UpdateWatcher | null = null;
+
+// Best-effort synchronous cleanup on any exit path. SIGINT/SIGTERM already
+// run the async cleanup() which calls hookConfigManager.uninstall(); this
+// handler is the last line of defense for `process.exit()` calls and
+// uncaught exceptions, so a daemon that crashes does not leave stale
+// hook URLs in `.claude/settings.local.json` that gate Claude Code
+// (issue #203). SIGKILL still leaves entries by definition; the next
+// startup's purgeStaleHooks recovers from that.
+process.on('exit', () => {
+  if (hookConfigManager) {
+    hookConfigManager.uninstallSync();
+  }
+});
+
 // mDNS publisher (initialized when daemon is network-accessible)
 let mdnsPublisher: import('./mdns/mdns-publisher.ts').MdnsPublisher | null = null;
+
+/**
+ * Start the on-disk binary watcher. Idempotent — repeated calls are no-ops.
+ * Polls every 60s; on the first detected change, broadcasts a single
+ * `daemon_update_available` to every attached client and stops itself.
+ *
+ * Skips activation when `process.execPath` does not look like the compiled
+ * remi binary. `bun run packages/daemon/src/cli.ts` (dev) or an npm-wrapper
+ * install that invokes a runtime (bun, node) directly would otherwise have
+ * the watcher tracking the runtime instead of remi — and a `brew upgrade
+ * bun` would silently misfire as "remi update available". The guard mirrors
+ * `daemon-manager.ts`'s existing endsWith('/remi') convention. Issue #287
+ * review (PR #370).
+ */
+function startBinaryUpdateWatcher(): void {
+  if (updateWatcher) return;
+  const execPath = process.execPath;
+  if (!isRemiBinaryPath(execPath)) {
+    log(`[update] Watcher disabled: execPath ${execPath} is not the remi binary`);
+    return;
+  }
+  updateWatcher = startUpdateWatcher({
+    binaryPath: execPath,
+    intervalMs: 60_000,
+    onUpdateDetected: () => {
+      log(`[update] Newer remi binary detected at ${execPath}; notifying clients`);
+      try {
+        registry.broadcast(createDaemonUpdateAvailable(REMI_VERSION, execPath));
+      } catch (err) {
+        logError(`[update] broadcast failed: ${errorToString(err)}`);
+      }
+    },
+    onError: (err) => logError(`[update] ${err.message}`),
+  });
+}
 
 // Watcher for live-sessions directory (pushes session list updates on new daemon startup)
 let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
@@ -1664,7 +962,7 @@ async function startMdnsIfNeeded(
     logFn('[mDNS] Advertising on local network');
     return publisher;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     logFn(`[mDNS] Failed to start: ${msg}. Network discovery disabled.`);
     return null;
   }
@@ -1680,109 +978,30 @@ async function createNewSession(
   extraArgs: string[] = [],
   passThrough = false,
 ): Promise<PTYSession> {
-  const sendAndRecord = (message: ProtocolMessage) => {
-    // Always record under primarySessionId so replay works correctly.
-    // The client only knows primarySessionId (from hello_ack).
-    const recordId = primarySessionId ?? sessionId;
-    sendMessage(sessionId, message);
-    sessionRegistry.recordOutgoingMessage(recordId, message);
-  };
-
-  const messageApi = new MessageAPI(
+  const { messageApi, sendAndRecord } = createMessageApiForSession(
     {
-      sessionId: sessionId,
-      initialBulletId: 1,
+      sessionRegistry,
+      transcriptWatchers,
+      deviceTokens,
+      pushConfig: () => ({
+        signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+        ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      }),
+      updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
+      sendMessage,
     },
-    {
-      onStructuredMessage: (structured) => {
-        try {
-          sendAndRecord(createStructuredAgentOutput(structured, false));
-        } catch (err) {
-          logError(`[Session ${sessionId}] Failed to send structured message:`, err);
-        }
-      },
-      onStructuredMessageUpdate: (_messageId, structured, changedBulletIds) => {
-        try {
-          sendAndRecord(createStructuredAgentOutput(structured, true, changedBulletIds));
-        } catch (err) {
-          logError(`[Session ${sessionId}] Failed to send structured message update:`, err);
-        }
-      },
-      onMessageFinalized: (msgId) => {
-        log(`Message ${msgId} finalized`);
-      },
-      onQuestion: (question) => {
-        log(`Question detected: ${question.text.substring(0, 50)}...`);
-        const questionSessionId = primarySessionId ?? sessionId;
-        const msg: ProtocolMessage = {
-          type: 'question',
-          id: generateId(),
-          timestamp: now(),
-          question: question,
-          sessionId: questionSessionId,
-        };
-        sendAndRecord(msg);
-        sessionRegistry.updateQuestion(questionSessionId, question);
-
-        // Push to registered devices only when no client is actively viewing the session.
-        // If a client is attached, they see the question in the UI; no push needed.
-        const sessionForPush = sessionRegistry.getSession(questionSessionId);
-        const hasActiveClient =
-          sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
-        if (deviceTokens.size > 0 && !hasActiveClient) {
-          const session = sessionRegistry.getSession(sessionId);
-          const sessionName = session?.name || 'Agent';
-          const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-          const pushSessionId = primarySessionId ?? sessionId;
-          const pushCategory = selectPushCategory(question.options);
-          const pushOptions = question.options.map((o) => o.value);
-          for (const dt of deviceTokens.values()) {
-            sendPushTrigger(signalingUrl, dt.token, {
-              title: `${sessionName} needs input`,
-              body: question.text.slice(0, 100),
-              ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-              sessionId: pushSessionId,
-              questionId: question.id,
-              ...(pushCategory !== undefined ? { category: pushCategory } : {}),
-              ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
-            })
-              .then(() => log(`Push notification sent for session ${pushSessionId}`))
-              .catch((err) => log(`Push notification failed: ${err}`));
-          }
-        }
-      },
-      onStatusChange: (status: AgentStatus, context?: string) => {
-        log(`Status: ${status}${context ? ` (${context})` : ''}`);
-        const msg: ProtocolMessage = {
-          type: 'session_update',
-          id: generateId(),
-          timestamp: now(),
-          session: {
-            id: sessionId,
-            name: '',
-            startedAt: now(),
-            status,
-            isActive: status !== 'idle',
-          },
-        };
-        sendAndRecord(msg);
-        sessionRegistry.updateStatus(sessionId, status);
-        updateRemiStatus({ sessionStatus: status });
-
-        const watcher = transcriptWatchers.get(sessionId);
-        if (watcher) {
-          watcher.forceRead().catch((err) => {
-            logError(`[Transcript] forceRead failed for session ${sessionId}:`, err);
-          });
-        }
-      },
-    },
+    sessionId,
   );
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
   // guard so terminal-only failures still reach remote clients.
+  // Hook bridge is created below (only when hookServer is active). The PTY
+  // onQuestion callback closes over this binding so it can suppress emissions
+  // during subagent contexts and skip duplicate Yes/Yes-always/No prompts.
+  let hookBridge: HookEventBridge | null = null;
+
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
     {
@@ -1791,12 +1010,20 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
-        // When hooks are active, questions come from HookEventBridge which merges
-        // PermissionRequest (tool context) with Notification (numbered options).
-        // PTY question detection is only needed when hooks are not available.
-        if (!hookServer) {
-          messageApi.handleQuestion(question);
+        // PTY parser runs as a secondary source so Y/N, multi-choice, and
+        // free-text prompts (which hooks never carry) reach the user with
+        // their real options. We still gate two cases:
+        //   1. Subagent prompts are confined to the subagent — the user
+        //      cannot answer them without breaking Task semantics.
+        //   2. The hook's hardcoded Yes/Yes-always/No is already emitted by
+        //      HookEventBridge for any tool permission. PTY sees the same
+        //      three options on screen but with different surrounding text,
+        //      so the dedup window cannot catch them — drop here by shape.
+        if (hookBridge !== null) {
+          if (hookBridge.isInSubagentContext()) return;
+          if (looksLikeDefaultPermissionQuestion(question)) return;
         }
+        messageApi.handleQuestion(question);
       },
       onStatusChange: (status, context) => {
         if (!hookServer) {
@@ -1806,485 +1033,32 @@ async function createNewSession(
     },
   );
 
-  // Hook-based event bridge for status/question detection
   if (hookServer) {
-    // Track the Claude session ID so we can filter hook events by session.
-    // Before SessionStart fires, we let events through (claudeSessionId is null).
-    let claudeSessionId: string | null = null;
-
-    // Our PTY is the ground truth for "main interactive session". A hook event
-    // with a different session_id is NEVER our main:
-    //  - Subagent spawn (TaskCreate/TeamCreate) — different session_id, no own PTY
-    //  - Sibling daemon's Claude — different session_id, different PTY elsewhere
-    //  - Actual Claude restart in our PTY — only possible after our PTY exited
-    // So: while our PTY is running, treat any different session_id as foreign.
-    // Once our PTY exits, a new session_id represents a genuine new Claude.
-    // Flag set on explicit SessionEnd so we don't wait for PTY exit if Claude
-    // shut down cleanly.
-    let mainSessionEnded = false;
-
-    // Extract transcript info from hook events. Most Claude Code hook events include
-    // session_id and transcript_path. When present, the first event gives us the
-    // transcript path, bypassing the slower mtime fallback.
-    //
-    // GUARD: When sibling daemons serve the same directory, all Claudes POST to all
-    // hook URLs (shared settings.local.json). So a sibling's event may arrive before
-    // our own Claude fires. In that case, skip hook-based discovery and let the
-    // mtime fallback handle it. For single-daemon directories (the common case),
-    // accept the first event immediately.
-    let hasSiblingInDir: boolean | null = null; // Computed once, then cached
-
-    // Safely tear down an existing transcript watcher, reset messages, and notify
-    // clients. Handles errors from stop() and sendAndRecord() so they never prevent
-    // the new watcher from being created. Shared by initFromHookEvent and onSessionInfo.
-    function teardownWatcher(reason: string, label: string): void {
-      const watcher = transcriptWatchers.get(sessionId);
-      if (!watcher) return;
-      transcriptWatchers.delete(sessionId); // Remove from map FIRST to unblock new watcher
-      try {
-        watcher.stop();
-      } catch (stopErr) {
-        logError(
-          `[Hooks] Failed to stop watcher (${label}): ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
-        );
-      }
-      messageApi.reset();
-      try {
-        sendAndRecord(createSessionReset(sessionId, reason));
-      } catch (sendErr) {
-        logError(
-          `[Hooks] Failed to send ${reason} for ${sessionId}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-        );
-      }
-    }
-
-    function initFromHookEvent(input: {
-      session_id?: string;
-      transcript_path?: string;
-      hook_event_name?: string;
-    }): void {
-      if (!input.session_id) return;
-
-      const classification = classifySessionEvent({
-        currentLock: claudeSessionId,
-        incomingSessionId: input.session_id,
-        mainPtyRunning: sessionRegistry.getSession(sessionId)?.pty.isRunning ?? false,
-        mainSessionEnded,
-      });
-
-      if (classification === 'foreign') {
-        // Subagent or sibling daemon event. Drop to avoid hijacking our lock.
-        // Log for observability: if classifier misbehaves, we still see activity.
-        log(
-          `[Hooks] Dropped foreign ${input.hook_event_name ?? 'event'}: lock=${claudeSessionId?.slice(0, 8)} incoming=${input.session_id.slice(0, 8)}`,
-        );
-        return;
-      }
-      if (classification === 'restart') {
-        log(
-          `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
-        );
-        teardownWatcher('claude_restarted', 'restart');
-        claudeSessionId = null;
-        mainSessionEnded = false;
-      }
-      // classification === 'match': either our tracked session or first-time lock.
-      if (claudeSessionId) return; // already initialized
-      if (!input.transcript_path) return;
-
-      if (hasSiblingInDir === null) {
-        hasSiblingInDir = liveSessionsRegistry
-          .listLive()
-          .some(
-            (e) =>
-              e.projectPath === workingDirectory && e.sessionId !== sessionId && e.wsPort !== PORT,
-          );
-      }
-
-      if (hasSiblingInDir) {
-        // Cannot trust which Claude sent this event — defer to fallback
-        return;
-      }
-
-      try {
-        claudeSessionId = input.session_id;
-        log(
-          `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
-        );
-        sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
-
-        // Cancel the fallback timer since we have the exact path
-        const fallbackTimer = transcriptFallbackTimers.get(sessionId);
-        if (fallbackTimer) {
-          clearInterval(fallbackTimer);
-          transcriptFallbackTimers.delete(sessionId);
-        }
-
-        // If a fallback watcher claimed the slot with a different (stale) file,
-        // replace it with the authoritative hook-provided path.
-        const existingWatcher = transcriptWatchers.get(sessionId);
-        if (
-          existingWatcher &&
-          path.resolve(existingWatcher.filePath) !== path.resolve(input.transcript_path)
-        ) {
-          log(
-            `[Hooks] Replacing stale watcher: ${existingWatcher.filePath} -> ${input.transcript_path}`,
-          );
-          teardownWatcher('transcript_changed', 'stale-replace');
-        }
-
-        if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
-          startTranscriptWatcher(sessionId, input.transcript_path, messageApi, sendAndRecord);
-        }
-      } catch (err) {
-        logError(
-          `[Hooks] initFromHookEvent failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        claudeSessionId = null; // Reset so fallback can take over
-      }
-    }
-
-    const hookBridge = new HookEventBridge(sessionId, {
-      onStatusChange: (status: AgentStatus, context?: string) => {
-        messageApi.handleStatusChange(status, context);
+    const handle = setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers,
+        transcriptFallbackTimers,
+        autoApproveService,
+        currentPort: () => PORT,
       },
-      onQuestion: (question) => {
-        messageApi.handleQuestion(question);
-      },
-      onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
-        // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude)
-        if (hasSiblingInDir === null) {
-          hasSiblingInDir = liveSessionsRegistry
-            .listLive()
-            .some(
-              (e) =>
-                e.projectPath === workingDirectory &&
-                e.sessionId !== sessionId &&
-                e.wsPort !== PORT,
-            );
-        }
-        if (hasSiblingInDir) return;
-
-        // Use the same classifier as initFromHookEvent so both paths share
-        // one rule for distinguishing foreign (subagent/sibling) from restart.
-        const classification = classifySessionEvent({
-          currentLock: claudeSessionId,
-          incomingSessionId: hookClaudeSessionId,
-          mainPtyRunning: sessionRegistry.getSession(sessionId)?.pty.isRunning ?? false,
-          mainSessionEnded,
-        });
-        if (classification === 'foreign') {
-          log(
-            `[Hooks] Dropped foreign SessionInfo: lock=${claudeSessionId?.slice(0, 8)} incoming=${hookClaudeSessionId.slice(0, 8)}`,
-          );
-          return;
-        }
-        if (classification === 'restart') {
-          log(
-            `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
-          );
-          teardownWatcher('claude_restarted', 'restart-sessioninfo');
-          claudeSessionId = null;
-          mainSessionEnded = false;
-        }
-
-        try {
-          claudeSessionId = hookClaudeSessionId;
-          log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
-          sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
-
-          // If a fallback watcher claimed the slot with a different (stale) file,
-          // replace it with the authoritative hook-provided path.
-          const existingWatcher = transcriptWatchers.get(sessionId);
-          if (
-            existingWatcher &&
-            path.resolve(existingWatcher.filePath) !== path.resolve(transcriptPath)
-          ) {
-            log(
-              `[Hooks] Replacing stale watcher (SessionInfo): ${existingWatcher.filePath} -> ${transcriptPath}`,
-            );
-            teardownWatcher('transcript_changed', 'stale-replace-sessioninfo');
-          }
-
-          if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
-            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-          }
-        } catch (err) {
-          logError(
-            `[Hooks] onSessionInfo failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          claudeSessionId = null;
-        }
-      },
-    });
-
-    const handlers = hookBridge.hookHandlers();
-    // initFromHookEvent runs before the bridge handler: it covers events where
-    // onSessionInfo doesn't fire (PreToolUse, etc.). For SessionStart, both paths
-    // converge; guards prevent double-processing.
-    hookServer.on('SessionStart', (input) => {
-      // SessionStart with an explicit main-transition source (/clear /compact
-      // /resume) is the authoritative signal that our main Claude took a new
-      // session_id while our PTY kept running. Pre-empt the classifier by
-      // treating the old session as ended, so the classifier sees a 'restart'
-      // and cleanly switches the lock.
-      if (input.source === 'clear' || input.source === 'compact' || input.source === 'resume') {
-        if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
-          log(
-            `[Hooks] Main lifecycle transition (${input.source}): ${claudeSessionId} -> ${input.session_id}`,
-          );
-          mainSessionEnded = true; // classifier will pick this up as 'restart'
-        }
-      }
-      initFromHookEvent(input);
-      handlers.onSessionStart?.(input);
-    });
-    // Filter: accept events only from our own Claude. Before claudeSessionId is known,
-    // block events when siblings exist (they could be from sibling's Claude).
-    const filterBySession = (input: { session_id?: string }): boolean => {
-      if (claudeSessionId) return input.session_id === claudeSessionId;
-      return !hasSiblingInDir; // No sibling → events can only be ours
-    };
-
-    // Subagent/team-member events carry `agent_id` (confirmed via
-    // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
-    // transcript, so session-id filtering cannot distinguish them. Drop these
-    // at the hook layer so status updates, auto-approve, question emission,
-    // and PTY injection all stay scoped to the main interactive session.
-    const isSubagentEvent = (input: { agent_id?: string }): boolean =>
-      typeof input.agent_id === 'string' && input.agent_id.length > 0;
-
-    hookServer.on('PreToolUse', (input) => {
-      initFromHookEvent(input);
-      if (!filterBySession(input)) return;
-      if (isSubagentEvent(input)) return;
-      handlers.onPreToolUse?.(input);
-    });
-    hookServer.on('PostToolUse', (input) => {
-      initFromHookEvent(input);
-      if (!filterBySession(input)) return;
-      if (isSubagentEvent(input)) return;
-      handlers.onPostToolUse?.(input);
-    });
-    hookServer.on('Notification', (input) => {
-      initFromHookEvent(input);
-      if (!filterBySession(input)) return;
-      // Subagent notifications must not bubble up to the user (phantom prompts).
-      if (isSubagentEvent(input)) {
-        log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
-        return;
-      }
-      handlers.onNotification?.(input);
-    });
-    hookServer.on('PermissionRequest', (input) => {
-      initFromHookEvent(input);
-      if (!filterBySession(input)) return;
-
-      // Subagent PermissionRequest: Claude Code sets `agent_id` on events
-      // originating from Task/Agent-spawned subagents or team members. Those
-      // events share the main session_id and transcript but are handled
-      // internally by Claude Code — they MUST NOT be injected into our main PTY.
-      if (isSubagentEvent(input)) {
-        log(
-          `[Hooks] Dropped subagent PermissionRequest: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
-        );
-        return;
-      }
-
-      // Legacy nested-Task context (kept as secondary safety net).
-      const inSubagent = hookBridge.isInSubagentContext();
-      const sessionTag = sessionId.slice(0, 8);
-
-      // Helper: inject an answer into the PTY. Returns true on success. On
-      // failure (session not found, PTY not running, submitInput throws) the
-      // helper never throws — it logs and returns false so callers can fall
-      // back to escalating the prompt to the user.
-      const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
-        try {
-          const session = sessionRegistry.getSession(sessionId);
-          if (!session) {
-            logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
-            return false;
-          }
-          await session.pty.submitInput(value);
-          log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
-          sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
-          hookBridge.markPermissionHandled();
-          return true;
-        } catch (err) {
-          logError(`[AutoApprove ${sessionTag}] inject("${value}") threw:`, err);
-          return false;
-        }
-      };
-
-      // Safe escalation to the user. Used when inject fails or when auto-approve
-      // is off and we're in main context. Wrapped so bridge/push failures don't
-      // leave the hook handler with a dangling unhandled rejection.
-      const escalateToUser = () => {
-        try {
-          handlers.onPermissionRequest?.(input);
-        } catch (err) {
-          logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
-        }
-      };
-
-      // Auto-approve gate: evaluate before creating Question object.
-      if (autoApproveService) {
-        const aaService = autoApproveService;
-        aaService
-          .evaluate(input.tool_name, input.tool_input, sessionTag)
-          .then(async (result) => {
-            if (result.decision === 'approve') {
-              if (!(await inject('1', 'approved'))) escalateToUser();
-              return;
-            }
-            if (result.decision === 'deny') {
-              if (!(await inject('3', 'denied'))) escalateToUser();
-              return;
-            }
-            // escalate: if we're in a subagent context, default-deny to avoid
-            // hanging the subagent. The user would not be able to answer anyway.
-            if (inSubagent) {
-              log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
-              // If inject fails here, the subagent is hung regardless — no main
-              // PTY to escalate to. Log and accept.
-              await inject('3', 'subagent-escalate-default-deny');
-              return;
-            }
-            escalateToUser();
-          })
-          .catch(async (err) => {
-            // Last line of defense. Must not leave an unhandled rejection.
-            try {
-              logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
-              if (inSubagent) {
-                await inject('3', 'subagent-error-default-deny');
-                return;
-              }
-              escalateToUser();
-            } catch (inner) {
-              logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
-            }
-          });
-        return;
-      }
-
-      // No auto-approve. If in subagent context, still must not hang the subagent:
-      // default-deny rather than emit a question the user can't answer.
-      if (inSubagent) {
-        log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
-        inject('3', 'subagent-no-aa-default-deny').catch((err) => {
-          logError(`[${sessionTag}] Failed to inject default-deny:`, err);
-        });
-        return;
-      }
-
-      escalateToUser();
-    });
-    hookServer.on('Stop', (input) => {
-      initFromHookEvent(input);
-      if (!filterBySession(input)) return;
-      handlers.onStop?.(input);
-    });
-    hookServer.on('SessionEnd', (input) => {
-      // Only mark our main as ended when the session_id matches what we locked.
-      // Foreign SessionEnds (subagents, siblings) must not unlock our tracking.
-      if (input.session_id && claudeSessionId && input.session_id === claudeSessionId) {
-        mainSessionEnded = true;
-      }
-      if (!filterBySession(input)) return;
-      handlers.onSessionEnd?.(input);
-    });
-
-    log(`[Hooks] Event bridge active for session ${sessionId}`);
+      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord },
+    );
+    hookBridge = handle.bridge;
   }
 
-  // Determine terminal size
-  const termSize = passThrough
-    ? {
-        cols: process.stdout.columns || 120,
-        rows: process.stdout.rows || 40,
-      }
-    : { cols: 120, rows: 40 };
-
-  const ptySession = new PTYSession(
+  const ptySession = createPtySessionForSession(
     {
-      command: 'claude',
-      args: extraArgs,
-      cwd: workingDirectory,
-      size: termSize,
-      env: { REMI_PORT: String(remiStatus.wsPort) },
+      sessionRegistry,
+      sessionStore,
+      outputProcessor,
+      wsPort: remiStatus.wsPort,
+      sendMessage,
+      cleanup,
     },
-    {
-      onRawData: (data: Uint8Array) => {
-        // Write to local terminal (wrapper pass-through mode)
-        if (passThrough && ptyStdoutFd !== null && !wrapperDetached) {
-          try {
-            fs.writeSync(ptyStdoutFd, data);
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            ptyStdoutFd = null;
-            wrapperDetached = true;
-            if (code === 'EPIPE' || code === 'EIO') {
-              logError(`Terminal write failed (${code}), detaching local terminal`);
-            } else {
-              logError(
-                `Unexpected terminal write error (${code}):`,
-                err instanceof Error ? err.message : String(err),
-              );
-            }
-            // Clean up stdin to avoid dangling raw-mode reader
-            if (process.stdin.isTTY) {
-              try {
-                process.stdin.setRawMode(false);
-              } catch {
-                // stdin may already be unusable
-              }
-            }
-            process.stdin.pause();
-            process.stdin.removeAllListeners('data');
-            process.stdin.unref();
-          }
-        }
-
-        // Send raw PTY bytes to the actively attached CLI client (if any)
-        const session = sessionRegistry.getSession(sessionId);
-        if (session?.activeConnectionId) {
-          const base64Data = Buffer.from(data).toString('base64');
-          const msg = createRawPtyOutput(base64Data, sessionId);
-          sendMessage(sessionId, msg);
-        }
-      },
-      onData: (output: string) => {
-        try {
-          outputProcessor.process(output);
-        } catch (err) {
-          logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
-        }
-      },
-      onExit: (code: number | null) => {
-        try {
-          outputProcessor.flush();
-        } catch (err) {
-          logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
-        }
-        log(`PTY ${ptySession.id} exited with code ${code}`);
-        sessionRegistry.handlePTYExit(sessionId);
-        sessionStore.markExited(sessionId, code);
-
-        if (passThrough) {
-          cleanup()
-            .then(() => process.exit(code ?? 0))
-            .catch((err) => {
-              logError(`[PTY] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-              process.exit(1);
-            });
-        }
-      },
-      onError: (error: Error) => {
-        logError(`PTY ${ptySession.id} error:`, error);
-      },
-    },
+    { sessionId, workingDirectory, extraArgs, passThrough },
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -2308,148 +1082,21 @@ async function createNewSession(
     exitCode: null,
   });
 
-  // Transcript watcher: normally started by hook event (provides path directly).
-  // When sibling daemons serve the same directory, hook events are skipped and
-  // this fallback becomes the primary discovery path.
-  const startupTime = Date.now();
-  const fallbackInterval = setInterval(() => {
-    if (transcriptWatchers.has(sessionId)) {
-      clearInterval(fallbackInterval);
-      transcriptFallbackTimers.delete(sessionId);
-      return;
-    }
-    if (!sessionRegistry.hasSession(sessionId)) {
-      clearInterval(fallbackInterval);
-      transcriptFallbackTimers.delete(sessionId);
-      return;
-    }
-    // Look for a transcript file that is actively being written to.
-    // When sibling daemons serve the same directory, exclude transcripts they've
-    // already claimed (by claudeSessionId in sessions.json) to avoid double-watching.
-    const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
-    const siblingClaudeIds = new Set<string>();
-    for (const entry of sessionStore.list()) {
-      if (entry.remiSessionId !== sessionId && entry.claudeSessionId && !entry.exitedAt) {
-        siblingClaudeIds.add(entry.claudeSessionId);
-      }
-    }
-    const transcriptPath =
-      siblingClaudeIds.size > 0
-        ? transcriptDiscovery.findLatestTranscriptExcluding(workingDirectory, siblingClaudeIds)
-        : transcriptDiscovery.findLatestTranscript(workingDirectory);
-    if (transcriptPath) {
-      try {
-        const stat = fs.statSync(transcriptPath);
-        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
-          clearInterval(fallbackInterval);
-          transcriptFallbackTimers.delete(sessionId);
-          log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
-          startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-          extractClaudeSessionId(transcriptPath, sessionId);
-          return;
-        }
-      } catch (err) {
-        log(
-          `[Hooks] Fallback stat failed for ${transcriptPath}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-    // Give up after 30 seconds
-    if (Date.now() - startupTime > 30000) {
-      clearInterval(fallbackInterval);
-      transcriptFallbackTimers.delete(sessionId);
-      if (transcriptPath) {
-        try {
-          const stat = fs.statSync(transcriptPath);
-          const isRecent =
-            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
-          if (isRecent) {
-            log('[Hooks] Transcript fallback: found recent transcript on final check.');
-            startTranscriptWatcher(sessionId, transcriptPath, messageApi, sendAndRecord);
-            extractClaudeSessionId(transcriptPath, sessionId);
-            return;
-          }
-
-          logError(
-            `[Hooks] Transcript fallback timed out without a fresh transcript. Skipping stale file: ${transcriptPath}`,
-          );
-          return;
-        } catch {
-          logError(
-            '[Hooks] Transcript fallback timed out and transcript stat failed on final check.',
-          );
-          return;
-        }
-      }
-
-      logError('[Hooks] Transcript fallback timed out without any transcript file.');
-    }
-  }, 2000);
-  transcriptFallbackTimers.set(sessionId, fallbackInterval);
-
-  return ptySession;
-}
-
-/** Extract Claude session ID from transcript filename and persist it. Returns the extracted ID or null. */
-function extractClaudeSessionId(transcriptPath: string, sessionId: UUID): string | null {
-  // Transcript filenames are plain UUIDs (e.g. "abc123-def456.jsonl").
-  // The underscore split is defensive in case a prefixed format is ever introduced.
-  const basename = path.basename(transcriptPath, '.jsonl');
-  const parts = basename.split('_');
-  const candidateId = parts[parts.length - 1];
-  if (candidateId && candidateId.length >= 8) {
-    sessionStore.updateClaudeSessionId(sessionId, candidateId);
-    log(`Claude session ID: ${candidateId}`);
-    return candidateId;
-  }
-  return null;
-}
-
-/** Start watching a transcript file for a session. */
-function startTranscriptWatcher(
-  sessionId: UUID,
-  transcriptPath: string,
-  messageApi: MessageAPI,
-  sendAndRecord: (message: ProtocolMessage) => void,
-): void {
-  log(`[Transcript] Watching: ${transcriptPath}`);
-  log(`[Transcript] File exists: ${fs.existsSync(transcriptPath)}`);
-
-  const bridge = new TranscriptMessageBridge({ sessionId }, messageApi, {
-    onTranscriptContent: (message) => {
-      log(`[Transcript] Delivering content (${message.type}) to clients`);
-      sendAndRecord(message);
-    },
-  });
-
-  const watcher = new TranscriptWatcher(
+  startTranscriptFallback(
     {
-      filePath: transcriptPath,
-      readExisting: true,
-      pollIntervalMs: 1000,
+      sessionRegistry,
+      sessionStore,
+      transcriptDiscovery,
+      transcriptWatchers,
+      transcriptFallbackTimers,
     },
-    {
-      onAssistantMessage: (entry: AssistantEntry) => {
-        log(
-          `[Transcript] Assistant entry: ${entry.uuid?.slice(0, 8)} (${entry.message?.content?.length ?? 0} blocks)`,
-        );
-        bridge.handleAssistantEntry(entry);
-      },
-      onUserMessage: (entry) => {
-        log(`[Transcript] User entry: ${entry.uuid?.slice(0, 8)}`);
-        bridge.handleUserEntry(entry);
-      },
-      onError: (error) => {
-        logError(`[Transcript] Error for session ${sessionId}:`, error.message);
-      },
-    },
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord,
   );
 
-  transcriptWatchers.set(sessionId, watcher);
-  watcher.start().catch((error) => {
-    logError(`[Transcript] Failed to start watcher for session ${sessionId}:`, error);
-  });
-  log(`[Transcript] Watcher started for session ${sessionId}`);
+  return ptySession;
 }
 
 // ---------------------------------------------------------------------------
@@ -2468,642 +1115,88 @@ const registry = new AdapterRegistry({
   },
 });
 
-function getRecentDirectories(store: SessionStore, limit: number): RecentDirectory[] {
-  const sessions = store.list();
-  const dirMap = new Map<string, { count: number; lastUsed: string }>();
-
-  for (const s of sessions) {
-    const dir = s.projectPath;
-    const existing = dirMap.get(dir);
-    if (existing) {
-      existing.count++;
-      if (s.startedAt > existing.lastUsed) {
-        existing.lastUsed = s.startedAt;
-      }
-    } else {
-      dirMap.set(dir, { count: 1, lastUsed: s.startedAt });
-    }
-  }
-
-  const entries = Array.from(dirMap.entries())
-    .map(([directory, { count, lastUsed }]) => ({
-      directory,
-      lastUsed,
-      sessionCount: count,
-      displayName: path.basename(directory),
-    }))
-    .sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1))
-    .slice(0, limit);
-
-  return entries;
-}
+import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
   return registry.sendRaw(connectionId, message);
 };
 
+const trivialHandlers: TrivialHandlers = createTrivialHandlers({
+  deviceTokens,
+  sessionStore,
+  sessionRegistry,
+  send: sendToConnection,
+});
+
+const inputHandlers: InputHandlers = createInputHandlers({
+  sessionRegistry,
+  send: sendToConnection,
+});
+
+const sessionHandlers: SessionHandlers = createSessionHandlers({
+  sessionRegistry,
+  sessionStore,
+  transcriptDiscovery,
+  liveSessionsRegistry,
+  currentPort: () => PORT,
+  untrackConnection: (id) => registry.untrackConnection(id),
+  onConnectionRemoved: () =>
+    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
+  send: sendToConnection,
+});
+
+const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
+  transcriptDiscovery,
+  transcriptWatchers,
+  send: sendToConnection,
+});
+
+const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  sessionRegistry,
+  sessionStore,
+  transcriptDiscovery,
+  createNewSession,
+  send: sendToConnection,
+});
+
+const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
+  liveSessionsRegistry,
+  spawningPorts,
+  basePort: remiConfig.daemon.base_port,
+  portRange: remiConfig.daemon.port_range,
+  // Lazy: bindHost is declared after sharedEvents is wired up, so compute
+  // the inherited-args array on each spawn rather than capturing it here.
+  inheritedArgs: () => {
+    const args: string[] = [];
+    if (cliAuth === true) args.push('--auth');
+    if (cliAuth === false) args.push('--no-auth');
+    if (cliNoRelay) args.push('--no-relay');
+    if (cliNoMdns) args.push('--no-mdns');
+    if (bindHost !== '0.0.0.0') args.push('--bind', bindHost);
+    return args;
+  },
+  send: sendToConnection,
+});
+
+const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
+  sessionRegistry,
+  trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
+  untrackConnection: (id) => registry.untrackConnection(id),
+  onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),
+  onConnectionRemoved: () =>
+    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
+  cancelOrphanTimeout,
+  send: sendToConnection,
+});
+
 const sharedEvents = {
-  onConnect: async (connectionId: UUID, metadata: AdapterMetadata) => {
-    log(`Client connected: ${connectionId} (${metadata.adapterType})`);
-
-    registry.trackConnection(connectionId, metadata.adapterType);
-    updateRemiStatus({ connections: remiStatus.connections + 1 });
-
-    const resumeSessionId = metadata.platformData?.['resumeSessionId'] as UUID | undefined;
-
-    // Unified connection flow: one session per daemon, both modes behave the same.
-    // If a resumeSessionId is provided, validate it matches our session.
-    if (resumeSessionId && primarySessionId && resumeSessionId !== primarySessionId) {
-      log(`Resume ID mismatch: requested ${resumeSessionId}, daemon has ${primarySessionId}`);
-      sendToConnection(
-        connectionId,
-        createError(
-          'SESSION_NOT_FOUND',
-          `Session ${resumeSessionId} not found on this daemon. Active session: ${primarySessionId}.`,
-        ),
-      );
-      return;
-    }
-
-    // Try to attach to the primary (only) session
-    const isQueryMode = metadata.platformData?.['mode'] === 'query';
-    if (primarySessionId) {
-      // Only auto-attach if the client wants to attach (not a utility client like ls/kill)
-      if (!isQueryMode) {
-        const targetSession = primarySessionId;
-        const result = sessionRegistry.attachConnection(targetSession, connectionId);
-        if (result.success) {
-          sendToConnection(
-            connectionId,
-            createHelloAck('1.0.0', targetSession, {
-              isResume: result.replayMessages.length > 0,
-              replayCount: result.replayMessages.length,
-              nextBulletId: result.nextBulletId,
-            }),
-          );
-          if (result.replayMessages.length > 0) {
-            sendToConnection(
-              connectionId,
-              createReplayBatch(targetSession, result.replayMessages, true),
-            );
-          }
-          cancelOrphanTimeout();
-          log(`Attached connection ${connectionId} to session ${targetSession}`);
-          return;
-        }
-      }
-
-      // Query mode or attach failed (session busy); send hello_ack without attach
-      // so utility clients (ls, kill) can still send requests
-      sendToConnection(connectionId, createHelloAck('1.0.0', primarySessionId));
-      log(
-        `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
-      );
-      return;
-    }
-
-    // No session available
-    sendToConnection(connectionId, createError('NO_SESSION', 'No active session available'));
-  },
-
-  onDisconnect: async (connectionId: UUID, reason: string) => {
-    log(`Client disconnected: ${connectionId}`);
-    log(`   Reason: ${reason}`);
-
-    // Remove device tokens registered by this connection so push
-    // notifications stop after explicit disconnect. The client
-    // re-registers on reconnect, so this is safe.
-    for (const [key, dt] of deviceTokens) {
-      if (dt.connectionId === connectionId) {
-        deviceTokens.delete(key);
-        log(`Device token unregistered (disconnect): ${key.slice(0, 20)}...`);
-      }
-    }
-
-    // Explicitly remove from waiting queue, then detach if active.
-    // detachConnection also handles waiting removal, but this ensures
-    // cleanup even if detachConnection's early-return path changes.
-    sessionRegistry.removeWaitingConnection(connectionId);
-    sessionRegistry.detachConnection(connectionId);
-    registry.untrackConnection(connectionId);
-    updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
-  },
-
-  onUserInput: async (connectionId: UUID, _sessionId: UUID, content: string, raw?: boolean) => {
-    log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
-
-    const session = sessionRegistry.getSessionForConnection(connectionId);
-    if (session) {
-      if (raw) {
-        // Raw terminal input from attach client: write directly without Enter
-        try {
-          session.pty.write(content);
-        } catch (err) {
-          log(`[PTY] raw write failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else {
-        // Structured input from web/mobile client: append Enter
-        await session.pty.submitInput(content);
-      }
-    } else {
-      log(`No session found for connection ${connectionId}`);
-    }
-  },
-
-  onAnswer: async (connectionId: UUID, sessionId: UUID, _questionId: UUID, answer: string) => {
-    log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
-
-    // Prefer lookup by sessionId (from push-action answers) so reconnected clients
-    // can answer even before the connection is fully mapped in the registry.
-    const session =
-      sessionRegistry.getSession(sessionId) ??
-      sessionRegistry.getSessionForConnection(connectionId);
-    if (session) {
-      await session.pty.submitInput(answer);
-      sessionRegistry.updateQuestion(session.sessionId, null);
-    } else {
-      log(`No session found for connection ${connectionId} or session ${sessionId}`);
-    }
-  },
-
-  onBulletExpandRequest: (
-    connectionId: UUID,
-    sessionId: UUID,
-    bulletId: number,
-    requestId: UUID,
-  ) => {
-    const session = sessionRegistry.getSession(sessionId);
-    if (!session) {
-      sendToConnection(connectionId, createError('NOT_FOUND', `Session ${sessionId} not found`));
-      return;
-    }
-
-    const fullContent = session.messageApi.getFullBulletContent(bulletId);
-    if (fullContent === null) {
-      sendToConnection(
-        connectionId,
-        createError('CONTENT_EXPIRED', `Content for bullet ${bulletId} not found or expired`),
-      );
-      return;
-    }
-
-    sendToConnection(connectionId, createBulletExpandResponse(bulletId, fullContent, requestId));
-  },
-
-  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => {
-    const daemonSessions = sessionRegistry.listSessions();
-
-    let allSessions = [...daemonSessions];
-
-    if (includeExternal) {
-      const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-      // Also exclude by Claude session ID (JSONL filename UUID — different namespace from remi IDs)
-      for (const remiId of [...managedIds]) {
-        const stored = sessionStore.findByRemiSessionId(remiId as UUID);
-        if (stored?.claudeSessionId) {
-          managedIds.add(stored.claudeSessionId);
-        }
-      }
-      const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
-      allSessions = [...daemonSessions, ...externalSessions];
-    }
-
-    log(
-      `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
-        `(${daemonSessions.length} daemon, ${allSessions.length - daemonSessions.length} external)`,
-    );
-    // Include other daemon ports on this machine so the app can auto-connect
-    const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
-    sendToConnection(connectionId, createSessionListResponse(allSessions, requestId, livePorts));
-  },
-
-  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => {
-    log(`Transcript load request from ${connectionId} for session ${sessionId}`);
-
-    // First try finding by Claude session ID embedded in the filename
-    let filePath = transcriptDiscovery.findTranscriptBySessionId(sessionId);
-
-    // If not found by Claude session ID, the request may be using a Remi UUID
-    // (daemon sessions are identified by Remi UUID, not Claude session ID).
-    // Check if an active watcher exists for this session ID and use its path.
-    if (!filePath) {
-      const activeWatcher = transcriptWatchers.get(sessionId as UUID);
-      if (activeWatcher) {
-        filePath = activeWatcher.filePath;
-        log(`[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via active watcher`);
-      }
-    }
-
-    if (!filePath) {
-      sendToConnection(
-        connectionId,
-        createError('NOT_FOUND', `Transcript for session ${sessionId} not found`),
-      );
-      return;
-    }
-
-    // Create a temporary MessageAPI and bridge to read the transcript
-    const messageApi = new MessageAPI({ sessionId: sessionId as UUID });
-    let messageCount = 0;
-
-    const bridge = new TranscriptMessageBridge({ sessionId: sessionId as UUID }, messageApi, {
-      onTranscriptContent: (message) => {
-        messageCount++;
-        sendToConnection(connectionId, message);
-      },
-    });
-
-    const watcher = new TranscriptWatcher(
-      {
-        filePath,
-        readExisting: true,
-        pollIntervalMs: 0, // We only want to read existing, not watch
-      },
-      {
-        onAssistantMessage: (entry: AssistantEntry) => {
-          bridge.handleAssistantEntry(entry);
-        },
-        onUserMessage: (entry) => {
-          bridge.handleUserEntry(entry);
-        },
-        onError: (error) => {
-          logError(`[TranscriptLoad] Error reading ${sessionId}:`, error.message);
-        },
-      },
-    );
-
-    // Read the transcript file, then send completion
-    watcher
-      .start()
-      .then(() => {
-        // Stop the watcher immediately since we only needed to read existing entries
-        watcher.stop();
-        log(`Transcript load complete for ${sessionId}: ${messageCount} messages`);
-        sendToConnection(
-          connectionId,
-          createTranscriptLoadComplete(sessionId, messageCount, requestId),
-        );
-      })
-      .catch((error) => {
-        logError(`[TranscriptLoad] Failed to read ${sessionId}:`, error);
-        sendToConnection(
-          connectionId,
-          createError('LOAD_FAILED', `Failed to load transcript: ${error.message}`),
-        );
-      });
-  },
-
-  onCreateSessionRequest: async (
-    connectionId: UUID,
-    directory: string | undefined,
-    requestId: UUID,
-  ) => {
-    // One session per daemon. Spawn a new daemon process for the new session.
-    log(`Create session request from ${connectionId}, spawning new daemon`);
-
-    try {
-      const { spawnRemiDaemon } = await import('./cli/daemon-manager.ts');
-      const { findAvailableTcpPort } = await import('./session/port-utils.ts');
-
-      // Include in-flight spawn ports to prevent TOCTOU race on concurrent requests
-      const liveUsed = new Set([
-        ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
-        ...spawningPorts,
-      ]);
-      const freePort = await findAvailableTcpPort(
-        remiConfig.daemon.base_port,
-        remiConfig.daemon.port_range,
-        liveUsed,
-      );
-      if (freePort === null) {
-        const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
-        sendToConnection(
-          connectionId,
-          createCreateSessionResponse(
-            false,
-            requestId,
-            undefined,
-            `All ports in range ${remiConfig.daemon.base_port}-${rangeEnd} are in use.`,
-          ),
-        );
-        return;
-      }
-
-      // Forward parent's flags so spawned daemon has matching config
-      const inheritedArgs: string[] = [];
-      if (cliAuth === true) inheritedArgs.push('--auth');
-      if (cliAuth === false) inheritedArgs.push('--no-auth');
-      if (cliNoRelay) inheritedArgs.push('--no-relay');
-      if (cliNoMdns) inheritedArgs.push('--no-mdns');
-      if (bindHost !== '0.0.0.0') inheritedArgs.push('--bind', bindHost);
-
-      log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
-      spawningPorts.add(freePort);
-      try {
-        const result = await spawnRemiDaemon(freePort, directory, inheritedArgs);
-
-        sendToConnection(
-          connectionId,
-          createCreateSessionResponse(
-            true,
-            requestId,
-            result.sessionId as UUID,
-            undefined,
-            result.port,
-          ),
-        );
-        log(
-          `New daemon spawned: port=${result.port}, session=${result.sessionId}, pid=${result.pid}`,
-        );
-      } finally {
-        spawningPorts.delete(freePort);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logError(`Failed to spawn daemon: ${msg}`);
-      sendToConnection(connectionId, createCreateSessionResponse(false, requestId, undefined, msg));
-    }
-  },
-
-  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => {
-    log(`Kill session request from ${connectionId} for session ${sessionId}`);
-
-    const session = sessionRegistry.getSession(sessionId);
-    if (!session) {
-      sendToConnection(
-        connectionId,
-        createKillSessionResponse(false, requestId, `Session ${sessionId} not found`),
-      );
-      return;
-    }
-
-    const sessionName = session.name;
-    log(`Killing session: ${sessionName} (${sessionId})`);
-
-    // Notify attached client before destroying the session
-    if (session.activeConnectionId && session.activeConnectionId !== connectionId) {
-      sendToConnection(
-        session.activeConnectionId,
-        createError('SESSION_ENDED', 'Session killed by remote request'),
-      );
-    }
-
-    const hadActiveClient =
-      session.activeConnectionId !== null && session.activeConnectionId !== connectionId;
-    sessionRegistry.closeSession(sessionId, 'forced');
-    sendToConnection(connectionId, createKillSessionResponse(true, requestId));
-    if (hadActiveClient) {
-      log(`Session killed: ${sessionName} (disconnected attached client)`);
-    } else {
-      log(`Session killed: ${sessionName}`);
-    }
-  },
-
-  onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID) => {
-    log(`Detach session request from ${connectionId} for session ${sessionId}`);
-
-    const session = sessionRegistry.getSession(sessionId);
-    if (!session) {
-      sendToConnection(
-        connectionId,
-        createDetachSessionAck(sessionId, false, `Session ${sessionId} not found`),
-      );
-      return;
-    }
-
-    const activeConnId = session.activeConnectionId;
-    if (activeConnId === null) {
-      sendToConnection(
-        connectionId,
-        createDetachSessionAck(sessionId, false, 'Session is already detached'),
-      );
-      return;
-    }
-
-    // Send ack to the requesting connection (may be the active client or
-    // a separate query-mode client like `remi detach <session>`)
-    const ackSent = sendToConnection(connectionId, createDetachSessionAck(sessionId, true));
-    if (!ackSent) {
-      log(`Warning: detach ack could not be delivered to ${connectionId}`);
-    }
-
-    // Detach the ACTIVE connection (not necessarily the requesting one).
-    // Only untrack/decrement here for third-party detach (connectionId !== activeConnId).
-    // For self-detach, onDisconnect will handle cleanup when the WebSocket closes.
-    sessionRegistry.detachConnection(activeConnId, true);
-    if (activeConnId !== connectionId) {
-      registry.untrackConnection(activeConnId);
-      updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) });
-    }
-
-    log(
-      `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
-    );
-  },
-
-  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string) => {
-    log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
-    deviceTokens.set(token, { token, platform, registeredAt: Date.now(), connectionId });
-  },
-
-  onResumeSessionRequest: async (connectionId: UUID, targetSessionId: string, requestId: UUID) => {
-    log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
-
-    // If the target matches our active session, try to attach
-    const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
-    if (existingSession) {
-      const result = sessionRegistry.attachConnection(targetSessionId as UUID, connectionId);
-      if (result.success) {
-        sendToConnection(
-          connectionId,
-          createResumeSessionResponse(true, requestId, targetSessionId as UUID),
-        );
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', targetSessionId as UUID, {
-            isResume: true,
-            replayCount: result.replayMessages.length,
-            nextBulletId: result.nextBulletId,
-          }),
-        );
-        if (result.replayMessages.length > 0) {
-          sendToConnection(
-            connectionId,
-            createReplayBatch(targetSessionId as UUID, result.replayMessages, true),
-          );
-        }
-        log(`Session ${targetSessionId} still alive; attached connection`);
-        return;
-      }
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(false, requestId, undefined, result.error),
-      );
-      return;
-    }
-
-    // Session not alive in registry. One session per daemon, so we cannot
-    // spawn a new session if one already exists.
-    if (sessionRegistry.activeSession !== null) {
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          "This daemon already has an active session. Use 'remi new' to start a new daemon for resume.",
-        ),
-      );
-      return;
-    }
-
-    // No active session; attempt transcript-based resume by spawning a new PTY.
-    let claudeSessionId: string | null = null;
-    let projectPath: string | null = null;
-
-    const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
-    if (storedByRemi) {
-      claudeSessionId = storedByRemi.claudeSessionId;
-      projectPath = storedByRemi.projectPath;
-    }
-
-    if (!claudeSessionId) {
-      const storedByClaude = sessionStore.findByClaudeSessionId(targetSessionId);
-      if (storedByClaude) {
-        claudeSessionId = storedByClaude.claudeSessionId;
-        projectPath = storedByClaude.projectPath;
-      }
-    }
-
-    if (!claudeSessionId) {
-      const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
-      if (transcriptPath) {
-        claudeSessionId = targetSessionId;
-        const dirName = path.basename(path.dirname(transcriptPath));
-        projectPath = dirName.replace(/-/g, '/');
-      }
-    }
-
-    if (!claudeSessionId) {
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          `Session ${targetSessionId} not found. No Claude session ID available for resume.`,
-        ),
-      );
-      return;
-    }
-
-    if (!projectPath) {
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          'Cannot resume: original project path is unknown.',
-        ),
-      );
-      return;
-    }
-
-    const dirResult = resolveDirectory(projectPath);
-    if ('error' in dirResult) {
-      const hint = projectPath?.includes('/')
-        ? ' Path may be inaccurate for projects with dashes in their name.'
-        : '';
-      sendToConnection(
-        connectionId,
-        createResumeSessionResponse(
-          false,
-          requestId,
-          undefined,
-          `Project directory not found: ${projectPath}.${hint}`,
-        ),
-      );
-      return;
-    }
-    const workingDirectory = dirResult.resolved;
-
-    const newSessionId = sessionRegistry.createSessionId();
-    log(
-      `Resuming Claude session ${claudeSessionId} as new Remi session ${newSessionId} in ${workingDirectory}`,
-    );
-
-    try {
-      await createNewSession(
-        newSessionId,
-        workingDirectory,
-        (sid, msg) => {
-          const session = sessionRegistry.getSession(sid);
-          if (session?.activeConnectionId) {
-            sendToConnection(session.activeConnectionId, msg);
-          }
-        },
-        ['--resume', claudeSessionId],
-      );
-
-      const result = sessionRegistry.attachConnection(newSessionId, connectionId);
-
-      if (result.success) {
-        sendToConnection(connectionId, createResumeSessionResponse(true, requestId, newSessionId));
-        sendToConnection(
-          connectionId,
-          createHelloAck('1.0.0', newSessionId, {
-            isResume: false,
-            replayCount: 0,
-            nextBulletId: 1,
-          }),
-        );
-        log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);
-      } else {
-        sessionRegistry.closeSession(newSessionId, 'forced');
-        sendToConnection(
-          connectionId,
-          createResumeSessionResponse(false, requestId, undefined, result.error),
-        );
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logError('Failed to resume session:', msg);
-      sessionRegistry.closeSession(newSessionId, 'forced');
-      sendToConnection(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
-    }
-  },
-
-  onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => {
-    log(`Session history request from ${connectionId}, limit: ${limit ?? 'default'}`);
-    try {
-      const clampedLimit = Math.max(1, limit ?? 20);
-      const directories = getRecentDirectories(sessionStore, clampedLimit);
-      sendToConnection(connectionId, createSessionHistoryResponse(directories, requestId));
-    } catch (err) {
-      log(`Failed to get recent directories: ${err instanceof Error ? err.message : err}`);
-      sendToConnection(connectionId, createSessionHistoryResponse([], requestId));
-    }
-  },
-
-  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => {
-    const session = sessionRegistry.getSessionForConnection(connectionId);
-    if (session) {
-      try {
-        session.pty.resize({ cols, rows });
-      } catch (err) {
-        log(
-          `Failed to resize PTY for connection ${connectionId}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
-    } else {
-      log(`Terminal resize ignored: no session for connection ${connectionId}`);
-    }
-  },
-
-  onError: (connectionId: UUID, error: Error) => {
-    logError(`Error from ${connectionId}:`, error);
-  },
+  ...trivialHandlers,
+  ...inputHandlers,
+  ...sessionHandlers,
+  ...connectionHandlers,
+  ...transcriptHandlers,
+  ...createSessionHandlers_,
+  ...resumeSessionHandlers,
 };
 
 // ---------------------------------------------------------------------------
@@ -3130,7 +1223,7 @@ if (authEnabled) {
       const newIdentity = await identityStore.generate();
       console.log(`Identity created (fingerprint: ${newIdentity.fingerprint})`);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to auto-generate identity: ${detail}`);
       console.error('Check permissions on ~/.remi or generate manually with "remi keygen".');
       process.exit(1);
@@ -3160,7 +1253,7 @@ if (authEnabled) {
     try {
       unlockedIdentity = await unlockIdentity(storedIdentity, passphrase);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to unlock identity: ${detail}`);
       console.error('Wrong passphrase?');
       process.exit(1);
@@ -3170,7 +1263,7 @@ if (authEnabled) {
     try {
       unlockedIdentity = await unlockIdentity(storedIdentity);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Failed to unlock identity: ${detail}`);
       console.error('Identity file may be corrupt. Run "remi keygen --force" to regenerate.');
       process.exit(1);
@@ -3285,18 +1378,21 @@ async function cleanup(): Promise<void> {
     try {
       hookConfigManager.uninstall();
     } catch (err) {
-      logError(
-        `[Hooks] Failed to uninstall hook config: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logError(`[Hooks] Failed to uninstall hook config: ${errorToString(err)}`);
     }
     hookConfigManager = null;
+  }
+
+  if (updateWatcher) {
+    updateWatcher.stop();
+    updateWatcher = null;
   }
 
   if (mdnsPublisher) {
     try {
       await mdnsPublisher.stop();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       logError(`[mDNS] Error during cleanup: ${msg}`);
     }
     mdnsPublisher = null;
@@ -3323,8 +1419,9 @@ async function cleanup(): Promise<void> {
   cleanupStatusFile();
 
   // Remove from live sessions directory
-  if (primarySessionId) {
-    liveSessionsRegistry.unregister(primarySessionId);
+  const primary = getPrimarySessionId();
+  if (primary) {
+    liveSessionsRegistry.unregister(primary);
   }
 }
 
@@ -3336,7 +1433,7 @@ async function cleanup(): Promise<void> {
 // In wrapper mode the terminal provides the PATH, but resolveShellPath
 // merges (never drops existing entries) so it's safe to call, and ensures
 // remote session creation works even after the terminal is detached (SIGHUP).
-resolveShellPath();
+resolveShellPath({ log, error: logError });
 
 if (cliDaemonMode) {
   console.log('Starting Remi daemon...');
@@ -3345,7 +1442,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAllExcept(['websocket']);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to start adapters: ${msg}`);
     await registry.stopAll();
     process.exit(1);
@@ -3379,7 +1476,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAdapter('websocket');
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to start WebSocket on port ${PORT}: ${msg}`);
     console.error('Use --port to specify a different port, or stop existing sessions.');
     await registry.stopAll();
@@ -3391,10 +1488,10 @@ if (cliDaemonMode) {
   // Create the daemon's single session (one session per daemon)
   const workingDirectory = cliDir ? path.resolve(cliDir) : process.cwd();
   const sessionId = sessionRegistry.createSessionId();
-  primarySessionId = sessionId;
+  setPrimarySessionId(sessionId);
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
-  installStatusLine();
+  installStatusLine(REMI_DIR);
 
   // Start hook server for Claude Code event detection (port 0 = OS-assigned)
   try {
@@ -3408,7 +1505,7 @@ if (cliDaemonMode) {
     HOOK_PORT = hookServer.port;
     console.log(`  Hook server listening on port ${HOOK_PORT}`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(
       `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
     );
@@ -3420,7 +1517,7 @@ if (cliDaemonMode) {
       hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
       await hookConfigManager.install();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
       hookConfigManager = null;
     }
@@ -3437,6 +1534,10 @@ if (cliDaemonMode) {
     startedAt: new Date().toISOString(),
   });
 
+  // Notify attached clients when a new dist/remi build replaces this binary
+  // on disk so they know to restart their session (#287).
+  startBinaryUpdateWatcher();
+
   // Create the PTY session
   try {
     await createNewSession(sessionId, workingDirectory, (sid, msg) => {
@@ -3449,7 +1550,7 @@ if (cliDaemonMode) {
       }
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     console.error(`Failed to create session: ${msg}`);
     liveSessionsRegistry.unregister(sessionId);
     await registry.stopAll();
@@ -3498,9 +1599,7 @@ if (cliDaemonMode) {
       applyEnvOverrides(loadConfig());
       console.log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
-      console.error(
-        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.error(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
 } else {
@@ -3509,25 +1608,10 @@ if (cliDaemonMode) {
   // console.log uses a native path that bypasses process.stdout.write,
   // so we must override both layers. Only the PTY raw byte pass-through
   // (via fs.writeSync to stdout fd) can reach the actual terminal.
-  ptyStdoutFd = 1; // stdout file descriptor
+  setPtyStdoutFd(1); // stdout file descriptor
 
-  try {
-    logFd = openLogFile();
-  } catch (logErr) {
-    // Fall back to a temp file so diagnostics are not completely lost
-    try {
-      const tmpLog = path.join(os.tmpdir(), `remi-${process.pid}.log`);
-      logFd = fs.openSync(tmpLog, 'a');
-      fs.writeSync(
-        logFd,
-        `[remi] Primary log file failed: ${logErr instanceof Error ? logErr.message : String(logErr)}\n`,
-      );
-      fs.writeSync(2, `[remi] Logging to ${tmpLog} (primary log unavailable)\n`);
-    } catch {
-      // Last resort: write one message to stderr before it gets overridden
-      fs.writeSync(2, '[remi] WARNING: All logging disabled (cannot open any log file)\n');
-    }
-  }
+  ensureRemiDir();
+  startLogFileSession(LOG_FILE, { dir: os.tmpdir(), pid: process.pid });
 
   // Layer 1: Override console methods (catches Bun's native console path)
   const toLog = (...args: unknown[]) => writeToLog(args.map(String).join(' '));
@@ -3550,22 +1634,13 @@ if (cliDaemonMode) {
   process.stderr.write = streamToLog as typeof process.stderr.write;
 
   // Close log fd as the very last thing on process exit
-  process.on('exit', () => {
-    if (logFd !== null) {
-      try {
-        fs.closeSync(logFd);
-      } catch {
-        // ignore
-      }
-      logFd = null;
-    }
-  });
+  process.on('exit', endLogFileSession);
 
   // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
-  installStatusLine();
+  installStatusLine(REMI_DIR);
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
-  primarySessionId = sessionId;
+  setPrimarySessionId(sessionId);
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
@@ -3573,9 +1648,7 @@ if (cliDaemonMode) {
   try {
     await registry.startAllExcept(['websocket']);
   } catch (err) {
-    logError(
-      `Failed to start background adapters: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logError(`Failed to start background adapters: ${errorToString(err)}`);
   }
 
   // Phase 2: Probe for available WebSocket port, then start
@@ -3589,9 +1662,7 @@ if (cliDaemonMode) {
       try {
         await registry.unregister('websocket');
       } catch (teardownErr) {
-        logError(
-          `Failed to tear down WebSocket adapter: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}`,
-        );
+        logError(`Failed to tear down WebSocket adapter: ${errorToString(teardownErr)}`);
       }
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
@@ -3613,7 +1684,7 @@ if (cliDaemonMode) {
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       logError(`WebSocket server failed to start: ${msg}. Remote monitoring disabled.`);
     }
   }
@@ -3640,7 +1711,7 @@ if (cliDaemonMode) {
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorToString(err);
     logError(
       `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
     );
@@ -3659,6 +1730,10 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
     });
+
+    // Notify attached clients when a new dist/remi build replaces this binary
+    // on disk so they know to restart their session (#287).
+    startBinaryUpdateWatcher();
 
     // Watch for new daemons registering in live-sessions and push updates to clients.
     // This lets clients auto-connect when a sibling session starts in the same directory.
@@ -3689,17 +1764,13 @@ if (cliDaemonMode) {
               const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
               registry.broadcast(msg);
             } catch (err) {
-              logError(
-                `[LiveSessions] Error pushing session update: ${err instanceof Error ? err.message : String(err)}`,
-              );
+              logError(`[LiveSessions] Error pushing session update: ${errorToString(err)}`);
             }
           }, 300);
         },
       );
     } catch (err) {
-      logError(
-        `[LiveSessions] Could not watch live-sessions dir: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
     }
   }
 
@@ -3722,15 +1793,16 @@ if (cliDaemonMode) {
   );
 
   // Print session name to terminal (useful for 'remi new' and general awareness)
-  if (ptyStdoutFd !== null) {
-    const managedSession = sessionRegistry.getSession(sessionId);
-    if (managedSession) {
-      try {
-        fs.writeSync(ptyStdoutFd, `Session: ${managedSession.name}\r\n`);
-      } catch (err) {
-        log(
-          `[Wrapper] Failed to write session name: ${err instanceof Error ? err.message : String(err)}`,
-        );
+  {
+    const stdoutFd = getPtyStdoutFd();
+    if (stdoutFd !== null) {
+      const managedSession = sessionRegistry.getSession(sessionId);
+      if (managedSession) {
+        try {
+          fs.writeSync(stdoutFd, `Session: ${managedSession.name}\r\n`);
+        } catch (err) {
+          log(`[Wrapper] Failed to write session name: ${errorToString(err)}`);
+        }
       }
     }
   }
@@ -3742,26 +1814,43 @@ if (cliDaemonMode) {
       try {
         ptySession.write(text);
       } catch (err) {
-        log(`[PTY] write failed: ${err instanceof Error ? err.message : String(err)}`);
+        log(`[PTY] write failed: ${errorToString(err)}`);
       }
     }
   }
 
+  // Ctrl+Z handler (issue #361). Installed before the DetachScanner so the
+  // scanner can route the `0x1A` byte directly into `requestSuspend()`. The
+  // SIGCONT path re-enters raw mode; restoring the data listener is
+  // unnecessary because Bun keeps it attached across the SIGSTOP boundary.
+  const suspendController = installSuspendHandler({
+    onResume: () => {
+      // Re-attach to stdin: setRawMode(true) is done inside the handler;
+      // here we just ensure stdin is flowing again. `process.stdin.resume()`
+      // is idempotent.
+      process.stdin.resume();
+    },
+  });
+
   const detachScanner = new DetachScanner({
     onDetach: () => {
-      if (ptyStdoutFd !== null) {
+      const stdoutFd = getPtyStdoutFd();
+      if (stdoutFd !== null) {
         try {
-          fs.writeSync(ptyStdoutFd, '\r\n[detached]\r\n');
+          fs.writeSync(stdoutFd, '\r\n[detached]\r\n');
         } catch (err) {
-          log(
-            `[Detach] Failed to write detach message: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          log(`[Detach] Failed to write detach message: ${errorToString(err)}`);
         }
       }
+      // detachLocalTerminal disposes the suspend controller as part of its
+      // teardown, so no extra cleanup is needed here.
       detachLocalTerminal('keybinding');
     },
     onData: (data) => {
       writeToPty(data.toString());
+    },
+    onSuspend: () => {
+      suspendController.requestSuspend();
     },
     timeoutMs: 1000,
   });
@@ -3783,7 +1872,7 @@ if (cliDaemonMode) {
         ptySession.resize({ cols, rows });
       }
     } catch (err) {
-      log(`[PTY] resize failed: ${err instanceof Error ? err.message : String(err)}`);
+      log(`[PTY] resize failed: ${errorToString(err)}`);
     }
   });
 
@@ -3793,17 +1882,19 @@ if (cliDaemonMode) {
   const SIGHUP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
   function detachLocalTerminal(reason: 'sighup' | 'keybinding'): void {
-    if (wrapperDetached) return;
-    wrapperDetached = true;
+    if (isWrapperDetached()) return;
+    setWrapperDetached(true);
+
+    // Tear down the wrapper-mode SIGTSTP/SIGCONT listeners; once the local
+    // terminal is gone there is no value in suspending the process.
+    suspendController.dispose();
 
     // Stop reading from stdin
     if (process.stdin.isTTY) {
       try {
         process.stdin.setRawMode(false);
       } catch (err) {
-        log(
-          `[Detach] setRawMode restore failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log(`[Detach] setRawMode restore failed: ${errorToString(err)}`);
       }
     }
     process.stdin.pause();
@@ -3813,15 +1904,13 @@ if (cliDaemonMode) {
       // Terminal closed: keep running for 30 minutes so remote clients can attach.
       // After the timeout, shut down to avoid accumulating orphaned sessions.
       process.stdin.unref();
-      ptyStdoutFd = null;
+      setPtyStdoutFd(null);
       sighupTimeoutId = setTimeout(() => {
         log('[SIGHUP] Orphan timeout reached (30m), shutting down');
         cleanup()
           .then(() => process.exit(0))
           .catch((err) => {
-            logError(
-              `[SIGHUP] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
+            logError(`[SIGHUP] Cleanup failed: ${errorToString(err)}`);
             process.exit(1);
           });
       }, SIGHUP_TIMEOUT_MS);
@@ -3837,7 +1926,7 @@ if (cliDaemonMode) {
       cleanup()
         .then(() => process.exit(0))
         .catch((err) => {
-          logError(`[Detach] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          logError(`[Detach] Cleanup failed: ${errorToString(err)}`);
           process.exit(1);
         });
     }
@@ -3857,15 +1946,13 @@ if (cliDaemonMode) {
       applyEnvOverrides(loadConfig());
       log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
-      logError(
-        `[reload] Failed to load config: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logError(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
   process.on('SIGINT', () => {
-    if (wrapperDetached) return; // No local terminal to forward from
+    if (isWrapperDetached()) return; // No local terminal to forward from
     if (ptySession.isRunning) {
       try {
         // Send Ctrl+C (0x03) to the PTY
@@ -3887,7 +1974,7 @@ if (cliDaemonMode) {
     try {
       await cleanup();
     } catch (err) {
-      logError(`[SIGTERM] Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`[SIGTERM] Cleanup failed: ${errorToString(err)}`);
     }
     process.exit(0);
   });

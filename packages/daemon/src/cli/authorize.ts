@@ -7,6 +7,7 @@
  */
 
 import * as fs from 'node:fs';
+import { errorToString } from '@remi/shared';
 import { IdentityStore } from '../auth/identity-store.ts';
 
 export interface AuthorizeOptions {
@@ -54,9 +55,7 @@ export async function runAuthorize(options: AuthorizeOptions): Promise<void> {
       throw new Error('Missing publicKey field');
     }
   } catch (err) {
-    console.error(
-      `Failed to parse public key: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    console.error(`Failed to parse public key: ${errorToString(err)}`);
     process.exit(1);
     return; // unreachable, helps TS
   }
@@ -69,7 +68,7 @@ export async function runAuthorize(options: AuthorizeOptions): Promise<void> {
     console.log(`  Fingerprint: ${key.fingerprint}`);
     console.log(`  Label:       ${key.label}`);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errorToString(err));
     process.exit(1);
   }
 }

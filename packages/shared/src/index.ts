@@ -77,6 +77,8 @@ export type {
   DetachSessionAckMessage,
   RegisterDeviceTokenMessage,
   SessionResetMessage,
+  DaemonUpdateAvailableMessage,
+  CreateHelloOptions,
 } from './protocol.ts';
 
 export {
@@ -122,6 +124,7 @@ export {
   createDetachSessionAck,
   createRegisterDeviceToken,
   createSessionReset,
+  createDaemonUpdateAvailable,
   MessageIdTracker,
 } from './protocol.ts';
 
@@ -166,3 +169,9 @@ export {
   createAuthorizedKey,
   createAuthorizedKeysFile,
 } from './identity.ts';
+
+// Error helpers
+export { errorToString } from './error-utils.ts';
+
+// Async helpers
+export { sleep } from './async-utils.ts';

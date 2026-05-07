@@ -11,6 +11,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import { findAvailableTcpPort } from './port-utils.ts';
 import { isProcessAlive } from './process-alive.ts';
 
@@ -83,9 +84,7 @@ export class SessionRegistryFile {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
-        console.error(
-          `[live-sessions] Failed to unregister ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        console.error(`[live-sessions] Failed to unregister ${sessionId}: ${errorToString(err)}`);
       }
     }
   }
@@ -106,9 +105,7 @@ export class SessionRegistryFile {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
-        console.error(
-          `[live-sessions] Cannot read directory ${this.dir}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        console.error(`[live-sessions] Cannot read directory ${this.dir}: ${errorToString(err)}`);
       }
       return [];
     }
@@ -141,7 +138,7 @@ export class SessionRegistryFile {
             const code = (cleanupErr as NodeJS.ErrnoException).code;
             if (code !== 'ENOENT') {
               console.error(
-                `[live-sessions] Failed to remove stale entry ${fileName}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+                `[live-sessions] Failed to remove stale entry ${fileName}: ${errorToString(cleanupErr)}`,
               );
             }
           }
@@ -159,9 +156,7 @@ export class SessionRegistryFile {
           }
           continue;
         }
-        console.error(
-          `[live-sessions] Failed to read ${fileName}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        console.error(`[live-sessions] Failed to read ${fileName}: ${errorToString(err)}`);
       }
     }
 

@@ -8,6 +8,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
@@ -89,7 +90,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     model: 'gemma4:e2b',
     api_key: '',
     base_url: 'http://localhost:11434/v1',
-    timeout: 10,
+    timeout: 30,
     log_decisions: true,
     allow: [],
     deny: [],
@@ -146,7 +147,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
       return deepMerge(DEFAULT_CONFIG, {});
     }
     throw new Error(
-      `Cannot read config file ${configPath}: ${err instanceof Error ? err.message : String(err)}. Fix file permissions or remove the file to use defaults.`,
+      `Cannot read config file ${configPath}: ${errorToString(err)}. Fix file permissions or remove the file to use defaults.`,
     );
   }
 
@@ -157,7 +158,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     return merged;
   } catch (err) {
     throw new Error(
-      `Invalid TOML in ${configPath}: ${err instanceof Error ? err.message : String(err)}. Fix the syntax or delete the file to use defaults.`,
+      `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
   }
 }
@@ -375,7 +376,8 @@ authorized_user_ids = []
 # model = "gemma4:e2b"
 # api_key = ""                  # Required for OpenRouter, empty for Ollama
 # base_url = "http://localhost:11434/v1"
-# timeout = 10                  # Seconds; falls through to user if exceeded
+# timeout = 30                  # Seconds; falls through to user if exceeded
+                                # (covers cold model load on local Ollama)
 # log_decisions = true
 #
 # User-defined rules. Substring matching for Bash, tool-name match for others.

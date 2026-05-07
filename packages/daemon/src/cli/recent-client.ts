@@ -7,6 +7,8 @@
  */
 
 import * as os from 'node:os';
+import * as path from 'node:path';
+import { errorToString } from '@remi/shared';
 import {
   createHello,
   createSessionHistoryRequest,
@@ -15,8 +17,41 @@ import {
   serialize,
 } from '@remi/shared';
 import type { ProtocolMessage, RecentDirectory } from '@remi/shared';
+import type { SessionStore } from '../session/session-store.ts';
 import { performAuthHandshake } from './auth-helper.ts';
 import { formatAge } from './ls-client.ts';
+
+/**
+ * Collect the N most-recent project directories from the SessionStore,
+ * with session counts and display names derived from the path basename.
+ */
+export function getRecentDirectories(store: SessionStore, limit: number): RecentDirectory[] {
+  const sessions = store.list();
+  const dirMap = new Map<string, { count: number; lastUsed: string }>();
+
+  for (const s of sessions) {
+    const dir = s.projectPath;
+    const existing = dirMap.get(dir);
+    if (existing) {
+      existing.count++;
+      if (s.startedAt > existing.lastUsed) {
+        existing.lastUsed = s.startedAt;
+      }
+    } else {
+      dirMap.set(dir, { count: 1, lastUsed: s.startedAt });
+    }
+  }
+
+  return Array.from(dirMap.entries())
+    .map(([directory, { count, lastUsed }]) => ({
+      directory,
+      lastUsed,
+      sessionCount: count,
+      displayName: path.basename(directory),
+    }))
+    .sort((a, b) => (a.lastUsed > b.lastUsed ? -1 : 1))
+    .slice(0, limit);
+}
 
 export interface RecentClientOptions {
   readonly host: string;
@@ -41,7 +76,7 @@ export async function fetchRecentDirectories(
     try {
       ws = new WebSocket(url);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));
       return;
     }
@@ -65,7 +100,7 @@ export async function fetchRecentDirectories(
 
     function sendHello(): void {
       const clientId = generateId();
-      ws.send(serialize(createHello(clientId, '1.0.0', undefined, undefined, undefined, 'query')));
+      ws.send(serialize(createHello(clientId, '1.0.0', { mode: 'query' })));
     }
 
     function handleMessage(msg: ProtocolMessage): void {

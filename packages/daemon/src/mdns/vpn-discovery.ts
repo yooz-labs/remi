@@ -16,6 +16,7 @@
 
 import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { errorToString } from '@remi/shared';
 import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-registry-file.ts';
 
 export interface VpnPeer {
@@ -170,7 +171,7 @@ function runCli(command: string, args: string, provider: string): string | null 
     }
     const status = e.status;
     if (status != null && status !== CMD_NOT_FOUND_STATUS) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorToString(err);
       const firstLine = msg.split('\n')[0];
       console.error(`[vpn-discovery] ${provider} query failed: ${firstLine}`);
     }
@@ -198,7 +199,7 @@ export function getTailscalePeers(): VpnPeer[] {
     status = JSON.parse(raw) as TailscaleStatus;
   } catch (parseErr) {
     const preview = raw.length > 200 ? `${raw.substring(0, 200)}...` : raw;
-    const detail = parseErr instanceof Error ? parseErr.message : String(parseErr);
+    const detail = errorToString(parseErr);
     console.error(
       `[vpn-discovery] Tailscale returned invalid JSON: ${detail}. Preview: ${preview}`,
     );

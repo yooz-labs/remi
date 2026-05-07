@@ -8,6 +8,7 @@
 import { generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
+import { shouldSkipAuthForPeer } from './peer-helpers.ts';
 
 /** Server configuration */
 export interface ServerConfig {
@@ -98,6 +99,8 @@ const DEFAULT_MAX_CONNECTIONS = 100;
 /** WebSocket data attached to each connection */
 interface WSData {
   connectionId: UUID;
+  /** Peer IP captured at upgrade time (used to skip auth for loopback). */
+  peerAddress: string | null;
 }
 
 /**
@@ -187,10 +190,14 @@ export class WebSocketServer {
             return new Response('Too many connections', { status: 503 });
           }
 
+          const peer = server.requestIP(req);
+          const peerAddress = peer?.address ?? null;
+
           // Upgrade to WebSocket
           const success = server.upgrade(req, {
             data: {
               connectionId: generateId(),
+              peerAddress,
             },
           });
 
@@ -207,6 +214,25 @@ export class WebSocketServer {
             JSON.stringify({
               status: 'ok',
               connections: self.connections.size,
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
+        // Auth-info endpoint: lets clients probe whether this daemon will
+        // require an Ed25519 challenge before opening the WebSocket. Loopback
+        // peers are always exempt regardless of authenticator config, so the
+        // probe answers from the same vantage point the WebSocket would.
+        // See ConnectModal in packages/web for the consumer (#257).
+        if (url.pathname === '/auth-info') {
+          const peer = server.requestIP(req);
+          const authenticator = self.config.connection?.authenticator;
+          const authRequired =
+            !shouldSkipAuthForPeer(!!authenticator, peer?.address) && !!authenticator;
+          return new Response(
+            JSON.stringify({
+              authRequired,
+              fingerprint: authenticator?.serverFingerprint ?? null,
             }),
             { headers: { 'Content-Type': 'application/json' } },
           );
@@ -350,10 +376,19 @@ export class WebSocketServer {
       },
     };
 
+    // Localhost-no-auth (#257): even when an authenticator is configured,
+    // peers connecting from the loopback interface are trusted by virtue of
+    // being on the same machine. Drop the authenticator from this peer's
+    // connection so it never receives an auth_challenge.
+    let perConnectionConfig = this.config.connection;
+    if (shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress)) {
+      perConnectionConfig = { ...perConnectionConfig, authenticator: undefined };
+    }
+
     const connection = new Connection(
       ws as unknown as WebSocket,
       connectionEvents,
-      this.config.connection,
+      perConnectionConfig,
       ws.data.connectionId,
     );
 

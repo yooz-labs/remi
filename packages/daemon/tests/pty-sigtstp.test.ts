@@ -76,7 +76,10 @@ describe('PTY SIGTSTP handling', () => {
   });
 
   test('daemon process ignores SIGTSTP without suspending', async () => {
-    // Register SIGTSTP handler (same as cli.ts does)
+    // A bare SIGTSTP listener is enough to suppress the kernel default. The
+    // wrapper-mode handler is in `cli/suspend-handler.ts`; this test only
+    // verifies the underlying runtime contract that the suspend handler
+    // depends on.
     const received = new Promise<void>((resolve) => {
       const handler = () => {
         process.removeListener('SIGTSTP', handler);

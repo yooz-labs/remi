@@ -620,6 +620,7 @@ export class TelegramAdapter implements ConnectionAdapter {
         adapterType: this.type,
         displayName: topicName,
         platformData: {
+          kind: 'telegram',
           chatId,
           topicId,
           directory,

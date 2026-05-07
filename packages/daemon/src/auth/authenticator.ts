@@ -17,6 +17,7 @@ import type {
   AuthResultMessage,
   UnlockedIdentity,
 } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import {
   createAuthChallenge,
   createAuthResult,
@@ -97,7 +98,7 @@ export class Authenticator {
     try {
       isAuthorized = this.store.isAuthorized(response.clientPublicKey, response.clientFingerprint);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Auth store error during verification: ${detail}`);
       return createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`);
     }
@@ -115,7 +116,7 @@ export class Authenticator {
             // Race condition: another connection added the key first
             isAuthorized = true;
           } else {
-            const detail = err instanceof Error ? err.message : String(err);
+            const detail = errorToString(err);
             console.error(`TOFU auto-accept failed: ${detail}`);
             return createAuthResult(false, undefined, 'TOFU_FAILED');
           }
@@ -134,7 +135,7 @@ export class Authenticator {
       const serverSignature = await sign(this.identity.privateKey, challengeData);
       return createAuthResult(true, serverSignature);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorToString(err);
       console.error(`Server failed to sign mutual auth challenge: ${detail}`);
       return createAuthResult(false, undefined, 'SERVER_SIGN_ERROR');
     }
