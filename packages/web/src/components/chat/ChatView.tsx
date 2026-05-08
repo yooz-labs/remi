@@ -5,11 +5,13 @@
  * Supports two view modes: compact (plain text) and chat (parsed markdown/code).
  */
 
+import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useKeyboard } from '@/hooks/useKeyboard';
+import { hapticImpact } from '@/lib/haptics';
 import type { ReplyContext } from '@/lib/reply-format';
 import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
@@ -90,8 +92,19 @@ export function ChatView({
   // Hide InputArea's quick responses when QuestionCard is handling the question
   const inputQuestion = viewMode === 'chat' ? null : question;
 
+  // iOS edge-swipe back (#411): rightward swipe from the left edge pops
+  // the chat back to the session list. Mirrors the native iOS gesture.
+  // Only active when we have an onBack consumer and a non-finger pointer
+  // is rare on the touch screens this targets.
+  const handleEdgeSwipeBack = useCallback(() => {
+    hapticImpact('light');
+    onBack?.();
+  }, [onBack]);
+  const swipeBackHandlers = useEdgeSwipeBack(handleEdgeSwipeBack);
+
   return (
     <div
+      {...(onBack ? swipeBackHandlers : {})}
       className={clsx(
         'flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]',
         className,
