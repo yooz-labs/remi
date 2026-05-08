@@ -4,6 +4,8 @@
  * Displays a single message with WhatsApp-style delivery status.
  */
 
+import { useLongPress } from '@/hooks/useLongPress';
+import { hapticImpact } from '@/lib/haptics';
 import type { UIBullet, UIMessage } from '@/types';
 import type { TranscriptContentBlock } from '@remi/shared/protocol.ts';
 import type { MessageState } from '@remi/shared/types.ts';
@@ -28,6 +30,8 @@ interface MessageBubbleProps {
   readonly message: UIMessage;
   readonly showTimestamp?: boolean;
   readonly onBulletExpand?: (bulletId: number) => void;
+  /** Long-press the bubble to set this message as the reply context (#401). */
+  readonly onReply?: (message: UIMessage) => void;
   readonly viewMode?: ViewMode;
 }
 
@@ -253,6 +257,7 @@ export function MessageBubble({
   message,
   showTimestamp = true,
   onBulletExpand,
+  onReply,
   viewMode = 'compact',
 }: MessageBubbleProps) {
   const isUser = message.sender === 'user';
@@ -261,6 +266,22 @@ export function MessageBubble({
 
   // Use bullets if available, otherwise fall back to raw content
   const hasBullets = message.bullets && message.bullets.length > 0;
+
+  // Long-press to enter "reply to this message" mode (#401). System
+  // messages and tool/streaming bubbles are not reply-able since there
+  // is no useful quoted context for the agent.
+  const isReplyable = !!onReply && !isSystem && !message.isStreaming && !message.tool;
+  const longPressHandlers = useLongPress(
+    () => {
+      if (onReply) onReply(message);
+    },
+    {
+      delayMs: 500,
+      onTrigger: () => {
+        hapticImpact('medium');
+      },
+    },
+  );
 
   // In enhanced chat mode, tool messages render as collapsible cards (not bubbles)
   if (enhanced && message.tool && !isUser) {
@@ -293,6 +314,7 @@ export function MessageBubble({
       className={clsx('flex w-full animate-[slide-up]', isUser ? 'justify-end' : 'justify-start')}
     >
       <div
+        {...(isReplyable ? longPressHandlers : {})}
         className={clsx(
           'rounded-2xl px-4 py-2.5 overflow-hidden',
           'transition-all duration-200',
@@ -311,6 +333,8 @@ export function MessageBubble({
           message.isStreaming && 'animate-pulse',
           // Editing indicator
           message.isEditing && 'border-[var(--color-primary)] border-dashed',
+          // Long-press affordance hint on touch devices
+          isReplyable && 'select-none touch-manipulation',
         )}
       >
         {/* Sender label in enhanced mode */}
