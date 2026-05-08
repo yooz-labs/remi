@@ -14,6 +14,7 @@ import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
+import { shouldKeepExisting } from '@/lib/question-merge';
 import type {
   AppSettings,
   ConnectionId,
@@ -425,6 +426,17 @@ function App() {
           timestamp: new Date().toISOString(),
         };
         setQuestions((prev) => {
+          // Richer-wins guard (#396). The daemon emits two questions for
+          // one prompt cycle (HookEventBridge default 3-set + PTY-parsed
+          // multi-choice with full sentences); their ids differ so the
+          // session-keyed map otherwise lets the second arrival overwrite
+          // the first regardless of richness. Keeping the richer pending
+          // question here prevents the "multi-choice flickers, then
+          // collapses to Yes/Yes-always/No" symptom users reported.
+          const existing = prev.get(questionSessionId);
+          if (existing && shouldKeepExisting(existing, uiQuestion)) {
+            return prev;
+          }
           const next = new Map(prev);
           next.set(questionSessionId, uiQuestion);
           return next;
