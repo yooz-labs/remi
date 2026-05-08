@@ -20,6 +20,11 @@ import {
 
 interface InputAreaProps {
   readonly onSend: (message: string) => void;
+  /** Answer the active question (#401). Quick-response chips route here so
+   *  tapping Yes/No on a 2-option permission sends `sendAnswer` not the
+   *  literal "y"/"n" via `sendInput`. Required when `question` is set
+   *  with options (the chips are visible). */
+  readonly onAnswer?: (answer: string) => void;
   readonly onCancel?: () => void;
   readonly disabled?: boolean;
   readonly placeholder?: string;
@@ -72,6 +77,7 @@ function QuickResponse({
 
 export function InputArea({
   onSend,
+  onAnswer,
   onCancel,
   disabled = false,
   placeholder = 'Type a message...',
@@ -202,9 +208,14 @@ export function InputArea({
     }
   };
 
-  // Handle quick response
+  // Quick-response chips for an active question. Route through onAnswer so
+  // a tap on Yes/No/option-N is a real `sendAnswer`, not the literal value
+  // sent as a regular user input (#401 / #402 review). When onAnswer is
+  // not provided (e.g. consumer hasn't migrated yet), fall back to onSend
+  // to preserve the prior behavior; this branch is only reachable when the
+  // chips are rendered, which itself requires `question` to be set.
   const handleQuickResponse = (response: string) => {
-    onSend(response);
+    (onAnswer ?? onSend)(response);
   };
 
   // Determine if we should show quick responses

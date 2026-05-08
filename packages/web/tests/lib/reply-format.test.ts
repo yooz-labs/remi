@@ -3,7 +3,15 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { REPLY_PREVIEW_LENGTH, formatReplyMessage, previewText } from '../../src/lib/reply-format';
+import type { UUID } from '@remi/shared';
+import {
+  MAX_QUOTED_BYTES,
+  REPLY_PREVIEW_LENGTH,
+  formatReplyMessage,
+  previewText,
+} from '../../src/lib/reply-format';
+
+const ID = 'm-1' as UUID;
 
 describe('previewText', () => {
   test('returns the input verbatim when within the preview length', () => {
@@ -39,31 +47,51 @@ describe('previewText', () => {
 });
 
 describe('formatReplyMessage', () => {
-  test('wraps the quoted content in a markdown blockquote and appends user text', () => {
-    const result = formatReplyMessage(
-      { messageId: 'm-1', content: 'Refactor the authentication module' },
-      'On it.',
-    );
-    expect(result).toBe('> Refactor the authentication module\n\nOn it.');
+  test('wraps the full quoted content in a markdown blockquote (#402 review)', () => {
+    // Wire payload is the FULL content, not the 50-char preview, so the
+    // agent receives the complete reference, not an excerpt.
+    const long = 'a'.repeat(REPLY_PREVIEW_LENGTH + 20);
+    const result = formatReplyMessage({ messageId: ID, content: long }, 'reply');
+    expect(result).toBe(`> ${long}\n\nreply`);
+    expect(result).not.toContain('…');
   });
 
-  test('uses the truncated preview when content is long', () => {
-    const long = 'a'.repeat(REPLY_PREVIEW_LENGTH + 20);
-    const result = formatReplyMessage({ messageId: 'm-1', content: long }, 'reply');
-    expect(result.startsWith(`> ${'a'.repeat(REPLY_PREVIEW_LENGTH)}…`)).toBe(true);
-    expect(result.endsWith('reply')).toBe(true);
+  test('multi-line quoted content prefixes each line with ">" (#402 review)', () => {
+    const result = formatReplyMessage(
+      { messageId: ID, content: 'line one\nline two\nline three' },
+      'thanks',
+    );
+    expect(result).toBe('> line one\n> line two\n> line three\n\nthanks');
+  });
+
+  test('preserves blank lines inside the quoted content', () => {
+    const result = formatReplyMessage(
+      { messageId: ID, content: 'paragraph one\n\nparagraph two' },
+      'reply',
+    );
+    expect(result).toBe('> paragraph one\n> \n> paragraph two\n\nreply');
   });
 
   test('preserves multi-line user text verbatim', () => {
     const result = formatReplyMessage(
-      { messageId: 'm-1', content: 'short' },
+      { messageId: ID, content: 'short' },
       'line one\n\nline three\n  indented',
     );
     expect(result).toBe('> short\n\nline one\n\nline three\n  indented');
   });
 
-  test('handles empty user text without trailing whitespace', () => {
-    const result = formatReplyMessage({ messageId: 'm-1', content: 'context' }, '');
+  test('handles empty user text without adding stray content', () => {
+    const result = formatReplyMessage({ messageId: ID, content: 'context' }, '');
     expect(result).toBe('> context\n\n');
+  });
+
+  test('truncates content over MAX_QUOTED_BYTES with an ellipsis', () => {
+    const huge = 'x'.repeat(MAX_QUOTED_BYTES + 100);
+    const result = formatReplyMessage({ messageId: ID, content: huge }, 'reply');
+    // Quoted line is "> {chars}" — the chars portion ends in an ellipsis.
+    expect(result.startsWith('> ')).toBe(true);
+    expect(result).toContain('…');
+    // Reply text is preserved verbatim after the blockquote.
+    expect(result.endsWith('\n\nreply')).toBe(true);
   });
 });

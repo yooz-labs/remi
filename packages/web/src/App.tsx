@@ -154,6 +154,11 @@ function App() {
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
+  // Mirror replyContexts in a ref so handleSend can read the active
+  // session's reply context without taking a dep on the whole Map (#402
+  // review). Without this, every reply set/clear in any session would
+  // re-create handleSend and bust InputArea memoization.
+  const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
@@ -784,6 +789,10 @@ function App() {
     messagesRef.current = messages;
   }, [messages]);
 
+  useEffect(() => {
+    replyContextsRef.current = replyContexts;
+  }, [replyContexts]);
+
   // Connection manager: manages N simultaneous WebSocket connections
   const {
     connections,
@@ -1209,7 +1218,7 @@ function App() {
         return;
       }
 
-      const reply = replyContexts.get(activeSessionId);
+      const reply = replyContextsRef.current.get(activeSessionId);
       const wireContent = reply ? formatReplyMessage(reply, content) : content;
 
       const newMessage: UIMessage = {
@@ -1256,7 +1265,7 @@ function App() {
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, getActiveConnectionId, sendInput, replyContexts],
+    [activeSessionId, getActiveConnectionId, sendInput],
   );
 
   // Set the reply context for the current session: long-press on a
@@ -1344,6 +1353,7 @@ function App() {
     setMessages([]);
     setActiveSessionId(null);
     setQuestions(new Map());
+    setReplyContexts(new Map());
     try {
       localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
     } catch (err) {

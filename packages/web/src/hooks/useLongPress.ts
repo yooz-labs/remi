@@ -6,10 +6,17 @@
  * moving past `moveTolerancePx`. Any pointer up / cancel / leave
  * before the timer fires aborts cleanly.
  *
- * Pointermove guard uses a tolerance instead of cancel-on-any-move
- * so a tiny finger jitter does not break the gesture on touch
- * devices, which was the most common false-cancel in iMessage-style
- * implementations.
+ * Pointer events (not touch events) unify mouse + touch + Apple
+ * Pencil and avoid the iOS double-fire of touchstart + mousedown.
+ *
+ * Move tolerance instead of cancel-on-any-move keeps tiny finger
+ * jitter from breaking the gesture on touch devices, which is the
+ * most common false-cancel in iMessage-style implementations.
+ *
+ * Selectable-content skip (#402 review): the hook ignores presses
+ * whose target sits inside a `<code>`, `<pre>`, or `[contenteditable]`
+ * ancestor so iOS text-selection long-press inside a code block does
+ * not accidentally trigger reply mode.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -30,6 +37,12 @@ export interface LongPressHandlers {
   readonly onPointerCancel: () => void;
   readonly onPointerLeave: () => void;
   readonly onPointerMove: (event: PointerEvent<HTMLElement>) => void;
+}
+
+/** Skip the press when the target sits inside selectable / editable content. */
+function isInSelectableContent(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest('code, pre, [contenteditable], [contenteditable="true"]') !== null;
 }
 
 export function useLongPress(
@@ -53,6 +66,11 @@ export function useLongPress(
 
   const onPointerDown = useCallback(
     (event: PointerEvent<HTMLElement>) => {
+      // Mouse: only primary button. Right-click / barrel-button must not
+      // trigger reply mode (would surprise desktop users).
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      // Selectable content: defer to the browser's text-selection gesture.
+      if (isInSelectableContent(event.target)) return;
       cancel();
       startCoords.current = { x: event.clientX, y: event.clientY };
       timer.current = setTimeout(() => {

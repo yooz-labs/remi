@@ -333,8 +333,12 @@ export function MessageBubble({
           message.isStreaming && 'animate-pulse',
           // Editing indicator
           message.isEditing && 'border-[var(--color-primary)] border-dashed',
-          // Long-press affordance hint on touch devices
-          isReplyable && 'select-none touch-manipulation',
+          // Long-press affordance hint on touch devices only.
+          // `select-none` would break copy-paste on desktop; the
+          // `pointer-coarse:` variant scopes the rule to touch input
+          // (Tailwind's `coarse` media query). `touch-manipulation`
+          // suppresses iOS's tap-delay regardless of pointer type.
+          isReplyable && 'pointer-coarse:select-none touch-manipulation',
         )}
       >
         {/* Sender label in enhanced mode */}

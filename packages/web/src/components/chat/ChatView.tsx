@@ -28,8 +28,9 @@ interface ChatViewProps {
   readonly onSend: (message: string) => void;
   /** Answer the active question. Routes through sendAnswer; decoupled from
    *  onSend so the bottom InputArea no longer hijacks input when a question
-   *  is pending (#401). When omitted, falls back to onSend for back-compat. */
-  readonly onAnswer?: (answer: string) => void;
+   *  is pending (#401). Required: a missing handler would silently route
+   *  answers through onSend and re-create the bug. */
+  readonly onAnswer: (answer: string) => void;
   /** Long-press on a message bubble fires this with the message; consumer
    *  records it as the active reply context for the session (#401). */
   readonly onReply?: (message: UIMessage) => void;
@@ -76,7 +77,6 @@ export function ChatView({
   showTimestamps = true,
   className,
 }: ChatViewProps) {
-  const answerHandler = onAnswer ?? onSend;
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
   const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
@@ -127,12 +127,13 @@ export function ChatView({
       {/* Question card in chat mode */}
       {(showQuestionCard || showAnsweredCard) && question && (
         <div className="border-t border-[var(--color-border)] px-3 py-2">
-          <QuestionCard question={question} onAnswer={answerHandler} />
+          <QuestionCard question={question} onAnswer={onAnswer} />
         </div>
       )}
 
       <InputArea
         onSend={onSend}
+        onAnswer={onAnswer}
         onCancel={onCancel}
         question={inputQuestion}
         isAgentBusy={isAgentBusy}
