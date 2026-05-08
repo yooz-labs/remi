@@ -28,6 +28,27 @@ function authInfoServer() {
   });
 }
 
+/**
+ * Bind a server adjacent to `anchorPort`. Walks +1, +2, ... until it finds
+ * a free port (most attempts succeed in 1–3 tries). Used by tests that need
+ * a tight scan range; CI runners allocate random ports thousands apart, so
+ * we cannot rely on `Bun.serve({ port: 0 })` placing two servers near each
+ * other. Returns the bound server.
+ */
+function bindNear(
+  anchorPort: number,
+  fetch: (req: Request) => Response | Promise<Response>,
+): { port: number; stop(): void } {
+  for (let offset = 1; offset < 50; offset++) {
+    try {
+      return Bun.serve({ port: anchorPort + offset, fetch });
+    } catch {
+      // Port in use; try next.
+    }
+  }
+  throw new Error(`bindNear: could not bind any port in [${anchorPort + 1}, ${anchorPort + 49}]`);
+}
+
 describe('parseHostInput', () => {
   test('plain hostname has no explicit port', () => {
     expect(parseHostInput('localhost')).toEqual({
@@ -166,14 +187,21 @@ describe('discoverDaemonPort', () => {
   });
 
   test('returns one of the responding ports when multiple daemons answer', async () => {
-    // Two siblings at base and base+1; whoever wins the race is fine.
+    // Two adjacent siblings; whoever wins the race is fine.
     const a = authInfoServer();
-    const b = authInfoServer();
+    const b = bindNear(a.port, (req) => {
+      const u = new URL(req.url);
+      if (u.pathname === '/auth-info') {
+        return new Response(JSON.stringify({ authRequired: false, fingerprint: null }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    });
     try {
-      const basePort = Math.min(a.port, b.port);
       const found = await discoverDaemonPort('127.0.0.1', {
-        basePort,
-        portRange: Math.abs(a.port - b.port) + 2,
+        basePort: a.port,
+        portRange: b.port - a.port + 1,
         timeoutMs: 800,
       });
       expect([a.port, b.port]).toContain(found);
@@ -228,40 +256,34 @@ describe('discoverDaemonPort', () => {
   test('aborts loser fetches when one port wins the race', async () => {
     // Track whether the slow server's request handler observed an abort.
     // If `winner.abort()` does not propagate through the per-probe
-    // controller, the slow handler runs to completion and the flag stays
-    // false, even if `discoverDaemonPort` returned the fast port.
+    // controller, the handler hangs forever (no setTimeout success path)
+    // and `slowAborted` stays false even though the fast port wins.
     let slowAborted = false;
-    const slow = Bun.serve({
-      port: 0,
-      async fetch(req) {
-        await new Promise<void>((resolve) => {
-          if (req.signal.aborted) {
+    const fast = authInfoServer();
+    const slow = bindNear(fast.port, async (req) => {
+      await new Promise<void>((resolve) => {
+        if (req.signal.aborted) {
+          slowAborted = true;
+          resolve();
+          return;
+        }
+        req.signal.addEventListener(
+          'abort',
+          () => {
             slowAborted = true;
             resolve();
-            return;
-          }
-          req.signal.addEventListener(
-            'abort',
-            () => {
-              slowAborted = true;
-              resolve();
-            },
-            { once: true },
-          );
-          setTimeout(resolve, 1500);
-        });
-        if (req.signal.aborted) return new Response('aborted', { status: 499 });
-        return new Response(JSON.stringify({ authRequired: false, fingerprint: null }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      },
+          },
+          { once: true },
+        );
+      });
+      // The abort fired; the client already saw AbortError on its fetch
+      // and will not read this response.
+      return new Response('aborted', { status: 499 });
     });
-    const fast = authInfoServer();
     try {
-      const basePort = Math.min(slow.port, fast.port);
       const found = await discoverDaemonPort('127.0.0.1', {
-        basePort,
-        portRange: Math.abs(slow.port - fast.port) + 2,
+        basePort: fast.port,
+        portRange: slow.port - fast.port + 1,
         timeoutMs: 2000,
       });
       expect(found).toBe(fast.port);
