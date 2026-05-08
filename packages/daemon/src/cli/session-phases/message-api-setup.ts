@@ -24,6 +24,7 @@ import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } fro
 import type { MessageAPIEvents } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
 import { sendPushTrigger } from '../../notifications/push-client.ts';
+import { PushDedup } from '../../notifications/push-dedup.ts';
 import type { SessionRegistry } from '../../session/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { DeviceTokenEntry } from '../handlers/trivial-events.ts';
@@ -90,6 +91,12 @@ export function createMessageApiForSession(
     sessionRegistry.recordOutgoingMessage(recordId, message);
   };
 
+  // Per-session push-dedup baseline. PTY + Hook double-emit one prompt
+  // with different ids; without this, the user gets two lock-screen
+  // notifications per prompt (#409). Reset whenever status leaves
+  // 'waiting' so a fresh prompt cycle starts with a clean baseline.
+  const pushDedup = new PushDedup();
+
   const callbacks: MessageAPIEvents = {
     onStructuredMessage: (structured) => {
       try {
@@ -126,6 +133,13 @@ export function createMessageApiForSession(
       const hasActiveClient =
         sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
       if (deviceTokens.size > 0 && !hasActiveClient) {
+        // Push-dedup gate (#409): suppress the PTY/Hook double-emission
+        // for one prompt cycle. Mirrors the client's richer-wins guard
+        // so phone and in-app converge on the same option set.
+        if (!pushDedup.shouldPush(question)) {
+          log(`Push suppressed by dedup for session ${questionSessionId}`);
+          return;
+        }
         const session = sessionRegistry.getSession(sessionId);
         const sessionName = session?.name || 'Agent';
         const cfg = pushConfig();
@@ -149,6 +163,13 @@ export function createMessageApiForSession(
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);
+      // Reset the push-dedup baseline whenever Claude moves past the
+      // 'waiting' state — same lifecycle as QuestionDedup so a new
+      // prompt cycle starts fresh and is not silently absorbed by a
+      // stale prior push (#409).
+      if (status !== 'waiting') {
+        pushDedup.reset();
+      }
       const msg: ProtocolMessage = {
         type: 'session_update',
         id: generateId(),
