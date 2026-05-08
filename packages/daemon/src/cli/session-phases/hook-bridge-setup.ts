@@ -506,7 +506,10 @@ export function setupHookBridge(
     // qualifying hook event for our session resolves it. If the timeout
     // fires first, the inject is treated as silently lost -- the dedup
     // mark is cleared and we escalate so the user still gets a question.
-    const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
+    // Value is a 1-based numeric option index serialised as a string. Most
+    // permissions only need '1' (approve) or '3' (deny); multi-choice picks
+    // can land any index in the prompt's option range (#399).
+    const inject = async (value: string, reason: string): Promise<boolean> => {
       let ack: PendingAck | null = null;
       try {
         const session = sessionRegistry.getSession(sessionId);
@@ -577,8 +580,19 @@ export function setupHookBridge(
       // Notification fallback usable.
       hookBridge.markPermissionHandled();
       const aaService = autoApproveService;
+      // Pass the raw suggestions array; AutoApproveService does its own
+      // strict-string filtering before feeding the LLM. We forward the
+      // raw shape (rather than coercing) so the multi-choice classifier
+      // can see "non-string entry" and route through escalate instead
+      // of crashing on a future Claude Code permission_suggestions
+      // schema change.
       aaService
-        .evaluate(input.tool_name, input.tool_input, sessionTag)
+        .evaluate(
+          input.tool_name,
+          input.tool_input,
+          sessionTag,
+          input.permission_suggestions as readonly unknown[] | undefined,
+        )
         .then(async (result) => {
           if (result.decision === 'cancelled') {
             // User already advanced past the prompt (terminal answer or
@@ -596,6 +610,16 @@ export function setupHookBridge(
           }
           if (result.decision === 'deny') {
             if (!(await inject('3', 'denied'))) escalateToUser();
+            return;
+          }
+          if (result.decision === 'pick' && result.pickIndex !== undefined) {
+            // Multi-choice pick (#399): inject the 1-based index Claude Code
+            // expects on the terminal. parseMultiChoiceDecision already
+            // validated the index against options length, so out-of-range
+            // values cannot reach this branch.
+            if (!(await inject(String(result.pickIndex), `multichoice-pick-${result.pickIndex}`))) {
+              escalateToUser();
+            }
             return;
           }
           // escalate: in a subagent context, default-deny to avoid hanging
