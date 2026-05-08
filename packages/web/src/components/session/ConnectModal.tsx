@@ -9,6 +9,13 @@ import { useKeyboard } from '@/hooks/useKeyboard';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { isIdentityEncrypted } from '@/lib/identity-client';
 import { keyboardBackdropStyle } from '@/lib/keyboard-style';
+import {
+  DEFAULT_BASE_PORT,
+  DEFAULT_PORT_RANGE,
+  buildWsUrl,
+  discoverDaemonPort,
+  parseHostInput,
+} from '@/lib/port-discovery';
 import type { ConnectionStatus } from '@/types';
 import { clsx } from 'clsx';
 import { AlertCircle, CheckCircle2, Globe, Key, Loader2, Monitor, Shield, X } from 'lucide-react';
@@ -35,35 +42,7 @@ interface ConnectModalProps {
 
 type ConnectionMode = 'local' | 'remote';
 
-const DEFAULT_PORT = 18765;
 const LOCALSTORAGE_HOST_KEY = 'remi-last-host';
-
-/** Build WebSocket URL from host and optional port */
-function buildWsUrl(host: string): string {
-  const trimmed = host.trim();
-  // If user entered a full ws:// URL, use it as-is (backward compat)
-  if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) {
-    return trimmed;
-  }
-  // IPv6 addresses contain multiple colons; don't split on port
-  const hasMultipleColons = (trimmed.match(/:/g) || []).length > 1;
-  if (hasMultipleColons) {
-    // Treat as IPv6 hostname without port
-    const hostname = trimmed.startsWith('[') ? trimmed : `[${trimmed}]`;
-    return `ws://${hostname}:${DEFAULT_PORT}/ws`;
-  }
-  // Extract port if provided (e.g., "192.168.1.5:18770")
-  const parts = trimmed.split(':');
-  const hostname = parts[0];
-  let port = DEFAULT_PORT;
-  if (parts.length > 1 && parts[1]) {
-    const parsed = Number.parseInt(parts[1], 10);
-    if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= 65535) {
-      port = parsed;
-    }
-  }
-  return `ws://${hostname}:${port}/ws`;
-}
 
 /** Code input with auto-formatting */
 function CodeInput({
@@ -255,6 +234,15 @@ export function ConnectModal({
     fingerprint: string | null;
   } | null>(null);
   const [isProbing, setIsProbing] = useState(false);
+  // Active when the user typed only a hostname and we're scanning the
+  // daemon port range to find a responder (#393). Distinct from `isProbing`
+  // (the auth pre-flight probe) so the UI can surface a different message.
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  // Cancels an in-flight port scan when the modal closes or the component
+  // unmounts; without this, 20 fetches keep racing for ~1.5s with nowhere
+  // to deliver their results.
+  const scanAbortRef = useRef<AbortController | null>(null);
 
   // Reset on close
   useEffect(() => {
@@ -263,8 +251,21 @@ export function ConnectModal({
       setHost(localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost');
       setPreflightPending(null);
       setIsProbing(false);
+      setIsScanning(false);
+      setScanError(null);
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
     }
   }, [isOpen]);
+
+  // Cancel any in-flight scan on unmount.
+  useEffect(
+    () => () => {
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
+    },
+    [],
+  );
 
   // Auto-focus host input when modal opens
   useEffect(() => {
@@ -284,8 +285,7 @@ export function ConnectModal({
   // pre-flight probe surfaced auth required up-front.
   const showPassphraseView =
     (needsPassphrase || preflightPending != null) && onPassphraseSubmit != null;
-  const passphraseFingerprint =
-    serverFingerprint ?? preflightPending?.fingerprint ?? null;
+  const passphraseFingerprint = serverFingerprint ?? preflightPending?.fingerprint ?? null;
 
   if (showPassphraseView && onPassphraseSubmit) {
     return (
@@ -332,8 +332,49 @@ export function ConnectModal({
 
   const handleConnect = async () => {
     if (mode === 'local') {
-      const wsUrl = buildWsUrl(host);
+      setScanError(null);
+      const parsed = parseHostInput(host);
       localStorage.setItem(LOCALSTORAGE_HOST_KEY, host.trim());
+
+      // Resolve a concrete port. If the user typed only a hostname (no
+      // explicit port), scan the daemon range so we still find a sibling
+      // when 18765 itself is empty (#393). User-supplied ports always win.
+      let wsUrl: string;
+      if (parsed.kind === 'wsurl') {
+        wsUrl = parsed.url;
+      } else if (parsed.explicitPort != null) {
+        wsUrl = buildWsUrl(parsed, parsed.explicitPort);
+      } else {
+        if (!parsed.hostname) {
+          setScanError('Hostname is required');
+          return;
+        }
+        // New controller per scan; aborting any prior in-flight scan
+        // prevents a slow first attempt from completing AFTER the user
+        // started a second one with a different hostname.
+        scanAbortRef.current?.abort();
+        const controller = new AbortController();
+        scanAbortRef.current = controller;
+        setIsScanning(true);
+        let discovered: number | null = null;
+        try {
+          discovered = await discoverDaemonPort(parsed.hostname, {
+            signal: controller.signal,
+          });
+        } finally {
+          setIsScanning(false);
+          if (scanAbortRef.current === controller) scanAbortRef.current = null;
+        }
+        if (controller.signal.aborted) return;
+        if (discovered === null) {
+          const last = DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1;
+          setScanError(
+            `No remi daemon found on ${parsed.hostname}:${DEFAULT_BASE_PORT}–${last}. Is the daemon running? You can also try host:port directly.`,
+          );
+          return;
+        }
+        wsUrl = buildWsUrl(parsed, discovered);
+      }
 
       // Pre-flight probe (#257). When the local identity is encrypted and
       // the user hasn't already unlocked it this session, ask the daemon
@@ -368,7 +409,7 @@ export function ConnectModal({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && canConnect && !isConnecting && !isProbing) {
+    if (e.key === 'Enter' && canConnect && !isConnecting && !isProbing && !isScanning) {
       e.preventDefault();
       void handleConnect();
     }
@@ -445,7 +486,12 @@ export function ConnectModal({
                   ref={hostInputRef}
                   type="text"
                   value={host}
-                  onChange={(e) => setHost(e.target.value)}
+                  onChange={(e) => {
+                    setHost(e.target.value);
+                    // Stale "no daemon found" banner would otherwise
+                    // stick around while the user is editing the input.
+                    if (scanError) setScanError(null);
+                  }}
                   onKeyDown={handleKeyDown}
                   disabled={isConnecting}
                   placeholder="localhost"
@@ -493,17 +539,28 @@ export function ConnectModal({
           )}
 
           {/* Status/Error */}
-          {(isConnecting || isAuthenticating || isConnected || error) && (
+          {(isScanning ||
+            isConnecting ||
+            isAuthenticating ||
+            isConnected ||
+            error ||
+            scanError) && (
             <div
               className={clsx(
                 'mt-4 flex items-center gap-2 rounded-lg p-3',
-                error && 'bg-[var(--color-error)]/10 text-[var(--color-error)]',
-                (isConnecting || isAuthenticating) &&
+                (error || scanError) && 'bg-[var(--color-error)]/10 text-[var(--color-error)]',
+                (isScanning || isConnecting || isAuthenticating) &&
                   'bg-[var(--color-warning)]/10 text-[var(--color-warning)]',
                 isConnected && 'bg-[var(--color-success)]/10 text-[var(--color-success)]',
               )}
             >
-              {(isConnecting || isAuthenticating) && (
+              {isScanning && (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  <span className="text-sm">Searching for daemon...</span>
+                </>
+              )}
+              {!isScanning && (isConnecting || isAuthenticating) && (
                 <>
                   <Loader2 className="size-4 animate-spin" />
                   <span className="text-sm">
@@ -517,10 +574,10 @@ export function ConnectModal({
                   <span className="text-sm">Connected</span>
                 </>
               )}
-              {error && (
+              {(error || scanError) && (
                 <>
                   <AlertCircle className="size-4" />
-                  <span className="text-sm">{error}</span>
+                  <span className="text-sm">{error ?? scanError}</span>
                 </>
               )}
             </div>
@@ -540,25 +597,37 @@ export function ConnectModal({
               void handleConnect();
             }}
             disabled={
-              !canConnect || isConnecting || isAuthenticating || isConnected || isProbing
+              !canConnect ||
+              isConnecting ||
+              isAuthenticating ||
+              isConnected ||
+              isProbing ||
+              isScanning
             }
             className={clsx(
               'flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-white transition-colors',
-              canConnect && !isConnecting && !isAuthenticating && !isConnected && !isProbing
+              canConnect &&
+                !isConnecting &&
+                !isAuthenticating &&
+                !isConnected &&
+                !isProbing &&
+                !isScanning
                 ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)]'
                 : 'cursor-not-allowed bg-[var(--color-primary)]/50',
             )}
           >
-            {isConnecting || isAuthenticating || isProbing ? (
+            {isConnecting || isAuthenticating || isProbing || isScanning ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Monitor className="size-4" />
             )}
-            {isProbing
-              ? 'Checking...'
-              : isConnecting || isAuthenticating
-                ? 'Discovering...'
-                : 'Connect'}
+            {isScanning
+              ? 'Scanning...'
+              : isProbing
+                ? 'Checking...'
+                : isConnecting || isAuthenticating
+                  ? 'Discovering...'
+                  : 'Connect'}
           </button>
         </div>
       </div>
