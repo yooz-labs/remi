@@ -22,17 +22,27 @@ export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'pick' | 'ca
  * produced the verdict (or the configured model for pattern-matched
  * decisions, since downstream telemetry treats them uniformly).
  *
- * `pickIndex` is set ONLY when `decision === 'pick'` and is a 1-based
- * index into the permission_suggestions array. Callers must validate it
- * against the actual options length before injecting.
+ * Discriminated by `decision` so the `pick`-only `pickIndex` field is
+ * load-bearing in TypeScript: a `pick` result MUST carry `pickIndex`
+ * and the approve/deny/escalate variants cannot accidentally set it.
  */
-export interface AutoApproveDecisionResult {
-  readonly decision: 'approve' | 'deny' | 'escalate' | 'pick';
-  readonly pickIndex?: number;
-  readonly reasoning: string;
-  readonly durationMs: number;
-  readonly model: string;
-}
+export type AutoApproveDecisionResult =
+  | {
+      readonly decision: 'approve' | 'deny' | 'escalate';
+      readonly reasoning: string;
+      readonly durationMs: number;
+      readonly model: string;
+    }
+  | {
+      readonly decision: 'pick';
+      /** 1-based index into the permission_suggestions array.
+       *  Validated by `parseMultiChoiceDecision` against the actual
+       *  options length before this result is constructed. */
+      readonly pickIndex: number;
+      readonly reasoning: string;
+      readonly durationMs: number;
+      readonly model: string;
+    };
 
 /**
  * Control-plane outcome: cancel() aborted the in-flight call, no decision

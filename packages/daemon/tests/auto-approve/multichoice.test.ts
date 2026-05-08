@@ -11,40 +11,72 @@ import {
 
 describe('isMultiChoicePermission', () => {
   test('returns false for null/undefined/empty (default 3-set substitutes)', () => {
-    expect(isMultiChoicePermission(undefined)).toBe(false);
-    expect(isMultiChoicePermission(null)).toBe(false);
-    expect(isMultiChoicePermission([])).toBe(false);
+    expect(isMultiChoicePermission('Bash', undefined)).toBe(false);
+    expect(isMultiChoicePermission('Bash', null)).toBe(false);
+    expect(isMultiChoicePermission('Bash', [])).toBe(false);
   });
 
   test('returns false for the standard Yes/Yes-always/No 3-set', () => {
-    expect(isMultiChoicePermission(['Yes', 'Yes, always', 'No'])).toBe(false);
-    // Case-insensitive + whitespace tolerated.
-    expect(isMultiChoicePermission(['  YES  ', 'yes, ALWAYS', ' no '])).toBe(false);
+    expect(isMultiChoicePermission('Bash', ['Yes', 'Yes, always', 'No'])).toBe(false);
+  });
+
+  test("returns false for Edit's real ['Yes','Always','No'] shape (#400 review)", () => {
+    // Edit/Write/MultiEdit's actual permission_suggestions; "Always" is a
+    // yes-shaped synonym (matches isYes heuristic at hook-event-bridge.ts:240).
+    expect(isMultiChoicePermission('Edit', ['Yes', 'Always', 'No'])).toBe(false);
+    expect(isMultiChoicePermission('Write', ['Yes', 'Always', 'No'])).toBe(false);
+    expect(isMultiChoicePermission('MultiEdit', ['Yes', 'Always', 'No'])).toBe(false);
+  });
+
+  test('returns false for the Allow/Deny pair', () => {
+    expect(isMultiChoicePermission('Bash', ['Allow', 'Deny'])).toBe(false);
   });
 
   test('returns false for the standard Yes/No pair', () => {
-    expect(isMultiChoicePermission(['Yes', 'No'])).toBe(false);
+    expect(isMultiChoicePermission('Bash', ['Yes', 'No'])).toBe(false);
+    // Whitespace + case tolerated.
+    expect(isMultiChoicePermission('Bash', [' YES ', ' no '])).toBe(false);
   });
 
-  test('returns true for non-standard 3-option sets (ExitPlanMode-style)', () => {
+  test('returns false for sentence labels that still start with yes/no', () => {
+    // ExitPlanMode-style labels that all start with "Yes"/"No": label-shape
+    // alone says binary. The tool-name list is what makes ExitPlanMode
+    // multi-choice in the next test.
     expect(
-      isMultiChoicePermission([
+      isMultiChoicePermission('Bash', [
         'Yes',
         "Yes, and don't ask again this session",
         'No, and tell Claude what to do differently',
       ]),
-    ).toBe(true);
-    expect(
-      isMultiChoicePermission(['Approve plan', 'Approve and stay in plan mode', 'Reject plan']),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  test('ExitPlanMode is always multi-choice regardless of label shape', () => {
+    expect(isMultiChoicePermission('ExitPlanMode', ['Yes', 'No'])).toBe(true);
+    expect(isMultiChoicePermission('ExitPlanMode', ['Yes', 'Always', 'No'])).toBe(true);
+    expect(isMultiChoicePermission('ExitPlanMode', undefined)).toBe(true);
   });
 
   test('returns true for >3 option lists', () => {
-    expect(isMultiChoicePermission(['Refactor', 'Patch', 'Rewrite', 'Skip'])).toBe(true);
+    expect(isMultiChoicePermission('CustomTool', ['Refactor', 'Patch', 'Rewrite', 'Skip'])).toBe(
+      true,
+    );
   });
 
-  test('returns true for non-Yes-No 2-option pairs', () => {
-    expect(isMultiChoicePermission(['Save', 'Discard'])).toBe(true);
+  test('returns true for non-binary 2-option pairs', () => {
+    expect(isMultiChoicePermission('CustomTool', ['Save', 'Discard'])).toBe(true);
+  });
+
+  test('returns true for 3-option list with non-binary middle label', () => {
+    expect(isMultiChoicePermission('CustomTool', ['Yes', 'Maybe later', 'No'])).toBe(true);
+  });
+
+  test('returns true for non-string entries (defensive against schema drift)', () => {
+    // permission_suggestions with garbage entries must NOT crash on
+    // .toLowerCase(). Routing to multi-choice is the safe path; the
+    // service does its own strict filter before any LLM call.
+    expect(isMultiChoicePermission('Bash', [null, 'Yes', 'No'] as readonly unknown[])).toBe(true);
+    expect(isMultiChoicePermission('Bash', [{}, 1] as readonly unknown[])).toBe(true);
   });
 });
 
@@ -129,8 +161,18 @@ describe('parseMultiChoiceDecision', () => {
     expect(r.reasoning).toContain('Unparsable');
   });
 
-  test('escalates on unknown decision strings', () => {
+  test('escalates on well-formed JSON with the wrong decision string (#400 review)', () => {
+    // Pre-#400-review behavior labelled this "Unparsable", which is misleading
+    // when triaging logs. The new branch distinguishes the failure modes.
     const r = parseMultiChoiceDecision('{"decision":"approve","reasoning":"x"}', 4);
     expect(r.decision).toBe('escalate');
+    expect(r.reasoning).toContain('Invalid multi-choice decision');
+    expect(r.reasoning).not.toContain('Unparsable');
+  });
+
+  test('escalates on JSON that is not an object', () => {
+    const r = parseMultiChoiceDecision('"just a string"', 4);
+    expect(r.decision).toBe('escalate');
+    expect(r.reasoning).toContain('not a JSON object');
   });
 });

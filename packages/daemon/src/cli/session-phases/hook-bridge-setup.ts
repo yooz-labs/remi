@@ -577,11 +577,19 @@ export function setupHookBridge(
       // Notification fallback usable.
       hookBridge.markPermissionHandled();
       const aaService = autoApproveService;
-      const suggestions = Array.isArray(input.permission_suggestions)
-        ? (input.permission_suggestions as readonly string[])
-        : undefined;
+      // Pass the raw suggestions array; AutoApproveService does its own
+      // strict-string filtering before feeding the LLM. We forward the
+      // raw shape (rather than coercing) so the multi-choice classifier
+      // can see "non-string entry" and route through escalate instead
+      // of crashing on a future Claude Code permission_suggestions
+      // schema change.
       aaService
-        .evaluate(input.tool_name, input.tool_input, sessionTag, suggestions)
+        .evaluate(
+          input.tool_name,
+          input.tool_input,
+          sessionTag,
+          input.permission_suggestions as readonly unknown[] | undefined,
+        )
         .then(async (result) => {
           if (result.decision === 'cancelled') {
             // User already advanced past the prompt (terminal answer or

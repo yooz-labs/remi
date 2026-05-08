@@ -865,3 +865,149 @@ describe('AutoApproveService - multichoice', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Multi-choice review-fix: regression guards (#400 review)
+// ---------------------------------------------------------------------------
+describe('AutoApproveService - multichoice regression guards', () => {
+  test("Edit's real ['Yes','Always','No'] is binary, not multi-choice", async () => {
+    // Without this guard, the exact-label detector misclassified Edit's
+    // real shape as multi-choice and silently escalated every Edit/Write
+    // permission under the default skip mode (#400 review, critical).
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              model: 'fake-model',
+              choices: [{ message: { content: '{"decision":"approve","reasoning":"safe edit"}' } }],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          // multichoice = 'skip' is default; if Edit were classified as
+          // multi-choice it would short-circuit to escalate without
+          // hitting the LLM. We use a real LLM endpoint so the test
+          // FAILS LOUDLY if the classifier regresses.
+          timeout: 5,
+        }),
+        logFn,
+      );
+      const result = await service.evaluate(
+        'Edit',
+        { file_path: '/tmp/x', old_string: 'a', new_string: 'b' },
+        undefined,
+        ['Yes', 'Always', 'No'],
+      );
+      expect(result.decision).toBe('approve');
+      if (result.decision !== 'cancelled') {
+        expect(result.reasoning).not.toContain('multi-choice');
+      }
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('deny pattern still wins on a multi-choice prompt', async () => {
+    const service = new AutoApproveService(
+      makeConfig({
+        base_url: 'http://10.255.255.1',
+        timeout: 60,
+        deny: ['ExitPlanMode'],
+      }),
+      logFn,
+    );
+    const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+      'Approve',
+      'Approve and stay',
+      'Reject',
+    ]);
+    expect(result.decision).toBe('deny');
+    expect(result.reasoning).toContain('deny-matched');
+  });
+
+  test('allow pattern still wins on a multi-choice prompt', async () => {
+    const service = new AutoApproveService(
+      makeConfig({
+        base_url: 'http://10.255.255.1',
+        timeout: 60,
+        allow: ['ExitPlanMode'],
+      }),
+      logFn,
+    );
+    const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+      'Approve',
+      'Approve and stay',
+      'Reject',
+    ]);
+    expect(result.decision).toBe('approve');
+    expect(result.reasoning).toContain('allow-matched');
+  });
+
+  test('skip mode does not call the LLM when multichoice_model is set', async () => {
+    // multichoice_model is consulted only in evaluate mode; skip mode
+    // must short-circuit before any LLM call regardless of model config.
+    let llmCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          llmCalls++;
+          return new Response(
+            JSON.stringify({
+              model: 'should-not-be-called',
+              choices: [{ message: { content: '{"decision":"escalate","reasoning":"x"}' } }],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          multichoice: 'skip',
+          multichoice_model: 'smart-model',
+          timeout: 5,
+        }),
+        logFn,
+      );
+      const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+        'Yes',
+        'No',
+      ]);
+      expect(result.decision).toBe('escalate');
+      expect(llmCalls).toBe(0);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('non-string entries in permission_suggestions do not crash', async () => {
+    const service = new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 60 }),
+      logFn,
+    );
+    const result = await service.evaluate(
+      'CustomTool',
+      { x: 1 },
+      undefined,
+      // biome-ignore lint/suspicious/noExplicitAny: defensive test
+      [null, 'Yes', { weird: true }] as any,
+    );
+    // Routed to multi-choice (skip mode) → escalate without crash.
+    expect(result.decision).toBe('escalate');
+  });
+});

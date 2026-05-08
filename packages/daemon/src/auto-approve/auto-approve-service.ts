@@ -1,8 +1,9 @@
 /**
  * Core auto-approve service.
  *
- * Evaluates PermissionRequest hook events using an LLM (via OpenAI-compatible API).
- * Returns one of three decisions: approve, deny, or escalate.
+ * Evaluates PermissionRequest hook events using an LLM (via OpenAI-compatible
+ * API). Returns one of: approve, deny, escalate, pick (multi-choice), or
+ * cancelled (control plane).
  *
  * Designed to never throw. All errors result in escalation so the user
  * is never blocked by an LLM failure.
@@ -18,29 +19,25 @@ import {
 } from './multichoice.ts';
 import { matchPattern } from './pattern-matcher.ts';
 import { buildPrompt } from './prompt-builder.ts';
-import type {
-  AutoApproveConfig,
-  AutoApproveDecision,
-  AutoApproveResult,
-  MultiChoiceMode,
-} from './types.ts';
+import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
 
-const VALID_DECISIONS = new Set<AutoApproveDecision>(['approve', 'deny', 'escalate']);
+type BinaryDecision = 'approve' | 'deny' | 'escalate';
+const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 /**
- * Parse an LLM response string into a decision.
+ * Parse an LLM response string into a binary approve/deny/escalate decision.
  * Tries JSON first. If JSON fails, escalates (no guessing from substring matches).
  * Exported for unit testing.
  */
-export function parseDecision(raw: string): { decision: AutoApproveDecision; reasoning: string } {
+export function parseDecision(raw: string): { decision: BinaryDecision; reasoning: string } {
   let parseErr: unknown = null;
   try {
     const parsed = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null) {
       const decisionStr = String(parsed.decision ?? '').toLowerCase();
       const reasoning = String(parsed.reasoning ?? '');
-      if (VALID_DECISIONS.has(decisionStr as AutoApproveDecision)) {
-        return { decision: decisionStr as AutoApproveDecision, reasoning };
+      if (VALID_DECISIONS.has(decisionStr as BinaryDecision)) {
+        return { decision: decisionStr as BinaryDecision, reasoning };
       }
     }
   } catch (err) {
@@ -110,11 +107,21 @@ export class AutoApproveService {
     toolName: string,
     toolInput: Record<string, unknown>,
     tag?: string,
-    permissionSuggestions?: readonly string[],
+    permissionSuggestions?: readonly unknown[],
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     const model = this.llmConfig.model;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
+
+    // Filter to a clean string array for the multi-choice prompt path
+    // (mirrors the strict check at hook-event-bridge.ts:211-214). Anything
+    // else falls through; isMultiChoicePermission still classifies as
+    // multi-choice but we never feed garbage to .toLowerCase or to the LLM.
+    const cleanSuggestions =
+      Array.isArray(permissionSuggestions) &&
+      permissionSuggestions.every((s) => typeof s === 'string' && s.length > 0)
+        ? (permissionSuggestions as readonly string[])
+        : undefined;
 
     // Entire body wrapped in try/catch so the "never throws" contract holds
     // even if matchPattern or other sync code fails (e.g. malformed config).
@@ -137,14 +144,14 @@ export class AutoApproveService {
         return { decision: 'approve', reasoning, durationMs: 0, model };
       }
 
-      const isMultiChoice = isMultiChoicePermission(permissionSuggestions);
+      const isMultiChoice = isMultiChoicePermission(toolName, permissionSuggestions);
 
       // Multi-choice + skip mode: never call the LLM. The binary approve/
       // deny mapping cannot express "pick option 2 of N", so evaluating
       // would just produce option-1 (approve) for every plan-mode prompt
       // regardless of what the user actually wanted (#399).
       if (isMultiChoice && this.multichoiceMode === 'skip') {
-        const reasoning = `multi-choice prompt (${permissionSuggestions?.length ?? 0} options); auto_approve.multichoice = "skip"`;
+        const reasoning = `multi-choice prompt (tool=${toolName}, ${permissionSuggestions?.length ?? 0} options); auto_approve.multichoice = "skip"`;
         if (this.logDecisions) {
           this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
         }
@@ -182,12 +189,7 @@ export class AutoApproveService {
             ? this.llmConfig
             : { ...this.llmConfig, model: callModel };
         const messages = useMultiChoice
-          ? buildMultiChoicePrompt(
-              toolName,
-              toolInput,
-              permissionSuggestions ?? [],
-              this.instructions,
-            )
+          ? buildMultiChoicePrompt(toolName, toolInput, cleanSuggestions ?? [], this.instructions)
           : buildPrompt(toolName, toolInput, this.instructions);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
@@ -208,7 +210,7 @@ export class AutoApproveService {
           ? (() => {
               const parsedMc = parseMultiChoiceDecision(
                 response.content,
-                permissionSuggestions?.length ?? 0,
+                cleanSuggestions?.length ?? 0,
               );
               if (parsedMc.decision === 'pick') {
                 return {

@@ -2,54 +2,67 @@
  * Multi-choice permission detector and prompt builder (#399).
  *
  * A `PermissionRequest` is "multi-choice" when its `permission_suggestions`
- * cannot be answered by the binary approve/deny path:
+ * cannot be answered by the binary approve/deny path. We classify by:
  *
- * - More than 3 options (e.g. a custom plugin tool with 4+ choices).
- * - Exactly 3 options that are NOT the daemon's standard Yes / Yes-always
- *   / No trio (e.g. ExitPlanMode's "Approve plan" / "Approve and stay in
- *   plan mode" / "Reject plan" or any per-tool variant).
- * - Exactly 2 options that are NOT a clean Yes / No pair (e.g. a tool
- *   asking the user to pick between two non-binary alternatives).
+ * 1. Tool name. `ExitPlanMode` is always multi-choice: the user's intent
+ *    (continue planning, accept plan, accept and stop asking) cannot be
+ *    derived from tool input, so the LLM should never auto-pick.
+ * 2. Option count > 3: a custom plugin tool with 4+ choices cannot be
+ *    expressed in the approve/deny mapping at all.
+ * 3. Label shape: any 2- or 3-option set whose labels are not all
+ *    yes/no-shaped (matching the daemon's existing `isYes`/`isNo`
+ *    heuristic at `hook-event-bridge.ts:240-241`) is multi-choice.
  *
- * Standard 2-option [Yes, No] and standard 3-option [Yes, Yes-always, No]
- * are treated as binary, since approve/deny maps cleanly to option 1 / N.
+ * Edit's real `["Yes", "Always", "No"]` shape is correctly classified as
+ * binary because every label is yes-shaped or no-shaped under the same
+ * heuristic the hook bridge already uses for option metadata.
  */
 
-import { DEFAULT_PERMISSION_LABELS } from '@remi/shared';
 import type { ChatMessage } from './llm-client.ts';
 
-function normalize(label: string): string {
-  return label.toLowerCase().trim();
-}
+/**
+ * Tools that always route through multi-choice handling regardless of
+ * `permission_suggestions` shape. Add tools here when their prompts
+ * encode user-intent the auto-approve LLM cannot infer (planning,
+ * direction, scope decisions).
+ */
+const ALWAYS_MULTI_CHOICE_TOOLS: ReadonlySet<string> = new Set(['ExitPlanMode']);
 
-function isStandardThreeSet(labels: readonly string[]): boolean {
-  if (labels.length !== 3) return false;
-  const expected = DEFAULT_PERMISSION_LABELS.map(normalize);
-  return labels[0] === expected[0] && labels[1] === expected[1] && labels[2] === expected[2];
-}
-
-function isStandardYesNoPair(labels: readonly string[]): boolean {
-  if (labels.length !== 2) return false;
-  return labels[0] === 'yes' && labels[1] === 'no';
+/**
+ * True when a label reads as a yes/no answer, mirroring the heuristic
+ * `hook-event-bridge.ts` uses to set `isYes`/`isNo` flags on options.
+ * Tolerates the `Allow`/`Always`/`Deny`/`Reject` synonyms that real
+ * Claude Code tools emit (Edit's `["Yes", "Always", "No"]` is the
+ * common case).
+ */
+function isBinaryShapedLabel(label: string): boolean {
+  const lower = label.toLowerCase().trim();
+  if (lower.startsWith('yes')) return true;
+  if (lower.startsWith('no')) return true;
+  return lower === 'allow' || lower === 'always' || lower === 'deny' || lower === 'reject';
 }
 
 /**
- * Returns true when `permission_suggestions` represents a multi-choice
- * prompt the binary approve/deny mapping cannot handle.
+ * Returns true when the permission cannot be answered by the binary
+ * approve/deny path. Handles the three cases listed in the module doc.
  *
- * Returns false when suggestions are absent or undefined: that case
- * means "no suggestions, daemon will substitute the default 3-set",
- * which is binary.
+ * `permissionSuggestions` may be undefined (default 3-set substitutes)
+ * or an array. Non-string entries cause the prompt to be classified as
+ * multi-choice so the safe path (escalate or LLM with index validation)
+ * runs instead of crashing on `.toLowerCase()`.
  */
 export function isMultiChoicePermission(
-  permissionSuggestions: readonly string[] | null | undefined,
+  toolName: string,
+  permissionSuggestions: readonly unknown[] | null | undefined,
 ): boolean {
+  if (ALWAYS_MULTI_CHOICE_TOOLS.has(toolName)) return true;
   if (!permissionSuggestions || permissionSuggestions.length === 0) return false;
   if (permissionSuggestions.length > 3) return true;
-  const labels = permissionSuggestions.map(normalize);
-  if (isStandardThreeSet(labels)) return false;
-  if (isStandardYesNoPair(labels)) return false;
-  return true;
+  // 2- or 3-option lists: binary only when every label is yes/no-shaped.
+  // Non-string entries fail the typeof check and route to multi-choice.
+  return !permissionSuggestions.every(
+    (label) => typeof label === 'string' && isBinaryShapedLabel(label),
+  );
 }
 
 const MULTI_CHOICE_SYSTEM_PROMPT = `You are a permission evaluator for Claude Code, an AI coding assistant running inside Remi (a remote monitoring tool).
@@ -97,9 +110,10 @@ export function buildMultiChoicePrompt(
 
 /**
  * Parse a multi-choice LLM response. Returns either a validated pick
- * (1-based index within `optionCount`) or escalate. Out-of-range or
- * malformed responses fall through to escalate so a confused LLM
- * cannot pick option 0 / option 99 / option NaN.
+ * (1-based index within `optionCount`) or escalate. Three failure modes
+ * are distinguished in the reasoning so a future debugger can tell
+ * "LLM returned junk" from "LLM said approve when it should have picked"
+ * from "JSON parse error" without re-running the prompt.
  */
 export function parseMultiChoiceDecision(
   raw: string,
@@ -107,32 +121,46 @@ export function parseMultiChoiceDecision(
 ):
   | { decision: 'pick'; index: number; reasoning: string }
   | { decision: 'escalate'; reasoning: string } {
-  let parseErr: unknown = null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed === 'object' && parsed !== null) {
-      const decisionStr = String(parsed.decision ?? '').toLowerCase();
-      const reasoning = String(parsed.reasoning ?? '');
-      if (decisionStr === 'escalate') {
-        return { decision: 'escalate', reasoning };
-      }
-      if (decisionStr === 'pick') {
-        const idx = Number(parsed.index);
-        if (Number.isInteger(idx) && idx >= 1 && idx <= optionCount) {
-          return { decision: 'pick', index: idx, reasoning };
-        }
-        return {
-          decision: 'escalate',
-          reasoning: `LLM picked out-of-range index ${parsed.index} for ${optionCount} options; ${reasoning}`,
-        };
-      }
-    }
+    parsed = JSON.parse(raw);
   } catch (err) {
-    parseErr = err;
+    const e = err as Error;
+    return {
+      decision: 'escalate',
+      reasoning: `Unparsable multi-choice response (${e.name}: ${e.message}): ${raw.slice(0, 100)}`,
+    };
   }
-  const errHint = parseErr ? ` [${(parseErr as Error).name}: ${(parseErr as Error).message}]` : '';
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    return {
+      decision: 'escalate',
+      reasoning: `Multi-choice response was not a JSON object: ${raw.slice(0, 100)}`,
+    };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const decisionStr = String(obj.decision ?? '').toLowerCase();
+  const reasoning = String(obj.reasoning ?? '');
+
+  if (decisionStr === 'escalate') {
+    return { decision: 'escalate', reasoning };
+  }
+  if (decisionStr === 'pick') {
+    const idx = Number(obj.index);
+    if (Number.isInteger(idx) && idx >= 1 && idx <= optionCount) {
+      return { decision: 'pick', index: idx, reasoning };
+    }
+    return {
+      decision: 'escalate',
+      reasoning: `LLM picked out-of-range index ${obj.index} for ${optionCount} options; ${reasoning}`,
+    };
+  }
+
+  // Well-formed JSON object with the wrong decision string. Distinct from
+  // a JSON parse failure so log triage can tell the two apart.
   return {
     decision: 'escalate',
-    reasoning: `Unparsable multi-choice response: ${raw.slice(0, 100)}${errHint}`,
+    reasoning: `Invalid multi-choice decision "${decisionStr}"; expected "pick" or "escalate"`,
   };
 }
