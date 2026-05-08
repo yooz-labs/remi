@@ -33,6 +33,12 @@ export type {
 
 export { ok, err, isOk, isErr } from './types.ts';
 
+// Permission/question defaults shared by daemon and client (#396)
+export {
+  DEFAULT_PERMISSION_LABELS,
+  QUESTION_DEDUP_WINDOW_MS,
+} from './permission-defaults.ts';
+
 // Protocol
 export type {
   ProtocolMessage,

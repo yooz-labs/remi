@@ -137,11 +137,67 @@ describe('shouldKeepExisting', () => {
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
-  test('handles malformed timestamp by allowing replacement', () => {
+  test('malformed timestamp falls open and allows replacement (fail-closed)', () => {
     const existing = uiq('Plan', fourSentenceOptions, { timestamp: 'not-a-date' });
     const incoming = uiq('Allow Bash', yesYesalwaysNo);
-    // Date.parse returns NaN; freshness check is skipped, so the richer
-    // logic kicks in and keeps the existing one.
+    // A corrupted/legacy timestamp must not pin the UI: the guard
+    // returns false so the new emission renders normally.
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
+  });
+
+  test('keeps an answered question when same id is replayed (#396)', () => {
+    // replay_batch path: phone wakes from background, the daemon re-feeds
+    // earlier question messages. Without the same-id guard, the user is
+    // re-prompted for a question they already answered.
+    const existing = uiq('Which approach?', fourSentenceOptions, {
+      answeredWith: 'Refactor the authentication module',
+    });
+    // Same id as existing — replay of the same wire message.
+    const incoming: UIQuestion = { ...existing, prompt: existing.prompt };
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
+  });
+
+  test('replaces answered question when a different id arrives (new prompt)', () => {
+    const existing = uiq('Which approach?', fourSentenceOptions, {
+      answeredWith: 'Refactor the authentication module',
+    });
+    // Different id; treat as a genuinely new prompt.
+    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
+  });
+
+  test('future-timestamped existing is not defended forever (clock skew clamp)', () => {
+    // Phone clock 60s ahead of daemon clock. Without the clamp, age is
+    // negative and stays under freshnessMs forever, pinning the existing
+    // question. The clamp treats the negative age as zero so the window
+    // applies normally.
+    const future = new Date(2_000_000).toISOString();
+    const existing = uiq('Old plan', fourSentenceOptions, { timestamp: future });
+    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    // 6 seconds after the existing's claimed time => stale, replace.
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(2_006_001) })).toBe(false);
+  });
+
+  test('boundary: exactly freshnessMs ago is treated as stale (>=)', () => {
+    const existing = uiq('Plan', fourSentenceOptions, {
+      timestamp: new Date(1_000_000).toISOString(),
+    });
+    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    // Strict >= boundary: 5000ms exactly is stale, allow replacement.
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_005_000) })).toBe(false);
+  });
+
+  test('default-shape detection is case-insensitive', () => {
+    const existing = uiq('Custom prompt', [
+      { label: 'Yes' },
+      { label: "Yes, and don't ask again this session" },
+      { label: 'No' },
+    ]);
+    const incoming = uiq('Allow Bash: ls', [
+      { label: '  YES  ' },
+      { label: 'yes, ALWAYS' },
+      { label: ' no ' },
+    ]);
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 });

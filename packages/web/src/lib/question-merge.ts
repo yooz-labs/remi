@@ -1,94 +1,141 @@
 /**
- * Client-side richer-wins guard for question rendering (#396).
+ * Client-side richer-wins guard for question rendering (#396; backstory
+ * in #378).
  *
- * The daemon emits questions from two sources for the same prompt cycle:
+ * The daemon emits two questions for the same prompt cycle:
  * `HookEventBridge` (synchronous on `PermissionRequest`, often with the
  * default Yes / Yes-always / No 3-set when `permission_suggestions` is
  * undefined) and the PTY parser (terminal-extracted, frequently richer
- * with full-sentence options for plan-mode prompts and tools that
- * present numbered choices). The two emissions arrive on the wire as
- * separate `question` messages with different ids; the consumer in
- * `App.tsx` keys its question map by sessionId, so the second arrival
- * overwrites the first regardless of richness.
+ * with full-sentence options for plan-mode prompts). The two emissions
+ * arrive on the wire as separate `question` messages with different ids;
+ * the consumer in `App.tsx` keys its question map by sessionId, so the
+ * second arrival otherwise overwrites the first regardless of richness.
  *
- * Daemon-side dedup is the wrong place to fix this: making it more
- * aggressive would silently drop a second legitimate `PermissionRequest`
- * fired in the same waiting status window (e.g. parallel tool calls in
- * one agent turn). The fix lives at the rendering boundary instead:
- * keep the richer pending question on screen and ignore subsequent
- * poorer emissions for the same session within a short window.
+ * The fix lives at the rendering boundary instead of the daemon-side
+ * dedup: keep the richer pending question on screen and ignore poorer
+ * emissions for the same session within the freshness window. Daemon
+ * dedup remains as the safety net for genuinely-distinct prompts that
+ * cross a status transition.
  *
- * Stale-question guard: if the existing question's timestamp is older
- * than the freshness window, allow replacement. A user who left the app
- * yesterday and reconnects today should see the latest prompt, not a
- * cached richer one. Aligned with the daemon's `QuestionDedup` 5 s
- * window so the two layers agree on what counts as "the same prompt
- * instance".
+ * Replay-after-answer guard: if the existing question was already
+ * answered AND the incoming arrival has the same id (a `replay_batch`
+ * re-feed of the same wire message), keep the existing one so the
+ * `answeredWith` state is not silently wiped and the user is not
+ * re-prompted for a question they already resolved.
+ *
+ * Stale guard: if existing was emitted longer ago than the freshness
+ * window, fall back to last-wins so a reconnect after lunch shows the
+ * latest prompt rather than a cached richer one. The window is imported
+ * from `@remi/shared` so daemon and client always agree on what counts
+ * as "the same prompt instance".
  */
 
+import { QUESTION_DEDUP_WINDOW_MS, DEFAULT_PERMISSION_LABELS } from '@remi/shared';
 import type { UIQuestion } from '@/types';
 
-/** How long a pending question is considered fresh enough to defend. */
-export const QUESTION_FRESHNESS_MS = 5000;
+/** Re-export so consumers can mirror the freshness contract. */
+export const QUESTION_FRESHNESS_MS = QUESTION_DEDUP_WINDOW_MS;
+
+export interface ShouldKeepExistingOptions {
+  readonly freshnessMs?: number;
+  readonly now?: () => number;
+}
 
 /**
- * Returns true when the question matches the daemon's hardcoded fallback
- * "Yes / Yes, always / No" 3-option set (literal labels in
- * `DEFAULT_PERMISSION_OPTIONS` at `hook-event-bridge.ts`). Distinct from
- * the daemon-side `looksLikeDefaultPermissionQuestion`, which uses a
- * loose startsWith check to drop PTY re-emissions of the SAME terminal
- * prompt; here we want a strict match so a richer custom 3-set with
- * sentence labels (e.g. Edit's "Yes, and don't ask again this session"
- * and "No, and tell Claude what to do differently") is NOT classified
- * as the poor default.
+ * Detects the daemon's hardcoded fallback labels. Strict literal match
+ * (lowercased + trimmed) against `DEFAULT_PERMISSION_LABELS`; a richer
+ * custom 3-set like Edit's "Yes, and don't ask again this session" /
+ * "No, and tell Claude what to do differently" is intentionally NOT
+ * classified as the bland default.
  */
 function isDefaultThreeSetShape(question: UIQuestion): boolean {
   const opts = question.structuredOptions;
   if (!opts || opts.length !== 3) return false;
   const labels = opts.map((o) => (o.label ?? '').toLowerCase().trim());
-  return labels[0] === 'yes' && labels[1] === 'yes, always' && labels[2] === 'no';
+  const expected = DEFAULT_PERMISSION_LABELS.map((l) => l.toLowerCase());
+  return labels[0] === expected[0] && labels[1] === expected[1] && labels[2] === expected[2];
 }
 
-/** Number of structured options on a question, treating absent as zero. */
 function optionCount(question: UIQuestion): number {
   return question.structuredOptions?.length ?? 0;
 }
 
+type Decision =
+  | 'replay-of-answered'
+  | 'richer-count'
+  | 'richer-shape'
+  | 'answered'
+  | 'stale'
+  | 'malformed-timestamp'
+  | 'incoming-richer-count'
+  | 'incoming-equal-or-poorer';
+
+function logSuppression(decision: Decision, existing: UIQuestion, incoming: UIQuestion): void {
+  console.debug(
+    `[question-merge] ${decision} (existing.id=${existing.id} ${optionCount(existing)}opts, incoming.id=${incoming.id} ${optionCount(incoming)}opts, session=${existing.sessionId})`,
+  );
+}
+
 /**
- * Decide whether to keep an existing pending question instead of replacing
- * it with a newly-arrived one. Returns `true` to keep `existing`.
- *
- * - Already answered: don't keep; treat the incoming as a fresh prompt.
- * - Existing is stale (older than the freshness window): don't keep.
- * - Existing has strictly more options than incoming: keep.
- * - Equal option count, incoming is the default 3-set shape and existing
- *   is not: keep (covers the cross-fingerprint hook overwrite race).
- * - Otherwise: don't keep (let the new question replace).
+ * Decide whether to keep the existing pending question. `true` means the
+ * incoming arrival is dropped at the render boundary; `false` means
+ * replace as usual.
  */
 export function shouldKeepExisting(
   existing: UIQuestion,
   incoming: UIQuestion,
-  options: { freshnessMs?: number; now?: () => number } = {},
+  options: ShouldKeepExistingOptions = {},
 ): boolean {
+  // Replay-after-answer: a `replay_batch` re-feed of the original
+  // question carries the same id. Keep the answered state intact so
+  // the user is not re-prompted for a question they already resolved.
+  if (existing.answeredWith && existing.id === incoming.id) {
+    logSuppression('replay-of-answered', existing, incoming);
+    return true;
+  }
+
+  // Different question id with an answered existing: a genuinely new
+  // prompt is arriving (the answer ack will demote `answeredWith`
+  // shortly). Let the new one through.
   if (existing.answeredWith) return false;
 
   const freshnessMs = options.freshnessMs ?? QUESTION_FRESHNESS_MS;
   const clock = options.now ?? Date.now;
   const existingMs = Date.parse(existing.timestamp);
-  if (Number.isFinite(existingMs) && clock() - existingMs >= freshnessMs) {
+  if (!Number.isFinite(existingMs)) {
+    // Fail-closed: a corrupted/legacy timestamp must not pin the UI.
+    logSuppression('malformed-timestamp', existing, incoming);
+    return false;
+  }
+  // Clamp negative ages (clock skew where existing is in the future)
+  // to zero so the defense window applies normally rather than stretching
+  // forever via the negative-ageMs side path.
+  const age = Math.max(0, clock() - existingMs);
+  if (age >= freshnessMs) {
+    logSuppression('stale', existing, incoming);
     return false;
   }
 
   const existingCount = optionCount(existing);
   const incomingCount = optionCount(incoming);
 
-  if (existingCount > incomingCount) return true;
+  if (existingCount > incomingCount) {
+    logSuppression('richer-count', existing, incoming);
+    return true;
+  }
   if (
     existingCount === incomingCount &&
     isDefaultThreeSetShape(incoming) &&
     !isDefaultThreeSetShape(existing)
   ) {
+    logSuppression('richer-shape', existing, incoming);
     return true;
   }
+  // Either incoming is richer, or both are equal-and-bland. Replace.
+  logSuppression(
+    incomingCount > existingCount ? 'incoming-richer-count' : 'incoming-equal-or-poorer',
+    existing,
+    incoming,
+  );
   return false;
 }

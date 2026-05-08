@@ -18,7 +18,7 @@
  * which are usually <80 chars after normalization.
  */
 
-import type { Question } from '@remi/shared';
+import { QUESTION_DEDUP_WINDOW_MS, type Question } from '@remi/shared';
 
 interface LastEmitted {
   fingerprint: string;
@@ -31,7 +31,7 @@ export class QuestionDedup {
   private last: LastEmitted | null = null;
 
   constructor(
-    private readonly windowMs: number = 5000,
+    private readonly windowMs: number = QUESTION_DEDUP_WINDOW_MS,
     private readonly clock: () => number = Date.now,
   ) {}
 
