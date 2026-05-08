@@ -6,6 +6,7 @@
  */
 
 import { useKeyboard } from '@/hooks/useKeyboard';
+import type { ReplyContext } from '@/lib/reply-format';
 import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
 import { useState } from 'react';
@@ -22,7 +23,21 @@ interface ChatViewProps {
   readonly messages: readonly UIMessage[];
   readonly question?: UIQuestion | null;
   readonly error?: string | null;
+  /** Send a regular user input message. Reply context (when set) is wrapped
+   *  into a markdown blockquote inside this callback's caller (#401). */
   readonly onSend: (message: string) => void;
+  /** Answer the active question. Routes through sendAnswer; decoupled from
+   *  onSend so the bottom InputArea no longer hijacks input when a question
+   *  is pending (#401). Required: a missing handler would silently route
+   *  answers through onSend and re-create the bug. */
+  readonly onAnswer: (answer: string) => void;
+  /** Long-press on a message bubble fires this with the message; consumer
+   *  records it as the active reply context for the session (#401). */
+  readonly onReply?: (message: UIMessage) => void;
+  /** Active reply context for this session, if any (#401). */
+  readonly replyContext?: ReplyContext | null;
+  /** Clear the active reply context (X button on the InputArea banner). */
+  readonly onClearReply?: () => void;
   readonly onCancel?: () => void;
   readonly onRetry?: () => void;
   readonly onBack?: () => void;
@@ -44,6 +59,10 @@ export function ChatView({
   question,
   error,
   onSend,
+  onAnswer,
+  onReply,
+  replyContext,
+  onClearReply,
   onCancel,
   onRetry,
   onBack,
@@ -99,6 +118,7 @@ export function ChatView({
         error={error}
         onRetry={onRetry}
         onBulletExpand={onBulletExpand}
+        onReply={onReply}
         viewMode={viewMode}
         keyboardVisible={keyboardVisible}
         showTimestamps={showTimestamps}
@@ -107,27 +127,24 @@ export function ChatView({
       {/* Question card in chat mode */}
       {(showQuestionCard || showAnsweredCard) && question && (
         <div className="border-t border-[var(--color-border)] px-3 py-2">
-          <QuestionCard question={question} onAnswer={onSend} />
+          <QuestionCard question={question} onAnswer={onAnswer} />
         </div>
       )}
 
       <InputArea
         onSend={onSend}
+        onAnswer={onAnswer}
         onCancel={onCancel}
         question={inputQuestion}
         isAgentBusy={isAgentBusy}
         disabled={!isConnected}
+        replyContext={replyContext ?? null}
+        onClearReply={onClearReply}
         // Session-scoped draft persistence so a half-typed message survives
         // app suspension on iOS (#226) and switching to a different session
         // doesn't leak the draft across.
         draftKey={`remi-draft-${session.id}`}
-        placeholder={
-          !isConnected
-            ? 'Not connected'
-            : question && !question.answeredWith
-              ? 'Type your response...'
-              : 'Type a message...'
-        }
+        placeholder={!isConnected ? 'Not connected' : 'Type a message...'}
       />
     </div>
   );

@@ -5,9 +5,10 @@
  */
 
 import { hapticImpact } from '@/lib/haptics';
+import { type ReplyContext, previewText } from '@/lib/reply-format';
 import type { UIQuestion } from '@/types';
 import { clsx } from 'clsx';
-import { Send, StopCircle } from 'lucide-react';
+import { CornerUpLeft, Send, StopCircle, X } from 'lucide-react';
 import {
   type ChangeEvent,
   type KeyboardEvent,
@@ -19,12 +20,23 @@ import {
 
 interface InputAreaProps {
   readonly onSend: (message: string) => void;
+  /** Answer the active question (#401). Quick-response chips route here so
+   *  tapping Yes/No on a 2-option permission sends `sendAnswer` not the
+   *  literal "y"/"n" via `sendInput`. Required when `question` is set
+   *  with options (the chips are visible). */
+  readonly onAnswer?: (answer: string) => void;
   readonly onCancel?: () => void;
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly question?: UIQuestion | null;
   readonly isAgentBusy?: boolean;
   readonly className?: string;
+  /** When set, render the reply banner above the input and submit the
+   *  message wrapped in a markdown blockquote (#401). The wire-format
+   *  wrap happens in App.tsx#handleSend so this component only owns
+   *  the visual banner + clear affordance. */
+  readonly replyContext?: ReplyContext | null;
+  readonly onClearReply?: () => void;
   /**
    * When provided, the typed-but-unsent draft is persisted to localStorage
    * under this key and restored across reloads / app suspensions. Pass a
@@ -65,12 +77,15 @@ function QuickResponse({
 
 export function InputArea({
   onSend,
+  onAnswer,
   onCancel,
   disabled = false,
   placeholder = 'Type a message...',
   question,
   isAgentBusy = false,
   className,
+  replyContext,
+  onClearReply,
   draftKey,
 }: InputAreaProps) {
   // Hydrate draft from localStorage when a draftKey is provided. The lazy
@@ -193,9 +208,14 @@ export function InputArea({
     }
   };
 
-  // Handle quick response
+  // Quick-response chips for an active question. Route through onAnswer so
+  // a tap on Yes/No/option-N is a real `sendAnswer`, not the literal value
+  // sent as a regular user input (#401 / #402 review). When onAnswer is
+  // not provided (e.g. consumer hasn't migrated yet), fall back to onSend
+  // to preserve the prior behavior; this branch is only reachable when the
+  // chips are rendered, which itself requires `question` to be set.
   const handleQuickResponse = (response: string) => {
-    onSend(response);
+    (onAnswer ?? onSend)(response);
   };
 
   // Determine if we should show quick responses
@@ -246,12 +266,38 @@ export function InputArea({
       {isAgentBusy && onCancel && (
         <div className="flex justify-center border-b border-[var(--color-border)] py-2">
           <button
+            type="button"
             onClick={onCancel}
             className="flex items-center gap-2 rounded-full bg-[var(--color-error)]/10 px-4 py-1.5 text-sm text-[var(--color-error)] transition-colors hover:bg-[var(--color-error)]/20"
           >
             <StopCircle className="size-4" />
             Stop
           </button>
+        </div>
+      )}
+
+      {/* Reply banner: shown when long-press set a reply context (#401). */}
+      {replyContext && (
+        <div className="flex items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface-light)] px-4 py-2">
+          <CornerUpLeft className="size-4 shrink-0 text-[var(--color-primary)]" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+              Replying to
+            </p>
+            <p className="truncate text-xs text-[var(--color-text-secondary)]">
+              {previewText(replyContext.content)}
+            </p>
+          </div>
+          {onClearReply && (
+            <button
+              type="button"
+              onClick={onClearReply}
+              className="rounded-full p-1 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-elevated)] hover:text-[var(--color-text)]"
+              aria-label="Cancel reply"
+            >
+              <X className="size-4" />
+            </button>
+          )}
         </div>
       )}
 

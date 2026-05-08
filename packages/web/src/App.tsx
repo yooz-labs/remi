@@ -15,6 +15,7 @@ import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import { shouldKeepExisting } from '@/lib/question-merge';
+import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
   AppSettings,
   ConnectionId,
@@ -136,6 +137,10 @@ function App() {
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [questions, setQuestions] = useState<Map<UUID, UIQuestion>>(new Map());
+  // Reply context per session: when set, the InputArea shows a quoted-message
+  // banner and outgoing user input is wrapped in a markdown blockquote so
+  // Claude Code receives the quoted context (#401).
+  const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -149,6 +154,11 @@ function App() {
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
+  // Mirror replyContexts in a ref so handleSend can read the active
+  // session's reply context without taking a dep on the whole Map (#402
+  // review). Without this, every reply set/clear in any session would
+  // re-create handleSend and bust InputArea memoization.
+  const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
@@ -779,6 +789,10 @@ function App() {
     messagesRef.current = messages;
   }, [messages]);
 
+  useEffect(() => {
+    replyContextsRef.current = replyContexts;
+  }, [replyContexts]);
+
   // Connection manager: manages N simultaneous WebSocket connections
   const {
     connections,
@@ -1113,6 +1127,79 @@ function App() {
     setActiveSessionId(null);
   }, []);
 
+  // Answer the active question for the current session. Used by
+  // QuestionCard's onAnswer callback. Decoupled from handleSend so the
+  // bottom InputArea is no longer hijacked when a question is pending
+  // (#401): the user can ask the agent a fresh question without it
+  // being treated as an answer to a stale prompt.
+  const handleAnswer = useCallback(
+    (content: string) => {
+      if (!activeSessionId || !sessionQuestion) return;
+      const connId = getActiveConnectionId();
+      if (!connId) {
+        const systemMsg: UIMessage = {
+          id: generateId(),
+          sessionId: activeSessionId,
+          sender: 'system',
+          content: 'Cannot send: not connected to daemon',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, systemMsg]);
+        return;
+      }
+
+      const sent = sendAnswer(connId, activeSessionId, sessionQuestion.id, content);
+      if (!sent) {
+        const failMsg: UIMessage = {
+          id: generateId(),
+          sessionId: activeSessionId,
+          connectionId: connId,
+          sender: 'system',
+          content: 'Failed to send answer: connection unavailable. Try again.',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, failMsg]);
+        return;
+      }
+      // Mark question as answered (card shows collapsed state briefly)
+      setQuestions((prev) => {
+        const next = new Map(prev);
+        next.set(activeSessionId, { ...sessionQuestion, answeredWith: content });
+        return next;
+      });
+      setTimeout(() => {
+        setQuestions((prev) => {
+          if (!prev.has(activeSessionId)) return prev;
+          const next = new Map(prev);
+          next.delete(activeSessionId);
+          return next;
+        });
+      }, 1500);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === activeSessionId ? { ...s, questionPending: false } : s)),
+      );
+      const userMsg: UIMessage = {
+        id: generateId(),
+        sessionId: activeSessionId,
+        sender: 'user',
+        content,
+        timestamp: new Date().toISOString(),
+        state: 'sent',
+        isEditing: false,
+        source: 'optimistic',
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    },
+    [activeSessionId, getActiveConnectionId, sendAnswer, sessionQuestion],
+  );
+
+  // Send a regular user input message, optionally with a reply context.
+  // Always routes through sendInput regardless of pending question state
+  // (#401 bug fix). The QuestionCard owns the answer flow via handleAnswer.
   const handleSend = useCallback(
     (content: string) => {
       if (!activeSessionId) return;
@@ -1131,62 +1218,14 @@ function App() {
         return;
       }
 
-      // If there's an active question, send as answer
-      if (sessionQuestion) {
-        const sent = sendAnswer(connId, activeSessionId, sessionQuestion.id, content);
-        if (!sent) {
-          const failMsg: UIMessage = {
-            id: generateId(),
-            sessionId: activeSessionId,
-            connectionId: connId,
-            sender: 'system',
-            content: 'Failed to send answer: connection unavailable. Try again.',
-            timestamp: new Date().toISOString(),
-            state: 'delivered',
-            isEditing: false,
-          };
-          setMessages((prev) => [...prev, failMsg]);
-          return;
-        }
-        // Mark question as answered (card shows collapsed state briefly)
-        setQuestions((prev) => {
-          const next = new Map(prev);
-          next.set(activeSessionId, { ...sessionQuestion, answeredWith: content });
-          return next;
-        });
-        setTimeout(() => {
-          setQuestions((prev) => {
-            if (!prev.has(activeSessionId)) return prev;
-            const next = new Map(prev);
-            next.delete(activeSessionId);
-            return next;
-          });
-        }, 1500);
-        // Clear question-pending on the session
-        setSessions((prev) =>
-          prev.map((s) => (s.id === activeSessionId ? { ...s, questionPending: false } : s)),
-        );
-        // Add user message to UI
-        const userMsg: UIMessage = {
-          id: generateId(),
-          sessionId: activeSessionId,
-          sender: 'user',
-          content,
-          timestamp: new Date().toISOString(),
-          state: 'sent',
-          isEditing: false,
-          source: 'optimistic',
-        };
-        setMessages((prev) => [...prev, userMsg]);
-        return;
-      }
+      const reply = replyContextsRef.current.get(activeSessionId);
+      const wireContent = reply ? formatReplyMessage(reply, content) : content;
 
-      // Regular user input
       const newMessage: UIMessage = {
         id: generateId(),
         sessionId: activeSessionId,
         sender: 'user',
-        content,
+        content: wireContent,
         timestamp: new Date().toISOString(),
         state: 'sending',
         isEditing: false,
@@ -1195,11 +1234,21 @@ function App() {
 
       setMessages((prev) => [...prev, newMessage]);
 
-      const success = sendInput(connId, activeSessionId, content);
+      const success = sendInput(connId, activeSessionId, wireContent);
       if (success) {
         setMessages((prev) =>
           prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
         );
+        // Reply context is consumed on send; the next message starts clean
+        // unless the user explicitly long-presses another message.
+        if (reply) {
+          setReplyContexts((prev) => {
+            if (!prev.has(activeSessionId)) return prev;
+            const next = new Map(prev);
+            next.delete(activeSessionId);
+            return next;
+          });
+        }
       } else {
         setMessages((prev) =>
           prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'delivered' as const } : m)),
@@ -1216,8 +1265,33 @@ function App() {
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, getActiveConnectionId, sendInput, sendAnswer, sessionQuestion],
+    [activeSessionId, getActiveConnectionId, sendInput],
   );
+
+  // Set the reply context for the current session: long-press on a
+  // MessageBubble routes here. The InputArea shows a banner + clear
+  // affordance derived from this state.
+  const handleReply = useCallback(
+    (message: UIMessage) => {
+      if (!activeSessionId) return;
+      setReplyContexts((prev) => {
+        const next = new Map(prev);
+        next.set(activeSessionId, { messageId: message.id, content: message.content });
+        return next;
+      });
+    },
+    [activeSessionId],
+  );
+
+  const handleClearReply = useCallback(() => {
+    if (!activeSessionId) return;
+    setReplyContexts((prev) => {
+      if (!prev.has(activeSessionId)) return prev;
+      const next = new Map(prev);
+      next.delete(activeSessionId);
+      return next;
+    });
+  }, [activeSessionId]);
 
   const handlePassphraseSubmit = useCallback(
     async (passphrase: string) => {
@@ -1279,6 +1353,7 @@ function App() {
     setMessages([]);
     setActiveSessionId(null);
     setQuestions(new Map());
+    setReplyContexts(new Map());
     try {
       localStorage.removeItem(LOCALSTORAGE_CONNECTIONS_KEY);
     } catch (err) {
@@ -1435,6 +1510,8 @@ function App() {
     0,
   );
 
+  const sessionReplyContext = activeSessionId ? (replyContexts.get(activeSessionId) ?? null) : null;
+
   // Main content
   const main = activeSession ? (
     <ChatView
@@ -1443,6 +1520,10 @@ function App() {
       question={sessionQuestion}
       error={error}
       onSend={handleSend}
+      onAnswer={handleAnswer}
+      onReply={handleReply}
+      replyContext={sessionReplyContext}
+      onClearReply={handleClearReply}
       onBack={handleBack}
       totalUnread={totalUnread}
       onCopyConversation={handleCopyConversation}

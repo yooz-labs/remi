@@ -19,6 +19,8 @@ interface MessageListProps {
   readonly error?: string | null;
   readonly onRetry?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
+  /** Long-press on a message bubble fires this with the message (#401). */
+  readonly onReply?: (message: UIMessage) => void;
   readonly viewMode?: ViewMode;
   readonly keyboardVisible?: boolean;
   readonly showTimestamps?: boolean;
@@ -125,6 +127,7 @@ export function MessageList({
   error,
   onRetry,
   onBulletExpand,
+  onReply,
   viewMode = 'compact',
   keyboardVisible = false,
   showTimestamps = true,
@@ -222,6 +225,7 @@ export function MessageList({
                 <MessageBubble
                   message={message}
                   onBulletExpand={onBulletExpand}
+                  onReply={onReply}
                   viewMode={viewMode}
                   showTimestamp={showTimestamps}
                 />
