@@ -742,6 +742,9 @@ let autoApproveService: AutoApproveService | null = null;
       );
     }
 
+    const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
+    const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
+
     autoApproveService = new AutoApproveService(
       {
         ...aaCfg,
@@ -753,12 +756,15 @@ let autoApproveService: AutoApproveService | null = null;
         allow,
         deny,
         instructions,
+        multichoice,
+        multichoice_model: multichoiceModel,
       },
       writeToLog,
     );
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
+    const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
     writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}`,
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}`,
     );
   }
 }

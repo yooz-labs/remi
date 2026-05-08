@@ -11,9 +11,19 @@
 import { errorToString } from '@remi/shared';
 import { chatCompletion, resolveProviderUrl } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
+import {
+  buildMultiChoicePrompt,
+  isMultiChoicePermission,
+  parseMultiChoiceDecision,
+} from './multichoice.ts';
 import { matchPattern } from './pattern-matcher.ts';
 import { buildPrompt } from './prompt-builder.ts';
-import type { AutoApproveConfig, AutoApproveDecision, AutoApproveResult } from './types.ts';
+import type {
+  AutoApproveConfig,
+  AutoApproveDecision,
+  AutoApproveResult,
+  MultiChoiceMode,
+} from './types.ts';
 
 const VALID_DECISIONS = new Set<AutoApproveDecision>(['approve', 'deny', 'escalate']);
 
@@ -54,6 +64,9 @@ export class AutoApproveService {
   private readonly allow: readonly string[];
   private readonly deny: readonly string[];
   private readonly instructions: string;
+  private readonly multichoiceMode: MultiChoiceMode;
+  /** Falls back to llmConfig.model when empty. */
+  private readonly multichoiceModel: string;
   /** Prevents concurrent evaluations. Second request escalates immediately. */
   private evaluating = false;
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
@@ -76,6 +89,8 @@ export class AutoApproveService {
     this.allow = config.allow;
     this.deny = config.deny;
     this.instructions = config.instructions;
+    this.multichoiceMode = config.multichoice;
+    this.multichoiceModel = config.multichoice_model;
   }
 
   /**
@@ -86,11 +101,16 @@ export class AutoApproveService {
    * @param toolInput Raw tool input from the PermissionRequest hook
    * @param tag Optional short tag (e.g. sessionId prefix) to include in logs
    *            so multi-session deployments can distinguish whose decision this is.
+   * @param permissionSuggestions Optional `permission_suggestions` from the
+   *            hook. When present and shape qualifies as multi-choice (#399),
+   *            evaluation is routed through the multi-choice path instead of
+   *            the binary approve/deny path.
    */
   async evaluate(
     toolName: string,
     toolInput: Record<string, unknown>,
     tag?: string,
+    permissionSuggestions?: readonly string[],
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     const model = this.llmConfig.model;
@@ -117,6 +137,20 @@ export class AutoApproveService {
         return { decision: 'approve', reasoning, durationMs: 0, model };
       }
 
+      const isMultiChoice = isMultiChoicePermission(permissionSuggestions);
+
+      // Multi-choice + skip mode: never call the LLM. The binary approve/
+      // deny mapping cannot express "pick option 2 of N", so evaluating
+      // would just produce option-1 (approve) for every plan-mode prompt
+      // regardless of what the user actually wanted (#399).
+      if (isMultiChoice && this.multichoiceMode === 'skip') {
+        const reasoning = `multi-choice prompt (${permissionSuggestions?.length ?? 0} options); auto_approve.multichoice = "skip"`;
+        if (this.logDecisions) {
+          this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
+        }
+        return { decision: 'escalate', reasoning, durationMs: 0, model };
+      }
+
       if (this.evaluating) {
         this.logFn(`${prefix} Concurrent evaluation blocked, escalating to user`);
         return {
@@ -138,13 +172,29 @@ export class AutoApproveService {
       // state).
       let raceTimer: ReturnType<typeof setTimeout> | null = null;
       try {
-        const messages = buildPrompt(toolName, toolInput, this.instructions);
+        // Multi-choice + evaluate mode: dedicated prompt, optional alt model.
+        // Otherwise the binary approve/deny prompt.
+        const useMultiChoice = isMultiChoice && this.multichoiceMode === 'evaluate';
+        const callModel =
+          useMultiChoice && this.multichoiceModel ? this.multichoiceModel : this.llmConfig.model;
+        const callConfig: LLMClientConfig =
+          callModel === this.llmConfig.model
+            ? this.llmConfig
+            : { ...this.llmConfig, model: callModel };
+        const messages = useMultiChoice
+          ? buildMultiChoicePrompt(
+              toolName,
+              toolInput,
+              permissionSuggestions ?? [],
+              this.instructions,
+            )
+          : buildPrompt(toolName, toolInput, this.instructions);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
         // timeoutMs. The race timer also calls abort() so a fetch that does
         // honor the signal releases socket resources promptly.
         const response = await Promise.race([
-          chatCompletion(this.llmConfig, messages, externalSignal),
+          chatCompletion(callConfig, messages, externalSignal),
           new Promise<never>((_, reject) => {
             raceTimer = setTimeout(() => {
               this.currentAbortController?.abort();
@@ -154,14 +204,37 @@ export class AutoApproveService {
         ]);
         const durationMs = Date.now() - start;
 
-        const parsed = parseDecision(response.content);
-
-        const result: AutoApproveResult = {
-          decision: parsed.decision,
-          reasoning: parsed.reasoning,
-          durationMs,
-          model: response.model,
-        };
+        const result: AutoApproveResult = useMultiChoice
+          ? (() => {
+              const parsedMc = parseMultiChoiceDecision(
+                response.content,
+                permissionSuggestions?.length ?? 0,
+              );
+              if (parsedMc.decision === 'pick') {
+                return {
+                  decision: 'pick' as const,
+                  pickIndex: parsedMc.index,
+                  reasoning: parsedMc.reasoning,
+                  durationMs,
+                  model: response.model,
+                };
+              }
+              return {
+                decision: 'escalate' as const,
+                reasoning: parsedMc.reasoning,
+                durationMs,
+                model: response.model,
+              };
+            })()
+          : (() => {
+              const parsed = parseDecision(response.content);
+              return {
+                decision: parsed.decision,
+                reasoning: parsed.reasoning,
+                durationMs,
+                model: response.model,
+              };
+            })();
 
         if (this.logDecisions) {
           const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;

@@ -269,6 +269,8 @@ describe('auto_approve config', () => {
       allow: [],
       deny: [],
       instructions: '',
+      multichoice: 'skip',
+      multichoice_model: '',
     });
   });
 

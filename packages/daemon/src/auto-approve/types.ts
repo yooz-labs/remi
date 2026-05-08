@@ -2,24 +2,33 @@
  * Types for the auto-approve feature.
  *
  * The auto-approve system intercepts PermissionRequest hook events and uses
- * an LLM (via OpenAI-compatible API) to decide: approve, deny, or escalate.
+ * an LLM (via OpenAI-compatible API) to decide: approve, deny, escalate,
+ * or, for multi-choice prompts, pick a specific option index.
  */
 
 /**
  * Possible decisions returned by AutoApproveService.evaluate().
+ *
+ * 'pick' is for multi-choice prompts (#399): the LLM chose a specific
+ *   option by 1-based index, surfaced via `pickIndex` on the result.
  * 'cancelled' is set ONLY when AutoApproveService.cancel() aborted an
- * in-flight call; it cannot come from the LLM. See cancel() docs for
- * the bridge-side contract.
+ *   in-flight call; it cannot come from the LLM. See cancel() docs for
+ *   the bridge-side contract.
  */
-export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'cancelled';
+export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'pick' | 'cancelled';
 
 /**
- * LLM-produced (or pattern-matched) decision: approve / deny / escalate.
- * `model` is the model that produced the verdict (or the configured model for
- * pattern-matched decisions, since downstream telemetry treats them uniformly).
+ * LLM-produced (or pattern-matched) decision. `model` is the model that
+ * produced the verdict (or the configured model for pattern-matched
+ * decisions, since downstream telemetry treats them uniformly).
+ *
+ * `pickIndex` is set ONLY when `decision === 'pick'` and is a 1-based
+ * index into the permission_suggestions array. Callers must validate it
+ * against the actual options length before injecting.
  */
 export interface AutoApproveDecisionResult {
-  readonly decision: 'approve' | 'deny' | 'escalate';
+  readonly decision: 'approve' | 'deny' | 'escalate' | 'pick';
+  readonly pickIndex?: number;
   readonly reasoning: string;
   readonly durationMs: number;
   readonly model: string;
@@ -36,6 +45,9 @@ export interface AutoApproveCancelledResult {
 }
 
 export type AutoApproveResult = AutoApproveDecisionResult | AutoApproveCancelledResult;
+
+/** How auto-approve treats multi-choice permission prompts (#399). */
+export type MultiChoiceMode = 'skip' | 'evaluate';
 
 /** Configuration for the auto-approve feature */
 export interface AutoApproveConfig {
@@ -71,4 +83,20 @@ export interface AutoApproveConfig {
    * Empty string means no extra guidance (use default prompt only).
    */
   readonly instructions: string;
+  /**
+   * How to treat multi-choice permission prompts (#399): permissions whose
+   * suggestions are not the standard Yes / Yes-always / No 3-set or have
+   * more than 3 options. 'skip' (default) escalates to the user without
+   * calling the LLM, since the binary approve/deny mapping cannot express
+   * "pick option 2 out of N". 'evaluate' uses a dedicated prompt that asks
+   * the LLM to pick an option index.
+   */
+  readonly multichoice: MultiChoiceMode;
+  /**
+   * Optional alternate model for multi-choice evaluation. When empty,
+   * `model` is used. Useful for routing complex plan-mode prompts to a
+   * smarter model without paying its latency for every binary permission.
+   * Ignored unless `multichoice = "evaluate"`.
+   */
+  readonly multichoice_model: string;
 }

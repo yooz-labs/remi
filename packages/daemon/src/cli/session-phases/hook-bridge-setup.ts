@@ -577,8 +577,11 @@ export function setupHookBridge(
       // Notification fallback usable.
       hookBridge.markPermissionHandled();
       const aaService = autoApproveService;
+      const suggestions = Array.isArray(input.permission_suggestions)
+        ? (input.permission_suggestions as readonly string[])
+        : undefined;
       aaService
-        .evaluate(input.tool_name, input.tool_input, sessionTag)
+        .evaluate(input.tool_name, input.tool_input, sessionTag, suggestions)
         .then(async (result) => {
           if (result.decision === 'cancelled') {
             // User already advanced past the prompt (terminal answer or
@@ -596,6 +599,16 @@ export function setupHookBridge(
           }
           if (result.decision === 'deny') {
             if (!(await inject('3', 'denied'))) escalateToUser();
+            return;
+          }
+          if (result.decision === 'pick' && result.pickIndex !== undefined) {
+            // Multi-choice pick (#399): inject the 1-based index Claude Code
+            // expects on the terminal. parseMultiChoiceDecision already
+            // validated the index against options length, so out-of-range
+            // values cannot reach this branch.
+            if (!(await inject(String(result.pickIndex), `multichoice-pick-${result.pickIndex}`))) {
+              escalateToUser();
+            }
             return;
           }
           // escalate: in a subagent context, default-deny to avoid hanging
