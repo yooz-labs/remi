@@ -72,6 +72,31 @@ describe('shouldKeepExisting', () => {
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
+  test('keeps a 2-option Yes/No when default 3-set arrives next (#407)', () => {
+    // The reported regression: PTY parser detects [y/n], emits 2-option
+    // Yes/No. Hook bridge then emits the bland default 3-set. Ranking by
+    // count alone made the 3-set "richer" and replaced the 2-option,
+    // showing three buttons for what the user expected to be a yes/no.
+    // The default-3-set must always lose to a non-default shape.
+    const existing = uiq('Continue?', [
+      { label: 'Yes', isYes: true },
+      { label: 'No', isNo: true },
+    ]);
+    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
+  });
+
+  test('replaces when existing is the bland default and incoming is non-default (#407)', () => {
+    // Symmetric: if the daemon's hook fired the 3-set first and the PTY
+    // then surfaced a real 2-option Yes/No, the richer one wins.
+    const existing = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = uiq('Continue?', [
+      { label: 'Yes', isYes: true },
+      { label: 'No', isNo: true },
+    ]);
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
+  });
+
   test('replaces when both are default 3-sets (truly equivalent)', () => {
     const existing = uiq('Allow Bash: ls', yesYesalwaysNo);
     const incoming = uiq('Allow Edit: foo', yesYesalwaysNo);
@@ -110,13 +135,17 @@ describe('shouldKeepExisting', () => {
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
-  test('replaces when existing has fewer options regardless of shape', () => {
+  test('shape outranks count: keeps a 2-option Yes/No over a 3-set default (#407)', () => {
+    // Pre-#407 this asserted the opposite — that the default 3-set
+    // replaces the 2-option Yes/No. That was the bug: the bland default
+    // is the daemon's "no real options" fallback and must never replace
+    // a non-default shape regardless of count.
     const existing = uiq('Run this?', [
       { label: 'Yes', isYes: true },
       { label: 'No', isNo: true },
     ]);
     const incoming = uiq('Run this?', yesYesalwaysNo);
-    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 
   test('keeps 4-option richer when poorer 4-option arrives (not a default 3-set)', () => {

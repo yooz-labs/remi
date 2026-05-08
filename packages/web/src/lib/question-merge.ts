@@ -118,20 +118,29 @@ export function shouldKeepExisting(
 
   const existingCount = optionCount(existing);
   const incomingCount = optionCount(incoming);
+  const existingIsDefault = isDefaultThreeSetShape(existing);
+  const incomingIsDefault = isDefaultThreeSetShape(incoming);
 
+  // The daemon's hardcoded Yes / Yes-always / No is the bland fallback
+  // shape; it must never replace a non-default question regardless of
+  // option count (#407). The previous rule "more options = richer" let
+  // the 3-set replace a 2-option Yes/No emitted by the PTY parser, so
+  // the user saw three options for what they expected to be a yes/no.
+  if (incomingIsDefault && !existingIsDefault) {
+    logSuppression('richer-shape', existing, incoming);
+    return true;
+  }
+  if (!incomingIsDefault && existingIsDefault) {
+    logSuppression('incoming-richer-count', existing, incoming);
+    return false;
+  }
+
+  // Same shape class on both sides: rank by option count, then fall
+  // through to "replace" so the most recent same-rank emission wins.
   if (existingCount > incomingCount) {
     logSuppression('richer-count', existing, incoming);
     return true;
   }
-  if (
-    existingCount === incomingCount &&
-    isDefaultThreeSetShape(incoming) &&
-    !isDefaultThreeSetShape(existing)
-  ) {
-    logSuppression('richer-shape', existing, incoming);
-    return true;
-  }
-  // Either incoming is richer, or both are equal-and-bland. Replace.
   logSuppression(
     incomingCount > existingCount ? 'incoming-richer-count' : 'incoming-equal-or-poorer',
     existing,
