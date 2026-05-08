@@ -239,6 +239,10 @@ export function ConnectModal({
   // (the auth pre-flight probe) so the UI can surface a different message.
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  // Cancels an in-flight port scan when the modal closes or the component
+  // unmounts; without this, 20 fetches keep racing for ~1.5s with nowhere
+  // to deliver their results.
+  const scanAbortRef = useRef<AbortController | null>(null);
 
   // Reset on close
   useEffect(() => {
@@ -249,8 +253,19 @@ export function ConnectModal({
       setIsProbing(false);
       setIsScanning(false);
       setScanError(null);
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
     }
   }, [isOpen]);
+
+  // Cancel any in-flight scan on unmount.
+  useEffect(
+    () => () => {
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
+    },
+    [],
+  );
 
   // Auto-focus host input when modal opens
   useEffect(() => {
@@ -334,18 +349,27 @@ export function ConnectModal({
           setScanError('Hostname is required');
           return;
         }
+        // New controller per scan; aborting any prior in-flight scan
+        // prevents a slow first attempt from completing AFTER the user
+        // started a second one with a different hostname.
+        scanAbortRef.current?.abort();
+        const controller = new AbortController();
+        scanAbortRef.current = controller;
         setIsScanning(true);
         let discovered: number | null = null;
         try {
-          discovered = await discoverDaemonPort(parsed.hostname);
+          discovered = await discoverDaemonPort(parsed.hostname, {
+            signal: controller.signal,
+          });
         } finally {
           setIsScanning(false);
+          if (scanAbortRef.current === controller) scanAbortRef.current = null;
         }
+        if (controller.signal.aborted) return;
         if (discovered === null) {
           const last = DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1;
           setScanError(
-            `No remi daemon found on ${parsed.hostname}:${DEFAULT_BASE_PORT}–${last}. ` +
-              `Is the daemon running? You can also try host:port directly.`,
+            `No remi daemon found on ${parsed.hostname}:${DEFAULT_BASE_PORT}–${last}. Is the daemon running? You can also try host:port directly.`,
           );
           return;
         }
@@ -462,7 +486,12 @@ export function ConnectModal({
                   ref={hostInputRef}
                   type="text"
                   value={host}
-                  onChange={(e) => setHost(e.target.value)}
+                  onChange={(e) => {
+                    setHost(e.target.value);
+                    // Stale "no daemon found" banner would otherwise
+                    // stick around while the user is editing the input.
+                    if (scanError) setScanError(null);
+                  }}
                   onKeyDown={handleKeyDown}
                   disabled={isConnecting}
                   placeholder="localhost"

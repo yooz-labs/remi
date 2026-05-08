@@ -4,28 +4,37 @@
  * When the Connect modal is given a hostname without an explicit port, the
  * legacy code defaulted to 18765 and gave up if nothing answered. That fails
  * the common case where a user closed the daemon on 18765 but a sibling on
- * 18766/18767 is still serving — the daemon already advertises its real port
+ * 18766/18767 is still serving; the daemon already advertises its real port
  * over mDNS and replies with sibling ports on `SessionListResponse`, but only
  * AFTER the first WebSocket handshake succeeds.
  *
- * This module probes the daemon port range in parallel via the cheap
- * `/auth-info` HTTP endpoint and returns the first responder. It does NOT
- * race WebSockets (20 concurrent WS handshakes are heavier than 20 fetches,
- * and the upgrade path drags auth state along).
+ * This module races HTTP `/auth-info` probes (rather than full WebSocket
+ * upgrades) across the daemon port range and resolves to the first responder.
+ * Probes are cheap, parallel, and avoid dragging auth state through 20
+ * concurrent WS handshakes that all but one would tear back down.
  *
- * The default range matches `DaemonConfig` defaults (`base_port=18765`,
- * `port_range=20`).
+ * Port range matches `DaemonConfig` defaults; values are pinned to
+ * `DEFAULT_BASE_PORT` and `DEFAULT_PORT_RANGE` below.
  */
 
 import { authInfoUrl } from './auth-probe';
 
-/** Default base port — must match `DaemonConfig.base_port` in the daemon config. */
-export const DEFAULT_BASE_PORT = 18765;
+/** Must match `DaemonConfig.base_port` in `packages/daemon/src/config/config.ts`. */
+export const DEFAULT_BASE_PORT = 18765 as const;
 
-/** Default port range — must match `DaemonConfig.port_range`. */
-export const DEFAULT_PORT_RANGE = 20;
+/** Must match `DaemonConfig.port_range` in `packages/daemon/src/config/config.ts`. */
+export const DEFAULT_PORT_RANGE = 20 as const;
 
-/** Per-port probe timeout. Keep short so the whole scan fails fast on bad hosts. */
+/**
+ * Per-port probe timeout in milliseconds.
+ *
+ * Budget: a healthy LAN daemon answers `/auth-info` in single-digit ms; an
+ * unreachable host returns ECONNREFUSED in microseconds. The interesting
+ * case is a host that ACCEPTs the TCP connection but never responds (broken
+ * proxy, half-dead daemon). 1500 ms gives enough slack for slow VPN paths
+ * while keeping the worst-case scan under ~2 s before the modal surfaces an
+ * error.
+ */
 const PROBE_TIMEOUT_MS = 1500;
 
 /** Bracket a bare IPv6 literal so URL parsers accept it. */
@@ -65,8 +74,10 @@ async function probePort(
     const res = await fetch(httpUrl, { signal: controller.signal });
     return res.ok ? port : null;
   } catch {
-    // Three failure modes collapse to null: connection refused, timeout,
-    // and outer abort. The caller only cares whether *any* port answered.
+    // Failure modes collapse to null: connection refused, timeout, outer
+    // abort, mixed-content / CORS rejection. The caller only needs to know
+    // whether *any* port answered. Distinguishing the cause for better UX
+    // is tracked separately; see #393 review thread.
     return null;
   } finally {
     clearTimeout(timer);
@@ -76,13 +87,14 @@ async function probePort(
 
 /**
  * Discover the first daemon port responding on `hostname` within the given
- * range. Returns `null` if no port answers before the per-probe timeout.
+ * range. Returns `null` on any of: no port answered before the per-probe
+ * timeout, `portRange <= 0`, or the outer `signal` already aborted at call.
  *
  * Implementation: fans out fetches in parallel and resolves the moment the
  * first probe succeeds, aborting the rest. Sequential ordering is NOT
- * preserved — if both 18765 and 18766 answer, whichever wins the network
- * race wins. This is intentional; the daemon hands back sibling ports after
- * the first hello, so picking either one converges the same way.
+ * preserved; if 18765 and 18766 both answer, whichever wins the network race
+ * wins. This is intentional, since the daemon hands back sibling ports after
+ * the first hello — picking either one converges the same way.
  */
 export async function discoverDaemonPort(
   hostname: string,
@@ -100,14 +112,23 @@ export async function discoverDaemonPort(
   if (portRange <= 0) return null;
 
   const winner = new AbortController();
+  // Track the listener so the success path can detach it; without this, a
+  // long-lived caller that reuses one signal across many discover calls
+  // accumulates listeners until the signal eventually aborts.
+  let outerAbortListener: (() => void) | null = null;
   if (options.signal) {
     if (options.signal.aborted) return null;
-    options.signal.addEventListener('abort', () => winner.abort(), { once: true });
+    outerAbortListener = () => winner.abort();
+    options.signal.addEventListener('abort', outerAbortListener, { once: true });
   }
 
   const ports: number[] = [];
   for (let i = 0; i < portRange; i++) ports.push(basePort + i);
 
+  // Hand-rolled rather than `Promise.any`: we want to resolve `null` when
+  // every probe fails, but `Promise.any` would *reject* with AggregateError
+  // in that case. Inverting the success/failure shape of `probePort` to
+  // make `Promise.any` work is uglier than the explicit counter below.
   return new Promise<number | null>((resolve) => {
     let pending = ports.length;
     let resolved = false;
@@ -115,21 +136,22 @@ export async function discoverDaemonPort(
       if (resolved) return;
       resolved = true;
       winner.abort();
+      if (outerAbortListener && options.signal) {
+        options.signal.removeEventListener('abort', outerAbortListener);
+      }
       resolve(port);
     };
     for (const port of ports) {
-      probePort(hostname, port, timeoutMs, winner.signal).then(
-        (result) => {
-          if (result !== null) {
-            finish(result);
-            return;
-          }
-          if (--pending === 0) finish(null);
-        },
-        () => {
-          if (--pending === 0) finish(null);
-        },
-      );
+      // probePort is reject-proof: every error path returns `null`. So we
+      // only handle the fulfilled branch and rely on the counter to bottom
+      // out on `null` if no probe wins.
+      probePort(hostname, port, timeoutMs, winner.signal).then((result) => {
+        if (result !== null) {
+          finish(result);
+          return;
+        }
+        if (--pending === 0) finish(null);
+      });
     }
   });
 }
@@ -142,11 +164,9 @@ export type ParsedHost =
 /**
  * Parse the Connect modal's host input.
  *
- * - `ws://...` / `wss://...`: pass through verbatim (backward compat).
- * - `host:port`: explicit port, scan skipped.
- * - `host`: explicit port is null; caller should run port discovery.
- * - IPv6 literals are tolerated either bare (`::1`) or bracketed (`[::1]`).
- *   When bare, multiple colons are treated as the address with no port.
+ * Bare IPv6 literals (multiple colons, no brackets) are treated as having
+ * no explicit port: without brackets we can't tell which colon delimits the
+ * port. Users can write `[::1]:18770` to force one.
  */
 export function parseHostInput(input: string): ParsedHost {
   const trimmed = input.trim();
@@ -173,8 +193,6 @@ export function parseHostInput(input: string): ParsedHost {
 
   const colonCount = (trimmed.match(/:/g) || []).length;
   if (colonCount > 1) {
-    // Bare IPv6 literal — no way to distinguish a trailing port without
-    // brackets, so we don't try. User can supply [::1]:18770 to force one.
     return { kind: 'host', hostname: trimmed, explicitPort: null };
   }
 

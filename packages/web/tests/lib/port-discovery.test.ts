@@ -1,8 +1,7 @@
 /**
  * Tests for the daemon port discovery helper used by Connect (#393).
  *
- * Following the project rule: no mocks. We spin up real Bun HTTP servers
- * on dynamic ports and let the helper probe them.
+ * Real Bun HTTP servers on dynamic ports; no mocks.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -224,5 +223,100 @@ describe('discoverDaemonPort', () => {
     // this test should fail to remind us to update both.
     expect(DEFAULT_BASE_PORT).toBe(18765);
     expect(DEFAULT_PORT_RANGE).toBe(20);
+  });
+
+  test('aborts loser fetches when one port wins the race', async () => {
+    // Track whether the slow server's request handler observed an abort.
+    // If `winner.abort()` does not propagate through the per-probe
+    // controller, the slow handler runs to completion and the flag stays
+    // false, even if `discoverDaemonPort` returned the fast port.
+    let slowAborted = false;
+    const slow = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            slowAborted = true;
+            resolve();
+            return;
+          }
+          req.signal.addEventListener(
+            'abort',
+            () => {
+              slowAborted = true;
+              resolve();
+            },
+            { once: true },
+          );
+          setTimeout(resolve, 1500);
+        });
+        if (req.signal.aborted) return new Response('aborted', { status: 499 });
+        return new Response(JSON.stringify({ authRequired: false, fingerprint: null }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    const fast = authInfoServer();
+    try {
+      const basePort = Math.min(slow.port, fast.port);
+      const found = await discoverDaemonPort('127.0.0.1', {
+        basePort,
+        portRange: Math.abs(slow.port - fast.port) + 2,
+        timeoutMs: 2000,
+      });
+      expect(found).toBe(fast.port);
+      // Allow the abort event loop to flush.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(slowAborted).toBe(true);
+    } finally {
+      slow.stop();
+      fast.stop();
+    }
+  });
+
+  test('per-probe timeout fires against a hung server', async () => {
+    // Server accepts the connection but never replies. Without the
+    // per-probe timer, the scan would hang indefinitely.
+    const hung = Bun.serve({
+      port: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    try {
+      const start = Date.now();
+      const found = await discoverDaemonPort('127.0.0.1', {
+        basePort: hung.port,
+        portRange: 1,
+        timeoutMs: 150,
+      });
+      const elapsed = Date.now() - start;
+      expect(found).toBeNull();
+      // Generous upper bound; the point is "didn't hang for 1.5s default".
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      hung.stop();
+    }
+  });
+
+  test('outer signal aborted mid-flight cancels the scan promptly', async () => {
+    const hung = Bun.serve({
+      port: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 50);
+    try {
+      const start = Date.now();
+      const found = await discoverDaemonPort('127.0.0.1', {
+        basePort: hung.port,
+        portRange: 1,
+        timeoutMs: 5000,
+        signal: ctl.signal,
+      });
+      const elapsed = Date.now() - start;
+      expect(found).toBeNull();
+      expect(elapsed).toBeLessThan(800);
+    } finally {
+      hung.stop();
+    }
   });
 });
