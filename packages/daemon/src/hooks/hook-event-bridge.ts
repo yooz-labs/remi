@@ -16,7 +16,7 @@
  *     the redundant Notification.
  */
 
-import { generateId } from '@remi/shared';
+import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
@@ -41,11 +41,31 @@ export interface HookBridgeEvents {
 }
 
 /** Default permission options. Claude Code always offers these for tool
- *  permissions; the Notification hook message never contains numbered options. */
+ *  permissions; the Notification hook message never contains numbered options.
+ *  Labels are imported from `@remi/shared` so the web client's question-merge
+ *  guard recognises them as the bland fallback (#396). */
 const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
-  { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
-  { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
-  { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+  {
+    label: DEFAULT_PERMISSION_LABELS[0],
+    value: '1',
+    isRecommended: true,
+    isYes: true,
+    isNo: false,
+  },
+  {
+    label: DEFAULT_PERMISSION_LABELS[1],
+    value: '2',
+    isRecommended: false,
+    isYes: true,
+    isNo: false,
+  },
+  {
+    label: DEFAULT_PERMISSION_LABELS[2],
+    value: '3',
+    isRecommended: false,
+    isYes: false,
+    isNo: true,
+  },
 ];
 
 /** Dedup window: suppress Notification(permission_prompt) arriving within
