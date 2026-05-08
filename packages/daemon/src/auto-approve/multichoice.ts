@@ -140,20 +140,20 @@ export function parseMultiChoiceDecision(
   }
 
   const obj = parsed as Record<string, unknown>;
-  const decisionStr = String(obj.decision ?? '').toLowerCase();
-  const reasoning = String(obj.reasoning ?? '');
+  const decisionStr = String(obj['decision'] ?? '').toLowerCase();
+  const reasoning = String(obj['reasoning'] ?? '');
 
   if (decisionStr === 'escalate') {
     return { decision: 'escalate', reasoning };
   }
   if (decisionStr === 'pick') {
-    const idx = Number(obj.index);
+    const idx = Number(obj['index']);
     if (Number.isInteger(idx) && idx >= 1 && idx <= optionCount) {
       return { decision: 'pick', index: idx, reasoning };
     }
     return {
       decision: 'escalate',
-      reasoning: `LLM picked out-of-range index ${obj.index} for ${optionCount} options; ${reasoning}`,
+      reasoning: `LLM picked out-of-range index ${obj['index']} for ${optionCount} options; ${reasoning}`,
     };
   }
 

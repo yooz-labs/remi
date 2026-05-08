@@ -506,7 +506,10 @@ export function setupHookBridge(
     // qualifying hook event for our session resolves it. If the timeout
     // fires first, the inject is treated as silently lost -- the dedup
     // mark is cleared and we escalate so the user still gets a question.
-    const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
+    // Value is a 1-based numeric option index serialised as a string. Most
+    // permissions only need '1' (approve) or '3' (deny); multi-choice picks
+    // can land any index in the prompt's option range (#399).
+    const inject = async (value: string, reason: string): Promise<boolean> => {
       let ack: PendingAck | null = null;
       try {
         const session = sessionRegistry.getSession(sessionId);

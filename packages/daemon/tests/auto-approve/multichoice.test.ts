@@ -88,12 +88,16 @@ describe('buildMultiChoicePrompt', () => {
       'Reject plan',
     ]);
     expect(messages).toHaveLength(2);
-    expect(messages[0].role).toBe('system');
-    expect(messages[0].content).toContain('PICK ONE option');
-    expect(messages[1].role).toBe('user');
-    expect(messages[1].content).toContain('  1. Approve plan');
-    expect(messages[1].content).toContain('  2. Approve and stay in plan mode');
-    expect(messages[1].content).toContain('  3. Reject plan');
+    const [system, user] = messages as [
+      { role: string; content: string },
+      { role: string; content: string },
+    ];
+    expect(system.role).toBe('system');
+    expect(system.content).toContain('PICK ONE option');
+    expect(user.role).toBe('user');
+    expect(user.content).toContain('  1. Approve plan');
+    expect(user.content).toContain('  2. Approve and stay in plan mode');
+    expect(user.content).toContain('  3. Reject plan');
   });
 
   test('appends user instructions when provided', () => {
@@ -103,15 +107,17 @@ describe('buildMultiChoicePrompt', () => {
       ['Yes', 'No'],
       'Always escalate plans involving database migrations.',
     );
-    expect(messages[0].content).toContain('USER-SPECIFIC GUIDANCE');
-    expect(messages[0].content).toContain('database migrations');
+    const [system] = messages as [{ role: string; content: string }];
+    expect(system.content).toContain('USER-SPECIFIC GUIDANCE');
+    expect(system.content).toContain('database migrations');
   });
 
   test('truncates very long inputs', () => {
     const longInput = { plan: 'x'.repeat(5000) };
     const messages = buildMultiChoicePrompt('ExitPlanMode', longInput, ['Yes', 'No']);
-    expect(messages[1].content.length).toBeLessThan(2500);
-    expect(messages[1].content).toContain('...');
+    const user = messages[1] as { content: string };
+    expect(user.content.length).toBeLessThan(2500);
+    expect(user.content).toContain('...');
   });
 });
 
