@@ -1018,15 +1018,22 @@ async function createNewSession(
       onQuestion: (question) => {
         // PTY parser runs as a secondary source so Y/N, multi-choice, and
         // free-text prompts (which hooks never carry) reach the user with
-        // their real options. We still gate two cases:
-        //   1. Subagent prompts are confined to the subagent — the user
-        //      cannot answer them without breaking Task semantics.
-        //   2. The hook's hardcoded Yes/Yes-always/No is already emitted by
-        //      HookEventBridge for any tool permission. PTY sees the same
-        //      three options on screen but with different surrounding text,
-        //      so the dedup window cannot catch them — drop here by shape.
+        // their real options.
+        //
+        // We do NOT gate on subagent-context here (#405). The PTY parser
+        // only emits questions for prompts visible on the main terminal
+        // screen, which by construction means the user can see them and
+        // wants to answer them, even if a Task tool is in flight (e.g. a
+        // subagent escalated a question up to the main agent's PTY). The
+        // primary `agent_id` filter at hook-bridge-setup.ts already drops
+        // hook events tagged as subagent-internal; whatever leaks through
+        // and lands on screen is genuinely user-facing.
+        //
+        // We DO drop the hook's hardcoded Yes/Yes-always/No when the PTY
+        // re-emits the same shape: HookEventBridge emits the default
+        // 3-set immediately and the dedup window cannot catch it because
+        // the surrounding text differs.
         if (hookBridge !== null) {
-          if (hookBridge.isInSubagentContext()) return;
           if (looksLikeDefaultPermissionQuestion(question)) return;
         }
         messageApi.handleQuestion(question);
