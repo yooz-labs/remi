@@ -629,4 +629,37 @@ describe('HookEventBridge', () => {
       expect(bridge.isInSubagentContext()).toBe(false);
     });
   });
+
+  describe('isHandlingPermission (#413)', () => {
+    it('returns false on a fresh bridge', () => {
+      const { bridge } = createBridge();
+      expect(bridge.isHandlingPermission()).toBe(false);
+    });
+
+    it('returns true while a permission is being handled within the dedup window', () => {
+      const { bridge } = createBridge();
+      bridge.markPermissionHandled();
+      // Effectively immediate; within window.
+      expect(bridge.isHandlingPermission()).toBe(true);
+    });
+
+    it('returns false after clearPermissionHandled', () => {
+      const { bridge } = createBridge();
+      bridge.markPermissionHandled();
+      bridge.clearPermissionHandled();
+      expect(bridge.isHandlingPermission()).toBe(false);
+    });
+
+    it('returns true after handlePermissionRequest emitted a question', () => {
+      // The escalate path sets lastPermissionEmitAt as a side effect.
+      const { bridge } = createBridge();
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      } as import('../../src/hooks/hook-types.ts').PermissionRequestHookInput);
+      expect(bridge.isHandlingPermission()).toBe(true);
+    });
+  });
 });

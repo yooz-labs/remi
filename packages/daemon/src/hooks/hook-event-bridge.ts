@@ -117,6 +117,16 @@ export class HookEventBridge {
     this.lastPermissionEmitAt = 0;
   }
 
+  /** True when a PermissionRequest is currently owned by the bridge or
+   *  by auto-approve (within the same dedup window). Callers in the
+   *  PTY question path use this to suppress redundant emissions while
+   *  auto-approve is in flight or the bridge already emitted the
+   *  question for the same prompt cycle (#413). */
+  isHandlingPermission(): boolean {
+    if (this.lastPermissionEmitAt === 0) return false;
+    return Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS;
+  }
+
   /** Returns HookServerEvents handlers wired to this bridge */
   hookHandlers(): Partial<HookServerEvents> {
     return {

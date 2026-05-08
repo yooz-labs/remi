@@ -1018,22 +1018,28 @@ async function createNewSession(
       onQuestion: (question) => {
         // PTY parser runs as a secondary source so Y/N, multi-choice, and
         // free-text prompts (which hooks never carry) reach the user with
-        // their real options.
+        // their real options. We gate two cases:
         //
-        // We do NOT gate on subagent-context here (#405). The PTY parser
-        // only emits questions for prompts visible on the main terminal
-        // screen, which by construction means the user can see them and
-        // wants to answer them, even if a Task tool is in flight (e.g. a
-        // subagent escalated a question up to the main agent's PTY). The
-        // primary `agent_id` filter at hook-bridge-setup.ts already drops
-        // hook events tagged as subagent-internal; whatever leaks through
-        // and lands on screen is genuinely user-facing.
+        //   1. Auto-approve / hook bridge is currently owning a permission
+        //      cycle (#413). The PTY observes the prompt on screen and
+        //      would emit a redundant question, firing a spurious push for
+        //      a prompt the user wasn't asked to handle (auto-approve
+        //      approved/denied internally) or that the bridge already
+        //      emitted (escalate path).
+        //   2. The hook's hardcoded Yes/Yes-always/No is already emitted by
+        //      HookEventBridge for any tool permission. PTY sees the same
+        //      three options on screen but with different surrounding text,
+        //      so the dedup window cannot catch them — drop here by shape.
         //
-        // We DO drop the hook's hardcoded Yes/Yes-always/No when the PTY
-        // re-emits the same shape: HookEventBridge emits the default
-        // 3-set immediately and the dedup window cannot catch it because
-        // the surrounding text differs.
+        // We do NOT gate on subagent-context (#405): the PTY parser only
+        // emits questions for prompts visible on the main terminal screen,
+        // which by construction the user can see and answer, even if a
+        // Task tool is in flight. The primary `agent_id` filter at
+        // hook-bridge-setup.ts already drops hook events tagged as
+        // subagent-internal; whatever leaks through and lands on screen
+        // is genuinely user-facing.
         if (hookBridge !== null) {
+          if (hookBridge.isHandlingPermission()) return;
           if (looksLikeDefaultPermissionQuestion(question)) return;
         }
         messageApi.handleQuestion(question);
