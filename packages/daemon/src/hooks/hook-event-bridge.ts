@@ -117,13 +117,13 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      // Subagent/team context: don't bubble inter-agent questions to the user.
-      if (this.subagentContext.isInSubagentContext()) {
-        console.debug(
-          `[HookEventBridge] Suppressed subagent Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
-        );
-        return;
-      }
+      // Phase 4 (#419): the subagentContext drop previously sat here.
+      // It was redundant defense: cli.ts hook-bridge-setup already
+      // forwards subagent events (phase 4 removed the agent_id gate)
+      // and the tracker handles presence by PTY confirmation. Keep
+      // SubagentContextTracker for the auto-approve default-deny path
+      // (still consumed via hookBridge.isInSubagentContext()).
+      //
       // Forward the question — push semantics live in the tracker
       // (cli.ts wiring). A trailing Notification arriving after
       // PermissionRequest replaces the pending record, which is fine
@@ -170,16 +170,12 @@ export class HookEventBridge {
   }
 
   handlePermissionRequest(input: PermissionRequestHookInput): void {
-    // Subagent/team context: suppress inter-agent questions from reaching the user.
-    // The main agent is blocked waiting for Task to return and cannot generate
-    // questions during this window. Any PermissionRequest here is from a subagent.
-    if (this.subagentContext.isInSubagentContext()) {
-      console.debug(
-        `[HookEventBridge] Suppressed subagent PermissionRequest: tool=${input.tool_name}`,
-      );
-      return;
-    }
-
+    // Phase 4 (#419): the subagentContext drop previously sat here.
+    // After phase 3 wired in the QuestionPresenceTracker, push semantics
+    // are presence-gated regardless of subagent context — a subagent
+    // prompt that does not render on the user's PTY does not push, and
+    // one that does is genuinely answerable. The tracker handles both
+    // cases; this method now only builds the question payload.
     const toolName = input.tool_name || 'unknown tool';
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
     const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;

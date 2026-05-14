@@ -420,31 +420,36 @@ export function setupHookBridge(
       log(`[Hooks] Dropped post-SessionEnd Notification: type=${input.notification_type}`);
       return;
     }
-    // Subagent notifications must not bubble up to the user (phantom prompts).
-    if (isSubagentEvent(input)) {
-      log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
-      return;
-    }
+    // Phase 4 (#419): subagent notifications previously dropped here
+    // based on agent_id presence. Now we forward; QuestionPresenceTracker
+    // gates the push by PTY presence. A hot-switched subagent view that
+    // renders a permission prompt on the user's PTY produces a push;
+    // a background subagent does not (PTY never confirms presence).
     handlers.onNotification?.(input);
   });
   hookServer.on('PermissionRequest', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
 
-    // Subagent PermissionRequest: Claude Code sets `agent_id` on events
-    // originating from Task/Agent-spawned subagents or team members. Those
-    // events share the main session_id and transcript but are handled
-    // internally by Claude Code, so they MUST NOT be injected into our main PTY.
+    // Phase 4 (#419): subagent PermissionRequest events (events with
+    // agent_id set, originating from Task/Agent-spawned subagents) used
+    // to be dropped at this seam. Under phase 3's PTY-presence model,
+    // "what's on screen" is the truth: a hot-switched subagent view
+    // that renders a permission prompt IS user-answerable, and dropping
+    // the hook here loses the rich tool/option metadata. Forward the
+    // event; the tracker pairs it with PTY confirmation. Auto-approve
+    // and the inSubagent default-deny safety net below still gate
+    // injection independently.
     if (isSubagentEvent(input)) {
       log(
-        `[Hooks] Dropped subagent PermissionRequest: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
-      return;
     }
 
-    // Legacy nested-Task context kept as a secondary safety net for the
-    // rare case where agent_id is absent but the hook bridge's nested-task
-    // tracker caught the descent.
+    // Nested-Task context (secondary safety net for cases where
+    // agent_id is absent). Used by the auto-approve default-deny path
+    // below to avoid hanging a subagent whose only escalation route is
+    // a main-PTY prompt the user cannot see.
     const inSubagent = hookBridge.isInSubagentContext();
     const sessionTag = sessionId.slice(0, 8);
 
