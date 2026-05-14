@@ -263,22 +263,34 @@ describe('setupHookBridge', () => {
     expect(() => build()).not.toThrow();
   });
 
-  test('PermissionRequest with agent_id is dropped before reaching inject', async () => {
-    build({ autoApprove: true });
+  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve', async () => {
+    // Pre-phase-4, agent_id-tagged events were dropped at the listener
+    // boundary. Phase 4 demoted agent_id from kill-switch to metadata:
+    // the auto-approve LLM evaluates and injects just like a main-agent
+    // event. The push to iOS is still gated by PTY presence downstream,
+    // so a background subagent's auto-approved permission silently
+    // executes; a hot-switched subagent's prompt would surface via the
+    // tracker's PTY confirmation path.
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-123',
+      transcript_path: path.join(tmpDir, 'sub.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-123',
+      session_id: 'claude-sub-123',
       agent_id: 'subagent-abc',
       agent_type: 'task',
       tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
+      tool_input: { command: 'ls' },
     });
 
-    // Let any queued microtasks run.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Wait for evaluate() + inject() to resolve.
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // Subagent PermissionRequests must NOT inject into the main PTY.
-    expect(ptySubmits).toEqual([]);
+    expect(ptySubmits).toEqual(['1']);
   });
 
   test('PermissionRequest with auto-approve APPROVE injects "1" (status: executing)', async () => {
@@ -863,6 +875,346 @@ describe('setupHookBridge', () => {
 
     expect(pushed.length).toBe(1);
     expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 4 (#419): agent_id demoted from kill-switch to metadata.
+  // Subagent PermissionRequest + Notification events flow through to the
+  // tracker; push is gated by PTY presence, not by the agent_id tag.
+  // -------------------------------------------------------------------------
+
+  test('Phase 4 wiring: subagent PermissionRequest + PTY-visible prompt fires a push', async () => {
+    // The user hot-switches to a subagent's view; the subagent's prompt
+    // is on the user's PTY screen. The hook fires with agent_id set.
+    // Under the new contract, this is an answerable prompt: tracker
+    // records the hook, PTY confirms, push fires with merged metadata.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null, // no auto-approve -> escalate path
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-A',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subA.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-A',
+      agent_id: 'subagent-A',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/foo.ts' },
+      permission_suggestions: ['Yes', 'Always', 'No'],
+    });
+
+    // Hook recorded the question in the tracker (no push yet).
+    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(pushed.length).toBe(0);
+
+    // PTY parser confirms the prompt is on the user's terminal.
+    tracker.onPTYPromptVisible({
+      id: generateId(),
+      text: 'Allow Edit: /tmp/foo.ts?',
+      options: [
+        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
+        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
+        { label: '3', value: '3', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(pushed.length).toBe(1);
+    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Always', 'No']);
+  });
+
+  test('Phase 4 wiring: subagent PermissionRequest with no PTY confirmation drops cleanly', async () => {
+    // Background subagent path: hook fires (agent_id set), no PTY emit
+    // because the user is not hot-switched into this subagent's view.
+    // The tracker holds the pending; a subsequent status transition
+    // (PostToolUse -> 'thinking') clears it. No push reaches iOS.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null,
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-B',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subB.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-B',
+      agent_id: 'subagent-B',
+      agent_type: 'task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(pushed.length).toBe(0);
+
+    // Subagent finished without the user seeing the prompt (background).
+    hookServer.fire('PostToolUse', {
+      session_id: 'claude-sub-B',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_response: { exit_code: 0 },
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(pushed.length).toBe(0);
+  });
+
+  test('Phase 4 wiring: subagent Notification(permission_prompt) records in tracker', async () => {
+    // Notification(permission_prompt) used to be dropped at the listener
+    // when agent_id was present. Under phase 4 it flows to the tracker
+    // just like its PermissionRequest sibling.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-N',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subN.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('Notification', {
+      session_id: 'claude-sub-N',
+      agent_id: 'subagent-N',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+  });
+
+  test('Phase 4 wiring: subagent PermissionRequest with auto-approve still injects normally', async () => {
+    // Pre-phase-4 this path returned early (dropped). Now it goes through
+    // auto-approve like a main-agent prompt. The push is suppressed
+    // structurally: inject succeeds, status flips to executing, tracker
+    // had no pending (handlePermissionRequest is only called via
+    // escalateToUser, which auto-approve never enters on the approve
+    // branch), so nothing pushes.
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-AA',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subAA.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-AA',
+      agent_id: 'subagent-AA',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['1']);
+  });
+
+  test('Phase 4 wiring: subagent PermissionRequest + auto-approve deny injects "3"', async () => {
+    // Mirrors the approve case but on the deny branch. A refactor that
+    // accidentally routed deny to escalateToUser would break the
+    // non-hang guarantee for background subagents.
+    build({ autoApprove: true, autoApproveDecision: 'deny' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-deny',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subdeny.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-deny',
+      agent_id: 'subagent-deny',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['3']);
+  });
+
+  test('Phase 4 wiring: escalate + active Task context default-denies (no hang)', async () => {
+    // PR #424 review pr-test-analyzer Gap 2 (criticality 8): when
+    // auto-approve cannot decide ('escalate') AND a Task tool call is
+    // open on the main session, the bridge must inject '3' rather than
+    // surface a question (the user can't answer a subagent's prompt
+    // visible only to the subagent). With the TOCTOU fix from this
+    // commit, the subagent context is read live in the .then(), so a
+    // Task that opens mid-eval is correctly caught.
+    build({ autoApprove: true, autoApproveDecision: 'escalate' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'esctask.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // Open a synchronous Task context.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: { subagent_type: 'general-purpose', prompt: 'do stuff' },
+      tool_use_id: 'tu_task_esc',
+    });
+
+    // Subagent-internal Bash PermissionRequest (no agent_id; the
+    // Task-context safety net catches it).
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['3']);
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('Phase 4 wiring: autoApproveThrows + active Task context default-denies', async () => {
+    // PR #424 review pr-test-analyzer Gap 3 (criticality 7): the
+    // .catch() handler's `if (hookBridge.isInSubagentContext())` branch.
+    // A dropped guard would route the catch through escalateToUser
+    // instead of inject-deny, hanging the subagent.
+    build({ autoApprove: true, autoApproveThrows: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-throws-task',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'throws-task.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-throws-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {},
+      tool_use_id: 'tu_task_throws',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-throws-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['3']);
+  });
+
+  test('Phase 4 wiring: no auto-approve + active Task context default-denies', async () => {
+    // PR #424 review pr-test-analyzer #4 (criticality 6): the
+    // synchronous fallback `if (hookBridge.isInSubagentContext())` at
+    // the bottom of the listener (no autoApproveService case). Uses a
+    // Task context, not an agent_id-tagged event, so the
+    // SubagentContextTracker bookkeeping is what carries the gate.
+    build(); // no autoApprove
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'noaatask.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {},
+      tool_use_id: 'tu_task_noaa',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    expect(ptySubmits).toEqual(['3']);
+    expect(messageApiLog.questionCalls).toBe(0);
   });
 
   // -------------------------------------------------------------------------

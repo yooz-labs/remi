@@ -65,7 +65,11 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
 
     expect(bridge.isInSubagentContext()).toBe(true);
 
-    // Subagent's Bash PermissionRequest should now be suppressed
+    // Phase 4 (#419): PermissionRequest events during a Task tool call
+    // are no longer dropped at the bridge level. The tracker (cli.ts
+    // wiring) gates push by PTY presence. This test now asserts the
+    // bookkeeping: handlePermissionRequest forwards both events, and
+    // isInSubagentContext() tracks tool_use_id correctly.
     expect(
       await post(url, {
         hook_event_name: 'PermissionRequest',
@@ -78,7 +82,8 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
       }),
     ).toBe(200);
 
-    expect(questions).toHaveLength(0);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.text).toContain('nmap -sV');
 
     // PostToolUse(Task) with matching tool_use_id closes context
     expect(
@@ -97,7 +102,7 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
 
     expect(bridge.isInSubagentContext()).toBe(false);
 
-    // Now a real user-directed PermissionRequest should pass through
+    // Post-Task PermissionRequest still forwards.
     expect(
       await post(url, {
         hook_event_name: 'PermissionRequest',
@@ -110,14 +115,17 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
       }),
     ).toBe(200);
 
-    expect(questions).toHaveLength(1);
+    expect(questions).toHaveLength(2);
+    expect(questions[1]?.text).toContain('dig example.com');
   });
 
-  test('agent_id present: subagent PermissionRequest does not emit user question', async () => {
-    // Verified via REMI_HOOK_DEBUG 2026-04-16: Task/Agent subagents and team
-    // members tag their hook events with `agent_id`. Main events don't.
-    // This test models the cli.ts hook-server-level filter: bridge handler is
-    // not called for agent-tagged events.
+  test('Phase 4 (#419): subagent PermissionRequest with agent_id forwards to the bridge', async () => {
+    // Pre-phase-4 the cli.ts hook listener dropped events with agent_id
+    // set, suppressing user-visible questions for Task/Agent subagents.
+    // Phase 4 demoted agent_id to metadata: events forward to the
+    // bridge and the QuestionPresenceTracker (cli.ts) gates push by
+    // PTY presence. This test models the new cli.ts behavior: no
+    // listener-level drop, both events reach the bridge.
     const questions: Question[] = [];
     const bridge = new HookEventBridge('session-1' as UUID, {
       onStatusChange: () => {},
@@ -126,11 +134,7 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
     });
     server = new HookServer({ port: 0 });
     const h = bridge.hookHandlers();
-    // Simulate cli.ts: skip dispatch when agent_id is set.
-    server.on('PermissionRequest', (input) => {
-      if (typeof input.agent_id === 'string' && input.agent_id.length > 0) return;
-      h.onPermissionRequest?.(input);
-    });
+    server.on('PermissionRequest', (input) => h.onPermissionRequest?.(input));
     server.start();
     const url = `http://127.0.0.1:${server.port}/hooks`;
 
@@ -149,10 +153,12 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
       }),
     ).toBe(200);
 
-    // Must NOT emit a user-visible question
-    expect(questions).toHaveLength(0);
+    // Bridge forwarded the question; cli.ts wiring would route it to
+    // tracker.recordPendingHook (push only on PTY confirmation).
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.text).toContain('nmap --version');
 
-    // Main PermissionRequest (no agent_id) still passes through
+    // Main PermissionRequest (no agent_id) forwards too.
     expect(
       await post(url, {
         hook_event_name: 'PermissionRequest',
@@ -165,8 +171,8 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
       }),
     ).toBe(200);
 
-    expect(questions).toHaveLength(1);
-    expect(questions[0]?.text).toContain('dig example.com');
+    expect(questions).toHaveLength(2);
+    expect(questions[1]?.text).toContain('dig example.com');
   });
 
   test('PreToolUse without tool_use_id degrades gracefully (no context)', async () => {

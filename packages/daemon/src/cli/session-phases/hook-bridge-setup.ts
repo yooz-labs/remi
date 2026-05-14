@@ -363,9 +363,17 @@ export function setupHookBridge(
 
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
-  // transcript, so session-id filtering cannot distinguish them. Drop these
-  // at the hook layer so status updates, auto-approve, question emission,
-  // and PTY injection all stay scoped to the main interactive session.
+  // transcript, so session-id filtering cannot distinguish them.
+  //
+  // Split policy:
+  //   - `PreToolUse` / `PostToolUse` / `SessionStart`: dropped here so
+  //     status updates and Task-tool tracking stay scoped to the main
+  //     interactive session.
+  //   - `PermissionRequest` / `Notification(permission_prompt)`: forwarded
+  //     (phase 4, #419). Push is gated by PTY presence in the tracker,
+  //     not by agent_id. A hot-switched subagent view that renders a
+  //     permission prompt IS user-answerable; dropping the hook loses
+  //     the rich tool/option metadata for that case.
   const isSubagentEvent = (input: { agent_id?: string }): boolean =>
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
@@ -420,32 +428,42 @@ export function setupHookBridge(
       log(`[Hooks] Dropped post-SessionEnd Notification: type=${input.notification_type}`);
       return;
     }
-    // Subagent notifications must not bubble up to the user (phantom prompts).
-    if (isSubagentEvent(input)) {
-      log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
-      return;
-    }
+    // Phase 4 (#419): subagent notifications previously dropped here
+    // based on agent_id presence. Now we forward; QuestionPresenceTracker
+    // gates the push by PTY presence. A hot-switched subagent view that
+    // renders a permission prompt on the user's PTY produces a push;
+    // a background subagent does not (PTY never confirms presence).
     handlers.onNotification?.(input);
   });
   hookServer.on('PermissionRequest', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
 
-    // Subagent PermissionRequest: Claude Code sets `agent_id` on events
-    // originating from Task/Agent-spawned subagents or team members. Those
-    // events share the main session_id and transcript but are handled
-    // internally by Claude Code, so they MUST NOT be injected into our main PTY.
+    // Phase 4 (#419): subagent PermissionRequest events (events with
+    // agent_id set, originating from Task/Agent-spawned subagents) used
+    // to be dropped at this seam. Under phase 3's PTY-presence model,
+    // "what's on screen" is the truth: a hot-switched subagent view
+    // that renders a permission prompt IS user-answerable, and dropping
+    // the hook here loses the rich tool/option metadata. Forward the
+    // event; the tracker pairs it with PTY confirmation. Auto-approve
+    // and the inSubagent default-deny safety net below still gate
+    // injection independently.
     if (isSubagentEvent(input)) {
       log(
-        `[Hooks] Dropped subagent PermissionRequest: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
-      return;
     }
 
-    // Legacy nested-Task context kept as a secondary safety net for the
-    // rare case where agent_id is absent but the hook bridge's nested-task
-    // tracker caught the descent.
-    const inSubagent = hookBridge.isInSubagentContext();
+    // Nested-Task context (secondary safety net for cases where
+    // agent_id is absent). Used by the auto-approve default-deny path
+    // below to avoid hanging a subagent whose only escalation route is
+    // a main-PTY prompt the user cannot see.
+    //
+    // Read live (not captured) at each branch: auto-approve evaluate()
+    // is async, so the Task context can open or close between when this
+    // listener fires and when the .then()/.catch() runs. Capturing
+    // would TOCTOU — a Task that closed mid-eval would still trigger
+    // default-deny, and a Task that opened mid-eval would escape it.
     const sessionTag = sessionId.slice(0, 8);
 
     // Inject an answer into the PTY. Returns true on success. On failure
@@ -530,7 +548,7 @@ export function setupHookBridge(
           }
           // escalate: in a subagent context, default-deny to avoid hanging
           // the subagent. The user could not answer it anyway.
-          if (inSubagent) {
+          if (hookBridge.isInSubagentContext()) {
             log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
             // If inject fails, the subagent is hung regardless (no main
             // PTY to escalate to). Log and accept.
@@ -543,7 +561,7 @@ export function setupHookBridge(
           // Last line of defense; must not leave an unhandled rejection.
           try {
             logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
-            if (inSubagent) {
+            if (hookBridge.isInSubagentContext()) {
               await inject('3', 'subagent-error-default-deny');
               return;
             }
@@ -556,8 +574,11 @@ export function setupHookBridge(
     }
 
     // No auto-approve. In a subagent context, still must not hang the
-    // subagent: default-deny rather than emit a question the user can't answer.
-    if (inSubagent) {
+    // subagent: default-deny rather than emit a question the user can't
+    // answer. Synchronous fallback — read live for symmetry with the
+    // async branches above; no TOCTOU here but the consistent shape
+    // helps a future maintainer.
+    if (hookBridge.isInSubagentContext()) {
       log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
       inject('3', 'subagent-no-aa-default-deny').catch((err) => {
         logError(`[${sessionTag}] Failed to inject default-deny:`, err);

@@ -409,8 +409,13 @@ describe('HookEventBridge', () => {
     });
   });
 
-  describe('subagent context filtering (issue #316)', () => {
-    it('suppresses PermissionRequest while inside a Task tool call', () => {
+  describe('subagent context filtering (issue #316, phase 4 #419)', () => {
+    it('forwards PermissionRequest during a Task tool call (tracker handles presence)', () => {
+      // Phase 4 (#419): the subagentContext drop in handlePermissionRequest
+      // is removed. The bridge now forwards every question; whether a push
+      // fires is decided by the QuestionPresenceTracker downstream, based
+      // on PTY confirmation. A hot-switched subagent view that renders
+      // a permission prompt on the user's PTY IS user-answerable.
       const { bridge, questions } = createBridge();
 
       // Main agent spawns subagent via Task
@@ -432,8 +437,9 @@ describe('HookEventBridge', () => {
         tool_input: { command: 'nmap --version' },
       } as PermissionRequestHookInput);
 
-      // User should NOT see this question
-      expect(questions).toHaveLength(0);
+      // Bridge forwards the question; the tracker (cli.ts wiring) gates push.
+      expect(questions).toHaveLength(1);
+      expect(questions[0]?.text).toContain('nmap --version');
 
       // Task completes; context exits
       bridge.handlePostToolUse({
@@ -447,7 +453,7 @@ describe('HookEventBridge', () => {
 
       expect(bridge.isInSubagentContext()).toBe(false);
 
-      // Now a real user-facing PermissionRequest SHOULD pass through
+      // Post-Task PermissionRequest passes through unchanged.
       bridge.handlePermissionRequest({
         ...makeCommon(),
         hook_event_name: 'PermissionRequest',
@@ -455,11 +461,14 @@ describe('HookEventBridge', () => {
         tool_input: { command: 'dig example.com' },
       } as PermissionRequestHookInput);
 
-      expect(questions).toHaveLength(1);
-      expect(questions[0]?.text).toContain('dig example.com');
+      expect(questions).toHaveLength(2);
+      expect(questions[1]?.text).toContain('dig example.com');
     });
 
-    it('suppresses Notification(permission_prompt) while in subagent context', () => {
+    it('forwards Notification(permission_prompt) during a Task tool call', () => {
+      // Mirror of the PermissionRequest test above. The bridge no longer
+      // drops Notification(permission_prompt) based on subagent context;
+      // the tracker collapses hook+PTY events into a single push.
       const { bridge, questions } = createBridge();
 
       bridge.handlePreToolUse({
@@ -470,7 +479,6 @@ describe('HookEventBridge', () => {
         tool_use_id: 'tu_1',
       } as PreToolUseHookInput);
 
-      // Notification(permission_prompt) that would fire during subagent work
       bridge.handleNotification({
         ...makeCommon(),
         hook_event_name: 'Notification',
@@ -478,7 +486,8 @@ describe('HookEventBridge', () => {
         message: 'Claude needs your permission to use Bash',
       } as NotificationHookInput);
 
-      expect(questions).toHaveLength(0);
+      expect(questions).toHaveLength(1);
+      expect(questions[0]?.text).toBe('Claude needs your permission to use Bash');
     });
 
     it('concurrent Task calls: context exits only when all complete', () => {
@@ -511,13 +520,17 @@ describe('HookEventBridge', () => {
 
       expect(bridge.isInSubagentContext()).toBe(true); // B still running
 
+      // Phase 4: PermissionRequest forwards even in subagent context; the
+      // tracker handles push gating downstream. This test now only
+      // verifies the subagentContext bookkeeping (reset semantics), not
+      // bridge-level suppression.
       bridge.handlePermissionRequest({
         ...makeCommon(),
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
         tool_input: { command: 'ls' },
       } as PermissionRequestHookInput);
-      expect(questions).toHaveLength(0);
+      expect(questions).toHaveLength(1);
 
       // Close B
       bridge.handlePostToolUse({
