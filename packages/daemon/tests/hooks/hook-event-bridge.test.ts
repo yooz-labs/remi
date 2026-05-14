@@ -354,8 +354,13 @@ describe('HookEventBridge', () => {
     expect(handlers.onSessionEnd).toBeDefined();
   });
 
-  describe('PermissionRequest + Notification dedup', () => {
-    it('suppresses Notification after PermissionRequest with suggestions', () => {
+  describe('PermissionRequest + Notification forwarding', () => {
+    it('emits BOTH question events when PermissionRequest is followed by Notification(permission_prompt)', () => {
+      // Phase 3: the 5 s `lastPermissionEmitAt` dedup window is gone. Both
+      // hook events now forward their metadata; QuestionPresenceTracker
+      // (cli.ts wiring) collapses them into a single push because the
+      // tracker only holds one `pending` slot at a time and PTY confirms
+      // once. This test pins the bridge contract: hand both events through.
       const { bridge, questions } = createBridge();
 
       bridge.handlePermissionRequest({
@@ -365,10 +370,6 @@ describe('HookEventBridge', () => {
         tool_input: { file_path: '/tmp/foo.ts' },
         permission_suggestions: ['Yes', 'Always', 'No'],
       } as PermissionRequestHookInput);
-
-      expect(questions.length).toBe(1);
-
-      // Notification arrives after; should be suppressed
       bridge.handleNotification({
         ...makeCommon(),
         hook_event_name: 'Notification',
@@ -376,36 +377,12 @@ describe('HookEventBridge', () => {
         message: 'Allow Edit: /tmp/foo.ts?',
       } as NotificationHookInput);
 
-      expect(questions.length).toBe(1);
+      expect(questions.length).toBe(2);
     });
 
-    it('suppresses Notification after PermissionRequest without suggestions', () => {
+    it('allows standalone Notification when no preceding PermissionRequest', () => {
       const { bridge, questions } = createBridge();
 
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'npm test' },
-      } as PermissionRequestHookInput);
-
-      expect(questions.length).toBe(1);
-
-      // Notification with "Claude needs your permission" text arrives; suppressed
-      bridge.handleNotification({
-        ...makeCommon(),
-        hook_event_name: 'Notification',
-        notification_type: 'permission_prompt',
-        message: 'Claude needs your permission to use Bash',
-      } as NotificationHookInput);
-
-      expect(questions.length).toBe(1);
-    });
-
-    it('allows standalone Notification when no recent PermissionRequest', () => {
-      const { bridge, questions } = createBridge();
-
-      // No preceding PermissionRequest
       bridge.handleNotification({
         ...makeCommon(),
         hook_event_name: 'Notification',
@@ -661,39 +638,6 @@ describe('HookEventBridge', () => {
       } as SessionStartHookInput);
 
       expect(bridge.isInSubagentContext()).toBe(false);
-    });
-  });
-
-  describe('isHandlingPermission (#413)', () => {
-    it('returns false on a fresh bridge', () => {
-      const { bridge } = createBridge();
-      expect(bridge.isHandlingPermission()).toBe(false);
-    });
-
-    it('returns true while a permission is being handled within the dedup window', () => {
-      const { bridge } = createBridge();
-      bridge.markPermissionHandled();
-      // Effectively immediate; within window.
-      expect(bridge.isHandlingPermission()).toBe(true);
-    });
-
-    it('returns false after clearPermissionHandled', () => {
-      const { bridge } = createBridge();
-      bridge.markPermissionHandled();
-      bridge.clearPermissionHandled();
-      expect(bridge.isHandlingPermission()).toBe(false);
-    });
-
-    it('returns true after handlePermissionRequest emitted a question', () => {
-      // The escalate path sets lastPermissionEmitAt as a side effect.
-      const { bridge } = createBridge();
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
-      } as import('../../src/hooks/hook-types.ts').PermissionRequestHookInput);
-      expect(bridge.isHandlingPermission()).toBe(true);
     });
   });
 });
