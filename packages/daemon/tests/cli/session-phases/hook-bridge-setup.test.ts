@@ -414,6 +414,174 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
   });
 
+  // SessionStart restart pre-empt is source-agnostic: any rotation of
+  // session_id while PTY is running fires it. These tests cover the new-
+  // source, undefined-source, same-session_id (must NOT fire), missing
+  // session_id (defensive), and subagent (agent_id set, must NOT fire) axes.
+
+  test('SessionStart with unknown source AND new session_id pre-empts classifier (issue #416)', () => {
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'switch_chat_future_value',
+    });
+
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('SessionStart with undefined source AND new session_id pre-empts classifier (issue #416)', () => {
+    // Some Claude Code versions omit `source` entirely on session transitions.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('SessionStart with same session_id does NOT pre-empt (issue #416)', () => {
+    // Locks the `input.session_id !== claudeSessionId` guard against silent
+    // refactor regression: a duplicate SessionStart for the same session
+    // (e.g. SDK reconnect, source=startup repeat) must be a no-op.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with missing session_id does NOT pre-empt (issue #416)', () => {
+    // Defensive: malformed/incomplete event must be inert, not tear down.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with agent_id set does NOT pre-empt even on session_id mismatch (issue #416)', () => {
+    // isSubagentEvent guard: a subagent firing SessionStart with its own
+    // session_id (hypothetical future Claude Code shape) must not tear down
+    // main's watcher. Closes the gap the pre-PR narrow `source` gate covered
+    // by accident.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'subagent-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      agent_id: 'subagent-id-xyz',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
   // -------------------------------------------------------------------------
   // Regression #379 / #377: pre-emptive Notification dedup during slow
   // auto-approve evaluation. The PermissionRequest hook handler must mark

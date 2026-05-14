@@ -422,18 +422,24 @@ export function setupHookBridge(
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
   hookServer.on('SessionStart', (input) => {
-    // SessionStart with an explicit main-transition source (/clear /compact
-    // /resume) is the authoritative signal that our main Claude took a new
-    // session_id while our PTY kept running. Pre-empt the classifier by
-    // treating the old session as ended, so the classifier sees a 'restart'
-    // and cleanly switches the lock.
-    if (input.source === 'clear' || input.source === 'compact' || input.source === 'resume') {
-      if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
-        log(
-          `[Hooks] Main lifecycle transition (${input.source}): ${claudeSessionId} -> ${input.session_id}`,
-        );
-        mainSessionEnded = true; // classifier will pick this up as 'restart'
-      }
+    // Pre-empt the classifier into 'restart' on any session_id rotation while
+    // our PTY is alive, regardless of `source` (Claude Code rotates session_id
+    // through flows that omit source or carry undocumented values; the narrow
+    // source-allowlist that used to gate this would wedge the lock).
+    // isSubagentEvent guard mirrors the pattern used by other hookServer
+    // handlers: subagents share the main session_id today, but if a future
+    // version ever fires SessionStart with agent_id set and a different
+    // session_id, we must not tear down main's watcher.
+    if (
+      !isSubagentEvent(input) &&
+      claudeSessionId &&
+      input.session_id &&
+      input.session_id !== claudeSessionId
+    ) {
+      log(
+        `[Hooks] Main lifecycle transition (source=${input.source ?? 'unknown'}): ${claudeSessionId} -> ${input.session_id}`,
+      );
+      mainSessionEnded = true; // classifier will pick this up as 'restart'
     }
     initFromHookEvent(input);
     handlers.onSessionStart?.(input);
