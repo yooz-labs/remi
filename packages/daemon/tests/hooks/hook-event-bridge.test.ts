@@ -248,6 +248,10 @@ describe('HookEventBridge', () => {
 
       expect(questions.length).toBe(1);
       expect(questions[0]?.options.map((o) => o.label)).toEqual(expected);
+      // isYes / isNo are the load-bearing flags the iOS response handler
+      // uses to route taps; verify they survive the filtered-string path.
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
     });
   }
 

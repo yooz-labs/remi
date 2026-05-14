@@ -205,6 +205,23 @@ describe('normalisePermissionSuggestion', () => {
     circular['self'] = circular;
     expect(normalisePermissionSuggestion(circular)).toBeNull();
   });
+
+  test('drops Map and Set (both stringify to "{}")', () => {
+    // The auto-approve service depends on this null return: a non-null
+    // serialisation that round-trips to an empty-shape would inflate
+    // normalisedSuggestions.length and confuse the index-mismatch guard.
+    expect(normalisePermissionSuggestion(new Map())).toBeNull();
+    expect(normalisePermissionSuggestion(new Set())).toBeNull();
+  });
+
+  test('keeps toJSON output when it produces a non-empty JSON shape', () => {
+    // Documents the accepted behavior: an object with a custom toJSON
+    // that returns a value gets serialised via that value. The index-
+    // mismatch guard in evaluate() catches downstream issues if any.
+    const obj = { toJSON: () => ({ type: 'custom', n: 1 }) };
+    const out = normalisePermissionSuggestion(obj);
+    expect(out).toBe('{"type":"custom","n":1}');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -239,6 +256,38 @@ describe('AutoApproveService - error handling', () => {
     );
     await service.evaluate('Bash', { command: 'ls' });
     expect(errorLogs.some((l) => l.includes('[AutoApprove] ERROR'))).toBe(true);
+  });
+
+  test('evaluate-mode index-mismatch guard escalates without calling the LLM', async () => {
+    // permission_suggestions = ['Yes', {}, 'No']: empty object drops in
+    // normalisation -> normalisedSuggestions=['Yes','No'] (length 2) while
+    // raw length stays 3. The LLM's pick index would address the
+    // normalised list but inject() sends it to the PTY, which interprets
+    // against the original positions. Escalating before any LLM call is
+    // the only safe path. `base_url` points at a black hole so a missed
+    // guard would surface as a timeout instead of a fast escalate.
+    const callLogs: string[] = [];
+    const service = new AutoApproveService(
+      makeConfig({
+        base_url: 'http://localhost:1',
+        timeout: 5,
+        multichoice: 'evaluate',
+        log_decisions: true,
+      }),
+      (msg) => callLogs.push(msg),
+    );
+    const start = Date.now();
+    const result = await service.evaluate('Bash', { command: 'ls' }, undefined, [
+      'Yes',
+      {} as unknown,
+      'No',
+    ]);
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('unreadable entries');
+    expect(Date.now() - start).toBeLessThan(2000); // no LLM call attempted
+    expect(callLogs.some((l) => l.includes('escalate') && l.includes('unreadable entries'))).toBe(
+      true,
+    );
   });
 });
 

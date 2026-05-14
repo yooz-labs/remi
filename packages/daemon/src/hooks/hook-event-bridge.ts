@@ -234,19 +234,14 @@ export class HookEventBridge {
     let options: QuestionOption[];
 
     // permission_suggestions is a union of string labels and structured
-    // object entries (e.g. {type:"addDirectories",directories:[...]},
-    // {type:"setMode",mode:"..."}). The iOS question card renders text
-    // labels only, so we filter to strings here; the raw array (objects
-    // included) is forwarded to AutoApproveService separately so the LLM
-    // can reason about non-string options.
+    // object entries (e.g. {type:"addDirectories",...}, {type:"setMode",...}).
+    // The iOS question card renders text labels only, so filter to strings.
     const suggestions = input.permission_suggestions;
     const stringSuggestions = Array.isArray(suggestions)
       ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
       : [];
 
     if (stringSuggestions.length >= 2) {
-      // Real Yes/Always/No-style label set from Claude Code (Edit's
-      // ["Yes","Always","No"]). Map labels directly into options.
       options = stringSuggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
@@ -261,10 +256,7 @@ export class HookEventBridge {
       });
     } else {
       // Either no suggestions (Bash) or only structured object entries
-      // (addDirectories, setMode). The iOS card cannot render either case
-      // meaningfully, so fall back to the default binary 3-set; auto-
-      // approve still gets the raw value via the bridge-setup path and
-      // routes object-only arrays through the multi-choice classifier.
+      // that the iOS card cannot render. Fall back to the default 3-set.
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 

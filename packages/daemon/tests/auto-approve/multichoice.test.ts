@@ -78,6 +78,29 @@ describe('isMultiChoicePermission', () => {
     expect(isMultiChoicePermission('Bash', [null, 'Yes', 'No'] as readonly unknown[])).toBe(true);
     expect(isMultiChoicePermission('Bash', [{}, 1] as readonly unknown[])).toBe(true);
   });
+
+  test('returns true for the typed-object addDirectories shape', () => {
+    // Concrete shape observed live from Claude Code (2026-05-13).
+    // Locks the classifier so a future change adding a string-only fast
+    // path cannot regress this case into a silent binary route.
+    expect(
+      isMultiChoicePermission('Bash', [
+        {
+          type: 'addDirectories',
+          directories: ['/Users/foo/.claude/agents'],
+          destination: 'session',
+        },
+      ] as readonly unknown[]),
+    ).toBe(true);
+  });
+
+  test('returns true for the typed-object setMode shape', () => {
+    expect(
+      isMultiChoicePermission('Bash', [
+        { type: 'setMode', mode: 'bypassPermissions', destination: 'session' },
+      ] as readonly unknown[]),
+    ).toBe(true);
+  });
 });
 
 describe('buildMultiChoicePrompt', () => {

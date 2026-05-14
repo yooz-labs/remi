@@ -27,9 +27,8 @@ const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate'])
 /**
  * Convert one `permission_suggestions` entry into an LLM-ready label, or
  * null when the entry carries no useful content. Strings pass through;
- * objects are JSON-serialised (truncated to keep the prompt small) so the
- * LLM can read a structured option like `{"type":"addDirectories",...}`.
- * Exported for unit testing.
+ * objects are JSON-serialised so the LLM can read a structured option like
+ * `{"type":"addDirectories",...}` (very long serialisations are truncated).
  */
 export function normalisePermissionSuggestion(entry: unknown): string | null {
   if (typeof entry === 'string') {
@@ -137,11 +136,6 @@ export class AutoApproveService {
     const model = this.llmConfig.model;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
 
-    // Normalise the heterogeneous permission_suggestions union (string |
-    // {type, ...}) into LLM-ready labels. Strings pass through; object
-    // entries are JSON-serialised so the LLM can reason about structured
-    // options like addDirectories/setMode. null/undefined/empty entries
-    // are dropped so they never reach .toLowerCase or the prompt.
     const normalisedSuggestions = Array.isArray(permissionSuggestions)
       ? permissionSuggestions
           .map((s) => normalisePermissionSuggestion(s))
@@ -180,6 +174,26 @@ export class AutoApproveService {
         if (this.logDecisions) {
           this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
         }
+        return { decision: 'escalate', reasoning, durationMs: 0, model };
+      }
+
+      // Index-mismatch guard: when normalisation dropped one or more raw
+      // entries (empty object, Map/Set serialising to "{}", null, etc.),
+      // the LLM's pick-index would address the normalised list while
+      // inject() sends that index to the PTY, which interprets it against
+      // the original positions. Different orderings mean a "pick No"
+      // decision could land on a different option in the terminal. Escalate
+      // instead of risk silently injecting the wrong choice.
+      if (
+        isMultiChoice &&
+        this.multichoiceMode === 'evaluate' &&
+        Array.isArray(permissionSuggestions) &&
+        normalisedSuggestions !== undefined &&
+        normalisedSuggestions.length !== permissionSuggestions.length
+      ) {
+        const dropped = permissionSuggestions.length - normalisedSuggestions.length;
+        const reasoning = `permission_suggestions had ${dropped} unreadable entries (length ${permissionSuggestions.length} -> ${normalisedSuggestions.length}); cannot safely map LLM pick to PTY index`;
+        this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
         return { decision: 'escalate', reasoning, durationMs: 0, model };
       }
 

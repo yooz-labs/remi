@@ -69,12 +69,11 @@ export interface SessionStartHookInput extends HookCommonInput {
 // --- 20 new events ---
 
 /**
- * One entry in `permission_suggestions`. Strings are the original shape
- * (e.g. Edit's `["Yes", "Always", "No"]`). Objects carry tool-specific
- * structured options that Claude Code added later — observed shapes
- * include `{type: "addDirectories", directories: [...], destination}` and
- * `{type: "setMode", mode: "...", destination}`. The shape is open: future
- * Claude Code versions may add new `type` values without notice.
+ * One entry in `permission_suggestions`. Strings are the binary-label
+ * shape (e.g. Edit's `["Yes", "Always", "No"]`). Objects carry tool-
+ * specific structured options discriminated by `type` — for example
+ * `{type:"addDirectories",...}` or `{type:"setMode",...}`. The wider
+ * shape is open: callers must treat unknown `type` values as opaque.
  */
 export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
 
