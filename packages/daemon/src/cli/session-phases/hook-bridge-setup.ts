@@ -422,18 +422,20 @@ export function setupHookBridge(
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
   hookServer.on('SessionStart', (input) => {
-    // Any SessionStart whose session_id differs from our lock while our PTY is
-    // still running is a main-session rotation: pre-empt the classifier by
-    // marking the old session ended so it sees a 'restart' and switches the
-    // lock cleanly. Source-agnostic by design: Claude Code's documented
-    // sources are 'startup'|'resume'|'clear'|'compact' (hook-types.ts:61),
-    // but new flows (session switch UX, background→foreground handoff, future
-    // sources) rotate session_id without firing any of those. Without this
-    // widening, every event from the new session_id classifies as 'foreign'
-    // and the daemon wedges (epic #415, phase 1 / issue #416). Subagent
-    // SessionStarts are not a risk here: they share the main session_id and
-    // carry agent_id, which is filtered downstream.
-    if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
+    // Pre-empt the classifier into 'restart' on any session_id rotation while
+    // our PTY is alive, regardless of `source` (Claude Code rotates session_id
+    // through flows that omit source or carry undocumented values; the narrow
+    // source-allowlist that used to gate this would wedge the lock).
+    // isSubagentEvent guard mirrors the pattern used by other hookServer
+    // handlers: subagents share the main session_id today, but if a future
+    // version ever fires SessionStart with agent_id set and a different
+    // session_id, we must not tear down main's watcher.
+    if (
+      !isSubagentEvent(input) &&
+      claudeSessionId &&
+      input.session_id &&
+      input.session_id !== claudeSessionId
+    ) {
       log(
         `[Hooks] Main lifecycle transition (source=${input.source ?? 'unknown'}): ${claudeSessionId} -> ${input.session_id}`,
       );

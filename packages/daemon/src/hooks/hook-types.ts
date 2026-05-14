@@ -58,7 +58,11 @@ export interface StopHookInput extends HookCommonInput {
 
 export interface SessionStartHookInput extends HookCommonInput {
   hook_event_name: 'SessionStart';
-  source: 'startup' | 'resume' | 'clear' | 'compact';
+  /** Documented values at time of writing: 'startup' | 'resume' | 'clear' |
+   *  'compact'. Typed as an open optional string because Claude Code rotates
+   *  session_id through flows that emit other source values (or omit the
+   *  field entirely), and restart detection downstream is source-agnostic. */
+  source?: string;
   model: string;
 }
 

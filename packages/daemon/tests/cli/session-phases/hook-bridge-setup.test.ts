@@ -414,21 +414,14 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
   });
 
-  // -------------------------------------------------------------------------
-  // Issue #416 / epic #415 phase 1: SessionStart source-agnostic restart.
-  // Claude Code's documented sources are 'startup'|'resume'|'clear'|'compact'
-  // (hook-types.ts:61). New flows (session switch UX, background<->foreground
-  // handoff, future sources) rotate session_id without firing any of those
-  // four. Without the source-agnostic pre-empt, every event from the new
-  // session_id classifies as 'foreign' and the daemon wedges (observed live
-  // in practicum 2026-05-13: lock=6ea65ea4 incoming=7dcb5339, ~hundreds of
-  // dropped events in one rotation).
-  // -------------------------------------------------------------------------
+  // SessionStart restart pre-empt is source-agnostic: any rotation of
+  // session_id while PTY is running fires it. These tests cover the new-
+  // source, undefined-source, same-session_id (must NOT fire), missing
+  // session_id (defensive), and subagent (agent_id set, must NOT fire) axes.
 
   test('SessionStart with unknown source AND new session_id pre-empts classifier (issue #416)', () => {
     build();
 
-    // Lock onto claude-A.
     hookServer.fire('SessionStart', {
       session_id: 'claude-A',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
@@ -443,10 +436,6 @@ describe('setupHookBridge', () => {
       },
     } as never);
 
-    // Claude Code emits a SessionStart with an unfamiliar source (representing
-    // a future session-switch flow) and a different session_id while our PTY
-    // is still running. Pre-fix this dropped through the classifier as
-    // 'foreign' for every subsequent event.
     hookServer.fire('SessionStart', {
       session_id: 'claude-B',
       transcript_path: path.join(tmpDir, 'b.jsonl'),
@@ -454,13 +443,9 @@ describe('setupHookBridge', () => {
       source: 'switch_chat_future_value',
     });
 
-    // Restart side effects fired: old watcher torn down, messageApi reset.
     expect(stopCalls.length).toBeGreaterThanOrEqual(1);
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
 
-    // And the lock actually transitioned: a follow-up event from claude-B
-    // must reach the handler instead of being dropped as 'Dropped foreign'.
-    // PreToolUse routes to handleStatusChange('executing', tool_name).
     hookServer.fire('PreToolUse', {
       session_id: 'claude-B',
       tool_name: 'Bash',
@@ -470,9 +455,7 @@ describe('setupHookBridge', () => {
   });
 
   test('SessionStart with undefined source AND new session_id pre-empts classifier (issue #416)', () => {
-    // Defensive companion test: some Claude Code versions omit `source`
-    // entirely on session transitions. The fix must trigger on session_id
-    // mismatch alone, regardless of whether source is present.
+    // Some Claude Code versions omit `source` entirely on session transitions.
     build();
 
     hookServer.fire('SessionStart', {
@@ -489,7 +472,6 @@ describe('setupHookBridge', () => {
       },
     } as never);
 
-    // No `source` field at all.
     hookServer.fire('SessionStart', {
       session_id: 'claude-B',
       transcript_path: path.join(tmpDir, 'b.jsonl'),
@@ -505,6 +487,99 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
     expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('SessionStart with same session_id does NOT pre-empt (issue #416)', () => {
+    // Locks the `input.session_id !== claudeSessionId` guard against silent
+    // refactor regression: a duplicate SessionStart for the same session
+    // (e.g. SDK reconnect, source=startup repeat) must be a no-op.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with missing session_id does NOT pre-empt (issue #416)', () => {
+    // Defensive: malformed/incomplete event must be inert, not tear down.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with agent_id set does NOT pre-empt even on session_id mismatch (issue #416)', () => {
+    // isSubagentEvent guard: a subagent firing SessionStart with its own
+    // session_id (hypothetical future Claude Code shape) must not tear down
+    // main's watcher. Closes the gap the pre-PR narrow `source` gate covered
+    // by accident.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'subagent-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      agent_id: 'subagent-id-xyz',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
   });
 
   // -------------------------------------------------------------------------
