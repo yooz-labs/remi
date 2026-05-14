@@ -82,8 +82,18 @@ export class HookEventBridge {
     this.events = events;
   }
 
-  /** True when the main agent is inside a Task tool call (subagent running).
-   *  Callers can use this to short-circuit auto-approve entirely during team work. */
+  /** True when the main agent is inside a *synchronous* Task tool call
+   *  (subagent running and bracketed by PreToolUse(Task)/PostToolUse(Task)
+   *  on the main session). Callers use this to short-circuit auto-approve
+   *  during team work.
+   *
+   *  Async / background-spawned subagents (TaskCreate, TeamCreate) and
+   *  team members emit hook events with `agent_id` set but do NOT bracket
+   *  their lifetime with a PreToolUse on the main session — so this
+   *  method returns `false` even when such a subagent is active. The
+   *  primary filter for those is `agent_id` (handled at the
+   *  hook-bridge-setup listener layer). This method is defense in depth
+   *  for the synchronous case where `agent_id` is absent. */
   isInSubagentContext(): boolean {
     return this.subagentContext.isInSubagentContext();
   }

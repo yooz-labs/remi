@@ -1077,6 +1077,146 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual(['1']);
   });
 
+  test('Phase 4 wiring: subagent PermissionRequest + auto-approve deny injects "3"', async () => {
+    // Mirrors the approve case but on the deny branch. A refactor that
+    // accidentally routed deny to escalateToUser would break the
+    // non-hang guarantee for background subagents.
+    build({ autoApprove: true, autoApproveDecision: 'deny' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-deny',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subdeny.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-deny',
+      agent_id: 'subagent-deny',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['3']);
+  });
+
+  test('Phase 4 wiring: escalate + active Task context default-denies (no hang)', async () => {
+    // PR #424 review pr-test-analyzer Gap 2 (criticality 8): when
+    // auto-approve cannot decide ('escalate') AND a Task tool call is
+    // open on the main session, the bridge must inject '3' rather than
+    // surface a question (the user can't answer a subagent's prompt
+    // visible only to the subagent). With the TOCTOU fix from this
+    // commit, the subagent context is read live in the .then(), so a
+    // Task that opens mid-eval is correctly caught.
+    build({ autoApprove: true, autoApproveDecision: 'escalate' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'esctask.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // Open a synchronous Task context.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: { subagent_type: 'general-purpose', prompt: 'do stuff' },
+      tool_use_id: 'tu_task_esc',
+    });
+
+    // Subagent-internal Bash PermissionRequest (no agent_id; the
+    // Task-context safety net catches it).
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['3']);
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
+  test('Phase 4 wiring: autoApproveThrows + active Task context default-denies', async () => {
+    // PR #424 review pr-test-analyzer Gap 3 (criticality 7): the
+    // .catch() handler's `if (hookBridge.isInSubagentContext())` branch.
+    // A dropped guard would route the catch through escalateToUser
+    // instead of inject-deny, hanging the subagent.
+    build({ autoApprove: true, autoApproveThrows: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-thr-task',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'thrtask.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-thr-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {},
+      tool_use_id: 'tu_task_thr',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-thr-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['3']);
+  });
+
+  test('Phase 4 wiring: no auto-approve + active Task context default-denies', async () => {
+    // PR #424 review pr-test-analyzer #4 (criticality 6): the
+    // synchronous fallback `if (hookBridge.isInSubagentContext())` at
+    // the bottom of the listener (no autoApproveService case). Uses a
+    // Task context, not an agent_id-tagged event, so the
+    // SubagentContextTracker bookkeeping is what carries the gate.
+    build(); // no autoApprove
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'noaatask.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {},
+      tool_use_id: 'tu_task_noaa',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    expect(ptySubmits).toEqual(['3']);
+    expect(messageApiLog.questionCalls).toBe(0);
+  });
+
   // -------------------------------------------------------------------------
   // Issue #387: cancel stale auto-approve LLM eval on advance signals
   // -------------------------------------------------------------------------

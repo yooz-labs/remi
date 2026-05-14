@@ -55,8 +55,23 @@ export class QuestionPresenceTracker {
    * Hook fired (PermissionRequest or Notification(permission_prompt)).
    * Stash the question; do NOT push yet. Push happens when PTY confirms
    * the prompt is visible, or never if status moves past 'waiting' first.
+   *
+   * Replacement policy: the newer hook wins. This is correct for the
+   * same-prompt double-fire case (PermissionRequest then Notification
+   * for the same prompt) but is a known weak spot for concurrent
+   * subagents (phase 4, #419) — if two different agents have prompts
+   * in flight, the second silently overwrites the first. The PTY
+   * presence gate still prevents the wrong push from firing for an
+   * off-screen agent; what is lost is option-label accuracy when the
+   * on-screen agent's hook arrived earlier. An agent_id-aware tracker
+   * would fix this structurally; tracked as a follow-up.
    */
   recordPendingHook(question: Question): void {
+    if (this.pending !== null) {
+      console.debug(
+        `[QuestionPresenceTracker] Overwriting pending hook (old="${this.pending.text.slice(0, 60)}", new="${question.text.slice(0, 60)}")`,
+      );
+    }
     this.pending = question;
   }
 
