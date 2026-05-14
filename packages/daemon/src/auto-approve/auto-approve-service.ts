@@ -25,6 +25,30 @@ type BinaryDecision = 'approve' | 'deny' | 'escalate';
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 /**
+ * Convert one `permission_suggestions` entry into an LLM-ready label, or
+ * null when the entry carries no useful content. Strings pass through;
+ * objects are JSON-serialised (truncated to keep the prompt small) so the
+ * LLM can read a structured option like `{"type":"addDirectories",...}`.
+ * Exported for unit testing.
+ */
+export function normalisePermissionSuggestion(entry: unknown): string | null {
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (entry !== null && typeof entry === 'object') {
+    try {
+      const serialised = JSON.stringify(entry);
+      if (!serialised || serialised === '{}') return null;
+      return serialised.length > 200 ? `${serialised.slice(0, 197)}...` : serialised;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * Parse an LLM response string into a binary approve/deny/escalate decision.
  * Tries JSON first. If JSON fails, escalates (no guessing from substring matches).
  * Exported for unit testing.
@@ -113,15 +137,16 @@ export class AutoApproveService {
     const model = this.llmConfig.model;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
 
-    // Filter to a clean string array for the multi-choice prompt path
-    // (mirrors the strict check at hook-event-bridge.ts:211-214). Anything
-    // else falls through; isMultiChoicePermission still classifies as
-    // multi-choice but we never feed garbage to .toLowerCase or to the LLM.
-    const cleanSuggestions =
-      Array.isArray(permissionSuggestions) &&
-      permissionSuggestions.every((s) => typeof s === 'string' && s.length > 0)
-        ? (permissionSuggestions as readonly string[])
-        : undefined;
+    // Normalise the heterogeneous permission_suggestions union (string |
+    // {type, ...}) into LLM-ready labels. Strings pass through; object
+    // entries are JSON-serialised so the LLM can reason about structured
+    // options like addDirectories/setMode. null/undefined/empty entries
+    // are dropped so they never reach .toLowerCase or the prompt.
+    const normalisedSuggestions = Array.isArray(permissionSuggestions)
+      ? permissionSuggestions
+          .map((s) => normalisePermissionSuggestion(s))
+          .filter((s): s is string => s !== null)
+      : undefined;
 
     // Entire body wrapped in try/catch so the "never throws" contract holds
     // even if matchPattern or other sync code fails (e.g. malformed config).
@@ -189,7 +214,12 @@ export class AutoApproveService {
             ? this.llmConfig
             : { ...this.llmConfig, model: callModel };
         const messages = useMultiChoice
-          ? buildMultiChoicePrompt(toolName, toolInput, cleanSuggestions ?? [], this.instructions)
+          ? buildMultiChoicePrompt(
+              toolName,
+              toolInput,
+              normalisedSuggestions ?? [],
+              this.instructions,
+            )
           : buildPrompt(toolName, toolInput, this.instructions);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
@@ -210,7 +240,7 @@ export class AutoApproveService {
           ? (() => {
               const parsedMc = parseMultiChoiceDecision(
                 response.content,
-                cleanSuggestions?.length ?? 0,
+                normalisedSuggestions?.length ?? 0,
               );
               if (parsedMc.decision === 'pick') {
                 return {

@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { AutoApproveService, parseDecision } from '../../src/auto-approve/auto-approve-service.ts';
+import {
+  AutoApproveService,
+  normalisePermissionSuggestion,
+  parseDecision,
+} from '../../src/auto-approve/auto-approve-service.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
 
@@ -131,6 +135,75 @@ describe('parseDecision', () => {
     // This was the regex fallback bug: substring "approve" in reasoning
     const r = parseDecision('I would not approve this dangerous command');
     expect(r.decision).toBe('escalate');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalisePermissionSuggestion - converts heterogeneous entries to LLM
+// labels. Strings pass through; objects are JSON-serialised so the LLM
+// can read addDirectories/setMode/etc shapes.
+// ---------------------------------------------------------------------------
+describe('normalisePermissionSuggestion', () => {
+  test('passes a plain string through', () => {
+    expect(normalisePermissionSuggestion('Yes')).toBe('Yes');
+  });
+
+  test('trims surrounding whitespace on strings', () => {
+    expect(normalisePermissionSuggestion('  Always  ')).toBe('Always');
+  });
+
+  test('drops empty / whitespace-only strings', () => {
+    expect(normalisePermissionSuggestion('')).toBeNull();
+    expect(normalisePermissionSuggestion('   ')).toBeNull();
+  });
+
+  test('JSON-serialises addDirectories object entry', () => {
+    const out = normalisePermissionSuggestion({
+      type: 'addDirectories',
+      directories: ['/Users/foo/.claude/agents'],
+      destination: 'session',
+    });
+    expect(out).toContain('"type":"addDirectories"');
+    expect(out).toContain('/Users/foo/.claude/agents');
+    expect(out).toContain('"destination":"session"');
+  });
+
+  test('JSON-serialises setMode object entry', () => {
+    const out = normalisePermissionSuggestion({
+      type: 'setMode',
+      mode: 'bypassPermissions',
+      destination: 'session',
+    });
+    expect(out).toContain('"type":"setMode"');
+    expect(out).toContain('"mode":"bypassPermissions"');
+  });
+
+  test('truncates very long serialisations to keep the prompt small', () => {
+    const giant = {
+      type: 'addDirectories',
+      directories: Array.from({ length: 50 }, (_, i) => `/Users/foo/dir-${i}/with-a-long-path`),
+    };
+    const out = normalisePermissionSuggestion(giant);
+    expect(out).not.toBeNull();
+    expect(out?.length).toBeLessThanOrEqual(200);
+    expect(out?.endsWith('...')).toBe(true);
+  });
+
+  test('drops null / undefined / non-object primitives', () => {
+    expect(normalisePermissionSuggestion(null)).toBeNull();
+    expect(normalisePermissionSuggestion(undefined)).toBeNull();
+    expect(normalisePermissionSuggestion(42)).toBeNull();
+    expect(normalisePermissionSuggestion(true)).toBeNull();
+  });
+
+  test('drops the empty object shape (no useful payload)', () => {
+    expect(normalisePermissionSuggestion({})).toBeNull();
+  });
+
+  test('returns null on a circular-reference object instead of throwing', () => {
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    expect(normalisePermissionSuggestion(circular)).toBeNull();
   });
 });
 

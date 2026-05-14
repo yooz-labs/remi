@@ -68,12 +68,22 @@ export interface SessionStartHookInput extends HookCommonInput {
 
 // --- 20 new events ---
 
+/**
+ * One entry in `permission_suggestions`. Strings are the original shape
+ * (e.g. Edit's `["Yes", "Always", "No"]`). Objects carry tool-specific
+ * structured options that Claude Code added later — observed shapes
+ * include `{type: "addDirectories", directories: [...], destination}` and
+ * `{type: "setMode", mode: "...", destination}`. The shape is open: future
+ * Claude Code versions may add new `type` values without notice.
+ */
+export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
+
 /** Fired when a permission dialog is about to show */
 export interface PermissionRequestHookInput extends HookCommonInput {
   hook_event_name: 'PermissionRequest';
   tool_name: string;
   tool_input: Record<string, unknown>;
-  permission_suggestions?: string[];
+  permission_suggestions?: PermissionSuggestion[];
 }
 
 /** Fired after a tool call fails */

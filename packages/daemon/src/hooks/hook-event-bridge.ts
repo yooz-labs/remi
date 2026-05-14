@@ -233,19 +233,21 @@ export class HookEventBridge {
 
     let options: QuestionOption[];
 
-    // Only trust permission_suggestions if every entry is a usable string.
-    // Some Claude Code versions / tool paths have been observed sending non-string
-    // entries (null, numbers, objects), which crashed `suggestion.toLowerCase()`
-    // and bubbled up as a "[AutoApprove] Unexpected error" in callers.
+    // permission_suggestions is a union of string labels and structured
+    // object entries (e.g. {type:"addDirectories",directories:[...]},
+    // {type:"setMode",mode:"..."}). The iOS question card renders text
+    // labels only, so we filter to strings here; the raw array (objects
+    // included) is forwarded to AutoApproveService separately so the LLM
+    // can reason about non-string options.
     const suggestions = input.permission_suggestions;
-    const suggestionsUsable =
-      Array.isArray(suggestions) &&
-      suggestions.length >= 2 &&
-      suggestions.every((s) => typeof s === 'string' && s.length > 0);
+    const stringSuggestions = Array.isArray(suggestions)
+      ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
+      : [];
 
-    if (suggestionsUsable) {
-      // Use the suggestions provided by Claude Code (e.g. Edit sends ["Yes","Always","No"])
-      options = suggestions.map((suggestion, idx) => {
+    if (stringSuggestions.length >= 2) {
+      // Real Yes/Always/No-style label set from Claude Code (Edit's
+      // ["Yes","Always","No"]). Map labels directly into options.
+      options = stringSuggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
         const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
@@ -258,18 +260,11 @@ export class HookEventBridge {
         };
       });
     } else {
-      // No suggestions (e.g. Bash). Use default 3-option set.
-      // The Notification hook that follows has no numbered options either
-      // (just plain text like "Claude needs your permission to use Bash"),
-      // so waiting for it adds latency without gaining information.
-      // When `permission_suggestions` is present but fails validation, log it so
-      // upstream regressions in Claude Code don't go undetected; the genuine
-      // "no suggestions" path (undefined) stays quiet.
-      if (suggestions !== undefined) {
-        console.warn(
-          `[HookEventBridge] PermissionRequest had unusable permission_suggestions (tool=${toolName}, value=${JSON.stringify(suggestions)}); using default options`,
-        );
-      }
+      // Either no suggestions (Bash) or only structured object entries
+      // (addDirectories, setMode). The iOS card cannot render either case
+      // meaningfully, so fall back to the default binary 3-set; auto-
+      // approve still gets the raw value via the bridge-setup path and
+      // routes object-only arrays through the multi-choice classifier.
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 
