@@ -11,9 +11,11 @@
  *   - Notification(permission_prompt) fires shortly after with a plain-text
  *     message like "Claude needs your permission to use Bash" (no numbered
  *     options; those appear only in the terminal UI).
- *   - We emit the question immediately from PermissionRequest using either
- *     the provided suggestions or a default 3-option set, then suppress
- *     the redundant Notification.
+ *   - Both events forward their question to onQuestion. The push gate is
+ *     QuestionPresenceTracker (cli.ts wiring): hook events stash the
+ *     metadata; PTY confirms presence and fires the push. If both events
+ *     arrive before PTY (typical), the second simply replaces the first
+ *     in the tracker — Claude only renders one prompt at a time.
  */
 
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
@@ -68,15 +70,9 @@ const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
   },
 ];
 
-/** Dedup window: suppress Notification(permission_prompt) arriving within
- *  this many ms after a PermissionRequest already emitted a question. */
-const PERMISSION_DEDUP_WINDOW_MS = 5000;
-
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
-  /** Timestamp of last question emitted from handlePermissionRequest */
-  private lastPermissionEmitAt = 0;
   /** Tracks active Task tool_use_ids — secondary safety net for subagent
    *  filtering (primary is agent_id check in cli.ts hook listeners). */
   private readonly subagentContext = new SubagentContextTracker();
@@ -90,41 +86,6 @@ export class HookEventBridge {
    *  Callers can use this to short-circuit auto-approve entirely during team work. */
   isInSubagentContext(): boolean {
     return this.subagentContext.isInSubagentContext();
-  }
-
-  /** Mark that a PermissionRequest is being handled externally (e.g. by
-   *  auto-approve). Sets the dedup timestamp so the subsequent
-   *  Notification(permission_prompt) is suppressed instead of generating a
-   *  phantom notification.
-   *
-   *  Call this BEFORE starting a slow op (e.g. LLM evaluation) so the
-   *  Notification arriving mid-flight is suppressed. Callers must ensure
-   *  the timestamp is refreshed if the op can outlive PERMISSION_DEDUP_WINDOW_MS,
-   *  either by re-invoking this method or via a downstream write to
-   *  lastPermissionEmitAt (e.g. handlePermissionRequest does this on the
-   *  escalation path). */
-  markPermissionHandled(): void {
-    this.lastPermissionEmitAt = Date.now();
-  }
-
-  /** Clear the dedup mark so the NEXT Notification(permission_prompt) is
-   *  treated as a fresh standalone notification. Use when an externally-
-   *  handled PermissionRequest path FAILS (escalation throws, catch handler
-   *  exhausts) so the Notification fallback can still surface a question
-   *  to the user. Without this, a swallowed escalation leaves the bridge
-   *  silently suppressed for the rest of the dedup window. */
-  clearPermissionHandled(): void {
-    this.lastPermissionEmitAt = 0;
-  }
-
-  /** True when a PermissionRequest is currently owned by the bridge or
-   *  by auto-approve (within the same dedup window). Callers in the
-   *  PTY question path use this to suppress redundant emissions while
-   *  auto-approve is in flight or the bridge already emitted the
-   *  question for the same prompt cycle (#413). */
-  isHandlingPermission(): boolean {
-    if (this.lastPermissionEmitAt === 0) return false;
-    return Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS;
   }
 
   /** Returns HookServerEvents handlers wired to this bridge */
@@ -156,13 +117,6 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      // PermissionRequest already emitted the question; suppress duplicate.
-      if (Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS) {
-        console.debug(
-          `[HookEventBridge] Suppressed duplicate Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
-        );
-        return;
-      }
       // Subagent/team context: don't bubble inter-agent questions to the user.
       if (this.subagentContext.isInSubagentContext()) {
         console.debug(
@@ -170,8 +124,13 @@ export class HookEventBridge {
         );
         return;
       }
-      // Standalone Notification without a preceding PermissionRequest.
-      // Emit with default 3-option set (message has no numbered options).
+      // Forward the notification's metadata to the tracker. Real push
+      // semantics are owned by QuestionPresenceTracker (cli.ts wiring):
+      // hook events stash the prompt metadata; the push only fires when
+      // PTY confirms the prompt is on screen. If PermissionRequest
+      // already recorded a pending hook this call simply replaces it
+      // with the latest metadata, which is what we want — Claude only
+      // renders one prompt at a time.
       const question: Question = {
         id: generateId(),
         text: input.message || 'Allow this action?',
@@ -179,7 +138,6 @@ export class HookEventBridge {
         allowsFreeText: false,
         isAnswered: false,
       };
-      this.lastPermissionEmitAt = Date.now();
       this.events.onQuestion(question);
       this.events.onStatusChange('waiting');
     } else if (input.notification_type === 'idle_prompt') {
@@ -222,8 +180,6 @@ export class HookEventBridge {
       console.debug(
         `[HookEventBridge] Suppressed subagent PermissionRequest: tool=${input.tool_name}`,
       );
-      // Still mark dedup so the follow-up Notification(permission_prompt) is suppressed too.
-      this.lastPermissionEmitAt = Date.now();
       return;
     }
 
@@ -260,7 +216,6 @@ export class HookEventBridge {
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 
-    this.lastPermissionEmitAt = Date.now();
     this.events.onQuestion({
       id: generateId(),
       text: promptText,
