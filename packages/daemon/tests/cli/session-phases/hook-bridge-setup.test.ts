@@ -1155,23 +1155,23 @@ describe('setupHookBridge', () => {
     build({ autoApprove: true, autoApproveThrows: true });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-thr-task',
+      session_id: 'claude-throws-task',
       hook_event_name: 'SessionStart',
-      transcript_path: path.join(tmpDir, 'thrtask.jsonl'),
+      transcript_path: path.join(tmpDir, 'throws-task.jsonl'),
       source: 'startup',
       model: 'test',
     });
 
     hookServer.fire('PreToolUse', {
-      session_id: 'claude-thr-task',
+      session_id: 'claude-throws-task',
       hook_event_name: 'PreToolUse',
       tool_name: 'Task',
       tool_input: {},
-      tool_use_id: 'tu_task_thr',
+      tool_use_id: 'tu_task_throws',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-thr-task',
+      session_id: 'claude-throws-task',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
