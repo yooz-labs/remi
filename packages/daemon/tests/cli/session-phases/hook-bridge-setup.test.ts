@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { UUID } from '@remi/shared';
+import type { Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
@@ -79,6 +80,25 @@ function fakeMessageAPI(
   } as unknown as MessageAPI;
 }
 
+/**
+ * Tracker used by setupHookBridge tests. Bridge calls onQuestion →
+ * recordPendingHook, which on real wiring stores and waits for PTY. In
+ * these tests we have no PTY, so the passthrough collapses recordPendingHook
+ * into onPTYPromptVisible — i.e. simulate a terminal whose prompt is always
+ * visible. Lets the existing `questionCalls` assertions keep their meaning
+ * ("the bridge emitted a question to the consumer"). True PTY-presence
+ * semantics are validated in tests/api/question-presence-tracker.test.ts.
+ */
+class PassthroughTracker extends QuestionPresenceTracker {
+  override recordPendingHook(question: Question): void {
+    this.onPTYPromptVisible(question);
+  }
+}
+
+function makePassthroughTracker(api: MessageAPI): PassthroughTracker {
+  return new PassthroughTracker((q) => api.handleQuestion(q));
+}
+
 /** Poll a predicate until true or timeout. Used in lieu of fixed-duration
  *  setTimeout waits in async tests so we don't depend on CI scheduler luck. */
 async function until(predicate: () => boolean, timeoutMs = 1000, pollMs = 5): Promise<void> {
@@ -140,16 +160,17 @@ describe('setupHookBridge', () => {
       cancelLog?: string[];
     } = {},
   ) {
+    const localMessageApi = fakeMessageAPI(
+      messageApiLog,
+      opts.throwOnQuestionTimes !== undefined
+        ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
+        : {},
+    );
     sessionRegistry.registerSession(
       SID,
       tmpDir,
       fakePTY(ptySubmits, opts.submitInputThrows ? { throws: true } : {}),
-      fakeMessageAPI(
-        messageApiLog,
-        opts.throwOnQuestionTimes !== undefined
-          ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-          : {},
-      ),
+      localMessageApi,
     );
 
     // Minimal AutoApproveService stub. Only invoked when opts.autoApprove is
@@ -202,13 +223,15 @@ describe('setupHookBridge', () => {
         hookServer: hookServer as unknown as HookServer,
         sessionId: SID,
         workingDirectory: tmpDir,
-        messageApi: fakeMessageAPI(
-          messageApiLog,
-          opts.throwOnQuestionTimes !== undefined
-            ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-            : {},
-        ),
+        messageApi: localMessageApi,
         sendAndRecord: () => {},
+        // The bridge wires onQuestion → tracker.recordPendingHook (no
+        // push). Tests assert the legacy "bridge emitted a question to
+        // the consumer" semantics via questionCalls, so the test tracker
+        // simulates a permanently-PTY-visible terminal by pushing on
+        // every recordPendingHook. Real production wiring uses the
+        // PTY-presence semantics; slice 3 adds tests for that path.
+        tracker: makePassthroughTracker(localMessageApi),
         ...(opts.injectAckTimeoutMs !== undefined
           ? { injectAckTimeoutMs: opts.injectAckTimeoutMs }
           : {}),

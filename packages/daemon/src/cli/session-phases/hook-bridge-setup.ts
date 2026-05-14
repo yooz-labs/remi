@@ -35,6 +35,7 @@ import { createSessionReset, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
+import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
@@ -62,6 +63,12 @@ export interface HookBridgeArgs {
   workingDirectory: string;
   messageApi: MessageAPI;
   sendAndRecord: (message: ProtocolMessage) => void;
+  /** Pairs hook metadata with PTY screen presence: hook events stash the
+   *  question via recordPendingHook (no push), the PTY parser fires the
+   *  push on confirmation, and status transitions out of 'waiting' drop
+   *  stale pending records. Required when wired into the createNewSession
+   *  flow; tests construct their own per-bridge tracker. */
+  tracker: QuestionPresenceTracker;
   /** Override the default inject ack timeout. Tests use a short value to
    *  exercise the timeout path without slowing the suite. */
   injectAckTimeoutMs?: number;
@@ -87,7 +94,7 @@ export function setupHookBridge(
     autoApproveService,
     currentPort,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord } = args;
+  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
   const PERMISSION_INJECT_ACK_TIMEOUT_MS = args.injectAckTimeoutMs ?? 1000;
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
@@ -340,9 +347,10 @@ export function setupHookBridge(
   const hookBridge = new HookEventBridge(sessionId, {
     onStatusChange: (status: AgentStatus, context?: string) => {
       messageApi.handleStatusChange(status, context);
+      tracker.onStatusChange(status);
     },
     onQuestion: (question) => {
-      messageApi.handleQuestion(question);
+      tracker.recordPendingHook(question);
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
       // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude).
