@@ -415,6 +415,99 @@ describe('setupHookBridge', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Issue #416 / epic #415 phase 1: SessionStart source-agnostic restart.
+  // Claude Code's documented sources are 'startup'|'resume'|'clear'|'compact'
+  // (hook-types.ts:61). New flows (session switch UX, background<->foreground
+  // handoff, future sources) rotate session_id without firing any of those
+  // four. Without the source-agnostic pre-empt, every event from the new
+  // session_id classifies as 'foreign' and the daemon wedges (observed live
+  // in practicum 2026-05-13: lock=6ea65ea4 incoming=7dcb5339, ~hundreds of
+  // dropped events in one rotation).
+  // -------------------------------------------------------------------------
+
+  test('SessionStart with unknown source AND new session_id pre-empts classifier (issue #416)', () => {
+    build();
+
+    // Lock onto claude-A.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    // Claude Code emits a SessionStart with an unfamiliar source (representing
+    // a future session-switch flow) and a different session_id while our PTY
+    // is still running. Pre-fix this dropped through the classifier as
+    // 'foreign' for every subsequent event.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'switch_chat_future_value',
+    });
+
+    // Restart side effects fired: old watcher torn down, messageApi reset.
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    // And the lock actually transitioned: a follow-up event from claude-B
+    // must reach the handler instead of being dropped as 'Dropped foreign'.
+    // PreToolUse routes to handleStatusChange('executing', tool_name).
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('SessionStart with undefined source AND new session_id pre-empts classifier (issue #416)', () => {
+    // Defensive companion test: some Claude Code versions omit `source`
+    // entirely on session transitions. The fix must trigger on session_id
+    // mismatch alone, regardless of whether source is present.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    // No `source` field at all.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  // -------------------------------------------------------------------------
   // Regression #379 / #377: pre-emptive Notification dedup during slow
   // auto-approve evaluation. The PermissionRequest hook handler must mark
   // the bridge as "handling permission" BEFORE invoking aaService.evaluate,

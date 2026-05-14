@@ -422,18 +422,22 @@ export function setupHookBridge(
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
   hookServer.on('SessionStart', (input) => {
-    // SessionStart with an explicit main-transition source (/clear /compact
-    // /resume) is the authoritative signal that our main Claude took a new
-    // session_id while our PTY kept running. Pre-empt the classifier by
-    // treating the old session as ended, so the classifier sees a 'restart'
-    // and cleanly switches the lock.
-    if (input.source === 'clear' || input.source === 'compact' || input.source === 'resume') {
-      if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
-        log(
-          `[Hooks] Main lifecycle transition (${input.source}): ${claudeSessionId} -> ${input.session_id}`,
-        );
-        mainSessionEnded = true; // classifier will pick this up as 'restart'
-      }
+    // Any SessionStart whose session_id differs from our lock while our PTY is
+    // still running is a main-session rotation: pre-empt the classifier by
+    // marking the old session ended so it sees a 'restart' and switches the
+    // lock cleanly. Source-agnostic by design: Claude Code's documented
+    // sources are 'startup'|'resume'|'clear'|'compact' (hook-types.ts:61),
+    // but new flows (session switch UX, background→foreground handoff, future
+    // sources) rotate session_id without firing any of those. Without this
+    // widening, every event from the new session_id classifies as 'foreign'
+    // and the daemon wedges (epic #415, phase 1 / issue #416). Subagent
+    // SessionStarts are not a risk here: they share the main session_id and
+    // carry agent_id, which is filtered downstream.
+    if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
+      log(
+        `[Hooks] Main lifecycle transition (source=${input.source ?? 'unknown'}): ${claudeSessionId} -> ${input.session_id}`,
+      );
+      mainSessionEnded = true; // classifier will pick this up as 'restart'
     }
     initFromHookEvent(input);
     handlers.onSessionStart?.(input);
