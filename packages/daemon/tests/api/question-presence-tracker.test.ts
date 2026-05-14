@@ -54,7 +54,7 @@ describe('QuestionPresenceTracker', () => {
 
     expect(pushes.length).toBe(1);
     expect(pushes[0]).toBe(ptyQ);
-    expect(tracker.hasPendingHookForTest()).toBe(false);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
   it('hook then PTY — pushes once with merged options from hook metadata', () => {
@@ -73,7 +73,7 @@ describe('QuestionPresenceTracker', () => {
     expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
     expect(pushes[0]?.options[0]?.isYes).toBe(true);
     expect(pushes[0]?.options[2]?.isNo).toBe(true);
-    expect(tracker.hasPendingHookForTest()).toBe(false);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
   it('hook only — no push until PTY confirms or status clears', () => {
@@ -85,7 +85,7 @@ describe('QuestionPresenceTracker', () => {
     tracker.recordPendingHook(makeHookQuestion('Bash'));
 
     expect(pushes.length).toBe(0);
-    expect(tracker.hasPendingHookForTest()).toBe(true);
+    expect(tracker.hasPendingForTest()).toBe(true);
   });
 
   it('hook then status transitions to executing — pending dropped, no push', () => {
@@ -100,7 +100,7 @@ describe('QuestionPresenceTracker', () => {
     tracker.onStatusChange('executing');
 
     expect(pushes.length).toBe(0);
-    expect(tracker.hasPendingHookForTest()).toBe(false);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
   it('hook then status transitions to thinking — pending dropped, no push', () => {
@@ -111,7 +111,7 @@ describe('QuestionPresenceTracker', () => {
     tracker.onStatusChange('thinking');
 
     expect(pushes.length).toBe(0);
-    expect(tracker.hasPendingHookForTest()).toBe(false);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
   it("status stays 'waiting' — pending hook is preserved", () => {
@@ -125,7 +125,7 @@ describe('QuestionPresenceTracker', () => {
     tracker.onStatusChange('waiting');
 
     expect(pushes.length).toBe(0);
-    expect(tracker.hasPendingHookForTest()).toBe(true);
+    expect(tracker.hasPendingForTest()).toBe(true);
   });
 
   it('two hooks back-to-back, one PTY — single push with newest hook metadata', () => {
@@ -153,7 +153,7 @@ describe('QuestionPresenceTracker', () => {
 
     expect(pushes.length).toBe(1);
     expect(pushes[0]?.options.map((o) => o.label)).toEqual(['A', 'B']);
-    expect(tracker.hasPendingHookForTest()).toBe(false);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
   it('PTY visible, status clears, then a second PTY visible — both push', () => {
@@ -194,5 +194,37 @@ describe('QuestionPresenceTracker', () => {
 
     expect(pushes.length).toBe(1);
     expect(pushes[0]).toBe(ptyQ); // identity-equal: no shallow-merge happened.
+  });
+
+  it('clearPending — drops a pending hook record without pushing', () => {
+    // Used by the auto-approve cancelled branch: Claude advanced past the
+    // prompt without a status transition we can observe (e.g. user typed
+    // a slash command). Without clearPending, the pending hook would
+    // merge stale option labels onto the next unrelated prompt.
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+
+    tracker.recordPendingHook(makeHookQuestion('Edit'));
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    tracker.clearPending();
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(pushes.length).toBe(0);
+  });
+
+  it('push sink throws — error is caught, tracker stays in a clean state', () => {
+    // APNS fan-out or WebSocket send can throw mid-push. The tracker
+    // must not crash the daemon process; log and move on. Pending is
+    // already cleared at this point (before push), so the next PTY emit
+    // re-pushes without the hook merge (degraded UX) but the system
+    // stays consistent.
+    const tracker = new QuestionPresenceTracker(() => {
+      throw new Error('test: APNS fan-out failure');
+    });
+    const ptyQ = makePTYQuestion();
+
+    expect(() => tracker.onPTYPromptVisible(ptyQ)).not.toThrow();
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 });

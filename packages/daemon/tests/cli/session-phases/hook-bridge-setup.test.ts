@@ -144,14 +144,22 @@ describe('setupHookBridge', () => {
       /** Test sink for cancel() invocations from the bridge. Each entry is
        *  the `reason` string the bridge passed. */
       cancelLog?: string[];
+      /** Use a real QuestionPresenceTracker (no PTY-visible passthrough)
+       *  so tests can exercise the actual record-pending / status-clear
+       *  contract through the bridge wiring. Defaults to the passthrough
+       *  tracker used by the legacy assertion-style tests. */
+      realTracker?: boolean;
     } = {},
-  ) {
+  ): { tracker: QuestionPresenceTracker } {
     const localMessageApi = fakeMessageAPI(
       messageApiLog,
       opts.throwOnQuestionTimes !== undefined
         ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
         : {},
     );
+    const tracker: QuestionPresenceTracker = opts.realTracker
+      ? new QuestionPresenceTracker((q) => localMessageApi.handleQuestion(q))
+      : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
       tmpDir,
@@ -210,15 +218,17 @@ describe('setupHookBridge', () => {
         workingDirectory: tmpDir,
         messageApi: localMessageApi,
         sendAndRecord: () => {},
-        // The bridge wires onQuestion → tracker.recordPendingHook (no
-        // push). Tests assert the legacy "bridge emitted a question to
-        // the consumer" semantics via questionCalls, so the test tracker
-        // simulates a permanently-PTY-visible terminal by pushing on
-        // every recordPendingHook. Real PTY-presence semantics are
-        // validated in tests/api/question-presence-tracker.test.ts.
-        tracker: makePassthroughTracker(localMessageApi),
+        // PassthroughTracker is the default: it collapses
+        // recordPendingHook into an immediate push so the legacy
+        // "bridge emitted a question to the consumer" assertions via
+        // questionCalls still work. opts.realTracker uses the real
+        // QuestionPresenceTracker for wiring tests (record/status-clear
+        // through the bridge). Pure PTY-presence semantics are validated
+        // in tests/api/question-presence-tracker.test.ts.
+        tracker,
       },
     );
+    return { tracker };
   }
 
   test('registers listeners for all 7 hook events', () => {
@@ -596,6 +606,44 @@ describe('setupHookBridge', () => {
   // tests were removed in this cleanup. Tracker semantics are validated
   // structurally in question-presence-tracker.test.ts.
   // -------------------------------------------------------------------------
+
+  test('Phase 3 wiring: PreToolUse drives tracker.onStatusChange and clears pending', () => {
+    // A PermissionRequest stashes the question in the tracker via
+    // onQuestion → recordPendingHook. A subsequent PreToolUse must drive
+    // tracker.onStatusChange('executing') through the bridge's
+    // onStatusChange wiring and clear the pending slot. Without this,
+    // a refactor that disconnects tracker.onStatusChange from the
+    // bridge would leave stale pending records that merge wrong option
+    // labels onto unrelated future PTY prompts.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'wire.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/x.ts' },
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
   // -------------------------------------------------------------------------
   // Issue #387: cancel stale auto-approve LLM eval on advance signals
   // -------------------------------------------------------------------------

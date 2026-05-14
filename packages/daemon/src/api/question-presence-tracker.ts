@@ -66,6 +66,19 @@ export class QuestionPresenceTracker {
    * `allowsFreeText` / `isAnswered` (it reflects the screen) and the
    * hook contributes `options` (it knows real labels like
    * ['Yes', 'Always', 'No'] while PTY usually has numbered fallbacks).
+   *
+   * When the merge fires, `ptyQuestion.options` is intentionally
+   * discarded — the hook record is the authoritative source for option
+   * labels. A future PTY-side options parser would not change this
+   * unless we promote PTY options past the hook (see merge rule).
+   *
+   * Pending is cleared BEFORE the push so a re-entrant call to this
+   * method (push sink fires synchronous side effects that loop back
+   * here) cannot re-merge the same hook record. Push errors are caught
+   * and logged but not rethrown — the next PTY emit for the same prompt
+   * (re-render) will retry the push WITHOUT the hook merge, falling
+   * back to PTY's numbered options. That degraded UX is still preferable
+   * to the daemon crashing on a network blip during APNS fan-out.
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
     const merged: Question =
@@ -73,7 +86,13 @@ export class QuestionPresenceTracker {
         ? { ...ptyQuestion, options: [...this.pending.options] }
         : ptyQuestion;
     this.pending = null;
-    this.push(merged);
+    try {
+      this.push(merged);
+    } catch (err) {
+      console.error(
+        `[QuestionPresenceTracker] push sink threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -89,11 +108,22 @@ export class QuestionPresenceTracker {
   }
 
   /**
+   * Drop any pending hook record without firing a push. Used by the
+   * auto-approve cancelled branch where Claude has advanced past the
+   * prompt without a status transition we can observe — leaving the
+   * pending in place would merge stale option labels onto the NEXT
+   * unrelated prompt's PTY emit.
+   */
+  clearPending(): void {
+    this.pending = null;
+  }
+
+  /**
    * Test-only inspection of the pending state. Exposed so the unit test
    * suite can assert state-machine invariants without resorting to
    * mocking the push sink.
    */
-  hasPendingHookForTest(): boolean {
+  hasPendingForTest(): boolean {
     return this.pending !== null;
   }
 }

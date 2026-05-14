@@ -485,7 +485,10 @@ export function setupHookBridge(
           if (result.decision === 'cancelled') {
             // User already advanced past the prompt (terminal answer or
             // hook event confirmed the tool ran). Do not inject, do not
-            // escalate.
+            // escalate. Drop the pending hook record so its stale option
+            // labels cannot merge onto the next unrelated PTY prompt
+            // (e.g. user typed /compact, no PreToolUse fires).
+            tracker.clearPending();
             log(`[AutoApprove ${sessionTag}] Decision dropped: ${result.reasoning}`);
             return;
           }

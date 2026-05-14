@@ -124,13 +124,10 @@ export class HookEventBridge {
         );
         return;
       }
-      // Forward the notification's metadata to the tracker. Real push
-      // semantics are owned by QuestionPresenceTracker (cli.ts wiring):
-      // hook events stash the prompt metadata; the push only fires when
-      // PTY confirms the prompt is on screen. If PermissionRequest
-      // already recorded a pending hook this call simply replaces it
-      // with the latest metadata, which is what we want — Claude only
-      // renders one prompt at a time.
+      // Forward the question — push semantics live in the tracker
+      // (cli.ts wiring). A trailing Notification arriving after
+      // PermissionRequest replaces the pending record, which is fine
+      // (Claude renders one prompt at a time).
       const question: Question = {
         id: generateId(),
         text: input.message || 'Allow this action?',
