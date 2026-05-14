@@ -136,7 +136,10 @@ describe('setupHookBridge', () => {
   function build(
     opts: {
       autoApprove?: boolean;
-      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled';
+      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled' | 'pick';
+      /** Index for the 'pick' branch (1-based, matches the auto-approve
+       *  service contract). Only relevant when autoApproveDecision='pick'. */
+      autoApprovePickIndex?: number;
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
       throwOnQuestionTimes?: number;
@@ -184,6 +187,15 @@ describe('setupHookBridge', () => {
             const durationMs = opts.autoApproveDelayMs ?? 0;
             if (decision === 'cancelled') {
               return { decision, reasoning: 'test-autoapprove', durationMs };
+            }
+            if (decision === 'pick') {
+              return {
+                decision,
+                pickIndex: opts.autoApprovePickIndex ?? 2,
+                reasoning: 'test-autoapprove',
+                durationMs,
+                model: 'test-model',
+              };
             }
             return {
               decision,
@@ -642,6 +654,215 @@ describe('setupHookBridge', () => {
     });
 
     expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 3 wiring: SessionStart restart clears tracker.pending', () => {
+    // Cross-phase regression: phase 1's restart classifier tears down
+    // the transcript watcher. Without explicit tracker.clearPending(),
+    // a PermissionRequest stashed before /clear or /compact would
+    // merge stale option labels onto the new session's first PTY
+    // prompt. Two reviewers flagged this on PR #423.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-restart-A',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-restart-A',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    // Restart fires (e.g. user typed /clear). Classifier returns
+    // 'restart' because session_id mismatch + source is treated as
+    // restart-evidence by phase 1.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-restart-B',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      source: 'clear',
+      model: 'test',
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 3 wiring: cancelled auto-approve clears tracker.pending via real bridge', async () => {
+    // pr-test-analyzer Gap 1: the existing 'cancelled decision: bridge
+    // does not inject and does not escalate' test uses PassthroughTracker
+    // and so cannot witness the clearPending() call. A refactor that
+    // dropped it would still pass that test. This one uses the real
+    // tracker and asserts the pending slot is drained.
+    const { tracker } = build({
+      autoApprove: true,
+      autoApproveDecision: 'cancelled',
+      realTracker: true,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-cancel',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'c.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-cancel',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait for the auto-approve .then() to drain.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual([]); // cancelled: no inject
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 3 wiring: late Notification after SessionEnd is dropped', () => {
+    // silent-failure-hunter #3: SessionEnd already cleared status to
+    // 'idle' (which drains tracker.pending). A late Notification
+    // arriving from a dying Claude process must not re-populate the
+    // pending slot, or a final PTY echo could fire a spurious push.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'late.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('SessionEnd', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'SessionEnd',
+      reason: 'logout',
+    });
+
+    // Late Notification fires after teardown.
+    hookServer.fire('Notification', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'phantom prompt from dying Claude',
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 2 + Phase 3: auto-approve pick decision injects the correct index', async () => {
+    // pr-test-analyzer Gap 4: the bridge's 'pick' branch was uncovered
+    // at the wiring layer. Service-level tests verify pick returns
+    // {pickIndex}; this asserts the bridge translates that into the
+    // right PTY submit value.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'pick',
+      autoApprovePickIndex: 2,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-pick',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'pick.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-pick',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait for the auto-approve .then() + inject to drain.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['2']);
+  });
+
+  test('Phase 2 + Phase 3: mixed-shape suggestions survive the hook->tracker->push merge', async () => {
+    // pr-test-analyzer Gap 3: phase 2 filters object entries out of
+    // permission_suggestions; phase 3 merges the filtered options onto
+    // the PTY question. Both layers are tested in isolation; this
+    // covers the chain end-to-end through the real bridge wiring.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null,
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-mixed',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'mixed.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // No auto-approve: the listener falls through to escalateToUser,
+    // which calls handlePermissionRequest -> onQuestion ->
+    // tracker.recordPendingHook with the filtered options.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-mixed',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/x.ts' },
+      permission_suggestions: [{ type: 'addDirectories', directories: ['/tmp'] }, 'Yes', 'No'],
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    // PTY confirms the prompt is on screen with the bland numbered
+    // fallback options. The hook's filtered string options must win
+    // the merge.
+    tracker.onPTYPromptVisible({
+      id: generateId(),
+      text: 'Allow Edit: /tmp/x.ts?',
+      options: [
+        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
+        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(pushed.length).toBe(1);
+    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 
   // -------------------------------------------------------------------------

@@ -220,6 +220,10 @@ export function setupHookBridge(
         `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
       );
       teardownWatcher('claude_restarted', 'restart');
+      // Drop any hook record stashed before /clear or /compact: the new
+      // Claude session's first PTY prompt must not merge stale option
+      // labels from the dying session.
+      tracker.clearPending();
       claudeSessionId = null;
       mainSessionEnded = false;
     }
@@ -307,6 +311,10 @@ export function setupHookBridge(
           `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
         );
         teardownWatcher('claude_restarted', 'restart-sessioninfo');
+        // Mirror the initFromHookEvent restart branch: drop any hook
+        // record so the new session's first PTY prompt cannot merge
+        // stale options from the dying session.
+        tracker.clearPending();
         claudeSessionId = null;
         mainSessionEnded = false;
       }
@@ -402,6 +410,16 @@ export function setupHookBridge(
   hookServer.on('Notification', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
+    // SessionEnd already cleared status to 'idle'; a late
+    // Notification(permission_prompt) for the dying session would
+    // re-populate tracker.pending and a final PTY echo could fire a
+    // spurious push the user cannot answer. Gate at the listener
+    // boundary; restart resets mainSessionEnded so legitimate
+    // post-restart notifications still pass.
+    if (mainSessionEnded) {
+      log(`[Hooks] Dropped post-SessionEnd Notification: type=${input.notification_type}`);
+      return;
+    }
     // Subagent notifications must not bubble up to the user (phantom prompts).
     if (isSubagentEvent(input)) {
       log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
