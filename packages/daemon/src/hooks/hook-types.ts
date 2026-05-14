@@ -68,12 +68,21 @@ export interface SessionStartHookInput extends HookCommonInput {
 
 // --- 20 new events ---
 
+/**
+ * One entry in `permission_suggestions`. Strings are the binary-label
+ * shape (e.g. Edit's `["Yes", "Always", "No"]`). Objects carry tool-
+ * specific structured options discriminated by `type` — for example
+ * `{type:"addDirectories",...}` or `{type:"setMode",...}`. The wider
+ * shape is open: callers must treat unknown `type` values as opaque.
+ */
+export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
+
 /** Fired when a permission dialog is about to show */
 export interface PermissionRequestHookInput extends HookCommonInput {
   hook_event_name: 'PermissionRequest';
   tool_name: string;
   tool_input: Record<string, unknown>;
-  permission_suggestions?: string[];
+  permission_suggestions?: PermissionSuggestion[];
 }
 
 /** Fired after a tool call fails */

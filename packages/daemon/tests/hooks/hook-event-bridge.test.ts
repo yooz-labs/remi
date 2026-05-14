@@ -187,20 +187,24 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.isNo).toBe(true);
   });
 
-  // Matrix of inputs that must NOT reach the `.toLowerCase()` path and must
-  // fall back to the default 3-option set. Observed in the wild as
-  // "suggestion.toLowerCase is not a function".
-  const badSuggestionCases: Array<[string, unknown]> = [
+  // Inputs that yield fewer than 2 usable string labels: must fall back to
+  // the default 3-option set so the iOS card always renders something the
+  // user can act on. Object entries (e.g. {type:"addDirectories",...}) are
+  // an expected shape and are silently filtered out of UI options here;
+  // the auto-approve path receives the raw array separately and handles
+  // them via the multi-choice classifier.
+  const fallbackCases: Array<[string, unknown]> = [
     ['all non-string entries', [null, 42, { label: 'Yes' }]],
-    ['mixed valid + null', ['Yes', null, 'No']],
-    ['mixed valid + empty string', ['Yes', '', 'No']],
-    ['single valid element (below min length 2)', ['Yes']],
+    ['pure object array (addDirectories)', [{ type: 'addDirectories', directories: ['/x'] }]],
+    ['object + null', [{ type: 'setMode', mode: 'plan' }, null]],
+    ['single string + object', ['Yes', { type: 'addDirectories', directories: ['/x'] }]],
+    ['single valid element', ['Yes']],
     ['empty array', []],
     ['string passed directly (not an array)', 'Yes'],
     ['number passed directly (not an array)', 7],
     ['array-like object', { 0: 'Yes', 1: 'No', length: 2 }],
   ];
-  for (const [label, value] of badSuggestionCases) {
+  for (const [label, value] of fallbackCases) {
     it(`PermissionRequest falls back to default options: ${label}`, () => {
       const { bridge, statuses, questions } = createBridge();
 
@@ -218,6 +222,36 @@ describe('HookEventBridge', () => {
       expect(questions[0]?.options[0]?.label).toBe('Yes');
       expect(questions[0]?.options[1]?.label).toBe('Yes, always');
       expect(questions[0]?.options[2]?.label).toBe('No');
+    });
+  }
+
+  // Mixed arrays where at least 2 string entries survive the filter:
+  // render those strings as the option set. This accepts Claude Code's
+  // newer permission_suggestions union where object entries (addDirectories
+  // etc) sit alongside Yes/No string labels.
+  const partialStringCases: Array<[string, unknown[], string[]]> = [
+    ['strings + object entry', ['Yes', { type: 'addDirectories' }, 'No'], ['Yes', 'No']],
+    ['strings + null', ['Yes', null, 'No'], ['Yes', 'No']],
+    ['strings + empty string', ['Yes', '', 'No'], ['Yes', 'No']],
+  ];
+  for (const [label, value, expected] of partialStringCases) {
+    it(`PermissionRequest uses filtered string labels: ${label}`, () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Edit',
+        tool_input: {},
+        permission_suggestions: value as unknown as string[],
+      } as PermissionRequestHookInput);
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.options.map((o) => o.label)).toEqual(expected);
+      // isYes / isNo are the load-bearing flags the iOS response handler
+      // uses to route taps; verify they survive the filtered-string path.
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
     });
   }
 
