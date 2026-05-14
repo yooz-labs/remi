@@ -101,7 +101,7 @@ import {
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
-import { looksLikeDefaultPermissionQuestion } from './api/question-dedup.ts';
+import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
@@ -137,7 +137,6 @@ import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
-import type { HookEventBridge } from './hooks/hook-event-bridge.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
@@ -1003,10 +1002,12 @@ async function createNewSession(
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
   // guard so terminal-only failures still reach remote clients.
-  // Hook bridge is created below (only when hookServer is active). The PTY
-  // onQuestion callback closes over this binding so it can suppress emissions
-  // during subagent contexts and skip duplicate Yes/Yes-always/No prompts.
-  let hookBridge: HookEventBridge | null = null;
+
+  // QuestionPresenceTracker pairs hook-derived metadata with PTY-derived
+  // screen presence: hooks record (no push), PTY confirms (push). Status
+  // transitions out of 'waiting' drop pending records so auto-approve
+  // silent paths never push.
+  const tracker = new QuestionPresenceTracker((q) => messageApi.handleQuestion(q));
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1016,44 +1017,19 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
-        // PTY parser runs as a secondary source so Y/N, multi-choice, and
-        // free-text prompts (which hooks never carry) reach the user with
-        // their real options. We gate two cases:
-        //
-        //   1. Auto-approve / hook bridge is currently owning a permission
-        //      cycle (#413). The PTY observes the prompt on screen and
-        //      would emit a redundant question, firing a spurious push for
-        //      a prompt the user wasn't asked to handle (auto-approve
-        //      approved/denied internally) or that the bridge already
-        //      emitted (escalate path).
-        //   2. The hook's hardcoded Yes/Yes-always/No is already emitted by
-        //      HookEventBridge for any tool permission. PTY sees the same
-        //      three options on screen but with different surrounding text,
-        //      so the dedup window cannot catch them — drop here by shape.
-        //
-        // We do NOT gate on subagent-context (#405): the PTY parser only
-        // emits questions for prompts visible on the main terminal screen,
-        // which by construction the user can see and answer, even if a
-        // Task tool is in flight. The primary `agent_id` filter at
-        // hook-bridge-setup.ts already drops hook events tagged as
-        // subagent-internal; whatever leaks through and lands on screen
-        // is genuinely user-facing.
-        if (hookBridge !== null) {
-          if (hookBridge.isHandlingPermission()) return;
-          if (looksLikeDefaultPermissionQuestion(question)) return;
-        }
-        messageApi.handleQuestion(question);
+        tracker.onPTYPromptVisible(question);
       },
       onStatusChange: (status, context) => {
         if (!hookServer) {
           messageApi.handleStatusChange(status, context);
         }
+        tracker.onStatusChange(status);
       },
     },
   );
 
   if (hookServer) {
-    const handle = setupHookBridge(
+    setupHookBridge(
       {
         sessionRegistry,
         sessionStore,
@@ -1063,9 +1039,8 @@ async function createNewSession(
         autoApproveService,
         currentPort: () => PORT,
       },
-      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord },
+      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
-    hookBridge = handle.bridge;
   }
 
   const ptySession = createPtySessionForSession(

@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { UUID } from '@remi/shared';
+import type { Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
@@ -79,17 +80,23 @@ function fakeMessageAPI(
   } as unknown as MessageAPI;
 }
 
-/** Poll a predicate until true or timeout. Used in lieu of fixed-duration
- *  setTimeout waits in async tests so we don't depend on CI scheduler luck. */
-async function until(predicate: () => boolean, timeoutMs = 1000, pollMs = 5): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await new Promise((r) => setTimeout(r, pollMs));
+/**
+ * Tracker used by setupHookBridge tests. Bridge calls onQuestion →
+ * recordPendingHook, which on real wiring stores and waits for PTY. In
+ * these tests we have no PTY, so the passthrough collapses recordPendingHook
+ * into onPTYPromptVisible — i.e. simulate a terminal whose prompt is always
+ * visible. Lets the existing `questionCalls` assertions keep their meaning
+ * ("the bridge emitted a question to the consumer"). True PTY-presence
+ * semantics are validated in tests/api/question-presence-tracker.test.ts.
+ */
+class PassthroughTracker extends QuestionPresenceTracker {
+  override recordPendingHook(question: Question): void {
+    this.onPTYPromptVisible(question);
   }
-  if (!predicate()) {
-    throw new Error(`until() timed out after ${timeoutMs}ms`);
-  }
+}
+
+function makePassthroughTracker(api: MessageAPI): PassthroughTracker {
+  return new PassthroughTracker((q) => api.handleQuestion(q));
 }
 
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
@@ -129,34 +136,44 @@ describe('setupHookBridge', () => {
   function build(
     opts: {
       autoApprove?: boolean;
-      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled';
+      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled' | 'pick';
+      /** Index for the 'pick' branch (1-based, matches the auto-approve
+       *  service contract). Only relevant when autoApproveDecision='pick'. */
+      autoApprovePickIndex?: number;
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
       throwOnQuestionTimes?: number;
-      injectAckTimeoutMs?: number;
       submitInputThrows?: boolean;
       /** Test sink for cancel() invocations from the bridge. Each entry is
        *  the `reason` string the bridge passed. */
       cancelLog?: string[];
+      /** Use a real QuestionPresenceTracker (no PTY-visible passthrough)
+       *  so tests can exercise the actual record-pending / status-clear
+       *  contract through the bridge wiring. Defaults to the passthrough
+       *  tracker used by the legacy assertion-style tests. */
+      realTracker?: boolean;
     } = {},
-  ) {
+  ): { tracker: QuestionPresenceTracker } {
+    const localMessageApi = fakeMessageAPI(
+      messageApiLog,
+      opts.throwOnQuestionTimes !== undefined
+        ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
+        : {},
+    );
+    const tracker: QuestionPresenceTracker = opts.realTracker
+      ? new QuestionPresenceTracker((q) => localMessageApi.handleQuestion(q))
+      : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
       tmpDir,
       fakePTY(ptySubmits, opts.submitInputThrows ? { throws: true } : {}),
-      fakeMessageAPI(
-        messageApiLog,
-        opts.throwOnQuestionTimes !== undefined
-          ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-          : {},
-      ),
+      localMessageApi,
     );
 
     // Minimal AutoApproveService stub. Only invoked when opts.autoApprove is
     // true; default decision is 'approve' (existing tests rely on this).
-    // `autoApproveDelayMs` simulates LLM eval latency so dedup-window tests
-    // can fire Notification while evaluate() is still in flight (#379).
-    // `autoApproveThrows` exercises the outer .catch() handler.
+    // `autoApproveDelayMs` simulates LLM eval latency; `autoApproveThrows`
+    // exercises the outer .catch() handler.
     const autoApproveService = opts.autoApprove
       ? ({
           evaluate: async () => {
@@ -170,6 +187,15 @@ describe('setupHookBridge', () => {
             const durationMs = opts.autoApproveDelayMs ?? 0;
             if (decision === 'cancelled') {
               return { decision, reasoning: 'test-autoapprove', durationMs };
+            }
+            if (decision === 'pick') {
+              return {
+                decision,
+                pickIndex: opts.autoApprovePickIndex ?? 2,
+                reasoning: 'test-autoapprove',
+                durationMs,
+                model: 'test-model',
+              };
             }
             return {
               decision,
@@ -202,18 +228,19 @@ describe('setupHookBridge', () => {
         hookServer: hookServer as unknown as HookServer,
         sessionId: SID,
         workingDirectory: tmpDir,
-        messageApi: fakeMessageAPI(
-          messageApiLog,
-          opts.throwOnQuestionTimes !== undefined
-            ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-            : {},
-        ),
+        messageApi: localMessageApi,
         sendAndRecord: () => {},
-        ...(opts.injectAckTimeoutMs !== undefined
-          ? { injectAckTimeoutMs: opts.injectAckTimeoutMs }
-          : {}),
+        // PassthroughTracker is the default: it collapses
+        // recordPendingHook into an immediate push so the legacy
+        // "bridge emitted a question to the consumer" assertions via
+        // questionCalls still work. opts.realTracker uses the real
+        // QuestionPresenceTracker for wiring tests (record/status-clear
+        // through the bridge). Pure PTY-presence semantics are validated
+        // in tests/api/question-presence-tracker.test.ts.
+        tracker,
       },
     );
+    return { tracker };
   }
 
   test('registers listeners for all 7 hook events', () => {
@@ -414,424 +441,428 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
   });
 
-  // -------------------------------------------------------------------------
-  // Regression #379 / #377: pre-emptive Notification dedup during slow
-  // auto-approve evaluation. The PermissionRequest hook handler must mark
-  // the bridge as "handling permission" BEFORE invoking aaService.evaluate,
-  // so a Notification(permission_prompt) arriving while the LLM is still
-  // running is suppressed instead of emitting a phantom Question (which
-  // would fire a duplicate APNS push the user can't dismiss).
-  // -------------------------------------------------------------------------
+  // SessionStart restart pre-empt is source-agnostic: any rotation of
+  // session_id while PTY is running fires it. These tests cover the new-
+  // source, undefined-source, same-session_id (must NOT fire), missing
+  // session_id (defensive), and subagent (agent_id set, must NOT fire) axes.
 
-  test('regression #379: slow auto-approve approve does NOT leak a Notification question', async () => {
-    // 80ms eval delay simulates ollama latency. Notification fires inside
-    // the window; without the pre-emptive markPermissionHandled, this
-    // Notification would emit a 3-option question and trigger a push.
-    build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 80 });
+  test('SessionStart with unknown source AND new session_id pre-empts classifier (issue #416)', () => {
+    build();
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
       hook_event_name: 'SessionStart',
     });
 
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379',
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'switch_chat_future_value',
+    });
+
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
-
-    // Notification fires ~10ms after PermissionRequest in real Claude Code;
-    // schedule it well within the eval window so the race is exercised.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
-    });
-
-    // Wait for evaluate() + inject() to fully resolve.
-    await until(() => ptySubmits.length >= 1);
-
-    // Approved: PTY received "1" once.
-    expect(ptySubmits).toEqual(['1']);
-    // Notification path must have been suppressed by the pre-emptive dedup.
-    // Total questions emitted: zero (the auto-approve path is silent on success).
-    expect(messageApiLog.questionCalls).toBe(0);
+    expect(messageApiLog.statusCalls).toContain('executing');
   });
 
-  test('regression #379: slow auto-approve DENY does NOT leak a Notification question', async () => {
-    // Mirror of the approve test; the deny path also injects (with "3")
-    // and must benefit from the same pre-emptive dedup. Without it, the
-    // mid-flight Notification would emit a phantom approve-style 3-option
-    // question while the daemon was about to silently deny.
-    build({ autoApprove: true, autoApproveDecision: 'deny', autoApproveDelayMs: 80 });
+  test('SessionStart with undefined source AND new session_id pre-empts classifier (issue #416)', () => {
+    // Some Claude Code versions omit `source` entirely on session transitions.
+    build();
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379-deny',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
       hook_event_name: 'SessionStart',
     });
 
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379-deny',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379-deny',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
-    });
-
-    await until(() => ptySubmits.length >= 1);
-
-    expect(ptySubmits).toEqual(['3']);
-    expect(messageApiLog.questionCalls).toBe(0);
-  });
-
-  test('regression #379: escalate path emits the canonical Question exactly once', async () => {
-    // When auto-approve cannot decide (e.g. 'escalate'), the user MUST see
-    // a question. The Notification arriving during eval must still be
-    // suppressed; the canonical question comes from handlePermissionRequest
-    // via escalateToUser. Net: questionCalls === 1.
-    build({ autoApprove: true, autoApproveDecision: 'escalate', autoApproveDelayMs: 80 });
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379b',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
       hook_event_name: 'SessionStart',
     });
 
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379b',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    });
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379b',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
-    });
-
-    await until(() => messageApiLog.questionCalls >= 1);
-
-    // No injection happened (escalate, main context).
-    expect(ptySubmits).toEqual([]);
-    // Exactly one question: the escalation, not the suppressed Notification.
-    expect(messageApiLog.questionCalls).toBe(1);
-  });
-
-  test('regression #379: evaluate() throws -> escalates to user, Notification suppressed', async () => {
-    // Outer .catch() runs when ollama dies mid-eval. Main-session context
-    // hits escalateToUser -> handlePermissionRequest emits canonical Q. The
-    // Notification fired during the eval window must still be suppressed.
-    build({ autoApprove: true, autoApproveThrows: true, autoApproveDelayMs: 80 });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379c',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379c',
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379c',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
-    });
-
-    await until(() => messageApiLog.questionCalls >= 1);
-
-    expect(ptySubmits).toEqual([]);
-    expect(messageApiLog.questionCalls).toBe(1);
+    expect(messageApiLog.statusCalls).toContain('executing');
   });
 
-  test('regression #381 audit: escalate throws -> dedup mark cleared so Notification fallback fires', async () => {
-    // Silent-failure-hunter B2: if escalateToUser() throws (push fan-out
-    // failure, WS send on a half-closed adapter, etc.) the user used to be
-    // left with NOTHING — pre-emptive dedup suppressed the trailing
-    // Notification. Now the catch handler clears the dedup mark, so the
-    // Notification fallback gets to surface a question.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'escalate',
-      autoApproveDelayMs: 30,
-      throwOnQuestionTimes: 1, // first onQuestion (escalation) throws; Notification fallback succeeds
-    });
+  test('SessionStart with same session_id does NOT pre-empt (issue #416)', () => {
+    // Locks the `input.session_id !== claudeSessionId` guard against silent
+    // refactor regression: a duplicate SessionStart for the same session
+    // (e.g. SDK reconnect, source=startup repeat) must be a no-op.
+    build();
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-381a',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
       hook_event_name: 'SessionStart',
     });
 
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-381a',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'startup',
     });
 
-    // Wait until escalation has been attempted (questionCalls increments
-    // even when the call throws — fakeMessageAPI counts on entry).
-    await until(() => messageApiLog.questionCalls >= 1);
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
 
-    // Now fire the Notification AFTER escalation has thrown. Without the
-    // clearPermissionHandled() call in escalateToUser's catch, the dedup
-    // mark would still be active and this Notification would be suppressed.
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-381a',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
+  test('SessionStart with missing session_id does NOT pre-empt (issue #416)', () => {
+    // Defensive: malformed/incomplete event must be inert, not tear down.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
     });
 
-    await until(() => messageApiLog.questionCalls >= 2);
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
 
-    // Two attempts: 1 escalation (threw), 1 Notification fallback (succeeded
-    // for counting purposes; throwOnQuestion fires on every call but the
-    // counter increments before the throw so we observe the call).
-    expect(messageApiLog.questionCalls).toBe(2);
+    hookServer.fire('SessionStart', {
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with agent_id set does NOT pre-empt even on session_id mismatch (issue #416)', () => {
+    // isSubagentEvent guard: a subagent firing SessionStart with its own
+    // session_id (hypothetical future Claude Code shape) must not tear down
+    // main's watcher. Closes the gap the pre-PR narrow `source` gate covered
+    // by accident.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'subagent-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      agent_id: 'subagent-id-xyz',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
   });
 
   // -------------------------------------------------------------------------
-  // Issue #382: PTY inject ack timeout. submitInput is fire-and-forget, so a
-  // stuck PTY can swallow the byte while inject() reports success. Combined
-  // with the pre-emptive dedup mark (#379/#381), the user would see no
-  // PTY answer, no question, and no APNS push -- a hard regression compared
-  // to the pre-#381 phantom-Notification behaviour. The fix registers a
-  // PendingAck around submitInput and escalates if no follow-up hook event
-  // arrives within the timeout.
+  // Phase 3 (#418) replaced the pre-emptive `lastPermissionEmitAt` dedup
+  // window (#377/#379/#381) and the `PendingAck` inject timer (#382) with
+  // QuestionPresenceTracker — see
+  // packages/daemon/src/api/question-presence-tracker.ts and its tests.
+  // Those windows/timers no longer exist, so the associated regression
+  // tests were removed in this cleanup. Tracker semantics are validated
+  // structurally in question-presence-tracker.test.ts.
   // -------------------------------------------------------------------------
 
-  test('regression #382: approve + PostToolUse arrives in time -> no escalation', async () => {
-    // Happy path: the auto-approve injects "1", Claude proceeds with the
-    // tool call, PostToolUse fires within the ack window. No timeout, no
-    // escalation. questionCalls stays at 0.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-    });
+  test('Phase 3 wiring: PreToolUse drives tracker.onStatusChange and clears pending', () => {
+    // A PermissionRequest stashes the question in the tracker via
+    // onQuestion → recordPendingHook. A subsequent PreToolUse must drive
+    // tracker.onStatusChange('executing') through the bridge's
+    // onStatusChange wiring and clear the pending slot. Without this,
+    // a refactor that disconnects tracker.onStatusChange from the
+    // bridge would leave stale pending records that merge wrong option
+    // labels onto unrelated future PTY prompts.
+    const { tracker } = build({ realTracker: true });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382a',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-locked-wire-1',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'wire.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382a',
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
+    expect(tracker.hasPendingForTest()).toBe(true);
 
-    // Simulate Claude advancing past the prompt: PostToolUse for the tool.
-    hookServer.fire('PostToolUse', {
-      session_id: 'claude-locked-382a',
-      hook_event_name: 'PostToolUse',
-      tool_name: 'Bash',
-      tool_use_id: 'tool-use-382a',
-      tool_input: { command: 'ls' },
-      tool_output: { exit_code: 0 },
-    });
-
-    // Wait past 2.5x the ack timeout to leave headroom for CI scheduler
-    // jitter (a Bun timer + microtask flush on a loaded macOS runner has
-    // shown >40 ms drift). If a late timeout escalation slips through,
-    // questionCalls becomes 1 and this assertion fails.
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(0);
-  });
-
-  test('regression #382: approve + no follow-up event -> ack timeout escalates', async () => {
-    // Silent PTY scenario: inject reports success but no PreToolUse /
-    // PostToolUse / Stop arrives. The ack timer fires, clears the dedup
-    // mark, and emits the canonical question via escalateToUser.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-    });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382b',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382b',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-    });
-
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
-
-    // No follow-up event: ack timer should fire and emit a fallback Q.
-    await until(() => messageApiLog.questionCalls >= 1, 1000);
-    expect(messageApiLog.questionCalls).toBe(1);
-  });
-
-  test('regression #382: deny + Stop arrives in time -> no escalation', async () => {
-    // Mirror of the approve happy path for the deny branch. Stop is the
-    // expected ack signal when Claude abandons the requested tool.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'deny',
-      injectAckTimeoutMs: 100,
-    });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382c',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382c',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    });
-
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['3']);
-
-    hookServer.fire('Stop', {
-      session_id: 'claude-locked-382c',
-      hook_event_name: 'Stop',
-      stop_hook_active: false,
-    });
-
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(0);
-  });
-
-  // (The previous "ack timeout AFTER Notification dedup expired" test was
-  // dropped: the timeout path's explicit clearPermissionHandled() is
-  // defensive -- handlePermissionRequest immediately re-arms
-  // lastPermissionEmitAt when escalateToUser emits, so a late Notification
-  // is correctly suppressed as a duplicate of the canonical escalation.
-  // The meaningful "timeout -> escalation fires" behavior is covered by
-  // the "approve + no follow-up event" test above.)
-
-  test('regression #382: submitInput throws -> ack cancelled, single escalation only', async () => {
-    // inject() catch path: cancel pendingAck before returning false so the
-    // caller's escalateToUser fires once, not once + a stale timeout
-    // escalation a second later.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-      submitInputThrows: true,
-    });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382e',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382e',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-    });
-
-    // PTY recorded the byte (fakePTY pushes BEFORE throwing) but inject
-    // returned false; caller escalates once via the inject-failure path.
-    await until(() => messageApiLog.questionCalls >= 1, 500);
-    expect(messageApiLog.questionCalls).toBe(1);
-
-    // Wait past the ack timeout to confirm no SECOND escalation lands.
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(1);
-  });
-
-  test('regression #382: default ack timeout is non-trivial (no override -> no fast escalation)', async () => {
-    // Pins the args.injectAckTimeoutMs ?? 1000 fallback. If a refactor
-    // dropped the default and the field became required (or undefined
-    // -> setTimeout interpreted as 1ms), the timer would fire almost
-    // immediately and escalate during this 200 ms quiet window.
-    build({ autoApprove: true, autoApproveDecision: 'approve' }); // no injectAckTimeoutMs
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382f',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382f',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-    });
-
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
-
-    // 200 ms is a fraction of the 1000 ms default; no escalation expected.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(messageApiLog.questionCalls).toBe(0);
-  });
-
-  test('regression #382: Notification(idle_prompt) resolves the ack (Edit-style approve)', async () => {
-    // When auto-approve approves an Edit (the same tool that triggered
-    // the prompt), Claude doesn't fire a fresh PreToolUse. The next
-    // signal that "Claude moved on" is often a Notification(idle_prompt).
-    // Code-reviewer flagged this as a phantom-escalation gap; this test
-    // pins ackAllPending() being called from the Notification handler
-    // when the type is anything other than permission_prompt.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-    });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382g',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382g',
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'PreToolUse',
       tool_name: 'Edit',
-      tool_input: { file_path: '/tmp/x.ts', old_str: 'a', new_str: 'b' },
+      tool_input: { file_path: '/tmp/x.ts' },
     });
 
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
 
-    // idle_prompt is a "Claude moved on" signal -- must ack the pending
-    // inject so the timer doesn't fire a phantom escalation.
+  test('Phase 3 wiring: SessionStart restart clears tracker.pending', () => {
+    // Cross-phase regression: phase 1's restart classifier tears down
+    // the transcript watcher. Without explicit tracker.clearPending(),
+    // a PermissionRequest stashed before /clear or /compact would
+    // merge stale option labels onto the new session's first PTY
+    // prompt. Two reviewers flagged this on PR #423.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-restart-A',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-restart-A',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    // Restart fires (e.g. user typed /clear). Classifier returns
+    // 'restart' because session_id mismatch + source is treated as
+    // restart-evidence by phase 1.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-restart-B',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      source: 'clear',
+      model: 'test',
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 3 wiring: cancelled auto-approve clears tracker.pending via real bridge', async () => {
+    // pr-test-analyzer Gap 1: the existing 'cancelled decision: bridge
+    // does not inject and does not escalate' test uses PassthroughTracker
+    // and so cannot witness the clearPending() call. A refactor that
+    // dropped it would still pass that test. This one uses the real
+    // tracker and asserts the pending slot is drained.
+    const { tracker } = build({
+      autoApprove: true,
+      autoApproveDecision: 'cancelled',
+      realTracker: true,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-cancel',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'c.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-cancel',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait for the auto-approve .then() to drain.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual([]); // cancelled: no inject
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 3 wiring: late Notification after SessionEnd is dropped', () => {
+    // silent-failure-hunter #3: SessionEnd already cleared status to
+    // 'idle' (which drains tracker.pending). A late Notification
+    // arriving from a dying Claude process must not re-populate the
+    // pending slot, or a final PTY echo could fire a spurious push.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'late.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('SessionEnd', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'SessionEnd',
+      reason: 'logout',
+    });
+
+    // Late Notification fires after teardown.
     hookServer.fire('Notification', {
-      session_id: 'claude-locked-382g',
+      session_id: 'claude-late-1',
       hook_event_name: 'Notification',
-      notification_type: 'idle_prompt',
-      message: '',
+      notification_type: 'permission_prompt',
+      message: 'phantom prompt from dying Claude',
     });
 
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(0);
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 2 + Phase 3: auto-approve pick decision injects the correct index', async () => {
+    // pr-test-analyzer Gap 4: the bridge's 'pick' branch was uncovered
+    // at the wiring layer. Service-level tests verify pick returns
+    // {pickIndex}; this asserts the bridge translates that into the
+    // right PTY submit value.
+    build({
+      autoApprove: true,
+      autoApproveDecision: 'pick',
+      autoApprovePickIndex: 2,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-pick',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'pick.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-pick',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait for the auto-approve .then() + inject to drain.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['2']);
+  });
+
+  test('Phase 2 + Phase 3: mixed-shape suggestions survive the hook->tracker->push merge', async () => {
+    // pr-test-analyzer Gap 3: phase 2 filters object entries out of
+    // permission_suggestions; phase 3 merges the filtered options onto
+    // the PTY question. Both layers are tested in isolation; this
+    // covers the chain end-to-end through the real bridge wiring.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null,
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-mixed',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'mixed.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // No auto-approve: the listener falls through to escalateToUser,
+    // which calls handlePermissionRequest -> onQuestion ->
+    // tracker.recordPendingHook with the filtered options.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-mixed',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/x.ts' },
+      permission_suggestions: [{ type: 'addDirectories', directories: ['/tmp'] }, 'Yes', 'No'],
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    // PTY confirms the prompt is on screen with the bland numbered
+    // fallback options. The hook's filtered string options must win
+    // the merge.
+    tracker.onPTYPromptVisible({
+      id: generateId(),
+      text: 'Allow Edit: /tmp/x.ts?',
+      options: [
+        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
+        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(pushed.length).toBe(1);
+    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 
   // -------------------------------------------------------------------------
