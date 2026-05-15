@@ -71,18 +71,25 @@ describe('isMultiChoicePermission', () => {
     expect(isMultiChoicePermission('CustomTool', ['Yes', 'Maybe later', 'No'])).toBe(true);
   });
 
-  test('returns true for non-string entries (defensive against schema drift)', () => {
-    // permission_suggestions with garbage entries must NOT crash on
-    // .toLowerCase(). Routing to multi-choice is the safe path; the
-    // service does its own strict filter before any LLM call.
-    expect(isMultiChoicePermission('Bash', [null, 'Yes', 'No'] as readonly unknown[])).toBe(true);
-    expect(isMultiChoicePermission('Bash', [{}, 1] as readonly unknown[])).toBe(true);
+  test('ignores non-string entries when classifying around real string labels', () => {
+    // Garbage entries (null, raw numbers, bare objects) carry no
+    // pickable label. Classification reads only the string subset, so
+    // ['Yes', 'No'] plus a stray null is still binary. Defensive against
+    // schema drift without flipping every real Claude Code prompt into
+    // an unconditional escalate.
+    expect(isMultiChoicePermission('Bash', [null, 'Yes', 'No'] as readonly unknown[])).toBe(false);
+    // No string labels at all -> default UI options (Yes/Yes-always/No)
+    // -> binary.
+    expect(isMultiChoicePermission('Bash', [{}, 1] as readonly unknown[])).toBe(false);
   });
 
-  test('returns true for the typed-object addDirectories shape', () => {
-    // Concrete shape observed live from Claude Code (2026-05-13).
-    // Locks the classifier so a future change adding a string-only fast
-    // path cannot regress this case into a silent binary route.
+  test('returns false for object-only rule-suggestion metadata (the regression fix)', () => {
+    // Concrete shapes observed live from Claude Code (2026-05-13 onwards).
+    // These are typed rule suggestions Claude Code attaches to a normal
+    // Bash permission prompt; the user still sees the standard
+    // Yes/Yes-always/No UI. Classifying them as multi-choice + the
+    // default `multichoice = "skip"` regresses every Bash auto-approve
+    // into a silent escalate. Lock the binary route.
     expect(
       isMultiChoicePermission('Bash', [
         {
@@ -91,13 +98,33 @@ describe('isMultiChoicePermission', () => {
           destination: 'session',
         },
       ] as readonly unknown[]),
-    ).toBe(true);
-  });
-
-  test('returns true for the typed-object setMode shape', () => {
+    ).toBe(false);
     expect(
       isMultiChoicePermission('Bash', [
         { type: 'setMode', mode: 'bypassPermissions', destination: 'session' },
+      ] as readonly unknown[]),
+    ).toBe(false);
+    expect(
+      isMultiChoicePermission('Bash', [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'rm -rf derivatives/preproc/sub-NDARAA948VFH' }],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+      ] as readonly unknown[]),
+    ).toBe(false);
+  });
+
+  test('returns true when 4+ STRING labels are present alongside object metadata', () => {
+    // Mixed payload with enough real labels to overflow the binary path.
+    expect(
+      isMultiChoicePermission('CustomTool', [
+        'Refactor',
+        'Patch',
+        'Rewrite',
+        'Skip',
+        { type: 'addRules', rules: [], behavior: 'allow', destination: 'session' },
       ] as readonly unknown[]),
     ).toBe(true);
   });
@@ -141,6 +168,29 @@ describe('buildMultiChoicePrompt', () => {
     const user = messages[1] as { content: string };
     expect(user.content.length).toBeLessThan(2500);
     expect(user.content).toContain('...');
+  });
+
+  test('system prompt makes the design/direction/steering escalate rule explicit', () => {
+    // The prompt must steer the LLM away from picking on direction,
+    // design, scope, or steering questions. Locks the rule so a future
+    // prompt rewrite cannot quietly drop it.
+    const messages = buildMultiChoicePrompt('ExitPlanMode', {}, ['A', 'B']);
+    const system = messages[0] as { content: string };
+    const lower = system.content.toLowerCase();
+    expect(lower).toContain('always escalate');
+    expect(lower).toContain('direction');
+    expect(lower).toContain('design');
+    expect(lower).toContain('scope');
+  });
+
+  test('system prompt flags irreversible/permanent options as escalate', () => {
+    // Options that mention "always", "permanent", or session-wide
+    // commitment must escalate. Locks the rule.
+    const messages = buildMultiChoicePrompt('ExitPlanMode', {}, ['A', 'B']);
+    const system = messages[0] as { content: string };
+    const lower = system.content.toLowerCase();
+    expect(lower).toContain('irreversible');
+    expect(lower).toContain('always');
   });
 });
 

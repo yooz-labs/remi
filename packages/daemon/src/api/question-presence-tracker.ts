@@ -49,6 +49,14 @@ export class QuestionPresenceTracker {
    *  user will see. */
   private pending: Question | null = null;
 
+  /** True between the most recent `onPTYPromptVisible` and the next
+   *  `onStatusChange` that leaves `'waiting'`. Consumed by the
+   *  auto-approve inject path to gate subagent injection: a background
+   *  subagent's permission prompt never renders on the main PTY, so
+   *  this flag stays false and the inject is dropped instead of
+   *  typing into the main agent's input. */
+  private ptyShowingQuestion = false;
+
   constructor(private readonly push: PushQuestion) {}
 
   /**
@@ -101,6 +109,7 @@ export class QuestionPresenceTracker {
         ? { ...ptyQuestion, options: [...this.pending.options] }
         : ptyQuestion;
     this.pending = null;
+    this.ptyShowingQuestion = true;
     try {
       this.push(merged);
     } catch (err) {
@@ -119,6 +128,7 @@ export class QuestionPresenceTracker {
   onStatusChange(status: AgentStatus): void {
     if (status !== 'waiting') {
       this.pending = null;
+      this.ptyShowingQuestion = false;
     }
   }
 
@@ -131,6 +141,20 @@ export class QuestionPresenceTracker {
    */
   clearPending(): void {
     this.pending = null;
+  }
+
+  /**
+   * True when the PTY parser has reported a permission prompt is on
+   * screen and no status transition since has cleared it. Used by the
+   * auto-approve inject path to gate subagent injection: only inject
+   * "1"/"3" when a prompt is actually visible to consume the input.
+   * A background subagent emits PermissionRequest hooks but its
+   * prompt never reaches the main PTY, so this stays false and the
+   * inject is dropped (caller falls through to escalateToUser, where
+   * the lack of PTY confirmation also prevents a spurious push).
+   */
+  isPromptVisibleOnPTY(): boolean {
+    return this.ptyShowingQuestion;
   }
 
   /**

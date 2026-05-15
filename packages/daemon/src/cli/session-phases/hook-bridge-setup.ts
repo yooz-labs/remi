@@ -467,17 +467,33 @@ export function setupHookBridge(
     const sessionTag = sessionId.slice(0, 8);
 
     // Inject an answer into the PTY. Returns true on success. On failure
-    // (session missing, PTY not running, submitInput throws) it logs and
-    // returns false so callers can fall back to escalating the prompt.
+    // (session missing, PTY not running, submitInput throws, subagent
+    // off-screen gate trips) it logs and returns false so callers can
+    // fall back to escalating the prompt.
     //
     // Value is a 1-based numeric option index serialised as a string. Most
     // permissions only need '1' (approve) or '3' (deny); multi-choice picks
     // can land any index in the prompt's option range (#399).
+    //
+    // PTY-presence gate (subagent-only): a background subagent (Task tool
+    // with agent_id set) emits PermissionRequest hooks for its own tool
+    // calls, but its prompts never render on the main PTY — only a
+    // hot-switched subagent view does. Without this gate, auto-approve
+    // would type "1"/"3" into the MAIN AGENT's input every time a
+    // background subagent asked for permission. Read-live so the
+    // hot-switched case (PTY has rendered the subagent prompt between
+    // the hook firing and the LLM eval returning) still injects.
     const inject = async (value: string, reason: string): Promise<boolean> => {
       try {
         const session = sessionRegistry.getSession(sessionId);
         if (!session) {
           logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
+          return false;
+        }
+        if (isSubagentEvent(input) && !tracker.isPromptVisibleOnPTY()) {
+          log(
+            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type})`,
+          );
           return false;
         }
         await session.pty.submitInput(value);

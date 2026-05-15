@@ -263,20 +263,29 @@ describe('setupHookBridge', () => {
     expect(() => build()).not.toThrow();
   });
 
-  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve', async () => {
+  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve, gated by PTY presence', async () => {
     // Pre-phase-4, agent_id-tagged events were dropped at the listener
     // boundary. Phase 4 demoted agent_id from kill-switch to metadata:
-    // the auto-approve LLM evaluates and injects just like a main-agent
-    // event. The push to iOS is still gated by PTY presence downstream,
-    // so a background subagent's auto-approved permission silently
-    // executes; a hot-switched subagent's prompt would surface via the
-    // tracker's PTY confirmation path.
-    build({ autoApprove: true, autoApproveDecision: 'approve' });
+    // the auto-approve LLM evaluates and forwards to the inject path.
+    // Inject is then gated by tracker.isPromptVisibleOnPTY() — true for
+    // a hot-switched subagent view, false for a background subagent.
+    // This test simulates the hot-switched case (PTY confirms presence)
+    // so inject proceeds end to end.
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
       session_id: 'claude-sub-123',
       transcript_path: path.join(tmpDir, 'sub.jsonl'),
       hook_event_name: 'SessionStart',
+    });
+
+    // PTY rendered the subagent's prompt on the user's screen.
+    tracker.onPTYPromptVisible({
+      id: 'pty-pr1',
+      text: 'Allow Bash?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1046,13 +1055,17 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(true);
   });
 
-  test('Phase 4 wiring: subagent PermissionRequest with auto-approve still injects normally', async () => {
-    // Pre-phase-4 this path returned early (dropped). Now it goes through
-    // auto-approve like a main-agent prompt. The push is suppressed
-    // structurally: inject succeeds, status flips to executing, tracker
-    // had no pending (handlePermissionRequest is only called via
-    // escalateToUser, which auto-approve never enters on the approve
-    // branch), so nothing pushes.
+  test('subagent PermissionRequest with no PTY-visible prompt: inject is dropped, fallback escalates', async () => {
+    // Regression guard for the dev.3 misfiring: a background subagent's
+    // PermissionRequest cannot answer by injecting into the MAIN PTY
+    // because the subagent's prompt isn't there — "1" would land in the
+    // main agent's input. inject() must gate on
+    // tracker.isPromptVisibleOnPTY(); when false (no PTY confirmation),
+    // it returns false so the approve branch falls through to
+    // escalateToUser, which records into the tracker. The PassthroughTracker
+    // collapses that into a push (one question call). In production the
+    // real tracker would wait for PTY confirmation that never arrives →
+    // pending dropped on next status change → no spurious push.
     build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
@@ -1074,13 +1087,56 @@ describe('setupHookBridge', () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
+    // Inject was gated → no submit. Escalation fires → one question call.
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('subagent PermissionRequest with PTY-visible prompt (hot-switched view) still injects', async () => {
+    // Preserves PR #419's hot-switched-subagent case: when the user
+    // has switched to the subagent's view, its permission prompt IS
+    // rendered on the main PTY. Simulate that by firing
+    // onPTYPromptVisible BEFORE the PermissionRequest so the tracker's
+    // ptyShowingQuestion flag is true when inject's gate checks it.
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-hot',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subhot.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // PTY rendered the subagent's prompt on the user's screen.
+    tracker.onPTYPromptVisible({
+      id: 'pty-q-1',
+      text: 'Allow Bash?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-hot',
+      agent_id: 'subagent-hot',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
     expect(ptySubmits).toEqual(['1']);
   });
 
-  test('Phase 4 wiring: subagent PermissionRequest + auto-approve deny injects "3"', async () => {
-    // Mirrors the approve case but on the deny branch. A refactor that
-    // accidentally routed deny to escalateToUser would break the
-    // non-hang guarantee for background subagents.
+  test('subagent PermissionRequest + auto-approve deny with no PTY presence: inject dropped, escalates', async () => {
+    // Mirrors the approve case for the deny branch — same gate, same
+    // fallthrough. The non-hang guarantee for background subagents is
+    // now structural: with no PTY presence the subagent has no answerable
+    // prompt to hang on (the inject never could have reached it), so
+    // dropping is correct.
     build({ autoApprove: true, autoApproveDecision: 'deny' });
 
     hookServer.fire('SessionStart', {
@@ -1094,6 +1150,40 @@ describe('setupHookBridge', () => {
     hookServer.fire('PermissionRequest', {
       session_id: 'claude-sub-deny',
       agent_id: 'subagent-deny',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('subagent PermissionRequest + auto-approve deny with PTY-visible prompt injects "3"', async () => {
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'deny' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-deny-hot',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subdenyhot.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    tracker.onPTYPromptVisible({
+      id: 'pty-q-2',
+      text: 'Allow Bash: rm -rf /?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-deny-hot',
+      agent_id: 'subagent-deny-hot',
       agent_type: 'general-purpose',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',

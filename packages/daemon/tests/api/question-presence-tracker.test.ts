@@ -227,4 +227,53 @@ describe('QuestionPresenceTracker', () => {
     expect(() => tracker.onPTYPromptVisible(ptyQ)).not.toThrow();
     expect(tracker.hasPendingForTest()).toBe(false);
   });
+
+  describe('isPromptVisibleOnPTY (subagent auto-approve gate)', () => {
+    it('starts false before any PTY confirmation', () => {
+      const tracker = new QuestionPresenceTracker(() => {});
+      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    });
+
+    it('stays false when only a hook has recorded — PTY has not confirmed yet', () => {
+      // Background subagent fires PermissionRequest; LLM eval is running;
+      // the prompt is NOT on the main PTY. The gate must report false so
+      // hook-bridge-setup drops the inject instead of typing "1" into
+      // the main agent's input.
+      const tracker = new QuestionPresenceTracker(() => {});
+      tracker.recordPendingHook(makeHookQuestion('Bash'));
+      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    });
+
+    it('flips to true once PTY confirms a prompt is on screen', () => {
+      const tracker = new QuestionPresenceTracker(() => {});
+      tracker.onPTYPromptVisible(makePTYQuestion());
+      expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    });
+
+    it('flips back to false when status leaves waiting (prompt consumed)', () => {
+      const tracker = new QuestionPresenceTracker(() => {});
+      tracker.onPTYPromptVisible(makePTYQuestion());
+      expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+      tracker.onStatusChange('executing');
+      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    });
+
+    it("stays true while status stays 'waiting'", () => {
+      const tracker = new QuestionPresenceTracker(() => {});
+      tracker.onPTYPromptVisible(makePTYQuestion());
+      tracker.onStatusChange('waiting');
+      expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    });
+
+    it('also flips false on transition to thinking or idle', () => {
+      const tracker = new QuestionPresenceTracker(() => {});
+      tracker.onPTYPromptVisible(makePTYQuestion());
+      tracker.onStatusChange('thinking');
+      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+
+      tracker.onPTYPromptVisible(makePTYQuestion());
+      tracker.onStatusChange('idle');
+      expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    });
+  });
 });
