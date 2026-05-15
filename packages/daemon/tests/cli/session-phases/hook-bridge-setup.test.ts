@@ -426,6 +426,123 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.statusCalls).toContain('executing');
   });
 
+  test('sibling-in-dir + fallback-discovered claudeSessionId: lock adopted from sessionStore on next hook', () => {
+    // The dev.3 inconsistency the user hit: when 2+ Remi wrappers share a
+    // project directory, hasSiblingInDir() defers hook-event-based locking
+    // to the transcript-fallback poll. The fallback discovers our own
+    // Claude session ID by inspecting `~/.claude/projects/<dir>/` and writes
+    // it to sessionStore. Pre-fix, the hook-bridge's `claudeSessionId`
+    // closure never read from sessionStore, so filterBySession kept
+    // returning false (no lock + siblings) and dropped EVERY hook for the
+    // entire session lifetime. The fix: adoptLockFromStore() reads
+    // sessionStore.findByRemiSessionId(...)?.claudeSessionId lazily on the
+    // next hook event after fallback completes.
+    //
+    // Test setup: seed a sibling and pre-populate sessionStore as the
+    // fallback would have done. Fire a PermissionRequest for our session
+    // and assert the auto-approve inject fires (proving filterBySession
+    // adopted the lock).
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-in-dir.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id',
+        pid: process.pid,
+        wsPort: 18999,
+        hookPort: 18001,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Pre-populate the store as transcript-fallback would have done after
+    // discovering our Claude transcript via filesystem polling.
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-mine-via-fallback',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Hot-switched PTY presence so the subagent gate doesn't shadow this
+    // assertion (irrelevant to the lock-adoption check itself).
+    // The first hook arrives WHILE hasSiblingInDir is still true. Pre-fix
+    // this dropped silently. Post-fix, adoptLockFromStore pulls the lock
+    // from sessionStore and filterBySession returns true.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-mine-via-fallback',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // If the lock was adopted, auto-approve fired and injected '1'.
+        // If not (regression), ptySubmits is empty.
+        expect(ptySubmits).toEqual(['1']);
+        resolve();
+      }, 50);
+    });
+  });
+
+  test("sibling-in-dir + fallback-discovered lock: foreign session's hooks still drop", () => {
+    // Mirror of the test above, but with a hook event from a DIFFERENT
+    // session_id (i.e. the sibling's Claude). Lock-adoption must not turn
+    // into "accept anything"; the adopted lock should be enforced like
+    // the normal locked path.
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-in-dir-2.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-2',
+        pid: process.pid,
+        wsPort: 18998,
+        hookPort: 18002,
+        projectPath: tmpDir,
+        name: 'sibling-2',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-mine-v2',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Foreign session_id — sibling's Claude firing through our hook URL.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sibling-not-ours',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // No inject — filterBySession matched on the adopted lock and
+        // dropped the foreign event.
+        expect(ptySubmits).toEqual([]);
+        resolve();
+      }, 50);
+    });
+  });
+
   test('SessionStart with source=clear pre-empts classifier and tears down watcher', () => {
     build();
 

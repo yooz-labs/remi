@@ -99,6 +99,33 @@ export function setupHookBridge(
   // Before SessionStart fires, we let events through (claudeSessionId is null).
   let claudeSessionId: string | null = null;
 
+  /**
+   * When `hasSiblingInDir()` is true (multiple Remi wrappers in the same
+   * project directory) the hook-event-based locking path defers to the
+   * filesystem fallback in transcript-fallback.ts, which discovers our
+   * own Claude session ID by looking at `~/.claude/projects/<dir>/` and
+   * excluding sibling-claimed transcripts. The fallback writes the
+   * discovered id to `sessionStore.updateClaudeSessionId(...)` — but
+   * the hook-bridge's `claudeSessionId` closure was never updated from
+   * the store, so `filterBySession` kept reading null and dropped every
+   * hook for the entire session lifetime. This helper closes that gap:
+   * it adopts the stored value lazily on the next hook event after the
+   * fallback completes, switching from "drop everything because siblings
+   * exist" to "drop only events whose session_id != ours". Side effects
+   * are deliberately omitted (no log spam for steady-state hooks, no
+   * watcher restart) because the fallback already wired those up.
+   */
+  const adoptLockFromStore = (): void => {
+    if (claudeSessionId !== null) return;
+    const stored = sessionStore.findByRemiSessionId(sessionId);
+    if (stored?.claudeSessionId) {
+      claudeSessionId = stored.claudeSessionId;
+      log(
+        `[Hooks] Lock adopted from sessionStore (fallback discovery): claude=${claudeSessionId.slice(0, 8)}`,
+      );
+    }
+  };
+
   // Our PTY is the ground truth for "main interactive session". A hook event
   // with a different session_id is NEVER our main:
   //  - Subagent spawn (TaskCreate/TeamCreate), different session_id, no own PTY
@@ -199,6 +226,12 @@ export function setupHookBridge(
     hook_event_name?: string;
   }): void {
     if (!input.session_id) return;
+
+    // If the transcript-fallback has already discovered our Claude
+    // session ID (the multi-wrapper-in-same-dir case), adopt it before
+    // classifying so the classifier sees the right currentLock instead
+    // of a stale null.
+    adoptLockFromStore();
 
     const classification = classifySessionEvent({
       currentLock: claudeSessionId,
@@ -357,6 +390,7 @@ export function setupHookBridge(
   // is known, block events when siblings exist (they could be from the
   // sibling's Claude).
   const filterBySession = (input: { session_id?: string }): boolean => {
+    adoptLockFromStore();
     if (claudeSessionId) return input.session_id === claudeSessionId;
     return !hasSiblingInDir();
   };
