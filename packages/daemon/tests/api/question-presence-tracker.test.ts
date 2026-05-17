@@ -213,6 +213,22 @@ describe('QuestionPresenceTracker', () => {
     expect(pushes.length).toBe(0);
   });
 
+  it('clearPending — also resets ptyShowingQuestion so the inject gate cannot leak', () => {
+    // Sequence: PTY confirms a prompt (flag=true) -> auto-approve eval
+    // returns 'cancelled' (Claude advanced past the prompt) -> bridge
+    // calls clearPending. Without resetting ptyShowingQuestion, the very
+    // next subagent PermissionRequest arriving before any onStatusChange
+    // would find the gate open and inject "1"/"3" into a PTY that is no
+    // longer showing a prompt.
+    const tracker = new QuestionPresenceTracker(() => {});
+    tracker.onPTYPromptVisible(makePTYQuestion());
+    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+
+    tracker.clearPending();
+
+    expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+  });
+
   it('push sink throws — error is caught, tracker stays in a clean state', () => {
     // APNS fan-out or WebSocket send can throw mid-push. The tracker
     // must not crash the daemon process; log and move on. Pending is

@@ -128,6 +128,30 @@ describe('isMultiChoicePermission', () => {
       ] as readonly unknown[]),
     ).toBe(true);
   });
+
+  test('single non-binary string label (with or without objects) routes to multi-choice', () => {
+    // A 1-option string label has no meaningful binary mapping and must
+    // route to multi-choice so the safe escalate path runs. The LLM's
+    // ALWAYS-ESCALATE rules then prevent a nonsensical pick from a
+    // 1-item menu. Without this property, a future Claude Code payload
+    // like `["Continue"]` would slip into the binary path.
+    expect(isMultiChoicePermission('CustomTool', ['Continue'])).toBe(true);
+    // Mixed with rule-suggestion objects — same outcome.
+    expect(
+      isMultiChoicePermission('CustomTool', [
+        { type: 'addRules', rules: [], behavior: 'allow', destination: 'session' },
+        'Continue',
+      ] as readonly unknown[]),
+    ).toBe(true);
+  });
+
+  test('single yes-shaped string label is still binary (degenerate but well-defined)', () => {
+    // Lone "Yes" — degenerate prompt with no negative option — still
+    // classifies as binary because the existing isYes/isNo heuristic
+    // covers it. Locked in to document the boundary between this and
+    // the previous test.
+    expect(isMultiChoicePermission('CustomTool', ['Yes'])).toBe(false);
+  });
 });
 
 describe('buildMultiChoicePrompt', () => {

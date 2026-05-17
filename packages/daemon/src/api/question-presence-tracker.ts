@@ -49,12 +49,14 @@ export class QuestionPresenceTracker {
    *  user will see. */
   private pending: Question | null = null;
 
-  /** True between the most recent `onPTYPromptVisible` and the next
-   *  `onStatusChange` that leaves `'waiting'`. Consumed by the
-   *  auto-approve inject path to gate subagent injection: a background
-   *  subagent's permission prompt never renders on the main PTY, so
-   *  this flag stays false and the inject is dropped instead of
-   *  typing into the main agent's input. */
+  /** True while a permission prompt is on the main PTY. Set by
+   *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
+   *  AND by `clearPending` (the auto-approve cancelled branch confirms
+   *  Claude advanced past the prompt without a status transition we can
+   *  observe). Consumed by the auto-approve inject path to gate subagent
+   *  injection: a background subagent's permission prompt never renders
+   *  on the main PTY, so this flag stays false and the inject is
+   *  dropped instead of typing into the main agent's input. */
   private ptyShowingQuestion = false;
 
   constructor(private readonly push: PushQuestion) {}
@@ -133,25 +135,26 @@ export class QuestionPresenceTracker {
   }
 
   /**
-   * Drop any pending hook record without firing a push. Used by the
-   * auto-approve cancelled branch where Claude has advanced past the
-   * prompt without a status transition we can observe — leaving the
-   * pending in place would merge stale option labels onto the NEXT
-   * unrelated prompt's PTY emit.
+   * Drop any pending hook record without firing a push, and clear the
+   * PTY-presence flag. Used by the auto-approve cancelled branch where
+   * Claude has advanced past the prompt without a status transition we
+   * can observe — leaving the pending in place would merge stale option
+   * labels onto the NEXT unrelated prompt, and leaving `ptyShowingQuestion`
+   * set would let the inject gate pass for a subagent prompt that arrives
+   * after the screen is already past the previous prompt.
    */
   clearPending(): void {
     this.pending = null;
+    this.ptyShowingQuestion = false;
   }
 
   /**
-   * True when the PTY parser has reported a permission prompt is on
-   * screen and no status transition since has cleared it. Used by the
-   * auto-approve inject path to gate subagent injection: only inject
-   * "1"/"3" when a prompt is actually visible to consume the input.
-   * A background subagent emits PermissionRequest hooks but its
-   * prompt never reaches the main PTY, so this stays false and the
-   * inject is dropped (caller falls through to escalateToUser, where
-   * the lack of PTY confirmation also prevents a spurious push).
+   * True when `onPTYPromptVisible` has fired and neither a non-`waiting`
+   * status transition nor `clearPending` has cleared it since. Auto-
+   * approve consumers MUST NOT inject PTY input for a subagent unless
+   * this returns true — a background subagent emits hooks but its
+   * prompt never reaches the main PTY, and injecting would type into
+   * the parent agent's input.
    */
   isPromptVisibleOnPTY(): boolean {
     return this.ptyShowingQuestion;

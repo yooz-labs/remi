@@ -109,20 +109,26 @@ export function setupHookBridge(
    * the hook-bridge's `claudeSessionId` closure was never updated from
    * the store, so `filterBySession` kept reading null and dropped every
    * hook for the entire session lifetime. This helper closes that gap:
-   * it adopts the stored value lazily on the next hook event after the
-   * fallback completes, switching from "drop everything because siblings
-   * exist" to "drop only events whose session_id != ours". Side effects
-   * are deliberately omitted (no log spam for steady-state hooks, no
-   * watcher restart) because the fallback already wired those up.
+   * each hook event re-reads the store and adopts the discovered id when
+   * it differs from the closure (initial adopt, or rotation after a
+   * /clear in the multi-wrapper case where hooks were never authoritative).
+   * Log only on change to avoid spam on steady-state hooks. Wrapped in
+   * try/catch so an EMFILE / permission flake on the sessions file does
+   * not propagate into the hook dispatch loop; on failure we leave the
+   * closure untouched (the existing sibling-guard path remains active).
    */
   const adoptLockFromStore = (): void => {
-    if (claudeSessionId !== null) return;
-    const stored = sessionStore.findByRemiSessionId(sessionId);
-    if (stored?.claudeSessionId) {
-      claudeSessionId = stored.claudeSessionId;
+    try {
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const storedId = stored?.claudeSessionId ?? null;
+      if (storedId === null || storedId === claudeSessionId) return;
+      const previous = claudeSessionId;
+      claudeSessionId = storedId;
       log(
-        `[Hooks] Lock adopted from sessionStore (fallback discovery): claude=${claudeSessionId.slice(0, 8)}`,
+        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from sessionStore: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
       );
+    } catch (err) {
+      logError(`[Hooks] adoptLockFromStore failed: ${errorToString(err)}`);
     }
   };
 
@@ -509,24 +515,42 @@ export function setupHookBridge(
     // permissions only need '1' (approve) or '3' (deny); multi-choice picks
     // can land any index in the prompt's option range (#399).
     //
-    // PTY-presence gate (subagent-only): a background subagent (Task tool
-    // with agent_id set) emits PermissionRequest hooks for its own tool
-    // calls, but its prompts never render on the main PTY — only a
-    // hot-switched subagent view does. Without this gate, auto-approve
-    // would type "1"/"3" into the MAIN AGENT's input every time a
-    // background subagent asked for permission. Read-live so the
-    // hot-switched case (PTY has rendered the subagent prompt between
-    // the hook firing and the LLM eval returning) still injects.
-    const inject = async (value: string, reason: string): Promise<boolean> => {
+    // PTY-presence gate (subagent-only): a background subagent emits
+    // PermissionRequest hooks for its own tool calls, but its prompts
+    // never render on the main PTY — only a hot-switched subagent view
+    // does. Without this gate, auto-approve would type "1"/"3" into the
+    // MAIN AGENT's input every time a background subagent asked for
+    // permission.
+    //
+    // Detect subagent context two ways: (a) explicit `agent_id` on the
+    // hook event (Task tool with agent_id set), and (b)
+    // `hookBridge.isInSubagentContext()` (nested-Task tracker — the
+    // secondary safety net for legacy events without agent_id). Both
+    // are read at inject time, not captured, so the hot-switched case
+    // (PTY has rendered the subagent prompt between the hook firing
+    // and the LLM eval returning) still injects.
+    //
+    // Asymmetry: the default-deny path (subagent-escalate / subagent-
+    // error) passes `bypassSubagentPtyGate=true` to keep firing even
+    // without PTY confirmation, because the alternative is hanging the
+    // subagent indefinitely with no one to answer. That is a
+    // deliberately-different trade-off from the approve/deny/pick path,
+    // which falls through to escalateToUser when gated.
+    const inject = async (
+      value: string,
+      reason: string,
+      bypassSubagentPtyGate = false,
+    ): Promise<boolean> => {
       try {
         const session = sessionRegistry.getSession(sessionId);
         if (!session) {
           logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
           return false;
         }
-        if (isSubagentEvent(input) && !tracker.isPromptVisibleOnPTY()) {
+        const inSubagentContext = isSubagentEvent(input) || hookBridge.isInSubagentContext();
+        if (!bypassSubagentPtyGate && inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
           log(
-            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type})`,
+            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8) ?? 'nested'} type=${input.agent_type ?? 'n/a'})`,
           );
           return false;
         }
@@ -597,12 +621,15 @@ export function setupHookBridge(
             return;
           }
           // escalate: in a subagent context, default-deny to avoid hanging
-          // the subagent. The user could not answer it anyway.
+          // the subagent. The user could not answer it anyway. Bypass the
+          // subagent PTY gate (`bypassSubagentPtyGate=true`) because the
+          // alternative is letting the subagent hang forever; typing '3'
+          // into the parent PTY is accepted as the lesser evil here. The
+          // approve/deny/pick branches above use the gate because they
+          // have a fallback (escalateToUser); this branch does not.
           if (hookBridge.isInSubagentContext()) {
             log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
-            // If inject fails, the subagent is hung regardless (no main
-            // PTY to escalate to). Log and accept.
-            await inject('3', 'subagent-escalate-default-deny');
+            await inject('3', 'subagent-escalate-default-deny', true);
             return;
           }
           escalateToUser();
@@ -612,7 +639,7 @@ export function setupHookBridge(
           try {
             logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
             if (hookBridge.isInSubagentContext()) {
-              await inject('3', 'subagent-error-default-deny');
+              await inject('3', 'subagent-error-default-deny', true);
               return;
             }
             escalateToUser();
@@ -630,7 +657,7 @@ export function setupHookBridge(
     // helps a future maintainer.
     if (hookBridge.isInSubagentContext()) {
       log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
-      inject('3', 'subagent-no-aa-default-deny').catch((err) => {
+      inject('3', 'subagent-no-aa-default-deny', true).catch((err) => {
         logError(`[${sessionTag}] Failed to inject default-deny:`, err);
       });
       return;

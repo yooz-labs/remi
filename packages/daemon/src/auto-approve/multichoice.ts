@@ -16,7 +16,9 @@
  *    cannot be expressed in the approve/deny mapping at all.
  * 3. String-label shape: any 2- or 3-label set whose labels are not all
  *    yes/no-shaped (matching the daemon's existing `isYes`/`isNo`
- *    heuristic at `hook-event-bridge.ts:240-241`) is multi-choice.
+ *    heuristic in `hook-event-bridge.ts`) is multi-choice. A single
+ *    non-binary string label is treated as multi-choice and routed to
+ *    escalate (no meaningful pick from a 1-item menu).
  *
  * Edit's real `["Yes", "Always", "No"]` shape is correctly classified as
  * binary because every label is yes-shaped or no-shaped under the same
@@ -73,6 +75,10 @@ export function isMultiChoicePermission(
   // UI shows the default Yes/Yes-always/No, so this is binary.
   if (stringLabels.length === 0) return false;
   if (stringLabels.length > 3) return true;
+  // 1-label edge case: only valid as binary if the single label is
+  // yes/no-shaped (a lone "Yes"). Anything else (e.g. ["Continue"])
+  // has no meaningful binary mapping and routes to multi-choice so
+  // the safe escalate path runs.
   // 2- or 3-label lists: binary only when every label is yes/no-shaped.
   return !stringLabels.every(isBinaryShapedLabel);
 }

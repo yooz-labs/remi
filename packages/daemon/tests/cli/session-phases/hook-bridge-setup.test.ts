@@ -302,6 +302,48 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual(['1']);
   });
 
+  test('PTY gate covers legacy subagents: nested-Task PermissionRequest WITHOUT agent_id is dropped when no PTY presence', async () => {
+    // The agent_id-based detector misses legacy Claude Code versions and any
+    // future flows where the subagent hook fires without agent_id. The
+    // secondary safety net is `hookBridge.isInSubagentContext()` (PreToolUse
+    // Task with tool_use_id increments the tracker; PostToolUse decrements).
+    // Inject must consult BOTH detectors; otherwise a nested Bash hook with
+    // no agent_id would inject into the parent agent's PTY input.
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-nested-1',
+      transcript_path: path.join(tmpDir, 'nested.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    // Engage nested-Task subagent context (no agent_id, just Task spawn).
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-nested-1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_use_id: 'task-use-1',
+      tool_input: { prompt: 'nested work' },
+    });
+
+    // PermissionRequest fires from inside the Task: NO agent_id (legacy
+    // path), but isInSubagentContext() is true and PTY has not confirmed
+    // any prompt is on screen.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-nested-1',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Pre-fix the inject would have typed '1' into the parent PTY because
+    // isSubagentEvent was false. Post-fix the OR gate trips on
+    // isInSubagentContext() and the inject is skipped.
+    expect(ptySubmits).toEqual([]);
+  });
+
   test('PermissionRequest with auto-approve APPROVE injects "1" (status: executing)', async () => {
     build({ autoApprove: true });
 
@@ -537,6 +579,133 @@ describe('setupHookBridge', () => {
       setTimeout(() => {
         // No inject — filterBySession matched on the adopted lock and
         // dropped the foreign event.
+        expect(ptySubmits).toEqual([]);
+        resolve();
+      }, 50);
+    });
+  });
+
+  test('sibling-in-dir + sessionStore rotation: adoptLockFromStore re-adopts the new claudeSessionId', () => {
+    // After initial adoption from sessionStore (claude-A), the user runs
+    // /clear in the sibling-wrapper scenario. The transcript-fallback
+    // rediscovers and writes claude-B to the store. The hook-bridge MUST
+    // pick up the rotation; pre-fix, the `if (claudeSessionId !== null)
+    // return` short-circuit blocked the re-read and every hook for
+    // claude-B was silently dropped.
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-rotate.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-rotate',
+        pid: process.pid,
+        wsPort: 18997,
+        hookPort: 18003,
+        projectPath: tmpDir,
+        name: 'sibling-rotate',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-A-initial',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Initial adoption: hook for claude-A passes the filter.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-A-initial',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        expect(ptySubmits).toEqual(['1']);
+
+        // Fallback rediscovers after /clear and writes the new id.
+        sessionStore.save({
+          remiSessionId: SID,
+          claudeSessionId: 'claude-B-rotated',
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+
+        // Hook for claude-B arrives. Lock must rotate; otherwise filterBySession
+        // sees claudeSessionId='claude-A-initial' and drops the event.
+        hookServer.fire('PermissionRequest', {
+          session_id: 'claude-B-rotated',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'pwd' },
+        });
+
+        setTimeout(() => {
+          expect(ptySubmits).toEqual(['1', '1']);
+          resolve();
+        }, 50);
+      }, 50);
+    });
+  });
+
+  test('adoptLockFromStore catches sessionStore throws and keeps the daemon running', () => {
+    // EMFILE / permissions / mid-write JSON.parse failures inside
+    // sessionStore.read can throw out of findByRemiSessionId. Pre-fix
+    // those propagated into the hook dispatch loop. The try/catch wrapper
+    // must contain them: log via logError and fall through to the
+    // existing sibling-guard path (claudeSessionId stays null, hooks
+    // drop until siblings clear).
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-throw.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-throw',
+        pid: process.pid,
+        wsPort: 18996,
+        hookPort: 18004,
+        projectPath: tmpDir,
+        name: 'sibling-throw',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Replace findByRemiSessionId with one that throws to simulate
+    // EMFILE-class failures from fs.readFileSync inside SessionStore.read.
+    sessionStore.findByRemiSessionId = () => {
+      throw Object.assign(new Error('test: EMFILE'), { code: 'EMFILE' });
+    };
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Fire a hook — this triggers adoptLockFromStore which would throw.
+    // We expect the hook dispatch to survive (no thrown exception, hook
+    // is filtered out because the closure remains null + sibling present).
+    expect(() =>
+      hookServer.fire('PermissionRequest', {
+        session_id: 'claude-throw-test',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      }),
+    ).not.toThrow();
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // No inject — sibling is present and adoptLockFromStore could not
+        // resolve a lock, so filterBySession's `!hasSiblingInDir()` arm
+        // returns false. The daemon stays alive instead of crashing.
         expect(ptySubmits).toEqual([]);
         resolve();
       }, 50);
