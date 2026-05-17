@@ -99,6 +99,39 @@ export function setupHookBridge(
   // Before SessionStart fires, we let events through (claudeSessionId is null).
   let claudeSessionId: string | null = null;
 
+  /**
+   * When `hasSiblingInDir()` is true (multiple Remi wrappers in the same
+   * project directory) the hook-event-based locking path defers to the
+   * filesystem fallback in transcript-fallback.ts, which discovers our
+   * own Claude session ID by looking at `~/.claude/projects/<dir>/` and
+   * excluding sibling-claimed transcripts. The fallback writes the
+   * discovered id to `sessionStore.updateClaudeSessionId(...)` — but
+   * the hook-bridge's `claudeSessionId` closure was never updated from
+   * the store, so `filterBySession` kept reading null and dropped every
+   * hook for the entire session lifetime. This helper closes that gap:
+   * each hook event re-reads the store and adopts the discovered id when
+   * it differs from the closure (initial adopt, or rotation after a
+   * /clear in the multi-wrapper case where hooks were never authoritative).
+   * Log only on change to avoid spam on steady-state hooks. Wrapped in
+   * try/catch so an EMFILE / permission flake on the sessions file does
+   * not propagate into the hook dispatch loop; on failure we leave the
+   * closure untouched (the existing sibling-guard path remains active).
+   */
+  const adoptLockFromStore = (): void => {
+    try {
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const storedId = stored?.claudeSessionId ?? null;
+      if (storedId === null || storedId === claudeSessionId) return;
+      const previous = claudeSessionId;
+      claudeSessionId = storedId;
+      log(
+        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from sessionStore: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
+      );
+    } catch (err) {
+      logError(`[Hooks] adoptLockFromStore failed: ${errorToString(err)}`);
+    }
+  };
+
   // Our PTY is the ground truth for "main interactive session". A hook event
   // with a different session_id is NEVER our main:
   //  - Subagent spawn (TaskCreate/TeamCreate), different session_id, no own PTY
@@ -199,6 +232,12 @@ export function setupHookBridge(
     hook_event_name?: string;
   }): void {
     if (!input.session_id) return;
+
+    // If the transcript-fallback has already discovered our Claude
+    // session ID (the multi-wrapper-in-same-dir case), adopt it before
+    // classifying so the classifier sees the right currentLock instead
+    // of a stale null.
+    adoptLockFromStore();
 
     const classification = classifySessionEvent({
       currentLock: claudeSessionId,
@@ -357,6 +396,7 @@ export function setupHookBridge(
   // is known, block events when siblings exist (they could be from the
   // sibling's Claude).
   const filterBySession = (input: { session_id?: string }): boolean => {
+    adoptLockFromStore();
     if (claudeSessionId) return input.session_id === claudeSessionId;
     return !hasSiblingInDir();
   };
@@ -467,17 +507,51 @@ export function setupHookBridge(
     const sessionTag = sessionId.slice(0, 8);
 
     // Inject an answer into the PTY. Returns true on success. On failure
-    // (session missing, PTY not running, submitInput throws) it logs and
-    // returns false so callers can fall back to escalating the prompt.
+    // (session missing, PTY not running, submitInput throws, subagent
+    // off-screen gate trips) it logs and returns false so callers can
+    // fall back to escalating the prompt.
     //
     // Value is a 1-based numeric option index serialised as a string. Most
     // permissions only need '1' (approve) or '3' (deny); multi-choice picks
     // can land any index in the prompt's option range (#399).
-    const inject = async (value: string, reason: string): Promise<boolean> => {
+    //
+    // PTY-presence gate (subagent-only): a background subagent emits
+    // PermissionRequest hooks for its own tool calls, but its prompts
+    // never render on the main PTY — only a hot-switched subagent view
+    // does. Without this gate, auto-approve would type "1"/"3" into the
+    // MAIN AGENT's input every time a background subagent asked for
+    // permission.
+    //
+    // Detect subagent context two ways: (a) explicit `agent_id` on the
+    // hook event (Task tool with agent_id set), and (b)
+    // `hookBridge.isInSubagentContext()` (nested-Task tracker — the
+    // secondary safety net for legacy events without agent_id). Both
+    // are read at inject time, not captured, so the hot-switched case
+    // (PTY has rendered the subagent prompt between the hook firing
+    // and the LLM eval returning) still injects.
+    //
+    // Asymmetry: the default-deny path (subagent-escalate / subagent-
+    // error) passes `bypassSubagentPtyGate=true` to keep firing even
+    // without PTY confirmation, because the alternative is hanging the
+    // subagent indefinitely with no one to answer. That is a
+    // deliberately-different trade-off from the approve/deny/pick path,
+    // which falls through to escalateToUser when gated.
+    const inject = async (
+      value: string,
+      reason: string,
+      bypassSubagentPtyGate = false,
+    ): Promise<boolean> => {
       try {
         const session = sessionRegistry.getSession(sessionId);
         if (!session) {
           logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
+          return false;
+        }
+        const inSubagentContext = isSubagentEvent(input) || hookBridge.isInSubagentContext();
+        if (!bypassSubagentPtyGate && inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
+          log(
+            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8) ?? 'nested'} type=${input.agent_type ?? 'n/a'})`,
+          );
           return false;
         }
         await session.pty.submitInput(value);
@@ -547,12 +621,15 @@ export function setupHookBridge(
             return;
           }
           // escalate: in a subagent context, default-deny to avoid hanging
-          // the subagent. The user could not answer it anyway.
+          // the subagent. The user could not answer it anyway. Bypass the
+          // subagent PTY gate (`bypassSubagentPtyGate=true`) because the
+          // alternative is letting the subagent hang forever; typing '3'
+          // into the parent PTY is accepted as the lesser evil here. The
+          // approve/deny/pick branches above use the gate because they
+          // have a fallback (escalateToUser); this branch does not.
           if (hookBridge.isInSubagentContext()) {
             log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
-            // If inject fails, the subagent is hung regardless (no main
-            // PTY to escalate to). Log and accept.
-            await inject('3', 'subagent-escalate-default-deny');
+            await inject('3', 'subagent-escalate-default-deny', true);
             return;
           }
           escalateToUser();
@@ -562,7 +639,7 @@ export function setupHookBridge(
           try {
             logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
             if (hookBridge.isInSubagentContext()) {
-              await inject('3', 'subagent-error-default-deny');
+              await inject('3', 'subagent-error-default-deny', true);
               return;
             }
             escalateToUser();
@@ -580,7 +657,7 @@ export function setupHookBridge(
     // helps a future maintainer.
     if (hookBridge.isInSubagentContext()) {
       log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
-      inject('3', 'subagent-no-aa-default-deny').catch((err) => {
+      inject('3', 'subagent-no-aa-default-deny', true).catch((err) => {
         logError(`[${sessionTag}] Failed to inject default-deny:`, err);
       });
       return;

@@ -263,20 +263,29 @@ describe('setupHookBridge', () => {
     expect(() => build()).not.toThrow();
   });
 
-  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve', async () => {
+  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve, gated by PTY presence', async () => {
     // Pre-phase-4, agent_id-tagged events were dropped at the listener
     // boundary. Phase 4 demoted agent_id from kill-switch to metadata:
-    // the auto-approve LLM evaluates and injects just like a main-agent
-    // event. The push to iOS is still gated by PTY presence downstream,
-    // so a background subagent's auto-approved permission silently
-    // executes; a hot-switched subagent's prompt would surface via the
-    // tracker's PTY confirmation path.
-    build({ autoApprove: true, autoApproveDecision: 'approve' });
+    // the auto-approve LLM evaluates and forwards to the inject path.
+    // Inject is then gated by tracker.isPromptVisibleOnPTY() — true for
+    // a hot-switched subagent view, false for a background subagent.
+    // This test simulates the hot-switched case (PTY confirms presence)
+    // so inject proceeds end to end.
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
       session_id: 'claude-sub-123',
       transcript_path: path.join(tmpDir, 'sub.jsonl'),
       hook_event_name: 'SessionStart',
+    });
+
+    // PTY rendered the subagent's prompt on the user's screen.
+    tracker.onPTYPromptVisible({
+      id: 'pty-pr1',
+      text: 'Allow Bash?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
     });
 
     hookServer.fire('PermissionRequest', {
@@ -291,6 +300,48 @@ describe('setupHookBridge', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(ptySubmits).toEqual(['1']);
+  });
+
+  test('PTY gate covers legacy subagents: nested-Task PermissionRequest WITHOUT agent_id is dropped when no PTY presence', async () => {
+    // The agent_id-based detector misses legacy Claude Code versions and any
+    // future flows where the subagent hook fires without agent_id. The
+    // secondary safety net is `hookBridge.isInSubagentContext()` (PreToolUse
+    // Task with tool_use_id increments the tracker; PostToolUse decrements).
+    // Inject must consult BOTH detectors; otherwise a nested Bash hook with
+    // no agent_id would inject into the parent agent's PTY input.
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-nested-1',
+      transcript_path: path.join(tmpDir, 'nested.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    // Engage nested-Task subagent context (no agent_id, just Task spawn).
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-nested-1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_use_id: 'task-use-1',
+      tool_input: { prompt: 'nested work' },
+    });
+
+    // PermissionRequest fires from inside the Task: NO agent_id (legacy
+    // path), but isInSubagentContext() is true and PTY has not confirmed
+    // any prompt is on screen.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-nested-1',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Pre-fix the inject would have typed '1' into the parent PTY because
+    // isSubagentEvent was false. Post-fix the OR gate trips on
+    // isInSubagentContext() and the inject is skipped.
+    expect(ptySubmits).toEqual([]);
   });
 
   test('PermissionRequest with auto-approve APPROVE injects "1" (status: executing)', async () => {
@@ -415,6 +466,250 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
     expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('sibling-in-dir + fallback-discovered claudeSessionId: lock adopted from sessionStore on next hook', () => {
+    // The dev.3 inconsistency the user hit: when 2+ Remi wrappers share a
+    // project directory, hasSiblingInDir() defers hook-event-based locking
+    // to the transcript-fallback poll. The fallback discovers our own
+    // Claude session ID by inspecting `~/.claude/projects/<dir>/` and writes
+    // it to sessionStore. Pre-fix, the hook-bridge's `claudeSessionId`
+    // closure never read from sessionStore, so filterBySession kept
+    // returning false (no lock + siblings) and dropped EVERY hook for the
+    // entire session lifetime. The fix: adoptLockFromStore() reads
+    // sessionStore.findByRemiSessionId(...)?.claudeSessionId lazily on the
+    // next hook event after fallback completes.
+    //
+    // Test setup: seed a sibling and pre-populate sessionStore as the
+    // fallback would have done. Fire a PermissionRequest for our session
+    // and assert the auto-approve inject fires (proving filterBySession
+    // adopted the lock).
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-in-dir.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id',
+        pid: process.pid,
+        wsPort: 18999,
+        hookPort: 18001,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Pre-populate the store as transcript-fallback would have done after
+    // discovering our Claude transcript via filesystem polling.
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-mine-via-fallback',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Hot-switched PTY presence so the subagent gate doesn't shadow this
+    // assertion (irrelevant to the lock-adoption check itself).
+    // The first hook arrives WHILE hasSiblingInDir is still true. Pre-fix
+    // this dropped silently. Post-fix, adoptLockFromStore pulls the lock
+    // from sessionStore and filterBySession returns true.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-mine-via-fallback',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // If the lock was adopted, auto-approve fired and injected '1'.
+        // If not (regression), ptySubmits is empty.
+        expect(ptySubmits).toEqual(['1']);
+        resolve();
+      }, 50);
+    });
+  });
+
+  test("sibling-in-dir + fallback-discovered lock: foreign session's hooks still drop", () => {
+    // Mirror of the test above, but with a hook event from a DIFFERENT
+    // session_id (i.e. the sibling's Claude). Lock-adoption must not turn
+    // into "accept anything"; the adopted lock should be enforced like
+    // the normal locked path.
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-in-dir-2.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-2',
+        pid: process.pid,
+        wsPort: 18998,
+        hookPort: 18002,
+        projectPath: tmpDir,
+        name: 'sibling-2',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-mine-v2',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Foreign session_id — sibling's Claude firing through our hook URL.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sibling-not-ours',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // No inject — filterBySession matched on the adopted lock and
+        // dropped the foreign event.
+        expect(ptySubmits).toEqual([]);
+        resolve();
+      }, 50);
+    });
+  });
+
+  test('sibling-in-dir + sessionStore rotation: adoptLockFromStore re-adopts the new claudeSessionId', () => {
+    // After initial adoption from sessionStore (claude-A), the user runs
+    // /clear in the sibling-wrapper scenario. The transcript-fallback
+    // rediscovers and writes claude-B to the store. The hook-bridge MUST
+    // pick up the rotation; pre-fix, the `if (claudeSessionId !== null)
+    // return` short-circuit blocked the re-read and every hook for
+    // claude-B was silently dropped.
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-rotate.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-rotate',
+        pid: process.pid,
+        wsPort: 18997,
+        hookPort: 18003,
+        projectPath: tmpDir,
+        name: 'sibling-rotate',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-A-initial',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Initial adoption: hook for claude-A passes the filter.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-A-initial',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        expect(ptySubmits).toEqual(['1']);
+
+        // Fallback rediscovers after /clear and writes the new id.
+        sessionStore.save({
+          remiSessionId: SID,
+          claudeSessionId: 'claude-B-rotated',
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+
+        // Hook for claude-B arrives. Lock must rotate; otherwise filterBySession
+        // sees claudeSessionId='claude-A-initial' and drops the event.
+        hookServer.fire('PermissionRequest', {
+          session_id: 'claude-B-rotated',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'pwd' },
+        });
+
+        setTimeout(() => {
+          expect(ptySubmits).toEqual(['1', '1']);
+          resolve();
+        }, 50);
+      }, 50);
+    });
+  });
+
+  test('adoptLockFromStore catches sessionStore throws and keeps the daemon running', () => {
+    // EMFILE / permissions / mid-write JSON.parse failures inside
+    // sessionStore.read can throw out of findByRemiSessionId. Pre-fix
+    // those propagated into the hook dispatch loop. The try/catch wrapper
+    // must contain them: log via logError and fall through to the
+    // existing sibling-guard path (claudeSessionId stays null, hooks
+    // drop until siblings clear).
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-throw.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-throw',
+        pid: process.pid,
+        wsPort: 18996,
+        hookPort: 18004,
+        projectPath: tmpDir,
+        name: 'sibling-throw',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Replace findByRemiSessionId with one that throws to simulate
+    // EMFILE-class failures from fs.readFileSync inside SessionStore.read.
+    sessionStore.findByRemiSessionId = () => {
+      throw Object.assign(new Error('test: EMFILE'), { code: 'EMFILE' });
+    };
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Fire a hook — this triggers adoptLockFromStore which would throw.
+    // We expect the hook dispatch to survive (no thrown exception, hook
+    // is filtered out because the closure remains null + sibling present).
+    expect(() =>
+      hookServer.fire('PermissionRequest', {
+        session_id: 'claude-throw-test',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      }),
+    ).not.toThrow();
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // No inject — sibling is present and adoptLockFromStore could not
+        // resolve a lock, so filterBySession's `!hasSiblingInDir()` arm
+        // returns false. The daemon stays alive instead of crashing.
+        expect(ptySubmits).toEqual([]);
+        resolve();
+      }, 50);
+    });
   });
 
   test('SessionStart with source=clear pre-empts classifier and tears down watcher', () => {
@@ -1046,13 +1341,17 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(true);
   });
 
-  test('Phase 4 wiring: subagent PermissionRequest with auto-approve still injects normally', async () => {
-    // Pre-phase-4 this path returned early (dropped). Now it goes through
-    // auto-approve like a main-agent prompt. The push is suppressed
-    // structurally: inject succeeds, status flips to executing, tracker
-    // had no pending (handlePermissionRequest is only called via
-    // escalateToUser, which auto-approve never enters on the approve
-    // branch), so nothing pushes.
+  test('subagent PermissionRequest with no PTY-visible prompt: inject is dropped, fallback escalates', async () => {
+    // Regression guard for the dev.3 misfiring: a background subagent's
+    // PermissionRequest cannot answer by injecting into the MAIN PTY
+    // because the subagent's prompt isn't there — "1" would land in the
+    // main agent's input. inject() must gate on
+    // tracker.isPromptVisibleOnPTY(); when false (no PTY confirmation),
+    // it returns false so the approve branch falls through to
+    // escalateToUser, which records into the tracker. The PassthroughTracker
+    // collapses that into a push (one question call). In production the
+    // real tracker would wait for PTY confirmation that never arrives →
+    // pending dropped on next status change → no spurious push.
     build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
@@ -1074,13 +1373,56 @@ describe('setupHookBridge', () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
+    // Inject was gated → no submit. Escalation fires → one question call.
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('subagent PermissionRequest with PTY-visible prompt (hot-switched view) still injects', async () => {
+    // Preserves PR #419's hot-switched-subagent case: when the user
+    // has switched to the subagent's view, its permission prompt IS
+    // rendered on the main PTY. Simulate that by firing
+    // onPTYPromptVisible BEFORE the PermissionRequest so the tracker's
+    // ptyShowingQuestion flag is true when inject's gate checks it.
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-hot',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subhot.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // PTY rendered the subagent's prompt on the user's screen.
+    tracker.onPTYPromptVisible({
+      id: 'pty-q-1',
+      text: 'Allow Bash?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-hot',
+      agent_id: 'subagent-hot',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
     expect(ptySubmits).toEqual(['1']);
   });
 
-  test('Phase 4 wiring: subagent PermissionRequest + auto-approve deny injects "3"', async () => {
-    // Mirrors the approve case but on the deny branch. A refactor that
-    // accidentally routed deny to escalateToUser would break the
-    // non-hang guarantee for background subagents.
+  test('subagent PermissionRequest + auto-approve deny with no PTY presence: inject dropped, escalates', async () => {
+    // Mirrors the approve case for the deny branch — same gate, same
+    // fallthrough. The non-hang guarantee for background subagents is
+    // now structural: with no PTY presence the subagent has no answerable
+    // prompt to hang on (the inject never could have reached it), so
+    // dropping is correct.
     build({ autoApprove: true, autoApproveDecision: 'deny' });
 
     hookServer.fire('SessionStart', {
@@ -1094,6 +1436,40 @@ describe('setupHookBridge', () => {
     hookServer.fire('PermissionRequest', {
       session_id: 'claude-sub-deny',
       agent_id: 'subagent-deny',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('subagent PermissionRequest + auto-approve deny with PTY-visible prompt injects "3"', async () => {
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'deny' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-deny-hot',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subdenyhot.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    tracker.onPTYPromptVisible({
+      id: 'pty-q-2',
+      text: 'Allow Bash: rm -rf /?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-deny-hot',
+      agent_id: 'subagent-deny-hot',
       agent_type: 'general-purpose',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',

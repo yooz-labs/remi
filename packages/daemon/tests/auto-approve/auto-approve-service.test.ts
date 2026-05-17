@@ -259,9 +259,12 @@ describe('AutoApproveService - error handling', () => {
   });
 
   test('evaluate-mode index-mismatch guard escalates without calling the LLM', async () => {
-    // permission_suggestions = ['Yes', {}, 'No']: empty object drops in
-    // normalisation -> normalisedSuggestions=['Yes','No'] (length 2) while
-    // raw length stays 3. The LLM's pick index would address the
+    // permission_suggestions = ['Save', 'Discard', {}]: 2 non-binary string
+    // labels route to multi-choice (after the object-only fix, the bare
+    // `{}` is not enough on its own — we need real picky labels). In
+    // evaluate mode, the empty object drops in normalisation, so
+    // normalisedSuggestions=['Save','Discard'] (length 2) while the raw
+    // array length stays 3. The LLM's pick index would address the
     // normalised list but inject() sends it to the PTY, which interprets
     // against the original positions. Escalating before any LLM call is
     // the only safe path. `base_url` points at a black hole so a missed
@@ -277,10 +280,10 @@ describe('AutoApproveService - error handling', () => {
       (msg) => callLogs.push(msg),
     );
     const start = Date.now();
-    const result = await service.evaluate('Bash', { command: 'ls' }, undefined, [
-      'Yes',
+    const result = await service.evaluate('CustomTool', { x: 1 }, undefined, [
+      'Save',
+      'Discard',
       {} as unknown,
-      'No',
     ]);
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('unreadable entries');
@@ -1118,6 +1121,12 @@ describe('AutoApproveService - multichoice regression guards', () => {
   });
 
   test('non-string entries in permission_suggestions do not crash', async () => {
+    // Garbage entries (null, raw objects) co-exist with picky labels.
+    // The string subset ['Maybe', 'Yes', 'No'] has a non-binary label
+    // ('Maybe') → multi-choice → skip mode short-circuits to escalate
+    // before any LLM call. The test pins that the classifier ignores
+    // non-string entries (rather than crashing on .toLowerCase()) AND
+    // that classification reads the string subset, not the raw length.
     const service = new AutoApproveService(
       makeConfig({ base_url: 'http://10.255.255.1', timeout: 60 }),
       logFn,
@@ -1127,9 +1136,61 @@ describe('AutoApproveService - multichoice regression guards', () => {
       { x: 1 },
       undefined,
       // biome-ignore lint/suspicious/noExplicitAny: defensive test
-      [null, 'Yes', { weird: true }] as any,
+      [null, 'Maybe', 'Yes', { weird: true }, 'No'] as any,
     );
-    // Routed to multi-choice (skip mode) → escalate without crash.
     expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('multi-choice prompt');
+  });
+
+  test('object-only permission_suggestions stay on the binary path (regression #424.dev3)', async () => {
+    // Claude Code attaches typed `addRules` / `addDirectories` /
+    // `setMode` objects to standard Bash prompts. They are
+    // rule-suggestion metadata, NOT pickable UI options — the user
+    // still sees Yes/Yes-always/No. Classifying as multi-choice +
+    // default `multichoice = "skip"` silently escalated every Bash
+    // command after PR #421. This test pins the binary route.
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              model: 'fake-model',
+              choices: [
+                { message: { content: '{"decision":"approve","reasoning":"git status is safe"}' } },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          timeout: 5,
+          // multichoice = 'skip' is default; a regression would
+          // short-circuit to escalate without hitting the LLM.
+        }),
+        logFn,
+      );
+      const result = await service.evaluate('Bash', { command: 'git status' }, undefined, [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'git status' }],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+      ] as readonly unknown[]);
+      expect(result.decision).toBe('approve');
+      if (result.decision !== 'cancelled') {
+        expect(result.reasoning).not.toContain('multi-choice');
+      }
+    } finally {
+      server.stop();
+    }
   });
 });
