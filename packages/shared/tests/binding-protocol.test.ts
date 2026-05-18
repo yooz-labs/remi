@@ -53,7 +53,7 @@ describe('binding fields on the wire (#429)', () => {
 
   test('question carries claudeSessionId when provided', () => {
     const msg = createQuestion(
-      { id: QID, text: 'continue?', options: [], freeText: false },
+      { id: QID, text: 'continue?', options: [], allowsFreeText: false, isAnswered: false },
       RID,
       CID,
     );

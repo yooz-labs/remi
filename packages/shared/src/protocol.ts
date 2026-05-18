@@ -130,19 +130,18 @@ export interface HelloAckMessage {
   /**
    * Claude Code session UUID this daemon's PTY is bound to (#427/#429).
    * Always populated post-phase-1 because the daemon pre-assigns the id
-   * before spawning Claude. Null only when this hello_ack predates a
-   * resolved binding (e.g. resume-attaching to a session whose lock was
-   * lost across a daemon crash). Clients should key sessions by
-   * (connectionId, claudeSessionId) to keep two daemons in the same cwd
-   * from cross-contaminating.
+   * before spawning Claude. Null only on the promotion path when the
+   * store lookup misses (crashed daemon, store cleared). Clients should
+   * key sessions by (connectionId, claudeSessionId) to keep two daemons
+   * in the same cwd from cross-contaminating.
    */
-  readonly claudeSessionId?: UUID | null | undefined;
+  readonly claudeSessionId?: UUID | null;
   /**
    * Absolute path to the .jsonl transcript file Claude writes to.
    * Pre-assigned alongside claudeSessionId; the file may not yet exist on
    * disk when this ack is sent. Null when claudeSessionId is null.
    */
-  readonly transcriptPath?: string | null | undefined;
+  readonly transcriptPath?: string | null;
   /** Whether this is a resumed session */
   readonly isResume?: boolean | undefined;
   /** Number of messages to be replayed (if resume) */
@@ -182,7 +181,7 @@ export interface UserInputMessage {
   readonly raw?: boolean;
   /**
    * Claude Code session UUID the client believed it was talking to when
-   * the user typed this. Daemon rejects with code='stale_binding' when
+   * the user typed this. Daemon rejects with code='STALE_BINDING' when
    * present and != current binding (e.g. the PTY swapped to another
    * session via /resume between the user typing and the message
    * landing). Omitted by pre-#429 clients; daemon accepts without
@@ -237,7 +236,7 @@ export interface AnswerMessage {
   readonly answer: string;
   /**
    * Echoes the claudeSessionId from the QuestionMessage. Daemon refuses
-   * with code='stale_binding' when present and != current binding.
+   * with code='STALE_BINDING' when present and != current binding.
    * Omitted by pre-#429 clients.
    */
   readonly claudeSessionId?: UUID | undefined;

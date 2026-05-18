@@ -1010,9 +1010,18 @@ async function createNewSession(
       sendMessage,
       // Lazy read so the binding seen on each question emission is the
       // current value — survives /resume rotation via hook-bridge's
-      // updateClaudeSessionId write into the store.
-      getClaudeSessionId: () =>
-        (sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ?? null) as UUID | null,
+      // updateClaudeSessionId write into the store. Wrapped in try/catch
+      // so a transient sessions.json I/O hiccup cannot kill question
+      // emission (the dep contract is non-throwing).
+      getClaudeSessionId: () => {
+        try {
+          return (sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ??
+            null) as UUID | null;
+        } catch (err) {
+          logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
+          return null;
+        }
+      },
     },
     sessionId,
   );

@@ -13,7 +13,7 @@ import { createBulletExpandResponse, createError, errorToString } from '@remi/sh
 import type { UUID } from '@remi/shared';
 
 import type { SessionRegistry, SessionStore } from '../../session/index.ts';
-import { log } from '../logger.ts';
+import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
@@ -32,13 +32,16 @@ export interface InputHandlerDeps {
  *     accept the message unconditionally. The client cannot have known
  *     the binding to check against.
  *   - If the client sent it but no daemon binding is recorded yet
- *     (extreme race: input received before transcript-fallback wrote
- *     the id), accept rather than refuse. The pre-spawn save in
- *     createNewSession makes this branch rare.
+ *     (extreme race: message arrived before the pre-spawn save in
+ *     cli.ts:createNewSession completed), accept rather than refuse.
  *   - If both are present and differ, the user typed against an old
  *     view (e.g. /resume rotated the binding between question and
  *     answer); refuse and emit STALE_BINDING with both ids so the
  *     client can rekey its UI.
+ *   - If the sessionStore lookup throws (I/O error on the sessions
+ *     file): fail-open with a logError. Refusing on a transient store
+ *     hiccup would silently swallow legitimate input; accepting at
+ *     least surfaces the problem in logs while letting the user work.
  */
 function guardBinding(
   sessionStore: SessionStore,
@@ -48,8 +51,13 @@ function guardBinding(
   claudeSessionId: UUID | undefined,
 ): boolean {
   if (claudeSessionId === undefined) return true;
-  const stored = sessionStore.findByRemiSessionId(sessionId);
-  const bound = stored?.claudeSessionId;
+  let bound: string | undefined;
+  try {
+    bound = sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ?? undefined;
+  } catch (err) {
+    logError(`[Binding] sessionStore lookup failed; accepting message: ${errorToString(err)}`);
+    return true;
+  }
   if (!bound) return true;
   if (bound === claudeSessionId) return true;
   log(

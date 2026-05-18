@@ -432,5 +432,35 @@ describe('createInputHandlers', () => {
       expect(capture.writes).toEqual([]);
       expect(sendCalls.filter((c) => c.message.type === 'error').length).toBe(1);
     });
+
+    test('client-sent claudeSessionId but no daemon binding yet: accept (race window)', async () => {
+      // Pre-spawn save in production makes this rare, but the contract
+      // is fail-open for the race window. Construct it by registering
+      // a session without saving the store entry.
+      const capture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(capture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.attachConnection(sessionId, CID);
+      // Deliberately do NOT call sessionStore.save here.
+      sessionRegistry.updateQuestion(sessionId, {
+        id: QID,
+        text: 'go?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+
+      const claudeId = '11111111-2222-3333-4444-555555555555' as UUID;
+      await handlers.onAnswer(CID, sessionId, QID, 'y', claudeId);
+
+      expect(capture.submits).toEqual(['y']);
+      expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+    });
   });
 });

@@ -287,15 +287,16 @@ export interface DiscoverableSession {
    * Claude Code session UUID this entry's Claude is bound to (#427/#429).
    * For daemon-sourced entries, this is the pre-assigned binding from
    * SessionStore. For transcript-sourced entries it equals sessionId.
-   * Optional because legacy/edge cases (daemon entry whose Claude was
-   * spawned before #428) may have no recorded binding.
+   * Optional because the SessionStore lookup may miss on the daemon-list
+   * path (e.g. a daemon entry whose sessions.json record was lost across
+   * a crash before the client requested the list).
    */
   readonly claudeSessionId?: string | undefined;
 
   /**
    * Absolute path to the .jsonl transcript Claude writes to. Populated
-   * for all entries where it can be derived; omitted only when the entry
-   * predates #428's binding model and no transcript file was discovered.
+   * for all entries where the binding is known. Omitted in the same
+   * lookup-miss case described above.
    */
   readonly transcriptPath?: string | undefined;
 

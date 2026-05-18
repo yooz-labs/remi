@@ -51,9 +51,11 @@ export interface MessageApiSetupDeps {
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
   /**
    * Returns the current Claude session UUID this PTY is bound to (#429).
-   * Called on every question emission; returns null if no binding is known
-   * (the daemon's pre-spawn save always sets one, so null is rare). Same
-   * synchronous/non-throwing contract as pushConfig.
+   * Called on every question emission; returns null if no binding is
+   * recorded for this session (the normal spawn path sets one pre-spawn,
+   * so null is rare in production). Same synchronous/non-throwing
+   * contract as pushConfig — implementations must absorb their own I/O
+   * errors rather than throwing into the emission path.
    */
   getClaudeSessionId?: () => UUID | null;
 }
