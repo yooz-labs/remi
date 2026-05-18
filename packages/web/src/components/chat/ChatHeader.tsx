@@ -216,10 +216,12 @@ export function ChatHeader({
           )}
         </div>
         {/* Transcript binding indicator (#430). The "port:short-uuid"
-            pair lets the user visually confirm WHICH Claude transcript
-            this session is talking to — the safety net for the
-            cross-daemon routing bug in #427. Tap-to-copy the full
-            transcript path is implemented via the title attribute. */}
+            pair is the UX surface for the cross-daemon routing fix
+            (#427): the user can visually confirm which transcript a
+            session is bound to. The actual routing safety net is the
+            daemon-side STALE_BINDING guard from phase 2 (#432). The
+            onClick handler copies the full path to clipboard; the
+            title attribute is the hover tooltip on desktop. */}
         {session.claudeSessionId && (
           <button
             type="button"
@@ -231,9 +233,13 @@ export function ChatHeader({
             }
             onClick={() => {
               const value = session.transcriptPath ?? session.claudeSessionId;
-              if (value) {
-                void navigator.clipboard?.writeText(value);
-              }
+              if (!value) return;
+              // navigator.clipboard can be undefined on iOS WKWebView
+              // in non-secure contexts; .catch on the promise covers
+              // permission denial and lost-focus rejections.
+              navigator.clipboard?.writeText(value).catch((err) => {
+                console.warn('[ChatHeader] clipboard write failed:', err);
+              });
             }}
           >
             {extractDaemonPortLabel(session.connectionId)}

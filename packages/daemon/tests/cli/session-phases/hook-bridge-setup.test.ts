@@ -1759,9 +1759,7 @@ describe('setupHookBridge', () => {
             },
           } as unknown as import('../../../src/api/message-api.ts').MessageAPI,
           sendAndRecord: (msg) => sent.push(msg),
-          tracker: tracker as unknown as import(
-            '../../../src/api/question-presence-tracker.ts',
-          ).QuestionPresenceTracker,
+          tracker: tracker as unknown as QuestionPresenceTracker,
         },
       );
       return { sent };

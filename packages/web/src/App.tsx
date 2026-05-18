@@ -15,6 +15,7 @@ import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import { shouldKeepExisting } from '@/lib/question-merge';
+import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
   AppSettings,
@@ -46,6 +47,16 @@ const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
 // cold-start push answers so multi-daemon users do not silently answer the
 // wrong daemon. Issue #389 review.
 const LOCALSTORAGE_SESSION_DAEMONS_KEY = 'remi-session-daemons';
+
+/**
+ * Narrow an unknown JSON value to a non-empty string. Used at the
+ * boundary between wire data (Record<string, unknown>) and typed UI
+ * state so a daemon that ever sends a malformed STALE_BINDING payload
+ * cannot corrupt the cached binding.
+ */
+function asNonEmptyString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
 
 function rememberSessionDaemon(sessionId: string, url: string): void {
   try {
@@ -586,28 +597,7 @@ function App() {
               }
             }
           }
-          // Cross-connection dedup keyed by (connectionId, claudeSessionId)
-          // composite (#430). Same Claude sessionId reported by two different
-          // daemons IS a collision — keep both as separate rows so the user
-          // can pick which daemon to talk to. Only collapse when both
-          // connectionId AND claudeSessionId match (or both lack
-          // claudeSessionId, in which case fall back to id-keyed dedup so
-          // pre-#429 daemons still degrade gracefully).
-          const compositeKey = (s: UISession): string =>
-            s.claudeSessionId ? `${s.connectionId}|${s.claudeSessionId}` : `${s.connectionId}|${s.id}`;
-          const deduped = result.reduce<UISession[]>((acc, s) => {
-            const key = compositeKey(s);
-            const dupIdx = acc.findIndex((other) => compositeKey(other) === key);
-            if (dupIdx === -1) {
-              acc.push(s);
-              return acc;
-            }
-            const existing = acc[dupIdx];
-            if (s.source === 'daemon' && existing.source !== 'daemon') {
-              acc[dupIdx] = s;
-            }
-            return acc;
-          }, []);
+          const deduped = dedupSessions(result);
           // Sort: live first, then by last activity
           const sorted = deduped.sort((a, b) => {
             const aLive = a.connectionStatus === 'connected' ? 0 : 1;
@@ -772,16 +762,19 @@ function App() {
         // STALE_BINDING (#430): the user typed against an old Claude
         // session and the daemon refused. Update our cached binding
         // from the error's details so the next answer routes correctly.
+        // The shape mirrors the daemon-side createError call in
+        // packages/daemon/src/cli/handlers/input-events.ts:guardBinding;
+        // update both ends together if the field names change.
         const errorCode = (message as { code?: string }).code;
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
-          const refusedSessionId = details?.['sessionId'] as UUID | undefined;
-          const newBound = details?.['boundClaudeSessionId'] as string | undefined;
+          const refusedSessionId = asNonEmptyString(details?.['sessionId']) as UUID | undefined;
+          const newBound = asNonEmptyString(details?.['boundClaudeSessionId']);
           if (refusedSessionId && newBound) {
             setSessions((prev) =>
               prev.map((s) =>
                 s.id === refusedSessionId && s.connectionId === connectionId
-                  ? { ...s, claudeSessionId: newBound }
+                  ? { ...s, claudeSessionId: newBound as UUID }
                   : s,
               ),
             );
@@ -827,21 +820,32 @@ function App() {
         // Daemon-side rotation (/clear, /compact, /resume inside the PTY).
         // Update the session's bound (claudeSessionId, transcriptPath) so
         // future outbound answers carry the new id and the chat header
-        // shows the updated binding.
+        // shows the updated binding. If no session matches, surface a
+        // warn — silent no-op would mean future answers hit STALE_BINDING
+        // even though the rotation event arrived correctly.
+        let matched = false;
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === message.sessionId && s.connectionId === connectionId
-              ? {
-                  ...s,
-                  claudeSessionId: message.claudeSessionId as string,
-                  transcriptPath: message.transcriptPath,
-                }
-              : s,
-          ),
+          prev.map((s) => {
+            if (s.id === message.sessionId && s.connectionId === connectionId) {
+              matched = true;
+              return {
+                ...s,
+                claudeSessionId: message.claudeSessionId as string,
+                transcriptPath: message.transcriptPath,
+              };
+            }
+            return s;
+          }),
         );
-        console.info(
-          `[App] Binding rotated for session ${message.sessionId.slice(0, 8)} on ${connectionId}: claude=${(message.claudeSessionId as string).slice(0, 8)} reason=${message.reason}`,
-        );
+        if (matched) {
+          console.info(
+            `[App] Binding rotated for session ${message.sessionId.slice(0, 8)} on ${connectionId}: claude=${(message.claudeSessionId as string).slice(0, 8)} reason=${message.reason}`,
+          );
+        } else {
+          console.warn(
+            `[App] transcript_binding_changed for unknown session ${message.sessionId.slice(0, 8)} on ${connectionId}; session list may be stale`,
+          );
+        }
         break;
       }
 
@@ -1044,7 +1048,19 @@ function App() {
 
       console.debug('[App] handlePushAnswer:', { sessionId, questionId, answer });
 
-      const answerMsg = createAnswer(sessionId as UUID, questionId as UUID, answer);
+      // Thread claudeSessionId so the daemon can refuse if its binding
+      // has rotated since the lock-screen notification fired (#430 review
+      // #433). Without this the cold-start push-answer path silently
+      // bypassed the stale-binding guard. Read from sessionsRef so we
+      // see the latest snapshot even when this handler captured an old
+      // closure of `sessions`.
+      const boundId = sessionsRef.current.find((s) => s.id === sessionId)?.claudeSessionId;
+      const answerMsg = createAnswer(
+        sessionId as UUID,
+        questionId as UUID,
+        answer,
+        boundId as UUID | undefined,
+      );
 
       // Read the persisted URL list and per-session daemon map once; pass
       // into the pure resolver.

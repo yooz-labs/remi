@@ -122,7 +122,7 @@ export interface UISession {
    * routing when the binding has rotated (e.g. user ran /resume). Shown
    * to the user in the chat header so the binding is verifiable by eye.
    */
-  readonly claudeSessionId?: string;
+  readonly claudeSessionId?: UUID;
   /** Absolute path to the bound .jsonl transcript (#430). */
   readonly transcriptPath?: string;
 }

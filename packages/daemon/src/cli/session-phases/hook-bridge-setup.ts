@@ -228,11 +228,27 @@ export function setupHookBridge(
   }): void {
     if (!input.session_id) return;
 
+    // Snapshot the closure BEFORE adoptLockFromStore mutates it.
+    // adoptLockFromStore can race-pull the new id from sessionStore when
+    // the transcript-fallback wrote it first; without this snapshot the
+    // classifier sees the post-adopt value, returns 'match', and the
+    // rotation event silently never emits (#430 review #433).
+    const previousClaudeSessionId = claudeSessionId;
+    let isRotation = false;
+
     // If the transcript-fallback has already discovered our Claude
     // session ID (the multi-wrapper-in-same-dir case), adopt it before
     // classifying so the classifier sees the right currentLock instead
     // of a stale null.
     adoptLockFromStore();
+
+    // Detect rotation by comparing the pre-adopt snapshot against the
+    // incoming id. We do this here (independent of classifySessionEvent)
+    // so the rotation is observable even when adoptLockFromStore raced
+    // ahead and the classifier returns 'match'.
+    if (previousClaudeSessionId !== null && previousClaudeSessionId !== input.session_id) {
+      isRotation = true;
+    }
 
     const classification = classifySessionEvent({
       currentLock: claudeSessionId,
@@ -249,11 +265,6 @@ export function setupHookBridge(
       );
       return;
     }
-    // Capture the pre-restart id so we can emit transcript_binding_changed
-    // on rotation (#430). First-init has no previous binding, so the
-    // notification only fires when the lock actually moved.
-    const previousClaudeSessionId = claudeSessionId;
-    let isRotation = false;
     if (classification === 'restart') {
       log(
         `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
@@ -265,7 +276,9 @@ export function setupHookBridge(
       tracker.clearPending();
       claudeSessionId = null;
       mainSessionEnded = false;
-      isRotation = previousClaudeSessionId !== null;
+      // isRotation was already computed above against the pre-adopt
+      // snapshot; restart is a stricter signal but does not override
+      // a true value coming from the race-detector path.
     }
     // classification === 'match': either our tracked session or first-time lock.
     if (claudeSessionId) return; // already initialized
@@ -285,8 +298,10 @@ export function setupHookBridge(
 
       // Notify clients of the binding rotation so they can rekey their
       // (sessionId, claudeSessionId) composite state and refresh any
-      // displayed binding indicator. Skip on first-init: that's already
-      // covered by hello_ack + session_list_response.
+      // displayed binding indicator. Skip on first-init: that's
+      // covered by session_list_response (and by hello_ack on the
+      // queue-promotion path; the initial first-connect hello_ack from
+      // connection.ts carries no binding by design).
       if (isRotation) {
         try {
           sendAndRecord(
