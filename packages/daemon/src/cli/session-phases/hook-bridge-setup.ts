@@ -31,7 +31,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionReset, errorToString } from '@remi/shared';
+import { createSessionReset, createTranscriptBindingChanged, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
@@ -228,11 +228,27 @@ export function setupHookBridge(
   }): void {
     if (!input.session_id) return;
 
+    // Snapshot the closure BEFORE adoptLockFromStore mutates it.
+    // adoptLockFromStore can race-pull the new id from sessionStore when
+    // the transcript-fallback wrote it first; without this snapshot the
+    // classifier sees the post-adopt value, returns 'match', and the
+    // rotation event silently never emits (#430 review #433).
+    const previousClaudeSessionId = claudeSessionId;
+    let isRotation = false;
+
     // If the transcript-fallback has already discovered our Claude
     // session ID (the multi-wrapper-in-same-dir case), adopt it before
     // classifying so the classifier sees the right currentLock instead
     // of a stale null.
     adoptLockFromStore();
+
+    // Detect rotation by comparing the pre-adopt snapshot against the
+    // incoming id. We do this here (independent of classifySessionEvent)
+    // so the rotation is observable even when adoptLockFromStore raced
+    // ahead and the classifier returns 'match'.
+    if (previousClaudeSessionId !== null && previousClaudeSessionId !== input.session_id) {
+      isRotation = true;
+    }
 
     const classification = classifySessionEvent({
       currentLock: claudeSessionId,
@@ -260,6 +276,9 @@ export function setupHookBridge(
       tracker.clearPending();
       claudeSessionId = null;
       mainSessionEnded = false;
+      // isRotation was already computed above against the pre-adopt
+      // snapshot; restart is a stricter signal but does not override
+      // a true value coming from the race-detector path.
     }
     // classification === 'match': either our tracked session or first-time lock.
     if (claudeSessionId) return; // already initialized
@@ -276,6 +295,27 @@ export function setupHookBridge(
         `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
       );
       sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+      // Notify clients of the binding rotation so they can rekey their
+      // (sessionId, claudeSessionId) composite state and refresh any
+      // displayed binding indicator. Skip on first-init: that's
+      // covered by session_list_response (and by hello_ack on the
+      // queue-promotion path; the initial first-connect hello_ack from
+      // connection.ts carries no binding by design).
+      if (isRotation) {
+        try {
+          sendAndRecord(
+            createTranscriptBindingChanged(
+              sessionId,
+              claudeSessionId as UUID,
+              input.transcript_path,
+              'restart',
+            ),
+          );
+        } catch (err) {
+          logError(`[Hooks] Failed to emit transcript_binding_changed: ${errorToString(err)}`);
+        }
+      }
 
       // Cancel the fallback timer since we have the exact path.
       const fallbackTimer = transcriptFallbackTimers.get(sessionId);
@@ -340,6 +380,8 @@ export function setupHookBridge(
         );
         return;
       }
+      const previousClaudeSessionId = claudeSessionId;
+      let isRotation = false;
       if (classification === 'restart') {
         log(
           `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
@@ -351,12 +393,30 @@ export function setupHookBridge(
         tracker.clearPending();
         claudeSessionId = null;
         mainSessionEnded = false;
+        isRotation = previousClaudeSessionId !== null;
       }
 
       try {
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
         sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+        if (isRotation) {
+          try {
+            sendAndRecord(
+              createTranscriptBindingChanged(
+                sessionId,
+                hookClaudeSessionId as UUID,
+                transcriptPath,
+                'restart',
+              ),
+            );
+          } catch (err) {
+            logError(
+              `[Hooks] Failed to emit transcript_binding_changed (SessionInfo): ${errorToString(err)}`,
+            );
+          }
+        }
 
         const existingWatcher = transcriptWatchers.get(sessionId);
         if (

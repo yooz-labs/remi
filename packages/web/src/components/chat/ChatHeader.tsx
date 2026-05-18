@@ -6,6 +6,17 @@
 
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 
+/**
+ * Extract a short "port :<num>" label from a ConnectionId of shape
+ * "host:port" so the binding indicator stays compact on mobile. Falls
+ * back to the raw id when no colon is present.
+ */
+function extractDaemonPortLabel(connectionId: string): string {
+  const colonIdx = connectionId.lastIndexOf(':');
+  if (colonIdx === -1) return connectionId;
+  return `:${connectionId.slice(colonIdx + 1)}`;
+}
+
 /** Strip hostname prefix from session name for display */
 function formatSessionName(name: string): string {
   let display = name.replace(/^[^:]+:/, '');
@@ -204,6 +215,38 @@ export function ChatHeader({
             </>
           )}
         </div>
+        {/* Transcript binding indicator (#430). The "port:short-uuid"
+            pair is the UX surface for the cross-daemon routing fix
+            (#427): the user can visually confirm which transcript a
+            session is bound to. The actual routing safety net is the
+            daemon-side STALE_BINDING guard from phase 2 (#432). The
+            onClick handler copies the full path to clipboard; the
+            title attribute is the hover tooltip on desktop. */}
+        {session.claudeSessionId && (
+          <button
+            type="button"
+            className="mt-0.5 truncate text-left text-[10px] font-mono text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-secondary)]"
+            title={
+              session.transcriptPath
+                ? `Claude session ${session.claudeSessionId}\nTranscript: ${session.transcriptPath}\nClick to copy path`
+                : `Claude session ${session.claudeSessionId}`
+            }
+            onClick={() => {
+              const value = session.transcriptPath ?? session.claudeSessionId;
+              if (!value) return;
+              // navigator.clipboard can be undefined on iOS WKWebView
+              // in non-secure contexts; .catch on the promise covers
+              // permission denial and lost-focus rejections.
+              navigator.clipboard?.writeText(value).catch((err) => {
+                console.warn('[ChatHeader] clipboard write failed:', err);
+              });
+            }}
+          >
+            {extractDaemonPortLabel(session.connectionId)}
+            {' · '}
+            {session.claudeSessionId.slice(0, 8)}
+          </button>
+        )}
       </div>
 
       {/* Detach/Resume button */}
