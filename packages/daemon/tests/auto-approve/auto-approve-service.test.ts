@@ -16,6 +16,10 @@ import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
  */
 
 async function isOllamaAvailable(): Promise<boolean> {
+  // SKIP_LLM_TESTS=1 lets a developer pin GPU-heavy LLM tests off without
+  // killing the local Ollama daemon (which they may want running for other
+  // workflows). Honored by every Ollama-gated test in this directory.
+  if (process.env['SKIP_LLM_TESTS'] === '1') return false;
   try {
     const res = await fetch('http://localhost:11434/api/tags', {
       signal: AbortSignal.timeout(2000),
