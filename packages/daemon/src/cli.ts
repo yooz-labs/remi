@@ -842,13 +842,25 @@ const sessionRegistry = new SessionRegistry(
     },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const claudeId = stored?.claudeSessionId ?? null;
+      const projPath = stored?.projectPath ?? null;
+      const tpath =
+        claudeId && projPath
+          ? `${transcriptDiscovery.getProjectTranscriptDir(projPath)}/${claudeId}.jsonl`
+          : null;
       const sent = registry.sendRaw(
         connectionId,
-        createHelloAck('1.0.0', sessionId, {
-          isResume: result.replayMessages.length > 0,
-          replayCount: result.replayMessages.length,
-          nextBulletId: result.nextBulletId,
-        }),
+        createHelloAck(
+          '1.0.0',
+          sessionId,
+          {
+            isResume: result.replayMessages.length > 0,
+            replayCount: result.replayMessages.length,
+            nextBulletId: result.nextBulletId,
+          },
+          { claudeSessionId: claudeId, transcriptPath: tpath },
+        ),
       );
       if (!sent) {
         log(`Promoted connection ${connectionId} is unreachable; detaching`);
@@ -996,6 +1008,11 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
+      // Lazy read so the binding seen on each question emission is the
+      // current value — survives /resume rotation via hook-bridge's
+      // updateClaudeSessionId write into the store.
+      getClaudeSessionId: () =>
+        (sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ?? null) as UUID | null,
     },
     sessionId,
   );
@@ -1150,6 +1167,7 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
 
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
+  sessionStore,
   send: sendToConnection,
 });
 

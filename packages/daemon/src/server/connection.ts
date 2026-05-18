@@ -60,10 +60,10 @@ export interface ConnectionEvents {
   onDisconnect: (reason: string) => void;
 
   /** User input received */
-  onUserInput: (sessionId: UUID, content: string, raw?: boolean) => void;
+  onUserInput: (sessionId: UUID, content: string, raw?: boolean, claudeSessionId?: UUID) => void;
 
   /** Answer to question received */
-  onAnswer: (sessionId: UUID, questionId: UUID, answer: string) => void;
+  onAnswer: (sessionId: UUID, questionId: UUID, answer: string, claudeSessionId?: UUID) => void;
 
   /** Bullet expand request received */
   onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
@@ -405,7 +405,12 @@ export class Connection {
     this.sendAck(message.id, 'delivered');
 
     // Notify
-    this.events.onUserInput?.(message.sessionId, message.content, message.raw);
+    this.events.onUserInput?.(
+      message.sessionId,
+      message.content,
+      message.raw,
+      message.claudeSessionId,
+    );
   }
 
   private handleAnswer(message: AnswerMessage): void {
@@ -418,7 +423,12 @@ export class Connection {
     this.sendAck(message.id, 'delivered');
 
     // Notify
-    this.events.onAnswer?.(message.sessionId, message.questionId, message.answer);
+    this.events.onAnswer?.(
+      message.sessionId,
+      message.questionId,
+      message.answer,
+      message.claudeSessionId,
+    );
   }
 
   private handleBulletExpandRequest(message: BulletExpandRequestMessage): void {

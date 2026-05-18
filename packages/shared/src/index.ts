@@ -84,6 +84,7 @@ export type {
   RegisterDeviceTokenMessage,
   SessionResetMessage,
   DaemonUpdateAvailableMessage,
+  TranscriptBindingChangedMessage,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -131,6 +132,7 @@ export {
   createRegisterDeviceToken,
   createSessionReset,
   createDaemonUpdateAvailable,
+  createTranscriptBindingChanged,
   MessageIdTracker,
 } from './protocol.ts';
 

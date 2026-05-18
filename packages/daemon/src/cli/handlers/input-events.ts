@@ -12,32 +12,86 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
-import type { SessionRegistry } from '../../session/index.ts';
+import type { SessionRegistry, SessionStore } from '../../session/index.ts';
 import { log } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
   sessionRegistry: SessionRegistry;
+  sessionStore: SessionStore;
   send: SendToConnection;
+}
+
+/**
+ * Compare an incoming message's claudeSessionId against the daemon's
+ * current binding for the target remi session (#429). Returns true when
+ * the message is safe to forward to the PTY, false when stale.
+ *
+ * Stale-binding semantics:
+ *   - If the client did not send claudeSessionId (pre-#429 client),
+ *     accept the message unconditionally. The client cannot have known
+ *     the binding to check against.
+ *   - If the client sent it but no daemon binding is recorded yet
+ *     (extreme race: input received before transcript-fallback wrote
+ *     the id), accept rather than refuse. The pre-spawn save in
+ *     createNewSession makes this branch rare.
+ *   - If both are present and differ, the user typed against an old
+ *     view (e.g. /resume rotated the binding between question and
+ *     answer); refuse and emit STALE_BINDING with both ids so the
+ *     client can rekey its UI.
+ */
+function guardBinding(
+  sessionStore: SessionStore,
+  send: SendToConnection,
+  connectionId: UUID,
+  sessionId: UUID,
+  claudeSessionId: UUID | undefined,
+): boolean {
+  if (claudeSessionId === undefined) return true;
+  const stored = sessionStore.findByRemiSessionId(sessionId);
+  const bound = stored?.claudeSessionId;
+  if (!bound) return true;
+  if (bound === claudeSessionId) return true;
+  log(
+    `[Binding] STALE_BINDING refused for session ${sessionId.slice(0, 8)}: incoming=${claudeSessionId.slice(0, 8)} bound=${bound.slice(0, 8)}`,
+  );
+  send(
+    connectionId,
+    createError(
+      'STALE_BINDING',
+      'The Claude session this message was for has rotated; the binding has moved',
+      {
+        sessionId,
+        incomingClaudeSessionId: claudeSessionId,
+        boundClaudeSessionId: bound,
+      },
+    ),
+  );
+  return false;
 }
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
 export function createInputHandlers(deps: InputHandlerDeps) {
-  const { sessionRegistry, send } = deps;
+  const { sessionRegistry, sessionStore, send } = deps;
 
   return {
     onUserInput: async (
       connectionId: UUID,
-      _sessionId: UUID,
+      sessionId: UUID,
       content: string,
       raw?: boolean,
+      claudeSessionId?: UUID,
     ): Promise<void> => {
       log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
 
       const session = sessionRegistry.getSessionForConnection(connectionId);
       if (!session) {
         log(`No session found for connection ${connectionId}`);
+        return;
+      }
+
+      if (!guardBinding(sessionStore, send, connectionId, sessionId, claudeSessionId)) {
         return;
       }
 
@@ -60,6 +114,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       sessionId: UUID,
       questionId: UUID,
       answer: string,
+      claudeSessionId?: UUID,
     ): Promise<void> => {
       log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
 
@@ -74,6 +129,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           connectionId,
           createError('SESSION_NOT_FOUND', `Session ${sessionId} not found on this daemon`),
         );
+        return;
+      }
+
+      if (!guardBinding(sessionStore, send, connectionId, sessionId, claudeSessionId)) {
         return;
       }
 

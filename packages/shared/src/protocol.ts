@@ -100,7 +100,8 @@ export type ProtocolMessage =
   | DetachSessionAckMessage
   | RegisterDeviceTokenMessage
   | SessionResetMessage
-  | DaemonUpdateAvailableMessage;
+  | DaemonUpdateAvailableMessage
+  | TranscriptBindingChangedMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -126,6 +127,22 @@ export interface HelloAckMessage {
   readonly timestamp: Timestamp;
   readonly serverVersion: string;
   readonly sessionId: UUID;
+  /**
+   * Claude Code session UUID this daemon's PTY is bound to (#427/#429).
+   * Always populated post-phase-1 because the daemon pre-assigns the id
+   * before spawning Claude. Null only when this hello_ack predates a
+   * resolved binding (e.g. resume-attaching to a session whose lock was
+   * lost across a daemon crash). Clients should key sessions by
+   * (connectionId, claudeSessionId) to keep two daemons in the same cwd
+   * from cross-contaminating.
+   */
+  readonly claudeSessionId?: UUID | null | undefined;
+  /**
+   * Absolute path to the .jsonl transcript file Claude writes to.
+   * Pre-assigned alongside claudeSessionId; the file may not yet exist on
+   * disk when this ack is sent. Null when claudeSessionId is null.
+   */
+  readonly transcriptPath?: string | null | undefined;
   /** Whether this is a resumed session */
   readonly isResume?: boolean | undefined;
   /** Number of messages to be replayed (if resume) */
@@ -163,6 +180,15 @@ export interface UserInputMessage {
   readonly content: string;
   /** When true, content is raw terminal bytes (no Enter appended) */
   readonly raw?: boolean;
+  /**
+   * Claude Code session UUID the client believed it was talking to when
+   * the user typed this. Daemon rejects with code='stale_binding' when
+   * present and != current binding (e.g. the PTY swapped to another
+   * session via /resume between the user typing and the message
+   * landing). Omitted by pre-#429 clients; daemon accepts without
+   * checking in that case.
+   */
+  readonly claudeSessionId?: UUID | undefined;
 }
 
 /** Acknowledgment */
@@ -192,6 +218,13 @@ export interface QuestionMessage {
   readonly question: Question;
   /** Session that owns this question */
   readonly sessionId?: UUID | undefined;
+  /**
+   * Claude Code session UUID the question came from. The answer carrying
+   * this id back lets the daemon reject the write if the binding has
+   * moved (e.g. user ran /resume between the question firing and their
+   * tap). Populated when the daemon has a binding; omitted otherwise.
+   */
+  readonly claudeSessionId?: UUID | undefined;
 }
 
 /** Answer to a question */
@@ -202,6 +235,12 @@ export interface AnswerMessage {
   readonly sessionId: UUID;
   readonly questionId: UUID;
   readonly answer: string;
+  /**
+   * Echoes the claudeSessionId from the QuestionMessage. Daemon refuses
+   * with code='stale_binding' when present and != current binding.
+   * Omitted by pre-#429 clients.
+   */
+  readonly claudeSessionId?: UUID | undefined;
 }
 
 /** Session state update */
@@ -292,6 +331,26 @@ export interface SessionListResponseMessage {
   readonly requestId: UUID;
   /** Other daemon ports on this machine (for auto-connect) */
   readonly daemonPorts?: readonly number[];
+}
+
+/**
+ * Notifies the client that the PTY's bound Claude session has changed,
+ * e.g. user ran /resume or /clear inside the PTY (#429). Clients should
+ * rekey UI state by the new (sessionId, claudeSessionId) tuple and update
+ * any displayed binding indicator.
+ */
+export interface TranscriptBindingChangedMessage {
+  readonly type: 'transcript_binding_changed';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Remi session id whose binding rotated. */
+  readonly sessionId: UUID;
+  /** The new Claude session id Claude is now writing under. */
+  readonly claudeSessionId: UUID;
+  /** Absolute path to the new transcript .jsonl. */
+  readonly transcriptPath: string;
+  /** Diagnostic: 'restart' for /clear|/compact, 'resume' for /resume, 'unknown' otherwise. */
+  readonly reason: 'restart' | 'resume' | 'unknown';
 }
 
 /** Token usage information from a transcript entry */
@@ -678,6 +737,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'register_device_token',
     'daemon_update_available',
     'session_reset',
+    'transcript_binding_changed',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -727,6 +787,7 @@ export function createHelloAck(
   serverVersion: string,
   sessionId: UUID,
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
+  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null },
 ): HelloAckMessage {
   return {
     type: 'hello_ack',
@@ -738,6 +799,10 @@ export function createHelloAck(
       isResume: resumeInfo.isResume,
       replayCount: resumeInfo.replayCount,
       nextBulletId: resumeInfo.nextBulletId,
+    }),
+    ...(binding && {
+      claudeSessionId: binding.claudeSessionId,
+      transcriptPath: binding.transcriptPath,
     }),
   };
 }
@@ -775,7 +840,12 @@ export function createStructuredAgentOutput(
 /**
  * Create a user input message.
  */
-export function createUserInput(sessionId: UUID, content: string, raw?: boolean): UserInputMessage {
+export function createUserInput(
+  sessionId: UUID,
+  content: string,
+  raw?: boolean,
+  claudeSessionId?: UUID,
+): UserInputMessage {
   return {
     type: 'user_input',
     id: generateId(),
@@ -783,6 +853,7 @@ export function createUserInput(sessionId: UUID, content: string, raw?: boolean)
     sessionId,
     content,
     ...(raw && { raw }),
+    ...(claudeSessionId !== undefined && { claudeSessionId }),
   };
 }
 
@@ -862,20 +933,30 @@ export function createError(
 /**
  * Create a question message.
  */
-export function createQuestion(question: Question, sessionId?: UUID): QuestionMessage {
+export function createQuestion(
+  question: Question,
+  sessionId?: UUID,
+  claudeSessionId?: UUID,
+): QuestionMessage {
   return {
     type: 'question',
     id: generateId(),
     timestamp: now(),
     question,
     ...(sessionId !== undefined && { sessionId }),
+    ...(claudeSessionId !== undefined && { claudeSessionId }),
   };
 }
 
 /**
  * Create an answer message for a question.
  */
-export function createAnswer(sessionId: UUID, questionId: UUID, answer: string): AnswerMessage {
+export function createAnswer(
+  sessionId: UUID,
+  questionId: UUID,
+  answer: string,
+  claudeSessionId?: UUID,
+): AnswerMessage {
   return {
     type: 'answer',
     id: generateId(),
@@ -883,6 +964,7 @@ export function createAnswer(sessionId: UUID, questionId: UUID, answer: string):
     sessionId,
     questionId,
     answer,
+    ...(claudeSessionId !== undefined && { claudeSessionId }),
   };
 }
 
@@ -1335,6 +1417,27 @@ export function createSessionReset(sessionId: UUID, reason: string): SessionRese
     id: generateId(),
     timestamp: now(),
     sessionId,
+    reason,
+  };
+}
+
+/**
+ * Create a transcript-binding-changed notification (PTY's bound Claude
+ * session UUID rotated, e.g. /resume, /clear).
+ */
+export function createTranscriptBindingChanged(
+  sessionId: UUID,
+  claudeSessionId: UUID,
+  transcriptPath: string,
+  reason: 'restart' | 'resume' | 'unknown' = 'unknown',
+): TranscriptBindingChangedMessage {
+  return {
+    type: 'transcript_binding_changed',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    claudeSessionId,
+    transcriptPath,
     reason,
   };
 }

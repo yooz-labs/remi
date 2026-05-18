@@ -49,6 +49,13 @@ export interface MessageApiSetupDeps {
   updateRemiStatus: (patch: { sessionStatus: AgentStatus }) => void;
   maxBulletLength: number;
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
+  /**
+   * Returns the current Claude session UUID this PTY is bound to (#429).
+   * Called on every question emission; returns null if no binding is known
+   * (the daemon's pre-spawn save always sets one, so null is rare). Same
+   * synchronous/non-throwing contract as pushConfig.
+   */
+  getClaudeSessionId?: () => UUID | null;
 }
 
 export interface MessageApiHandle {
@@ -80,6 +87,7 @@ export function createMessageApiForSession(
     updateRemiStatus,
     maxBulletLength,
     sendMessage,
+    getClaudeSessionId,
   } = deps;
 
   const sendAndRecord = (message: ProtocolMessage): void => {
@@ -118,12 +126,14 @@ export function createMessageApiForSession(
     onQuestion: (question: Question) => {
       log(`Question detected: ${question.text.substring(0, 50)}...`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
+      const claudeSessionId = getClaudeSessionId?.() ?? undefined;
       const msg: ProtocolMessage = {
         type: 'question',
         id: generateId(),
         timestamp: now(),
         question,
         sessionId: questionSessionId,
+        ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
       };
       sendAndRecord(msg);
       sessionRegistry.updateQuestion(questionSessionId, question);

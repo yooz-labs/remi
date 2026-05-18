@@ -271,6 +271,10 @@ export class TranscriptDiscovery {
       source: 'transcript',
       canAttach: false, // External sessions can't be attached to via daemon
       canResume: status !== 'active', // Only offer resume for idle/completed sessions, not actively running ones
+      // For external entries the filename UUID IS the Claude session id;
+      // path comes from the same disk scan.
+      claudeSessionId: file.sessionId,
+      transcriptPath: file.filePath,
     };
   }
 

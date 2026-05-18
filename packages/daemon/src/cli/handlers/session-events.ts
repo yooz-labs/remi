@@ -56,7 +56,17 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
 
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
-      const daemonSessions = sessionRegistry.listSessions();
+      // Decorate daemon-sourced sessions with their pre-assigned Claude
+      // binding (#429). transcriptPath is derived from the same encoding
+      // rule transcript-discovery uses, so the client can show "you are
+      // talking to port X / claude <short-uuid>" without round-tripping.
+      const daemonSessionsRaw = sessionRegistry.listSessions();
+      const daemonSessions = daemonSessionsRaw.map((s) => {
+        const stored = sessionStore.findByRemiSessionId(s.sessionId as UUID);
+        if (!stored?.claudeSessionId) return s;
+        const transcriptPath = `${transcriptDiscovery.getProjectTranscriptDir(s.projectPath)}/${stored.claudeSessionId}.jsonl`;
+        return { ...s, claudeSessionId: stored.claudeSessionId, transcriptPath };
+      });
       let allSessions = [...daemonSessions];
 
       if (includeExternal) {

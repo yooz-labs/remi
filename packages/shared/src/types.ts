@@ -283,6 +283,22 @@ export interface DiscoverableSession {
   /** Whether this dead session can be resumed via Claude Code --resume */
   readonly canResume: boolean;
 
+  /**
+   * Claude Code session UUID this entry's Claude is bound to (#427/#429).
+   * For daemon-sourced entries, this is the pre-assigned binding from
+   * SessionStore. For transcript-sourced entries it equals sessionId.
+   * Optional because legacy/edge cases (daemon entry whose Claude was
+   * spawned before #428) may have no recorded binding.
+   */
+  readonly claudeSessionId?: string | undefined;
+
+  /**
+   * Absolute path to the .jsonl transcript Claude writes to. Populated
+   * for all entries where it can be derived; omitted only when the entry
+   * predates #428's binding model and no transcript file was discovered.
+   */
+  readonly transcriptPath?: string | undefined;
+
   /** WebSocket port of the daemon hosting this session (for auto-connect) */
   readonly wsPort?: number;
 
