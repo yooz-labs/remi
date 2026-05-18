@@ -8,9 +8,8 @@
  * "claude" processes by writing the .jsonl files each binding expects.
  *
  * Pre-fix this scenario was the silent killer behind cross-daemon answer
- * routing: both daemons' fallbacks called findLatestTranscript and grabbed
- * whichever .jsonl had the freshest mtime, regardless of which Claude wrote
- * it.
+ * routing: both daemons' fallbacks sorted the project directory by mtime
+ * and grabbed the newest .jsonl regardless of which Claude wrote it.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -131,7 +130,6 @@ describe('two daemons in the same cwd never cross-bind (#427)', () => {
     startTranscriptFallback(
       {
         sessionRegistry: d.sessionRegistry,
-        sessionStore: d.sessionStore,
         transcriptDiscovery,
         transcriptWatchers: d.transcriptWatchers,
         transcriptFallbackTimers: d.transcriptFallbackTimers,

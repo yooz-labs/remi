@@ -36,6 +36,28 @@ describe('resolveClaudeBinding', () => {
     expect(claudeSessionId).toBe(id);
   });
 
+  test('user-provided --resume=<uuid> (equals form) is respected', () => {
+    const id = '11111111-2222-3333-4444-555555555555';
+    const { claudeSessionId, args, source } = resolveClaudeBinding([`--resume=${id}`]);
+    expect(source).toBe('user-resume');
+    expect(claudeSessionId).toBe(id);
+    expect(args).not.toContain('--session-id');
+  });
+
+  test('malformed --session-id=uuid=foo (second = in value) falls back to fresh', () => {
+    // Documents safe-degradation behavior: isUuidLike rejects the trailing
+    // garbage, so we mint a fresh id and inject our own --session-id rather
+    // than trusting a malformed value.
+    const malformed = '--session-id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee=foo';
+    const { source, claudeSessionId, args } = resolveClaudeBinding([malformed]);
+    expect(source).toBe('fresh');
+    expect(UUID_RE.test(claudeSessionId)).toBe(true);
+    // The user's malformed arg is preserved verbatim AND our fresh --session-id
+    // is injected; Claude will reject one of them or honor the last.
+    expect(args[0]).toBe(malformed);
+    expect(args).toContain('--session-id');
+  });
+
   test('--resume alone: binding equals the resumed id', () => {
     const id = '11111111-2222-3333-4444-555555555555';
     const { claudeSessionId, args, source } = resolveClaudeBinding(['--resume', id]);

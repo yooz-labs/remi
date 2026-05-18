@@ -29,8 +29,14 @@ import { randomUUID } from 'node:crypto';
 export interface ClaudeBindingResult {
   /** The session id Claude will use; either pre-existing in args or freshly minted. */
   readonly claudeSessionId: string;
-  /** The args to pass to `Bun.spawn`. Equal to input args plus any injection. */
-  readonly args: string[];
+  /**
+   * The args to pass to `Bun.spawn`. Equal to input args plus any injection.
+   * Invariant by source: `fresh` and `user-resume-fork` always contain an
+   * injected `--session-id <claudeSessionId>` pair; `user-session-id` and
+   * `user-resume` never inject because the binding is already in the user's
+   * args (or, in the resume case, implicit in `--resume`).
+   */
+  readonly args: readonly string[];
   /** How the binding was determined; useful for diagnostics + tests. */
   readonly source: 'user-session-id' | 'user-resume' | 'user-resume-fork' | 'fresh';
 }

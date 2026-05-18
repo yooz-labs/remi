@@ -1088,12 +1088,23 @@ async function createNewSession(
     messageApi,
     locallyOwned,
   );
-  await ptySession.start();
+
+  // If the spawn or any post-spawn wiring throws, mark the pre-saved
+  // store entry as exited so sibling daemons reading the store don't
+  // see a phantom "live" session with our claudeSessionId reserved.
+  // Without this, the failed-spawn entry stays exitedAt=null and the
+  // pid-aliveness self-heal in SessionStore only fires after our
+  // daemon process itself exits.
+  try {
+    await ptySession.start();
+  } catch (err) {
+    sessionStore.markExited(sessionId, null);
+    throw err;
+  }
 
   startTranscriptFallback(
     {
       sessionRegistry,
-      sessionStore,
       transcriptDiscovery,
       transcriptWatchers,
       transcriptFallbackTimers,

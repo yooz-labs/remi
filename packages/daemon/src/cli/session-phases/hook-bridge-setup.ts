@@ -100,22 +100,17 @@ export function setupHookBridge(
   let claudeSessionId: string | null = null;
 
   /**
-   * When `hasSiblingInDir()` is true (multiple Remi wrappers in the same
-   * project directory) the hook-event-based locking path defers to the
-   * filesystem fallback in transcript-fallback.ts, which discovers our
-   * own Claude session ID by looking at `~/.claude/projects/<dir>/` and
-   * excluding sibling-claimed transcripts. The fallback writes the
-   * discovered id to `sessionStore.updateClaudeSessionId(...)` — but
-   * the hook-bridge's `claudeSessionId` closure was never updated from
-   * the store, so `filterBySession` kept reading null and dropped every
-   * hook for the entire session lifetime. This helper closes that gap:
-   * each hook event re-reads the store and adopts the discovered id when
-   * it differs from the closure (initial adopt, or rotation after a
-   * /clear in the multi-wrapper case where hooks were never authoritative).
-   * Log only on change to avoid spam on steady-state hooks. Wrapped in
-   * try/catch so an EMFILE / permission flake on the sessions file does
-   * not propagate into the hook dispatch loop; on failure we leave the
-   * closure untouched (the existing sibling-guard path remains active).
+   * Adopt the canonical claudeSessionId from `sessionStore`. After phase 1
+   * (#427), `cli.ts:createNewSession` pre-writes the binding to the store
+   * BEFORE Bun.spawn, so the value is authoritative the moment the bridge
+   * starts receiving hook events — no inference from filesystem mtime,
+   * no risk of latching a sibling daemon's id. The same call also covers
+   * subsequent rotations: if a hook-driven restart (/clear, /resume) flips
+   * the closure to null and writes a new id to the store, the next event
+   * re-adopts the new value. Logs only on change to avoid spam on
+   * steady-state hooks. Wrapped in try/catch so an EMFILE / permission
+   * flake on the sessions file does not propagate into the hook dispatch
+   * loop; on failure we leave the closure untouched.
    */
   const adoptLockFromStore = (): void => {
     try {

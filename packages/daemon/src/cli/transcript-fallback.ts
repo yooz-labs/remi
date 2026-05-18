@@ -22,7 +22,7 @@ import { errorToString } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
-import type { SessionRegistry, SessionStore } from '../session/index.ts';
+import type { SessionRegistry } from '../session/index.ts';
 import type { TranscriptDiscovery } from '../transcript/index.ts';
 import type { TranscriptWatcher } from '../transcript/index.ts';
 import { log, logError } from './logger.ts';
@@ -33,7 +33,6 @@ const DEFAULT_POLL_TIMEOUT_MS = 30000;
 
 export interface TranscriptFallbackDeps {
   sessionRegistry: SessionRegistry;
-  sessionStore: SessionStore;
   transcriptDiscovery: TranscriptDiscovery;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
@@ -71,19 +70,12 @@ export function startTranscriptFallback(
 ): void {
   const {
     sessionRegistry,
-    sessionStore: _sessionStore,
     transcriptDiscovery,
     transcriptWatchers,
     transcriptFallbackTimers,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     pollTimeoutMs = DEFAULT_POLL_TIMEOUT_MS,
   } = deps;
-
-  // SessionStore writes happen pre-spawn in cli.ts; this poll only consumes
-  // the binding it was given. Kept in the interface so future recovery
-  // paths (e.g. /resume swap re-binding) can persist updates without
-  // having to thread a second dep object.
-  void _sessionStore;
 
   const startupTime = Date.now();
   const expectedPath = expectedTranscriptPath(
@@ -108,8 +100,11 @@ export function startTranscriptFallback(
     }
 
     if (fs.existsSync(expectedPath)) {
+      // Do NOT stopPoll before the watcher is wired. A throw inside
+      // startTranscriptWatcher (e.g. transient EMFILE on the watcher's
+      // openSync) used to kill the poll while leaving the session
+      // unwatched — silent failure with no retry.
       try {
-        stopPoll();
         log(
           `[Fallback] Bound transcript appeared: ${expectedPath} (claude=${claudeSessionId.slice(0, 8)})`,
         );
@@ -120,8 +115,12 @@ export function startTranscriptFallback(
           messageApi,
           sendAndRecord,
         );
+        stopPoll();
       } catch (err) {
-        logError(`[Fallback] Failed to start watcher for ${expectedPath}: ${errorToString(err)}`);
+        logError(
+          `[Fallback] Failed to start watcher for ${expectedPath}; will retry: ${errorToString(err)}`,
+        );
+        // Fall through without stopping the poll so the next tick retries.
       }
       return;
     }

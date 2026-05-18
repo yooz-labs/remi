@@ -9,7 +9,6 @@ import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts'
 import { startTranscriptFallback } from '../../src/cli/transcript-fallback.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
-import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import type { TranscriptWatcher } from '../../src/transcript/transcript-watcher.ts';
 
@@ -39,7 +38,6 @@ describe('startTranscriptFallback', () => {
   let projectsDir: string;
   let projectPath: string;
   let sessionRegistry: SessionRegistry;
-  let sessionStore: SessionStore;
   let transcriptDiscovery: TranscriptDiscovery;
   let transcriptWatchers: Map<UUID, TranscriptWatcher>;
   let transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
@@ -52,7 +50,6 @@ describe('startTranscriptFallback', () => {
     fs.mkdirSync(projectsDir, { recursive: true });
     fs.mkdirSync(projectPath, { recursive: true });
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     transcriptDiscovery = new TranscriptDiscovery({ projectsDir });
     transcriptWatchers = new Map();
     transcriptFallbackTimers = new Map();
@@ -98,7 +95,6 @@ describe('startTranscriptFallback', () => {
     startTranscriptFallback(
       {
         sessionRegistry,
-        sessionStore,
         transcriptDiscovery,
         transcriptWatchers,
         transcriptFallbackTimers,
@@ -123,7 +119,6 @@ describe('startTranscriptFallback', () => {
     startTranscriptFallback(
       {
         sessionRegistry,
-        sessionStore,
         transcriptDiscovery,
         transcriptWatchers,
         transcriptFallbackTimers,
@@ -149,7 +144,6 @@ describe('startTranscriptFallback', () => {
     startTranscriptFallback(
       {
         sessionRegistry,
-        sessionStore,
         transcriptDiscovery,
         transcriptWatchers,
         transcriptFallbackTimers,
@@ -183,7 +177,6 @@ describe('startTranscriptFallback', () => {
     startTranscriptFallback(
       {
         sessionRegistry,
-        sessionStore,
         transcriptDiscovery,
         transcriptWatchers,
         transcriptFallbackTimers,
@@ -224,7 +217,6 @@ describe('startTranscriptFallback', () => {
     startTranscriptFallback(
       {
         sessionRegistry,
-        sessionStore,
         transcriptDiscovery,
         transcriptWatchers,
         transcriptFallbackTimers,
@@ -251,7 +243,6 @@ describe('startTranscriptFallback', () => {
     startTranscriptFallback(
       {
         sessionRegistry,
-        sessionStore,
         transcriptDiscovery,
         transcriptWatchers,
         transcriptFallbackTimers,
