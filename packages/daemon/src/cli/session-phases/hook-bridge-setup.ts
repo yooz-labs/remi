@@ -140,15 +140,18 @@ export function setupHookBridge(
 
   // Extract transcript info from hook events. Most Claude Code hook events
   // include session_id and transcript_path. When present, the first event
-  // gives us the transcript path, bypassing the slower mtime fallback.
+  // gives us the transcript path immediately, bypassing the deterministic-
+  // path fallback poll in transcript-fallback.ts.
   //
   // GUARD: when sibling daemons serve the same directory, all Claudes POST
   // to all hook URLs (shared settings.local.json), so a sibling's event may
   // arrive before our own Claude fires. Skip hook-based discovery and let
-  // the mtime fallback handle it. Re-evaluated per event so a sibling dying
-  // (or a fresh sibling appearing) is reflected immediately. Issue #321:
-  // a stale `null`-once cache wedged this state and permanently disabled
-  // hook-driven discovery for both daemons.
+  // the deterministic-path fallback handle it (post-#427 the fallback waits
+  // for our pre-assigned UUID rather than racing on mtime). Re-evaluated
+  // per event so a sibling dying (or a fresh sibling appearing) is
+  // reflected immediately. Issue #321: a stale `null`-once cache wedged
+  // this state and permanently disabled hook-driven discovery for both
+  // daemons.
 
   /**
    * Cancel any in-flight auto-approve LLM eval. Called on hook events that

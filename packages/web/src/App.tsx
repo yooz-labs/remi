@@ -778,6 +778,19 @@ function App() {
                   : s,
               ),
             );
+            // Un-answer the optimistically-collapsed question so the
+            // user can retry against the new binding (#434 review).
+            // Without this the QuestionCard stays collapsed showing
+            // the rejected answer and the user has no retry path.
+            setQuestions((prev) => {
+              const stale = prev.get(refusedSessionId);
+              if (!stale || stale.answeredWith === undefined) return prev;
+              const next = new Map(prev);
+              const restored = { ...stale };
+              delete (restored as { answeredWith?: string }).answeredWith;
+              next.set(refusedSessionId, restored);
+              return next;
+            });
           }
           console.warn(
             '[App] STALE_BINDING: server-side binding rotated; re-keying. Detail:',
@@ -820,13 +833,23 @@ function App() {
         // Daemon-side rotation (/clear, /compact, /resume inside the PTY).
         // Update the session's bound (claudeSessionId, transcriptPath) so
         // future outbound answers carry the new id and the chat header
-        // shows the updated binding. If no session matches, surface a
-        // warn — silent no-op would mean future answers hit STALE_BINDING
-        // even though the rotation event arrived correctly.
+        // shows the updated binding.
+        //
+        // Daemon-side broadcast (registry.broadcast) fans this event to
+        // every connection on this adapter, but a connection only "owns"
+        // sessions it created. Sessions are stored with their owning
+        // connectionId, so a session belonging to a SIBLING connection
+        // (or none at all) is correctly filtered out here. We
+        // intentionally don't warn in that case: it's not an error, just
+        // an event that doesn't apply to this connection's state.
+        // Only warn if a session matches the id on THIS connection but
+        // the binding is unexpectedly absent.
         let matched = false;
+        let sessionExistedOnThisConnection = false;
         setSessions((prev) =>
           prev.map((s) => {
             if (s.id === message.sessionId && s.connectionId === connectionId) {
+              sessionExistedOnThisConnection = true;
               matched = true;
               return {
                 ...s,
@@ -841,9 +864,9 @@ function App() {
           console.info(
             `[App] Binding rotated for session ${message.sessionId.slice(0, 8)} on ${connectionId}: claude=${(message.claudeSessionId as string).slice(0, 8)} reason=${message.reason}`,
           );
-        } else {
+        } else if (sessionExistedOnThisConnection) {
           console.warn(
-            `[App] transcript_binding_changed for unknown session ${message.sessionId.slice(0, 8)} on ${connectionId}; session list may be stale`,
+            `[App] transcript_binding_changed: session ${message.sessionId.slice(0, 8)} on ${connectionId} could not be updated; session list may be stale`,
           );
         }
         break;

@@ -2,6 +2,28 @@
 
 All notable changes to Remi are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Cross-daemon answer routing: two daemons running in the same cwd no
+  longer cross-route responses to each other's sessions (#427). The fix
+  has three layers of defense:
+  - Daemon pre-assigns the Claude session UUID at spawn via
+    `--session-id <uuid>` so transcript binding is deterministic; no
+    more mtime-based discovery race (#428).
+  - Wire protocol carries `claudeSessionId` and `transcriptPath` end to
+    end (`hello_ack`, `session_list_response`, `question`,
+    `transcript_binding_changed`). The daemon refuses outbound answers
+    with `STALE_BINDING` when the client's claimed binding no longer
+    matches (#429).
+  - Mobile and web chat header now shows the active port and Claude
+    session id (`:<port> · <8-char-uuid>`), tap to copy the transcript
+    path; client tracks the binding through `transcript_binding_changed`
+    and rekeys on `STALE_BINDING` (#430).
+
+### Internal
+- Auto-approve tests honor `SKIP_LLM_TESTS=1` (skip Ollama-gated suite).
+
 ## [0.4.4] - 2026-03-20
 
 ### Added
