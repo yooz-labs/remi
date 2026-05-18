@@ -190,6 +190,17 @@ function App() {
           console.warn('[App] Received hello_ack without sessionId from connection:', connectionId);
           break;
         }
+        // Phase 2 daemons attach the binding here so the client knows
+        // which transcript it's talking to before the first session_list
+        // round-trip (#430). Older daemons omit; the field stays undefined.
+        const ackClaudeSessionId =
+          message.claudeSessionId === undefined || message.claudeSessionId === null
+            ? undefined
+            : (message.claudeSessionId as string);
+        const ackTranscriptPath =
+          message.transcriptPath === undefined || message.transcriptPath === null
+            ? undefined
+            : (message.transcriptPath as string);
         setSessions((prev) => {
           // On reconnect, remove stale sessions from this connection that have a different
           // session ID (the daemon may have assigned a new session). Keep sessions from
@@ -202,7 +213,13 @@ function App() {
           if (exists) {
             return cleaned.map((s) =>
               s.id === message.sessionId
-                ? { ...s, connectionStatus: 'connected', connectionId }
+                ? {
+                    ...s,
+                    connectionStatus: 'connected',
+                    connectionId,
+                    ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
+                    ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+                  }
                 : s,
             );
           }
@@ -219,6 +236,8 @@ function App() {
               connectionId,
               unreadCount: 0,
               preview: 'Connected',
+              ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
+              ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
             } satisfies UISession,
           ];
         });
@@ -513,6 +532,8 @@ function App() {
               preview: cleanedPreview.slice(0, 100),
               source: ds.source,
               canResume: showResume,
+              ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
+              ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
             };
           })
           // Dedup: same session ID from daemon + transcript → keep daemon version.
@@ -565,10 +586,18 @@ function App() {
               }
             }
           }
-          // Cross-connection dedup: same session ID from multiple connections →
-          // keep daemon-sourced version. Different IDs in same cwd → keep both.
+          // Cross-connection dedup keyed by (connectionId, claudeSessionId)
+          // composite (#430). Same Claude sessionId reported by two different
+          // daemons IS a collision — keep both as separate rows so the user
+          // can pick which daemon to talk to. Only collapse when both
+          // connectionId AND claudeSessionId match (or both lack
+          // claudeSessionId, in which case fall back to id-keyed dedup so
+          // pre-#429 daemons still degrade gracefully).
+          const compositeKey = (s: UISession): string =>
+            s.claudeSessionId ? `${s.connectionId}|${s.claudeSessionId}` : `${s.connectionId}|${s.id}`;
           const deduped = result.reduce<UISession[]>((acc, s) => {
-            const dupIdx = acc.findIndex((other) => other.id === s.id);
+            const key = compositeKey(s);
+            const dupIdx = acc.findIndex((other) => compositeKey(other) === key);
             if (dupIdx === -1) {
               acc.push(s);
               return acc;
@@ -740,6 +769,29 @@ function App() {
           console.debug('[App] Auth error suppressed:', errorText);
           break;
         }
+        // STALE_BINDING (#430): the user typed against an old Claude
+        // session and the daemon refused. Update our cached binding
+        // from the error's details so the next answer routes correctly.
+        const errorCode = (message as { code?: string }).code;
+        if (errorCode === 'STALE_BINDING') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const refusedSessionId = details?.['sessionId'] as UUID | undefined;
+          const newBound = details?.['boundClaudeSessionId'] as string | undefined;
+          if (refusedSessionId && newBound) {
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id === refusedSessionId && s.connectionId === connectionId
+                  ? { ...s, claudeSessionId: newBound }
+                  : s,
+              ),
+            );
+          }
+          console.warn(
+            '[App] STALE_BINDING: server-side binding rotated; re-keying. Detail:',
+            details,
+          );
+          // Fall through so the user sees the error in chat.
+        }
         // Clear loading state for any session awaiting transcript load, and allow retry.
         // The daemon does not echo sessionId in error responses, so we clear all loading sessions.
         setSessions((prev) =>
@@ -768,6 +820,28 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, errorMsg]);
+        break;
+      }
+
+      case 'transcript_binding_changed': {
+        // Daemon-side rotation (/clear, /compact, /resume inside the PTY).
+        // Update the session's bound (claudeSessionId, transcriptPath) so
+        // future outbound answers carry the new id and the chat header
+        // shows the updated binding.
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === message.sessionId && s.connectionId === connectionId
+              ? {
+                  ...s,
+                  claudeSessionId: message.claudeSessionId as string,
+                  transcriptPath: message.transcriptPath,
+                }
+              : s,
+          ),
+        );
+        console.info(
+          `[App] Binding rotated for session ${message.sessionId.slice(0, 8)} on ${connectionId}: claude=${(message.claudeSessionId as string).slice(0, 8)} reason=${message.reason}`,
+        );
         break;
       }
 
@@ -1150,7 +1224,16 @@ function App() {
         return;
       }
 
-      const sent = sendAnswer(connId, activeSessionId, sessionQuestion.id, content);
+      // Carry claudeSessionId so the daemon can refuse if its binding
+      // has rotated since the question fired (#430).
+      const activeBinding = sessions.find((s) => s.id === activeSessionId)?.claudeSessionId;
+      const sent = sendAnswer(
+        connId,
+        activeSessionId,
+        sessionQuestion.id,
+        content,
+        activeBinding as UUID | undefined,
+      );
       if (!sent) {
         const failMsg: UIMessage = {
           id: generateId(),
@@ -1194,7 +1277,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [activeSessionId, getActiveConnectionId, sendAnswer, sessionQuestion],
+    [activeSessionId, getActiveConnectionId, sendAnswer, sessionQuestion, sessions],
   );
 
   // Send a regular user input message, optionally with a reply context.
@@ -1234,7 +1317,13 @@ function App() {
 
       setMessages((prev) => [...prev, newMessage]);
 
-      const success = sendInput(connId, activeSessionId, wireContent);
+      const activeBinding = sessions.find((s) => s.id === activeSessionId)?.claudeSessionId;
+      const success = sendInput(
+        connId,
+        activeSessionId,
+        wireContent,
+        activeBinding as UUID | undefined,
+      );
       if (success) {
         setMessages((prev) =>
           prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
@@ -1265,7 +1354,7 @@ function App() {
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, getActiveConnectionId, sendInput],
+    [activeSessionId, getActiveConnectionId, sendInput, sessions],
   );
 
   // Set the reply context for the current session: long-press on a

@@ -116,6 +116,15 @@ export interface UISession {
   readonly questionPending?: boolean;
   /** Whether this dead session can be resumed via Claude Code --resume */
   readonly canResume?: boolean;
+  /**
+   * Claude Code session UUID this entry's Claude is writing under (#430).
+   * Carried in outbound answer/input so the daemon can refuse stale
+   * routing when the binding has rotated (e.g. user ran /resume). Shown
+   * to the user in the chat header so the binding is verifiable by eye.
+   */
+  readonly claudeSessionId?: string;
+  /** Absolute path to the bound .jsonl transcript (#430). */
+  readonly transcriptPath?: string;
 }
 
 /** Structured option for a question */

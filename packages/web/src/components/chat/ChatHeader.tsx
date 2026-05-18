@@ -6,6 +6,17 @@
 
 import type { AgentStatus, ConnectionStatus, UISession } from '@/types';
 
+/**
+ * Extract a short "port :<num>" label from a ConnectionId of shape
+ * "host:port" so the binding indicator stays compact on mobile. Falls
+ * back to the raw id when no colon is present.
+ */
+function extractDaemonPortLabel(connectionId: string): string {
+  const colonIdx = connectionId.lastIndexOf(':');
+  if (colonIdx === -1) return connectionId;
+  return `:${connectionId.slice(colonIdx + 1)}`;
+}
+
 /** Strip hostname prefix from session name for display */
 function formatSessionName(name: string): string {
   let display = name.replace(/^[^:]+:/, '');
@@ -204,6 +215,32 @@ export function ChatHeader({
             </>
           )}
         </div>
+        {/* Transcript binding indicator (#430). The "port:short-uuid"
+            pair lets the user visually confirm WHICH Claude transcript
+            this session is talking to — the safety net for the
+            cross-daemon routing bug in #427. Tap-to-copy the full
+            transcript path is implemented via the title attribute. */}
+        {session.claudeSessionId && (
+          <button
+            type="button"
+            className="mt-0.5 truncate text-left text-[10px] font-mono text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-secondary)]"
+            title={
+              session.transcriptPath
+                ? `Claude session ${session.claudeSessionId}\nTranscript: ${session.transcriptPath}\nClick to copy path`
+                : `Claude session ${session.claudeSessionId}`
+            }
+            onClick={() => {
+              const value = session.transcriptPath ?? session.claudeSessionId;
+              if (value) {
+                void navigator.clipboard?.writeText(value);
+              }
+            }}
+          >
+            {extractDaemonPortLabel(session.connectionId)}
+            {' · '}
+            {session.claudeSessionId.slice(0, 8)}
+          </button>
+        )}
       </div>
 
       {/* Detach/Resume button */}
