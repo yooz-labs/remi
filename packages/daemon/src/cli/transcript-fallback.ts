@@ -1,15 +1,20 @@
 /**
  * Transcript-watcher fallback poll for the hook-miss case.
  *
- * Normally the Claude Code hook event stream tells us the exact transcript
- * path (SessionStart carries `transcript_path`). When sibling daemons share
- * the same project directory, hook events are intentionally skipped because
- * all Claudes POST to all hook URLs and we can't tell which one we own.
- * This poll becomes the primary discovery path in that case.
+ * Since #427 / phase 1, the daemon pre-assigns a `claudeSessionId` and passes
+ * `--session-id <uuid>` to `claude` so Claude writes to a known path. This
+ * poll waits for that exact file to appear under
+ * `~/.claude/projects/<encoded-cwd>/<claudeSessionId>.jsonl` and then starts
+ * the watcher. No mtime sort, no sibling exclusion, no inference.
  *
- * Every 2 seconds, look for a transcript file whose mtime is recent or is
- * newer than the PTY startup. If found, start the watcher and cancel the
- * poll. Give up after 30 seconds and log the reason.
+ * Normally the Claude Code hook event stream tells us the exact transcript
+ * path (SessionStart carries `transcript_path`), in which case the hook
+ * bridge starts the watcher and this poll self-cancels on the next tick. The
+ * poll is the primary path only when hook events are unavailable (e.g.
+ * settings.local.json absent, hook server disabled, or in the sibling-in-dir
+ * case where the bridge defers to filesystem ground-truth).
+ *
+ * Poll every 2 seconds. Give up after 30 seconds and log the reason.
  */
 
 import * as fs from 'node:fs';
@@ -21,11 +26,10 @@ import type { SessionRegistry, SessionStore } from '../session/index.ts';
 import type { TranscriptDiscovery } from '../transcript/index.ts';
 import type { TranscriptWatcher } from '../transcript/index.ts';
 import { log, logError } from './logger.ts';
-import { extractClaudeSessionId, startTranscriptWatcher } from './transcript-watcher-setup.ts';
+import { startTranscriptWatcher } from './transcript-watcher-setup.ts';
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_POLL_TIMEOUT_MS = 30000;
-const RECENT_THRESHOLD_MS = 5 * 60 * 1000;
 
 export interface TranscriptFallbackDeps {
   sessionRegistry: SessionRegistry;
@@ -40,20 +44,34 @@ export interface TranscriptFallbackDeps {
 }
 
 /**
- * Start polling for a transcript path to watch. Registers the interval in
- * `transcriptFallbackTimers` so cleanup can cancel it; the poll self-clears
- * on success, on session loss, or after the timeout.
+ * Build the deterministic transcript path Claude will write to for a given
+ * (projectPath, claudeSessionId) pair. Exposed so callers (and tests) can
+ * agree on the same encoding rule as Claude Code itself.
+ */
+export function expectedTranscriptPath(
+  transcriptDiscovery: TranscriptDiscovery,
+  projectPath: string,
+  claudeSessionId: string,
+): string {
+  return `${transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${claudeSessionId}.jsonl`;
+}
+
+/**
+ * Start polling for the pre-assigned transcript path to appear. Registers
+ * the interval in `transcriptFallbackTimers` so cleanup can cancel it; the
+ * poll self-clears on success, on session loss, or after the timeout.
  */
 export function startTranscriptFallback(
   deps: TranscriptFallbackDeps,
   sessionId: UUID,
   workingDirectory: string,
+  claudeSessionId: string,
   messageApi: MessageAPI,
   sendAndRecord: (message: ProtocolMessage) => void,
 ): void {
   const {
     sessionRegistry,
-    sessionStore,
+    sessionStore: _sessionStore,
     transcriptDiscovery,
     transcriptWatchers,
     transcriptFallbackTimers,
@@ -61,18 +79,18 @@ export function startTranscriptFallback(
     pollTimeoutMs = DEFAULT_POLL_TIMEOUT_MS,
   } = deps;
 
-  const startupTime = Date.now();
+  // SessionStore writes happen pre-spawn in cli.ts; this poll only consumes
+  // the binding it was given. Kept in the interface so future recovery
+  // paths (e.g. /resume swap re-binding) can persist updates without
+  // having to thread a second dep object.
+  void _sessionStore;
 
-  const attachWatcher = (transcriptPath: string): void => {
-    startTranscriptWatcher(
-      { transcriptWatchers },
-      sessionId,
-      transcriptPath,
-      messageApi,
-      sendAndRecord,
-    );
-    extractClaudeSessionId({ sessionStore }, transcriptPath, sessionId);
-  };
+  const startupTime = Date.now();
+  const expectedPath = expectedTranscriptPath(
+    transcriptDiscovery,
+    workingDirectory,
+    claudeSessionId,
+  );
 
   const stopPoll = (): void => {
     clearInterval(fallbackInterval);
@@ -89,61 +107,30 @@ export function startTranscriptFallback(
       return;
     }
 
-    // Exclude transcripts already claimed by sibling daemons (their
-    // claudeSessionId is stored in sessions.json) to avoid double-watching.
-    const siblingClaudeIds = new Set<string>();
-    for (const entry of sessionStore.list()) {
-      if (entry.remiSessionId !== sessionId && entry.claudeSessionId && !entry.exitedAt) {
-        siblingClaudeIds.add(entry.claudeSessionId);
-      }
-    }
-    const transcriptPath =
-      siblingClaudeIds.size > 0
-        ? transcriptDiscovery.findLatestTranscriptExcluding(workingDirectory, siblingClaudeIds)
-        : transcriptDiscovery.findLatestTranscript(workingDirectory);
-
-    if (transcriptPath) {
+    if (fs.existsSync(expectedPath)) {
       try {
-        const stat = fs.statSync(transcriptPath);
-        if (stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS) {
-          stopPoll();
-          log(`[Hooks] Found new transcript via fallback: ${transcriptPath}`);
-          attachWatcher(transcriptPath);
-          return;
-        }
+        stopPoll();
+        log(
+          `[Fallback] Bound transcript appeared: ${expectedPath} (claude=${claudeSessionId.slice(0, 8)})`,
+        );
+        startTranscriptWatcher(
+          { transcriptWatchers },
+          sessionId,
+          expectedPath,
+          messageApi,
+          sendAndRecord,
+        );
       } catch (err) {
-        log(`[Hooks] Fallback stat failed for ${transcriptPath}: ${errorToString(err)}`);
+        logError(`[Fallback] Failed to start watcher for ${expectedPath}: ${errorToString(err)}`);
       }
+      return;
     }
 
-    // Timeout branch. Still accept the transcript if it became recent
-    // during the final interval, otherwise log and give up.
     if (Date.now() - startupTime > pollTimeoutMs) {
       stopPoll();
-      if (transcriptPath) {
-        try {
-          const stat = fs.statSync(transcriptPath);
-          const isRecent =
-            stat.mtimeMs >= startupTime || Date.now() - stat.mtimeMs < RECENT_THRESHOLD_MS;
-          if (isRecent) {
-            log('[Hooks] Transcript fallback: found recent transcript on final check.');
-            attachWatcher(transcriptPath);
-            return;
-          }
-
-          logError(
-            `[Hooks] Transcript fallback timed out without a fresh transcript. Skipping stale file: ${transcriptPath}`,
-          );
-          return;
-        } catch {
-          logError(
-            '[Hooks] Transcript fallback timed out and transcript stat failed on final check.',
-          );
-          return;
-        }
-      }
-
-      logError('[Hooks] Transcript fallback timed out without any transcript file.');
+      logError(
+        `[Fallback] Timed out waiting for transcript: ${expectedPath} (claude=${claudeSessionId.slice(0, 8)}). Claude may have failed to start, or wrote to an unexpected path.`,
+      );
     }
   }, pollIntervalMs);
 

@@ -105,6 +105,7 @@ import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
@@ -1028,6 +1029,30 @@ async function createNewSession(
     },
   );
 
+  // Deterministic PTY -> transcript binding (#427). Resolve the
+  // claudeSessionId Claude will write under BEFORE spawning, so sibling
+  // daemons in the same cwd cannot race-claim each other's transcripts
+  // through mtime-based discovery.
+  const binding = resolveClaudeBinding(extraArgs, {
+    displayName: `remi:${remiStatus.wsPort}`,
+  });
+  log(
+    `[Binding] claude=${binding.claudeSessionId.slice(0, 8)} source=${binding.source} for remi=${sessionId.slice(0, 8)}`,
+  );
+
+  // Persist the binding before spawn so siblings observing the store
+  // during the race window see our claim immediately.
+  sessionStore.save({
+    remiSessionId: sessionId,
+    claudeSessionId: binding.claudeSessionId,
+    projectPath: workingDirectory,
+    port: PORT,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    exitedAt: null,
+    exitCode: null,
+  });
+
   if (hookServer) {
     setupHookBridge(
       {
@@ -1052,7 +1077,7 @@ async function createNewSession(
       sendMessage,
       cleanup,
     },
-    { sessionId, workingDirectory, extraArgs, passThrough },
+    { sessionId, workingDirectory, extraArgs: binding.args, passThrough },
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1065,17 +1090,6 @@ async function createNewSession(
   );
   await ptySession.start();
 
-  sessionStore.save({
-    remiSessionId: sessionId,
-    claudeSessionId: null,
-    projectPath: workingDirectory,
-    port: PORT,
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    exitedAt: null,
-    exitCode: null,
-  });
-
   startTranscriptFallback(
     {
       sessionRegistry,
@@ -1086,6 +1100,7 @@ async function createNewSession(
     },
     sessionId,
     workingDirectory,
+    binding.claudeSessionId,
     messageApi,
     sendAndRecord,
   );

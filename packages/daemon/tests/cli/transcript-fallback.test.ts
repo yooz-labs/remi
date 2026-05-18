@@ -89,6 +89,9 @@ describe('startTranscriptFallback', () => {
 
   const sendAndRecord = (_: ProtocolMessage) => {};
 
+  const KNOWN_CLAUDE_ID = '11111111-2222-3333-4444-555555555555';
+  const OTHER_CLAUDE_ID = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+
   test('registers a timer in transcriptFallbackTimers', () => {
     const sid = registerSession();
 
@@ -104,6 +107,7 @@ describe('startTranscriptFallback', () => {
       },
       sid,
       projectPath,
+      KNOWN_CLAUDE_ID,
       fakeMessageAPI(),
       sendAndRecord,
     );
@@ -128,6 +132,7 @@ describe('startTranscriptFallback', () => {
       },
       sid,
       projectPath,
+      KNOWN_CLAUDE_ID,
       fakeMessageAPI(),
       sendAndRecord,
     );
@@ -153,6 +158,7 @@ describe('startTranscriptFallback', () => {
       },
       sid,
       projectPath,
+      KNOWN_CLAUDE_ID,
       fakeMessageAPI(),
       sendAndRecord,
     );
@@ -162,18 +168,17 @@ describe('startTranscriptFallback', () => {
     expect(transcriptFallbackTimers.has(sid)).toBe(false);
   });
 
-  test('attaches a watcher when a fresh transcript appears on disk', async () => {
+  test('attaches a watcher when the bound transcript appears on disk', async () => {
     const sid = registerSession();
-    const claudeId = '11111111-2222-3333-4444-555555555555';
     const entry = {
       type: 'user',
       uuid: 'u1',
-      sessionId: claudeId,
+      sessionId: KNOWN_CLAUDE_ID,
       cwd: projectPath,
       timestamp: new Date().toISOString(),
       message: { role: 'user', content: 'hi' },
     };
-    writeTranscript(claudeId, [entry]);
+    writeTranscript(KNOWN_CLAUDE_ID, [entry]);
 
     startTranscriptFallback(
       {
@@ -187,6 +192,7 @@ describe('startTranscriptFallback', () => {
       },
       sid,
       projectPath,
+      KNOWN_CLAUDE_ID,
       fakeMessageAPI(),
       sendAndRecord,
     );
@@ -201,7 +207,44 @@ describe('startTranscriptFallback', () => {
     expect(transcriptFallbackTimers.has(sid)).toBe(false);
   });
 
-  test('times out when no transcript ever appears', async () => {
+  test('ignores a sibling daemons transcript with a different UUID', async () => {
+    // Race scenario: a sibling daemon's claude wrote its transcript first.
+    // The new fallback waits for OUR pre-bound id, not "newest in the dir".
+    const sid = registerSession();
+    const entry = {
+      type: 'user',
+      uuid: 'u1',
+      sessionId: OTHER_CLAUDE_ID,
+      cwd: projectPath,
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: 'hi' },
+    };
+    writeTranscript(OTHER_CLAUDE_ID, [entry]);
+
+    startTranscriptFallback(
+      {
+        sessionRegistry,
+        sessionStore,
+        transcriptDiscovery,
+        transcriptWatchers,
+        transcriptFallbackTimers,
+        pollIntervalMs: 20,
+        pollTimeoutMs: 150,
+      },
+      sid,
+      projectPath,
+      KNOWN_CLAUDE_ID,
+      fakeMessageAPI(),
+      sendAndRecord,
+    );
+
+    await sleep(200);
+
+    expect(transcriptWatchers.has(sid)).toBe(false);
+    expect(transcriptFallbackTimers.has(sid)).toBe(false);
+  });
+
+  test('times out when the bound transcript never appears', async () => {
     // No transcript on disk.
     const sid = registerSession();
 
@@ -217,6 +260,7 @@ describe('startTranscriptFallback', () => {
       },
       sid,
       projectPath,
+      KNOWN_CLAUDE_ID,
       fakeMessageAPI(),
       sendAndRecord,
     );
@@ -226,10 +270,6 @@ describe('startTranscriptFallback', () => {
 
     expect(transcriptFallbackTimers.has(sid)).toBe(false);
     expect(transcriptWatchers.has(sid)).toBe(false);
-    expect(
-      logs.some((m) =>
-        m.includes('[error] [Hooks] Transcript fallback timed out without any transcript file'),
-      ),
-    ).toBe(true);
+    expect(logs.some((m) => m.includes('[Fallback] Timed out waiting for transcript'))).toBe(true);
   });
 });
