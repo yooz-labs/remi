@@ -105,6 +105,7 @@ import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
@@ -841,13 +842,25 @@ const sessionRegistry = new SessionRegistry(
     },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const claudeId = stored?.claudeSessionId ?? null;
+      const projPath = stored?.projectPath ?? null;
+      const tpath =
+        claudeId && projPath
+          ? `${transcriptDiscovery.getProjectTranscriptDir(projPath)}/${claudeId}.jsonl`
+          : null;
       const sent = registry.sendRaw(
         connectionId,
-        createHelloAck('1.0.0', sessionId, {
-          isResume: result.replayMessages.length > 0,
-          replayCount: result.replayMessages.length,
-          nextBulletId: result.nextBulletId,
-        }),
+        createHelloAck(
+          '1.0.0',
+          sessionId,
+          {
+            isResume: result.replayMessages.length > 0,
+            replayCount: result.replayMessages.length,
+            nextBulletId: result.nextBulletId,
+          },
+          { claudeSessionId: claudeId, transcriptPath: tpath },
+        ),
       );
       if (!sent) {
         log(`Promoted connection ${connectionId} is unreachable; detaching`);
@@ -995,6 +1008,20 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
+      // Lazy read so the binding seen on each question emission is the
+      // current value — survives /resume rotation via hook-bridge's
+      // updateClaudeSessionId write into the store. Wrapped in try/catch
+      // so a transient sessions.json I/O hiccup cannot kill question
+      // emission (the dep contract is non-throwing).
+      getClaudeSessionId: () => {
+        try {
+          return (sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ??
+            null) as UUID | null;
+        } catch (err) {
+          logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
+          return null;
+        }
+      },
     },
     sessionId,
   );
@@ -1028,6 +1055,30 @@ async function createNewSession(
     },
   );
 
+  // Deterministic PTY -> transcript binding (#427). Resolve the
+  // claudeSessionId Claude will write under BEFORE spawning, so sibling
+  // daemons in the same cwd cannot race-claim each other's transcripts
+  // through mtime-based discovery.
+  const binding = resolveClaudeBinding(extraArgs, {
+    displayName: `remi:${remiStatus.wsPort}`,
+  });
+  log(
+    `[Binding] claude=${binding.claudeSessionId.slice(0, 8)} source=${binding.source} for remi=${sessionId.slice(0, 8)}`,
+  );
+
+  // Persist the binding before spawn so siblings observing the store
+  // during the race window see our claim immediately.
+  sessionStore.save({
+    remiSessionId: sessionId,
+    claudeSessionId: binding.claudeSessionId,
+    projectPath: workingDirectory,
+    port: PORT,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    exitedAt: null,
+    exitCode: null,
+  });
+
   if (hookServer) {
     setupHookBridge(
       {
@@ -1052,7 +1103,7 @@ async function createNewSession(
       sendMessage,
       cleanup,
     },
-    { sessionId, workingDirectory, extraArgs, passThrough },
+    { sessionId, workingDirectory, extraArgs: binding.args, passThrough },
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1063,29 +1114,30 @@ async function createNewSession(
     messageApi,
     locallyOwned,
   );
-  await ptySession.start();
 
-  sessionStore.save({
-    remiSessionId: sessionId,
-    claudeSessionId: null,
-    projectPath: workingDirectory,
-    port: PORT,
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    exitedAt: null,
-    exitCode: null,
-  });
+  // If the spawn or any post-spawn wiring throws, mark the pre-saved
+  // store entry as exited so sibling daemons reading the store don't
+  // see a phantom "live" session with our claudeSessionId reserved.
+  // Without this, the failed-spawn entry stays exitedAt=null and the
+  // pid-aliveness self-heal in SessionStore only fires after our
+  // daemon process itself exits.
+  try {
+    await ptySession.start();
+  } catch (err) {
+    sessionStore.markExited(sessionId, null);
+    throw err;
+  }
 
   startTranscriptFallback(
     {
       sessionRegistry,
-      sessionStore,
       transcriptDiscovery,
       transcriptWatchers,
       transcriptFallbackTimers,
     },
     sessionId,
     workingDirectory,
+    binding.claudeSessionId,
     messageApi,
     sendAndRecord,
   );
@@ -1124,6 +1176,7 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
 
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
+  sessionStore,
   send: sendToConnection,
 });
 

@@ -1719,4 +1719,103 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toHaveLength(0); // no inject
     expect(messageApiLog.questionCalls).toBe(0); // no escalate
   });
+
+  describe('transcript_binding_changed emission on rotation (#430)', () => {
+    /**
+     * Set up a hook bridge that captures every protocol message it tries
+     * to send. We can't use the shared `build` helper because that swallows
+     * sendAndRecord; rotation emission is the whole point we need to assert
+     * on.
+     */
+    function buildWithCapture(): { sent: import('@remi/shared').ProtocolMessage[] } {
+      const sent: import('@remi/shared').ProtocolMessage[] = [];
+      const tracker = new PassthroughTracker((q) => {
+        messageApiLog.questionCalls += 1;
+        const _ = q;
+      });
+      setupHookBridge(
+        {
+          sessionRegistry,
+          sessionStore,
+          liveSessionsRegistry,
+          transcriptWatchers: transcriptWatchers as unknown as Map<
+            UUID,
+            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+          >,
+          transcriptFallbackTimers,
+          autoApproveService: null,
+          currentPort: () => 8765,
+        },
+        {
+          hookServer: hookServer as unknown as HookServer,
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          messageApi: {
+            handleMessage: () => {},
+            handleQuestion: () => {},
+            handleStatusChange: () => {},
+            reset: () => {
+              messageApiLog.resetCalls.n += 1;
+            },
+          } as unknown as import('../../../src/api/message-api.ts').MessageAPI,
+          sendAndRecord: (msg) => sent.push(msg),
+          tracker: tracker as unknown as QuestionPresenceTracker,
+        },
+      );
+      return { sent };
+    }
+
+    test('first-init does NOT emit (no rotation, only hello_ack covers initial)', () => {
+      const { sent } = buildWithCapture();
+
+      // Register the session so the bridge proceeds past hasSession() checks.
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-first-id',
+        transcript_path: path.join(tmpDir, 'first.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      expect(sent.filter((m) => m.type === 'transcript_binding_changed')).toHaveLength(0);
+    });
+
+    test('second SessionStart with a different id emits transcript_binding_changed', () => {
+      const { sent } = buildWithCapture();
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-first-id',
+        transcript_path: path.join(tmpDir, 'first.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-second-id',
+        transcript_path: path.join(tmpDir, 'second.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      const events = sent.filter((m) => m.type === 'transcript_binding_changed') as Array<{
+        sessionId: string;
+        claudeSessionId: string;
+        transcriptPath: string;
+        reason: string;
+      }>;
+      expect(events).toHaveLength(1);
+      expect(events[0]?.sessionId).toBe(SID);
+      expect(events[0]?.claudeSessionId).toBe('claude-second-id');
+      expect(events[0]?.transcriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
+      expect(events[0]?.reason).toBe('restart');
+    });
+  });
 });

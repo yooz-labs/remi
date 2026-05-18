@@ -241,30 +241,38 @@ export class RelayAdapter implements ConnectionAdapter {
     if (!this.clientConnectionId) return;
     const connectionId = this.clientConnectionId;
     switch (msg['type']) {
-      case 'user_input':
+      case 'user_input': {
         if (typeof msg['content'] !== 'string' || typeof msg['sessionId'] !== 'string') {
           console.warn('Invalid user_input payload: missing content or sessionId');
           return;
         }
+        const claudeId =
+          typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
         this.events.onUserInput?.(
           connectionId,
           msg['sessionId'],
           msg['content'],
           msg['raw'] === true,
+          claudeId,
         );
         break;
-      case 'answer':
+      }
+      case 'answer': {
         if (typeof msg['questionId'] !== 'string' || typeof msg['answer'] !== 'string') {
           console.warn('Invalid answer payload: missing questionId or answer');
           return;
         }
+        const claudeId =
+          typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
         this.events.onAnswer?.(
           connectionId,
           typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '',
           msg['questionId'],
           msg['answer'],
+          claudeId,
         );
         break;
+      }
       case 'session_list_request':
         if (typeof msg['id'] !== 'string') {
           console.warn('Invalid session_list_request payload: missing id');

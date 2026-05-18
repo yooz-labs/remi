@@ -31,7 +31,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionReset, errorToString } from '@remi/shared';
+import { createSessionReset, createTranscriptBindingChanged, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
@@ -100,22 +100,17 @@ export function setupHookBridge(
   let claudeSessionId: string | null = null;
 
   /**
-   * When `hasSiblingInDir()` is true (multiple Remi wrappers in the same
-   * project directory) the hook-event-based locking path defers to the
-   * filesystem fallback in transcript-fallback.ts, which discovers our
-   * own Claude session ID by looking at `~/.claude/projects/<dir>/` and
-   * excluding sibling-claimed transcripts. The fallback writes the
-   * discovered id to `sessionStore.updateClaudeSessionId(...)` — but
-   * the hook-bridge's `claudeSessionId` closure was never updated from
-   * the store, so `filterBySession` kept reading null and dropped every
-   * hook for the entire session lifetime. This helper closes that gap:
-   * each hook event re-reads the store and adopts the discovered id when
-   * it differs from the closure (initial adopt, or rotation after a
-   * /clear in the multi-wrapper case where hooks were never authoritative).
-   * Log only on change to avoid spam on steady-state hooks. Wrapped in
-   * try/catch so an EMFILE / permission flake on the sessions file does
-   * not propagate into the hook dispatch loop; on failure we leave the
-   * closure untouched (the existing sibling-guard path remains active).
+   * Adopt the canonical claudeSessionId from `sessionStore`. After phase 1
+   * (#427), `cli.ts:createNewSession` pre-writes the binding to the store
+   * BEFORE Bun.spawn, so the value is authoritative the moment the bridge
+   * starts receiving hook events — no inference from filesystem mtime,
+   * no risk of latching a sibling daemon's id. The same call also covers
+   * subsequent rotations: if a hook-driven restart (/clear, /resume) flips
+   * the closure to null and writes a new id to the store, the next event
+   * re-adopts the new value. Logs only on change to avoid spam on
+   * steady-state hooks. Wrapped in try/catch so an EMFILE / permission
+   * flake on the sessions file does not propagate into the hook dispatch
+   * loop; on failure we leave the closure untouched.
    */
   const adoptLockFromStore = (): void => {
     try {
@@ -145,15 +140,18 @@ export function setupHookBridge(
 
   // Extract transcript info from hook events. Most Claude Code hook events
   // include session_id and transcript_path. When present, the first event
-  // gives us the transcript path, bypassing the slower mtime fallback.
+  // gives us the transcript path immediately, bypassing the deterministic-
+  // path fallback poll in transcript-fallback.ts.
   //
   // GUARD: when sibling daemons serve the same directory, all Claudes POST
   // to all hook URLs (shared settings.local.json), so a sibling's event may
   // arrive before our own Claude fires. Skip hook-based discovery and let
-  // the mtime fallback handle it. Re-evaluated per event so a sibling dying
-  // (or a fresh sibling appearing) is reflected immediately. Issue #321:
-  // a stale `null`-once cache wedged this state and permanently disabled
-  // hook-driven discovery for both daemons.
+  // the deterministic-path fallback handle it (post-#427 the fallback waits
+  // for our pre-assigned UUID rather than racing on mtime). Re-evaluated
+  // per event so a sibling dying (or a fresh sibling appearing) is
+  // reflected immediately. Issue #321: a stale `null`-once cache wedged
+  // this state and permanently disabled hook-driven discovery for both
+  // daemons.
 
   /**
    * Cancel any in-flight auto-approve LLM eval. Called on hook events that
@@ -233,11 +231,27 @@ export function setupHookBridge(
   }): void {
     if (!input.session_id) return;
 
+    // Snapshot the closure BEFORE adoptLockFromStore mutates it.
+    // adoptLockFromStore can race-pull the new id from sessionStore when
+    // the transcript-fallback wrote it first; without this snapshot the
+    // classifier sees the post-adopt value, returns 'match', and the
+    // rotation event silently never emits (#430 review #433).
+    const previousClaudeSessionId = claudeSessionId;
+    let isRotation = false;
+
     // If the transcript-fallback has already discovered our Claude
     // session ID (the multi-wrapper-in-same-dir case), adopt it before
     // classifying so the classifier sees the right currentLock instead
     // of a stale null.
     adoptLockFromStore();
+
+    // Detect rotation by comparing the pre-adopt snapshot against the
+    // incoming id. We do this here (independent of classifySessionEvent)
+    // so the rotation is observable even when adoptLockFromStore raced
+    // ahead and the classifier returns 'match'.
+    if (previousClaudeSessionId !== null && previousClaudeSessionId !== input.session_id) {
+      isRotation = true;
+    }
 
     const classification = classifySessionEvent({
       currentLock: claudeSessionId,
@@ -265,6 +279,9 @@ export function setupHookBridge(
       tracker.clearPending();
       claudeSessionId = null;
       mainSessionEnded = false;
+      // isRotation was already computed above against the pre-adopt
+      // snapshot; restart is a stricter signal but does not override
+      // a true value coming from the race-detector path.
     }
     // classification === 'match': either our tracked session or first-time lock.
     if (claudeSessionId) return; // already initialized
@@ -281,6 +298,27 @@ export function setupHookBridge(
         `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
       );
       sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+      // Notify clients of the binding rotation so they can rekey their
+      // (sessionId, claudeSessionId) composite state and refresh any
+      // displayed binding indicator. Skip on first-init: that's
+      // covered by session_list_response (and by hello_ack on the
+      // queue-promotion path; the initial first-connect hello_ack from
+      // connection.ts carries no binding by design).
+      if (isRotation) {
+        try {
+          sendAndRecord(
+            createTranscriptBindingChanged(
+              sessionId,
+              claudeSessionId as UUID,
+              input.transcript_path,
+              'restart',
+            ),
+          );
+        } catch (err) {
+          logError(`[Hooks] Failed to emit transcript_binding_changed: ${errorToString(err)}`);
+        }
+      }
 
       // Cancel the fallback timer since we have the exact path.
       const fallbackTimer = transcriptFallbackTimers.get(sessionId);
@@ -345,6 +383,8 @@ export function setupHookBridge(
         );
         return;
       }
+      const previousClaudeSessionId = claudeSessionId;
+      let isRotation = false;
       if (classification === 'restart') {
         log(
           `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
@@ -356,12 +396,30 @@ export function setupHookBridge(
         tracker.clearPending();
         claudeSessionId = null;
         mainSessionEnded = false;
+        isRotation = previousClaudeSessionId !== null;
       }
 
       try {
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
         sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+        if (isRotation) {
+          try {
+            sendAndRecord(
+              createTranscriptBindingChanged(
+                sessionId,
+                hookClaudeSessionId as UUID,
+                transcriptPath,
+                'restart',
+              ),
+            );
+          } catch (err) {
+            logError(
+              `[Hooks] Failed to emit transcript_binding_changed (SessionInfo): ${errorToString(err)}`,
+            );
+          }
+        }
 
         const existingWatcher = transcriptWatchers.get(sessionId);
         if (

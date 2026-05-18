@@ -43,10 +43,22 @@ export interface ServerEvents {
   onClientDisconnect: (connectionId: UUID, reason: string) => void;
 
   /** User input from client */
-  onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
+  onUserInput: (
+    connectionId: UUID,
+    sessionId: UUID,
+    content: string,
+    raw?: boolean,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Answer from client */
-  onAnswer: (connectionId: UUID, sessionId: UUID, questionId: UUID, answer: string) => void;
+  onAnswer: (
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Bullet expand request from client */
   onBulletExpandRequest: (
@@ -338,12 +350,18 @@ export class WebSocketServer {
         this.events.onClientDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (sessionId, content, raw) => {
-        this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw);
+      onUserInput: (sessionId, content, raw, claudeSessionId) => {
+        this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw, claudeSessionId);
       },
 
-      onAnswer: (sessionId, questionId, answer) => {
-        this.events.onAnswer?.(ws.data.connectionId, sessionId, questionId, answer);
+      onAnswer: (sessionId, questionId, answer, claudeSessionId) => {
+        this.events.onAnswer?.(
+          ws.data.connectionId,
+          sessionId,
+          questionId,
+          answer,
+          claudeSessionId,
+        );
       },
 
       onBulletExpandRequest: (sessionId, bulletId, requestId) => {

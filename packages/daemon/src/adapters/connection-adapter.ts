@@ -64,10 +64,22 @@ export interface AdapterEvents {
   onDisconnect: (connectionId: UUID, reason: string) => void;
 
   /** User input received */
-  onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
+  onUserInput: (
+    connectionId: UUID,
+    sessionId: UUID,
+    content: string,
+    raw?: boolean,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Answer to question received */
-  onAnswer: (connectionId: UUID, sessionId: UUID, questionId: UUID, answer: string) => void;
+  onAnswer: (
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Bullet expand request received */
   onBulletExpandRequest: (

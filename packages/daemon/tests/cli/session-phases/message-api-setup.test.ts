@@ -326,4 +326,92 @@ describe('createMessageApiForSession', () => {
     expect(updates.length).toBeGreaterThanOrEqual(1);
     expect((updates[0]?.message as { isUpdate: boolean }).isUpdate).toBe(true);
   });
+
+  describe('getClaudeSessionId on questions (#429)', () => {
+    function buildWithBinding(sessionId: UUID, get: () => UUID | null) {
+      return createMessageApiForSession(
+        {
+          sessionRegistry,
+          transcriptWatchers,
+          deviceTokens,
+          pushConfig: () => ({ signalingUrl: 'ws://fake-signaling' }),
+          updateRemiStatus: (patch) => statusPatches.push(patch),
+          maxBulletLength: 4000,
+          sendMessage: (sid, message) => {
+            sendCalls.push({ sessionId: sid, message });
+          },
+          getClaudeSessionId: get,
+        },
+        sessionId,
+      );
+    }
+
+    test('question carries claudeSessionId returned by the lazy getter', () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+      setPrimarySessionId(sessionId);
+      const claudeId = '11111111-2222-3333-4444-555555555555' as UUID;
+      const { messageApi } = buildWithBinding(sessionId, () => claudeId);
+
+      messageApi.handleQuestion(questionWith([yesOpt, noOpt]));
+
+      const q = sendCalls.find((c) => c.message.type === 'question');
+      expect(q).toBeDefined();
+      expect((q?.message as { claudeSessionId?: string }).claudeSessionId).toBe(claudeId);
+    });
+
+    test('getter rotation: second question reflects the new binding', () => {
+      // Simulates /resume rotation between two question emissions —
+      // the lazy getter must re-read on each emission, not capture once.
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+      setPrimarySessionId(sessionId);
+      const before = '11111111-2222-3333-4444-555555555555' as UUID;
+      const after = '99999999-aaaa-bbbb-cccc-dddddddddddd' as UUID;
+      let current: UUID = before;
+      const { messageApi } = buildWithBinding(sessionId, () => current);
+
+      messageApi.handleQuestion(questionWith([yesOpt, noOpt]));
+      // Force a status reset so questionDedup doesn't suppress the
+      // second emission.
+      messageApi.handleStatusChange('idle');
+      current = after;
+      messageApi.handleQuestion(
+        questionWith([
+          { ...yesOpt, value: 'y2', label: 'Y2' },
+          { ...noOpt, value: 'n2', label: 'N2' },
+        ]),
+      );
+
+      const questions = sendCalls
+        .filter((c) => c.message.type === 'question')
+        .map((c) => (c.message as { claudeSessionId?: string }).claudeSessionId);
+      expect(questions).toEqual([before, after]);
+    });
+
+    test('getter returning null omits claudeSessionId from the wire message', () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+      setPrimarySessionId(sessionId);
+      const { messageApi } = buildWithBinding(sessionId, () => null);
+
+      messageApi.handleQuestion(questionWith([yesOpt, noOpt]));
+
+      const q = sendCalls.find((c) => c.message.type === 'question');
+      expect(q).toBeDefined();
+      expect('claudeSessionId' in (q?.message ?? {})).toBe(false);
+    });
+  });
 });

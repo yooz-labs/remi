@@ -86,13 +86,19 @@ export interface UseConnectionManagerReturn {
   /** Disconnect all connections */
   disconnectAll: () => void;
   /** Send user input routed to the correct connection */
-  sendInput: (connectionId: ConnectionId, sessionId: UUID, content: string) => boolean;
+  sendInput: (
+    connectionId: ConnectionId,
+    sessionId: UUID,
+    content: string,
+    claudeSessionId?: UUID,
+  ) => boolean;
   /** Send answer to a question via the correct connection */
   sendAnswer: (
     connectionId: ConnectionId,
     sessionId: UUID,
     questionId: UUID,
     answer: string,
+    claudeSessionId?: UUID,
   ) => boolean;
   /** Send a raw protocol message to a specific connection */
   sendMessage: (connectionId: ConnectionId, message: ProtocolMessage) => boolean;
@@ -532,15 +538,32 @@ export function useConnectionManager(
   );
 
   const sendInput = useCallback(
-    (connectionId: ConnectionId, sessionId: UUID, content: string): boolean => {
-      return sendToConnection(connectionId, createUserInput(sessionId, content));
+    (
+      connectionId: ConnectionId,
+      sessionId: UUID,
+      content: string,
+      claudeSessionId?: UUID,
+    ): boolean => {
+      return sendToConnection(
+        connectionId,
+        createUserInput(sessionId, content, undefined, claudeSessionId),
+      );
     },
     [sendToConnection],
   );
 
   const sendAnswer = useCallback(
-    (connectionId: ConnectionId, sessionId: UUID, questionId: UUID, answer: string): boolean => {
-      return sendToConnection(connectionId, createAnswer(sessionId, questionId, answer));
+    (
+      connectionId: ConnectionId,
+      sessionId: UUID,
+      questionId: UUID,
+      answer: string,
+      claudeSessionId?: UUID,
+    ): boolean => {
+      return sendToConnection(
+        connectionId,
+        createAnswer(sessionId, questionId, answer, claudeSessionId),
+      );
     },
     [sendToConnection],
   );

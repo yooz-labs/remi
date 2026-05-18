@@ -1,12 +1,16 @@
 /**
- * Transcript-watcher helpers used during session creation and during the
- * hook-miss fallback poll.
+ * Transcript-watcher helper used during session creation.
  *
- * `extractClaudeSessionId` reads the Claude session id out of a transcript
- * filename and persists it in the local SessionStore. `startTranscriptWatcher`
- * wires a `TranscriptMessageBridge` + `TranscriptWatcher` for the given file
- * and registers the watcher in the shared `transcriptWatchers` map so other
- * code (status refresh, cleanup, fallback teardown) can find it by session id.
+ * `startTranscriptWatcher` wires a `TranscriptMessageBridge` +
+ * `TranscriptWatcher` for the given file and registers the watcher in the
+ * shared `transcriptWatchers` map so other code (status refresh, cleanup,
+ * fallback teardown) can find it by session id.
+ *
+ * `extractClaudeSessionId` is **deprecated** (post-#427/phase 1): the
+ * daemon now pre-assigns the Claude session id via `resolveClaudeBinding`
+ * before spawn and persists it directly to `SessionStore`, so no
+ * filename-based inference is needed. The function is kept only because
+ * the test suite still exercises it; remove once tests are migrated.
  *
  * Both helpers are pure over their inputs — no module-level singletons — so
  * tests can supply tmpdir-backed stores and an in-memory Map.
@@ -27,11 +31,15 @@ export interface ExtractClaudeSessionIdDeps {
 }
 
 /**
- * Extract the Claude session id from a transcript filename and persist it.
- * Returns the extracted id, or null if the filename does not expose one.
+ * @deprecated Superseded by `resolveClaudeBinding` (#427/phase 1). The
+ * daemon now pre-assigns the Claude session id before spawn; no
+ * filename-based inference happens at runtime. Retained only for the
+ * legacy test surface; not called from any production code path.
  *
- * Transcript filenames are plain UUIDs (`abc123-def456.jsonl`). The
- * underscore split is defensive in case a prefixed format is ever introduced.
+ * Extracts the Claude session id from a transcript filename and persists
+ * it. Returns the extracted id, or null if the filename does not expose
+ * one. Filenames are plain UUIDs (`abc123-def456.jsonl`); the underscore
+ * split is defensive in case a prefixed format is ever introduced.
  */
 export function extractClaudeSessionId(
   deps: ExtractClaudeSessionIdDeps,
