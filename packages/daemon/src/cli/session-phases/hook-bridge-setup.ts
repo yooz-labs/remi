@@ -31,7 +31,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionReset, errorToString } from '@remi/shared';
+import { createSessionReset, createTranscriptBindingChanged, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
@@ -249,6 +249,11 @@ export function setupHookBridge(
       );
       return;
     }
+    // Capture the pre-restart id so we can emit transcript_binding_changed
+    // on rotation (#430). First-init has no previous binding, so the
+    // notification only fires when the lock actually moved.
+    const previousClaudeSessionId = claudeSessionId;
+    let isRotation = false;
     if (classification === 'restart') {
       log(
         `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
@@ -260,6 +265,7 @@ export function setupHookBridge(
       tracker.clearPending();
       claudeSessionId = null;
       mainSessionEnded = false;
+      isRotation = previousClaudeSessionId !== null;
     }
     // classification === 'match': either our tracked session or first-time lock.
     if (claudeSessionId) return; // already initialized
@@ -276,6 +282,25 @@ export function setupHookBridge(
         `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
       );
       sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+      // Notify clients of the binding rotation so they can rekey their
+      // (sessionId, claudeSessionId) composite state and refresh any
+      // displayed binding indicator. Skip on first-init: that's already
+      // covered by hello_ack + session_list_response.
+      if (isRotation) {
+        try {
+          sendAndRecord(
+            createTranscriptBindingChanged(
+              sessionId,
+              claudeSessionId as UUID,
+              input.transcript_path,
+              'restart',
+            ),
+          );
+        } catch (err) {
+          logError(`[Hooks] Failed to emit transcript_binding_changed: ${errorToString(err)}`);
+        }
+      }
 
       // Cancel the fallback timer since we have the exact path.
       const fallbackTimer = transcriptFallbackTimers.get(sessionId);
@@ -340,6 +365,8 @@ export function setupHookBridge(
         );
         return;
       }
+      const previousClaudeSessionId = claudeSessionId;
+      let isRotation = false;
       if (classification === 'restart') {
         log(
           `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
@@ -351,12 +378,30 @@ export function setupHookBridge(
         tracker.clearPending();
         claudeSessionId = null;
         mainSessionEnded = false;
+        isRotation = previousClaudeSessionId !== null;
       }
 
       try {
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
         sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+        if (isRotation) {
+          try {
+            sendAndRecord(
+              createTranscriptBindingChanged(
+                sessionId,
+                hookClaudeSessionId as UUID,
+                transcriptPath,
+                'restart',
+              ),
+            );
+          } catch (err) {
+            logError(
+              `[Hooks] Failed to emit transcript_binding_changed (SessionInfo): ${errorToString(err)}`,
+            );
+          }
+        }
 
         const existingWatcher = transcriptWatchers.get(sessionId);
         if (
