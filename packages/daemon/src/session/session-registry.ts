@@ -24,6 +24,11 @@ import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
 import { generateSessionName } from './session-name.ts';
 
+/** Upper bound on concurrently-pending questions per session. Real prompts are
+ *  few (main + a handful of subagents); the cap is a backstop against a runaway
+ *  prompt loop growing the map unbounded. Oldest is evicted first. */
+const MAX_PENDING_QUESTIONS = 8;
+
 /** Configuration for SessionRegistry */
 export interface SessionRegistryConfig {
   /** How long orphaned sessions stay alive (ms). Default: 5 minutes */
@@ -42,8 +47,8 @@ export interface AttachResult {
   readonly replayMessages: readonly ProtocolMessage[];
   /** Current agent status */
   readonly currentStatus: AgentStatus;
-  /** Current pending question (if any) */
-  readonly currentQuestion: Question | null;
+  /** Currently pending questions (multiple can be in flight: main + subagent). */
+  readonly currentQuestions: readonly Question[];
   /** Next bullet ID for continuation */
   readonly nextBulletId: number;
   /** Error message if attachment failed */
@@ -98,8 +103,10 @@ export interface ManagedSession {
 
   /** Current agent status */
   currentStatus: AgentStatus;
-  /** Current pending question */
-  currentQuestion: Question | null;
+  /** Currently pending questions, keyed by questionId. Multiple can be in
+   *  flight at once (e.g. main agent + a subagent since #419), so an answer to
+   *  one must not invalidate the others. Bounded by MAX_PENDING_QUESTIONS. */
+  currentQuestions: Map<UUID, Question>;
 
   /** Whether this session is owned by the local process (wrapper mode).
    * Locally-owned sessions are never killed by orphan timeout. */
@@ -171,7 +178,7 @@ export class SessionRegistry {
       messageHistory: [],
       lastDeliveredIndex: -1,
       currentStatus: 'idle',
-      currentQuestion: null,
+      currentQuestions: new Map(),
       locallyOwned,
       explicitlyDetached: false,
     };
@@ -245,7 +252,7 @@ export class SessionRegistry {
         isResume: false,
         replayMessages: [],
         currentStatus: 'idle',
-        currentQuestion: null,
+        currentQuestions: [],
         nextBulletId: 1,
         error: 'Session not found',
       };
@@ -268,7 +275,7 @@ export class SessionRegistry {
         isResume: true,
         replayMessages,
         currentStatus: this.session.currentStatus,
-        currentQuestion: this.session.currentQuestion,
+        currentQuestions: [...this.session.currentQuestions.values()],
         nextBulletId: this.session.messageApi.bulletCount + 1,
       };
     }
@@ -306,7 +313,7 @@ export class SessionRegistry {
       isResume,
       replayMessages,
       currentStatus: this.session.currentStatus,
-      currentQuestion: this.session.currentQuestion,
+      currentQuestions: [...this.session.currentQuestions.values()],
       nextBulletId: this.session.messageApi.bulletCount + 1,
     };
   }
@@ -433,13 +440,44 @@ export class SessionRegistry {
   }
 
   /**
-   * Update current question (from hook events).
+   * Register a pending question. Multiple can coexist (main + subagent); each
+   * is tracked by its own id so answering one never invalidates another.
+   * Bounded by MAX_PENDING_QUESTIONS (oldest evicted first) so a runaway
+   * prompt loop cannot grow the map without limit.
    */
-  updateQuestion(sessionId: UUID, question: Question | null): void {
+  addQuestion(sessionId: UUID, question: Question): void {
+    if (this.session === null || this.session.sessionId !== sessionId) return;
+    const map = this.session.currentQuestions;
+    map.delete(question.id); // re-insert so a refreshed question is "newest"
+    map.set(question.id, question);
+    while (map.size > MAX_PENDING_QUESTIONS) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+    this.session.lastActivityAt = now();
+  }
+
+  /** Remove one answered/resolved question by id. */
+  removeQuestion(sessionId: UUID, questionId: UUID): void {
     if (this.session !== null && this.session.sessionId === sessionId) {
-      this.session.currentQuestion = question;
+      this.session.currentQuestions.delete(questionId);
       this.session.lastActivityAt = now();
     }
+  }
+
+  /** Drop all pending questions (status left 'waiting', or session restart). */
+  clearQuestions(sessionId: UUID): void {
+    if (this.session !== null && this.session.sessionId === sessionId) {
+      this.session.currentQuestions.clear();
+      this.session.lastActivityAt = now();
+    }
+  }
+
+  /** Look up a pending question by id (null if not awaitable). */
+  getQuestion(sessionId: UUID, questionId: UUID): Question | null {
+    if (this.session === null || this.session.sessionId !== sessionId) return null;
+    return this.session.currentQuestions.get(questionId) ?? null;
   }
 
   /**

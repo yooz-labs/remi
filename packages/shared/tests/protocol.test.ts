@@ -525,7 +525,7 @@ describe('Message factory functions', () => {
         ],
       };
 
-      const msg = createQuestion(question);
+      const msg = createQuestion(question, generateId());
       expect(msg.type).toBe('question');
       expect(msg.question).toBe(question);
       expect(msg.question.text).toBe('Do you want to continue?');
@@ -548,18 +548,19 @@ describe('Message factory functions', () => {
       expect(msg.sessionId).toBe(sid);
     });
 
-    test('creates question message without sessionId when omitted', () => {
+    test('carries the agentId from the question payload', () => {
       const question: Question = {
         id: generateId(),
         text: 'Continue?',
         allowsFreeText: false,
         isAnswered: false,
         options: [],
+        agentId: 'subagent-7',
       };
 
-      const msg = createQuestion(question);
+      const msg = createQuestion(question, generateId());
       expect(msg.type).toBe('question');
-      expect(msg.sessionId).toBeUndefined();
+      expect(msg.question.agentId).toBe('subagent-7');
     });
   });
 

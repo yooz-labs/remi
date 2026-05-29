@@ -162,7 +162,7 @@ describe('createInputHandlers', () => {
         fakePTY(ptyCapture),
         fakeMessageAPI(new Map()),
       );
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'yes?',
         options: [
@@ -177,7 +177,7 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'yes');
 
       expect(ptyCapture.submits).toEqual(['yes']);
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
     test('falls back to connection lookup when sessionId is unknown', async () => {
@@ -192,7 +192,7 @@ describe('createInputHandlers', () => {
       sessionRegistry.attachConnection(sessionId, CID);
       // Pre-seed a question so we can assert the fallback path clears it on
       // the REAL session's id, not on the bogus arg it was handed.
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'proceed?',
         options: [
@@ -209,7 +209,7 @@ describe('createInputHandlers', () => {
 
       expect(ptyCapture.submits).toEqual(['hello']);
       // Question must be cleared on the real session id, not the bogus one.
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
     test('drops answer when no question is pending (stale APNS push answer)', async () => {
@@ -232,7 +232,7 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'hi');
 
       expect(ptyCapture.submits).toEqual([]);
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestion).toBeNull();
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
       const errors = sendCalls.filter((c) => c.message.type === 'error');
       expect(errors).toHaveLength(1);
       expect((errors[0]?.message as unknown as { code: string }).code).toBe('STALE_ANSWER');
@@ -247,7 +247,7 @@ describe('createInputHandlers', () => {
         fakePTY(ptyCapture),
         fakeMessageAPI(new Map()),
       );
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'current?',
         options: [
@@ -263,16 +263,16 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, stale, 'yes');
 
       expect(ptyCapture.submits).toEqual([]);
-      // Active question stays in place; only the matching answer should clear it.
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestion?.id).toBe(QID);
+      // Active question stays pending; only the matching answer removes it.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.has(QID)).toBe(true);
       const errors = sendCalls.filter((c) => c.message.type === 'error');
       expect(errors).toHaveLength(1);
       const errMsg = errors[0]?.message as unknown as {
         code: string;
-        details?: { activeQuestionId: string | null };
+        details?: { pendingQuestionIds: string[] };
       };
       expect(errMsg.code).toBe('STALE_ANSWER');
-      expect(errMsg.details?.activeQuestionId).toBe(QID);
+      expect(errMsg.details?.pendingQuestionIds).toContain(QID);
     });
 
     test('logs when neither sessionId nor connectionId maps to a session', async () => {
@@ -363,7 +363,7 @@ describe('createInputHandlers', () => {
     test('answer with matching claudeSessionId is forwarded', async () => {
       const bound = '11111111-2222-3333-4444-555555555555' as UUID;
       const { sessionId, capture } = registerSessionWithBinding(bound);
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'go?',
         options: [{ value: 'y', label: 'Y', isRecommended: true, isYes: true, isNo: false }],
@@ -382,7 +382,7 @@ describe('createInputHandlers', () => {
       const bound = '11111111-2222-3333-4444-555555555555' as UUID;
       const stale = '99999999-aaaa-bbbb-cccc-dddddddddddd' as UUID;
       const { sessionId, capture } = registerSessionWithBinding(bound);
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'go?',
         options: [],
@@ -405,7 +405,7 @@ describe('createInputHandlers', () => {
     test('answer without claudeSessionId (legacy client) is accepted', async () => {
       const bound = '11111111-2222-3333-4444-555555555555' as UUID;
       const { sessionId, capture } = registerSessionWithBinding(bound);
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'go?',
         options: [],
@@ -447,7 +447,7 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
       // Deliberately do NOT call sessionStore.save here.
-      sessionRegistry.updateQuestion(sessionId, {
+      sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'go?',
         options: [],

@@ -146,6 +146,14 @@ export interface Question {
 
   /** The answer that was given (if answered) */
   answer?: string | undefined;
+
+  /**
+   * The Claude agent this prompt belongs to: the hook `agent_id` for a
+   * subagent, or undefined ('main') for the primary agent. Keys the
+   * pending-question collection so a main-agent prompt and a concurrent
+   * subagent prompt (#419) coexist instead of overwriting each other (#425).
+   */
+  readonly agentId?: string | undefined;
 }
 
 /**

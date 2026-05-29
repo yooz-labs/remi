@@ -147,7 +147,8 @@ describe('createMessageApiForSession', () => {
 
     const questionMsgs = sendCalls.filter((c) => c.message.type === 'question');
     expect(questionMsgs).toHaveLength(1);
-    expect(sessionRegistry.getSession(sessionId)?.currentQuestion?.text).toBe('proceed?');
+    const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
+    expect(pending[0]?.text).toBe('proceed?');
   });
 
   test('onQuestion does NOT push when a client is attached', () => {

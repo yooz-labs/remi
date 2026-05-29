@@ -275,8 +275,10 @@ export function setupHookBridge(
       teardownWatcher('claude_restarted', 'restart');
       // Drop any hook record stashed before /clear or /compact: the new
       // Claude session's first PTY prompt must not merge stale option
-      // labels from the dying session.
+      // labels from the dying session. Also drop the pending-question
+      // collection so answers to the dead session's prompts are refused.
       tracker.clearPending();
+      sessionRegistry.clearQuestions(sessionId);
       claudeSessionId = null;
       mainSessionEnded = false;
       // isRotation was already computed above against the pre-adopt
@@ -391,9 +393,11 @@ export function setupHookBridge(
         );
         teardownWatcher('claude_restarted', 'restart-sessioninfo');
         // Mirror the initFromHookEvent restart branch: drop any hook
-        // record so the new session's first PTY prompt cannot merge
-        // stale options from the dying session.
+        // record and the pending-question collection so the new session's
+        // first PTY prompt cannot merge stale options, and stale answers
+        // are refused.
         tracker.clearPending();
+        sessionRegistry.clearQuestions(sessionId);
         claudeSessionId = null;
         mainSessionEnded = false;
         isRotation = previousClaudeSessionId !== null;
