@@ -10,6 +10,7 @@
 
 import type { AgentStatus } from '@remi/shared';
 import { cleanForParsing } from './ansi.ts';
+import { PROMPT_CHROME } from './question-parser.ts';
 
 /** Status detection result */
 export interface StatusResult {
@@ -68,9 +69,9 @@ const THINKING_PATTERNS: readonly RegExp[] = [
  * prompt (it was a false-positive source). Claude's own prompts are matched by
  * the selection-box chrome; the remaining patterns catch subprocess prompts. */
 const WAITING_PATTERNS: readonly RegExp[] = [
-  // Claude Code selection-box chrome (❯ cursor on a numbered option); spacing
-  // collapses after ANSI stripping, kept single-line via [^\S\n].
-  /❯[^\S\n]*\d+[.)]/,
+  // Claude Code selection-box chrome (❯ cursor on a numbered option). Reuses
+  // the question-parser constant so the two detectors cannot drift apart.
+  PROMPT_CHROME,
   /\(y\/n\)/i,
   /\[y\/n\]/i,
   /waiting for/i,

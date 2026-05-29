@@ -1611,6 +1611,7 @@ function App() {
     if (hasAnyConnected) return 'connected' as const;
     if (isAnyConnecting) return 'connecting' as const;
     if (connections.some((c) => c.status === 'reconnecting')) return 'reconnecting' as const;
+    if (connections.some((c) => c.status === 'unreachable')) return 'unreachable' as const;
     if (connections.some((c) => c.status === 'error')) return 'error' as const;
     return 'disconnected' as const;
   })();

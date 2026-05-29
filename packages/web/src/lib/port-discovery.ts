@@ -20,7 +20,7 @@
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from '@remi/shared';
 import { authInfoUrl } from './auth-probe';
 
-/** Daemon port range — single source of truth in `@remi/shared/daemon-ports`. */
+/** Daemon base port — single source of truth in `@remi/shared/daemon-ports`. */
 export const DEFAULT_BASE_PORT = DAEMON_BASE_PORT;
 
 /** Daemon port range — single source of truth in `@remi/shared/daemon-ports`. */
@@ -181,7 +181,7 @@ export async function resolveDaemonPort(
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   if (options.signal?.aborted) return null;
 
-  if (typeof hintPort === 'number' && hintPort >= 1 && hintPort <= 65535) {
+  if (typeof hintPort === 'number' && Number.isInteger(hintPort) && hintPort >= 1 && hintPort <= 65535) {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onAbort, { once: true });

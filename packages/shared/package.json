@@ -10,7 +10,9 @@
     "./types": "./src/types.ts",
     "./types.ts": "./src/types.ts",
     "./protocol": "./src/protocol.ts",
-    "./protocol.ts": "./src/protocol.ts"
+    "./protocol.ts": "./src/protocol.ts",
+    "./daemon-ports": "./src/daemon-ports.ts",
+    "./daemon-ports.ts": "./src/daemon-ports.ts"
   },
   "scripts": {
     "test": "bun test",

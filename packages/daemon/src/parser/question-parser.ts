@@ -78,8 +78,11 @@ const PATTERNS = {
  * line so the empty input box ("❯ ") cannot pair with an unrelated numbered
  * list line below it. This is the discriminator between a real prompt and a
  * list Claude merely printed.
+ *
+ * Exported and reused by `status-parser`'s WAITING detection so the two cannot
+ * drift apart.
  */
-const PROMPT_CHROME = /❯[^\S\n]*\d+[.)]/;
+export const PROMPT_CHROME = /❯[^\S\n]*\d+[.)]/;
 
 /**
  * A single option line inside a selection box. Tolerates an optional `❯`
@@ -163,6 +166,12 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
   // The cursor is the discriminator: a printed list has no `❯` on any option
   // line. Require it plus at least two options.
   if (!cursorSeen || options.length < 2) {
+    if (cursorSeen && options.length < 2) {
+      // A `❯` cursor was on screen but we could not assemble >=2 sequential
+      // options (e.g. ANSI cursor moves split the option block). Logged so a
+      // missed prompt is diagnosable from device logs rather than silent.
+      console.debug('[question-parser] ❯ cursor seen but <2 sequential options; not surfaced');
+    }
     return null;
   }
 

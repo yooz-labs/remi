@@ -19,6 +19,7 @@ import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-cli
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
 import { collectPendingChallengeConnections } from './connection-manager-helpers';
+import { splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
@@ -60,6 +61,9 @@ interface ManagedConnection {
   serverFingerprint: string | null;
   directory?: string;
   pingInterval?: ReturnType<typeof setInterval>;
+  /** True while escalateReconnect is probing; prevents concurrent escalations
+   *  racing reconnectWithUrl against themselves (#435). */
+  escalating?: boolean;
 }
 
 /** Hook options */
@@ -141,18 +145,6 @@ export function parseConnectionId(url: string): ConnectionId {
     console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
     return makeConnectionId(url);
   }
-}
-
-/** Split a "host:port" connectionId into parts (IPv6-safe; greedy host). */
-export function splitConnectionId(connectionId: ConnectionId): {
-  host: string;
-  port: number | null;
-} {
-  const raw = connectionId as string;
-  const match = /^(.*):(\d+)$/.exec(raw);
-  if (!match) return { host: raw, port: null };
-  const port = Number.parseInt(match[2] ?? '', 10);
-  return { host: match[1] ?? raw, port: Number.isNaN(port) ? null : port };
 }
 
 /** Sign an auth challenge with the given identity */
@@ -431,29 +423,57 @@ export function useConnectionManager(
   // port. Re-resolve the daemon's port from the host (the old port is hinted
   // first, then the full range is scanned). Reconnect on the winner, or fall
   // to a terminal 'unreachable' state if nothing answers. (#435 Phase 1 / P3)
+  //
+  // Self-contained error handling: callers dispatch this as `void
+  // escalateReconnect(mc)`, so any throw must NOT become an unhandled rejection
+  // (which would freeze the connection in 'reconnecting'). The re-entry guard
+  // prevents a concurrent probe from racing reconnectWithUrl against itself.
   const escalateReconnect = useCallback(
     async (mc: ManagedConnection): Promise<void> => {
+      if (mc.escalating) return;
+      mc.escalating = true;
+
       const { host, port } = splitConnectionId(mc.connectionId);
+      // Set 'reconnecting' directly (the client emits onReconnectExhausted, not
+      // a status), and stop the old ping so it cannot fire during the probe.
       mc.status = 'reconnecting';
       mc.error = null;
+      stopPing(mc);
       syncState();
+      console.debug(`[ConnectionManager] escalate ${mc.connectionId}: probing ${host}`);
 
-      const resolved = await resolveDaemonPort(host, port);
-      // Bail if the connection was torn down (or replaced) while probing.
-      if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
+      try {
+        const resolved = await resolveDaemonPort(host, port);
+        // Bail if the connection was torn down (or replaced) while probing.
+        if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
 
-      if (resolved === null) {
-        mc.status = 'unreachable';
-        mc.error = new Error(`No daemon answered on ${host}`);
-        stopPing(mc);
-        syncState();
-        return;
+        if (resolved === null) {
+          console.warn(`[ConnectionManager] no daemon on ${host}; marking unreachable`);
+          mc.status = 'unreachable';
+          mc.error = new Error(`No daemon answered on ${host}`);
+          stopPing(mc);
+          syncState();
+          return;
+        }
+
+        const newUrl = buildWsUrl(parseHostInput(host), resolved);
+        mc.url = newUrl;
+        console.debug(`[ConnectionManager] resolved ${host}:${resolved}; reconnecting`);
+        // status flows back to 'connecting'/'authenticating' via onStatusChange.
+        mc.client.reconnectWithUrl(newUrl);
+      } catch (err) {
+        // resolveDaemonPort is reject-proof today, but a runtime fault here must
+        // not freeze the connection. Surface it as the terminal state.
+        if (connectionsMapRef.current.get(mc.connectionId) === mc) {
+          console.error(`[ConnectionManager] escalateReconnect failed on ${mc.connectionId}:`, err);
+          mc.status = 'unreachable';
+          mc.error = err instanceof Error ? err : new Error(String(err));
+          stopPing(mc);
+          syncState();
+        }
+      } finally {
+        mc.escalating = false;
       }
-
-      const newUrl = buildWsUrl(parseHostInput(host), resolved);
-      mc.url = newUrl;
-      // status flows back to 'connecting'/'authenticating' via onStatusChange.
-      mc.client.reconnectWithUrl(newUrl);
     },
     [stopPing, syncState],
   );
@@ -475,7 +495,7 @@ export function useConnectionManager(
         ) {
           return connectionId;
         }
-        // Only tear down errored or disconnected connections
+        // Tear down the rest (error / disconnected / unreachable) before reconnecting.
         stopPing(existing);
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
@@ -551,11 +571,20 @@ export function useConnectionManager(
   );
 
   // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
-  // re-running port discovery against its host. (#435 Phase 1 / P3)
+  // re-running port discovery against its host. Ignored while a connection is
+  // live or already (re)connecting, so a stray tap can't disrupt it. (#435)
   const reconnect = useCallback(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
+      if (
+        mc.status === 'connected' ||
+        mc.status === 'connecting' ||
+        mc.status === 'authenticating' ||
+        mc.status === 'reconnecting'
+      ) {
+        return;
+      }
       void escalateReconnect(mc);
     },
     [escalateReconnect],

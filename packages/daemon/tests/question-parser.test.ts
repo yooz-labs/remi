@@ -57,6 +57,14 @@ describe('parseQuestion() - selection-box chrome (Claude prompts)', () => {
     expect(result.question?.options[0]?.isRecommended).toBe(true);
     expect(result.question?.options[1]?.isRecommended).toBe(false);
   });
+
+  test('strips box-drawing borders around option labels', () => {
+    const result = parseQuestion('│ ❯ 1. Allow  │\n│   2. Deny   │');
+    expect(result.detected).toBe(true);
+    expect(result.question?.options.length).toBe(2);
+    expect(result.question?.options[0]?.label).toBe('Allow');
+    expect(result.question?.options[1]?.label).toBe('Deny');
+  });
 });
 
 describe('parseQuestion() - literal yes/no (subprocess prompts)', () => {
@@ -132,6 +140,11 @@ describe('parseQuestion() - NOT a prompt (false-positive guards)', () => {
 
   test('the empty input box (❯ with no option) is NOT detected', () => {
     expect(parseQuestion('❯ \n────').detected).toBe(false);
+  });
+
+  test('a single cursor option (no second option) is NOT detected', () => {
+    // Guards the >=2 requirement: a lone "❯ 1. ..." is not a selection prompt.
+    expect(parseQuestion('❯ 1. Only one option').detected).toBe(false);
   });
 
   test('cursor line and a separate list line do NOT combine across lines', () => {

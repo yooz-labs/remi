@@ -48,6 +48,10 @@ export interface WebSocketClientEvents {
  * Default ceiling on consecutive reconnect attempts before `onReconnectExhausted`
  * fires. Finite (was Infinity) so a daemon that closed or moved its port stops
  * being retried forever and instead triggers port rediscovery / a terminal state.
+ *
+ * At the default backoff (1s base, doubling, capped at 30s) six attempts span
+ * roughly 1+2+4+8+16+30 ≈ 60s of retries before escalating — long enough to
+ * ride out a daemon restart, short enough that a real move is noticed quickly.
  */
 export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 6;
 
@@ -152,7 +156,8 @@ export class WebSocketClient {
 
   /** Rebind to a (re-resolved) URL and reconnect immediately, resetting the
    *  reconnect counter. Used by the owner's `onReconnectExhausted` escalation
-   *  after port rediscovery finds the daemon on a new port. */
+   *  after port rediscovery finds a live daemon port (which may be the same
+   *  port, if the daemon simply restarted, or a sibling). */
   reconnectWithUrl(url: string): void {
     this.currentUrl = url;
     this.intentionalDisconnect = false;
@@ -229,12 +234,14 @@ export class WebSocketClient {
       return;
     }
 
-    // Exhausted the ceiling on this URL. Hand off to the owner to rediscover
-    // the port or surface a terminal state; fall back to 'disconnected'.
+    // Exhausted the ceiling on this URL. Clear the 'reconnecting' status first
+    // so the client never reports a phantom in-progress reconnect after it has
+    // stopped (and so the owner's onStatusChange runs its disconnect cleanup),
+    // then hand off to the owner to rediscover the port or surface a terminal
+    // state. With no handler we simply stay 'disconnected'.
+    this.setStatus('disconnected');
     if (this.events.onReconnectExhausted) {
       this.events.onReconnectExhausted();
-    } else {
-      this.setStatus('disconnected');
     }
   }
 

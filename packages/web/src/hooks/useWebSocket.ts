@@ -368,6 +368,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       const config: WebSocketClientConfig = {
         url,
         autoReconnect,
+        // Legacy single-connection hook (superseded by useConnectionManager,
+        // which escalates via onReconnectExhausted). It has no escalation
+        // handler, so keep its historical retry-forever behavior rather than
+        // inherit the new finite default and silently give up. (#435)
+        maxReconnectAttempts: Number.POSITIVE_INFINITY,
       };
 
       const client = new WebSocketClient(config, {
