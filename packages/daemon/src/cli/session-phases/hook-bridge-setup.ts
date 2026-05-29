@@ -31,7 +31,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionReset, createTranscriptBindingChanged, errorToString } from '@remi/shared';
+import { createSessionRotated, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
@@ -202,12 +202,14 @@ export function setupHookBridge(
   };
 
   /**
-   * Safely tear down an existing transcript watcher, reset messages, and
-   * notify clients. Errors from stop() and sendAndRecord() are swallowed so
-   * they never prevent the new watcher from being created. Shared by
-   * initFromHookEvent and onSessionInfo.
+   * Safely tear down an existing transcript watcher and reset message state.
+   * Errors from stop() are swallowed so they never prevent the new watcher
+   * from being created. Does NOT emit a wire message: a rotation is announced
+   * by a single atomic `session_rotated` from the adopt path (#438), so the
+   * client clears + rebinds + re-fetches in one step rather than reacting to a
+   * separate reset. Shared by initFromHookEvent and onSessionInfo.
    */
-  function teardownWatcher(reason: string, label: string): void {
+  function teardownWatcher(label: string): void {
     const watcher = transcriptWatchers.get(sessionId);
     if (!watcher) return;
     transcriptWatchers.delete(sessionId); // Remove FIRST to unblock the new watcher.
@@ -217,11 +219,6 @@ export function setupHookBridge(
       logError(`[Hooks] Failed to stop watcher (${label}): ${errorToString(stopErr)}`);
     }
     messageApi.reset();
-    try {
-      sendAndRecord(createSessionReset(sessionId, reason));
-    } catch (sendErr) {
-      logError(`[Hooks] Failed to send ${reason} for ${sessionId}: ${errorToString(sendErr)}`);
-    }
   }
 
   function initFromHookEvent(input: {
@@ -272,7 +269,7 @@ export function setupHookBridge(
       log(
         `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
       );
-      teardownWatcher('claude_restarted', 'restart');
+      teardownWatcher('restart');
       // Drop any hook record stashed before /clear or /compact: the new
       // Claude session's first PTY prompt must not merge stale option
       // labels from the dying session. Also drop the pending-question
@@ -301,24 +298,23 @@ export function setupHookBridge(
       );
       sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
 
-      // Notify clients of the binding rotation so they can rekey their
-      // (sessionId, claudeSessionId) composite state and refresh any
-      // displayed binding indicator. Skip on first-init: that's
-      // covered by session_list_response (and by hello_ack on the
-      // queue-promotion path; the initial first-connect hello_ack from
-      // connection.ts carries no binding by design).
+      // Announce the rotation as ONE atomic event so the client clears, swaps
+      // the binding, and re-fetches the new transcript in a single step (#438).
+      // Skip on first-init (not a rotation): that's covered by
+      // session_list_response / the queue-promotion hello_ack.
       if (isRotation) {
         try {
           sendAndRecord(
-            createTranscriptBindingChanged(
+            createSessionRotated(
               sessionId,
               claudeSessionId as UUID,
               input.transcript_path,
               'restart',
+              previousClaudeSessionId ?? undefined,
             ),
           );
         } catch (err) {
-          logError(`[Hooks] Failed to emit transcript_binding_changed: ${errorToString(err)}`);
+          logError(`[Hooks] Failed to emit session_rotated: ${errorToString(err)}`);
         }
       }
 
@@ -339,7 +335,7 @@ export function setupHookBridge(
         log(
           `[Hooks] Replacing stale watcher: ${existingWatcher.filePath} -> ${input.transcript_path}`,
         );
-        teardownWatcher('transcript_changed', 'stale-replace');
+        teardownWatcher('stale-replace');
       }
 
       if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
@@ -391,7 +387,7 @@ export function setupHookBridge(
         log(
           `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
         );
-        teardownWatcher('claude_restarted', 'restart-sessioninfo');
+        teardownWatcher('restart-sessioninfo');
         // Mirror the initFromHookEvent restart branch: drop any hook
         // record and the pending-question collection so the new session's
         // first PTY prompt cannot merge stale options, and stale answers
@@ -411,17 +407,16 @@ export function setupHookBridge(
         if (isRotation) {
           try {
             sendAndRecord(
-              createTranscriptBindingChanged(
+              createSessionRotated(
                 sessionId,
                 hookClaudeSessionId as UUID,
                 transcriptPath,
                 'restart',
+                previousClaudeSessionId ?? undefined,
               ),
             );
           } catch (err) {
-            logError(
-              `[Hooks] Failed to emit transcript_binding_changed (SessionInfo): ${errorToString(err)}`,
-            );
+            logError(`[Hooks] Failed to emit session_rotated (SessionInfo): ${errorToString(err)}`);
           }
         }
 
@@ -433,7 +428,7 @@ export function setupHookBridge(
           log(
             `[Hooks] Replacing stale watcher (SessionInfo): ${existingWatcher.filePath} -> ${transcriptPath}`,
           );
-          teardownWatcher('transcript_changed', 'stale-replace-sessioninfo');
+          teardownWatcher('stale-replace-sessioninfo');
         }
 
         if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {

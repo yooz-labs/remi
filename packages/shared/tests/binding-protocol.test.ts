@@ -10,7 +10,7 @@ import {
   createAnswer,
   createHelloAck,
   createQuestion,
-  createTranscriptBindingChanged,
+  createSessionRotated,
   createUserInput,
   deserialize,
   serialize,
@@ -80,23 +80,27 @@ describe('binding fields on the wire (#429)', () => {
     expect(round.content).toBe('ls');
   });
 
-  test('transcript_binding_changed event round-trips with all fields', () => {
-    const msg = createTranscriptBindingChanged(
+  test('session_rotated event round-trips with all fields', () => {
+    const OLD = 'claude00-0000-0000-0000-00000000000a' as UUID;
+    const msg = createSessionRotated(
       RID,
       CID,
       '/home/u/.claude/projects/-x/abc.jsonl',
       'resume',
+      OLD,
     );
     const round = deserialize(serialize(msg));
-    if (round?.type !== 'transcript_binding_changed') throw new Error('wrong type');
+    if (round?.type !== 'session_rotated') throw new Error('wrong type');
     expect(round.sessionId).toBe(RID);
-    expect(round.claudeSessionId).toBe(CID);
-    expect(round.transcriptPath).toBe('/home/u/.claude/projects/-x/abc.jsonl');
+    expect(round.newClaudeSessionId).toBe(CID);
+    expect(round.oldClaudeSessionId).toBe(OLD);
+    expect(round.newTranscriptPath).toBe('/home/u/.claude/projects/-x/abc.jsonl');
     expect(round.reason).toBe('resume');
   });
 
-  test('transcript_binding_changed defaults reason to "unknown"', () => {
-    const msg = createTranscriptBindingChanged(RID, CID, '/x.jsonl');
-    expect(msg.reason).toBe('unknown');
+  test('session_rotated defaults reason to "restart" and omits old id when absent', () => {
+    const msg = createSessionRotated(RID, CID, '/x.jsonl');
+    expect(msg.reason).toBe('restart');
+    expect('oldClaudeSessionId' in msg).toBe(false);
   });
 });
