@@ -424,7 +424,16 @@ function App() {
         const owns = sessionsRef.current.some(
           (s) => s.id === rotatedId && s.connectionId === connectionId,
         );
-        if (!owns) break; // sibling connection's session, or none: not ours.
+        if (!owns) {
+          // Usually a sibling connection's session (not ours) — expected and
+          // benign. The rare exception is a rotation arriving in the same tick
+          // as the session's hello_ack, before sessionsRef commits; log so that
+          // case is diagnosable rather than a silent dropped rotation.
+          console.warn(
+            `[App] session_rotated for ${rotatedId.slice(0, 8)} not owned by ${connectionId} (sibling, or hello_ack not yet committed)`,
+          );
+          break;
+        }
         setMessages((prev) => prev.filter((m) => m.sessionId !== rotatedId));
         setQuestions((prev) => clearSessionQuestions(prev, rotatedId));
         loadedTranscriptsRef.current.delete(rotatedId);

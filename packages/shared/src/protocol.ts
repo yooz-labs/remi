@@ -342,9 +342,10 @@ export interface SessionListResponseMessage {
  *
  * Replaces the former non-atomic pair `session_reset` + `transcript_binding_
  * changed`. On receipt, a client that owns this session clears its messages
- * and pending questions, swaps the binding to the new (claudeSessionId,
- * transcriptPath), re-fetches the new transcript, and un-stales any pending
- * question so the next answer carries the new id (no STALE_BINDING).
+ * AND all pending questions for the session (answers to the old session's
+ * prompts would be refused as STALE_BINDING anyway), swaps the binding to the
+ * new (claudeSessionId, transcriptPath), and re-fetches the new transcript so
+ * the next answer carries the new id.
  */
 export interface SessionRotatedMessage {
   readonly type: 'session_rotated';
@@ -1408,7 +1409,9 @@ export function createDaemonUpdateAvailable(
 /**
  * Create an atomic session-rotated notification (#438): the PTY's bound Claude
  * session rotated to a new transcript (`/clear` or `/resume`). Replaces the
- * former session_reset + transcript_binding_changed pair.
+ * former session_reset + transcript_binding_changed pair. `reason` is `'clear'`
+ * / `'resume'` when the triggering command is known; the hook-detection path
+ * currently can't distinguish them and passes `'restart'`.
  */
 export function createSessionRotated(
   sessionId: UUID,

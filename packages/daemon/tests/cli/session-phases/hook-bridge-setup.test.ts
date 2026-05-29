@@ -1720,7 +1720,7 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.questionCalls).toBe(0); // no escalate
   });
 
-  describe('transcript_binding_changed emission on rotation (#430)', () => {
+  describe('session_rotated emission on rotation (#430 #438)', () => {
     /**
      * Set up a hook bridge that captures every protocol message it tries
      * to send. We can't use the shared `build` helper because that swallows

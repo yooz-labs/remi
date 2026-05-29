@@ -14,8 +14,9 @@
  *   2. **Transcript discovery via hooks.** Most events carry
  *      `transcript_path`; when present (and not shadowed by a sibling), we
  *      can start the watcher immediately instead of waiting for the
- *      2s mtime poll. A restart (/clear /compact /resume) tears down the
- *      old watcher and starts a fresh one.
+ *      2s mtime poll. A rotation (/clear or /resume — NOT /compact, which
+ *      keeps the same session id) tears down the old watcher, starts a fresh
+ *      one, and emits a single session_rotated event.
  *
  *   3. **Auto-approve gate.** PermissionRequest events are intercepted
  *      before they reach the user. If auto-approve returns approve/deny we
@@ -235,6 +236,7 @@ export function setupHookBridge(
     // rotation event silently never emits (#430 review #433).
     const previousClaudeSessionId = claudeSessionId;
     let isRotation = false;
+    let rotationAnnounced = false;
 
     // If the transcript-fallback has already discovered our Claude
     // session ID (the multi-wrapper-in-same-dir case), adopt it before
@@ -276,6 +278,28 @@ export function setupHookBridge(
       // collection so answers to the dead session's prompts are refused.
       tracker.clearPending();
       sessionRegistry.clearQuestions(sessionId);
+      // Announce the rotation NOW, before the sibling / no-transcript_path
+      // guards below can early-return. teardownWatcher already reset the
+      // client's view, so the client must learn of the rotation (clear +
+      // rebind + re-fetch) even when we can't (re)start the watcher yet — the
+      // sibling guard only defers WATCHER setup, not this notification. The
+      // flag suppresses the duplicate emit in the adopt block.
+      if (isRotation && input.transcript_path) {
+        try {
+          sendAndRecord(
+            createSessionRotated(
+              sessionId,
+              input.session_id as UUID,
+              input.transcript_path,
+              'restart',
+              previousClaudeSessionId ?? undefined,
+            ),
+          );
+          rotationAnnounced = true;
+        } catch (err) {
+          logError(`[Hooks] Failed to emit session_rotated (restart): ${errorToString(err)}`);
+        }
+      }
       claudeSessionId = null;
       mainSessionEnded = false;
       // isRotation was already computed above against the pre-adopt
@@ -301,8 +325,11 @@ export function setupHookBridge(
       // Announce the rotation as ONE atomic event so the client clears, swaps
       // the binding, and re-fetches the new transcript in a single step (#438).
       // Skip on first-init (not a rotation): that's covered by
-      // session_list_response / the queue-promotion hello_ack.
-      if (isRotation) {
+      // session_list_response / the queue-promotion hello_ack. Also skip if the
+      // restart branch already announced it (the common path); this covers the
+      // race-detector case where isRotation is true without a 'restart'
+      // classification (adoptLockFromStore got ahead of us).
+      if (isRotation && !rotationAnnounced) {
         try {
           sendAndRecord(
             createSessionRotated(

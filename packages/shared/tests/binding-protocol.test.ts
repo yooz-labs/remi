@@ -103,4 +103,10 @@ describe('binding fields on the wire (#429)', () => {
     expect(msg.reason).toBe('restart');
     expect('oldClaudeSessionId' in msg).toBe(false);
   });
+
+  test('session_rotated round-trips reason "clear"', () => {
+    const round = deserialize(serialize(createSessionRotated(RID, CID, '/x.jsonl', 'clear')));
+    if (round?.type !== 'session_rotated') throw new Error('wrong type');
+    expect(round.reason).toBe('clear');
+  });
 });
