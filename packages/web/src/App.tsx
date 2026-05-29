@@ -413,13 +413,44 @@ function App() {
         break;
       }
 
-      case 'session_reset': {
-        // Claude restarted in the same directory; clear old messages and questions
-        const resetSessionId = message.sessionId;
-        if (resetSessionId) {
-          setMessages((prev) => prev.filter((m) => m.sessionId !== resetSessionId));
-          setQuestions((prev) => clearSessionQuestions(prev, resetSessionId));
+      case 'session_rotated': {
+        // Atomic rotation (#438): /clear or /resume started a NEW transcript
+        // under a new Claude session id (NOT /compact, which keeps the same
+        // id). Only applies to a session THIS connection owns. Clear the stale
+        // messages + questions, swap the binding, and clear loadedTranscriptsRef
+        // so the new transcript re-fetches — otherwise the old chat lingers and
+        // the next answer is refused as STALE_BINDING ("not from this session").
+        const rotatedId = message.sessionId;
+        const owns = sessionsRef.current.some(
+          (s) => s.id === rotatedId && s.connectionId === connectionId,
+        );
+        if (!owns) {
+          // Usually a sibling connection's session (not ours) — expected and
+          // benign. The rare exception is a rotation arriving in the same tick
+          // as the session's hello_ack, before sessionsRef commits; log so that
+          // case is diagnosable rather than a silent dropped rotation.
+          console.warn(
+            `[App] session_rotated for ${rotatedId.slice(0, 8)} not owned by ${connectionId} (sibling, or hello_ack not yet committed)`,
+          );
+          break;
         }
+        setMessages((prev) => prev.filter((m) => m.sessionId !== rotatedId));
+        setQuestions((prev) => clearSessionQuestions(prev, rotatedId));
+        loadedTranscriptsRef.current.delete(rotatedId);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === rotatedId && s.connectionId === connectionId
+              ? {
+                  ...s,
+                  claudeSessionId: message.newClaudeSessionId as string,
+                  transcriptPath: message.newTranscriptPath,
+                }
+              : s,
+          ),
+        );
+        console.info(
+          `[App] session_rotated ${rotatedId.slice(0, 8)} on ${connectionId}: claude=${message.newClaudeSessionId.slice(0, 8)} reason=${message.reason}`,
+        );
         break;
       }
 
@@ -842,49 +873,6 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, errorMsg]);
-        break;
-      }
-
-      case 'transcript_binding_changed': {
-        // Daemon-side rotation (/clear, /compact, /resume inside the PTY).
-        // Update the session's bound (claudeSessionId, transcriptPath) so
-        // future outbound answers carry the new id and the chat header
-        // shows the updated binding.
-        //
-        // Daemon-side broadcast (registry.broadcast) fans this event to
-        // every connection on this adapter, but a connection only "owns"
-        // sessions it created. Sessions are stored with their owning
-        // connectionId, so a session belonging to a SIBLING connection
-        // (or none at all) is correctly filtered out here. We
-        // intentionally don't warn in that case: it's not an error, just
-        // an event that doesn't apply to this connection's state.
-        // Only warn if a session matches the id on THIS connection but
-        // the binding is unexpectedly absent.
-        let matched = false;
-        let sessionExistedOnThisConnection = false;
-        setSessions((prev) =>
-          prev.map((s) => {
-            if (s.id === message.sessionId && s.connectionId === connectionId) {
-              sessionExistedOnThisConnection = true;
-              matched = true;
-              return {
-                ...s,
-                claudeSessionId: message.claudeSessionId as string,
-                transcriptPath: message.transcriptPath,
-              };
-            }
-            return s;
-          }),
-        );
-        if (matched) {
-          console.info(
-            `[App] Binding rotated for session ${message.sessionId.slice(0, 8)} on ${connectionId}: claude=${(message.claudeSessionId as string).slice(0, 8)} reason=${message.reason}`,
-          );
-        } else if (sessionExistedOnThisConnection) {
-          console.warn(
-            `[App] transcript_binding_changed: session ${message.sessionId.slice(0, 8)} on ${connectionId} could not be updated; session list may be stale`,
-          );
-        }
         break;
       }
 

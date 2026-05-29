@@ -1720,7 +1720,7 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.questionCalls).toBe(0); // no escalate
   });
 
-  describe('transcript_binding_changed emission on rotation (#430)', () => {
+  describe('session_rotated emission on rotation (#430 #438)', () => {
     /**
      * Set up a hook bridge that captures every protocol message it tries
      * to send. We can't use the shared `build` helper because that swallows
@@ -1782,10 +1782,10 @@ describe('setupHookBridge', () => {
         hook_event_name: 'SessionStart',
       });
 
-      expect(sent.filter((m) => m.type === 'transcript_binding_changed')).toHaveLength(0);
+      expect(sent.filter((m) => m.type === 'session_rotated')).toHaveLength(0);
     });
 
-    test('second SessionStart with a different id emits transcript_binding_changed', () => {
+    test('second SessionStart with a different id emits one session_rotated', () => {
       const { sent } = buildWithCapture();
       sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
         handleMessage: () => {},
@@ -1805,16 +1805,18 @@ describe('setupHookBridge', () => {
         hook_event_name: 'SessionStart',
       });
 
-      const events = sent.filter((m) => m.type === 'transcript_binding_changed') as Array<{
+      const events = sent.filter((m) => m.type === 'session_rotated') as Array<{
         sessionId: string;
-        claudeSessionId: string;
-        transcriptPath: string;
+        oldClaudeSessionId?: string;
+        newClaudeSessionId: string;
+        newTranscriptPath: string;
         reason: string;
       }>;
       expect(events).toHaveLength(1);
       expect(events[0]?.sessionId).toBe(SID);
-      expect(events[0]?.claudeSessionId).toBe('claude-second-id');
-      expect(events[0]?.transcriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
+      expect(events[0]?.oldClaudeSessionId).toBe('claude-first-id');
+      expect(events[0]?.newClaudeSessionId).toBe('claude-second-id');
+      expect(events[0]?.newTranscriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
       expect(events[0]?.reason).toBe('restart');
     });
   });
