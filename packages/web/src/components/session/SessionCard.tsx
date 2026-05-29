@@ -44,7 +44,7 @@ function StatusDot({
   readonly agentStatus: AgentStatus;
 }) {
   // Connection status takes priority
-  if (connectionStatus === 'error') {
+  if (connectionStatus === 'error' || connectionStatus === 'unreachable') {
     return <span className="size-2.5 rounded-full bg-[var(--color-error)]" />;
   }
   if (connectionStatus === 'disconnected') {

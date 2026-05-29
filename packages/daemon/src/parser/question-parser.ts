@@ -1,11 +1,24 @@
 /**
- * Question Parser - Detects and parses questions from Claude Code output.
+ * Question Parser - Detects when Claude (or a subprocess it runs) is genuinely
+ * waiting for the user to choose or answer, and extracts the options.
  *
- * Claude Code can ask questions in several formats:
- * 1. Yes/No questions: "Do you want to proceed? (y/n)"
- * 2. Numbered options: "1. Option A\n2. Option B\n..."
- * 3. Free text prompts: Waiting for user input
- * 4. Permission requests: "Allow X?" with yes/no
+ * Detection is gated on REAL signals, never on text shape (epic #415: the PTY
+ * answers "is a prompt on screen right now?", not "does this text look like a
+ * question?"):
+ *
+ *  1. Claude's interactive selection box - rendered with a `❯` cursor sitting
+ *     on the active numbered option. This single renderer covers yes/no,
+ *     permission, AND multi-choice prompts, so it is the primary, highest-
+ *     confidence signal.
+ *  2. Literal `(y/n)` / `[y/n]` - emitted by SUBPROCESSES Claude runs (git,
+ *     npm, shell scripts) that prompt on the PTY. Specific; low false-positive.
+ *  3. Explicit free-text waiting markers ("enter your response", "press enter
+ *     to continue") - also from subprocesses.
+ *
+ * Deliberately NOT detected, because these were the false-positive sources the
+ * user reported: a plain numbered list Claude prints in its answer (no `❯`
+ * cursor on any line), or prose that merely ends in `?`. A list or a sentence
+ * is not a prompt.
  */
 
 import { generateId } from '@remi/shared';
@@ -32,7 +45,8 @@ export interface ParseResult {
 
 /** Patterns for detecting different question types */
 const PATTERNS = {
-  // Yes/No patterns
+  // Yes/No literals emitted by subprocesses (NOT Claude's own prompts, which
+  // render as a selection box - see PROMPT_CHROME).
   yesNo: [
     /\(y\/n\)\s*$/i,
     /\(yes\/no\)\s*$/i,
@@ -41,25 +55,14 @@ const PATTERNS = {
     /\?\s*\(y\)\s*$/i,
   ],
 
-  // Permission patterns (Claude Code specific)
-  permission: [
-    /allow\s+\w+.*\?\s*$/i,
-    /permit\s+\w+.*\?\s*$/i,
-    /do you want to\s+\w+.*\?\s*$/i,
-    /should i\s+\w+.*\?\s*$/i,
-    /proceed with\s+\w+.*\?\s*$/i,
-  ],
-
-  // Numbered option patterns: "1. Option" or "1) Option"
+  // Numbered option line: "1. Option" or "1) Option". A space after the
+  // delimiter is REQUIRED here because this drives `parseNumberedOptions`,
+  // which parses clean, space-preserved text (e.g. hook permission_suggestions
+  // or inline "(1) Yes (2) No"). The PTY selection-box path uses CHROME_OPTION
+  // below, where ANSI stripping has collapsed the spacing.
   numberedOption: /^\s*(\d+)[.)]\s+(.+)$/,
 
-  // Option with marker (arrow, bullet)
-  markedOption: /^\s*[►▸•●]\s+(.+)$/,
-
-  // Question ending
-  questionEnding: /\?\s*$/,
-
-  // Waiting indicators
+  // Explicit free-text waiting indicators (subprocess prompts).
   waiting: [
     /waiting for input/i,
     /enter your response/i,
@@ -67,6 +70,27 @@ const PATTERNS = {
     /press enter to continue/i,
   ],
 } as const;
+
+/**
+ * Claude Code selection-box chrome: the `❯` cursor sitting on a numbered
+ * option. After ANSI stripping the inter-glyph spacing collapses (e.g.
+ * "❯1.Yes"), so spaces are optional; `[^\S\n]` keeps the match on a SINGLE
+ * line so the empty input box ("❯ ") cannot pair with an unrelated numbered
+ * list line below it. This is the discriminator between a real prompt and a
+ * list Claude merely printed.
+ *
+ * Exported and reused by `status-parser`'s WAITING detection so the two cannot
+ * drift apart.
+ */
+export const PROMPT_CHROME = /❯[^\S\n]*\d+[.)]/;
+
+/**
+ * A single option line inside a selection box. Tolerates an optional `❯`
+ * cursor, optional box borders, and collapsed spacing. Group 1 = cursor (if
+ * present), group 2 = number, group 3 = label (trailing border stripped by
+ * the caller).
+ */
+const CHROME_OPTION = /^[\s│|>]*(❯)?[^\S\n]*(\d+)[.)][^\S\n]*(.*)$/;
 
 /**
  * Parse terminal output to detect questions.
@@ -82,31 +106,98 @@ export function parseQuestion(rawOutput: string): ParseResult {
     return { detected: false, confidence: 0 };
   }
 
-  // Try different parsers in order of specificity
-  const parsers: Array<() => ParseResult | null> = [
-    () => tryParseYesNo(lines),
-    () => tryParsePermission(lines),
-    () => tryParseNumbered(lines),
-    () => tryParseFreeText(lines),
-  ];
+  // 1. Claude's interactive selection box (yes/no, permission, multi-choice).
+  const chrome = parseChromePrompt(lines);
+  if (chrome) {
+    return { detected: true, type: 'numbered', confidence: 0.95, question: chrome };
+  }
 
-  for (const parser of parsers) {
-    const result = parser();
-    if (result?.detected) {
-      return result;
-    }
+  // 2. Literal y/n from a subprocess.
+  const yesNo = tryParseYesNo(lines);
+  if (yesNo?.detected) {
+    return yesNo;
+  }
+
+  // 3. Explicit free-text waiting marker from a subprocess.
+  const waiting = tryParseWaiting(lines);
+  if (waiting?.detected) {
+    return waiting;
   }
 
   return { detected: false, confidence: 0 };
 }
 
-/** Try to parse a yes/no question */
+/**
+ * Parse a Claude Code selection box. Returns a Question only when the `❯`
+ * cursor is present on one of at least two contiguous, sequentially-numbered
+ * option lines. A plain numbered list has no cursor and so returns null.
+ */
+function parseChromePrompt(lines: readonly string[]): Question | null {
+  const options: QuestionOption[] = [];
+  let cursorSeen = false;
+  let firstOptionIdx = -1;
+  let expected = 1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = CHROME_OPTION.exec(lines[i] ?? '');
+    if (!match) {
+      // A non-option line ends the contiguous block once we have started.
+      if (options.length > 0) break;
+      continue;
+    }
+
+    const num = Number.parseInt(match[2] ?? '', 10);
+    // Options must be sequential starting at 1. A stray "3." in prose before
+    // the real block is ignored; a break mid-block ends collection.
+    if (num !== expected) {
+      if (options.length > 0) break;
+      continue;
+    }
+
+    if (firstOptionIdx === -1) firstOptionIdx = i;
+    if (match[1] === '❯') cursorSeen = true;
+    const label = (match[3] ?? '').replace(/[\s│|]+$/, '').trim();
+    options.push(
+      createOption(label || `Option ${num}`, String(num), options.length === 0, false, false),
+    );
+    expected++;
+  }
+
+  // The cursor is the discriminator: a printed list has no `❯` on any option
+  // line. Require it plus at least two options.
+  if (!cursorSeen || options.length < 2) {
+    if (cursorSeen && options.length < 2) {
+      // A `❯` cursor was on screen but we could not assemble >=2 sequential
+      // options (e.g. ANSI cursor moves split the option block). Logged so a
+      // missed prompt is diagnosable from device logs rather than silent.
+      console.debug('[question-parser] ❯ cursor seen but <2 sequential options; not surfaced');
+    }
+    return null;
+  }
+
+  const questionText = firstOptionIdx > 0 ? extractPromptText(lines.slice(0, firstOptionIdx)) : '';
+  return createQuestion(questionText || 'Select an option:', options, true);
+}
+
+/**
+ * Best-effort prompt text: the nearest preceding line with letters, stripped
+ * of box-drawing chrome. The authoritative text/labels are supplied by the
+ * matching hook record when one exists (see QuestionPresenceTracker merge).
+ */
+function extractPromptText(before: readonly string[]): string {
+  for (let i = before.length - 1; i >= 0; i--) {
+    const t = (before[i] ?? '').replace(/[│|╭╮╰╯─━═]/g, '').trim();
+    if (t.length >= 3 && /[A-Za-z]/.test(t)) return t.slice(0, 200);
+  }
+  return '';
+}
+
+/** Try to parse a literal yes/no question (subprocess prompt). */
 function tryParseYesNo(lines: readonly string[]): ParseResult | null {
   const lastLine = lines[lines.length - 1]?.trim() ?? '';
 
   for (const pattern of PATTERNS.yesNo) {
     if (pattern.test(lastLine)) {
-      // Extract question text
       const questionText = extractQuestionText(lines, lastLine);
 
       return {
@@ -128,114 +219,18 @@ function tryParseYesNo(lines: readonly string[]): ParseResult | null {
   return null;
 }
 
-/** Try to parse a permission question */
-function tryParsePermission(lines: readonly string[]): ParseResult | null {
-  const lastLine = lines[lines.length - 1]?.trim() ?? '';
-
-  for (const pattern of PATTERNS.permission) {
-    if (pattern.test(lastLine)) {
-      const questionText = extractQuestionText(lines, lastLine);
-
-      return {
-        detected: true,
-        type: 'permission',
-        confidence: 0.85,
-        question: createQuestion(
-          questionText,
-          [
-            createOption('Allow', 'yes', true, true, false),
-            createOption('Deny', 'no', false, false, true),
-          ],
-          false,
-        ),
-      };
-    }
-  }
-
-  return null;
-}
-
-/** Try to parse numbered options */
-function tryParseNumbered(lines: readonly string[]): ParseResult | null {
-  const options: QuestionOption[] = [];
-  let questionText = '';
-  let firstOptionIndex = -1;
-
-  // Find numbered options
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]?.trim() ?? '';
-    const match = PATTERNS.numberedOption.exec(line);
-
-    if (match) {
-      if (firstOptionIndex === -1) {
-        firstOptionIndex = i;
-      }
-
-      // biome-ignore lint/style/noNonNullAssertion: regex capture group guaranteed by match
-      const num = match[1]!;
-      const label = match[2]?.trim() ?? '';
-
-      options.push(
-        createOption(
-          label,
-          num,
-          options.length === 0, // First option is recommended
-          false,
-          false,
-        ),
-      );
-    }
-  }
-
-  // Need at least 2 options
-  if (options.length < 2 || firstOptionIndex === -1) {
-    return null;
-  }
-
-  // Question text is everything before the options
-  if (firstOptionIndex > 0) {
-    questionText = lines.slice(0, firstOptionIndex).join(' ').trim();
-  } else {
-    questionText = 'Select an option:';
-  }
-
-  return {
-    detected: true,
-    type: 'numbered',
-    confidence: 0.8,
-    question: createQuestion(questionText, options, true),
-  };
-}
-
-/** Try to detect a free text prompt */
-function tryParseFreeText(lines: readonly string[]): ParseResult | null {
+/** Try to detect an explicit free-text waiting prompt (subprocess prompt). */
+function tryParseWaiting(lines: readonly string[]): ParseResult | null {
   const text = lines.join(' ');
 
-  // Check for waiting indicators
   for (const pattern of PATTERNS.waiting) {
     if (pattern.test(text)) {
       const questionText = lines[lines.length - 1]?.trim() ?? 'Enter your response:';
-
       return {
         detected: true,
         type: 'free_text',
         confidence: 0.6,
         question: createQuestion(questionText, [], true),
-      };
-    }
-  }
-
-  // Check for question ending in last line without options
-  const lastLine = lines[lines.length - 1]?.trim() ?? '';
-  if (PATTERNS.questionEnding.test(lastLine)) {
-    // Only if there are no numbered options nearby
-    const hasOptions = lines.some((l) => PATTERNS.numberedOption.test(l));
-    if (!hasOptions) {
-      return {
-        detected: true,
-        type: 'free_text',
-        confidence: 0.5,
-        question: createQuestion(lastLine, [], true),
       };
     }
   }
@@ -318,7 +313,9 @@ export interface NumberedParseResult {
  * - Line-per-option with paren:  "1) Yes\n2) No"
  * - Inline with parens:          "(1) Yes (2) Always (3) No"
  *
- * Returns null if fewer than 2 options are found.
+ * Operates on clean, space-preserved text (e.g. option labels carried in a
+ * hook's permission_suggestions), NOT on raw PTY output. Returns null if fewer
+ * than 2 options are found.
  */
 export function parseNumberedOptions(text: string): NumberedParseResult | null {
   if (!text || text.trim().length === 0) {
@@ -394,26 +391,15 @@ export function parseNumberedOptions(text: string): NumberedParseResult | null {
 }
 
 /**
- * Check if output likely contains a question.
- * Faster than full parsing for filtering.
+ * Fast pre-filter: does output plausibly contain a prompt the user must
+ * answer? Mirrors the gated signals in `parseQuestion` - selection-box chrome,
+ * a literal y/n, or an explicit waiting marker. A bare `?` or a numbered list
+ * deliberately does NOT qualify.
  */
 export function hasQuestionIndicator(rawOutput: string): boolean {
   const text = cleanForParsing(rawOutput);
 
-  // Quick checks
-  if (text.includes('?')) return true;
-  if (text.includes('(y/n)')) return true;
-  if (text.includes('[y/n]')) return true;
-
-  // Check for numbered options
-  const lines = splitLines(text);
-  let numberedCount = 0;
-  for (const line of lines) {
-    if (PATTERNS.numberedOption.test(line)) {
-      numberedCount++;
-      if (numberedCount >= 2) return true;
-    }
-  }
-
-  return false;
+  if (PROMPT_CHROME.test(text)) return true;
+  if (/\(y\/n\)|\[y\/n\]|\(yes\/no\)|\[yes\/no\]/i.test(text)) return true;
+  return PATTERNS.waiting.some((pattern) => pattern.test(text));
 }

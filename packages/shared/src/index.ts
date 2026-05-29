@@ -31,13 +31,16 @@ export type {
   DiscoverableSession,
 } from './types.ts';
 
-export { ok, err, isOk, isErr } from './types.ts';
+export { ok, err, isOk, isErr, MAIN_AGENT_ID } from './types.ts';
 
 // Permission/question defaults shared by daemon and client (#396)
 export {
   DEFAULT_PERMISSION_LABELS,
   QUESTION_DEDUP_WINDOW_MS,
 } from './permission-defaults.ts';
+
+// Daemon loopback port range — single source of truth for daemon + client (#435)
+export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
 
 // Protocol
 export type {
@@ -82,9 +85,8 @@ export type {
   DetachSessionMessage,
   DetachSessionAckMessage,
   RegisterDeviceTokenMessage,
-  SessionResetMessage,
   DaemonUpdateAvailableMessage,
-  TranscriptBindingChangedMessage,
+  SessionRotatedMessage,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -130,9 +132,8 @@ export {
   createDetachSession,
   createDetachSessionAck,
   createRegisterDeviceToken,
-  createSessionReset,
   createDaemonUpdateAvailable,
-  createTranscriptBindingChanged,
+  createSessionRotated,
   MessageIdTracker,
 } from './protocol.ts';
 

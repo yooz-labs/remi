@@ -23,16 +23,18 @@ export type ViewMode = 'compact' | 'chat';
 interface ChatViewProps {
   readonly session: UISession;
   readonly messages: readonly UIMessage[];
-  readonly question?: UIQuestion | null;
+  /** Pending prompts for this session, oldest first. Multiple can be in flight
+   *  (main agent + a subagent, #419/#437); rendered as a stack of cards. */
+  readonly questions?: readonly UIQuestion[];
   readonly error?: string | null;
   /** Send a regular user input message. Reply context (when set) is wrapped
    *  into a markdown blockquote inside this callback's caller (#401). */
   readonly onSend: (message: string) => void;
-  /** Answer the active question. Routes through sendAnswer; decoupled from
-   *  onSend so the bottom InputArea no longer hijacks input when a question
-   *  is pending (#401). Required: a missing handler would silently route
-   *  answers through onSend and re-create the bug. */
-  readonly onAnswer: (answer: string) => void;
+  /** Answer a specific pending question. Routes through sendAnswer keyed by the
+   *  question itself; decoupled from onSend so the bottom InputArea no longer
+   *  hijacks input when a question is pending (#401). Non-optional so the
+   *  decoupling can't be accidentally dropped back onto onSend. */
+  readonly onAnswer: (question: UIQuestion, answer: string) => void;
   /** Long-press on a message bubble fires this with the message; consumer
    *  records it as the active reply context for the session (#401). */
   readonly onReply?: (message: UIMessage) => void;
@@ -58,7 +60,7 @@ interface ChatViewProps {
 export function ChatView({
   session,
   messages,
-  question,
+  questions,
   error,
   onSend,
   onAnswer,
@@ -84,13 +86,17 @@ export function ChatView({
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
 
-  // In chat mode, show QuestionCard for active questions (not free_text with no options).
-  // In compact mode, fall back to the InputArea's built-in quick responses.
-  const showQuestionCard = viewMode === 'chat' && question && !question.answeredWith && isConnected;
-  const showAnsweredCard = viewMode === 'chat' && question?.answeredWith != null;
-
-  // Hide InputArea's quick responses when QuestionCard is handling the question
-  const inputQuestion = viewMode === 'chat' ? null : question;
+  // In chat mode, render a stack of QuestionCards (main + any subagent prompts,
+  // #437). In compact mode, fall back to the InputArea's quick responses for
+  // the primary (first) prompt. A pending card needs a live connection; an
+  // already-answered card stays briefly regardless.
+  const questionList = questions ?? [];
+  const primaryQuestion = questionList[0] ?? null;
+  const chatCards =
+    viewMode === 'chat'
+      ? questionList.filter((q) => q.answeredWith != null || isConnected)
+      : [];
+  const inputQuestion = viewMode === 'chat' ? null : primaryQuestion;
 
   // iOS edge-swipe back (#411): rightward swipe from the left edge pops
   // the chat back to the session list. Mirrors the native iOS gesture.
@@ -137,16 +143,20 @@ export function ChatView({
         showTimestamps={showTimestamps}
       />
 
-      {/* Question card in chat mode */}
-      {(showQuestionCard || showAnsweredCard) && question && (
-        <div className="border-t border-[var(--color-border)] px-3 py-2">
-          <QuestionCard question={question} onAnswer={onAnswer} />
+      {/* Question stack in chat mode (one card per concurrent prompt) */}
+      {chatCards.length > 0 && (
+        <div className="border-t border-[var(--color-border)] px-3 py-2 space-y-2">
+          {chatCards.map((q) => (
+            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
+          ))}
         </div>
       )}
 
       <InputArea
         onSend={onSend}
-        onAnswer={onAnswer}
+        onAnswer={(answer) => {
+          if (primaryQuestion) onAnswer(primaryQuestion, answer);
+        }}
         onCancel={onCancel}
         question={inputQuestion}
         isAgentBusy={isAgentBusy}

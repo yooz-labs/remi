@@ -202,7 +202,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
     return this.server.sendTo(connectionId, protocolMessage);
   }
 
-  sendQuestion(connectionId: UUID, question: Question, sessionId?: UUID): boolean {
+  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
     if (!this.server) {
       return false;
     }

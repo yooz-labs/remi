@@ -14,6 +14,11 @@ import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
+import {
+  clearSessionQuestions,
+  getSessionQuestions,
+  questionKey,
+} from '@/lib/question-collection';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
@@ -147,7 +152,9 @@ function App() {
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [questions, setQuestions] = useState<Map<UUID, UIQuestion>>(new Map());
+  // Keyed by `${sessionId}#${agentId}` so concurrent main + subagent prompts
+  // coexist; see lib/question-collection (#437).
+  const [questions, setQuestions] = useState<Map<string, UIQuestion>>(new Map());
   // Reply context per session: when set, the InputArea shows a quoted-message
   // banner and outgoing user input is wrapped in a markdown blockquote so
   // Claude Code receives the quoted context (#401).
@@ -162,6 +169,7 @@ function App() {
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
+  const questionsRef = useRef(questions);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
@@ -269,12 +277,7 @@ function App() {
             setActiveSessionId(message.sessionId);
             if (oldActive) {
               setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
-              setQuestions((prev) => {
-                if (!prev.has(oldActive)) return prev;
-                const next = new Map(prev);
-                next.delete(oldActive);
-                return next;
-              });
+              setQuestions((prev) => clearSessionQuestions(prev, oldActive));
             }
           }
         }
@@ -394,30 +397,60 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
-        // If status moved from 'waiting' to something else, the question was answered elsewhere
+        // If status moved from 'waiting', the MAIN agent's prompt resolved
+        // (auto-approved, answered in terminal, etc.). Session status tracks
+        // the main agent only (subagent events don't change it), so clear just
+        // the main-agent slot — a concurrent subagent prompt must survive.
         if (sessionData.status !== 'waiting') {
           setQuestions((prev) => {
-            if (!prev.has(sessionData.id)) return prev;
+            const key = questionKey(sessionData.id);
+            if (!prev.has(key)) return prev;
             const next = new Map(prev);
-            next.delete(sessionData.id);
+            next.delete(key);
             return next;
           });
         }
         break;
       }
 
-      case 'session_reset': {
-        // Claude restarted in the same directory; clear old messages and questions
-        const resetSessionId = message.sessionId;
-        if (resetSessionId) {
-          setMessages((prev) => prev.filter((m) => m.sessionId !== resetSessionId));
-          setQuestions((prev) => {
-            if (!prev.has(resetSessionId)) return prev;
-            const next = new Map(prev);
-            next.delete(resetSessionId);
-            return next;
-          });
+      case 'session_rotated': {
+        // Atomic rotation (#438): /clear or /resume started a NEW transcript
+        // under a new Claude session id (NOT /compact, which keeps the same
+        // id). Only applies to a session THIS connection owns. Clear the stale
+        // messages + questions, swap the binding, and clear loadedTranscriptsRef
+        // so the new transcript re-fetches — otherwise the old chat lingers and
+        // the next answer is refused as STALE_BINDING ("not from this session").
+        const rotatedId = message.sessionId;
+        const owns = sessionsRef.current.some(
+          (s) => s.id === rotatedId && s.connectionId === connectionId,
+        );
+        if (!owns) {
+          // Usually a sibling connection's session (not ours) — expected and
+          // benign. The rare exception is a rotation arriving in the same tick
+          // as the session's hello_ack, before sessionsRef commits; log so that
+          // case is diagnosable rather than a silent dropped rotation.
+          console.warn(
+            `[App] session_rotated for ${rotatedId.slice(0, 8)} not owned by ${connectionId} (sibling, or hello_ack not yet committed)`,
+          );
+          break;
         }
+        setMessages((prev) => prev.filter((m) => m.sessionId !== rotatedId));
+        setQuestions((prev) => clearSessionQuestions(prev, rotatedId));
+        loadedTranscriptsRef.current.delete(rotatedId);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === rotatedId && s.connectionId === connectionId
+              ? {
+                  ...s,
+                  claudeSessionId: message.newClaudeSessionId as string,
+                  transcriptPath: message.newTranscriptPath,
+                }
+              : s,
+          ),
+        );
+        console.info(
+          `[App] session_rotated ${rotatedId.slice(0, 8)} on ${connectionId}: claude=${message.newClaudeSessionId.slice(0, 8)} reason=${message.reason}`,
+        );
         break;
       }
 
@@ -454,8 +487,15 @@ function App() {
           isRecommended: o.isRecommended || undefined,
         }));
 
-        // Use sessionId from the message when available; fall back to active session
-        const questionSessionId = message.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
+        // sessionId is mandatory on the wire now (#437); never fall back to
+        // the active session (that cross-contaminated when another session or
+        // agent had a prompt). Drop a malformed message rather than misroute.
+        const questionSessionId = message.sessionId;
+        if (!questionSessionId) {
+          console.warn('[App] Dropping question with no sessionId');
+          break;
+        }
+        const questionAgentId = q.agentId;
         const uiQuestion: UIQuestion = {
           id: q.id,
           sessionId: questionSessionId,
@@ -464,21 +504,22 @@ function App() {
           options: q.options.length > 0 ? q.options.map((o) => o.label) : undefined,
           structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
           timestamp: new Date().toISOString(),
+          agentId: questionAgentId,
         };
+        const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {
-          // Richer-wins guard (#396). The daemon emits two questions for
-          // one prompt cycle (HookEventBridge default 3-set + PTY-parsed
-          // multi-choice with full sentences); their ids differ so the
-          // session-keyed map otherwise lets the second arrival overwrite
-          // the first regardless of richness. Keeping the richer pending
-          // question here prevents the "multi-choice flickers, then
-          // collapses to Yes/Yes-always/No" symptom users reported.
-          const existing = prev.get(questionSessionId);
+          // Richer-wins guard (#396), scoped to this agent's slot. The daemon
+          // emits two questions for one prompt cycle (HookEventBridge default
+          // 3-set + PTY-parsed multi-choice with full sentences); their ids
+          // differ so a same-key second arrival would otherwise overwrite the
+          // first regardless of richness. A DIFFERENT agent's prompt has a
+          // different key and so coexists rather than clobbering (#419/#425).
+          const existing = prev.get(key);
           if (existing && shouldKeepExisting(existing, uiQuestion)) {
             return prev;
           }
           const next = new Map(prev);
-          next.set(questionSessionId, uiQuestion);
+          next.set(key, uiQuestion);
           return next;
         });
 
@@ -783,13 +824,19 @@ function App() {
             // Without this the QuestionCard stays collapsed showing
             // the rejected answer and the user has no retry path.
             setQuestions((prev) => {
-              const stale = prev.get(refusedSessionId);
-              if (!stale || stale.answeredWith === undefined) return prev;
+              // Un-answer any optimistically-collapsed question for the refused
+              // session (across agents) so the user can retry (#434 review).
+              let changed = false;
               const next = new Map(prev);
-              const restored = { ...stale };
-              delete (restored as { answeredWith?: string }).answeredWith;
-              next.set(refusedSessionId, restored);
-              return next;
+              for (const [key, q] of prev) {
+                if (q.sessionId === refusedSessionId && q.answeredWith !== undefined) {
+                  const restored = { ...q };
+                  delete (restored as { answeredWith?: string }).answeredWith;
+                  next.set(key, restored);
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
             });
           }
           console.warn(
@@ -829,49 +876,6 @@ function App() {
         break;
       }
 
-      case 'transcript_binding_changed': {
-        // Daemon-side rotation (/clear, /compact, /resume inside the PTY).
-        // Update the session's bound (claudeSessionId, transcriptPath) so
-        // future outbound answers carry the new id and the chat header
-        // shows the updated binding.
-        //
-        // Daemon-side broadcast (registry.broadcast) fans this event to
-        // every connection on this adapter, but a connection only "owns"
-        // sessions it created. Sessions are stored with their owning
-        // connectionId, so a session belonging to a SIBLING connection
-        // (or none at all) is correctly filtered out here. We
-        // intentionally don't warn in that case: it's not an error, just
-        // an event that doesn't apply to this connection's state.
-        // Only warn if a session matches the id on THIS connection but
-        // the binding is unexpectedly absent.
-        let matched = false;
-        let sessionExistedOnThisConnection = false;
-        setSessions((prev) =>
-          prev.map((s) => {
-            if (s.id === message.sessionId && s.connectionId === connectionId) {
-              sessionExistedOnThisConnection = true;
-              matched = true;
-              return {
-                ...s,
-                claudeSessionId: message.claudeSessionId as string,
-                transcriptPath: message.transcriptPath,
-              };
-            }
-            return s;
-          }),
-        );
-        if (matched) {
-          console.info(
-            `[App] Binding rotated for session ${message.sessionId.slice(0, 8)} on ${connectionId}: claude=${(message.claudeSessionId as string).slice(0, 8)} reason=${message.reason}`,
-          );
-        } else if (sessionExistedOnThisConnection) {
-          console.warn(
-            `[App] transcript_binding_changed: session ${message.sessionId.slice(0, 8)} on ${connectionId} could not be updated; session list may be stale`,
-          );
-        }
-        break;
-      }
-
       default:
         console.debug(`[App] Unhandled message type: ${(message as { type: string }).type}`);
         break;
@@ -891,6 +895,10 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
+    questionsRef.current = questions;
+  }, [questions]);
+
+  useEffect(() => {
     replyContextsRef.current = replyContexts;
   }, [replyContexts]);
 
@@ -899,6 +907,7 @@ function App() {
     connections,
     connectDirect,
     disconnect: disconnectConnection,
+    reconnect: reconnectConnection,
     disconnectAll,
     sendInput,
     sendAnswer,
@@ -1210,7 +1219,9 @@ function App() {
       })()
     : undefined;
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
-  const sessionQuestion = activeSessionId ? (questions.get(activeSessionId) ?? null) : null;
+  // All pending prompts for the active session (main + any subagents), oldest
+  // first; rendered as a stack of cards (#437).
+  const sessionQuestions = activeSessionId ? getSessionQuestions(questions, activeSessionId) : [];
 
   const handleSelectSession = useCallback(
     (id: UUID) => {
@@ -1246,13 +1257,15 @@ function App() {
   // (#401): the user can ask the agent a fresh question without it
   // being treated as an answer to a stale prompt.
   const handleAnswer = useCallback(
-    (content: string) => {
-      if (!activeSessionId || !sessionQuestion) return;
-      const connId = getActiveConnectionId();
+    (question: UIQuestion, content: string) => {
+      const sid = question.sessionId;
+      // Route by the question's OWN session connection (in a multi-daemon
+      // stack it may differ from the active session), not "whatever is active".
+      const connId = sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
       if (!connId) {
         const systemMsg: UIMessage = {
           id: generateId(),
-          sessionId: activeSessionId,
+          sessionId: sid,
           sender: 'system',
           content: 'Cannot send: not connected to daemon',
           timestamp: new Date().toISOString(),
@@ -1264,19 +1277,14 @@ function App() {
       }
 
       // Carry claudeSessionId so the daemon can refuse if its binding
-      // has rotated since the question fired (#430).
-      const activeBinding = sessions.find((s) => s.id === activeSessionId)?.claudeSessionId;
-      const sent = sendAnswer(
-        connId,
-        activeSessionId,
-        sessionQuestion.id,
-        content,
-        activeBinding as UUID | undefined,
-      );
+      // has rotated since the question fired (#430). Route by the question's
+      // OWN session/id so answering one of several stacked prompts is precise.
+      const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
+      const sent = sendAnswer(connId, sid, question.id, content, binding as UUID | undefined);
       if (!sent) {
         const failMsg: UIMessage = {
           id: generateId(),
-          sessionId: activeSessionId,
+          sessionId: sid,
           connectionId: connId,
           sender: 'system',
           content: 'Failed to send answer: connection unavailable. Try again.',
@@ -1287,26 +1295,36 @@ function App() {
         setMessages((prev) => [...prev, failMsg]);
         return;
       }
-      // Mark question as answered (card shows collapsed state briefly)
+      const key = questionKey(sid, question.agentId);
+      // Mark this question answered (card shows collapsed state briefly), then
+      // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {
+        const existing = prev.get(key);
+        if (!existing) return prev;
         const next = new Map(prev);
-        next.set(activeSessionId, { ...sessionQuestion, answeredWith: content });
+        next.set(key, { ...existing, answeredWith: content });
         return next;
       });
       setTimeout(() => {
         setQuestions((prev) => {
-          if (!prev.has(activeSessionId)) return prev;
+          if (!prev.has(key)) return prev;
           const next = new Map(prev);
-          next.delete(activeSessionId);
+          next.delete(key);
           return next;
         });
       }, 1500);
+      // Keep the session flagged while OTHER prompts remain unanswered. Read
+      // the ref (latest committed map) rather than the closure so the badge
+      // can't get stuck after the dep snapshot goes stale.
+      const stillPending = getSessionQuestions(questionsRef.current, sid).some(
+        (q) => q.id !== question.id && q.answeredWith === undefined,
+      );
       setSessions((prev) =>
-        prev.map((s) => (s.id === activeSessionId ? { ...s, questionPending: false } : s)),
+        prev.map((s) => (s.id === sid ? { ...s, questionPending: stillPending } : s)),
       );
       const userMsg: UIMessage = {
         id: generateId(),
-        sessionId: activeSessionId,
+        sessionId: sid,
         sender: 'user',
         content,
         timestamp: new Date().toISOString(),
@@ -1316,7 +1334,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [activeSessionId, getActiveConnectionId, sendAnswer, sessionQuestion, sessions],
+    [getActiveConnectionId, sendAnswer],
   );
 
   // Send a regular user input message, optionally with a reply context.
@@ -1610,6 +1628,7 @@ function App() {
     if (hasAnyConnected) return 'connected' as const;
     if (isAnyConnecting) return 'connecting' as const;
     if (connections.some((c) => c.status === 'reconnecting')) return 'reconnecting' as const;
+    if (connections.some((c) => c.status === 'unreachable')) return 'unreachable' as const;
     if (connections.some((c) => c.status === 'error')) return 'error' as const;
     return 'disconnected' as const;
   })();
@@ -1626,6 +1645,7 @@ function App() {
       onConnect={() => setShowConnectModal(true)}
       onAddConnection={() => setShowConnectModal(true)}
       onDisconnect={handleDisconnect}
+      onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
       onNewSession={handleNewSession}
       onSettings={() => setShowSettings(true)}
@@ -1645,7 +1665,7 @@ function App() {
     <ChatView
       session={activeSession}
       messages={sessionMessages}
-      question={sessionQuestion}
+      questions={sessionQuestions}
       error={error}
       onSend={handleSend}
       onAnswer={handleAnswer}

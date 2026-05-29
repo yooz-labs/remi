@@ -138,7 +138,7 @@ export function createMessageApiForSession(
         ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
       };
       sendAndRecord(msg);
-      sessionRegistry.updateQuestion(questionSessionId, question);
+      sessionRegistry.addQuestion(questionSessionId, question);
 
       // Push only when no client is attached; attached clients see it in-app.
       const sessionForPush = sessionRegistry.getSession(questionSessionId);

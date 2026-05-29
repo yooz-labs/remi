@@ -144,6 +144,7 @@ export class HookEventBridge {
         options: [...DEFAULT_PERMISSION_OPTIONS],
         allowsFreeText: false,
         isAnswered: false,
+        agentId: input.agent_id,
       };
       this.events.onQuestion(question);
       this.events.onStatusChange('waiting');
@@ -225,6 +226,7 @@ export class HookEventBridge {
       options,
       allowsFreeText: false,
       isAnswered: false,
+      agentId: input.agent_id,
     });
     this.events.onStatusChange('waiting');
   }
@@ -255,6 +257,7 @@ export class HookEventBridge {
       ],
       allowsFreeText: false,
       isAnswered: false,
+      agentId: input.agent_id,
     };
     this.events.onQuestion(question);
     this.events.onStatusChange('waiting');

@@ -294,27 +294,5 @@ describe('Type structures', () => {
       expect(session.isActive).toBe(false);
       expect(session.endedAt).toBe('2026-01-10T01:00:00.000Z');
     });
-
-    test('session can have pending question', () => {
-      const question: Question = {
-        id: 'q-123',
-        text: 'Proceed?',
-        options: [],
-        allowsFreeText: true,
-        isAnswered: false,
-      };
-
-      const session: Session = {
-        id: 'session-123',
-        name: 'claude-code-project',
-        startedAt: '2026-01-10T00:00:00.000Z',
-        status: 'waiting',
-        isActive: true,
-        pendingQuestion: question,
-      };
-
-      expect(session.pendingQuestion?.id).toBe('q-123');
-      expect(session.status).toBe('waiting');
-    });
   });
 });

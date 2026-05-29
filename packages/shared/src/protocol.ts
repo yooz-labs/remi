@@ -99,9 +99,8 @@ export type ProtocolMessage =
   | DetachSessionMessage
   | DetachSessionAckMessage
   | RegisterDeviceTokenMessage
-  | SessionResetMessage
   | DaemonUpdateAvailableMessage
-  | TranscriptBindingChangedMessage;
+  | SessionRotatedMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -215,8 +214,11 @@ export interface QuestionMessage {
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly question: Question;
-  /** Session that owns this question */
-  readonly sessionId?: UUID | undefined;
+  /** Remi session that owns this question. Mandatory (#437): the client routes
+   *  and keys questions by it and must never fall back to "the active session",
+   *  which cross-contaminates when multiple sessions/agents have prompts. The
+   *  owning agent is carried inside `question.agentId`. */
+  readonly sessionId: UUID;
   /**
    * Claude Code session UUID the question came from. The answer carrying
    * this id back lets the daemon reject the write if the binding has
@@ -333,23 +335,32 @@ export interface SessionListResponseMessage {
 }
 
 /**
- * Notifies the client that the PTY's bound Claude session has changed,
- * e.g. user ran /resume or /clear inside the PTY (#429). Clients should
- * rekey UI state by the new (sessionId, claudeSessionId) tuple and update
- * any displayed binding indicator.
+ * One atomic rotation event (#438): the PTY's bound Claude session rotated —
+ * the user ran `/clear` or `/resume` inside the PTY, starting a NEW transcript
+ * under a new Claude session id. (`/compact` does NOT rotate — it keeps the
+ * same id and appends in place — so it never produces this message.)
+ *
+ * Replaces the former non-atomic pair `session_reset` + `transcript_binding_
+ * changed`. On receipt, a client that owns this session clears its messages
+ * AND all pending questions for the session (answers to the old session's
+ * prompts would be refused as STALE_BINDING anyway), swaps the binding to the
+ * new (claudeSessionId, transcriptPath), and re-fetches the new transcript so
+ * the next answer carries the new id.
  */
-export interface TranscriptBindingChangedMessage {
-  readonly type: 'transcript_binding_changed';
+export interface SessionRotatedMessage {
+  readonly type: 'session_rotated';
   readonly id: UUID;
   readonly timestamp: Timestamp;
-  /** Remi session id whose binding rotated. */
+  /** Remi session id whose Claude binding rotated (unchanged across rotation). */
   readonly sessionId: UUID;
+  /** Claude session id before the rotation, if known. */
+  readonly oldClaudeSessionId?: UUID | undefined;
   /** The new Claude session id Claude is now writing under. */
-  readonly claudeSessionId: UUID;
+  readonly newClaudeSessionId: UUID;
   /** Absolute path to the new transcript .jsonl. */
-  readonly transcriptPath: string;
-  /** Diagnostic: 'restart' for /clear|/compact, 'resume' for /resume, 'unknown' otherwise. */
-  readonly reason: 'restart' | 'resume' | 'unknown';
+  readonly newTranscriptPath: string;
+  /** Diagnostic: what triggered the rotation. */
+  readonly reason: 'clear' | 'resume' | 'restart';
 }
 
 /** Token usage information from a transcript entry */
@@ -615,17 +626,6 @@ export interface DaemonUpdateAvailableMessage {
   readonly binaryPath: string;
 }
 
-/** Notification that a Claude session restarted within the same Remi session */
-export interface SessionResetMessage {
-  readonly type: 'session_reset';
-  readonly id: UUID;
-  readonly timestamp: Timestamp;
-  /** Remi session ID that was reset */
-  readonly sessionId: UUID;
-  /** Reason for the reset */
-  readonly reason: string;
-}
-
 /** A recent project directory aggregated from session history */
 export interface RecentDirectory {
   /** Absolute path */
@@ -735,8 +735,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'detach_session_ack',
     'register_device_token',
     'daemon_update_available',
-    'session_reset',
-    'transcript_binding_changed',
+    'session_rotated',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -934,7 +933,7 @@ export function createError(
  */
 export function createQuestion(
   question: Question,
-  sessionId?: UUID,
+  sessionId: UUID,
   claudeSessionId?: UUID,
 ): QuestionMessage {
   return {
@@ -942,7 +941,7 @@ export function createQuestion(
     id: generateId(),
     timestamp: now(),
     question,
-    ...(sessionId !== undefined && { sessionId }),
+    sessionId,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
   };
 }
@@ -1408,35 +1407,27 @@ export function createDaemonUpdateAvailable(
 }
 
 /**
- * Create a session reset notification (Claude restarted within the same Remi session).
+ * Create an atomic session-rotated notification (#438): the PTY's bound Claude
+ * session rotated to a new transcript (`/clear` or `/resume`). Replaces the
+ * former session_reset + transcript_binding_changed pair. `reason` is `'clear'`
+ * / `'resume'` when the triggering command is known; the hook-detection path
+ * currently can't distinguish them and passes `'restart'`.
  */
-export function createSessionReset(sessionId: UUID, reason: string): SessionResetMessage {
-  return {
-    type: 'session_reset',
-    id: generateId(),
-    timestamp: now(),
-    sessionId,
-    reason,
-  };
-}
-
-/**
- * Create a transcript-binding-changed notification (PTY's bound Claude
- * session UUID rotated, e.g. /resume, /clear).
- */
-export function createTranscriptBindingChanged(
+export function createSessionRotated(
   sessionId: UUID,
-  claudeSessionId: UUID,
-  transcriptPath: string,
-  reason: 'restart' | 'resume' | 'unknown' = 'unknown',
-): TranscriptBindingChangedMessage {
+  newClaudeSessionId: UUID,
+  newTranscriptPath: string,
+  reason: 'clear' | 'resume' | 'restart' = 'restart',
+  oldClaudeSessionId?: UUID,
+): SessionRotatedMessage {
   return {
-    type: 'transcript_binding_changed',
+    type: 'session_rotated',
     id: generateId(),
     timestamp: now(),
     sessionId,
-    claudeSessionId,
-    transcriptPath,
+    ...(oldClaudeSessionId !== undefined && { oldClaudeSessionId }),
+    newClaudeSessionId,
+    newTranscriptPath,
     reason,
   };
 }

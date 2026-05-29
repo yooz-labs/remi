@@ -21,6 +21,8 @@
  * ship a DOM/component test runner. Issue #278.
  */
 
+import type { ConnectionStatus } from '@/types';
+
 interface SessionRef {
   readonly id: string;
   readonly connectionId?: string | null;
@@ -29,13 +31,9 @@ interface SessionRef {
 interface ConnectionRef {
   readonly connectionId: string;
   readonly url: string;
-  readonly status:
-    | 'connected'
-    | 'connecting'
-    | 'authenticating'
-    | 'reconnecting'
-    | 'disconnected'
-    | 'error';
+  // Canonical union (type-only import is erased at runtime, so this keeps the
+  // module's pure/testable shape while preventing drift from ConnectionStatus).
+  readonly status: ConnectionStatus;
 }
 
 export interface ResolvedAnswerTarget {

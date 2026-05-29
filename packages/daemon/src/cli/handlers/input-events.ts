@@ -146,28 +146,31 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
       // Drop stale answers. APNS tokens persist across disconnect (#286), so a
       // delayed lock-screen tap can deliver an answer for a question that has
-      // since been auto-approved or replaced. Without this guard, the digit
-      // would inject into whatever Claude prompt is currently live. Surface
-      // the drop to the client so the iOS user gets a "not delivered" signal
-      // instead of silent failure.
-      const active = session.currentQuestion;
-      if (active === null || active.id !== questionId) {
+      // since been auto-approved or resolved. Membership in the pending set
+      // (not equality with a single slot) is the check, so answering one of
+      // several concurrent prompts (main + subagent, #419) never invalidates
+      // the others. Surface the drop so the iOS user gets a "not delivered"
+      // signal instead of silent failure.
+      const active = sessionRegistry.getQuestion(session.sessionId, questionId);
+      if (active === null) {
+        const pendingIds = [...session.currentQuestions.keys()];
         log(
-          `Ignoring stale answer: questionId ${questionId} does not match active ${active?.id ?? 'none'}`,
+          `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]`,
         );
         send(
           connectionId,
           createError('STALE_ANSWER', 'The question this answer was for is no longer active', {
             sessionId,
             questionId,
-            activeQuestionId: active?.id ?? null,
+            pendingQuestionIds: pendingIds,
           }),
         );
         return;
       }
 
       await session.pty.submitInput(answer);
-      sessionRegistry.updateQuestion(session.sessionId, null);
+      // Remove only the answered question; sibling prompts remain answerable.
+      sessionRegistry.removeQuestion(session.sessionId, questionId);
     },
 
     onBulletExpandRequest: (

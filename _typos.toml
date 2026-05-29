@@ -1,0 +1,8 @@
+# typos (crate-ci/typos) configuration.
+#
+# Exclude captured-PTY test fixtures: these are real Claude Code terminal
+# output saved verbatim for no-mock parser tests. ANSI stripping collapses the
+# spacing (e.g. "Output ONLY a..." becomes "OutputONLYa..."), which the spell
+# checker mis-tokenizes (e.g. "ONL"). They are data, not prose.
+[files]
+extend-exclude = ["packages/daemon/tests/parser/fixtures/"]

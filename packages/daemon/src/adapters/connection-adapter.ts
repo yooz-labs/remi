@@ -169,7 +169,7 @@ export interface ConnectionAdapter {
    * The adapter is responsible for formatting appropriately
    * (e.g., inline keyboard for Telegram).
    */
-  sendQuestion(connectionId: UUID, question: Question, sessionId?: UUID): boolean;
+  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean;
 
   /**
    * Send a status update to a specific connection.
