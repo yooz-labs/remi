@@ -8,7 +8,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { errorToString } from '@remi/shared';
+import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
@@ -62,8 +62,8 @@ export interface RemiConfig {
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
   daemon: {
-    base_port: 18765,
-    port_range: 20,
+    base_port: DAEMON_BASE_PORT,
+    port_range: DAEMON_PORT_RANGE,
     bind: '0.0.0.0',
     orphan_timeout: 300,
   },

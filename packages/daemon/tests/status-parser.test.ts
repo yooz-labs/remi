@@ -163,6 +163,18 @@ describe('parseStatus()', () => {
       const result = parseStatus('what would you like me to do');
       expect(result.status).toBe('waiting');
     });
+
+    test('detects selection-box chrome as waiting', () => {
+      // The ❯ cursor on a numbered option is the new chrome signal, kept in
+      // sync with question-parser's PROMPT_CHROME.
+      expect(parseStatus('❯ 1. Yes\n  2. No').status).toBe('waiting');
+    });
+
+    test('does NOT treat a bare trailing question mark as waiting', () => {
+      // Regression guard for the removed /\?\s*$/ pattern (the false-positive source).
+      expect(parseStatus('Are you sure?').status).not.toBe('waiting');
+      expect(parseStatus('Is this a question?').status).not.toBe('waiting');
+    });
   });
 
   describe('Idle state', () => {

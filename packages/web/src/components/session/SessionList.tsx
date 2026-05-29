@@ -32,6 +32,8 @@ interface SessionListProps {
   readonly onConnect: () => void;
   readonly onAddConnection?: () => void;
   readonly onDisconnect: (connectionId: ConnectionId) => void;
+  /** Retry a connection that became 'unreachable' (re-runs port discovery). */
+  readonly onReconnect?: (connectionId: ConnectionId) => void;
   readonly onDisconnectAll: () => void;
   readonly onNewSession?: (directory?: string) => void;
   readonly onSettings?: () => void;
@@ -47,6 +49,7 @@ export function SessionList({
   resumingSessionId,
   onConnect,
   onDisconnect,
+  onReconnect,
   onDisconnectAll,
   onNewSession,
   onSettings,
@@ -115,30 +118,48 @@ export function SessionList({
 
       {/* Connection status banners */}
       {hasConnections &&
-        connections.some((c) => c.status === 'error' || c.status === 'reconnecting') && (
+        connections.some(
+          (c) => c.status === 'error' || c.status === 'reconnecting' || c.status === 'unreachable',
+        ) && (
           <div className="border-b border-[var(--color-border)] px-3 py-2 space-y-1">
             {connections
-              .filter((c) => c.status === 'error' || c.status === 'reconnecting')
+              .filter(
+                (c) =>
+                  c.status === 'error' ||
+                  c.status === 'reconnecting' ||
+                  c.status === 'unreachable',
+              )
               .map((c) => (
                 <div
                   key={c.connectionId}
                   className={clsx(
                     'flex items-center gap-2 rounded-lg px-3 py-2 text-xs',
-                    c.status === 'error'
-                      ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]'
-                      : 'bg-[var(--color-warning,#f59e0b)]/10 text-[var(--color-warning,#f59e0b)]',
+                    c.status === 'reconnecting'
+                      ? 'bg-[var(--color-warning,#f59e0b)]/10 text-[var(--color-warning,#f59e0b)]'
+                      : 'bg-[var(--color-error)]/10 text-[var(--color-error)]',
                   )}
                 >
-                  {c.status === 'error' ? (
-                    <AlertTriangle className="size-3.5 shrink-0" />
-                  ) : (
+                  {c.status === 'reconnecting' ? (
                     <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <AlertTriangle className="size-3.5 shrink-0" />
                   )}
                   <span className="truncate">
                     {c.status === 'reconnecting'
                       ? `Reconnecting to ${c.connectionId}...`
-                      : c.error || `Connection error: ${c.connectionId}`}
+                      : c.status === 'unreachable'
+                        ? `No daemon found at ${c.connectionId.replace(/:\d+$/, '')}`
+                        : c.error || `Connection error: ${c.connectionId}`}
                   </span>
+                  {c.status === 'unreachable' && onReconnect && (
+                    <button
+                      type="button"
+                      onClick={() => onReconnect(c.connectionId)}
+                      className="ml-auto shrink-0 rounded-md bg-[var(--color-error)]/15 px-2 py-0.5 font-medium hover:bg-[var(--color-error)]/25"
+                    >
+                      Retry
+                    </button>
+                  )}
                 </div>
               ))}
           </div>

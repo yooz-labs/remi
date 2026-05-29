@@ -19,7 +19,11 @@ export type ConnectionStatus =
   | 'authenticating'
   | 'connected'
   | 'reconnecting'
-  | 'error';
+  | 'error'
+  // Terminal: auto-reconnect exhausted AND port rediscovery found no daemon on
+  // the host. Distinct from 'disconnected' (idle) and 'error' (transient). The
+  // UI offers a Retry that re-runs discovery. (#435 Phase 1 / P3)
+  | 'unreachable';
 
 /** Unique identifier for a daemon connection (e.g. "localhost:18765") */
 export type ConnectionId = string & { readonly __brand: 'ConnectionId' };

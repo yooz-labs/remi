@@ -74,6 +74,7 @@ function ConnectionIndicator({
     case 'reconnecting':
       return <Loader2 className="size-4 animate-spin text-[var(--color-warning)]" />;
     case 'error':
+    case 'unreachable':
       return <AlertCircle className="size-4 text-[var(--color-error)]" />;
     case 'disconnected':
     default:

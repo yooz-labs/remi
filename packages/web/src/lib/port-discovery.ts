@@ -17,13 +17,14 @@
  * `DEFAULT_BASE_PORT` and `DEFAULT_PORT_RANGE` below.
  */
 
+import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from '@remi/shared';
 import { authInfoUrl } from './auth-probe';
 
-/** Must match `DaemonConfig.base_port` in `packages/daemon/src/config/config.ts`. */
-export const DEFAULT_BASE_PORT = 18765 as const;
+/** Daemon base port — single source of truth in `@remi/shared/daemon-ports`. */
+export const DEFAULT_BASE_PORT = DAEMON_BASE_PORT;
 
-/** Must match `DaemonConfig.port_range` in `packages/daemon/src/config/config.ts`. */
-export const DEFAULT_PORT_RANGE = 20 as const;
+/** Daemon port range — single source of truth in `@remi/shared/daemon-ports`. */
+export const DEFAULT_PORT_RANGE = DAEMON_PORT_RANGE;
 
 /**
  * Per-port probe timeout in milliseconds.
@@ -153,6 +154,50 @@ export async function discoverDaemonPort(
         if (--pending === 0) finish(null);
       });
     }
+  });
+}
+
+/**
+ * Resolve the live daemon port for a host. Tries `hintPort` first (the last
+ * known good port — the common case after a transient disconnect), then falls
+ * back to a full range scan via `discoverDaemonPort`. Returns null if nothing
+ * answers.
+ *
+ * This is the single entry point every connection-establishment path (manual
+ * connect, restore from localStorage, reconnect escalation) should use, so a
+ * daemon that closed on its old port or moved to a sibling heals instead of
+ * dead-ending on a frozen URL.
+ */
+export async function resolveDaemonPort(
+  hostname: string,
+  hintPort?: number | null,
+  options: {
+    basePort?: number;
+    portRange?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<number | null> {
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  if (options.signal?.aborted) return null;
+
+  if (typeof hintPort === 'number' && Number.isInteger(hintPort) && hintPort >= 1 && hintPort <= 65535) {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const hit = await probePort(hostname, hintPort, timeoutMs, controller.signal);
+      if (hit !== null) return hit;
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  return discoverDaemonPort(hostname, {
+    basePort: options.basePort,
+    portRange: options.portRange,
+    timeoutMs,
+    signal: options.signal,
   });
 }
 

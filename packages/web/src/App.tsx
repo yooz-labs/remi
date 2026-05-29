@@ -899,6 +899,7 @@ function App() {
     connections,
     connectDirect,
     disconnect: disconnectConnection,
+    reconnect: reconnectConnection,
     disconnectAll,
     sendInput,
     sendAnswer,
@@ -1610,6 +1611,7 @@ function App() {
     if (hasAnyConnected) return 'connected' as const;
     if (isAnyConnecting) return 'connecting' as const;
     if (connections.some((c) => c.status === 'reconnecting')) return 'reconnecting' as const;
+    if (connections.some((c) => c.status === 'unreachable')) return 'unreachable' as const;
     if (connections.some((c) => c.status === 'error')) return 'error' as const;
     return 'disconnected' as const;
   })();
@@ -1626,6 +1628,7 @@ function App() {
       onConnect={() => setShowConnectModal(true)}
       onAddConnection={() => setShowConnectModal(true)}
       onDisconnect={handleDisconnect}
+      onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
       onNewSession={handleNewSession}
       onSettings={() => setShowSettings(true)}

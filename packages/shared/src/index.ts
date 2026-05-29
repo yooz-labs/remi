@@ -39,6 +39,9 @@ export {
   QUESTION_DEDUP_WINDOW_MS,
 } from './permission-defaults.ts';
 
+// Daemon loopback port range — single source of truth for daemon + client (#435)
+export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
+
 // Protocol
 export type {
   ProtocolMessage,
