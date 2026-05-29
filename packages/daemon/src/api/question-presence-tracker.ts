@@ -20,9 +20,13 @@
  *     user's terminal RIGHT NOW. Push immediately, merging hook metadata
  *     if a pending hook record matches (real option labels, agent_id, etc.).
  *   - Status transitions OUT of `'waiting'` (`onStatusChange`) clear any
- *     pending hook record. The user advanced past the prompt — auto-
+ *     pending hook records. The user advanced past the prompt — auto-
  *     approve handled it silently, or the subagent stayed in the
  *     background, or the user answered in-terminal. No push needed.
+ *
+ * Pending hook records are keyed by agent (`agentId` or `'main'`), so two
+ * concurrent agents (main + a subagent, #419) keep separate records and a
+ * later subagent hook cannot clobber the main agent's option labels (#425).
  *
  * Upstream context (anthropics/claude-code #23983): subagent / Agent-Teams
  * permission requests do not fire PermissionRequest hooks at all. The PTY
@@ -30,6 +34,7 @@
  * record) is therefore a first-class case here, not a fallback.
  */
 
+import { MAIN_AGENT_ID } from '@remi/shared';
 import type { AgentStatus, Question } from '@remi/shared';
 
 /**
@@ -40,14 +45,18 @@ import type { AgentStatus, Question } from '@remi/shared';
  */
 export type PushQuestion = (question: Question) => void;
 
+/** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
+function agentKey(question: Question): string {
+  return question.agentId ?? MAIN_AGENT_ID;
+}
+
 export class QuestionPresenceTracker {
-  /** The last hook-derived question we have not yet paired with PTY
-   *  confirmation or cleared via status. At most one is held at a time:
-   *  if a second hook arrives before the first paired/cleared, the newer
-   *  one wins — Claude only renders one prompt on screen at a time, and
-   *  the second hook is the more accurate description of the prompt the
-   *  user will see. */
-  private pending: Question | null = null;
+  /** Hook-derived questions not yet paired with PTY confirmation or cleared,
+   *  keyed by agent. At most one per agent: a second hook for the SAME agent
+   *  (e.g. PermissionRequest then Notification for one prompt) replaces the
+   *  first, but different agents keep separate entries. Insertion order is
+   *  preserved so the PTY-pairing fallback can pick the most recent. */
+  private pending = new Map<string, Question>();
 
   /** True while a permission prompt is on the main PTY. Set by
    *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
@@ -63,54 +72,69 @@ export class QuestionPresenceTracker {
 
   /**
    * Hook fired (PermissionRequest or Notification(permission_prompt)).
-   * Stash the question; do NOT push yet. Push happens when PTY confirms
-   * the prompt is visible, or never if status moves past 'waiting' first.
+   * Stash the question by agent; do NOT push yet. Push happens when PTY
+   * confirms the prompt is visible, or never if status moves past 'waiting'
+   * first.
    *
-   * Replacement policy: the newer hook wins. This is correct for the
-   * same-prompt double-fire case (PermissionRequest then Notification
-   * for the same prompt) but is a known weak spot for concurrent
-   * subagents (phase 4, #419) — if two different agents have prompts
-   * in flight, the second silently overwrites the first. The PTY
-   * presence gate still prevents the wrong push from firing for an
-   * off-screen agent; what is lost is option-label accuracy when the
-   * on-screen agent's hook arrived earlier. An agent_id-aware tracker
-   * would fix this structurally; tracked as a follow-up.
+   * Replacement policy: per agent, the newer hook wins (correct for the
+   * same-prompt double-fire: PermissionRequest then Notification). Different
+   * agents no longer overwrite each other (#425).
    */
   recordPendingHook(question: Question): void {
-    if (this.pending !== null) {
+    const key = agentKey(question);
+    if (this.pending.has(key)) {
       console.debug(
-        `[QuestionPresenceTracker] Overwriting pending hook (old="${this.pending.text.slice(0, 60)}", new="${question.text.slice(0, 60)}")`,
+        `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${this.pending.get(key)?.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
       );
     }
-    this.pending = question;
+    // Re-insert so this agent's entry is the most recent (matters for the
+    // PTY-pairing fallback below).
+    this.pending.delete(key);
+    this.pending.set(key, question);
   }
 
   /**
-   * PTY parser saw a prompt on screen. Push immediately. If we have a
-   * recent hook record, merge: PTY contributes `id` / `text` /
-   * `allowsFreeText` / `isAnswered` (it reflects the screen) and the
-   * hook contributes `options` (it knows real labels like
-   * ['Yes', 'Always', 'No'] while PTY usually has numbered fallbacks).
+   * PTY parser saw a prompt on screen. Push immediately. Pair with a hook
+   * record for option labels / agent_id: prefer the same agent, else fall
+   * back to the most-recent pending hook (PTY output does not reliably name
+   * the agent — #425). When paired, the hook contributes `options` and
+   * `agentId` (so the client keys the prompt to the right agent) while PTY
+   * contributes `id` / `text` / `allowsFreeText` / `isAnswered` (it reflects
+   * the screen). The consumed hook entry is removed.
    *
-   * When the merge fires, `ptyQuestion.options` is intentionally
-   * discarded — the hook record is the authoritative source for option
-   * labels. A future PTY-side options parser would not change this
-   * unless we promote PTY options past the hook (see merge rule).
-   *
-   * Pending is cleared BEFORE the push so a re-entrant call to this
-   * method (push sink fires synchronous side effects that loop back
-   * here) cannot re-merge the same hook record. Push errors are caught
-   * and logged but not rethrown — the next PTY emit for the same prompt
-   * (re-render) will retry the push WITHOUT the hook merge, falling
-   * back to PTY's numbered options. That degraded UX is still preferable
-   * to the daemon crashing on a network blip during APNS fan-out.
+   * Pending is mutated BEFORE the push so a re-entrant call cannot re-merge
+   * the same record. Push errors are caught and logged but not rethrown — the
+   * next PTY emit for the same prompt retries WITHOUT the hook merge (PTY's
+   * numbered options), which beats crashing on a network blip during APNS.
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
+    const key = agentKey(ptyQuestion);
+    let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
+    if (recordKey === undefined && this.pending.size > 0) {
+      // Most-recent pending hook (Map preserves insertion order). The PTY did
+      // not name an agent we have a record for, so this may attach the wrong
+      // agent's option labels (#425). Log it so the misattribution is
+      // observable rather than silent.
+      const keys = [...this.pending.keys()];
+      recordKey = keys[keys.length - 1];
+      console.warn(
+        `[QuestionPresenceTracker] PTY prompt (agent "${key}") has no matching hook; pairing most-recent "${recordKey}" of [${keys.join(', ')}] — option labels may be misattributed`,
+      );
+    }
+    const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;
+    if (recordKey !== undefined) {
+      this.pending.delete(recordKey);
+    }
+
     const merged: Question =
-      this.pending && this.pending.options.length > 0
-        ? { ...ptyQuestion, options: [...this.pending.options] }
+      hookRecord && hookRecord.options.length > 0
+        ? {
+            ...ptyQuestion,
+            options: [...hookRecord.options],
+            agentId: ptyQuestion.agentId ?? hookRecord.agentId,
+          }
         : ptyQuestion;
-    this.pending = null;
+
     this.ptyShowingQuestion = true;
     try {
       this.push(merged);
@@ -123,28 +147,25 @@ export class QuestionPresenceTracker {
 
   /**
    * Status transition observed. When status leaves 'waiting', the user
-   * advanced past whatever prompt was up: drop any pending hook record
-   * so it cannot push later (Claude is busy executing, the prompt is
-   * gone from screen, the iOS card would be stale).
+   * advanced past whatever prompts were up: drop all pending hook records
+   * so they cannot push later (Claude is busy executing, the prompts are
+   * gone from screen, the iOS cards would be stale).
    */
   onStatusChange(status: AgentStatus): void {
     if (status !== 'waiting') {
-      this.pending = null;
+      this.pending.clear();
       this.ptyShowingQuestion = false;
     }
   }
 
   /**
-   * Drop any pending hook record without firing a push, and clear the
-   * PTY-presence flag. Used by the auto-approve cancelled branch where
-   * Claude has advanced past the prompt without a status transition we
-   * can observe — leaving the pending in place would merge stale option
-   * labels onto the NEXT unrelated prompt, and leaving `ptyShowingQuestion`
-   * set would let the inject gate pass for a subagent prompt that arrives
-   * after the screen is already past the previous prompt.
+   * Drop all pending hook records without firing a push, and clear the
+   * PTY-presence flag. Used by the auto-approve cancelled branch and on
+   * Claude restart (where the dying session's prompts must not merge stale
+   * labels onto the new session's first prompt).
    */
   clearPending(): void {
-    this.pending = null;
+    this.pending.clear();
     this.ptyShowingQuestion = false;
   }
 
@@ -161,11 +182,15 @@ export class QuestionPresenceTracker {
   }
 
   /**
-   * Test-only inspection of the pending state. Exposed so the unit test
-   * suite can assert state-machine invariants without resorting to
-   * mocking the push sink.
+   * Test-only inspection of pending state. Exposed so the unit test suite
+   * can assert state-machine invariants without mocking the push sink.
    */
   hasPendingForTest(): boolean {
-    return this.pending !== null;
+    return this.pending.size > 0;
+  }
+
+  /** Test-only: number of distinct agents with a pending hook record. */
+  pendingCountForTest(): number {
+    return this.pending.size;
   }
 }

@@ -74,13 +74,17 @@ describe('sendMessage with unknown connection', () => {
 describe('sendQuestion with unknown connection', () => {
   test('returns false for unknown connectionId', () => {
     const adapter = createAdapter();
-    const result = adapter.sendQuestion(unknownConnectionId, {
-      id: generateId(),
-      text: 'Allow?',
-      options: [],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
+    const result = adapter.sendQuestion(
+      unknownConnectionId,
+      {
+        id: generateId(),
+        text: 'Allow?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      },
+      generateId(),
+    );
     expect(result).toBe(false);
   });
 });
@@ -142,6 +146,7 @@ describe('sendRaw routing', () => {
       type: 'question',
       id: generateId(),
       timestamp: now(),
+      sessionId: generateId(),
       question: {
         id: generateId(),
         text: 'Allow?',

@@ -31,7 +31,7 @@ export type {
   DiscoverableSession,
 } from './types.ts';
 
-export { ok, err, isOk, isErr } from './types.ts';
+export { ok, err, isOk, isErr, MAIN_AGENT_ID } from './types.ts';
 
 // Permission/question defaults shared by daemon and client (#396)
 export {

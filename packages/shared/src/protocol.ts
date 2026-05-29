@@ -215,8 +215,11 @@ export interface QuestionMessage {
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly question: Question;
-  /** Session that owns this question */
-  readonly sessionId?: UUID | undefined;
+  /** Remi session that owns this question. Mandatory (#437): the client routes
+   *  and keys questions by it and must never fall back to "the active session",
+   *  which cross-contaminates when multiple sessions/agents have prompts. The
+   *  owning agent is carried inside `question.agentId`. */
+  readonly sessionId: UUID;
   /**
    * Claude Code session UUID the question came from. The answer carrying
    * this id back lets the daemon reject the write if the binding has
@@ -934,7 +937,7 @@ export function createError(
  */
 export function createQuestion(
   question: Question,
-  sessionId?: UUID,
+  sessionId: UUID,
   claudeSessionId?: UUID,
 ): QuestionMessage {
   return {
@@ -942,7 +945,7 @@ export function createQuestion(
     id: generateId(),
     timestamp: now(),
     question,
-    ...(sessionId !== undefined && { sessionId }),
+    sessionId,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
   };
 }

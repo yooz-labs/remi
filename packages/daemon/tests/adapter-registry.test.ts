@@ -327,7 +327,7 @@ describe('AdapterRegistry', () => {
         ],
       };
 
-      const result = registry.sendQuestion(connId, question);
+      const result = registry.sendQuestion(connId, question, generateId());
       expect(result).toBe(true);
       expect(adapter.sentQuestions.length).toBe(1);
     });
@@ -342,7 +342,7 @@ describe('AdapterRegistry', () => {
         options: [],
       };
 
-      expect(registry.sendQuestion(generateId(), question)).toBe(false);
+      expect(registry.sendQuestion(generateId(), question, generateId())).toBe(false);
     });
 
     test('sendStatus routes to correct adapter', () => {
