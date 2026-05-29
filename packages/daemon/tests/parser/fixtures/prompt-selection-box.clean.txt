@@ -1,0 +1,18 @@
+78[<u[>1u[>4;2m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Accessingworkspace:
+
+/private/tmp/remirot/capproj2
+
+Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust?(Likeyourowncode,awell-knownopensource
+project,orworkfromyourteam).Ifnot,takeamomenttoreviewwhat'sinthisfolderfirst.
+
+ClaudeCode'llbeabletoread,edit,andexecutefileshere.
+
+Security guide
+
+❯1.Yes,Itrustthisfolder
+2.No,exit
+
+Entertoconfirm·Esctocancel
+[>0q

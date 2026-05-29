@@ -62,9 +62,15 @@ const THINKING_PATTERNS: readonly RegExp[] = [
   /^[✳✢]\s*$/,
 ];
 
-/** Waiting indicators (question or input prompt) */
+/** Waiting indicators (question or input prompt).
+ *
+ * A bare trailing `?` is deliberately NOT here: prose ending in `?` is not a
+ * prompt (it was a false-positive source). Claude's own prompts are matched by
+ * the selection-box chrome; the remaining patterns catch subprocess prompts. */
 const WAITING_PATTERNS: readonly RegExp[] = [
-  /\?\s*$/,
+  // Claude Code selection-box chrome (❯ cursor on a numbered option); spacing
+  // collapses after ANSI stripping, kept single-line via [^\S\n].
+  /❯[^\S\n]*\d+[.)]/,
   /\(y\/n\)/i,
   /\[y\/n\]/i,
   /waiting for/i,
