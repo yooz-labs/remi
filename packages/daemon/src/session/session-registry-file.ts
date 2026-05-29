@@ -11,7 +11,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { errorToString } from '@remi/shared';
+import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { findAvailableTcpPort } from './port-utils.ts';
 import { isProcessAlive } from './process-alive.ts';
 
@@ -29,9 +29,9 @@ export interface LiveSessionEntry {
   readonly startedAt: string;
 }
 
-/** Default port range for auto-selection. */
-export const DEFAULT_BASE_PORT = 18765;
-export const DEFAULT_PORT_RANGE = 20;
+/** Default port range for auto-selection (single source of truth in @remi/shared). */
+export const DEFAULT_BASE_PORT = DAEMON_BASE_PORT;
+export const DEFAULT_PORT_RANGE = DAEMON_PORT_RANGE;
 
 /** Type guard for LiveSessionEntry after JSON.parse. */
 function isValidEntry(data: unknown): data is LiveSessionEntry {

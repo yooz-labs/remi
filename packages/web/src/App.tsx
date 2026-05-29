@@ -899,6 +899,7 @@ function App() {
     connections,
     connectDirect,
     disconnect: disconnectConnection,
+    reconnect: reconnectConnection,
     disconnectAll,
     sendInput,
     sendAnswer,
@@ -1626,6 +1627,7 @@ function App() {
       onConnect={() => setShowConnectModal(true)}
       onAddConnection={() => setShowConnectModal(true)}
       onDisconnect={handleDisconnect}
+      onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
       onNewSession={handleNewSession}
       onSettings={() => setShowSettings(true)}

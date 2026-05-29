@@ -14,11 +14,12 @@ import {
   trustHost,
   unlockStoredIdentity,
 } from '@/lib/identity-client';
-import { errorToString } from '@remi/shared';
+import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
 import { collectPendingChallengeConnections } from './connection-manager-helpers';
+import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
@@ -83,6 +84,8 @@ export interface UseConnectionManagerReturn {
   connectDirect: (url: string, directory?: string) => ConnectionId;
   /** Disconnect a specific connection */
   disconnect: (connectionId: ConnectionId) => void;
+  /** Retry a connection by re-running port discovery against its host (#435). */
+  reconnect: (connectionId: ConnectionId) => void;
   /** Disconnect all connections */
   disconnectAll: () => void;
   /** Send user input routed to the correct connection */
@@ -126,17 +129,30 @@ export interface UseConnectionManagerReturn {
   passphraseServerFingerprint: string | null;
 }
 
-/** Derive connectionId (host:port) from a WebSocket URL. Falls back to port 18765 if not specified. */
+/** Derive connectionId (host:port) from a WebSocket URL. Falls back to the
+ * default daemon port if not specified. */
 export function parseConnectionId(url: string): ConnectionId {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname || 'localhost';
-    const port = parsed.port || '18765';
+    const port = parsed.port || String(DAEMON_BASE_PORT);
     return makeConnectionId(`${host}:${port}`);
   } catch (err) {
     console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
     return makeConnectionId(url);
   }
+}
+
+/** Split a "host:port" connectionId into parts (IPv6-safe; greedy host). */
+export function splitConnectionId(connectionId: ConnectionId): {
+  host: string;
+  port: number | null;
+} {
+  const raw = connectionId as string;
+  const match = /^(.*):(\d+)$/.exec(raw);
+  if (!match) return { host: raw, port: null };
+  const port = Number.parseInt(match[2] ?? '', 10);
+  return { host: match[1] ?? raw, port: Number.isNaN(port) ? null : port };
 }
 
 /** Sign an auth challenge with the given identity */
@@ -411,6 +427,37 @@ export function useConnectionManager(
     }
   }, []);
 
+  // Reconnect escalation: auto-reconnect exhausted the ceiling on the current
+  // port. Re-resolve the daemon's port from the host (the old port is hinted
+  // first, then the full range is scanned). Reconnect on the winner, or fall
+  // to a terminal 'unreachable' state if nothing answers. (#435 Phase 1 / P3)
+  const escalateReconnect = useCallback(
+    async (mc: ManagedConnection): Promise<void> => {
+      const { host, port } = splitConnectionId(mc.connectionId);
+      mc.status = 'reconnecting';
+      mc.error = null;
+      syncState();
+
+      const resolved = await resolveDaemonPort(host, port);
+      // Bail if the connection was torn down (or replaced) while probing.
+      if (connectionsMapRef.current.get(mc.connectionId) !== mc) return;
+
+      if (resolved === null) {
+        mc.status = 'unreachable';
+        mc.error = new Error(`No daemon answered on ${host}`);
+        stopPing(mc);
+        syncState();
+        return;
+      }
+
+      const newUrl = buildWsUrl(parseHostInput(host), resolved);
+      mc.url = newUrl;
+      // status flows back to 'connecting'/'authenticating' via onStatusChange.
+      mc.client.reconnectWithUrl(newUrl);
+    },
+    [stopPing, syncState],
+  );
+
   // Connect to a daemon (direct WebSocket)
   const connectDirect = useCallback(
     (url: string, directory?: string): ConnectionId => {
@@ -488,6 +535,9 @@ export function useConnectionManager(
           mc.error = err;
           syncState();
         },
+        onReconnectExhausted: () => {
+          void escalateReconnect(mc);
+        },
       });
 
       mc.client = client;
@@ -497,7 +547,18 @@ export function useConnectionManager(
 
       return connectionId;
     },
-    [createMessageHandler, sendHello, startPing, stopPing, syncState],
+    [createMessageHandler, sendHello, startPing, stopPing, syncState, escalateReconnect],
+  );
+
+  // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
+  // re-running port discovery against its host. (#435 Phase 1 / P3)
+  const reconnect = useCallback(
+    (connectionId: ConnectionId) => {
+      const mc = connectionsMapRef.current.get(connectionId);
+      if (!mc) return;
+      void escalateReconnect(mc);
+    },
+    [escalateReconnect],
   );
 
   // Disconnect a specific connection
@@ -705,6 +766,7 @@ export function useConnectionManager(
     connections: connectionsState,
     connectDirect,
     disconnect,
+    reconnect,
     disconnectAll,
     sendInput,
     sendAnswer,

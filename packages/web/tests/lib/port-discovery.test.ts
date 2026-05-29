@@ -11,6 +11,7 @@ import {
   buildWsUrl,
   discoverDaemonPort,
   parseHostInput,
+  resolveDaemonPort,
 } from '../../src/lib/port-discovery';
 
 function authInfoServer() {
@@ -339,6 +340,78 @@ describe('discoverDaemonPort', () => {
       expect(elapsed).toBeLessThan(800);
     } finally {
       hung.stop();
+    }
+  });
+});
+
+describe('resolveDaemonPort', () => {
+  test('hint-hit: returns the hinted port without scanning', async () => {
+    const server = authInfoServer();
+    try {
+      // basePort points at an empty range; the hint must short-circuit it.
+      const found = await resolveDaemonPort('127.0.0.1', server.port, {
+        basePort: 49100,
+        portRange: 3,
+        timeoutMs: 800,
+      });
+      expect(found).toBe(server.port);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('hint-miss: falls back to a range scan and finds the moved daemon', async () => {
+    const server = authInfoServer();
+    try {
+      // Dead hint (nothing on 49201); the scan over the range finds the live
+      // server. basePort = server.port so the live server is in-range and is
+      // the only responder (a freshly-allocated port has no stale neighbours).
+      const found = await resolveDaemonPort('127.0.0.1', 49201, {
+        basePort: server.port,
+        portRange: 3,
+        timeoutMs: 800,
+      });
+      expect(found).toBe(server.port);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('no daemon anywhere: returns null', async () => {
+    const found = await resolveDaemonPort('127.0.0.1', 49202, {
+      basePort: 49100,
+      portRange: 4,
+      timeoutMs: 200,
+    });
+    expect(found).toBeNull();
+  });
+
+  test('no hint: behaves like a plain range scan', async () => {
+    const server = authInfoServer();
+    try {
+      const found = await resolveDaemonPort('127.0.0.1', null, {
+        basePort: server.port,
+        portRange: 3,
+        timeoutMs: 800,
+      });
+      expect(found).toBe(server.port);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('already-aborted signal returns null', async () => {
+    const server = authInfoServer();
+    const ctl = new AbortController();
+    ctl.abort();
+    try {
+      const found = await resolveDaemonPort('127.0.0.1', server.port, {
+        timeoutMs: 800,
+        signal: ctl.signal,
+      });
+      expect(found).toBeNull();
+    } finally {
+      server.stop();
     }
   });
 });

@@ -35,7 +35,8 @@ interface ConnectionRef {
     | 'authenticating'
     | 'reconnecting'
     | 'disconnected'
-    | 'error';
+    | 'error'
+    | 'unreachable';
 }
 
 export interface ResolvedAnswerTarget {
