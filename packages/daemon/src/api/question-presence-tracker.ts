@@ -34,6 +34,7 @@
  * record) is therefore a first-class case here, not a fallback.
  */
 
+import { MAIN_AGENT_ID } from '@remi/shared';
 import type { AgentStatus, Question } from '@remi/shared';
 
 /**
@@ -44,9 +45,9 @@ import type { AgentStatus, Question } from '@remi/shared';
  */
 export type PushQuestion = (question: Question) => void;
 
-/** Pending-hook map key: the prompt's agent, or 'main' for the primary agent. */
+/** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
 function agentKey(question: Question): string {
-  return question.agentId ?? 'main';
+  return question.agentId ?? MAIN_AGENT_ID;
 }
 
 export class QuestionPresenceTracker {
@@ -110,9 +111,15 @@ export class QuestionPresenceTracker {
     const key = agentKey(ptyQuestion);
     let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
     if (recordKey === undefined && this.pending.size > 0) {
-      // Most-recent pending hook (Map preserves insertion order).
+      // Most-recent pending hook (Map preserves insertion order). The PTY did
+      // not name an agent we have a record for, so this may attach the wrong
+      // agent's option labels (#425). Log it so the misattribution is
+      // observable rather than silent.
       const keys = [...this.pending.keys()];
       recordKey = keys[keys.length - 1];
+      console.warn(
+        `[QuestionPresenceTracker] PTY prompt (agent "${key}") has no matching hook; pairing most-recent "${recordKey}" of [${keys.join(', ')}] — option labels may be misattributed`,
+      );
     }
     const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;
     if (recordKey !== undefined) {

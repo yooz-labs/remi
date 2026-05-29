@@ -32,8 +32,8 @@ interface ChatViewProps {
   readonly onSend: (message: string) => void;
   /** Answer a specific pending question. Routes through sendAnswer keyed by the
    *  question itself; decoupled from onSend so the bottom InputArea no longer
-   *  hijacks input when a question is pending (#401). Required: a missing
-   *  handler would silently route answers through onSend and re-create the bug. */
+   *  hijacks input when a question is pending (#401). Non-optional so the
+   *  decoupling can't be accidentally dropped back onto onSend. */
   readonly onAnswer: (question: UIQuestion, answer: string) => void;
   /** Long-press on a message bubble fires this with the message; consumer
    *  records it as the active reply context for the session (#401). */

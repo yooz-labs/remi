@@ -149,12 +149,19 @@ export interface Question {
 
   /**
    * The Claude agent this prompt belongs to: the hook `agent_id` for a
-   * subagent, or undefined ('main') for the primary agent. Keys the
-   * pending-question collection so a main-agent prompt and a concurrent
-   * subagent prompt (#419) coexist instead of overwriting each other (#425).
+   * subagent, or undefined (MAIN_AGENT_ID) for the primary agent. Used as the
+   * key in QuestionPresenceTracker's pending map and as part of the composite
+   * key (`${sessionId}#${agentId}`) in the web client's collection, so a
+   * main-agent prompt and a concurrent subagent prompt (#419) coexist instead
+   * of overwriting each other (#425). The daemon SessionRegistry keys by
+   * question id, so concurrency there holds regardless of this field.
    */
   readonly agentId?: string | undefined;
 }
+
+/** Sentinel agent key for the primary (main) agent, whose questions carry no
+ *  `agentId`. Normalize `agentId ?? MAIN_AGENT_ID` when building collection keys. */
+export const MAIN_AGENT_ID = 'main';
 
 /**
  * Option for a question (e.g., Yes/No, numbered choices).
@@ -194,9 +201,6 @@ export interface Session {
 
   /** Current agent status */
   status: AgentStatus;
-
-  /** Current pending question (if any) */
-  pendingQuestion?: Question | undefined;
 
   /** Is session still active */
   isActive: boolean;

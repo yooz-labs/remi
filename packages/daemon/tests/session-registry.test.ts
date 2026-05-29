@@ -78,6 +78,84 @@ describe('SessionRegistry', () => {
     });
   });
 
+  describe('pending questions (#437)', () => {
+    const mkQuestion = (id: string, agentId?: string) => ({
+      id: id as ReturnType<typeof generateId>,
+      text: `${id}?`,
+      options: [],
+      allowsFreeText: true,
+      isAnswered: false,
+      ...(agentId !== undefined && { agentId }),
+    });
+
+    test('add/remove keep concurrent questions independent', () => {
+      const sid = generateId();
+      registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+      const q1 = generateId();
+      const q2 = generateId();
+      registry.addQuestion(sid, mkQuestion(q1));
+      registry.addQuestion(sid, mkQuestion(q2, 'sub-7'));
+      expect(registry.getSession(sid)?.currentQuestions.size).toBe(2);
+
+      registry.removeQuestion(sid, q1);
+      expect(registry.getQuestion(sid, q1)).toBeNull();
+      expect(registry.getQuestion(sid, q2)?.text).toBe(`${q2}?`);
+    });
+
+    test('clearQuestions drops all', () => {
+      const sid = generateId();
+      registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.addQuestion(sid, mkQuestion(generateId()));
+      registry.addQuestion(sid, mkQuestion(generateId()));
+      registry.clearQuestions(sid);
+      expect(registry.getSession(sid)?.currentQuestions.size).toBe(0);
+    });
+
+    test('evicts the OLDEST when MAX_PENDING_QUESTIONS exceeded', () => {
+      const sid = generateId();
+      registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+      const ids: string[] = [];
+      for (let i = 0; i < 9; i++) {
+        const id = generateId();
+        ids.push(id);
+        registry.addQuestion(sid, mkQuestion(id));
+      }
+      const map = registry.getSession(sid)?.currentQuestions;
+      expect(map?.size).toBe(8); // capped
+      expect(registry.getQuestion(sid, ids[0] as string)).toBeNull(); // oldest gone
+      expect(registry.getQuestion(sid, ids[8] as string)?.text).toBe(`${ids[8]}?`); // newest kept
+    });
+
+    test('re-adding an existing id refreshes it to newest (survives eviction)', () => {
+      const sid = generateId();
+      registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+      const ids: string[] = [];
+      for (let i = 0; i < 8; i++) {
+        const id = generateId();
+        ids.push(id);
+        registry.addQuestion(sid, mkQuestion(id));
+      }
+      // Refresh the oldest, then add one more: the refreshed one must survive
+      // and the now-oldest (ids[1]) must be evicted.
+      registry.addQuestion(sid, mkQuestion(ids[0] as string));
+      registry.addQuestion(sid, mkQuestion(generateId()));
+      expect(registry.getQuestion(sid, ids[0] as string)).not.toBeNull();
+      expect(registry.getQuestion(sid, ids[1] as string)).toBeNull();
+    });
+
+    test('attachConnection result replays all pending questions', () => {
+      const sid = generateId();
+      registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+      const q1 = generateId();
+      const q2 = generateId();
+      registry.addQuestion(sid, mkQuestion(q1));
+      registry.addQuestion(sid, mkQuestion(q2, 'sub-7'));
+
+      const result = registry.attachConnection(sid, generateId());
+      expect(result.currentQuestions.map((q) => q.id)).toEqual([q1, q2]);
+    });
+  });
+
   describe('attachConnection()', () => {
     test('attaches connection to session', () => {
       const sessionId = generateId();

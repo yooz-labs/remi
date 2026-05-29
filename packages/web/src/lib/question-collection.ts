@@ -7,11 +7,12 @@
  * collapses via the richer-wins guard. Pure functions, unit-tested directly.
  */
 
+import { MAIN_AGENT_ID } from '@remi/shared';
 import type { UIQuestion } from '@/types';
 
-/** Composite map key: a session's prompt, scoped to its agent ('main' default). */
+/** Composite map key: a session's prompt, scoped to its agent (main default). */
 export function questionKey(sessionId: string, agentId?: string | undefined): string {
-  return `${sessionId}#${agentId ?? 'main'}`;
+  return `${sessionId}#${agentId ?? MAIN_AGENT_ID}`;
 }
 
 /** All pending questions belonging to a session, in insertion order. */

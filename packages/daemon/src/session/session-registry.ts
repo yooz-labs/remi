@@ -453,7 +453,14 @@ export class SessionRegistry {
     while (map.size > MAX_PENDING_QUESTIONS) {
       const oldest = map.keys().next().value;
       if (oldest === undefined) break;
+      const evicted = map.get(oldest);
       map.delete(oldest);
+      // Log: an evicted prompt may have an outstanding APNS push whose answer
+      // will now be refused as STALE_ANSWER. Should be unreachable in normal
+      // use (cap is generous); a hit signals a runaway prompt loop.
+      console.warn(
+        `[SessionRegistry] pending-question cap (${MAX_PENDING_QUESTIONS}) exceeded; evicted oldest id=${oldest} text="${evicted?.text.slice(0, 60) ?? ''}"`,
+      );
     }
     this.session.lastActivityAt = now();
   }
@@ -466,7 +473,10 @@ export class SessionRegistry {
     }
   }
 
-  /** Drop all pending questions (status left 'waiting', or session restart). */
+  /** Drop all pending questions on Claude session restart (/clear, /resume).
+   *  Status-leaving-'waiting' is handled by QuestionPresenceTracker and the
+   *  client; this covers the restart path only, so answers to the dying
+   *  session's prompts are refused. */
   clearQuestions(sessionId: UUID): void {
     if (this.session !== null && this.session.sessionId === sessionId) {
       this.session.currentQuestions.clear();

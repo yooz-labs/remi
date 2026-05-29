@@ -12,7 +12,11 @@ function opt(label: string, value: string): QuestionOption {
   return { label, value, isRecommended: false, isYes: false, isNo: false };
 }
 
-function question(opts: { text?: string; agentId?: string; options?: QuestionOption[] }): Question {
+function question(opts: {
+  text?: string;
+  agentId?: string | undefined;
+  options?: QuestionOption[];
+}): Question {
   return {
     id: generateId(),
     text: opts.text ?? 'Allow?',
@@ -89,6 +93,22 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     tracker.onStatusChange('thinking');
     expect(tracker.pendingCountForTest()).toBe(0);
     expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+  });
+
+  test('a throwing push consumes the hook but leaves presence set, so a retry re-pushes', () => {
+    let calls = 0;
+    const tracker = new QuestionPresenceTracker(() => {
+      calls++;
+      if (calls === 1) throw new Error('network blip');
+    });
+    tracker.recordPendingHook(question({ agentId: undefined, options: [opt('Yes', 'y')] }));
+    tracker.onPTYPromptVisible(question({ agentId: undefined }));
+    // hook consumed, presence set, error swallowed (not rethrown).
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    // A re-render emits again; the second push (no hook to merge) succeeds.
+    tracker.onPTYPromptVisible(question({ agentId: undefined }));
+    expect(calls).toBe(2);
   });
 
   test('clearPending drops all records and presence', () => {

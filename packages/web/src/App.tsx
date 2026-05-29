@@ -169,6 +169,7 @@ function App() {
   const resumingSessionRef = useRef<string | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
+  const questionsRef = useRef(questions);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
@@ -396,9 +397,18 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
-        // If status moved from 'waiting' to something else, the question was answered elsewhere
+        // If status moved from 'waiting', the MAIN agent's prompt resolved
+        // (auto-approved, answered in terminal, etc.). Session status tracks
+        // the main agent only (subagent events don't change it), so clear just
+        // the main-agent slot — a concurrent subagent prompt must survive.
         if (sessionData.status !== 'waiting') {
-          setQuestions((prev) => clearSessionQuestions(prev, sessionData.id));
+          setQuestions((prev) => {
+            const key = questionKey(sessionData.id);
+            if (!prev.has(key)) return prev;
+            const next = new Map(prev);
+            next.delete(key);
+            return next;
+          });
         }
         break;
       }
@@ -897,6 +907,10 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
+    questionsRef.current = questions;
+  }, [questions]);
+
+  useEffect(() => {
     replyContextsRef.current = replyContexts;
   }, [replyContexts]);
 
@@ -1257,7 +1271,9 @@ function App() {
   const handleAnswer = useCallback(
     (question: UIQuestion, content: string) => {
       const sid = question.sessionId;
-      const connId = getActiveConnectionId();
+      // Route by the question's OWN session connection (in a multi-daemon
+      // stack it may differ from the active session), not "whatever is active".
+      const connId = sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
       if (!connId) {
         const systemMsg: UIMessage = {
           id: generateId(),
@@ -1275,7 +1291,7 @@ function App() {
       // Carry claudeSessionId so the daemon can refuse if its binding
       // has rotated since the question fired (#430). Route by the question's
       // OWN session/id so answering one of several stacked prompts is precise.
-      const binding = sessions.find((s) => s.id === sid)?.claudeSessionId;
+      const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAnswer(connId, sid, question.id, content, binding as UUID | undefined);
       if (!sent) {
         const failMsg: UIMessage = {
@@ -1309,8 +1325,10 @@ function App() {
           return next;
         });
       }, 1500);
-      // Keep the session flagged while other prompts remain unanswered.
-      const stillPending = getSessionQuestions(questions, sid).some(
+      // Keep the session flagged while OTHER prompts remain unanswered. Read
+      // the ref (latest committed map) rather than the closure so the badge
+      // can't get stuck after the dep snapshot goes stale.
+      const stillPending = getSessionQuestions(questionsRef.current, sid).some(
         (q) => q.id !== question.id && q.answeredWith === undefined,
       );
       setSessions((prev) =>
@@ -1328,7 +1346,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [getActiveConnectionId, sendAnswer, sessions, questions],
+    [getActiveConnectionId, sendAnswer],
   );
 
   // Send a regular user input message, optionally with a reply context.
