@@ -14,6 +14,11 @@ import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
+import {
+  clearSessionQuestions,
+  getSessionQuestions,
+  questionKey,
+} from '@/lib/question-collection';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
@@ -147,7 +152,9 @@ function App() {
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<UUID | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [questions, setQuestions] = useState<Map<UUID, UIQuestion>>(new Map());
+  // Keyed by `${sessionId}#${agentId}` so concurrent main + subagent prompts
+  // coexist; see lib/question-collection (#437).
+  const [questions, setQuestions] = useState<Map<string, UIQuestion>>(new Map());
   // Reply context per session: when set, the InputArea shows a quoted-message
   // banner and outgoing user input is wrapped in a markdown blockquote so
   // Claude Code receives the quoted context (#401).
@@ -269,12 +276,7 @@ function App() {
             setActiveSessionId(message.sessionId);
             if (oldActive) {
               setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
-              setQuestions((prev) => {
-                if (!prev.has(oldActive)) return prev;
-                const next = new Map(prev);
-                next.delete(oldActive);
-                return next;
-              });
+              setQuestions((prev) => clearSessionQuestions(prev, oldActive));
             }
           }
         }
@@ -396,12 +398,7 @@ function App() {
         );
         // If status moved from 'waiting' to something else, the question was answered elsewhere
         if (sessionData.status !== 'waiting') {
-          setQuestions((prev) => {
-            if (!prev.has(sessionData.id)) return prev;
-            const next = new Map(prev);
-            next.delete(sessionData.id);
-            return next;
-          });
+          setQuestions((prev) => clearSessionQuestions(prev, sessionData.id));
         }
         break;
       }
@@ -411,12 +408,7 @@ function App() {
         const resetSessionId = message.sessionId;
         if (resetSessionId) {
           setMessages((prev) => prev.filter((m) => m.sessionId !== resetSessionId));
-          setQuestions((prev) => {
-            if (!prev.has(resetSessionId)) return prev;
-            const next = new Map(prev);
-            next.delete(resetSessionId);
-            return next;
-          });
+          setQuestions((prev) => clearSessionQuestions(prev, resetSessionId));
         }
         break;
       }
@@ -454,8 +446,15 @@ function App() {
           isRecommended: o.isRecommended || undefined,
         }));
 
-        // Use sessionId from the message when available; fall back to active session
-        const questionSessionId = message.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
+        // sessionId is mandatory on the wire now (#437); never fall back to
+        // the active session (that cross-contaminated when another session or
+        // agent had a prompt). Drop a malformed message rather than misroute.
+        const questionSessionId = message.sessionId;
+        if (!questionSessionId) {
+          console.warn('[App] Dropping question with no sessionId');
+          break;
+        }
+        const questionAgentId = q.agentId;
         const uiQuestion: UIQuestion = {
           id: q.id,
           sessionId: questionSessionId,
@@ -464,21 +463,22 @@ function App() {
           options: q.options.length > 0 ? q.options.map((o) => o.label) : undefined,
           structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
           timestamp: new Date().toISOString(),
+          agentId: questionAgentId,
         };
+        const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {
-          // Richer-wins guard (#396). The daemon emits two questions for
-          // one prompt cycle (HookEventBridge default 3-set + PTY-parsed
-          // multi-choice with full sentences); their ids differ so the
-          // session-keyed map otherwise lets the second arrival overwrite
-          // the first regardless of richness. Keeping the richer pending
-          // question here prevents the "multi-choice flickers, then
-          // collapses to Yes/Yes-always/No" symptom users reported.
-          const existing = prev.get(questionSessionId);
+          // Richer-wins guard (#396), scoped to this agent's slot. The daemon
+          // emits two questions for one prompt cycle (HookEventBridge default
+          // 3-set + PTY-parsed multi-choice with full sentences); their ids
+          // differ so a same-key second arrival would otherwise overwrite the
+          // first regardless of richness. A DIFFERENT agent's prompt has a
+          // different key and so coexists rather than clobbering (#419/#425).
+          const existing = prev.get(key);
           if (existing && shouldKeepExisting(existing, uiQuestion)) {
             return prev;
           }
           const next = new Map(prev);
-          next.set(questionSessionId, uiQuestion);
+          next.set(key, uiQuestion);
           return next;
         });
 
@@ -783,13 +783,19 @@ function App() {
             // Without this the QuestionCard stays collapsed showing
             // the rejected answer and the user has no retry path.
             setQuestions((prev) => {
-              const stale = prev.get(refusedSessionId);
-              if (!stale || stale.answeredWith === undefined) return prev;
+              // Un-answer any optimistically-collapsed question for the refused
+              // session (across agents) so the user can retry (#434 review).
+              let changed = false;
               const next = new Map(prev);
-              const restored = { ...stale };
-              delete (restored as { answeredWith?: string }).answeredWith;
-              next.set(refusedSessionId, restored);
-              return next;
+              for (const [key, q] of prev) {
+                if (q.sessionId === refusedSessionId && q.answeredWith !== undefined) {
+                  const restored = { ...q };
+                  delete (restored as { answeredWith?: string }).answeredWith;
+                  next.set(key, restored);
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
             });
           }
           console.warn(
@@ -1211,7 +1217,9 @@ function App() {
       })()
     : undefined;
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
-  const sessionQuestion = activeSessionId ? (questions.get(activeSessionId) ?? null) : null;
+  // All pending prompts for the active session (main + any subagents), oldest
+  // first; rendered as a stack of cards (#437).
+  const sessionQuestions = activeSessionId ? getSessionQuestions(questions, activeSessionId) : [];
 
   const handleSelectSession = useCallback(
     (id: UUID) => {
@@ -1247,13 +1255,13 @@ function App() {
   // (#401): the user can ask the agent a fresh question without it
   // being treated as an answer to a stale prompt.
   const handleAnswer = useCallback(
-    (content: string) => {
-      if (!activeSessionId || !sessionQuestion) return;
+    (question: UIQuestion, content: string) => {
+      const sid = question.sessionId;
       const connId = getActiveConnectionId();
       if (!connId) {
         const systemMsg: UIMessage = {
           id: generateId(),
-          sessionId: activeSessionId,
+          sessionId: sid,
           sender: 'system',
           content: 'Cannot send: not connected to daemon',
           timestamp: new Date().toISOString(),
@@ -1265,19 +1273,14 @@ function App() {
       }
 
       // Carry claudeSessionId so the daemon can refuse if its binding
-      // has rotated since the question fired (#430).
-      const activeBinding = sessions.find((s) => s.id === activeSessionId)?.claudeSessionId;
-      const sent = sendAnswer(
-        connId,
-        activeSessionId,
-        sessionQuestion.id,
-        content,
-        activeBinding as UUID | undefined,
-      );
+      // has rotated since the question fired (#430). Route by the question's
+      // OWN session/id so answering one of several stacked prompts is precise.
+      const binding = sessions.find((s) => s.id === sid)?.claudeSessionId;
+      const sent = sendAnswer(connId, sid, question.id, content, binding as UUID | undefined);
       if (!sent) {
         const failMsg: UIMessage = {
           id: generateId(),
-          sessionId: activeSessionId,
+          sessionId: sid,
           connectionId: connId,
           sender: 'system',
           content: 'Failed to send answer: connection unavailable. Try again.',
@@ -1288,26 +1291,34 @@ function App() {
         setMessages((prev) => [...prev, failMsg]);
         return;
       }
-      // Mark question as answered (card shows collapsed state briefly)
+      const key = questionKey(sid, question.agentId);
+      // Mark this question answered (card shows collapsed state briefly), then
+      // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {
+        const existing = prev.get(key);
+        if (!existing) return prev;
         const next = new Map(prev);
-        next.set(activeSessionId, { ...sessionQuestion, answeredWith: content });
+        next.set(key, { ...existing, answeredWith: content });
         return next;
       });
       setTimeout(() => {
         setQuestions((prev) => {
-          if (!prev.has(activeSessionId)) return prev;
+          if (!prev.has(key)) return prev;
           const next = new Map(prev);
-          next.delete(activeSessionId);
+          next.delete(key);
           return next;
         });
       }, 1500);
+      // Keep the session flagged while other prompts remain unanswered.
+      const stillPending = getSessionQuestions(questions, sid).some(
+        (q) => q.id !== question.id && q.answeredWith === undefined,
+      );
       setSessions((prev) =>
-        prev.map((s) => (s.id === activeSessionId ? { ...s, questionPending: false } : s)),
+        prev.map((s) => (s.id === sid ? { ...s, questionPending: stillPending } : s)),
       );
       const userMsg: UIMessage = {
         id: generateId(),
-        sessionId: activeSessionId,
+        sessionId: sid,
         sender: 'user',
         content,
         timestamp: new Date().toISOString(),
@@ -1317,7 +1328,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [activeSessionId, getActiveConnectionId, sendAnswer, sessionQuestion, sessions],
+    [getActiveConnectionId, sendAnswer, sessions, questions],
   );
 
   // Send a regular user input message, optionally with a reply context.
@@ -1648,7 +1659,7 @@ function App() {
     <ChatView
       session={activeSession}
       messages={sessionMessages}
-      question={sessionQuestion}
+      questions={sessionQuestions}
       error={error}
       onSend={handleSend}
       onAnswer={handleAnswer}

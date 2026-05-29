@@ -275,6 +275,48 @@ describe('createInputHandlers', () => {
       expect(errMsg.details?.pendingQuestionIds).toContain(QID);
     });
 
+    test('two concurrent questions: answering one leaves the other answerable (#437)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const q2 = 'q2000000-0000-0000-0000-000000000000' as UUID;
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'main?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      });
+      sessionRegistry.addQuestion(sessionId, {
+        id: q2,
+        text: 'subagent?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+        agentId: 'sub-7',
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      // Answer the first; it should inject and be removed, the second stays.
+      await handlers.onAnswer(CID, sessionId, QID, 'one');
+      expect(ptyCapture.submits).toEqual(['one']);
+      expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+      const after1 = sessionRegistry.getSession(sessionId)?.currentQuestions;
+      expect(after1?.has(QID)).toBe(false);
+      expect(after1?.has(q2)).toBe(true);
+
+      // Answer the second; no STALE_ANSWER, injected and removed.
+      await handlers.onAnswer(CID, sessionId, q2, 'two');
+      expect(ptyCapture.submits).toEqual(['one', 'two']);
+      expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
     test('logs when neither sessionId nor connectionId maps to a session', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });

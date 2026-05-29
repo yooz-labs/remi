@@ -151,6 +151,9 @@ export interface UIQuestion {
   readonly timestamp: Timestamp;
   /** The answer that was selected (set after answering) */
   readonly answeredWith?: string;
+  /** The Claude agent this prompt belongs to ('main' default). Keys the
+   *  collection so a main + subagent prompt coexist rather than overwrite. */
+  readonly agentId?: string;
 }
 
 /** App settings */
