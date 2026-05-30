@@ -287,7 +287,7 @@ export function SessionList({
                       className="inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
                       style={{
                         background: active ? 'var(--color-surface)' : 'var(--color-primary)',
-                        color: active ? 'var(--color-primary)' : 'var(--color-accent-ink)',
+                        color: active ? 'var(--color-accent-text)' : 'var(--color-accent-ink)',
                       }}
                     >
                       {count}

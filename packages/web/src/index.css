@@ -17,6 +17,11 @@
   inherits: true;
   initial-value: #1a1c0a;
 }
+@property --color-accent-text {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #c9eb4a;
+}
 @property --color-surface {
   syntax: "<color>";
   inherits: true;
