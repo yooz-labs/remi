@@ -3,6 +3,10 @@ import { Network } from '@capacitor/network';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+// Bundled variable fonts (offline-first; no CDN). Inter Tight for UI/display,
+// JetBrains Mono for code, hosts, and technical labels.
+import '@fontsource-variable/inter-tight';
+import '@fontsource-variable/jetbrains-mono';
 import './index.css';
 import App from './App.tsx';
 import { initNotifications } from './lib/notifications';

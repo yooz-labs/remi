@@ -5,6 +5,12 @@
 /** Format a timestamp as a human-readable relative time string. */
 export function formatRelativeTime(timestamp: string): string {
   const date = new Date(timestamp);
+  // A timestamp that fails to parse would otherwise render the literal
+  // "Invalid Date" with no signal; surface it instead of shipping it to the UI.
+  if (Number.isNaN(date.getTime())) {
+    console.warn('[formatRelativeTime] invalid timestamp:', timestamp);
+    return '—';
+  }
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);

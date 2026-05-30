@@ -97,7 +97,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
             }
           }}
           disabled={!customPath.trim()}
-          className="rounded bg-[var(--color-primary)] px-2 py-1 text-xs text-white disabled:opacity-50"
+          className="rounded bg-[var(--color-primary)] px-2 py-1 text-xs text-[var(--color-accent-ink)] disabled:opacity-50"
         >
           Start
         </button>

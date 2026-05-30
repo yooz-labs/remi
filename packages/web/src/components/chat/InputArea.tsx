@@ -65,7 +65,7 @@ function QuickResponse({
         variant === 'default' &&
           'bg-[var(--color-surface-elevated)] text-[var(--color-text)] hover:bg-[var(--color-surface-light)]',
         variant === 'primary' &&
-          'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)]',
+          'bg-[var(--color-primary)] text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)]',
         variant === 'danger' &&
           'bg-[var(--color-error)]/10 text-[var(--color-error)] hover:bg-[var(--color-error)]/20',
       )}
@@ -315,10 +315,10 @@ export function InputArea({
             disabled={disabled}
             rows={1}
             className={clsx(
-              'w-full resize-none rounded-2xl bg-[var(--color-surface-light)] px-4 py-2.5',
+              'w-full resize-none rounded-[20px] border border-[var(--color-border)] bg-[var(--color-surface-light)] px-4 py-2.5',
               'text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
               'outline-none transition-colors',
-              'focus:ring-2 focus:ring-[var(--color-primary)]/50',
+              'focus:ring-2 focus:ring-[var(--color-primary)]/40',
               disabled && 'cursor-not-allowed opacity-50',
             )}
           />
@@ -329,10 +329,10 @@ export function InputArea({
           onClick={handleSend}
           disabled={disabled || !value.trim()}
           className={clsx(
-            'rounded-full p-2.5 transition-all',
+            'flex size-10 shrink-0 items-center justify-center rounded-full transition-all',
             value.trim()
-              ? 'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)] active:scale-95'
-              : 'text-[var(--color-text-muted)]',
+              ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)] active:scale-95'
+              : 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)]',
             disabled && 'cursor-not-allowed opacity-50',
           )}
           aria-label="Send message"

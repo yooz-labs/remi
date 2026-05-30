@@ -1,8 +1,8 @@
 /**
  * ChatView component.
  *
- * Main chat interface combining header, messages, and input.
- * Supports two view modes: compact (plain text) and chat (parsed markdown/code).
+ * Main chat interface combining header, messages, and input. Always renders in
+ * the rich chat mode (markdown, tool grouping, pinned question stack).
  */
 
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
@@ -81,22 +81,21 @@ export function ChatView({
   showTimestamps = true,
   className,
 }: ChatViewProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  // The redesigned chat always uses the rich "chat" rendering (markdown, tool
+  // grouping, pinned question cards). The legacy compact toggle was removed.
+  const [viewMode] = useState<ViewMode>('chat');
   const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
 
-  // In chat mode, render a stack of QuestionCards (main + any subagent prompts,
-  // #437). In compact mode, fall back to the InputArea's quick responses for
-  // the primary (first) prompt. A pending card needs a live connection; an
-  // already-answered card stays briefly regardless.
+  // Render a stack of QuestionCards (main + any subagent prompts, #437) pinned
+  // at the top of the chat. A pending card needs a live connection; an
+  // already-answered card stays briefly regardless. primaryQuestion routes the
+  // InputArea's answer callback (the bottom input itself never shows the
+  // quick-response chips now -- the pinned card owns answering).
   const questionList = questions ?? [];
   const primaryQuestion = questionList[0] ?? null;
-  const chatCards =
-    viewMode === 'chat'
-      ? questionList.filter((q) => q.answeredWith != null || isConnected)
-      : [];
-  const inputQuestion = viewMode === 'chat' ? null : primaryQuestion;
+  const chatCards = questionList.filter((q) => q.answeredWith != null || isConnected);
 
   // iOS edge-swipe back (#411): rightward swipe from the left edge pops
   // the chat back to the session list. Mirrors the native iOS gesture.
@@ -119,8 +118,6 @@ export function ChatView({
     >
       <ChatHeader
         session={session}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         onBack={onBack}
         onOpenSessions={onOpenSessions}
         sessionCount={sessionCount}
@@ -130,6 +127,17 @@ export function ChatView({
         onExportText={onExportText}
         onDetach={onDetach}
       />
+
+      {/* Pinned question stack -- the headline interaction. One card per
+          concurrent prompt (main + any subagent prompts, #437). Kept above
+          the scroll so the answer is always reachable without scrolling. */}
+      {chatCards.length > 0 && (
+        <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface)] pb-1">
+          {chatCards.map((q) => (
+            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
+          ))}
+        </div>
+      )}
 
       <MessageList
         messages={messages}
@@ -143,22 +151,13 @@ export function ChatView({
         showTimestamps={showTimestamps}
       />
 
-      {/* Question stack in chat mode (one card per concurrent prompt) */}
-      {chatCards.length > 0 && (
-        <div className="border-t border-[var(--color-border)] px-3 py-2 space-y-2">
-          {chatCards.map((q) => (
-            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
-          ))}
-        </div>
-      )}
-
       <InputArea
         onSend={onSend}
         onAnswer={(answer) => {
           if (primaryQuestion) onAnswer(primaryQuestion, answer);
         }}
         onCancel={onCancel}
-        question={inputQuestion}
+        question={null}
         isAgentBusy={isAgentBusy}
         disabled={!isConnected}
         replyContext={replyContext ?? null}

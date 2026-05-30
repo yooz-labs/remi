@@ -184,7 +184,7 @@ function PassphraseView({
         type="submit"
         disabled={!passphrase || isSubmitting}
         className={clsx(
-          'flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-white transition-colors',
+          'flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-[var(--color-accent-ink)] transition-colors',
           passphrase && !isSubmitting
             ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)]'
             : 'cursor-not-allowed bg-[var(--color-primary)]/50',
@@ -291,12 +291,13 @@ export function ConnectModal({
     return (
       <div
         data-testid="connect-modal-backdrop"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        className="fixed inset-0 z-50 flex items-end justify-center bg-black/60"
         style={backdropStyle}
       >
-        <div className="w-full max-w-md rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
+        <div className="w-full max-w-md rounded-t-[28px] border border-[var(--color-border)] bg-[var(--color-surface)] pb-[max(env(safe-area-inset-bottom),12px)] shadow-2xl animate-[sheet-up_260ms_cubic-bezier(.2,.8,.2,1)]">
+          <div className="mx-auto mb-1 mt-3 h-1 w-9 rounded-full bg-[var(--color-border)]" />
           <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
-            <h2 className="text-lg font-semibold text-[var(--color-text)]">Authenticate</h2>
+            <h2 className="text-lg font-bold tracking-tight text-[var(--color-text)]">Authenticate</h2>
             <button
               onClick={() => {
                 setPreflightPending(null);
@@ -420,20 +421,14 @@ export function ConnectModal({
   return (
     <div
       data-testid="connect-modal-backdrop"
-      className={clsx(
-        'fixed inset-0 z-50 flex justify-center bg-black/60 p-4',
-        // When the keyboard is open, anchor the modal to the top of the
-        // remaining visible area (paired with backdropStyle's padding-bottom
-        // equal to the keyboard height) so the input never sits behind the
-        // keyboard on short screens.
-        keyboard.isVisible ? 'items-start pt-8' : 'items-center',
-      )}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60"
       style={backdropStyle}
     >
-      <div className="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-[var(--color-surface)] shadow-xl border border-[var(--color-border)]">
+      <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[28px] border border-[var(--color-border)] bg-[var(--color-surface)] pb-[max(env(safe-area-inset-bottom),12px)] shadow-2xl animate-[sheet-up_260ms_cubic-bezier(.2,.8,.2,1)]">
+        <div className="mx-auto mb-1 mt-3 h-1 w-9 rounded-full bg-[var(--color-border)]" />
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
-          <h2 className="text-lg font-semibold text-[var(--color-text)]">Connect</h2>
+        <div className="flex items-center justify-between px-5 pb-3 pt-1">
+          <h2 className="text-[22px] font-bold tracking-tight text-[var(--color-text)]">Connect</h2>
           <button
             onClick={onClose}
             className="rounded-full p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-light)] hover:text-[var(--color-text)]"
@@ -452,7 +447,7 @@ export function ConnectModal({
               className={clsx(
                 'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors',
                 mode === 'local'
-                  ? 'bg-[var(--color-primary)] text-white'
+                  ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)]'
                   : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]',
               )}
             >
@@ -465,7 +460,7 @@ export function ConnectModal({
                 className={clsx(
                   'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors',
                   mode === 'remote'
-                    ? 'bg-[var(--color-primary)] text-white'
+                    ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)]'
                     : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text)]',
                 )}
               >
@@ -605,7 +600,7 @@ export function ConnectModal({
               isScanning
             }
             className={clsx(
-              'flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-white transition-colors',
+              'flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-medium text-[var(--color-accent-ink)] transition-colors',
               canConnect &&
                 !isConnecting &&
                 !isAuthenticating &&
