@@ -235,9 +235,18 @@ function App() {
         // rotation that happened while we were disconnected (#439). If Claude
         // rotated (/clear, /resume) while away, the remi session id is
         // unchanged but its claudeSessionId differs from the one we last saw.
+        // This read must precede the setSessions enqueue below, which is what
+        // overwrites the binding.
         const prevClaudeSessionId = sessionsRef.current.find(
           (s) => s.id === message.sessionId && s.connectionId === connectionId,
         )?.claudeSessionId;
+        // Reconnect-mid-rotation: the binding changed while we were away, so the
+        // chat on screen belongs to the OLD Claude session. Clear it first, then
+        // let the setSessions below swap the binding. Same effect as a live
+        // session_rotated, which also clears before swapping (#439).
+        if (bindingRotated(prevClaudeSessionId, ackClaudeSessionId)) {
+          clearSessionForRebind(message.sessionId);
+        }
         setSessions((prev) => {
           // On reconnect, remove stale sessions from this connection that have a different
           // session ID (the daemon may have assigned a new session). Keep sessions from
@@ -278,13 +287,6 @@ function App() {
             } satisfies UISession,
           ];
         });
-        // Reconnect-mid-rotation: the binding changed while we were away, so the
-        // chat on screen belongs to the OLD Claude session. Reconcile exactly
-        // like a live session_rotated, clear it so the new transcript loads
-        // (the setSessions above already swapped the binding) (#439).
-        if (bindingRotated(prevClaudeSessionId, ackClaudeSessionId)) {
-          clearSessionForRebind(message.sessionId);
-        }
         localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
 
         // Pin sessionId -> daemon URL so cold-start push answers route to the
