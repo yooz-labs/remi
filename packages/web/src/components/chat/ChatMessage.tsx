@@ -194,7 +194,7 @@ const userMarkdownComponents = {
     }
     return (
       <code
-        className="rounded px-1.5 py-0.5 text-[0.85em] font-[family-name:--font-mono] bg-white/15"
+        className="rounded px-1.5 py-0.5 text-[0.85em] font-[family-name:--font-mono] bg-[var(--color-surface)]/10"
         {...props}
       >
         {children}

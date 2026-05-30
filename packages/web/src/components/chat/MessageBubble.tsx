@@ -302,13 +302,6 @@ export function MessageBubble({
     );
   }
 
-  // Sender label for enhanced chat mode
-  let senderLabel: string | null = null;
-  if (enhanced) {
-    if (isUser) senderLabel = 'You';
-    else if (!isSystem) senderLabel = 'Claude';
-  }
-
   return (
     <div
       className={clsx('flex w-full animate-[slide-up]', isUser ? 'justify-end' : 'justify-start')}
@@ -321,8 +314,10 @@ export function MessageBubble({
           'shadow-sm border',
           // Width: wider in enhanced mode for better code block display
           enhanced ? 'max-w-[95%]' : 'max-w-[85%]',
-          // Bubble colors
-          isUser && 'bg-[var(--color-bubble-user)] text-white border-[var(--color-bubble-user)]',
+          // Bubble colors -- user is a light "ink" pill with dark text; the
+          // dark/light surface color flips with the theme so contrast holds.
+          isUser &&
+            'bg-[var(--color-bubble-user)] text-[var(--color-surface)] border-[var(--color-bubble-user)]',
           !isUser && !isSystem && 'bg-[var(--color-bubble-assistant)] border-[var(--color-border)]',
           isSystem &&
             'bg-[var(--color-bubble-system)] text-[var(--color-text-secondary)] border-[var(--color-border)]',
@@ -341,13 +336,6 @@ export function MessageBubble({
           isReplyable && 'pointer-coarse:select-none touch-manipulation',
         )}
       >
-        {/* Sender label in enhanced mode */}
-        {senderLabel && (
-          <div className="mb-1 text-[11px] font-semibold text-[var(--color-text-muted)]">
-            {senderLabel}
-          </div>
-        )}
-
         {/* Tool indicator (compact mode only; enhanced mode uses ToolUseCard) */}
         {!enhanced && message.tool && (
           <div className="mb-1 flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
@@ -357,7 +345,7 @@ export function MessageBubble({
         )}
 
         {/* Message content */}
-        <div className={clsx(isUser ? 'text-white' : 'text-[var(--color-text)]')}>
+        <div className={clsx(isUser ? 'text-[var(--color-surface)]' : 'text-[var(--color-text)]')}>
           <MessageContent
             message={message}
             enhanced={enhanced}
@@ -387,7 +375,7 @@ export function MessageBubble({
             <span
               className={clsx(
                 'text-[10px]',
-                isUser ? 'text-white/70' : 'text-[var(--color-text-muted)]',
+                isUser ? 'text-[var(--color-surface)]/55' : 'text-[var(--color-text-muted)]',
               )}
             >
               {formatTime(message.timestamp)}

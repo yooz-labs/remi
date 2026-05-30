@@ -1,14 +1,17 @@
 /**
  * QuestionCard component.
  *
- * Renders interactive question cards based on question type.
- * Supports yes/no, multi-option, numbered selection, and free text.
- * Designed for mobile with large tap targets (min 44px).
+ * The headline interaction of the chat screen: a pinned permission / question
+ * card. Renders a labeled header (with elapsed time), the prompt, an optional
+ * mono detail block, and large tap-friendly option rows with key badges and
+ * hints (Allow once / Remember for session / Cancel). Free-text questions get
+ * an inline input.
  */
 
+import { formatRelativeTime } from '@/lib/format-time';
 import type { UIQuestion, UIQuestionOption } from '@/types';
 import { clsx } from 'clsx';
-import { Check, ChevronRight, MessageSquare, Send } from 'lucide-react';
+import { Check, Send } from 'lucide-react';
 import { type KeyboardEvent, useCallback, useState } from 'react';
 
 interface QuestionCardProps {
@@ -17,14 +20,13 @@ interface QuestionCardProps {
   readonly className?: string;
 }
 
-/** Resolve the display label for an option value in the answered state */
+/** Resolve the display label for an answered value. */
 function resolveAnswerLabel(question: UIQuestion, answer: string): string {
   if (question.structuredOptions) {
     const match = question.structuredOptions.find((o) => o.value === answer);
     if (match) return match.label;
   }
   if (question.options) {
-    // For numbered questions, the answer is the index (1-based)
     const idx = Number.parseInt(answer, 10);
     if (!Number.isNaN(idx) && idx >= 1 && idx <= question.options.length) {
       return question.options[idx - 1];
@@ -33,202 +35,133 @@ function resolveAnswerLabel(question: UIQuestion, answer: string): string {
   return answer;
 }
 
-/** Get display label for an option. Uses the label from the daemon directly. */
-function getOptionDisplayLabel(option: UIQuestionOption): string {
-  return option.label;
+type OptionKind = 'primary' | 'danger' | 'default';
+
+interface RenderOption {
+  readonly key: string;
+  readonly badge: string;
+  readonly label: string;
+  readonly hint?: string;
+  readonly kind: OptionKind;
 }
 
-/** Determine button variant based on option semantics */
-function getOptionVariant(option: UIQuestionOption): 'primary' | 'danger' | 'warning' | 'default' {
+/** Hint text shown to the right of permission-style options. */
+function optionHint(option: UIQuestionOption): string | undefined {
+  if (/always/i.test(option.label)) return 'Remember for session';
+  if (option.isYes) return 'Allow once';
+  if (option.isNo) return 'Cancel';
+  return undefined;
+}
+
+function optionKind(option: UIQuestionOption): OptionKind {
   if (option.isYes || option.isRecommended) return 'primary';
   if (option.isNo) return 'danger';
-  const lower = option.value.toLowerCase();
-  if (lower === 'q' || lower === 'quit') return 'warning';
   return 'default';
 }
 
-/** Large tap-friendly button for option selection */
-function OptionButton({
-  label,
-  variant = 'default',
-  onClick,
-  disabled,
-}: {
-  readonly label: string;
-  readonly variant?: 'primary' | 'danger' | 'warning' | 'default';
-  readonly onClick: () => void;
-  readonly disabled?: boolean;
-}) {
+/** Flatten any question shape into a uniform option list for rendering. */
+function buildOptions(question: UIQuestion): RenderOption[] {
+  if (question.structuredOptions && question.structuredOptions.length > 0) {
+    return question.structuredOptions.map((o) => ({
+      key: o.value,
+      badge: o.value.slice(0, 2).toUpperCase(),
+      label: o.label,
+      hint: optionHint(o),
+      kind: optionKind(o),
+    }));
+  }
+  if (question.type === 'yes_no') {
+    return [
+      { key: 'y', badge: 'Y', label: 'Yes', hint: 'Allow once', kind: 'primary' },
+      { key: 'n', badge: 'N', label: 'No', hint: 'Cancel', kind: 'danger' },
+    ];
+  }
+  if (question.options && question.options.length > 0) {
+    return question.options.map((label, i) => ({
+      key: String(i + 1),
+      badge: String(i + 1),
+      label,
+      kind: 'default' as const,
+    }));
+  }
+  return [];
+}
+
+/** A single option row. */
+function OptionRow({ option, onAnswer }: { readonly option: RenderOption; readonly onAnswer: (v: string) => void }) {
+  const { kind } = option;
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={clsx(
-        'flex min-h-[44px] min-w-[44px] items-center justify-center',
-        'rounded-xl px-6 py-3 text-sm font-semibold',
-        'transition-all duration-150 active:scale-[0.97]',
-        'shadow-sm border',
-        disabled && 'pointer-events-none opacity-40',
-        variant === 'primary' && [
-          'bg-[var(--color-primary)] text-white border-[var(--color-primary)]',
-          'hover:bg-[var(--color-primary-dark)]',
-        ],
-        variant === 'danger' && [
-          'bg-[var(--color-error)]/10 text-[var(--color-error)] border-[var(--color-error)]/20',
-          'hover:bg-[var(--color-error)]/20',
-        ],
-        variant === 'warning' && [
-          'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20',
-          'hover:bg-[var(--color-warning)]/20',
-        ],
-        variant === 'default' && [
-          'bg-[var(--color-surface-elevated)] text-[var(--color-text)] border-[var(--color-border)]',
-          'hover:bg-[var(--color-surface-light)]',
-        ],
-      )}
+      onClick={() => onAnswer(option.key)}
+      className="flex min-h-[44px] items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-transform active:scale-[0.99]"
+      style={{
+        background:
+          kind === 'primary'
+            ? 'var(--color-primary)'
+            : kind === 'danger'
+              ? 'transparent'
+              : 'var(--color-surface-elevated)',
+        color: kind === 'primary' ? 'var(--color-accent-ink)' : 'var(--color-text)',
+        border: kind === 'danger' ? '1px solid var(--color-border)' : 'none',
+      }}
     >
-      {label}
+      <span
+        className="inline-flex size-[22px] shrink-0 items-center justify-center rounded-md font-mono text-[11px] font-bold"
+        style={{
+          background:
+            kind === 'primary'
+              ? 'color-mix(in srgb, var(--color-accent-ink) 14%, transparent)'
+              : kind === 'danger'
+                ? 'var(--color-surface-elevated)'
+                : 'var(--color-surface)',
+          opacity: 0.95,
+        }}
+      >
+        {option.badge}
+      </span>
+      <span className="text-sm font-semibold">{option.label}</span>
+      {option.hint && (
+        <span className="ml-auto text-[11px] opacity-70">{option.hint}</span>
+      )}
     </button>
   );
 }
 
-/** Yes/No card with two large buttons */
-function YesNoCard({
-  question,
-  onAnswer,
-}: {
-  readonly question: UIQuestion;
-  readonly onAnswer: (answer: string) => void;
-}) {
-  const yesOption = question.structuredOptions?.find((o) => o.isYes);
-  const noOption = question.structuredOptions?.find((o) => o.isNo);
-
-  return (
-    <div className="flex gap-3">
-      <OptionButton
-        label="Yes"
-        variant="primary"
-        onClick={() => onAnswer(yesOption?.value ?? 'yes')}
-      />
-      <OptionButton label="No" variant="danger" onClick={() => onAnswer(noOption?.value ?? 'no')} />
-    </div>
-  );
-}
-
-/** Multi-option card (yes/no + extra options like all/quit) */
-function MultiOptionCard({
-  question,
-  onAnswer,
-}: {
-  readonly question: UIQuestion;
-  readonly onAnswer: (answer: string) => void;
-}) {
-  const options = question.structuredOptions ?? [];
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      {options.map((option) => (
-        <OptionButton
-          key={option.value}
-          label={getOptionDisplayLabel(option)}
-          variant={getOptionVariant(option)}
-          onClick={() => onAnswer(option.value)}
-        />
-      ))}
-    </div>
-  );
-}
-
-/** Numbered selection card with tap targets */
-function NumberedCard({
-  question,
-  onAnswer,
-}: {
-  readonly question: UIQuestion;
-  readonly onAnswer: (answer: string) => void;
-}) {
-  const options = question.options ?? [];
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      {options.map((option, index) => (
-        <button
-          type="button"
-          key={`opt-${index + 1}-${option}`}
-          onClick={() => onAnswer(String(index + 1))}
-          className={clsx(
-            'flex min-h-[44px] items-center gap-3 rounded-xl px-4 py-3',
-            'bg-[var(--color-surface-elevated)] border border-[var(--color-border)]',
-            'text-left text-sm text-[var(--color-text)]',
-            'transition-all duration-150 active:scale-[0.98]',
-            'hover:bg-[var(--color-surface-light)] hover:border-[var(--color-primary)]/30',
-          )}
-        >
-          <span
-            className={clsx(
-              'flex size-7 shrink-0 items-center justify-center rounded-full',
-              'bg-[var(--color-primary)]/10 text-xs font-bold text-[var(--color-primary)]',
-            )}
-          >
-            {index + 1}
-          </span>
-          <span className="flex-1">{option}</span>
-          <ChevronRight className="size-4 shrink-0 text-[var(--color-text-muted)]" />
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/** Free text input card */
-function FreeTextCard({
-  onAnswer,
-}: {
-  readonly onAnswer: (answer: string) => void;
-}) {
+/** Free text input row. */
+function FreeTextRow({ onAnswer }: { readonly onAnswer: (v: string) => void }) {
   const [value, setValue] = useState('');
-
-  const handleSubmit = useCallback(() => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    onAnswer(trimmed);
+  const submit = useCallback(() => {
+    const t = value.trim();
+    if (!t) return;
+    onAnswer(t);
     setValue('');
   }, [value, onAnswer]);
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      handleSubmit();
+      submit();
     }
   };
-
   return (
     <div className="flex items-center gap-2">
       <input
         type="text"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
+        onKeyDown={onKey}
         placeholder="Type your response..."
-        className={clsx(
-          'min-h-[44px] flex-1 rounded-xl border border-[var(--color-border)]',
-          'bg-[var(--color-surface-elevated)] px-4 py-2.5 text-sm text-[var(--color-text)]',
-          'placeholder:text-[var(--color-text-muted)]',
-          'outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50',
-        )}
+        className="min-h-[44px] flex-1 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-2.5 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-muted)] focus:ring-2 focus:ring-[var(--color-primary)]/40"
       />
       <button
         type="button"
-        onClick={handleSubmit}
+        onClick={submit}
         disabled={!value.trim()}
-        className={clsx(
-          'flex size-[44px] items-center justify-center rounded-xl',
-          'transition-all duration-150 active:scale-95',
-          value.trim()
-            ? 'bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-dark)]'
-            : 'bg-[var(--color-surface-elevated)] text-[var(--color-text-muted)]',
-        )}
+        className="flex size-[44px] items-center justify-center rounded-[10px] transition-transform active:scale-95"
+        style={{
+          background: value.trim() ? 'var(--color-primary)' : 'var(--color-surface-elevated)',
+          color: value.trim() ? 'var(--color-accent-ink)' : 'var(--color-text-muted)',
+        }}
         aria-label="Send response"
       >
         <Send className="size-5" />
@@ -237,76 +170,83 @@ function FreeTextCard({
   );
 }
 
-/** Answered state: collapsed card showing the selected answer */
-function AnsweredCard({
-  question,
-}: {
-  readonly question: UIQuestion;
-}) {
-  const answerLabel = resolveAnswerLabel(question, question.answeredWith ?? '');
-
-  return (
-    <div
-      className={clsx(
-        'flex items-center gap-2 rounded-xl px-4 py-2.5',
-        'bg-[var(--color-success)]/10 border border-[var(--color-success)]/20',
-        'text-sm text-[var(--color-text-secondary)]',
-        'animate-[fade-in_200ms_ease-out]',
-      )}
-    >
-      <Check className="size-4 shrink-0 text-[var(--color-success)]" />
-      <span>
-        Answered: <span className="font-medium text-[var(--color-text)]">{answerLabel}</span>
-      </span>
-    </div>
-  );
-}
-
-/** Render the appropriate answer UI based on question type and state */
-function AnswerArea({
-  question,
-  isAnswered,
-  onAnswer,
-}: {
-  readonly question: UIQuestion;
-  readonly isAnswered: boolean;
-  readonly onAnswer: (answer: string) => void;
-}) {
-  if (isAnswered) return <AnsweredCard question={question} />;
-
-  switch (question.type) {
-    case 'yes_no':
-      return <YesNoCard question={question} onAnswer={onAnswer} />;
-    case 'multi_option':
-      return <MultiOptionCard question={question} onAnswer={onAnswer} />;
-    case 'numbered':
-      return <NumberedCard question={question} onAnswer={onAnswer} />;
-    default:
-      return <FreeTextCard onAnswer={onAnswer} />;
-  }
-}
-
 export function QuestionCard({ question, onAnswer, className }: QuestionCardProps) {
   const isAnswered = question.answeredWith != null;
+  const options = buildOptions(question);
+  const isPermission = options.some((o) => o.kind === 'primary' || o.kind === 'danger');
+  const headerLabel = isPermission ? 'Permission request' : 'Question';
+
+  if (isAnswered) {
+    return (
+      <div
+        className={clsx(
+          'mx-3.5 my-2 flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm',
+          'animate-[fade-in_200ms_ease-out]',
+          className,
+        )}
+        style={{
+          background: 'color-mix(in srgb, var(--color-success) 10%, transparent)',
+          borderColor: 'color-mix(in srgb, var(--color-success) 25%, transparent)',
+          color: 'var(--color-text-secondary)',
+        }}
+      >
+        <Check className="size-4 shrink-0 text-[var(--color-success)]" />
+        <span>
+          Answered:{' '}
+          <span className="font-medium text-[var(--color-text)]">
+            {resolveAnswerLabel(question, question.answeredWith ?? '')}
+          </span>
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div
-      className={clsx(
-        'rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]',
-        'shadow-md p-4',
-        'animate-[slide-up_200ms_ease-out]',
-        isAnswered && 'opacity-75',
-        className,
-      )}
+      className={clsx('mx-3.5 my-2 overflow-hidden rounded-[18px]', className)}
+      style={{
+        background: 'var(--color-surface-light)',
+        border: '1px solid color-mix(in srgb, var(--color-primary) 33%, transparent)',
+        boxShadow:
+          '0 0 0 4px color-mix(in srgb, var(--color-primary) 7%, transparent), 0 12px 32px -16px color-mix(in srgb, var(--color-primary) 33%, transparent)',
+        animation: 'slide-up 200ms ease-out',
+      }}
     >
-      {/* Question prompt */}
-      <div className="mb-3 flex items-start gap-2">
-        <MessageSquare className="mt-0.5 size-4 shrink-0 text-[var(--color-primary)]" />
-        <p className="text-sm font-medium text-[var(--color-text)]">{question.prompt}</p>
+      {/* Header */}
+      <div
+        className="flex items-center gap-2 px-3.5 py-2.5"
+        style={{
+          background: 'var(--color-accent-soft)',
+          borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 13%, transparent)',
+        }}
+      >
+        <span
+          className="size-1.5 rounded-full bg-[var(--color-primary)]"
+          style={{ color: 'var(--color-primary)', animation: 'pulse-dot 1.4s ease-out infinite' }}
+        />
+        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--color-primary)]">
+          {headerLabel}
+        </span>
+        <span className="ml-auto font-mono text-[11px] text-[var(--color-text-secondary)]">
+          {formatRelativeTime(question.timestamp)}
+        </span>
       </div>
 
-      {/* Answer area */}
-      <AnswerArea question={question} isAnswered={isAnswered} onAnswer={onAnswer} />
+      {/* Prompt */}
+      <div className="px-4 pb-1.5 pt-3.5">
+        <p className="break-anywhere text-[15px] font-medium leading-snug text-[var(--color-text)]">
+          {question.prompt}
+        </p>
+      </div>
+
+      {/* Options / free text */}
+      <div className="flex flex-col gap-1.5 px-3 pb-3 pt-2.5">
+        {options.length > 0 ? (
+          options.map((o) => <OptionRow key={o.key} option={o} onAnswer={onAnswer} />)
+        ) : (
+          <FreeTextRow onAnswer={onAnswer} />
+        )}
+      </div>
     </div>
   );
 }

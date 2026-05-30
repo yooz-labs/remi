@@ -81,7 +81,9 @@ export function ChatView({
   showTimestamps = true,
   className,
 }: ChatViewProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  // The redesigned chat always uses the rich "chat" rendering (markdown, tool
+  // grouping, pinned question cards). The legacy compact toggle was removed.
+  const [viewMode] = useState<ViewMode>('chat');
   const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
@@ -119,8 +121,6 @@ export function ChatView({
     >
       <ChatHeader
         session={session}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         onBack={onBack}
         onOpenSessions={onOpenSessions}
         sessionCount={sessionCount}
@@ -130,6 +130,17 @@ export function ChatView({
         onExportText={onExportText}
         onDetach={onDetach}
       />
+
+      {/* Pinned question stack -- the headline interaction. One card per
+          concurrent prompt (main + any subagent prompts, #437). Kept above
+          the scroll so the answer is always reachable without scrolling. */}
+      {chatCards.length > 0 && (
+        <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface)] pb-1">
+          {chatCards.map((q) => (
+            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
+          ))}
+        </div>
+      )}
 
       <MessageList
         messages={messages}
@@ -142,15 +153,6 @@ export function ChatView({
         keyboardVisible={keyboardVisible}
         showTimestamps={showTimestamps}
       />
-
-      {/* Question stack in chat mode (one card per concurrent prompt) */}
-      {chatCards.length > 0 && (
-        <div className="border-t border-[var(--color-border)] px-3 py-2 space-y-2">
-          {chatCards.map((q) => (
-            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
-          ))}
-        </div>
-      )}
 
       <InputArea
         onSend={onSend}

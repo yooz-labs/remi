@@ -52,7 +52,7 @@ export function ToolUseCard({ toolName, content, defaultExpanded = false }: Tool
   return (
     <div
       className={clsx(
-        'rounded-lg border border-[var(--color-border)] overflow-hidden',
+        'overflow-hidden rounded-xl border border-[var(--color-border)] font-mono',
         'bg-[var(--color-surface-light)] transition-colors',
       )}
     >
@@ -70,8 +70,8 @@ export function ToolUseCard({ toolName, content, defaultExpanded = false }: Tool
         ) : (
           <ChevronRight className="size-3.5 shrink-0 text-[var(--color-text-muted)]" />
         )}
-        <ToolIcon name={toolName} className="size-3.5 shrink-0 text-[var(--color-primary)]" />
-        <span className="text-xs font-medium text-[var(--color-text-secondary)]">{toolName}</span>
+        <ToolIcon name={toolName} className="size-3.5 shrink-0 text-[var(--color-text-muted)]" />
+        <span className="text-xs font-semibold text-[var(--color-text)]">{toolName}</span>
         {!expanded && summary && (
           <span className="truncate text-xs text-[var(--color-text-muted)]">{summary}</span>
         )}
