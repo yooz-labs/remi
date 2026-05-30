@@ -90,7 +90,7 @@ function BulletItem({
           disabled={bullet.isExpanding}
           className={clsx(
             'mt-1 flex items-center gap-1 text-xs',
-            'text-[var(--color-primary)] hover:text-[var(--color-primary-hover)]',
+            'text-[var(--color-accent-text)] hover:opacity-80',
             'transition-colors duration-150',
             bullet.isExpanding && 'opacity-50 cursor-wait',
           )}

@@ -113,6 +113,9 @@
   --color-accent-ink: #1a1c0a;
   /* Soft accent wash for attention surfaces (banners, pills, glows). */
   --color-accent-soft: rgba(201, 235, 74, 0.1);
+  /* Lime as TEXT. Legible on dark surfaces; the light theme overrides this to a
+     darker olive-lime because bright lime text fails contrast on light bg. */
+  --color-accent-text: #c9eb4a;
 
   --color-surface: #0e0e0c;
   --color-surface-light: #171614;
@@ -245,6 +248,9 @@ html[data-theme="light"] {
   --color-primary-dark: #b9db3a;
   --color-accent-ink: #1a1c0a;
   --color-accent-soft: rgba(159, 191, 38, 0.16);
+  /* Darker olive-lime so accent text (inline code, links, labels) stays legible
+     on the light paper surfaces (~5:1 on white, ~4.8:1 on the elevated chip). */
+  --color-accent-text: #4f6b07;
   --color-surface: #f6f3ec;
   --color-surface-light: #ffffff;
   --color-surface-elevated: #ede8dc;
