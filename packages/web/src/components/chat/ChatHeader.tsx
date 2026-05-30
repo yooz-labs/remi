@@ -142,6 +142,9 @@ export function ChatHeader({
             onClick={() => {
               const value = session.transcriptPath ?? session.claudeSessionId;
               if (!value) return;
+              // navigator.clipboard can be undefined in iOS WKWebView
+              // non-secure contexts; permission denial and lost-focus
+              // rejections also land in this catch. Best-effort copy.
               navigator.clipboard?.writeText(value).catch((err) => {
                 console.warn('[ChatHeader] clipboard write failed:', err);
               });

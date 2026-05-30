@@ -47,8 +47,10 @@ interface SessionListProps {
 
 type FilterId = 'all' | 'asking' | 'working' | 'idle';
 
-/** Map a pill state to the filter bucket it belongs to. */
-function filterBucket(state: PillState): FilterId {
+/** Map a pill state to the filter bucket it belongs to. `connecting` and
+ *  `offline` fold into `idle` on purpose: they are all non-interactive from
+ *  the user's point of view and don't warrant their own chip on a phone. */
+function filterBucket(state: PillState): 'asking' | 'working' | 'idle' {
   if (state === 'asking') return 'asking';
   if (state === 'working') return 'working';
   return 'idle';
@@ -172,8 +174,8 @@ export function SessionList({
               onClick={() => {
                 if (hasConnections && onNewSession) {
                   // Directory selection is preserved here; the richer
-                  // new-session sheet (command + options) is a follow-up that
-                  // needs daemon-side support.
+                  // new-session sheet (command + options) is tracked in #447
+                  // and needs daemon-side support.
                   const dir = window.prompt('Project directory (leave empty for home):');
                   if (dir !== null) onNewSession(dir || undefined);
                 } else {
@@ -239,7 +241,7 @@ export function SessionList({
               className="mx-4 mb-3 mt-3 flex items-center gap-3 rounded-2xl px-3.5 py-3 text-left"
               style={{
                 background: 'var(--color-accent-soft)',
-                border: '1px solid color-mix(in srgb, var(--color-primary) 20%, transparent)',
+                border: '1px solid var(--color-accent-20)',
               }}
             >
               <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-[var(--color-accent-ink)]">

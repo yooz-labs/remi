@@ -11,6 +11,8 @@ import type { PillState } from '@/lib/session-display';
 
 interface PillConfig {
   readonly label: string;
+  // `dot` and `fg` are separate fields (currently always equal) so a future
+  // design can tint the dot independently of the label text.
   readonly dot: string;
   readonly fg: string;
   readonly bg: string;

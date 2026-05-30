@@ -124,6 +124,16 @@
   --color-success: #7dd87a;
   --color-warning: #f5b341;
   --color-error: #ff5d5d;
+  /* Pre-mixed success tints (literal rgba, not color-mix) so they render on
+     iOS 15 WebView where color-mix() is unsupported (Safari < 16.2). */
+  --color-success-soft: rgba(125, 216, 122, 0.1);
+  --color-success-line: rgba(125, 216, 122, 0.25);
+  /* Pre-mixed lime accent tints, same iOS-15 reason. */
+  --color-accent-7: rgba(201, 235, 74, 0.07);
+  --color-accent-13: rgba(201, 235, 74, 0.13);
+  --color-accent-20: rgba(201, 235, 74, 0.2);
+  --color-accent-33: rgba(201, 235, 74, 0.33);
+  --color-accent-ink-14: rgba(26, 28, 10, 0.14);
 
   /* Message bubbles -- light "ink" pill for the user, warm elevation for the agent */
   --color-bubble-user: #f4efe4;
@@ -214,8 +224,9 @@
   }
 }
 
-/* Expanding ring used by "working" status dots. currentColor lets the ring
-   inherit whatever color the dot is tinted. */
+/* Expanding ring used by active-state status dots (working, connecting, and
+   the question-card header). currentColor lets the ring inherit whatever color
+   the dot is tinted. */
 @keyframes pulse-dot {
   0% {
     box-shadow: 0 0 0 0 currentColor;
@@ -251,6 +262,9 @@ html[data-theme="light"] {
   --color-status-sent: #5a564e;
   --color-status-delivered: #4a8f47;
   --color-status-read: #6f8a1f;
+  /* Success tints recomputed for the lighter-foliage light-mode success. */
+  --color-success-soft: rgba(74, 143, 71, 0.1);
+  --color-success-line: rgba(74, 143, 71, 0.25);
 }
 
 /* Base styles */
@@ -320,7 +334,7 @@ body.keyboard-open .safe-area-bottom {
   background-color: var(--color-text-muted);
 }
 
-/* Hide scrollbars inside horizontal scroll regions (chips, recents) */
+/* Hide scrollbars inside horizontal scroll regions (the filter-chips row) */
 .no-scrollbar {
   scrollbar-width: none;
   -ms-overflow-style: none;

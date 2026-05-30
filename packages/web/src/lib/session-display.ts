@@ -26,9 +26,17 @@ export function sessionPillState(
       return 'connecting';
     case 'disconnected':
       return 'idle';
-    default:
-      break;
+    case 'connected':
+      break; // fall through to the agent-status checks below
+    default: {
+      // Exhaustiveness guard: a new ConnectionStatus must be handled above or
+      // this line fails to compile.
+      const _exhaustive: never = session.connectionStatus;
+      void _exhaustive;
+    }
   }
+  // A pending question always wins. Note: the 'waiting' AgentStatus has no
+  // distinct pill and intentionally collapses to 'idle'.
   if (session.questionPending) return 'asking';
   if (session.status === 'thinking' || session.status === 'executing') return 'working';
   return 'idle';
@@ -38,11 +46,12 @@ export function sessionPillState(
  * Split a session's display name into host / project / branch parts.
  * Session names are shaped "<host>:<project>/<branch...>" (host optional);
  * when no explicit host prefix is present we fall back to the connection's
- * hostname (the port stripped off).
+ * hostname (the port stripped off). `branch` is null when the name has no
+ * branch component (callers fall back to the project as the headline).
  */
 export function splitSessionName(
   session: Pick<UISession, 'name' | 'connectionId'>,
-): { host: string; project: string; branch: string } {
+): { host: string; project: string; branch: string | null } {
   const raw = session.name || '';
   let host = session.connectionId.replace(/:\d+$/, '');
   let rest = raw;
@@ -54,6 +63,6 @@ export function splitSessionName(
   }
   const slash = rest.indexOf('/');
   const project = (slash >= 0 ? rest.slice(0, slash) : rest) || 'session';
-  const branch = slash >= 0 ? rest.slice(slash + 1) : '';
+  const branch = slash >= 0 ? rest.slice(slash + 1) : null;
   return { host, project, branch };
 }

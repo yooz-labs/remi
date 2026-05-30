@@ -2,10 +2,9 @@
  * QuestionCard component.
  *
  * The headline interaction of the chat screen: a pinned permission / question
- * card. Renders a labeled header (with elapsed time), the prompt, an optional
- * mono detail block, and large tap-friendly option rows with key badges and
- * hints (Allow once / Remember for session / Cancel). Free-text questions get
- * an inline input.
+ * card. Renders a labeled header (with elapsed time), the prompt, and large
+ * tap-friendly option rows with key badges and hints (Allow once / Remember
+ * for session / Cancel). Free-text questions get an inline input.
  */
 
 import { formatRelativeTime } from '@/lib/format-time';
@@ -111,7 +110,7 @@ function OptionRow({ option, onAnswer }: { readonly option: RenderOption; readon
         style={{
           background:
             kind === 'primary'
-              ? 'color-mix(in srgb, var(--color-accent-ink) 14%, transparent)'
+              ? 'var(--color-accent-ink-14)'
               : kind === 'danger'
                 ? 'var(--color-surface-elevated)'
                 : 'var(--color-surface)',
@@ -185,8 +184,8 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
           className,
         )}
         style={{
-          background: 'color-mix(in srgb, var(--color-success) 10%, transparent)',
-          borderColor: 'color-mix(in srgb, var(--color-success) 25%, transparent)',
+          background: 'var(--color-success-soft)',
+          borderColor: 'var(--color-success-line)',
           color: 'var(--color-text-secondary)',
         }}
       >
@@ -206,9 +205,8 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
       className={clsx('mx-3.5 my-2 overflow-hidden rounded-[18px]', className)}
       style={{
         background: 'var(--color-surface-light)',
-        border: '1px solid color-mix(in srgb, var(--color-primary) 33%, transparent)',
-        boxShadow:
-          '0 0 0 4px color-mix(in srgb, var(--color-primary) 7%, transparent), 0 12px 32px -16px color-mix(in srgb, var(--color-primary) 33%, transparent)',
+        border: '1px solid var(--color-accent-33)',
+        boxShadow: '0 0 0 4px var(--color-accent-7), 0 12px 32px -16px var(--color-accent-33)',
         animation: 'slide-up 200ms ease-out',
       }}
     >
@@ -217,7 +215,7 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
         className="flex items-center gap-2 px-3.5 py-2.5"
         style={{
           background: 'var(--color-accent-soft)',
-          borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 13%, transparent)',
+          borderBottom: '1px solid var(--color-accent-13)',
         }}
       >
         <span

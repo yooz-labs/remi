@@ -1,8 +1,8 @@
 /**
  * ChatView component.
  *
- * Main chat interface combining header, messages, and input.
- * Supports two view modes: compact (plain text) and chat (parsed markdown/code).
+ * Main chat interface combining header, messages, and input. Always renders in
+ * the rich chat mode (markdown, tool grouping, pinned question stack).
  */
 
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
@@ -88,17 +88,14 @@ export function ChatView({
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
 
-  // In chat mode, render a stack of QuestionCards (main + any subagent prompts,
-  // #437). In compact mode, fall back to the InputArea's quick responses for
-  // the primary (first) prompt. A pending card needs a live connection; an
-  // already-answered card stays briefly regardless.
+  // Render a stack of QuestionCards (main + any subagent prompts, #437) pinned
+  // at the top of the chat. A pending card needs a live connection; an
+  // already-answered card stays briefly regardless. primaryQuestion routes the
+  // InputArea's answer callback (the bottom input itself never shows the
+  // quick-response chips now -- the pinned card owns answering).
   const questionList = questions ?? [];
   const primaryQuestion = questionList[0] ?? null;
-  const chatCards =
-    viewMode === 'chat'
-      ? questionList.filter((q) => q.answeredWith != null || isConnected)
-      : [];
-  const inputQuestion = viewMode === 'chat' ? null : primaryQuestion;
+  const chatCards = questionList.filter((q) => q.answeredWith != null || isConnected);
 
   // iOS edge-swipe back (#411): rightward swipe from the left edge pops
   // the chat back to the session list. Mirrors the native iOS gesture.
@@ -160,7 +157,7 @@ export function ChatView({
           if (primaryQuestion) onAnswer(primaryQuestion, answer);
         }}
         onCancel={onCancel}
-        question={inputQuestion}
+        question={null}
         isAgentBusy={isAgentBusy}
         disabled={!isConnected}
         replyContext={replyContext ?? null}

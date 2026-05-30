@@ -375,7 +375,7 @@ export function MessageBubble({
             <span
               className={clsx(
                 'text-[10px]',
-                isUser ? 'text-[var(--color-surface)]/55' : 'text-[var(--color-text-muted)]',
+                isUser ? 'text-[var(--color-surface)]/70' : 'text-[var(--color-text-muted)]',
               )}
             >
               {formatTime(message.timestamp)}

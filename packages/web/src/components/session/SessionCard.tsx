@@ -3,7 +3,7 @@
  *
  * A single session row in the session list. Shows host/project, the branch,
  * a status pill, a two-line preview, and the time + unread badge. Sessions
- * that need the user (a pending question) get a lime attention stripe.
+ * that need the user (a pending question) get an accent attention stripe.
  */
 
 import { StatusPill } from '@/components/StatusPill';
@@ -146,7 +146,7 @@ function getStatusText(state: ReturnType<typeof sessionPillState>): string {
       return 'Connecting...';
     case 'offline':
       return 'Disconnected. Reattach to resume.';
-    default:
+    case 'idle':
       return 'Idle';
   }
 }
