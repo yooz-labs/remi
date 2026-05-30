@@ -23,7 +23,7 @@ const PILL: Record<PillState, PillConfig> = {
   asking: {
     label: 'Needs you',
     dot: 'var(--color-primary)',
-    fg: 'var(--color-primary)',
+    fg: 'var(--color-accent-text)',
     bg: 'var(--color-accent-soft)',
     pulse: false,
   },

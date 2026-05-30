@@ -222,7 +222,7 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
           className="size-1.5 rounded-full bg-[var(--color-primary)]"
           style={{ color: 'var(--color-primary)', animation: 'pulse-dot 1.4s ease-out infinite' }}
         />
-        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--color-primary)]">
+        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--color-accent-text)]">
           {headerLabel}
         </span>
         <span className="ml-auto font-mono text-[11px] text-[var(--color-text-secondary)]">

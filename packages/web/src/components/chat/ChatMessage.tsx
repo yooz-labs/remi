@@ -117,7 +117,7 @@ const markdownComponents = {
   a: ({ children, href, ...props }: React.ComponentProps<'a'>) => (
     <a
       href={href}
-      className="text-[var(--color-primary)] underline underline-offset-2"
+      className="text-[var(--color-accent-text)] underline underline-offset-2"
       target="_blank"
       rel="noopener noreferrer"
       {...props}
@@ -167,9 +167,9 @@ const markdownComponents = {
     return (
       <code
         className={clsx(
-          'rounded px-1.5 py-0.5 text-[0.85em]',
+          'rounded px-1.5 py-0.5 text-[0.85em] font-medium',
           'font-[family-name:--font-mono]',
-          'bg-[var(--color-surface-light)] text-[var(--color-primary)]',
+          'bg-[var(--color-surface-elevated)] text-[var(--color-accent-text)]',
         )}
         {...props}
       >

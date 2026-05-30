@@ -77,7 +77,7 @@ export function SessionCard({
 
         {/* preview (two lines) */}
         <div className="line-clamp-2 text-[13px] leading-snug text-[var(--color-text-secondary)]">
-          {isAsking && <span className="font-semibold text-[var(--color-primary)]">· </span>}
+          {isAsking && <span className="font-semibold text-[var(--color-accent-text)]">· </span>}
           {preview}
         </div>
       </div>
