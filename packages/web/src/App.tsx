@@ -304,13 +304,13 @@ function App() {
         const oldActive = activeSessionIdRef.current;
         if (oldActive !== message.sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
-          const shouldSwitch = !!oldActive && oldSession?.connectionId === connectionId;
-          if (shouldSwitch) {
+          // `oldActive &&` both gates on a chat being open (so a fresh connect
+          // stays on the list) and narrows oldActive to non-null for the
+          // cleanup below.
+          if (oldActive && oldSession?.connectionId === connectionId) {
             setActiveSessionId(message.sessionId);
-            if (oldActive) {
-              setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
-              setQuestions((prev) => clearSessionQuestions(prev, oldActive));
-            }
+            setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
+            setQuestions((prev) => clearSessionQuestions(prev, oldActive));
           }
         }
         break;
