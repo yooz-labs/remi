@@ -20,6 +20,7 @@ import {
   questionKey,
 } from '@/lib/question-collection';
 import { shouldKeepExisting } from '@/lib/question-merge';
+import { bindingRotated } from '@/lib/session-binding';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
@@ -202,6 +203,16 @@ function App() {
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
+    // Drop a session's now-orphaned chat so its (new) transcript re-fetches.
+    // Shared by session_rotated (live rotation) and hello_ack
+    // (reconnect-mid-rotation, #439): both clear stale messages + questions and
+    // forget the loaded-transcript marker so the load gate re-pulls history.
+    const clearSessionForRebind = (sid: string) => {
+      setMessages((prev) => prev.filter((m) => m.sessionId !== sid));
+      setQuestions((prev) => clearSessionQuestions(prev, sid));
+      loadedTranscriptsRef.current.delete(sid);
+    };
+
     switch (message.type) {
       case 'hello_ack': {
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
@@ -220,6 +231,22 @@ function App() {
           message.transcriptPath === undefined || message.transcriptPath === null
             ? undefined
             : (message.transcriptPath as string);
+        // Capture the binding we held BEFORE this ack so we can detect a
+        // rotation that happened while we were disconnected (#439). If Claude
+        // rotated (/clear, /resume) while away, the remi session id is
+        // unchanged but its claudeSessionId differs from the one we last saw.
+        // This read must precede the setSessions enqueue below, which is what
+        // overwrites the binding.
+        const prevClaudeSessionId = sessionsRef.current.find(
+          (s) => s.id === message.sessionId && s.connectionId === connectionId,
+        )?.claudeSessionId;
+        // Reconnect-mid-rotation: the binding changed while we were away, so the
+        // chat on screen belongs to the OLD Claude session. Clear it first, then
+        // let the setSessions below swap the binding. Same effect as a live
+        // session_rotated, which also clears before swapping (#439).
+        if (bindingRotated(prevClaudeSessionId, ackClaudeSessionId)) {
+          clearSessionForRebind(message.sessionId);
+        }
         setSessions((prev) => {
           // On reconnect, remove stale sessions from this connection that have a different
           // session ID (the daemon may have assigned a new session). Keep sessions from
@@ -434,9 +461,7 @@ function App() {
           );
           break;
         }
-        setMessages((prev) => prev.filter((m) => m.sessionId !== rotatedId));
-        setQuestions((prev) => clearSessionQuestions(prev, rotatedId));
-        loadedTranscriptsRef.current.delete(rotatedId);
+        clearSessionForRebind(rotatedId);
         setSessions((prev) =>
           prev.map((s) =>
             s.id === rotatedId && s.connectionId === connectionId
