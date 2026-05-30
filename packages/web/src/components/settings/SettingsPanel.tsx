@@ -44,7 +44,7 @@ function ThemeButton({
       className={clsx(
         'flex flex-1 flex-col items-center gap-1.5 rounded-lg p-3 text-xs transition-colors',
         active
-          ? 'bg-[var(--color-primary)] text-white'
+          ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)]'
           : 'bg-[var(--color-surface-light)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]',
       )}
     >
@@ -246,7 +246,7 @@ function IdentitySection() {
                   setShowGenerate(true);
                   setShowImport(false);
                 }}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)]"
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)]"
               >
                 <Key className="size-3.5" />
                 Generate
@@ -299,7 +299,7 @@ function IdentitySection() {
                 <button
                   type="submit"
                   disabled={generating}
-                  className="flex-1 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)] disabled:opacity-50"
+                  className="flex-1 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)] disabled:opacity-50"
                 >
                   {generating ? 'Generating...' : 'Create Identity'}
                 </button>
@@ -332,7 +332,7 @@ function IdentitySection() {
                 <button
                   type="submit"
                   disabled={!importJson.trim()}
-                  className="flex-1 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-white hover:bg-[var(--color-primary-dark)] disabled:opacity-50"
+                  className="flex-1 rounded-lg bg-[var(--color-primary)] py-2 text-xs text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)] disabled:opacity-50"
                 >
                   Import
                 </button>
@@ -435,7 +435,7 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
                   className={clsx(
                     'flex-1 rounded-lg py-2 text-sm capitalize transition-colors',
                     settings.fontSize === size
-                      ? 'bg-[var(--color-primary)] text-white'
+                      ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)]'
                       : 'bg-[var(--color-surface-light)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-elevated)]',
                   )}
                 >
