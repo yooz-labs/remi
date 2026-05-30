@@ -295,17 +295,22 @@ function App() {
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
         if (conn?.url) rememberSessionDaemon(message.sessionId, conn.url);
 
-        // Auto-switch to new session when same connection restarts
+        // Reconnect-mid-rotation only: if the chat the user is CURRENTLY
+        // viewing belongs to this connection and the daemon came back with a
+        // new session id, follow it into the new session. A fresh connect (no
+        // chat open) must NOT bypass the session list -- land on the list so
+        // the user picks a session. Notification deep-links navigate via their
+        // own `push-notification-tap` handler, not here.
         const oldActive = activeSessionIdRef.current;
         if (oldActive !== message.sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
-          const shouldSwitch = !oldActive || oldSession?.connectionId === connectionId;
-          if (shouldSwitch) {
+          // `oldActive &&` both gates on a chat being open (so a fresh connect
+          // stays on the list) and narrows oldActive to non-null for the
+          // cleanup below.
+          if (oldActive && oldSession?.connectionId === connectionId) {
             setActiveSessionId(message.sessionId);
-            if (oldActive) {
-              setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
-              setQuestions((prev) => clearSessionQuestions(prev, oldActive));
-            }
+            setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
+            setQuestions((prev) => clearSessionQuestions(prev, oldActive));
           }
         }
         break;
