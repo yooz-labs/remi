@@ -17,12 +17,16 @@ import type { Question, QuestionOption, UUID } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log } from '../cli/logger.ts';
-import { getPrimarySessionId } from '../cli/session-state.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 
 export interface PushConfig {
+  /**
+   * Signaling server base URL. Always provided by the caller; `sendPushTrigger`'s
+   * `string | undefined` first parameter is wider (it has its own fallback), but
+   * the dispatcher never passes undefined here.
+   */
   signalingUrl: string;
   pushSecret?: string | undefined;
 }
@@ -50,17 +54,28 @@ export interface NotificationDispatcherDeps {
    * source without re-wiring. Must be synchronous and non-throwing.
    */
   pushConfig: () => PushConfig;
+  /**
+   * Reads the primary session id the client knows (from hello_ack) so pushes
+   * carry the id the phone can route on. Injected (not imported) so the
+   * dispatcher has no upward dependency on cli/session-state.
+   */
+  getPrimarySessionId: () => UUID | null;
   /** Defaults to the real sendPushTrigger; overridden in tests. */
   pushFn?: PushFn;
 }
 
 export class NotificationDispatcher {
   private readonly pushDedup = new PushDedup();
+  /** Resolved once at construction: the real sendPushTrigger unless a test
+   *  injected an override. Fixed for the instance lifetime. */
+  private readonly pushFn: PushFn;
 
   constructor(
     private readonly deps: NotificationDispatcherDeps,
     private readonly sessionId: UUID,
-  ) {}
+  ) {
+    this.pushFn = deps.pushFn ?? sendPushTrigger;
+  }
 
   /**
    * Reset the dedup baseline when the prompt cycle ends (status != 'waiting'),
@@ -91,13 +106,12 @@ export class NotificationDispatcher {
     const session = sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
     const cfg = pushConfig();
-    const pushSessionId = getPrimarySessionId() ?? this.sessionId;
+    const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     const pushCategory = selectPushCategory(question.options);
     const pushOptions = question.options.map((o) => o.value);
-    const push = this.deps.pushFn ?? sendPushTrigger;
 
     for (const dt of deviceTokens.values()) {
-      push(cfg.signalingUrl, dt.token, {
+      this.pushFn(cfg.signalingUrl, dt.token, {
         title: `${sessionName} needs input`,
         body: question.text.slice(0, 100),
         ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),

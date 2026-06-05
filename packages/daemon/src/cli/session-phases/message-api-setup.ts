@@ -90,7 +90,7 @@ export function createMessageApiForSession(
   // active-client gate, the per-prompt PushDedup baseline (#409), and the
   // device-token fan-out; the MessageAPI callback just hands it the question.
   const notifications = new NotificationDispatcher(
-    { sessionRegistry, deviceTokens, pushConfig },
+    { sessionRegistry, deviceTokens, pushConfig, getPrimarySessionId },
     sessionId,
   );
 

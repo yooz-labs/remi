@@ -36,12 +36,20 @@ import type { AutoApproveResult } from './types.ts';
  * mocking framework or a live LLM.
  */
 export interface AutoApproveEvaluator {
+  /**
+   * Evaluate a permission request. MUST NOT throw — return an `escalate` result
+   * instead so the gate's decision path is deterministic. A rejected Promise is
+   * tolerated (the gate's `.catch` treats it identically to `escalate`), but a
+   * synchronous throw would escape into the hook dispatch loop.
+   */
   evaluate(
     toolName: string,
     toolInput: Record<string, unknown>,
     tag?: string,
     permissionSuggestions?: readonly unknown[],
   ): Promise<AutoApproveResult>;
+  /** Abort any in-flight `evaluate`. Returns true if an abort was issued, false
+   *  if nothing was in flight (idempotent). */
   cancel(reason: string): boolean;
 }
 
@@ -52,7 +60,10 @@ export interface AutoApproveGateDeps {
   tracker: QuestionPresenceTracker;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per branch (async TOCTOU). */
   isInSubagentContext: () => boolean;
-  /** Escalate to the user (wraps `handlers.onPermissionRequest`). The gate adds the try/catch. */
+  /** Escalate to the user (wraps `handlers.onPermissionRequest`). The gate wraps
+   *  every call in a try/catch, so an implementation that throws is logged and
+   *  absorbed rather than propagated; implementations should still prefer to
+   *  handle their own errors. */
   escalate: (input: PermissionRequestHookInput) => void;
 }
 

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Question, QuestionOption, UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
-import { __resetSessionStateForTests } from '../../src/cli/session-state.ts';
 import {
   NotificationDispatcher,
   type PushFn,
@@ -74,6 +73,7 @@ describe('NotificationDispatcher.maybePush', () => {
         sessionRegistry: registry,
         deviceTokens,
         pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
         pushFn,
       },
       SID,
@@ -89,7 +89,6 @@ describe('NotificationDispatcher.maybePush', () => {
 
   afterEach(async () => {
     __resetLoggerForTests();
-    __resetSessionStateForTests();
     await registry.shutdown();
   });
 
