@@ -8,6 +8,7 @@ import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
+import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 
@@ -51,6 +52,7 @@ const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 describe('createInputHandlers', () => {
   let sessionRegistry: SessionRegistry;
   let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
   let tmpDir: string;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
   let send: (connectionId: UUID, message: ProtocolMessage) => boolean;
@@ -59,6 +61,7 @@ describe('createInputHandlers', () => {
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-input-events-'));
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
     sendCalls = [];
     send = (connectionId, message) => {
       sendCalls.push({ connectionId, message });
@@ -85,7 +88,7 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onUserInput(CID, sessionId, '\x1b[A', true);
 
       expect(ptyCapture.writes).toEqual(['\x1b[A']);
@@ -103,7 +106,7 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onUserInput(CID, sessionId, 'hello world', false);
 
       expect(ptyCapture.submits).toEqual(['hello world']);
@@ -113,7 +116,7 @@ describe('createInputHandlers', () => {
     test('logs and returns when no session is attached to the connection', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
 
       await handlers.onUserInput(
         CID,
@@ -142,7 +145,7 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       // Should not throw
       await handlers.onUserInput(CID, sessionId, 'x', true);
 
@@ -173,7 +176,7 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onAnswer(CID, sessionId, QID, 'yes');
 
       expect(ptyCapture.submits).toEqual(['yes']);
@@ -203,7 +206,7 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       // Pass a bogus sessionId, handler should still find the session via connection
       await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'hello');
 
@@ -228,7 +231,7 @@ describe('createInputHandlers', () => {
       // must signal the drop back to the iOS client so the user is not left
       // wondering whether their tap landed.
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onAnswer(CID, sessionId, QID, 'hi');
 
       expect(ptyCapture.submits).toEqual([]);
@@ -259,7 +262,7 @@ describe('createInputHandlers', () => {
       });
 
       const stale = 'stal0000-0000-0000-0000-000000000000' as UUID;
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onAnswer(CID, sessionId, stale, 'yes');
 
       expect(ptyCapture.submits).toEqual([]);
@@ -301,7 +304,7 @@ describe('createInputHandlers', () => {
         agentId: 'sub-7',
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       // Answer the first; it should inject and be removed, the second stays.
       await handlers.onAnswer(CID, sessionId, QID, 'one');
       expect(ptyCapture.submits).toEqual(['one']);
@@ -320,7 +323,7 @@ describe('createInputHandlers', () => {
     test('logs when neither sessionId nor connectionId maps to a session', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
 
       await handlers.onAnswer(CID, 'miss0000-0000-0000-0000-000000000000' as UUID, QID, 'y');
 
@@ -330,7 +333,7 @@ describe('createInputHandlers', () => {
 
   describe('onBulletExpandRequest', () => {
     test('sends NOT_FOUND when session is missing', () => {
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
 
       handlers.onBulletExpandRequest(CID, 'noses000-0000-0000-0000-000000000000' as UUID, 1, REQ);
 
@@ -349,7 +352,7 @@ describe('createInputHandlers', () => {
         fakeMessageAPI(new Map()),
       );
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       handlers.onBulletExpandRequest(CID, sessionId, 99, REQ);
 
       expect(sendCalls).toHaveLength(1);
@@ -367,7 +370,7 @@ describe('createInputHandlers', () => {
         fakeMessageAPI(new Map([[7, 'full expanded content']])),
       );
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       handlers.onBulletExpandRequest(CID, sessionId, 7, REQ);
 
       expect(sendCalls).toHaveLength(1);
@@ -413,7 +416,7 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onAnswer(CID, sessionId, QID, 'y', bound);
 
       expect(capture.submits).toEqual(['y']);
@@ -432,7 +435,7 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onAnswer(CID, sessionId, QID, 'y', stale);
 
       expect(capture.submits).toEqual([]);
@@ -455,7 +458,7 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onAnswer(CID, sessionId, QID, 'y');
 
       expect(capture.submits).toEqual(['y']);
@@ -467,7 +470,7 @@ describe('createInputHandlers', () => {
       const stale = '99999999-aaaa-bbbb-cccc-dddddddddddd' as UUID;
       const { sessionId, capture } = registerSessionWithBinding(bound);
 
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onUserInput(CID, sessionId, 'ls', false, stale);
 
       expect(capture.submits).toEqual([]);
@@ -496,7 +499,7 @@ describe('createInputHandlers', () => {
         allowsFreeText: false,
         isAnswered: false,
       });
-      const handlers = createInputHandlers({ sessionRegistry, sessionStore, send });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
 
       const claudeId = '11111111-2222-3333-4444-555555555555' as UUID;
       await handlers.onAnswer(CID, sessionId, QID, 'y', claudeId);

@@ -21,13 +21,13 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
-import type { SessionStore } from '../session/index.ts';
+import type { SessionBindingStore } from '../session/index.ts';
 import { TranscriptMessageBridge, TranscriptWatcher } from '../transcript/index.ts';
 import type { AssistantEntry } from '../transcript/index.ts';
 import { log, logError } from './logger.ts';
 
 export interface ExtractClaudeSessionIdDeps {
-  sessionStore: SessionStore;
+  bindingStore: SessionBindingStore;
 }
 
 /**
@@ -50,7 +50,7 @@ export function extractClaudeSessionId(
   const parts = basename.split('_');
   const candidateId = parts[parts.length - 1];
   if (candidateId && candidateId.length >= 8) {
-    deps.sessionStore.updateClaudeSessionId(sessionId, candidateId);
+    deps.bindingStore.update(sessionId, candidateId);
     log(`Claude session ID: ${candidateId}`);
     return candidateId;
   }

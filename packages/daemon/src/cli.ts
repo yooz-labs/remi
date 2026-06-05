@@ -144,6 +144,7 @@ import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
+  SessionBindingStore,
   SessionRegistry,
   SessionRegistryFile,
   SessionStore,
@@ -805,6 +806,10 @@ const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 const sessionStore = new SessionStore();
+// Single binding accessor for the whole daemon (#460 phase 2): the one typed,
+// disk-backed surface for remiUUID<->claudeSessionId. Every binding read/write +
+// both resume resolvers route through it. No cache — see session-binding-store.ts.
+const bindingStore = new SessionBindingStore(sessionStore);
 
 const orphanTimeoutMs =
   cliOrphanTimeout !== undefined
@@ -1008,15 +1013,14 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
-      // Lazy read so the binding seen on each question emission is the
-      // current value — survives /resume rotation via hook-bridge's
-      // updateClaudeSessionId write into the store. Wrapped in try/catch
-      // so a transient sessions.json I/O hiccup cannot kill question
-      // emission (the dep contract is non-throwing).
+      // Lazy disk-backed read so the binding seen on each question emission is
+      // the current value — survives /resume rotation via the hook bridge's
+      // bindingStore.update write. Wrapped in try/catch so a transient
+      // sessions.json I/O hiccup cannot kill question emission (the dep
+      // contract is non-throwing).
       getClaudeSessionId: () => {
         try {
-          return (sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ??
-            null) as UUID | null;
+          return (bindingStore.get(sessionId)?.claudeSessionId ?? null) as UUID | null;
         } catch (err) {
           logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
           return null;
@@ -1068,7 +1072,7 @@ async function createNewSession(
 
   // Persist the binding before spawn so siblings observing the store
   // during the race window see our claim immediately.
-  sessionStore.save({
+  bindingStore.preAssign({
     remiSessionId: sessionId,
     claudeSessionId: binding.claudeSessionId,
     projectPath: workingDirectory,
@@ -1083,7 +1087,7 @@ async function createNewSession(
     setupHookBridge(
       {
         sessionRegistry,
-        sessionStore,
+        bindingStore,
         liveSessionsRegistry,
         transcriptWatchers,
         transcriptFallbackTimers,
@@ -1192,13 +1196,13 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
 
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
-  sessionStore,
+  bindingStore,
   send: sendToConnection,
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
   sessionRegistry,
-  sessionStore,
+  bindingStore,
   transcriptDiscovery,
   liveSessionsRegistry,
   currentPort: () => PORT,
@@ -1211,13 +1215,14 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
-  sessionStore,
+  bindingStore,
   send: sendToConnection,
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
   sessionRegistry,
   sessionStore,
+  bindingStore,
   transcriptDiscovery,
   createNewSession,
   send: sendToConnection,
@@ -1818,8 +1823,8 @@ if (cliDaemonMode) {
               // sessions for this connection).
               const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
               for (const remiId of [...managedIds]) {
-                const stored = sessionStore.findByRemiSessionId(remiId as UUID);
-                if (stored?.claudeSessionId) managedIds.add(stored.claudeSessionId);
+                const binding = bindingStore.get(remiId as UUID);
+                if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
               }
               const allSessions = [
                 ...sessionRegistry.listSessions(),

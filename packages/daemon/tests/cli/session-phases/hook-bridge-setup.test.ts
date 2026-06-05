@@ -10,6 +10,7 @@ import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
+import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
@@ -105,6 +106,7 @@ describe('setupHookBridge', () => {
   let tmpDir: string;
   let sessionRegistry: SessionRegistry;
   let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
   let liveSessionsRegistry: SessionRegistryFile;
   // Stored loosely so tests can inject a minimal fake watcher without
   // dragging in a real TranscriptWatcher instance.
@@ -118,6 +120,7 @@ describe('setupHookBridge', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hook-bridge-'));
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
     // Live-sessions registry gets its OWN subdir so its listLive() scan does
     // not see (and delete as "invalid") the SessionStore's sessions.json that
     // shares the tmp root. Create it up front so tests that write sibling
@@ -230,7 +233,7 @@ describe('setupHookBridge', () => {
     setupHookBridge(
       {
         sessionRegistry,
-        sessionStore,
+        bindingStore,
         liveSessionsRegistry,
         transcriptWatchers: transcriptWatchers as unknown as Map<
           UUID,
@@ -1129,7 +1132,7 @@ describe('setupHookBridge', () => {
     setupHookBridge(
       {
         sessionRegistry,
-        sessionStore,
+        bindingStore,
         liveSessionsRegistry,
         transcriptWatchers: transcriptWatchers as unknown as Map<
           UUID,
@@ -1207,7 +1210,7 @@ describe('setupHookBridge', () => {
     setupHookBridge(
       {
         sessionRegistry,
-        sessionStore,
+        bindingStore,
         liveSessionsRegistry,
         transcriptWatchers: transcriptWatchers as unknown as Map<
           UUID,
@@ -1279,7 +1282,7 @@ describe('setupHookBridge', () => {
     setupHookBridge(
       {
         sessionRegistry,
-        sessionStore,
+        bindingStore,
         liveSessionsRegistry,
         transcriptWatchers: transcriptWatchers as unknown as Map<
           UUID,
@@ -1752,7 +1755,7 @@ describe('setupHookBridge', () => {
       setupHookBridge(
         {
           sessionRegistry,
-          sessionStore,
+          bindingStore,
           liveSessionsRegistry,
           transcriptWatchers: transcriptWatchers as unknown as Map<
             UUID,

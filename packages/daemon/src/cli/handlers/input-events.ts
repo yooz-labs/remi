@@ -12,13 +12,13 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
-import type { SessionRegistry, SessionStore } from '../../session/index.ts';
+import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
   sessionRegistry: SessionRegistry;
-  sessionStore: SessionStore;
+  bindingStore: SessionBindingStore;
   send: SendToConnection;
 }
 
@@ -44,7 +44,7 @@ export interface InputHandlerDeps {
  *     least surfaces the problem in logs while letting the user work.
  */
 function guardBinding(
-  sessionStore: SessionStore,
+  bindingStore: SessionBindingStore,
   send: SendToConnection,
   connectionId: UUID,
   sessionId: UUID,
@@ -53,9 +53,9 @@ function guardBinding(
   if (claudeSessionId === undefined) return true;
   let bound: string | undefined;
   try {
-    bound = sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ?? undefined;
+    bound = bindingStore.get(sessionId)?.claudeSessionId ?? undefined;
   } catch (err) {
-    logError(`[Binding] sessionStore lookup failed; accepting message: ${errorToString(err)}`);
+    logError(`[Binding] binding lookup failed; accepting message: ${errorToString(err)}`);
     return true;
   }
   if (!bound) return true;
@@ -81,7 +81,7 @@ function guardBinding(
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
 export function createInputHandlers(deps: InputHandlerDeps) {
-  const { sessionRegistry, sessionStore, send } = deps;
+  const { sessionRegistry, bindingStore, send } = deps;
 
   return {
     onUserInput: async (
@@ -99,7 +99,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return;
       }
 
-      if (!guardBinding(sessionStore, send, connectionId, sessionId, claudeSessionId)) {
+      if (!guardBinding(bindingStore, send, connectionId, sessionId, claudeSessionId)) {
         return;
       }
 
@@ -140,7 +140,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return;
       }
 
-      if (!guardBinding(sessionStore, send, connectionId, sessionId, claudeSessionId)) {
+      if (!guardBinding(bindingStore, send, connectionId, sessionId, claudeSessionId)) {
         return;
       }
 
