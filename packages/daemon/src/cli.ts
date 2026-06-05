@@ -843,6 +843,11 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason) => {
       log(`Session closed: ${sessionId} (reason: ${reason})`);
+      // Tear down the drive-mode binder (rotation dir-poll + fallback timer) at
+      // session close, not just at process cleanup — else the poll interval leaks
+      // for the rest of the daemon's life across resumes (#463 phase 3 review).
+      binderClosers.get(sessionId)?.();
+      binderClosers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
       if (watcher) {
         watcher.stop();

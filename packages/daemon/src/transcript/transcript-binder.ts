@@ -802,6 +802,17 @@ export class TranscriptBinder {
    * can drive a deterministic tick without waiting on the interval.
    */
   rotationPollTick(): void {
+    // A throw escaping the setInterval callback permanently kills the timer with
+    // no log or recovery. The inner fs reads have their own catches; this is the
+    // backstop for an unexpected throw (sessionRegistry/currentPort/etc.).
+    try {
+      this.rotationPollTickInner();
+    } catch (err) {
+      logError(`[Binder] rotation poll tick failed unexpectedly: ${errorToString(err)}`);
+    }
+  }
+
+  private rotationPollTickInner(): void {
     if (this.mode === 'shadow') return;
     // Session gone -> the lifecycle owner will close() us; do nothing meanwhile.
     if (!this.deps.sessionRegistry.hasSession(this.sessionId)) return;
