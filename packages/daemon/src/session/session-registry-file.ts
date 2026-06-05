@@ -27,6 +27,34 @@ export interface LiveSessionEntry {
   readonly projectPath: string;
   readonly name: string;
   readonly startedAt: string;
+  /**
+   * OS pid of the spawned `claude` child, recorded once the PTY starts.
+   * Absent on legacy entries and during the pre-spawn registration window.
+   * Lets co-located daemons tell a live sibling from a zombie (daemon
+   * process alive, its Claude long dead) — see {@link claudeChildLooksAlive}.
+   */
+  readonly claudeChildPid?: number;
+  /**
+   * Set true when the Claude child exits while the daemon keeps running.
+   * Distinguishes "known dead" (recycle-proof: never reconsidered live even
+   * if the OS reassigns the old pid) from "unknown" (field absent ⇒ treated
+   * as live, the fail-safe for legacy entries).
+   */
+  readonly claudeChildExited?: boolean;
+}
+
+/**
+ * Whether a registry entry's Claude child should be treated as a live sibling.
+ *
+ * Fail-safe by design: an entry with no recorded child pid (legacy writer, or
+ * the pre-spawn window) counts as live so we never drop a guard we cannot
+ * disprove. A child explicitly marked exited is permanently dead (pid-reuse
+ * proof); otherwise we probe the recorded pid.
+ */
+export function claudeChildLooksAlive(entry: LiveSessionEntry): boolean {
+  if (entry.claudeChildExited === true) return false;
+  if (entry.claudeChildPid === undefined) return true;
+  return isProcessAlive(entry.claudeChildPid);
 }
 
 /** Default port range for auto-selection (single source of truth in @remi/shared). */
@@ -37,6 +65,12 @@ export const DEFAULT_PORT_RANGE = DAEMON_PORT_RANGE;
 function isValidEntry(data: unknown): data is LiveSessionEntry {
   if (typeof data !== 'object' || data === null) return false;
   const obj = data as Record<string, unknown>;
+  const childPid = obj['claudeChildPid'];
+  const childPidOk =
+    childPid === undefined ||
+    (typeof childPid === 'number' && Number.isInteger(childPid) && childPid > 0);
+  const childExited = obj['claudeChildExited'];
+  const childExitedOk = childExited === undefined || typeof childExited === 'boolean';
   return (
     typeof obj['sessionId'] === 'string' &&
     obj['sessionId'].length > 0 &&
@@ -44,7 +78,9 @@ function isValidEntry(data: unknown): data is LiveSessionEntry {
     obj['pid'] > 0 &&
     typeof obj['wsPort'] === 'number' &&
     obj['wsPort'] > 0 &&
-    obj['wsPort'] <= 65535
+    obj['wsPort'] <= 65535 &&
+    childPidOk &&
+    childExitedOk
   );
 }
 
@@ -87,6 +123,47 @@ export class SessionRegistryFile {
         console.error(`[live-sessions] Failed to unregister ${sessionId}: ${errorToString(err)}`);
       }
     }
+  }
+
+  /**
+   * Merge fields into an existing entry, preserving everything else (notably
+   * startedAt). No-op if the entry is gone. Best-effort: enumeration/parse
+   * failures are swallowed so a registry hiccup never propagates into the
+   * spawn or PTY-exit path.
+   */
+  private patchEntry(sessionId: string, patch: Partial<LiveSessionEntry>): void {
+    const filePath = path.join(this.dir, `${sessionId}.json`);
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const data: unknown = JSON.parse(raw);
+      if (!isValidEntry(data)) {
+        // The on-disk entry is malformed (e.g. a torn write). Skipping the
+        // patch silently would disable the zombie guard for this session with
+        // no trace; surface it (listLive will reap the bad entry separately).
+        console.error(`[live-sessions] Cannot patch ${sessionId}: existing entry is invalid`);
+        return;
+      }
+      this.register({ ...data, ...patch });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return; // entry already gone
+      console.error(`[live-sessions] Failed to patch ${sessionId}: ${errorToString(err)}`);
+    }
+  }
+
+  /** Record the Claude child pid once the PTY has spawned. */
+  setClaudeChildPid(sessionId: string, claudeChildPid: number): void {
+    this.patchEntry(sessionId, { claudeChildPid, claudeChildExited: false });
+  }
+
+  /**
+   * Mark the Claude child as exited while keeping the daemon entry (the
+   * daemon process is still alive and must remain discoverable for
+   * `remi ls`/attach/resume). Recycle-proof: the entry is never reconsidered
+   * a live sibling regardless of pid reassignment.
+   */
+  markClaudeChildExited(sessionId: string): void {
+    this.patchEntry(sessionId, { claudeChildExited: true });
   }
 
   /**

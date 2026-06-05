@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
 
@@ -41,6 +42,7 @@ describe('createTranscriptHandlers', () => {
   let projectsDir: string;
   let transcriptDiscovery: TranscriptDiscovery;
   let transcriptWatchers: Map<UUID, TranscriptWatcher>;
+  let sessionStore: SessionStore;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
 
   function send(connectionId: UUID, message: ProtocolMessage): boolean {
@@ -54,6 +56,7 @@ describe('createTranscriptHandlers', () => {
     fs.mkdirSync(projectsDir, { recursive: true });
     transcriptDiscovery = new TranscriptDiscovery({ projectsDir });
     transcriptWatchers = new Map();
+    sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     sendCalls = [];
     configureLogger({ writeLog: () => {} });
   });
@@ -64,7 +67,12 @@ describe('createTranscriptHandlers', () => {
   });
 
   function makeHandlers() {
-    return createTranscriptHandlers({ transcriptDiscovery, transcriptWatchers, send });
+    return createTranscriptHandlers({
+      transcriptDiscovery,
+      transcriptWatchers,
+      sessionStore,
+      send,
+    });
   }
 
   function writeTranscript(claudeSessionId: string, entries: object[]): string {
@@ -124,6 +132,46 @@ describe('createTranscriptHandlers', () => {
     expect(complete).toBeDefined();
     // Requesting connection matches the ack receiver.
     expect(complete?.connectionId).toBe(CID);
+  });
+
+  test('falls back to the store binding when a Remi UUID has no active watcher (#451)', async () => {
+    // A wedged/rotated session: no live watcher, but the store knows the
+    // current Claude session id. The handler must resolve via the binding
+    // instead of returning NOT_FOUND.
+    const claudeSessionId = '44444444-4444-4444-4444-444444444444';
+    writeTranscript(claudeSessionId, [
+      {
+        type: 'user',
+        uuid: 'u1',
+        sessionId: claudeSessionId,
+        cwd: '/Users/test/project',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: 'history please' },
+      },
+    ]);
+
+    const remiUuid = '55555555-5555-5555-5555-555555555555' as UUID;
+    sessionStore.save({
+      remiSessionId: remiUuid,
+      claudeSessionId,
+      projectPath: '/Users/test/project',
+      port: 18767,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    // No watcher registered for remiUuid.
+    makeHandlers().onTranscriptLoadRequest(CID, remiUuid, REQ);
+
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+
+    expect(sendCalls.some((c) => (c.message as { code?: string }).code === 'NOT_FOUND')).toBe(
+      false,
+    );
   });
 
   test('falls back to the active watcher when the id is a Remi UUID', async () => {

@@ -1098,6 +1098,7 @@ async function createNewSession(
     {
       sessionRegistry,
       sessionStore,
+      liveSessionsRegistry,
       outputProcessor,
       wsPort: remiStatus.wsPort,
       sendMessage,
@@ -1126,6 +1127,21 @@ async function createNewSession(
   } catch (err) {
     sessionStore.markExited(sessionId, null);
     throw err;
+  }
+
+  // Record the spawned Claude child pid in the live-sessions entry now that the
+  // PTY is up. Co-located daemons use it to tell a live sibling from a zombie
+  // (daemon process alive, its Claude long dead) so a leftover daemon can no
+  // longer permanently wedge our rotation handling (#451).
+  const claudeChildPid = ptySession.childPid;
+  if (claudeChildPid !== null) {
+    liveSessionsRegistry.setClaudeChildPid(sessionId, claudeChildPid);
+  } else {
+    // Unreachable after a successful start() (the child pid is assigned
+    // synchronously by the spawn). Log rather than silently skip: without the
+    // pid the entry stays "unknown" and peers keep treating this live session
+    // as a zombie's sibling, re-opening the wedge this fix closes (#451).
+    logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
   }
 
   startTranscriptFallback(
@@ -1195,6 +1211,7 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
+  sessionStore,
   send: sendToConnection,
 });
 
