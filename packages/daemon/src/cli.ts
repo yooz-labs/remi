@@ -449,6 +449,17 @@ if (
 // Instantiated early so subcommand handlers (ls, attach, kill) can use it.
 const liveSessionsRegistry = new SessionRegistryFile();
 
+// Experimental TranscriptBinder flags (#453 phase 3). Snapshotted into immutable
+// module-level consts at boot and NEVER re-read per session: a mid-process flip
+// would split sessions across the old/new code paths, which share the
+// transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
+// instant flip-back means a daemon restart (design §3.1 v4 #9). Default OFF.
+const binderEnabled = remiConfig.features.transcript_binder_enabled;
+// Drive mode and shadow mode are mutually exclusive: enabled wins. When the
+// binder DRIVES, running the shadow alongside it would be meaningless (and would
+// double-construct the binder), so the shadow is suppressed whenever drive is on.
+const binderShadow = remiConfig.features.transcript_binder_shadow && !binderEnabled;
+
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
   const { runLsCommand } = await import('./cli/cmd-ls.ts');
@@ -805,6 +816,12 @@ const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
+// Per-session drive-mode TranscriptBinder teardown hooks (#453 phase 3, commit
+// 5). The shared transcriptWatchers/transcriptFallbackTimers cleanup below stops
+// the binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
+// interval (it lives inside the binder); close() reaches all three. Empty when
+// transcript_binder_enabled is off (no binder is ever constructed).
+const binderClosers: Map<UUID, () => void> = new Map();
 const sessionStore = new SessionStore();
 // Single binding accessor for the whole daemon (#460 phase 2): the one typed,
 // disk-backed surface for remiUUID<->claudeSessionId. Every binding read/write +
@@ -826,6 +843,11 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason) => {
       log(`Session closed: ${sessionId} (reason: ${reason})`);
+      // Tear down the drive-mode binder (rotation dir-poll + fallback timer) at
+      // session close, not just at process cleanup — else the poll interval leaks
+      // for the rest of the daemon's life across resumes (#463 phase 3 review).
+      binderClosers.get(sessionId)?.();
+      binderClosers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
       if (watcher) {
         watcher.stop();
@@ -1084,7 +1106,7 @@ async function createNewSession(
   });
 
   if (hookServer) {
-    setupHookBridge(
+    const hookBridgeHandle = setupHookBridge(
       {
         sessionRegistry,
         bindingStore,
@@ -1093,9 +1115,16 @@ async function createNewSession(
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => PORT,
+        shadowBinder: binderShadow,
+        binderEnabled,
+        transcriptDiscovery,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
+    // In drive mode the binder owns the fallback poll + #452 dir-watch (armed by
+    // its start() inside setupHookBridge); record its teardown so cleanup()
+    // reaches the rotation dir-poll interval the shared maps below cannot.
+    if (binderEnabled) binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
   }
 
   const ptySession = createPtySessionForSession(
@@ -1148,19 +1177,24 @@ async function createNewSession(
     logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
   }
 
-  startTranscriptFallback(
-    {
-      sessionRegistry,
-      transcriptDiscovery,
-      transcriptWatchers,
-      transcriptFallbackTimers,
-    },
-    sessionId,
-    workingDirectory,
-    binding.claudeSessionId,
-    messageApi,
-    sendAndRecord,
-  );
+  // In drive mode the TranscriptBinder's start() (inside setupHookBridge) already
+  // armed BOTH the fallback poll and the #452 rotation dir-watch; arming it again
+  // here would double-arm the same fallback timer. Only the old path needs this.
+  if (!binderEnabled) {
+    startTranscriptFallback(
+      {
+        sessionRegistry,
+        transcriptDiscovery,
+        transcriptWatchers,
+        transcriptFallbackTimers,
+      },
+      sessionId,
+      workingDirectory,
+      binding.claudeSessionId,
+      messageApi,
+      sendAndRecord,
+    );
+  }
 
   return ptySession;
 }
@@ -1467,6 +1501,13 @@ async function cleanup(): Promise<void> {
     mdnsPublisher = null;
   }
 
+  // Drive-mode binders own a rotation dir-poll interval the shared maps below do
+  // not reach; close() tears down its watcher + fallback timer + dir-poll. No-op
+  // map when transcript_binder_enabled is off.
+  for (const closeBinder of binderClosers.values()) {
+    closeBinder();
+  }
+  binderClosers.clear();
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }

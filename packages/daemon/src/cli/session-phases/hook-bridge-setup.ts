@@ -50,8 +50,10 @@ import type {
   SessionRegistry,
   SessionRegistryFile,
 } from '../../session/index.ts';
-import { readTranscriptOwnerPort } from '../../transcript/index.ts';
+import { TranscriptBinder, readTranscriptOwnerPort } from '../../transcript/index.ts';
+import type { BinderDecision, BinderHookEvent } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
+import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
 import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
 
@@ -64,6 +66,36 @@ export interface HookBridgeDeps {
   autoApproveService: AutoApproveService | null;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
+  /**
+   * #453 phase 3, commit 3 (SHADOW MODE). When true, a compute-only
+   * `TranscriptBinder` runs alongside the old initFromHookEvent/onSessionInfo
+   * path and logs control-plane disagreements. It is constructed with no-op
+   * effect deps (no send, no store write, no watcher start, no rotation
+   * callback) so it is PROVABLY side-effect-free; the old path stays the sole
+   * driver. Default OFF (undefined) — zero behavior change when unset.
+   */
+  shadowBinder?: boolean;
+  /**
+   * #453 phase 3, commit 5 (DRIVE MODE). When true, a single drive-mode
+   * `TranscriptBinder` per session OWNS the binding/watcher/rotation control
+   * plane: each hook listener routes to `binder.onHookEvent` /
+   * `binder.admits` / `binder.preemptOnSessionStart` / `binder.onSessionEnd`
+   * INSTEAD of the old `initFromHookEvent` / `onSessionInfo` / `filterBySession`
+   * bodies, and `binder.start()` arms the fallback poll + #452 dir-watch. The
+   * binder's decisions are already proven equivalent to the old path by the
+   * shadow differential harness (commit 3); this flag lets it DRIVE. Mutually
+   * exclusive with `shadowBinder` (enabled wins; the caller never sets both).
+   * Default OFF (undefined) — flag-off path is byte-identical to pre-commit.
+   * Requires `transcriptDiscovery` (the binder's `start()` reads it).
+   */
+  binderEnabled?: boolean;
+  /**
+   * Required by the `TranscriptBinder` constructor (its `start()` reads it).
+   * Shadow never calls `start()`, but drive mode does; the dep is part of the
+   * binder's construction contract. Optional so callers/tests that use neither
+   * binder mode are unaffected.
+   */
+  transcriptDiscovery?: TranscriptDiscovery;
 }
 
 export interface HookBridgeArgs {
@@ -86,6 +118,15 @@ export interface HookBridgeHandle {
    *  alternate question sources (e.g. PTY parser) so subagent prompts are
    *  not surfaced to the user. */
   bridge: HookEventBridge;
+  /**
+   * Tear down the drive-mode `TranscriptBinder` for this session (its watcher,
+   * fallback timer, and the #452 rotation dir-poll). No-op when binderEnabled is
+   * off (no binder was constructed). The caller must invoke this on session
+   * teardown so the binder's rotation dir-poll interval — which the shared
+   * `transcriptWatchers` / `transcriptFallbackTimers` cleanup in cli.ts does NOT
+   * reach — never outlives the session.
+   */
+  closeBinder: () => void;
 }
 
 export function setupHookBridge(
@@ -100,8 +141,32 @@ export function setupHookBridge(
     transcriptFallbackTimers,
     autoApproveService,
     currentPort,
+    shadowBinder,
+    binderEnabled,
+    transcriptDiscovery,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
+  const {
+    hookServer,
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord: rawSendAndRecord,
+    tracker,
+  } = args;
+
+  // ---- Shadow-mode plumbing (#453 phase 3, commit 3) ----------------------
+  // When shadowBinder is OFF (the default), `sendAndRecord` and the binding
+  // writer below are the untouched originals: ZERO behavior change. When ON,
+  // sendAndRecord is wrapped in a forwarding tap that records (per old-path
+  // event) whether a session_rotated crossed the wire, then forwards EVERY
+  // message untouched. The tap never alters or drops a message.
+  let oldPathRotationEmitted = false;
+  const sendAndRecord = shadowBinder
+    ? (message: ProtocolMessage): void => {
+        if (message.type === 'session_rotated') oldPathRotationEmitted = true;
+        rawSendAndRecord(message);
+      }
+    : rawSendAndRecord;
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
 
@@ -454,6 +519,12 @@ export function setupHookBridge(
       tracker.recordPendingHook(question);
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
+      // DRIVE: the binder's onHookEvent (fired from the SessionStart listener)
+      // already subsumes this SessionInfo bind/rotation; skip the old body so we
+      // never double-bind or double-emit. The bridge still fires this callback
+      // (status/subagent tracking lives on handlers.onSessionStart), but the
+      // binding control plane is the binder's alone.
+      if (binderEnabled) return;
       // Guard: skip if sibling daemons share this directory AND the transcript's
       // port marker does not prove this SessionStart is ours (#451). When the
       // marker matches our port we proceed so our own rotation rebinds even
@@ -582,7 +653,235 @@ export function setupHookBridge(
   const isSubagentEvent = (input: { agent_id?: string }): boolean =>
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
+  // ---- Shadow TranscriptBinder (#453 phase 3, commit 3) -------------------
+  //
+  // ONE compute-only binder per session, constructed only when shadowBinder is
+  // on. It is provably side-effect-free:
+  //   - `sendAndRecord: () => {}`  -> cannot emit (no session_rotated on the wire).
+  //   - `bindingStore` wrapped read-only: `update()` is a no-op; `get(ourSession)`
+  //     returns the PER-EVENT snapshot (the store as it stood before the old path
+  //     ran) so the old path's same-event write cannot leak into the shadow's
+  //     adoptLockFromStore and race the classifier; foreign ids delegate through.
+  //   - `messageApi` no-op: `reset()` does nothing (the binder calls it on teardown).
+  //   - `onRotation: () => {}` -> no presence-tracker / question side effects.
+  //   - `start()` is a no-op in 'shadow' mode (no fs.watch, no fallback timer),
+  //     and we never call it anyway.
+  //
+  // After each old-path listener body runs, the same input is fed to the shadow
+  // binder mirroring the old listener order (preemptOnSessionStart + decide for
+  // SessionStart; decide for the events that call initFromHookEvent; onSessionEnd
+  // for SessionEnd), then we compare the binder's decision against the old path's
+  // observable outcome captured live from state.
+
+  // The real store's binding for OUR session as it stood at the START of the
+  // current event (captured before the old path runs). The shadow reads THIS,
+  // not the live store, so the old path's same-event write does not leak into
+  // the shadow's adoptLockFromStore and race the classifier into 'match' when
+  // the old path saw 'restart' (the #430/#433 snapshot invariant). For other
+  // sessions the wrapper delegates straight through (the binder only ever reads
+  // its own sessionId via get(), so this is exact).
+  let oldPathStoreSnapshot: ReturnType<SessionBindingStore['get']> = null;
+
+  const shadow: TranscriptBinder | null =
+    shadowBinder && transcriptDiscovery
+      ? new TranscriptBinder(
+          {
+            sessionRegistry,
+            // Read-only wrapper: get() delegates to the real store but, for our
+            // own session, returns the per-event entry snapshot taken before the
+            // old path mutated it (so the shadow adopts the same value the old
+            // path's adoptLockFromStore saw, not the old path's just-written id).
+            // update() is a no-op — the shadow must never write the binding.
+            bindingStore: {
+              get: (id: UUID) => (id === sessionId ? oldPathStoreSnapshot : bindingStore.get(id)),
+              getByClaudeSessionId: (id: string) => bindingStore.getByClaudeSessionId(id),
+              update: () => {},
+              preAssign: () => {},
+            } as unknown as SessionBindingStore,
+            liveSessionsRegistry,
+            transcriptWatchers,
+            transcriptFallbackTimers,
+            transcriptDiscovery,
+            // No-op MessageAPI: only reset() is reachable from the binder, and it
+            // must do nothing in shadow.
+            messageApi: { reset: () => {} } as unknown as MessageAPI,
+            sendAndRecord: () => {},
+            currentPort,
+            onRotation: () => {},
+          },
+          { sessionId, workingDirectory },
+          'shadow',
+        )
+      : null;
+
+  if (shadowBinder && !transcriptDiscovery) {
+    logError(
+      `[ShadowBinder] shadowBinder=true but no transcriptDiscovery dep supplied for ${sessionId.slice(0, 8)}; shadow comparison disabled`,
+    );
+  }
+
+  // ---- Drive TranscriptBinder (#453 phase 3, commit 5) --------------------
+  //
+  // ONE drive-mode binder per session, constructed only when binderEnabled is on
+  // (mutually exclusive with shadowBinder; the caller never sets both). It OWNS
+  // the binding/watcher/rotation control plane: the hook listeners below route to
+  // its `onHookEvent` / `admits` / `preemptOnSessionStart` / `onSessionEnd`
+  // INSTEAD of the old `initFromHookEvent` / `onSessionInfo` / `filterBySession`
+  // bodies. Wired with the REAL effect deps (the same `sendAndRecord`,
+  // `bindingStore`, `messageApi` the old path used) and the REAL rotation side
+  // effect (clear the presence tracker's pending record + sessionRegistry
+  // questions, exactly the old restart branch's
+  // `tracker.clearPending(); sessionRegistry.clearQuestions(sessionId)`).
+  //
+  // `start()` arms BOTH the existing fallback poll (Case A: our pre-assigned file
+  // appears) AND the #452 re-arming dir-watch (Case B: a no-hooks rotation), so
+  // in drive mode the cli.ts-level `startTranscriptFallback` is NOT also called
+  // (the caller skips it to avoid double-arming). The pre-assigned claudeSessionId
+  // is the binding cli.ts wrote to the store before spawn (#427); read it here.
+  const driveBinder: TranscriptBinder | null =
+    binderEnabled && transcriptDiscovery
+      ? new TranscriptBinder(
+          {
+            sessionRegistry,
+            bindingStore,
+            liveSessionsRegistry,
+            transcriptWatchers,
+            transcriptFallbackTimers,
+            transcriptDiscovery,
+            messageApi,
+            sendAndRecord: rawSendAndRecord,
+            currentPort,
+            onRotation: () => {
+              // The old restart branch's injected side effects: drop any hook
+              // record stashed before the rotation so the new session's first
+              // PTY prompt cannot merge stale option labels, and drop the
+              // pending-question collection so stale answers are refused.
+              tracker.clearPending();
+              sessionRegistry.clearQuestions(sessionId);
+            },
+          },
+          { sessionId, workingDirectory },
+          'drive',
+        )
+      : null;
+
+  if (binderEnabled && !transcriptDiscovery) {
+    logError(
+      `[Binder] binderEnabled=true but no transcriptDiscovery dep supplied for ${sessionId.slice(0, 8)}; drive mode disabled`,
+    );
+  }
+
+  if (driveBinder) {
+    // Arm the fallback poll + #452 dir-watch on the pre-assigned id (the binding
+    // cli.ts wrote to the store before Bun.spawn). On a fresh store read this is
+    // the deterministic claude id Claude will write under.
+    const preAssignedClaudeId = bindingStore.get(sessionId)?.claudeSessionId ?? null;
+    if (preAssignedClaudeId) {
+      driveBinder.start(preAssignedClaudeId);
+    } else {
+      logError(
+        `[Binder] No pre-assigned claudeSessionId for ${sessionId.slice(0, 8)}; fallback poll + dir-watch not armed`,
+      );
+    }
+  }
+
+  /**
+   * Capture the old path's observable control-plane outcome from LIVE state,
+   * read right after the old-path listener body ran. `boundId` is a disk-fresh
+   * read of the binding the old path may have written; `watcherPath` is the
+   * path of the watcher the old path may have (re)started; `rotationEmitted` is
+   * the per-event flag set by the sendAndRecord tap above.
+   */
+  const observeOldState = (): {
+    boundId: string | null;
+    watcherPath: string | null;
+    rotationEmitted: boolean;
+  } => ({
+    boundId: bindingStore.get(sessionId)?.claudeSessionId ?? null,
+    watcherPath: transcriptWatchers.get(sessionId)?.filePath ?? null,
+    rotationEmitted: oldPathRotationEmitted,
+  });
+
+  /**
+   * Emit a single structured DISAGREE line ONLY when the binder's decision and
+   * the old path's observed outcome diverge on a LOAD-BEARING control-plane
+   * field: the DURABLE store binding after the event, or whether a rotation was
+   * emitted. watcherPath is compared path-normalized but is advisory (the binder
+   * reports intent, the old path reports the live watcher). Silent on agreement.
+   *
+   * The compared "bound id" is the DURABLE store binding, not the binder's
+   * in-memory lock. The two diverge intentionally on a path-less restart: the
+   * old path NULLs its in-closure lock but does NOT write the store (no path to
+   * rebind on), so the store keeps the prior id; the binder likewise drops its
+   * in-memory `currentBoundId` to null WITHOUT writing the store. So the binder's
+   * store-after = `boundIdAfter` when it (re)bound this event, else the prior
+   * snapshot (it wrote nothing). That reconstruction matches the old path's
+   * post-event store exactly — which is the #430/#433 invariant we are pinning.
+   */
+  const compareAndLog = (
+    eventName: string,
+    input: BinderHookEvent,
+    decision: BinderDecision,
+    old: { boundId: string | null; watcherPath: string | null; rotationEmitted: boolean },
+  ): void => {
+    const diffs: string[] = [];
+    // The binder writes the store only when it (re)binds (boundIdAfter non-null);
+    // otherwise it leaves the durable binding untouched at its pre-event value.
+    const binderStoreAfter = decision.boundIdAfter ?? oldPathStoreSnapshot?.claudeSessionId ?? null;
+    if (binderStoreAfter !== old.boundId) {
+      diffs.push(`boundId binder=${binderStoreAfter ?? 'null'} old=${old.boundId ?? 'null'}`);
+    }
+    if (decision.wouldEmitRotation !== old.rotationEmitted) {
+      diffs.push(`rotation binder=${decision.wouldEmitRotation} old=${old.rotationEmitted}`);
+    }
+    const binderWatcher = decision.watcherPath ? path.resolve(decision.watcherPath) : null;
+    const oldWatcher = old.watcherPath ? path.resolve(old.watcherPath) : null;
+    if (decision.wouldStartWatcher && binderWatcher !== oldWatcher) {
+      diffs.push(`watcherPath binder=${binderWatcher ?? 'null'} old=${oldWatcher ?? 'null'}`);
+    }
+    if (diffs.length > 0) {
+      logError(
+        `[ShadowBinder] DISAGREE ${eventName}: ${diffs.join('; ')} (class=${decision.classification} incoming=${input.session_id?.slice(0, 8) ?? 'none'})`,
+      );
+    }
+  };
+
+  /**
+   * Run at the TOP of every listener (before the old path executes). Resets the
+   * per-event rotation tap and snapshots the real store's current binding for
+   * our session so the shadow's read reflects the pre-event truth. No-op when
+   * shadow is off.
+   */
+  const shadowEnterEvent = (): void => {
+    if (!shadow) return;
+    oldPathRotationEmitted = false;
+    oldPathStoreSnapshot = bindingStore.get(sessionId);
+  };
+
+  /**
+   * Feed an event that went through the `initFromHookEvent` old path to the
+   * shadow binder via `decide()`, then compare. `shadowEnterEvent` must have run
+   * at handler entry; here we just read the captured outcome. Called at the END
+   * of each old-path listener body.
+   */
+  const shadowDecide = (eventName: string, input: BinderHookEvent): void => {
+    if (!shadow) return;
+    const decision = shadow.decide(input);
+    compareAndLog(eventName, input, decision, observeOldState());
+  };
+
   hookServer.on('SessionStart', (input) => {
+    shadowEnterEvent(); // reset rotation tap + snapshot store (shadow-only)
+    if (driveBinder) {
+      // DRIVE: the binder owns the pre-empt + bind. Mirror the old listener
+      // order — pre-empt (flip its own mainSessionEnded) BEFORE onHookEvent.
+      // The old closure pre-empt + initFromHookEvent below are skipped; the
+      // bridge's onSessionInfo body is also skipped (binder subsumes it).
+      driveBinder.preemptOnSessionStart(input);
+      driveBinder.onHookEvent(input);
+      handlers.onSessionStart?.(input);
+      return;
+    }
     // Pre-empt the classifier into 'restart' on any session_id rotation while
     // our PTY is alive, regardless of `source` (Claude Code rotates session_id
     // through flows that omit source or carry undocumented values; the narrow
@@ -610,32 +909,49 @@ export function setupHookBridge(
     }
     initFromHookEvent(input);
     handlers.onSessionStart?.(input);
+    // Shadow: mirror the old listener order — pre-empt BEFORE decide so the
+    // binder flips its own mainSessionEnded exactly like the closure above did.
+    if (shadow) {
+      shadow.preemptOnSessionStart(input);
+      shadowDecide('SessionStart', input);
+    }
   });
 
   hookServer.on('PreToolUse', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PreToolUse', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     if (isSubagentEvent(input)) return;
     autoApproveGate.cancelStale('PreToolUse');
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PostToolUse', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     if (isSubagentEvent(input)) return;
     autoApproveGate.cancelStale('PostToolUse');
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('Notification', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     // SessionEnd already cleared status to 'idle'; a late
     // Notification(permission_prompt) for the dying session would
     // re-populate tracker.pending and a final PTY echo could fire a
     // spurious push the user cannot answer. Gate at the listener
     // boundary; restart resets mainSessionEnded so legitimate
-    // post-restart notifications still pass.
-    if (mainSessionEnded) {
+    // post-restart notifications still pass. In drive mode the binder owns
+    // mainSessionEnded (and resets it on restart via rotate()), so read it
+    // there as the single source of truth; the closure flag is the old path's.
+    if (driveBinder ? driveBinder.isMainEnded() : mainSessionEnded) {
       log(`[Hooks] Dropped post-SessionEnd Notification: type=${input.notification_type}`);
       return;
     }
@@ -647,8 +963,11 @@ export function setupHookBridge(
     handlers.onNotification?.(input);
   });
   hookServer.on('PermissionRequest', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PermissionRequest', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     // Auto-approve eval + inject, or escalate to the user (#453 phase 1). The gate
     // owns the PTY injection, the subagent PTY-presence gate, the default-deny
     // safety net, and the escalate fallback; session filtering above stays here in
@@ -657,17 +976,36 @@ export function setupHookBridge(
     autoApproveGate.handlePermissionRequest(input);
   });
   hookServer.on('Stop', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('Stop', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     autoApproveGate.cancelStale('Stop');
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) {
+      // DRIVE: the binder owns mainSessionEnded on id-match (and resets it on
+      // restart via rotate()). The post-SessionEnd Notification drop reads
+      // driveBinder.isMainEnded() directly, so there is no closure flag to keep
+      // in sync here — the binder is the single source of truth.
+      driveBinder.onSessionEnd(input);
+      if (!driveBinder.admits(input)) return;
+      autoApproveGate.cancelStale('SessionEnd');
+      handlers.onSessionEnd?.(input);
+      return;
+    }
     // Only mark our main as ended when the session_id matches what we locked.
     // Foreign SessionEnds (subagents, siblings) must not unlock our tracking.
     if (input.session_id && claudeSessionId && input.session_id === claudeSessionId) {
       mainSessionEnded = true;
     }
+    // Shadow: SessionEnd does NOT run initFromHookEvent/decide; it only flips
+    // mainSessionEnded on id-match. Mirror with onSessionEnd (no decide, no
+    // compare — there is no binding/rotation outcome to diff on this event).
+    shadow?.onSessionEnd(input);
     if (!filterBySession(input)) return;
     autoApproveGate.cancelStale('SessionEnd');
     handlers.onSessionEnd?.(input);
@@ -675,5 +1013,8 @@ export function setupHookBridge(
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
 
-  return { bridge: hookBridge };
+  return {
+    bridge: hookBridge,
+    closeBinder: () => driveBinder?.close(),
+  };
 }
