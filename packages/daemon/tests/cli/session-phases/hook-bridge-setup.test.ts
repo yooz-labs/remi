@@ -1878,6 +1878,82 @@ describe('setupHookBridge', () => {
       // reconciles via the store, not via a replayed rotation event.
       expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
     });
+
+    // Epic #453 phase 0: golden-master / differential baseline. A
+    // representative multi-rotation session lifecycle (fresh -> /clear ->
+    // /clear) replayed through the CURRENT path, capturing the control-plane
+    // contract: the ordered session_rotated sequence + the final durable
+    // binding. Phase 3's TranscriptBinder must reproduce this exactly
+    // (shadow-mode diffs against it). Deterministic (synchronous control
+    // plane only; async transcript content is out of scope here).
+    test('golden master: multi-rotation control-plane sequence + final binding', () => {
+      const { sent } = buildWithCapture();
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      // Pre-spawn binding (createNewSession writes this before spawn).
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-1',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+
+      const t1 = path.join(tmpDir, 'm1.jsonl');
+      const t2 = path.join(tmpDir, 'm2.jsonl');
+      const t3 = path.join(tmpDir, 'm3.jsonl');
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-1',
+        transcript_path: t1,
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-2',
+        transcript_path: t2,
+        hook_event_name: 'SessionStart',
+        source: 'clear',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-3',
+        transcript_path: t3,
+        hook_event_name: 'SessionStart',
+        source: 'clear',
+      });
+
+      const rotations = sent
+        .filter((m) => m.type === 'session_rotated')
+        .map((m) => {
+          const r = m as unknown as {
+            oldClaudeSessionId?: string;
+            newClaudeSessionId: string;
+            newTranscriptPath: string;
+            reason: string;
+          };
+          return {
+            old: r.oldClaudeSessionId,
+            new: r.newClaudeSessionId,
+            path: r.newTranscriptPath,
+            reason: r.reason,
+          };
+        });
+
+      // THE GOLDEN MASTER — phase 3 must reproduce this byte-for-byte.
+      expect(rotations).toEqual([
+        { old: 'claude-1', new: 'claude-2', path: t2, reason: 'restart' },
+        { old: 'claude-2', new: 'claude-3', path: t3, reason: 'restart' },
+      ]);
+      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-3');
+    });
   });
 
   describe('child-liveness + port-ownership rotation (#451)', () => {
