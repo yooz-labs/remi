@@ -449,6 +449,15 @@ if (
 // Instantiated early so subcommand handlers (ls, attach, kill) can use it.
 const liveSessionsRegistry = new SessionRegistryFile();
 
+// Experimental TranscriptBinder flags (#453 phase 3). Snapshotted into immutable
+// module-level consts at boot and NEVER re-read per session: a mid-process flip
+// would split sessions across the old/new code paths, which share the
+// transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
+// instant flip-back means a daemon restart (design §3.1 v4 #9). Default OFF.
+const binderShadow = remiConfig.features.transcript_binder_shadow;
+const binderEnabled = remiConfig.features.transcript_binder_enabled;
+void binderEnabled; // commit 4 wires the DRIVE path; commit 3 is shadow-only.
+
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
   const { runLsCommand } = await import('./cli/cmd-ls.ts');
@@ -1093,6 +1102,8 @@ async function createNewSession(
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => PORT,
+        shadowBinder: binderShadow,
+        transcriptDiscovery,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
