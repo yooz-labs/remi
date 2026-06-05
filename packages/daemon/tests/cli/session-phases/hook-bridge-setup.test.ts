@@ -2080,4 +2080,47 @@ describe('setupHookBridge', () => {
       }
     });
   });
+
+  // Epic #453 phase 0: pin TODAY's behavior so the QuestionPipeline / binder
+  // refactor is verified against a baseline. These tests change no production
+  // code; they characterize. The migration-safety + Codex critics flagged
+  // that the existing realTracker tests assert hasPendingForTest() but never
+  // that the push itself is gated on PTY presence, so a refactor could
+  // collapse the two-step recordPendingHook -> onPTYPromptVisible contract
+  // into a direct handleQuestion and still pass.
+  describe('phase 0 characterization (#453 baseline)', () => {
+    test('two-step push: a hook stashes pending WITHOUT pushing; only PTY presence fires the push', () => {
+      const { tracker } = build({ realTracker: true });
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-twostep',
+        hook_event_name: 'SessionStart',
+        transcript_path: path.join(tmpDir, 'twostep.jsonl'),
+        source: 'startup',
+        model: 'test',
+      });
+
+      hookServer.fire('PermissionRequest', {
+        session_id: 'claude-twostep',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      // The hook recorded a pending question but did NOT push (no handleQuestion).
+      expect(tracker.hasPendingForTest()).toBe(true);
+      expect(messageApiLog.questionCalls).toBe(0);
+
+      // The PTY confirms the prompt is on screen -> the push fires exactly once.
+      tracker.onPTYPromptVisible({
+        id: 'pty-twostep',
+        text: 'Allow Bash?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as unknown as Question);
+
+      expect(messageApiLog.questionCalls).toBe(1);
+    });
+  });
 });
