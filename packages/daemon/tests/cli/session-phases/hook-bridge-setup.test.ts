@@ -134,6 +134,17 @@ describe('setupHookBridge', () => {
 
   afterEach(async () => {
     __resetLoggerForTests();
+    // Stop any transcript watchers a test left running (tests that fire
+    // SessionStart start a real TranscriptWatcher with an fs.watch + 1s poll;
+    // without this they leak a timer + fd past the test). Covers the
+    // pre-existing rotation tests too.
+    for (const w of transcriptWatchers.values()) {
+      try {
+        w.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
     await sessionRegistry.shutdown();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -1824,6 +1835,136 @@ describe('setupHookBridge', () => {
       expect(events[0]?.newTranscriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
       expect(events[0]?.reason).toBe('restart');
     });
+
+    // Epic #453 phase 0 characterization. The #430/#433 hazard: the
+    // transcript-fallback writes the NEW claudeSessionId to sessionStore
+    // BEFORE the hook event for it arrives, so adoptLockFromStore pulls the
+    // new id and classifySessionEvent sees currentLock === incoming = 'match'.
+    // The bug-regression + Codex critics flagged that this exact race is
+    // untested. This pins TODAY's behavior so the TranscriptBinder refactor
+    // (phase 3) cannot change it unnoticed: when the store has already raced
+    // to the new id, the early-return at hook-bridge-setup.ts:370 is hit and
+    // NO session_rotated is emitted (the snapshot's isRotation is computed but
+    // never reaches the restart/adopt announce). Reconnect reconcile then
+    // relies on the store-binding + hello_ack decoration, not a replayed
+    // session_rotated. The binder must consciously preserve OR fix this.
+    test('store raced to the new id before SessionStart: characterize session_rotated', () => {
+      const { sent } = buildWithCapture();
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      // Establish the lock on claude-A.
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      // Fallback races the store to claude-B BEFORE the SessionStart for B.
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-B',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+
+      // SessionStart for B arrives; adoptLockFromStore pulls B -> 'match'.
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-B',
+        transcript_path: path.join(tmpDir, 'b.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      // Baseline: the store-raced case does NOT re-emit session_rotated.
+      expect(sent.filter((m) => m.type === 'session_rotated')).toHaveLength(0);
+      // But the binding DID advance to B (store + lock), so a reconnect still
+      // reconciles via the store, not via a replayed rotation event.
+      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
+    });
+
+    // Epic #453 phase 0: golden-master / differential baseline. A
+    // representative multi-rotation session lifecycle (fresh -> /clear ->
+    // /clear) replayed through the CURRENT path, capturing the control-plane
+    // contract: the ordered session_rotated sequence + the final durable
+    // binding. Phase 3's TranscriptBinder must reproduce this exactly
+    // (shadow-mode diffs against it). Deterministic (synchronous control
+    // plane only; async transcript content is out of scope here).
+    test('golden master: multi-rotation control-plane sequence + final binding', () => {
+      const { sent } = buildWithCapture();
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      // Pre-spawn binding (createNewSession writes this before spawn).
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-1',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+
+      const t1 = path.join(tmpDir, 'm1.jsonl');
+      const t2 = path.join(tmpDir, 'm2.jsonl');
+      const t3 = path.join(tmpDir, 'm3.jsonl');
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-1',
+        transcript_path: t1,
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-2',
+        transcript_path: t2,
+        hook_event_name: 'SessionStart',
+        source: 'clear',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-3',
+        transcript_path: t3,
+        hook_event_name: 'SessionStart',
+        source: 'clear',
+      });
+
+      const rotations = sent
+        .filter((m) => m.type === 'session_rotated')
+        .map((m) => {
+          const r = m as unknown as {
+            oldClaudeSessionId?: string;
+            newClaudeSessionId: string;
+            newTranscriptPath: string;
+            reason: string;
+          };
+          return {
+            old: r.oldClaudeSessionId,
+            new: r.newClaudeSessionId,
+            path: r.newTranscriptPath,
+            reason: r.reason,
+          };
+        });
+
+      // THE GOLDEN MASTER — phase 3 must reproduce this byte-for-byte.
+      expect(rotations).toEqual([
+        { old: 'claude-1', new: 'claude-2', path: t2, reason: 'restart' },
+        { old: 'claude-2', new: 'claude-3', path: t3, reason: 'restart' },
+      ]);
+      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-3');
+    });
   });
 
   describe('child-liveness + port-ownership rotation (#451)', () => {
@@ -2078,6 +2219,49 @@ describe('setupHookBridge', () => {
       } finally {
         stopWatchers();
       }
+    });
+  });
+
+  // Epic #453 phase 0: pin TODAY's behavior so the QuestionPipeline / binder
+  // refactor is verified against a baseline. These tests change no production
+  // code; they characterize. The migration-safety + Codex critics flagged
+  // that the existing realTracker tests assert hasPendingForTest() but never
+  // that the push itself is gated on PTY presence, so a refactor could
+  // collapse the two-step recordPendingHook -> onPTYPromptVisible contract
+  // into a direct handleQuestion and still pass.
+  describe('phase 0 characterization (#453 baseline)', () => {
+    test('two-step push: a hook stashes pending WITHOUT pushing; only PTY presence fires the push', () => {
+      const { tracker } = build({ realTracker: true });
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-twostep',
+        hook_event_name: 'SessionStart',
+        transcript_path: path.join(tmpDir, 'twostep.jsonl'),
+        source: 'startup',
+        model: 'test',
+      });
+
+      hookServer.fire('PermissionRequest', {
+        session_id: 'claude-twostep',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      // The hook recorded a pending question but did NOT push (no handleQuestion).
+      expect(tracker.hasPendingForTest()).toBe(true);
+      expect(messageApiLog.questionCalls).toBe(0);
+
+      // The PTY confirms the prompt is on screen -> the push fires exactly once.
+      tracker.onPTYPromptVisible({
+        id: 'pty-twostep',
+        text: 'Allow Bash?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as unknown as Question);
+
+      expect(messageApiLog.questionCalls).toBe(1);
     });
   });
 });
