@@ -1824,6 +1824,60 @@ describe('setupHookBridge', () => {
       expect(events[0]?.newTranscriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
       expect(events[0]?.reason).toBe('restart');
     });
+
+    // Epic #453 phase 0 characterization. The #430/#433 hazard: the
+    // transcript-fallback writes the NEW claudeSessionId to sessionStore
+    // BEFORE the hook event for it arrives, so adoptLockFromStore pulls the
+    // new id and classifySessionEvent sees currentLock === incoming = 'match'.
+    // The bug-regression + Codex critics flagged that this exact race is
+    // untested. This pins TODAY's behavior so the TranscriptBinder refactor
+    // (phase 3) cannot change it unnoticed: when the store has already raced
+    // to the new id, the early-return at hook-bridge-setup.ts:370 is hit and
+    // NO session_rotated is emitted (the snapshot's isRotation is computed but
+    // never reaches the restart/adopt announce). Reconnect reconcile then
+    // relies on the store-binding + hello_ack decoration, not a replayed
+    // session_rotated. The binder must consciously preserve OR fix this.
+    test('store raced to the new id before SessionStart: characterize session_rotated', () => {
+      const { sent } = buildWithCapture();
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      // Establish the lock on claude-A.
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      // Fallback races the store to claude-B BEFORE the SessionStart for B.
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-B',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+
+      // SessionStart for B arrives; adoptLockFromStore pulls B -> 'match'.
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-B',
+        transcript_path: path.join(tmpDir, 'b.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      // Baseline: the store-raced case does NOT re-emit session_rotated.
+      expect(sent.filter((m) => m.type === 'session_rotated')).toHaveLength(0);
+      // But the binding DID advance to B (store + lock), so a reconnect still
+      // reconciles via the store, not via a replayed rotation event.
+      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
+    });
   });
 
   describe('child-liveness + port-ownership rotation (#451)', () => {
