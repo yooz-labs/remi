@@ -95,6 +95,8 @@ export interface ParsedArgs {
   readonly autoApproveAllow: readonly string[];
   readonly autoApproveDeny: readonly string[];
   readonly autoApproveInstructions: string | undefined;
+  readonly autoApproveMultichoice: 'skip' | 'evaluate' | undefined;
+  readonly autoApproveMultichoiceModel: string | undefined;
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
   readonly showHelp: boolean;
@@ -141,6 +143,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   const autoApproveAllow: string[] = [];
   const autoApproveDeny: string[] = [];
   let autoApproveInstructions: string | undefined;
+  let autoApproveMultichoice: 'skip' | 'evaluate' | undefined;
+  let autoApproveMultichoiceModel: string | undefined;
   let showVersion = false;
   let showHelp = false;
   let error: string | undefined;
@@ -356,6 +360,20 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         autoApproveInstructions = nextArg;
         i++;
       }
+    } else if (arg === '--auto-approve-multichoice') {
+      if (nextArg !== 'skip' && nextArg !== 'evaluate') {
+        error = 'Error: --auto-approve-multichoice requires "skip" or "evaluate".';
+      } else {
+        autoApproveMultichoice = nextArg;
+        i++;
+      }
+    } else if (arg === '--auto-approve-multichoice-model') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --auto-approve-multichoice-model requires a value.';
+      } else {
+        autoApproveMultichoiceModel = nextArg;
+        i++;
+      }
     } else if (arg === '--version' || arg === '-v') {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -433,6 +451,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     autoApproveAllow,
     autoApproveDeny,
     autoApproveInstructions,
+    autoApproveMultichoice,
+    autoApproveMultichoiceModel,
     orphanTimeout,
     claudeArgs,
     showVersion,

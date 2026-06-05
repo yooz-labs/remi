@@ -12,7 +12,7 @@ const config: CapacitorConfig = {
     contentInset: 'automatic',
     preferredContentMode: 'mobile',
     overrideUserAgent: 'Remi/1.0 iOS',
-    backgroundColor: '#1a1d21',
+    backgroundColor: '#0e0e0c',
     scrollEnabled: false,
   },
   android: {
@@ -24,7 +24,7 @@ const config: CapacitorConfig = {
   plugins: {
     StatusBar: {
       style: 'dark',
-      backgroundColor: '#1a1d21',
+      backgroundColor: '#0e0e0c',
     },
     Keyboard: {
       resize: 'none',

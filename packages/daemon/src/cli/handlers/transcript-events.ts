@@ -15,6 +15,7 @@ import { createError, createTranscriptLoadComplete, errorToString } from '@remi/
 import type { UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
+import type { SessionStore } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,
   TranscriptWatcher as TranscriptWatcherType,
@@ -28,13 +29,16 @@ export interface TranscriptHandlerDeps {
   transcriptDiscovery: TranscriptDiscovery;
   /** Live watchers keyed by Remi session ID (for Remi-UUID fallback resolution). */
   transcriptWatchers: Map<UUID, TranscriptWatcherType>;
+  /** Authoritative Remi-UUID -> claudeSessionId binding, used as a last-resort
+   *  resolver when no live watcher exists (e.g. a wedged/rotated session). */
+  sessionStore: SessionStore;
   send: SendToConnection;
 }
 
 export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
-  const { transcriptDiscovery, transcriptWatchers, send } = deps;
+  const { transcriptDiscovery, transcriptWatchers, sessionStore, send } = deps;
 
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
@@ -51,6 +55,22 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         if (activeWatcher) {
           filePath = activeWatcher.filePath;
           log(`[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via active watcher`);
+        }
+      }
+
+      // Last resort: no live watcher (e.g. a session wedged or torn down mid
+      // rotation). Resolve through the authoritative store binding, which the
+      // rotation handler keeps current (#451), so history loads even when the
+      // streaming watcher is absent rather than failing with NOT_FOUND.
+      if (!filePath) {
+        const boundClaudeId = sessionStore.findByRemiSessionId(sessionId as UUID)?.claudeSessionId;
+        if (boundClaudeId) {
+          filePath = transcriptDiscovery.findTranscriptBySessionId(boundClaudeId);
+          if (filePath) {
+            log(
+              `[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via store binding ${boundClaudeId.slice(0, 8)}`,
+            );
+          }
         }
       }
 

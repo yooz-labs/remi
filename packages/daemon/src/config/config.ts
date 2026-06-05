@@ -8,7 +8,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { errorToString } from '@remi/shared';
+import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
@@ -62,8 +62,8 @@ export interface RemiConfig {
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
   daemon: {
-    base_port: 18765,
-    port_range: 20,
+    base_port: DAEMON_BASE_PORT,
+    port_range: DAEMON_PORT_RANGE,
     bind: '0.0.0.0',
     orphan_timeout: 300,
   },
@@ -95,6 +95,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     allow: [],
     deny: [],
     instructions: '',
+    multichoice: 'skip',
+    multichoice_model: '',
   },
 };
 
@@ -221,6 +223,13 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     );
   }
 
+  if (cfg.multichoice !== 'skip' && cfg.multichoice !== 'evaluate') {
+    throw new Error(
+      `Invalid auto_approve.multichoice in ${configPath}: must be "skip" or "evaluate", got ${typeof cfg.multichoice === 'string' ? `"${cfg.multichoice}"` : typeof cfg.multichoice}.`,
+    );
+  }
+  expectString('multichoice_model', cfg.multichoice_model);
+
   // Warn about dangerously short patterns that would match too broadly.
   const MIN_PATTERN_LENGTH = 2;
   for (const p of cfg.allow) {
@@ -328,6 +337,14 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
   }
+  const mc = env['REMI_AUTO_APPROVE_MULTICHOICE'];
+  if (mc === 'skip' || mc === 'evaluate') {
+    (auto_approve as { multichoice: 'skip' | 'evaluate' }).multichoice = mc;
+  }
+  if (env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL']) {
+    (auto_approve as { multichoice_model: string }).multichoice_model =
+      env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL'];
+  }
 
   return {
     ...config,
@@ -391,6 +408,17 @@ authorized_user_ids = []
 # Escalate anything touching .env or secrets/.
 # Deny any git push to main.
 # """
+#
+# Multi-choice prompts (plan-mode questions, tools with 4+ choices, or any
+# permission_suggestions outside the standard Yes/Yes-always/No trio):
+# multichoice = "skip"             # "skip" (default; always escalate to user)
+#                                  # | "evaluate" (call LLM to pick an index)
+# multichoice_model = ""           # Optional alt-model for multi-choice; empty
+#                                  # falls back to the main \`model\`. Useful
+#                                  # for routing planning prompts to a smarter
+#                                  # model without paying its latency for
+#                                  # every binary permission. Ignored unless
+#                                  # multichoice = "evaluate".
 `;
 }
 
@@ -460,6 +488,8 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   const instr = config.auto_approve.instructions;
   const instrDisplay = instr ? `"${instr.slice(0, 40)}${instr.length > 40 ? '...' : ''}"` : '""';
   lines.push(`  instructions = ${instrDisplay}`);
+  lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
+  lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
 
   return lines.join('\n');
 }

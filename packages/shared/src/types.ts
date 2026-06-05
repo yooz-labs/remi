@@ -146,7 +146,22 @@ export interface Question {
 
   /** The answer that was given (if answered) */
   answer?: string | undefined;
+
+  /**
+   * The Claude agent this prompt belongs to: the hook `agent_id` for a
+   * subagent, or undefined (MAIN_AGENT_ID) for the primary agent. Used as the
+   * key in QuestionPresenceTracker's pending map and as part of the composite
+   * key (`${sessionId}#${agentId}`) in the web client's collection, so a
+   * main-agent prompt and a concurrent subagent prompt (#419) coexist instead
+   * of overwriting each other (#425). The daemon SessionRegistry keys by
+   * question id, so concurrency there holds regardless of this field.
+   */
+  readonly agentId?: string | undefined;
 }
+
+/** Sentinel agent key for the primary (main) agent, whose questions carry no
+ *  `agentId`. Normalize `agentId ?? MAIN_AGENT_ID` when building collection keys. */
+export const MAIN_AGENT_ID = 'main';
 
 /**
  * Option for a question (e.g., Yes/No, numbered choices).
@@ -186,9 +201,6 @@ export interface Session {
 
   /** Current agent status */
   status: AgentStatus;
-
-  /** Current pending question (if any) */
-  pendingQuestion?: Question | undefined;
 
   /** Is session still active */
   isActive: boolean;
@@ -282,6 +294,23 @@ export interface DiscoverableSession {
 
   /** Whether this dead session can be resumed via Claude Code --resume */
   readonly canResume: boolean;
+
+  /**
+   * Claude Code session UUID this entry's Claude is bound to (#427/#429).
+   * For daemon-sourced entries, this is the pre-assigned binding from
+   * SessionStore. For transcript-sourced entries it equals sessionId.
+   * Optional because the SessionStore lookup may miss on the daemon-list
+   * path (e.g. a daemon entry whose sessions.json record was lost across
+   * a crash before the client requested the list).
+   */
+  readonly claudeSessionId?: string | undefined;
+
+  /**
+   * Absolute path to the .jsonl transcript Claude writes to. Populated
+   * for all entries where the binding is known. Omitted in the same
+   * lookup-miss case described above.
+   */
+  readonly transcriptPath?: string | undefined;
 
   /** WebSocket port of the daemon hosting this session (for auto-connect) */
   readonly wsPort?: number;

@@ -18,12 +18,13 @@ import {
   createError,
   createKillSessionResponse,
   createSessionListResponse,
+  errorToString,
 } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
-import { log } from '../logger.ts';
+import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
@@ -56,7 +57,27 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
 
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
-      const daemonSessions = sessionRegistry.listSessions();
+      // Decorate daemon-sourced sessions with their pre-assigned Claude
+      // binding (#429). transcriptPath is derived from the same encoding
+      // rule transcript-discovery uses, so the client can show "you are
+      // talking to port X / claude <short-uuid>" without round-tripping.
+      // A failed lookup on any one entry must not nuke the entire list
+      // response — the connection would hang waiting for a reply. Fall
+      // back to the undecorated entry on per-entry failure.
+      const daemonSessionsRaw = sessionRegistry.listSessions();
+      const daemonSessions = daemonSessionsRaw.map((s) => {
+        try {
+          const stored = sessionStore.findByRemiSessionId(s.sessionId as UUID);
+          if (!stored?.claudeSessionId) return s;
+          const transcriptPath = `${transcriptDiscovery.getProjectTranscriptDir(s.projectPath)}/${stored.claudeSessionId}.jsonl`;
+          return { ...s, claudeSessionId: stored.claudeSessionId, transcriptPath };
+        } catch (err) {
+          logError(
+            `[SessionList] Failed to decorate session ${s.sessionId.slice(0, 8)}; serving raw entry: ${errorToString(err)}`,
+          );
+          return s;
+        }
+      });
       let allSessions = [...daemonSessions];
 
       if (includeExternal) {

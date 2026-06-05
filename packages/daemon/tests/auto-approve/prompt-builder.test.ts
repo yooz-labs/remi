@@ -65,4 +65,28 @@ describe('buildPrompt', () => {
     expect(defaultIdx).toBeGreaterThanOrEqual(0);
     expect(userIdx).toBeGreaterThan(defaultIdx);
   });
+
+  test('system prompt states the reversibility rule', () => {
+    // Locks the rule the user asked for: reversible side effects can
+    // approve; irreversible side effects escalate. Without this, the
+    // model has no principled way to decide on routine compound commands.
+    const [system] = buildPrompt('Bash', { command: 'cd /tmp && ls' });
+    expect(system?.content.toLowerCase()).toContain('reversib');
+  });
+
+  test('system prompt states the design/direction/steering rule', () => {
+    // Design/scope/steering questions must always escalate — the model
+    // cannot infer user intent for these.
+    const [system] = buildPrompt('Bash', { command: 'ls' });
+    const lower = system?.content.toLowerCase() ?? '';
+    expect(lower).toContain('design');
+    expect(lower).toContain('direction');
+  });
+
+  test('system prompt evaluates compound commands as a whole', () => {
+    // Compound commands (&&, ||, ;, |) must be evaluated as one
+    // unit; one risky part escalates the whole chain.
+    const [system] = buildPrompt('Bash', { command: 'ls && cat foo' });
+    expect(system?.content).toContain('Compound commands');
+  });
 });

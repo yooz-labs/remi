@@ -196,7 +196,7 @@ export class AdapterRegistry {
   /**
    * Send a question to a specific connection.
    */
-  sendQuestion(connectionId: UUID, question: Question, sessionId?: UUID): boolean {
+  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
     const adapterType = this.connectionToAdapter.get(connectionId);
     if (!adapterType) {
       return false;

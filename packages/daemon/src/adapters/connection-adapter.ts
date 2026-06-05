@@ -64,10 +64,22 @@ export interface AdapterEvents {
   onDisconnect: (connectionId: UUID, reason: string) => void;
 
   /** User input received */
-  onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
+  onUserInput: (
+    connectionId: UUID,
+    sessionId: UUID,
+    content: string,
+    raw?: boolean,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Answer to question received */
-  onAnswer: (connectionId: UUID, sessionId: UUID, questionId: UUID, answer: string) => void;
+  onAnswer: (
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Bullet expand request received */
   onBulletExpandRequest: (
@@ -157,7 +169,7 @@ export interface ConnectionAdapter {
    * The adapter is responsible for formatting appropriately
    * (e.g., inline keyboard for Telegram).
    */
-  sendQuestion(connectionId: UUID, question: Question, sessionId?: UUID): boolean;
+  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean;
 
   /**
    * Send a status update to a specific connection.

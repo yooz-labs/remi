@@ -11,12 +11,14 @@
  *   - Notification(permission_prompt) fires shortly after with a plain-text
  *     message like "Claude needs your permission to use Bash" (no numbered
  *     options; those appear only in the terminal UI).
- *   - We emit the question immediately from PermissionRequest using either
- *     the provided suggestions or a default 3-option set, then suppress
- *     the redundant Notification.
+ *   - Both events forward their question to onQuestion. The push gate is
+ *     QuestionPresenceTracker (cli.ts wiring): hook events stash the
+ *     metadata; PTY confirms presence and fires the push. If both events
+ *     arrive before PTY (typical), the second simply replaces the first
+ *     in the tracker — Claude only renders one prompt at a time.
  */
 
-import { generateId } from '@remi/shared';
+import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
@@ -41,22 +43,36 @@ export interface HookBridgeEvents {
 }
 
 /** Default permission options. Claude Code always offers these for tool
- *  permissions; the Notification hook message never contains numbered options. */
+ *  permissions; the Notification hook message never contains numbered options.
+ *  Labels are imported from `@remi/shared` so the web client's question-merge
+ *  guard recognises them as the bland fallback (#396). */
 const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
-  { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
-  { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
-  { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+  {
+    label: DEFAULT_PERMISSION_LABELS[0],
+    value: '1',
+    isRecommended: true,
+    isYes: true,
+    isNo: false,
+  },
+  {
+    label: DEFAULT_PERMISSION_LABELS[1],
+    value: '2',
+    isRecommended: false,
+    isYes: true,
+    isNo: false,
+  },
+  {
+    label: DEFAULT_PERMISSION_LABELS[2],
+    value: '3',
+    isRecommended: false,
+    isYes: false,
+    isNo: true,
+  },
 ];
-
-/** Dedup window: suppress Notification(permission_prompt) arriving within
- *  this many ms after a PermissionRequest already emitted a question. */
-const PERMISSION_DEDUP_WINDOW_MS = 5000;
 
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
-  /** Timestamp of last question emitted from handlePermissionRequest */
-  private lastPermissionEmitAt = 0;
   /** Tracks active Task tool_use_ids — secondary safety net for subagent
    *  filtering (primary is agent_id check in cli.ts hook listeners). */
   private readonly subagentContext = new SubagentContextTracker();
@@ -66,35 +82,20 @@ export class HookEventBridge {
     this.events = events;
   }
 
-  /** True when the main agent is inside a Task tool call (subagent running).
-   *  Callers can use this to short-circuit auto-approve entirely during team work. */
+  /** True when the main agent is inside a *synchronous* Task tool call
+   *  (subagent running and bracketed by PreToolUse(Task)/PostToolUse(Task)
+   *  on the main session). Callers use this to short-circuit auto-approve
+   *  during team work.
+   *
+   *  Async / background-spawned subagents (TaskCreate, TeamCreate) and
+   *  team members emit hook events with `agent_id` set but do NOT bracket
+   *  their lifetime with a PreToolUse on the main session — so this
+   *  method returns `false` even when such a subagent is active. The
+   *  primary filter for those is `agent_id` (handled at the
+   *  hook-bridge-setup listener layer). This method is defense in depth
+   *  for the synchronous case where `agent_id` is absent. */
   isInSubagentContext(): boolean {
     return this.subagentContext.isInSubagentContext();
-  }
-
-  /** Mark that a PermissionRequest is being handled externally (e.g. by
-   *  auto-approve). Sets the dedup timestamp so the subsequent
-   *  Notification(permission_prompt) is suppressed instead of generating a
-   *  phantom notification.
-   *
-   *  Call this BEFORE starting a slow op (e.g. LLM evaluation) so the
-   *  Notification arriving mid-flight is suppressed. Callers must ensure
-   *  the timestamp is refreshed if the op can outlive PERMISSION_DEDUP_WINDOW_MS,
-   *  either by re-invoking this method or via a downstream write to
-   *  lastPermissionEmitAt (e.g. handlePermissionRequest does this on the
-   *  escalation path). */
-  markPermissionHandled(): void {
-    this.lastPermissionEmitAt = Date.now();
-  }
-
-  /** Clear the dedup mark so the NEXT Notification(permission_prompt) is
-   *  treated as a fresh standalone notification. Use when an externally-
-   *  handled PermissionRequest path FAILS (escalation throws, catch handler
-   *  exhausts) so the Notification fallback can still surface a question
-   *  to the user. Without this, a swallowed escalation leaves the bridge
-   *  silently suppressed for the rest of the dedup window. */
-  clearPermissionHandled(): void {
-    this.lastPermissionEmitAt = 0;
   }
 
   /** Returns HookServerEvents handlers wired to this bridge */
@@ -126,30 +127,25 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      // PermissionRequest already emitted the question; suppress duplicate.
-      if (Date.now() - this.lastPermissionEmitAt < PERMISSION_DEDUP_WINDOW_MS) {
-        console.debug(
-          `[HookEventBridge] Suppressed duplicate Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
-        );
-        return;
-      }
-      // Subagent/team context: don't bubble inter-agent questions to the user.
-      if (this.subagentContext.isInSubagentContext()) {
-        console.debug(
-          `[HookEventBridge] Suppressed subagent Notification(permission_prompt): ${(input.message || '').substring(0, 80)}`,
-        );
-        return;
-      }
-      // Standalone Notification without a preceding PermissionRequest.
-      // Emit with default 3-option set (message has no numbered options).
+      // Phase 4 (#419): the subagentContext drop previously sat here.
+      // It was redundant defense: cli.ts hook-bridge-setup already
+      // forwards subagent events (phase 4 removed the agent_id gate)
+      // and the tracker handles presence by PTY confirmation. Keep
+      // SubagentContextTracker for the auto-approve default-deny path
+      // (still consumed via hookBridge.isInSubagentContext()).
+      //
+      // Forward the question — push semantics live in the tracker
+      // (cli.ts wiring). A trailing Notification arriving after
+      // PermissionRequest replaces the pending record, which is fine
+      // (Claude renders one prompt at a time).
       const question: Question = {
         id: generateId(),
         text: input.message || 'Allow this action?',
         options: [...DEFAULT_PERMISSION_OPTIONS],
         allowsFreeText: false,
         isAnswered: false,
+        agentId: input.agent_id,
       };
-      this.lastPermissionEmitAt = Date.now();
       this.events.onQuestion(question);
       this.events.onStatusChange('waiting');
     } else if (input.notification_type === 'idle_prompt') {
@@ -185,37 +181,28 @@ export class HookEventBridge {
   }
 
   handlePermissionRequest(input: PermissionRequestHookInput): void {
-    // Subagent/team context: suppress inter-agent questions from reaching the user.
-    // The main agent is blocked waiting for Task to return and cannot generate
-    // questions during this window. Any PermissionRequest here is from a subagent.
-    if (this.subagentContext.isInSubagentContext()) {
-      console.debug(
-        `[HookEventBridge] Suppressed subagent PermissionRequest: tool=${input.tool_name}`,
-      );
-      // Still mark dedup so the follow-up Notification(permission_prompt) is suppressed too.
-      this.lastPermissionEmitAt = Date.now();
-      return;
-    }
-
+    // Phase 4 (#419): the subagentContext drop previously sat here.
+    // After phase 3 wired in the QuestionPresenceTracker, push semantics
+    // are presence-gated regardless of subagent context — a subagent
+    // prompt that does not render on the user's PTY does not push, and
+    // one that does is genuinely answerable. The tracker handles both
+    // cases; this method now only builds the question payload.
     const toolName = input.tool_name || 'unknown tool';
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
     const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;
 
     let options: QuestionOption[];
 
-    // Only trust permission_suggestions if every entry is a usable string.
-    // Some Claude Code versions / tool paths have been observed sending non-string
-    // entries (null, numbers, objects), which crashed `suggestion.toLowerCase()`
-    // and bubbled up as a "[AutoApprove] Unexpected error" in callers.
+    // permission_suggestions is a union of string labels and structured
+    // object entries (e.g. {type:"addDirectories",...}, {type:"setMode",...}).
+    // The iOS question card renders text labels only, so filter to strings.
     const suggestions = input.permission_suggestions;
-    const suggestionsUsable =
-      Array.isArray(suggestions) &&
-      suggestions.length >= 2 &&
-      suggestions.every((s) => typeof s === 'string' && s.length > 0);
+    const stringSuggestions = Array.isArray(suggestions)
+      ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
+      : [];
 
-    if (suggestionsUsable) {
-      // Use the suggestions provided by Claude Code (e.g. Edit sends ["Yes","Always","No"])
-      options = suggestions.map((suggestion, idx) => {
+    if (stringSuggestions.length >= 2) {
+      options = stringSuggestions.map((suggestion, idx) => {
         const lower = suggestion.toLowerCase();
         const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
         const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
@@ -228,28 +215,18 @@ export class HookEventBridge {
         };
       });
     } else {
-      // No suggestions (e.g. Bash). Use default 3-option set.
-      // The Notification hook that follows has no numbered options either
-      // (just plain text like "Claude needs your permission to use Bash"),
-      // so waiting for it adds latency without gaining information.
-      // When `permission_suggestions` is present but fails validation, log it so
-      // upstream regressions in Claude Code don't go undetected; the genuine
-      // "no suggestions" path (undefined) stays quiet.
-      if (suggestions !== undefined) {
-        console.warn(
-          `[HookEventBridge] PermissionRequest had unusable permission_suggestions (tool=${toolName}, value=${JSON.stringify(suggestions)}); using default options`,
-        );
-      }
+      // Either no suggestions (Bash) or only structured object entries
+      // that the iOS card cannot render. Fall back to the default 3-set.
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 
-    this.lastPermissionEmitAt = Date.now();
     this.events.onQuestion({
       id: generateId(),
       text: promptText,
       options,
       allowsFreeText: false,
       isAnswered: false,
+      agentId: input.agent_id,
     });
     this.events.onStatusChange('waiting');
   }
@@ -280,6 +257,7 @@ export class HookEventBridge {
       ],
       allowsFreeText: false,
       isAnswered: false,
+      agentId: input.agent_id,
     };
     this.events.onQuestion(question);
     this.events.onStatusChange('waiting');

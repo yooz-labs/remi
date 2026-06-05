@@ -110,6 +110,8 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     allow: [],
     deny: [],
     instructions: '',
+    multichoice: 'skip',
+    multichoice_model: '',
   };
 }
 

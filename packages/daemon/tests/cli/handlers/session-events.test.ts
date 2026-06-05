@@ -103,6 +103,50 @@ describe('createSessionHandlers', () => {
       expect(msg.sessions).toHaveLength(1);
     });
 
+    test('decorates daemon sessions with claudeSessionId + transcriptPath (#429)', () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      const claudeId = '11111111-2222-3333-4444-555555555555';
+      sessionStore.save({
+        remiSessionId: sessionId,
+        claudeSessionId: claudeId,
+        projectPath: '/test/dir',
+        port: PORT,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+
+      makeHandlers().onSessionListRequest(CID, REQ, false);
+
+      const msg = sendCalls[0]?.message as unknown as {
+        sessions: Array<{
+          sessionId: string;
+          claudeSessionId?: string;
+          transcriptPath?: string;
+        }>;
+      };
+      expect(msg.sessions).toHaveLength(1);
+      expect(msg.sessions[0]?.claudeSessionId).toBe(claudeId);
+      expect(msg.sessions[0]?.transcriptPath).toContain(`/${claudeId}.jsonl`);
+    });
+
+    test('falls back to undecorated entry when sessionStore lookup misses', () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      // Deliberately do NOT call sessionStore.save.
+
+      makeHandlers().onSessionListRequest(CID, REQ, false);
+
+      const msg = sendCalls[0]?.message as unknown as {
+        sessions: Array<{ claudeSessionId?: string; transcriptPath?: string }>;
+      };
+      expect(msg.sessions).toHaveLength(1);
+      expect(msg.sessions[0]?.claudeSessionId).toBeUndefined();
+      expect(msg.sessions[0]?.transcriptPath).toBeUndefined();
+    });
+
     test('omits the current daemon port from daemonPorts', () => {
       // Register one session entry for a DIFFERENT port alongside ours.
       liveSessionsRegistry.register({

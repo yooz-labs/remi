@@ -4,6 +4,8 @@
  * Displays a single message with WhatsApp-style delivery status.
  */
 
+import { useLongPress } from '@/hooks/useLongPress';
+import { hapticImpact } from '@/lib/haptics';
 import type { UIBullet, UIMessage } from '@/types';
 import type { TranscriptContentBlock } from '@remi/shared/protocol.ts';
 import type { MessageState } from '@remi/shared/types.ts';
@@ -28,6 +30,8 @@ interface MessageBubbleProps {
   readonly message: UIMessage;
   readonly showTimestamp?: boolean;
   readonly onBulletExpand?: (bulletId: number) => void;
+  /** Long-press the bubble to set this message as the reply context (#401). */
+  readonly onReply?: (message: UIMessage) => void;
   readonly viewMode?: ViewMode;
 }
 
@@ -86,7 +90,7 @@ function BulletItem({
           disabled={bullet.isExpanding}
           className={clsx(
             'mt-1 flex items-center gap-1 text-xs',
-            'text-[var(--color-primary)] hover:text-[var(--color-primary-hover)]',
+            'text-[var(--color-accent-text)] hover:opacity-80',
             'transition-colors duration-150',
             bullet.isExpanding && 'opacity-50 cursor-wait',
           )}
@@ -253,6 +257,7 @@ export function MessageBubble({
   message,
   showTimestamp = true,
   onBulletExpand,
+  onReply,
   viewMode = 'compact',
 }: MessageBubbleProps) {
   const isUser = message.sender === 'user';
@@ -261,6 +266,22 @@ export function MessageBubble({
 
   // Use bullets if available, otherwise fall back to raw content
   const hasBullets = message.bullets && message.bullets.length > 0;
+
+  // Long-press to enter "reply to this message" mode (#401). System
+  // messages and tool/streaming bubbles are not reply-able since there
+  // is no useful quoted context for the agent.
+  const isReplyable = !!onReply && !isSystem && !message.isStreaming && !message.tool;
+  const longPressHandlers = useLongPress(
+    () => {
+      if (onReply) onReply(message);
+    },
+    {
+      delayMs: 500,
+      onTrigger: () => {
+        hapticImpact('medium');
+      },
+    },
+  );
 
   // In enhanced chat mode, tool messages render as collapsible cards (not bubbles)
   if (enhanced && message.tool && !isUser) {
@@ -281,26 +302,22 @@ export function MessageBubble({
     );
   }
 
-  // Sender label for enhanced chat mode
-  let senderLabel: string | null = null;
-  if (enhanced) {
-    if (isUser) senderLabel = 'You';
-    else if (!isSystem) senderLabel = 'Claude';
-  }
-
   return (
     <div
       className={clsx('flex w-full animate-[slide-up]', isUser ? 'justify-end' : 'justify-start')}
     >
       <div
+        {...(isReplyable ? longPressHandlers : {})}
         className={clsx(
           'rounded-2xl px-4 py-2.5 overflow-hidden',
           'transition-all duration-200',
           'shadow-sm border',
           // Width: wider in enhanced mode for better code block display
           enhanced ? 'max-w-[95%]' : 'max-w-[85%]',
-          // Bubble colors
-          isUser && 'bg-[var(--color-bubble-user)] text-white border-[var(--color-bubble-user)]',
+          // Bubble colors -- user is a light "ink" pill with dark text; the
+          // dark/light surface color flips with the theme so contrast holds.
+          isUser &&
+            'bg-[var(--color-bubble-user)] text-[var(--color-surface)] border-[var(--color-bubble-user)]',
           !isUser && !isSystem && 'bg-[var(--color-bubble-assistant)] border-[var(--color-border)]',
           isSystem &&
             'bg-[var(--color-bubble-system)] text-[var(--color-text-secondary)] border-[var(--color-border)]',
@@ -311,15 +328,14 @@ export function MessageBubble({
           message.isStreaming && 'animate-pulse',
           // Editing indicator
           message.isEditing && 'border-[var(--color-primary)] border-dashed',
+          // Long-press affordance hint on touch devices only.
+          // `select-none` would break copy-paste on desktop; the
+          // `pointer-coarse:` variant scopes the rule to touch input
+          // (Tailwind's `coarse` media query). `touch-manipulation`
+          // suppresses iOS's tap-delay regardless of pointer type.
+          isReplyable && 'pointer-coarse:select-none touch-manipulation',
         )}
       >
-        {/* Sender label in enhanced mode */}
-        {senderLabel && (
-          <div className="mb-1 text-[11px] font-semibold text-[var(--color-text-muted)]">
-            {senderLabel}
-          </div>
-        )}
-
         {/* Tool indicator (compact mode only; enhanced mode uses ToolUseCard) */}
         {!enhanced && message.tool && (
           <div className="mb-1 flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
@@ -329,7 +345,7 @@ export function MessageBubble({
         )}
 
         {/* Message content */}
-        <div className={clsx(isUser ? 'text-white' : 'text-[var(--color-text)]')}>
+        <div className={clsx(isUser ? 'text-[var(--color-surface)]' : 'text-[var(--color-text)]')}>
           <MessageContent
             message={message}
             enhanced={enhanced}
@@ -359,7 +375,7 @@ export function MessageBubble({
             <span
               className={clsx(
                 'text-[10px]',
-                isUser ? 'text-white/70' : 'text-[var(--color-text-muted)]',
+                isUser ? 'text-[var(--color-surface)]/70' : 'text-[var(--color-text-muted)]',
               )}
             >
               {formatTime(message.timestamp)}

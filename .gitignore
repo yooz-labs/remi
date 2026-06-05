@@ -87,3 +87,6 @@ logs/
 *.sqlite3
 test-results/
 playwright-report/
+
+# epic-dev local state (never committed)
+.claude/*.local.md

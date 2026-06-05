@@ -295,7 +295,7 @@ describe('runAttachClient', () => {
           if (msg.type === 'hello') {
             ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
             setTimeout(() => {
-              ws.send(serialize(createQuestion(question)));
+              ws.send(serialize(createQuestion(question, targetSessionId as UUID)));
             }, 50);
             setTimeout(() => ws.close(), 200);
           }

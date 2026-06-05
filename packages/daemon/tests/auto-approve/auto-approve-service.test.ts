@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { AutoApproveService, parseDecision } from '../../src/auto-approve/auto-approve-service.ts';
+import {
+  AutoApproveService,
+  normalisePermissionSuggestion,
+  parseDecision,
+} from '../../src/auto-approve/auto-approve-service.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
 
@@ -12,6 +16,10 @@ import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
  */
 
 async function isOllamaAvailable(): Promise<boolean> {
+  // SKIP_LLM_TESTS=1 lets a developer pin GPU-heavy LLM tests off without
+  // killing the local Ollama daemon (which they may want running for other
+  // workflows). Honored by every Ollama-gated test in this directory.
+  if (process.env['SKIP_LLM_TESTS'] === '1') return false;
   try {
     const res = await fetch('http://localhost:11434/api/tags', {
       signal: AbortSignal.timeout(2000),
@@ -37,6 +45,8 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     allow: [],
     deny: [],
     instructions: '',
+    multichoice: 'skip',
+    multichoice_model: '',
     ...overrides,
   };
 }
@@ -133,6 +143,92 @@ describe('parseDecision', () => {
 });
 
 // ---------------------------------------------------------------------------
+// normalisePermissionSuggestion - converts heterogeneous entries to LLM
+// labels. Strings pass through; objects are JSON-serialised so the LLM
+// can read addDirectories/setMode/etc shapes.
+// ---------------------------------------------------------------------------
+describe('normalisePermissionSuggestion', () => {
+  test('passes a plain string through', () => {
+    expect(normalisePermissionSuggestion('Yes')).toBe('Yes');
+  });
+
+  test('trims surrounding whitespace on strings', () => {
+    expect(normalisePermissionSuggestion('  Always  ')).toBe('Always');
+  });
+
+  test('drops empty / whitespace-only strings', () => {
+    expect(normalisePermissionSuggestion('')).toBeNull();
+    expect(normalisePermissionSuggestion('   ')).toBeNull();
+  });
+
+  test('JSON-serialises addDirectories object entry', () => {
+    const out = normalisePermissionSuggestion({
+      type: 'addDirectories',
+      directories: ['/Users/foo/.claude/agents'],
+      destination: 'session',
+    });
+    expect(out).toContain('"type":"addDirectories"');
+    expect(out).toContain('/Users/foo/.claude/agents');
+    expect(out).toContain('"destination":"session"');
+  });
+
+  test('JSON-serialises setMode object entry', () => {
+    const out = normalisePermissionSuggestion({
+      type: 'setMode',
+      mode: 'bypassPermissions',
+      destination: 'session',
+    });
+    expect(out).toContain('"type":"setMode"');
+    expect(out).toContain('"mode":"bypassPermissions"');
+  });
+
+  test('truncates very long serialisations to keep the prompt small', () => {
+    const giant = {
+      type: 'addDirectories',
+      directories: Array.from({ length: 50 }, (_, i) => `/Users/foo/dir-${i}/with-a-long-path`),
+    };
+    const out = normalisePermissionSuggestion(giant);
+    expect(out).not.toBeNull();
+    expect(out?.length).toBeLessThanOrEqual(200);
+    expect(out?.endsWith('...')).toBe(true);
+  });
+
+  test('drops null / undefined / non-object primitives', () => {
+    expect(normalisePermissionSuggestion(null)).toBeNull();
+    expect(normalisePermissionSuggestion(undefined)).toBeNull();
+    expect(normalisePermissionSuggestion(42)).toBeNull();
+    expect(normalisePermissionSuggestion(true)).toBeNull();
+  });
+
+  test('drops the empty object shape (no useful payload)', () => {
+    expect(normalisePermissionSuggestion({})).toBeNull();
+  });
+
+  test('returns null on a circular-reference object instead of throwing', () => {
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    expect(normalisePermissionSuggestion(circular)).toBeNull();
+  });
+
+  test('drops Map and Set (both stringify to "{}")', () => {
+    // The auto-approve service depends on this null return: a non-null
+    // serialisation that round-trips to an empty-shape would inflate
+    // normalisedSuggestions.length and confuse the index-mismatch guard.
+    expect(normalisePermissionSuggestion(new Map())).toBeNull();
+    expect(normalisePermissionSuggestion(new Set())).toBeNull();
+  });
+
+  test('keeps toJSON output when it produces a non-empty JSON shape', () => {
+    // Documents the accepted behavior: an object with a custom toJSON
+    // that returns a value gets serialised via that value. The index-
+    // mismatch guard in evaluate() catches downstream issues if any.
+    const obj = { toJSON: () => ({ type: 'custom', n: 1 }) };
+    const out = normalisePermissionSuggestion(obj);
+    expect(out).toBe('{"type":"custom","n":1}');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AutoApproveService - error handling
 // ---------------------------------------------------------------------------
 describe('AutoApproveService - error handling', () => {
@@ -164,6 +260,41 @@ describe('AutoApproveService - error handling', () => {
     );
     await service.evaluate('Bash', { command: 'ls' });
     expect(errorLogs.some((l) => l.includes('[AutoApprove] ERROR'))).toBe(true);
+  });
+
+  test('evaluate-mode index-mismatch guard escalates without calling the LLM', async () => {
+    // permission_suggestions = ['Save', 'Discard', {}]: 2 non-binary string
+    // labels route to multi-choice (after the object-only fix, the bare
+    // `{}` is not enough on its own — we need real picky labels). In
+    // evaluate mode, the empty object drops in normalisation, so
+    // normalisedSuggestions=['Save','Discard'] (length 2) while the raw
+    // array length stays 3. The LLM's pick index would address the
+    // normalised list but inject() sends it to the PTY, which interprets
+    // against the original positions. Escalating before any LLM call is
+    // the only safe path. `base_url` points at a black hole so a missed
+    // guard would surface as a timeout instead of a fast escalate.
+    const callLogs: string[] = [];
+    const service = new AutoApproveService(
+      makeConfig({
+        base_url: 'http://localhost:1',
+        timeout: 5,
+        multichoice: 'evaluate',
+        log_decisions: true,
+      }),
+      (msg) => callLogs.push(msg),
+    );
+    const start = Date.now();
+    const result = await service.evaluate('CustomTool', { x: 1 }, undefined, [
+      'Save',
+      'Discard',
+      {} as unknown,
+    ]);
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('unreadable entries');
+    expect(Date.now() - start).toBeLessThan(2000); // no LLM call attempted
+    expect(callLogs.some((l) => l.includes('escalate') && l.includes('unreadable entries'))).toBe(
+      true,
+    );
   });
 });
 
@@ -618,4 +749,452 @@ describeOllama('AutoApproveService - real Ollama integration', () => {
     const result = await service.evaluate('Grep', { pattern: 'TODO', path: '/tmp' });
     expect(['approve', 'escalate']).toContain(result.decision);
   }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// Multi-choice handling (#399)
+// ---------------------------------------------------------------------------
+describe('AutoApproveService - multichoice', () => {
+  test('skip mode escalates without calling LLM (default)', async () => {
+    const service = new AutoApproveService(
+      // base_url unreachable on purpose: if the service called the LLM
+      // anyway the test would time out instead of returning escalate.
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 60 }),
+      logFn,
+    );
+    const result = await service.evaluate(
+      'ExitPlanMode',
+      { plan: 'Refactor auth module' },
+      undefined,
+      ['Approve plan', 'Approve and stay in plan mode', 'Reject plan'],
+    );
+    expect(result.decision).toBe('escalate');
+    if (result.decision !== 'cancelled') {
+      expect(result.reasoning).toContain('multi-choice');
+      expect(result.durationMs).toBeLessThan(50);
+    }
+  });
+
+  test('binary 3-set still goes through LLM path (skip mode does not block it)', async () => {
+    // Standard Yes/Yes-always/No is binary; multichoice gate must not fire.
+    // base_url unreachable -> evaluate falls through to escalate via LLM
+    // error path (timeoutMs=1) rather than the multi-choice short-circuit.
+    const service = new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 1 }),
+      logFn,
+    );
+    const result = await service.evaluate('Bash', { command: 'ls' }, undefined, [
+      'Yes',
+      'Yes, always',
+      'No',
+    ]);
+    expect(result.decision).toBe('escalate');
+    if (result.decision !== 'cancelled') {
+      // Reasoning is "LLM timeout" or "Error: ..." NOT "multi-choice".
+      expect(result.reasoning).not.toContain('multi-choice');
+    }
+  });
+
+  test('evaluate mode picks an option index from the LLM response', async () => {
+    // Spin up a tiny OpenAI-compatible endpoint that returns a deterministic
+    // multi-choice JSON. No mocks; this is a real HTTP server.
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              model: 'fake-model',
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      decision: 'pick',
+                      index: 2,
+                      reasoning: 'middle option fits the routine default',
+                    }),
+                  },
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          multichoice: 'evaluate',
+          timeout: 5,
+        }),
+        logFn,
+      );
+      const result = await service.evaluate('ExitPlanMode', { plan: 'Refactor' }, undefined, [
+        'Approve',
+        'Approve and stay',
+        'Reject',
+      ]);
+      expect(result.decision).toBe('pick');
+      if (result.decision === 'pick') {
+        expect(result.pickIndex).toBe(2);
+        expect(result.reasoning).toContain('middle option');
+      }
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('evaluate mode falls through to escalate on out-of-range pick', async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              model: 'fake-model',
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      decision: 'pick',
+                      index: 99,
+                      reasoning: 'misread the option count',
+                    }),
+                  },
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          multichoice: 'evaluate',
+          timeout: 5,
+        }),
+        logFn,
+      );
+      const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+        'Approve',
+        'Approve and stay',
+        'Reject',
+      ]);
+      expect(result.decision).toBe('escalate');
+      if (result.decision !== 'cancelled') {
+        expect(result.reasoning).toContain('out-of-range');
+      }
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('evaluate mode uses multichoice_model when set', async () => {
+    let receivedModel: string | undefined;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          const body = (await req.json()) as { model?: string };
+          receivedModel = body.model;
+          return new Response(
+            JSON.stringify({
+              model: body.model ?? 'fake-model',
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({ decision: 'escalate', reasoning: 'unsure' }),
+                  },
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          model: 'main-model',
+          multichoice: 'evaluate',
+          multichoice_model: 'smart-model',
+          timeout: 5,
+        }),
+        logFn,
+      );
+      await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+        'Approve plan',
+        'Approve and stay',
+        'Reject plan',
+      ]);
+      expect(receivedModel).toBe('smart-model');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('evaluate mode falls back to main model when multichoice_model is empty', async () => {
+    let receivedModel: string | undefined;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          const body = (await req.json()) as { model?: string };
+          receivedModel = body.model;
+          return new Response(
+            JSON.stringify({
+              model: body.model ?? 'fake-model',
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({ decision: 'escalate', reasoning: 'unsure' }),
+                  },
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          model: 'main-model',
+          multichoice: 'evaluate',
+          multichoice_model: '',
+          timeout: 5,
+        }),
+        logFn,
+      );
+      await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+        'Approve plan',
+        'Approve and stay',
+        'Reject plan',
+      ]);
+      expect(receivedModel).toBe('main-model');
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-choice review-fix: regression guards (#400 review)
+// ---------------------------------------------------------------------------
+describe('AutoApproveService - multichoice regression guards', () => {
+  test("Edit's real ['Yes','Always','No'] is binary, not multi-choice", async () => {
+    // Without this guard, the exact-label detector misclassified Edit's
+    // real shape as multi-choice and silently escalated every Edit/Write
+    // permission under the default skip mode (#400 review, critical).
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              model: 'fake-model',
+              choices: [{ message: { content: '{"decision":"approve","reasoning":"safe edit"}' } }],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          // multichoice = 'skip' is default; if Edit were classified as
+          // multi-choice it would short-circuit to escalate without
+          // hitting the LLM. We use a real LLM endpoint so the test
+          // FAILS LOUDLY if the classifier regresses.
+          timeout: 5,
+        }),
+        logFn,
+      );
+      const result = await service.evaluate(
+        'Edit',
+        { file_path: '/tmp/x', old_string: 'a', new_string: 'b' },
+        undefined,
+        ['Yes', 'Always', 'No'],
+      );
+      expect(result.decision).toBe('approve');
+      if (result.decision !== 'cancelled') {
+        expect(result.reasoning).not.toContain('multi-choice');
+      }
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('deny pattern still wins on a multi-choice prompt', async () => {
+    const service = new AutoApproveService(
+      makeConfig({
+        base_url: 'http://10.255.255.1',
+        timeout: 60,
+        deny: ['ExitPlanMode'],
+      }),
+      logFn,
+    );
+    const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+      'Approve',
+      'Approve and stay',
+      'Reject',
+    ]);
+    expect(result.decision).toBe('deny');
+    expect(result.reasoning).toContain('deny-matched');
+  });
+
+  test('allow pattern still wins on a multi-choice prompt', async () => {
+    const service = new AutoApproveService(
+      makeConfig({
+        base_url: 'http://10.255.255.1',
+        timeout: 60,
+        allow: ['ExitPlanMode'],
+      }),
+      logFn,
+    );
+    const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+      'Approve',
+      'Approve and stay',
+      'Reject',
+    ]);
+    expect(result.decision).toBe('approve');
+    expect(result.reasoning).toContain('allow-matched');
+  });
+
+  test('skip mode does not call the LLM when multichoice_model is set', async () => {
+    // multichoice_model is consulted only in evaluate mode; skip mode
+    // must short-circuit before any LLM call regardless of model config.
+    let llmCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          llmCalls++;
+          return new Response(
+            JSON.stringify({
+              model: 'should-not-be-called',
+              choices: [{ message: { content: '{"decision":"escalate","reasoning":"x"}' } }],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          multichoice: 'skip',
+          multichoice_model: 'smart-model',
+          timeout: 5,
+        }),
+        logFn,
+      );
+      const result = await service.evaluate('ExitPlanMode', { plan: 'x' }, undefined, [
+        'Yes',
+        'No',
+      ]);
+      expect(result.decision).toBe('escalate');
+      expect(llmCalls).toBe(0);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('non-string entries in permission_suggestions do not crash', async () => {
+    // Garbage entries (null, raw objects) co-exist with picky labels.
+    // The string subset ['Maybe', 'Yes', 'No'] has a non-binary label
+    // ('Maybe') → multi-choice → skip mode short-circuits to escalate
+    // before any LLM call. The test pins that the classifier ignores
+    // non-string entries (rather than crashing on .toLowerCase()) AND
+    // that classification reads the string subset, not the raw length.
+    const service = new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 60 }),
+      logFn,
+    );
+    const result = await service.evaluate(
+      'CustomTool',
+      { x: 1 },
+      undefined,
+      // biome-ignore lint/suspicious/noExplicitAny: defensive test
+      [null, 'Maybe', 'Yes', { weird: true }, 'No'] as any,
+    );
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('multi-choice prompt');
+  });
+
+  test('object-only permission_suggestions stay on the binary path (regression #424.dev3)', async () => {
+    // Claude Code attaches typed `addRules` / `addDirectories` /
+    // `setMode` objects to standard Bash prompts. They are
+    // rule-suggestion metadata, NOT pickable UI options — the user
+    // still sees Yes/Yes-always/No. Classifying as multi-choice +
+    // default `multichoice = "skip"` silently escalated every Bash
+    // command after PR #421. This test pins the binary route.
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (new URL(req.url).pathname === '/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              model: 'fake-model',
+              choices: [
+                { message: { content: '{"decision":"approve","reasoning":"git status is safe"}' } },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    try {
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          timeout: 5,
+          // multichoice = 'skip' is default; a regression would
+          // short-circuit to escalate without hitting the LLM.
+        }),
+        logFn,
+      );
+      const result = await service.evaluate('Bash', { command: 'git status' }, undefined, [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'git status' }],
+          behavior: 'allow',
+          destination: 'localSettings',
+        },
+      ] as readonly unknown[]);
+      expect(result.decision).toBe('approve');
+      if (result.decision !== 'cancelled') {
+        expect(result.reasoning).not.toContain('multi-choice');
+      }
+    } finally {
+      server.stop();
+    }
+  });
 });

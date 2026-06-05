@@ -1,14 +1,17 @@
 /**
  * ChatView component.
  *
- * Main chat interface combining header, messages, and input.
- * Supports two view modes: compact (plain text) and chat (parsed markdown/code).
+ * Main chat interface combining header, messages, and input. Always renders in
+ * the rich chat mode (markdown, tool grouping, pinned question stack).
  */
 
+import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useKeyboard } from '@/hooks/useKeyboard';
+import { hapticImpact } from '@/lib/haptics';
+import type { ReplyContext } from '@/lib/reply-format';
 import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
@@ -20,9 +23,25 @@ export type ViewMode = 'compact' | 'chat';
 interface ChatViewProps {
   readonly session: UISession;
   readonly messages: readonly UIMessage[];
-  readonly question?: UIQuestion | null;
+  /** Pending prompts for this session, oldest first. Multiple can be in flight
+   *  (main agent + a subagent, #419/#437); rendered as a stack of cards. */
+  readonly questions?: readonly UIQuestion[];
   readonly error?: string | null;
+  /** Send a regular user input message. Reply context (when set) is wrapped
+   *  into a markdown blockquote inside this callback's caller (#401). */
   readonly onSend: (message: string) => void;
+  /** Answer a specific pending question. Routes through sendAnswer keyed by the
+   *  question itself; decoupled from onSend so the bottom InputArea no longer
+   *  hijacks input when a question is pending (#401). Non-optional so the
+   *  decoupling can't be accidentally dropped back onto onSend. */
+  readonly onAnswer: (question: UIQuestion, answer: string) => void;
+  /** Long-press on a message bubble fires this with the message; consumer
+   *  records it as the active reply context for the session (#401). */
+  readonly onReply?: (message: UIMessage) => void;
+  /** Active reply context for this session, if any (#401). */
+  readonly replyContext?: ReplyContext | null;
+  /** Clear the active reply context (X button on the InputArea banner). */
+  readonly onClearReply?: () => void;
   readonly onCancel?: () => void;
   readonly onRetry?: () => void;
   readonly onBack?: () => void;
@@ -41,9 +60,13 @@ interface ChatViewProps {
 export function ChatView({
   session,
   messages,
-  question,
+  questions,
   error,
   onSend,
+  onAnswer,
+  onReply,
+  replyContext,
+  onClearReply,
   onCancel,
   onRetry,
   onBack,
@@ -58,21 +81,35 @@ export function ChatView({
   showTimestamps = true,
   className,
 }: ChatViewProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  // The redesigned chat always uses the rich "chat" rendering (markdown, tool
+  // grouping, pinned question cards). The legacy compact toggle was removed.
+  const [viewMode] = useState<ViewMode>('chat');
   const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
   const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
   const isConnected = session.connectionStatus === 'connected';
 
-  // In chat mode, show QuestionCard for active questions (not free_text with no options).
-  // In compact mode, fall back to the InputArea's built-in quick responses.
-  const showQuestionCard = viewMode === 'chat' && question && !question.answeredWith && isConnected;
-  const showAnsweredCard = viewMode === 'chat' && question?.answeredWith != null;
+  // Render a stack of QuestionCards (main + any subagent prompts, #437) pinned
+  // at the top of the chat. A pending card needs a live connection; an
+  // already-answered card stays briefly regardless. primaryQuestion routes the
+  // InputArea's answer callback (the bottom input itself never shows the
+  // quick-response chips now -- the pinned card owns answering).
+  const questionList = questions ?? [];
+  const primaryQuestion = questionList[0] ?? null;
+  const chatCards = questionList.filter((q) => q.answeredWith != null || isConnected);
 
-  // Hide InputArea's quick responses when QuestionCard is handling the question
-  const inputQuestion = viewMode === 'chat' ? null : question;
+  // iOS edge-swipe back (#411): rightward swipe from the left edge pops
+  // the chat back to the session list. Mirrors the native iOS gesture.
+  // Only active when we have an onBack consumer and a non-finger pointer
+  // is rare on the touch screens this targets.
+  const handleEdgeSwipeBack = useCallback(() => {
+    hapticImpact('light');
+    onBack?.();
+  }, [onBack]);
+  const swipeBackHandlers = useEdgeSwipeBack(handleEdgeSwipeBack);
 
   return (
     <div
+      {...(onBack ? swipeBackHandlers : {})}
       className={clsx(
         'flex h-full flex-col overflow-x-hidden bg-[var(--color-surface)]',
         className,
@@ -81,8 +118,6 @@ export function ChatView({
     >
       <ChatHeader
         session={session}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         onBack={onBack}
         onOpenSessions={onOpenSessions}
         sessionCount={sessionCount}
@@ -93,41 +128,45 @@ export function ChatView({
         onDetach={onDetach}
       />
 
+      {/* Pinned question stack -- the headline interaction. One card per
+          concurrent prompt (main + any subagent prompts, #437). Kept above
+          the scroll so the answer is always reachable without scrolling. */}
+      {chatCards.length > 0 && (
+        <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface)] pb-1">
+          {chatCards.map((q) => (
+            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
+          ))}
+        </div>
+      )}
+
       <MessageList
         messages={messages}
         agentStatus={session.status}
         error={error}
         onRetry={onRetry}
         onBulletExpand={onBulletExpand}
+        onReply={onReply}
         viewMode={viewMode}
         keyboardVisible={keyboardVisible}
         showTimestamps={showTimestamps}
       />
 
-      {/* Question card in chat mode */}
-      {(showQuestionCard || showAnsweredCard) && question && (
-        <div className="border-t border-[var(--color-border)] px-3 py-2">
-          <QuestionCard question={question} onAnswer={onSend} />
-        </div>
-      )}
-
       <InputArea
         onSend={onSend}
+        onAnswer={(answer) => {
+          if (primaryQuestion) onAnswer(primaryQuestion, answer);
+        }}
         onCancel={onCancel}
-        question={inputQuestion}
+        question={null}
         isAgentBusy={isAgentBusy}
         disabled={!isConnected}
+        replyContext={replyContext ?? null}
+        onClearReply={onClearReply}
         // Session-scoped draft persistence so a half-typed message survives
         // app suspension on iOS (#226) and switching to a different session
         // doesn't leak the draft across.
         draftKey={`remi-draft-${session.id}`}
-        placeholder={
-          !isConnected
-            ? 'Not connected'
-            : question && !question.answeredWith
-              ? 'Type your response...'
-              : 'Type a message...'
-        }
+        placeholder={!isConnected ? 'Not connected' : 'Type a message...'}
       />
     </div>
   );

@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.5.3'; // REMI_COMPILED_VERSION
+      return '0.6.0-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.5.3'; // REMI_COMPILED_VERSION
+    return '0.6.0-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -101,10 +101,11 @@ import {
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
-import { looksLikeDefaultPermissionQuestion } from './api/question-dedup.ts';
+import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
@@ -137,7 +138,6 @@ import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
-import type { HookEventBridge } from './hooks/hook-event-bridge.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
@@ -742,6 +742,9 @@ let autoApproveService: AutoApproveService | null = null;
       );
     }
 
+    const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
+    const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
+
     autoApproveService = new AutoApproveService(
       {
         ...aaCfg,
@@ -753,12 +756,15 @@ let autoApproveService: AutoApproveService | null = null;
         allow,
         deny,
         instructions,
+        multichoice,
+        multichoice_model: multichoiceModel,
       },
       writeToLog,
     );
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
+    const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
     writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}`,
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}`,
     );
   }
 }
@@ -836,13 +842,25 @@ const sessionRegistry = new SessionRegistry(
     },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const claudeId = stored?.claudeSessionId ?? null;
+      const projPath = stored?.projectPath ?? null;
+      const tpath =
+        claudeId && projPath
+          ? `${transcriptDiscovery.getProjectTranscriptDir(projPath)}/${claudeId}.jsonl`
+          : null;
       const sent = registry.sendRaw(
         connectionId,
-        createHelloAck('1.0.0', sessionId, {
-          isResume: result.replayMessages.length > 0,
-          replayCount: result.replayMessages.length,
-          nextBulletId: result.nextBulletId,
-        }),
+        createHelloAck(
+          '1.0.0',
+          sessionId,
+          {
+            isResume: result.replayMessages.length > 0,
+            replayCount: result.replayMessages.length,
+            nextBulletId: result.nextBulletId,
+          },
+          { claudeSessionId: claudeId, transcriptPath: tpath },
+        ),
       );
       if (!sent) {
         log(`Promoted connection ${connectionId} is unreachable; detaching`);
@@ -990,6 +1008,20 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
+      // Lazy read so the binding seen on each question emission is the
+      // current value — survives /resume rotation via hook-bridge's
+      // updateClaudeSessionId write into the store. Wrapped in try/catch
+      // so a transient sessions.json I/O hiccup cannot kill question
+      // emission (the dep contract is non-throwing).
+      getClaudeSessionId: () => {
+        try {
+          return (sessionStore.findByRemiSessionId(sessionId)?.claudeSessionId ??
+            null) as UUID | null;
+        } catch (err) {
+          logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
+          return null;
+        }
+      },
     },
     sessionId,
   );
@@ -997,10 +1029,12 @@ async function createNewSession(
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
   // guard so terminal-only failures still reach remote clients.
-  // Hook bridge is created below (only when hookServer is active). The PTY
-  // onQuestion callback closes over this binding so it can suppress emissions
-  // during subagent contexts and skip duplicate Yes/Yes-always/No prompts.
-  let hookBridge: HookEventBridge | null = null;
+
+  // QuestionPresenceTracker pairs hook-derived metadata with PTY-derived
+  // screen presence: hooks record (no push), PTY confirms (push). Status
+  // transitions out of 'waiting' drop pending records so auto-approve
+  // silent paths never push.
+  const tracker = new QuestionPresenceTracker((q) => messageApi.handleQuestion(q));
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1010,31 +1044,43 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
-        // PTY parser runs as a secondary source so Y/N, multi-choice, and
-        // free-text prompts (which hooks never carry) reach the user with
-        // their real options. We still gate two cases:
-        //   1. Subagent prompts are confined to the subagent — the user
-        //      cannot answer them without breaking Task semantics.
-        //   2. The hook's hardcoded Yes/Yes-always/No is already emitted by
-        //      HookEventBridge for any tool permission. PTY sees the same
-        //      three options on screen but with different surrounding text,
-        //      so the dedup window cannot catch them — drop here by shape.
-        if (hookBridge !== null) {
-          if (hookBridge.isInSubagentContext()) return;
-          if (looksLikeDefaultPermissionQuestion(question)) return;
-        }
-        messageApi.handleQuestion(question);
+        tracker.onPTYPromptVisible(question);
       },
       onStatusChange: (status, context) => {
         if (!hookServer) {
           messageApi.handleStatusChange(status, context);
         }
+        tracker.onStatusChange(status);
       },
     },
   );
 
+  // Deterministic PTY -> transcript binding (#427). Resolve the
+  // claudeSessionId Claude will write under BEFORE spawning, so sibling
+  // daemons in the same cwd cannot race-claim each other's transcripts
+  // through mtime-based discovery.
+  const binding = resolveClaudeBinding(extraArgs, {
+    displayName: `remi:${remiStatus.wsPort}`,
+  });
+  log(
+    `[Binding] claude=${binding.claudeSessionId.slice(0, 8)} source=${binding.source} for remi=${sessionId.slice(0, 8)}`,
+  );
+
+  // Persist the binding before spawn so siblings observing the store
+  // during the race window see our claim immediately.
+  sessionStore.save({
+    remiSessionId: sessionId,
+    claudeSessionId: binding.claudeSessionId,
+    projectPath: workingDirectory,
+    port: PORT,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    exitedAt: null,
+    exitCode: null,
+  });
+
   if (hookServer) {
-    const handle = setupHookBridge(
+    setupHookBridge(
       {
         sessionRegistry,
         sessionStore,
@@ -1044,21 +1090,21 @@ async function createNewSession(
         autoApproveService,
         currentPort: () => PORT,
       },
-      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord },
+      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
-    hookBridge = handle.bridge;
   }
 
   const ptySession = createPtySessionForSession(
     {
       sessionRegistry,
       sessionStore,
+      liveSessionsRegistry,
       outputProcessor,
       wsPort: remiStatus.wsPort,
       sendMessage,
       cleanup,
     },
-    { sessionId, workingDirectory, extraArgs, passThrough },
+    { sessionId, workingDirectory, extraArgs: binding.args, passThrough },
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1069,29 +1115,45 @@ async function createNewSession(
     messageApi,
     locallyOwned,
   );
-  await ptySession.start();
 
-  sessionStore.save({
-    remiSessionId: sessionId,
-    claudeSessionId: null,
-    projectPath: workingDirectory,
-    port: PORT,
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    exitedAt: null,
-    exitCode: null,
-  });
+  // If the spawn or any post-spawn wiring throws, mark the pre-saved
+  // store entry as exited so sibling daemons reading the store don't
+  // see a phantom "live" session with our claudeSessionId reserved.
+  // Without this, the failed-spawn entry stays exitedAt=null and the
+  // pid-aliveness self-heal in SessionStore only fires after our
+  // daemon process itself exits.
+  try {
+    await ptySession.start();
+  } catch (err) {
+    sessionStore.markExited(sessionId, null);
+    throw err;
+  }
+
+  // Record the spawned Claude child pid in the live-sessions entry now that the
+  // PTY is up. Co-located daemons use it to tell a live sibling from a zombie
+  // (daemon process alive, its Claude long dead) so a leftover daemon can no
+  // longer permanently wedge our rotation handling (#451).
+  const claudeChildPid = ptySession.childPid;
+  if (claudeChildPid !== null) {
+    liveSessionsRegistry.setClaudeChildPid(sessionId, claudeChildPid);
+  } else {
+    // Unreachable after a successful start() (the child pid is assigned
+    // synchronously by the spawn). Log rather than silently skip: without the
+    // pid the entry stays "unknown" and peers keep treating this live session
+    // as a zombie's sibling, re-opening the wedge this fix closes (#451).
+    logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
+  }
 
   startTranscriptFallback(
     {
       sessionRegistry,
-      sessionStore,
       transcriptDiscovery,
       transcriptWatchers,
       transcriptFallbackTimers,
     },
     sessionId,
     workingDirectory,
+    binding.claudeSessionId,
     messageApi,
     sendAndRecord,
   );
@@ -1130,6 +1192,7 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
 
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
+  sessionStore,
   send: sendToConnection,
 });
 
@@ -1148,6 +1211,7 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
+  sessionStore,
   send: sendToConnection,
 });
 

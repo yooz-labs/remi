@@ -19,7 +19,11 @@ export type ConnectionStatus =
   | 'authenticating'
   | 'connected'
   | 'reconnecting'
-  | 'error';
+  | 'error'
+  // Terminal: auto-reconnect exhausted AND port rediscovery found no daemon on
+  // the host. Distinct from 'disconnected' (idle) and 'error' (transient). The
+  // UI offers a Retry that re-runs discovery. (#435 Phase 1 / P3)
+  | 'unreachable';
 
 /** Unique identifier for a daemon connection (e.g. "localhost:18765") */
 export type ConnectionId = string & { readonly __brand: 'ConnectionId' };
@@ -116,6 +120,15 @@ export interface UISession {
   readonly questionPending?: boolean;
   /** Whether this dead session can be resumed via Claude Code --resume */
   readonly canResume?: boolean;
+  /**
+   * Claude Code session UUID this entry's Claude is writing under (#430).
+   * Carried in outbound answer/input so the daemon can refuse stale
+   * routing when the binding has rotated (e.g. user ran /resume). Shown
+   * to the user in the chat header so the binding is verifiable by eye.
+   */
+  readonly claudeSessionId?: UUID;
+  /** Absolute path to the bound .jsonl transcript (#430). */
+  readonly transcriptPath?: string;
 }
 
 /** Structured option for a question */
@@ -138,6 +151,9 @@ export interface UIQuestion {
   readonly timestamp: Timestamp;
   /** The answer that was selected (set after answering) */
   readonly answeredWith?: string;
+  /** The Claude agent this prompt belongs to ('main' default). Keys the
+   *  collection so a main + subagent prompt coexist rather than overwrite. */
+  readonly agentId?: string;
 }
 
 /** App settings */

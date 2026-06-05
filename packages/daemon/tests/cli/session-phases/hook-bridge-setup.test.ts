@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { UUID } from '@remi/shared';
+import type { Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
@@ -79,17 +80,23 @@ function fakeMessageAPI(
   } as unknown as MessageAPI;
 }
 
-/** Poll a predicate until true or timeout. Used in lieu of fixed-duration
- *  setTimeout waits in async tests so we don't depend on CI scheduler luck. */
-async function until(predicate: () => boolean, timeoutMs = 1000, pollMs = 5): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await new Promise((r) => setTimeout(r, pollMs));
+/**
+ * Tracker used by setupHookBridge tests. Bridge calls onQuestion →
+ * recordPendingHook, which on real wiring stores and waits for PTY. In
+ * these tests we have no PTY, so the passthrough collapses recordPendingHook
+ * into onPTYPromptVisible — i.e. simulate a terminal whose prompt is always
+ * visible. Lets the existing `questionCalls` assertions keep their meaning
+ * ("the bridge emitted a question to the consumer"). True PTY-presence
+ * semantics are validated in tests/api/question-presence-tracker.test.ts.
+ */
+class PassthroughTracker extends QuestionPresenceTracker {
+  override recordPendingHook(question: Question): void {
+    this.onPTYPromptVisible(question);
   }
-  if (!predicate()) {
-    throw new Error(`until() timed out after ${timeoutMs}ms`);
-  }
+}
+
+function makePassthroughTracker(api: MessageAPI): PassthroughTracker {
+  return new PassthroughTracker((q) => api.handleQuestion(q));
 }
 
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
@@ -111,7 +118,12 @@ describe('setupHookBridge', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hook-bridge-'));
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
-    liveSessionsRegistry = new SessionRegistryFile(tmpDir);
+    // Live-sessions registry gets its OWN subdir so its listLive() scan does
+    // not see (and delete as "invalid") the SessionStore's sessions.json that
+    // shares the tmp root. Create it up front so tests that write sibling
+    // entries directly into dirPath don't need their own mkdir.
+    liveSessionsRegistry = new SessionRegistryFile(path.join(tmpDir, 'live-sessions'));
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
     transcriptWatchers = new Map();
     transcriptFallbackTimers = new Map();
     hookServer = new RecordingHookServer();
@@ -129,34 +141,44 @@ describe('setupHookBridge', () => {
   function build(
     opts: {
       autoApprove?: boolean;
-      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled';
+      autoApproveDecision?: 'approve' | 'deny' | 'escalate' | 'cancelled' | 'pick';
+      /** Index for the 'pick' branch (1-based, matches the auto-approve
+       *  service contract). Only relevant when autoApproveDecision='pick'. */
+      autoApprovePickIndex?: number;
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
       throwOnQuestionTimes?: number;
-      injectAckTimeoutMs?: number;
       submitInputThrows?: boolean;
       /** Test sink for cancel() invocations from the bridge. Each entry is
        *  the `reason` string the bridge passed. */
       cancelLog?: string[];
+      /** Use a real QuestionPresenceTracker (no PTY-visible passthrough)
+       *  so tests can exercise the actual record-pending / status-clear
+       *  contract through the bridge wiring. Defaults to the passthrough
+       *  tracker used by the legacy assertion-style tests. */
+      realTracker?: boolean;
     } = {},
-  ) {
+  ): { tracker: QuestionPresenceTracker } {
+    const localMessageApi = fakeMessageAPI(
+      messageApiLog,
+      opts.throwOnQuestionTimes !== undefined
+        ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
+        : {},
+    );
+    const tracker: QuestionPresenceTracker = opts.realTracker
+      ? new QuestionPresenceTracker((q) => localMessageApi.handleQuestion(q))
+      : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
       tmpDir,
       fakePTY(ptySubmits, opts.submitInputThrows ? { throws: true } : {}),
-      fakeMessageAPI(
-        messageApiLog,
-        opts.throwOnQuestionTimes !== undefined
-          ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-          : {},
-      ),
+      localMessageApi,
     );
 
     // Minimal AutoApproveService stub. Only invoked when opts.autoApprove is
     // true; default decision is 'approve' (existing tests rely on this).
-    // `autoApproveDelayMs` simulates LLM eval latency so dedup-window tests
-    // can fire Notification while evaluate() is still in flight (#379).
-    // `autoApproveThrows` exercises the outer .catch() handler.
+    // `autoApproveDelayMs` simulates LLM eval latency; `autoApproveThrows`
+    // exercises the outer .catch() handler.
     const autoApproveService = opts.autoApprove
       ? ({
           evaluate: async () => {
@@ -170,6 +192,15 @@ describe('setupHookBridge', () => {
             const durationMs = opts.autoApproveDelayMs ?? 0;
             if (decision === 'cancelled') {
               return { decision, reasoning: 'test-autoapprove', durationMs };
+            }
+            if (decision === 'pick') {
+              return {
+                decision,
+                pickIndex: opts.autoApprovePickIndex ?? 2,
+                reasoning: 'test-autoapprove',
+                durationMs,
+                model: 'test-model',
+              };
             }
             return {
               decision,
@@ -202,18 +233,19 @@ describe('setupHookBridge', () => {
         hookServer: hookServer as unknown as HookServer,
         sessionId: SID,
         workingDirectory: tmpDir,
-        messageApi: fakeMessageAPI(
-          messageApiLog,
-          opts.throwOnQuestionTimes !== undefined
-            ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-            : {},
-        ),
+        messageApi: localMessageApi,
         sendAndRecord: () => {},
-        ...(opts.injectAckTimeoutMs !== undefined
-          ? { injectAckTimeoutMs: opts.injectAckTimeoutMs }
-          : {}),
+        // PassthroughTracker is the default: it collapses
+        // recordPendingHook into an immediate push so the legacy
+        // "bridge emitted a question to the consumer" assertions via
+        // questionCalls still work. opts.realTracker uses the real
+        // QuestionPresenceTracker for wiring tests (record/status-clear
+        // through the bridge). Pure PTY-presence semantics are validated
+        // in tests/api/question-presence-tracker.test.ts.
+        tracker,
       },
     );
+    return { tracker };
   }
 
   test('registers listeners for all 7 hook events', () => {
@@ -236,21 +268,84 @@ describe('setupHookBridge', () => {
     expect(() => build()).not.toThrow();
   });
 
-  test('PermissionRequest with agent_id is dropped before reaching inject', async () => {
-    build({ autoApprove: true });
+  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve, gated by PTY presence', async () => {
+    // Pre-phase-4, agent_id-tagged events were dropped at the listener
+    // boundary. Phase 4 demoted agent_id from kill-switch to metadata:
+    // the auto-approve LLM evaluates and forwards to the inject path.
+    // Inject is then gated by tracker.isPromptVisibleOnPTY() — true for
+    // a hot-switched subagent view, false for a background subagent.
+    // This test simulates the hot-switched case (PTY confirms presence)
+    // so inject proceeds end to end.
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-123',
+      transcript_path: path.join(tmpDir, 'sub.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    // PTY rendered the subagent's prompt on the user's screen.
+    tracker.onPTYPromptVisible({
+      id: 'pty-pr1',
+      text: 'Allow Bash?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-123',
+      session_id: 'claude-sub-123',
       agent_id: 'subagent-abc',
       agent_type: 'task',
       tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
+      tool_input: { command: 'ls' },
     });
 
-    // Let any queued microtasks run.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Wait for evaluate() + inject() to resolve.
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // Subagent PermissionRequests must NOT inject into the main PTY.
+    expect(ptySubmits).toEqual(['1']);
+  });
+
+  test('PTY gate covers legacy subagents: nested-Task PermissionRequest WITHOUT agent_id is dropped when no PTY presence', async () => {
+    // The agent_id-based detector misses legacy Claude Code versions and any
+    // future flows where the subagent hook fires without agent_id. The
+    // secondary safety net is `hookBridge.isInSubagentContext()` (PreToolUse
+    // Task with tool_use_id increments the tracker; PostToolUse decrements).
+    // Inject must consult BOTH detectors; otherwise a nested Bash hook with
+    // no agent_id would inject into the parent agent's PTY input.
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-nested-1',
+      transcript_path: path.join(tmpDir, 'nested.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    // Engage nested-Task subagent context (no agent_id, just Task spawn).
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-nested-1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_use_id: 'task-use-1',
+      tool_input: { prompt: 'nested work' },
+    });
+
+    // PermissionRequest fires from inside the Task: NO agent_id (legacy
+    // path), but isInSubagentContext() is true and PTY has not confirmed
+    // any prompt is on screen.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-nested-1',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Pre-fix the inject would have typed '1' into the parent PTY because
+    // isSubagentEvent was false. Post-fix the OR gate trips on
+    // isInSubagentContext() and the inject is skipped.
     expect(ptySubmits).toEqual([]);
   });
 
@@ -378,6 +473,250 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.statusCalls).toContain('executing');
   });
 
+  test('sibling-in-dir + fallback-discovered claudeSessionId: lock adopted from sessionStore on next hook', () => {
+    // The dev.3 inconsistency the user hit: when 2+ Remi wrappers share a
+    // project directory, hasSiblingInDir() defers hook-event-based locking
+    // to the transcript-fallback poll. The fallback discovers our own
+    // Claude session ID by inspecting `~/.claude/projects/<dir>/` and writes
+    // it to sessionStore. Pre-fix, the hook-bridge's `claudeSessionId`
+    // closure never read from sessionStore, so filterBySession kept
+    // returning false (no lock + siblings) and dropped EVERY hook for the
+    // entire session lifetime. The fix: adoptLockFromStore() reads
+    // sessionStore.findByRemiSessionId(...)?.claudeSessionId lazily on the
+    // next hook event after fallback completes.
+    //
+    // Test setup: seed a sibling and pre-populate sessionStore as the
+    // fallback would have done. Fire a PermissionRequest for our session
+    // and assert the auto-approve inject fires (proving filterBySession
+    // adopted the lock).
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-in-dir.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id',
+        pid: process.pid,
+        wsPort: 18999,
+        hookPort: 18001,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Pre-populate the store as transcript-fallback would have done after
+    // discovering our Claude transcript via filesystem polling.
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-mine-via-fallback',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Hot-switched PTY presence so the subagent gate doesn't shadow this
+    // assertion (irrelevant to the lock-adoption check itself).
+    // The first hook arrives WHILE hasSiblingInDir is still true. Pre-fix
+    // this dropped silently. Post-fix, adoptLockFromStore pulls the lock
+    // from sessionStore and filterBySession returns true.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-mine-via-fallback',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // If the lock was adopted, auto-approve fired and injected '1'.
+        // If not (regression), ptySubmits is empty.
+        expect(ptySubmits).toEqual(['1']);
+        resolve();
+      }, 50);
+    });
+  });
+
+  test("sibling-in-dir + fallback-discovered lock: foreign session's hooks still drop", () => {
+    // Mirror of the test above, but with a hook event from a DIFFERENT
+    // session_id (i.e. the sibling's Claude). Lock-adoption must not turn
+    // into "accept anything"; the adopted lock should be enforced like
+    // the normal locked path.
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-in-dir-2.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-2',
+        pid: process.pid,
+        wsPort: 18998,
+        hookPort: 18002,
+        projectPath: tmpDir,
+        name: 'sibling-2',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-mine-v2',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Foreign session_id — sibling's Claude firing through our hook URL.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sibling-not-ours',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // No inject — filterBySession matched on the adopted lock and
+        // dropped the foreign event.
+        expect(ptySubmits).toEqual([]);
+        resolve();
+      }, 50);
+    });
+  });
+
+  test('sibling-in-dir + sessionStore rotation: adoptLockFromStore re-adopts the new claudeSessionId', () => {
+    // After initial adoption from sessionStore (claude-A), the user runs
+    // /clear in the sibling-wrapper scenario. The transcript-fallback
+    // rediscovers and writes claude-B to the store. The hook-bridge MUST
+    // pick up the rotation; pre-fix, the `if (claudeSessionId !== null)
+    // return` short-circuit blocked the re-read and every hook for
+    // claude-B was silently dropped.
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-rotate.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-rotate',
+        pid: process.pid,
+        wsPort: 18997,
+        hookPort: 18003,
+        projectPath: tmpDir,
+        name: 'sibling-rotate',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-A-initial',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Initial adoption: hook for claude-A passes the filter.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-A-initial',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        expect(ptySubmits).toEqual(['1']);
+
+        // Fallback rediscovers after /clear and writes the new id.
+        sessionStore.save({
+          remiSessionId: SID,
+          claudeSessionId: 'claude-B-rotated',
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+
+        // Hook for claude-B arrives. Lock must rotate; otherwise filterBySession
+        // sees claudeSessionId='claude-A-initial' and drops the event.
+        hookServer.fire('PermissionRequest', {
+          session_id: 'claude-B-rotated',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'pwd' },
+        });
+
+        setTimeout(() => {
+          expect(ptySubmits).toEqual(['1', '1']);
+          resolve();
+        }, 50);
+      }, 50);
+    });
+  });
+
+  test('adoptLockFromStore catches sessionStore throws and keeps the daemon running', () => {
+    // EMFILE / permissions / mid-write JSON.parse failures inside
+    // sessionStore.read can throw out of findByRemiSessionId. Pre-fix
+    // those propagated into the hook dispatch loop. The try/catch wrapper
+    // must contain them: log via logError and fall through to the
+    // existing sibling-guard path (claudeSessionId stays null, hooks
+    // drop until siblings clear).
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(liveSessionsRegistry.dirPath, 'sibling-throw.json'),
+      JSON.stringify({
+        sessionId: 'sibling-session-id-throw',
+        pid: process.pid,
+        wsPort: 18996,
+        hookPort: 18004,
+        projectPath: tmpDir,
+        name: 'sibling-throw',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    // Replace findByRemiSessionId with one that throws to simulate
+    // EMFILE-class failures from fs.readFileSync inside SessionStore.read.
+    sessionStore.findByRemiSessionId = () => {
+      throw Object.assign(new Error('test: EMFILE'), { code: 'EMFILE' });
+    };
+
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    // Fire a hook — this triggers adoptLockFromStore which would throw.
+    // We expect the hook dispatch to survive (no thrown exception, hook
+    // is filtered out because the closure remains null + sibling present).
+    expect(() =>
+      hookServer.fire('PermissionRequest', {
+        session_id: 'claude-throw-test',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      }),
+    ).not.toThrow();
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        // No inject — sibling is present and adoptLockFromStore could not
+        // resolve a lock, so filterBySession's `!hasSiblingInDir()` arm
+        // returns false. The daemon stays alive instead of crashing.
+        expect(ptySubmits).toEqual([]);
+        resolve();
+      }, 50);
+    });
+  });
+
   test('SessionStart with source=clear pre-empts classifier and tears down watcher', () => {
     build();
 
@@ -414,423 +753,848 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
   });
 
-  // -------------------------------------------------------------------------
-  // Regression #379 / #377: pre-emptive Notification dedup during slow
-  // auto-approve evaluation. The PermissionRequest hook handler must mark
-  // the bridge as "handling permission" BEFORE invoking aaService.evaluate,
-  // so a Notification(permission_prompt) arriving while the LLM is still
-  // running is suppressed instead of emitting a phantom Question (which
-  // would fire a duplicate APNS push the user can't dismiss).
-  // -------------------------------------------------------------------------
+  // SessionStart restart pre-empt is source-agnostic: any rotation of
+  // session_id while PTY is running fires it. These tests cover the new-
+  // source, undefined-source, same-session_id (must NOT fire), missing
+  // session_id (defensive), and subagent (agent_id set, must NOT fire) axes.
 
-  test('regression #379: slow auto-approve approve does NOT leak a Notification question', async () => {
-    // 80ms eval delay simulates ollama latency. Notification fires inside
-    // the window; without the pre-emptive markPermissionHandled, this
-    // Notification would emit a 3-option question and trigger a push.
-    build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 80 });
+  test('SessionStart with unknown source AND new session_id pre-empts classifier (issue #416)', () => {
+    build();
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
       hook_event_name: 'SessionStart',
     });
 
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'switch_chat_future_value',
+    });
+
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('SessionStart with undefined source AND new session_id pre-empts classifier (issue #416)', () => {
+    // Some Claude Code versions omit `source` entirely on session transitions.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-B',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    expect(messageApiLog.statusCalls).toContain('executing');
+  });
+
+  test('SessionStart with same session_id does NOT pre-empt (issue #416)', () => {
+    // Locks the `input.session_id !== claudeSessionId` guard against silent
+    // refactor regression: a duplicate SessionStart for the same session
+    // (e.g. SDK reconnect, source=startup repeat) must be a no-op.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with missing session_id does NOT pre-empt (issue #416)', () => {
+    // Defensive: malformed/incomplete event must be inert, not tear down.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  test('SessionStart with agent_id set does NOT pre-empt even on session_id mismatch (issue #416)', () => {
+    // isSubagentEvent guard: a subagent firing SessionStart with its own
+    // session_id (hypothetical future Claude Code shape) must not tear down
+    // main's watcher. Closes the gap the pre-PR narrow `source` gate covered
+    // by accident.
+    build();
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    const stopCalls: number[] = [];
+    transcriptWatchers.set(SID, {
+      filePath: path.join(tmpDir, 'a.jsonl'),
+      stop: () => {
+        stopCalls.push(1);
+      },
+    } as never);
+    const resetsBefore = messageApiLog.resetCalls.n;
+
+    hookServer.fire('SessionStart', {
+      session_id: 'subagent-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      agent_id: 'subagent-id-xyz',
+    });
+
+    expect(stopCalls.length).toBe(0);
+    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 3 (#418) replaced the pre-emptive `lastPermissionEmitAt` dedup
+  // window (#377/#379/#381) and the `PendingAck` inject timer (#382) with
+  // QuestionPresenceTracker — see
+  // packages/daemon/src/api/question-presence-tracker.ts and its tests.
+  // Those windows/timers no longer exist, so the associated regression
+  // tests were removed in this cleanup. Tracker semantics are validated
+  // structurally in question-presence-tracker.test.ts.
+  // -------------------------------------------------------------------------
+
+  test('Phase 3 wiring: PreToolUse drives tracker.onStatusChange and clears pending', () => {
+    // A PermissionRequest stashes the question in the tracker via
+    // onQuestion → recordPendingHook. A subsequent PreToolUse must drive
+    // tracker.onStatusChange('executing') through the bridge's
+    // onStatusChange wiring and clear the pending slot. Without this,
+    // a refactor that disconnects tracker.onStatusChange from the
+    // bridge would leave stale pending records that merge wrong option
+    // labels onto unrelated future PTY prompts.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'wire.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379',
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    // Notification fires ~10ms after PermissionRequest in real Claude Code;
-    // schedule it well within the eval window so the race is exercised.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-locked-wire-1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/x.ts' },
     });
 
-    // Wait for evaluate() + inject() to fully resolve.
-    await until(() => ptySubmits.length >= 1);
-
-    // Approved: PTY received "1" once.
-    expect(ptySubmits).toEqual(['1']);
-    // Notification path must have been suppressed by the pre-emptive dedup.
-    // Total questions emitted: zero (the auto-approve path is silent on success).
-    expect(messageApiLog.questionCalls).toBe(0);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
-  test('regression #379: slow auto-approve DENY does NOT leak a Notification question', async () => {
-    // Mirror of the approve test; the deny path also injects (with "3")
-    // and must benefit from the same pre-emptive dedup. Without it, the
-    // mid-flight Notification would emit a phantom approve-style 3-option
-    // question while the daemon was about to silently deny.
-    build({ autoApprove: true, autoApproveDecision: 'deny', autoApproveDelayMs: 80 });
+  test('Phase 3 wiring: SessionStart restart clears tracker.pending', () => {
+    // Cross-phase regression: phase 1's restart classifier tears down
+    // the transcript watcher. Without explicit tracker.clearPending(),
+    // a PermissionRequest stashed before /clear or /compact would
+    // merge stale option labels onto the new session's first PTY
+    // prompt. Two reviewers flagged this on PR #423.
+    const { tracker } = build({ realTracker: true });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379-deny',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-restart-A',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379-deny',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379-deny',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
-    });
-
-    await until(() => ptySubmits.length >= 1);
-
-    expect(ptySubmits).toEqual(['3']);
-    expect(messageApiLog.questionCalls).toBe(0);
-  });
-
-  test('regression #379: escalate path emits the canonical Question exactly once', async () => {
-    // When auto-approve cannot decide (e.g. 'escalate'), the user MUST see
-    // a question. The Notification arriving during eval must still be
-    // suppressed; the canonical question comes from handlePermissionRequest
-    // via escalateToUser. Net: questionCalls === 1.
-    build({ autoApprove: true, autoApproveDecision: 'escalate', autoApproveDelayMs: 80 });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379b',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379b',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379b',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
-    });
-
-    await until(() => messageApiLog.questionCalls >= 1);
-
-    // No injection happened (escalate, main context).
-    expect(ptySubmits).toEqual([]);
-    // Exactly one question: the escalation, not the suppressed Notification.
-    expect(messageApiLog.questionCalls).toBe(1);
-  });
-
-  test('regression #379: evaluate() throws -> escalates to user, Notification suppressed', async () => {
-    // Outer .catch() runs when ollama dies mid-eval. Main-session context
-    // hits escalateToUser -> handlePermissionRequest emits canonical Q. The
-    // Notification fired during the eval window must still be suppressed.
-    build({ autoApprove: true, autoApproveThrows: true, autoApproveDelayMs: 80 });
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-379c',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-379c',
+      session_id: 'claude-restart-A',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-379c',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    // Restart fires (e.g. user typed /clear). Classifier returns
+    // 'restart' because session_id mismatch + source is treated as
+    // restart-evidence by phase 1.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-restart-B',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      source: 'clear',
+      model: 'test',
     });
 
-    await until(() => messageApiLog.questionCalls >= 1);
-
-    expect(ptySubmits).toEqual([]);
-    expect(messageApiLog.questionCalls).toBe(1);
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
-  test('regression #381 audit: escalate throws -> dedup mark cleared so Notification fallback fires', async () => {
-    // Silent-failure-hunter B2: if escalateToUser() throws (push fan-out
-    // failure, WS send on a half-closed adapter, etc.) the user used to be
-    // left with NOTHING — pre-emptive dedup suppressed the trailing
-    // Notification. Now the catch handler clears the dedup mark, so the
-    // Notification fallback gets to surface a question.
+  test('Phase 3 wiring: cancelled auto-approve clears tracker.pending via real bridge', async () => {
+    // pr-test-analyzer Gap 1: the existing 'cancelled decision: bridge
+    // does not inject and does not escalate' test uses PassthroughTracker
+    // and so cannot witness the clearPending() call. A refactor that
+    // dropped it would still pass that test. This one uses the real
+    // tracker and asserts the pending slot is drained.
+    const { tracker } = build({
+      autoApprove: true,
+      autoApproveDecision: 'cancelled',
+      realTracker: true,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-cancel',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'c.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-cancel',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    // Wait for the auto-approve .then() to drain.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual([]); // cancelled: no inject
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 3 wiring: late Notification after SessionEnd is dropped', () => {
+    // silent-failure-hunter #3: SessionEnd already cleared status to
+    // 'idle' (which drains tracker.pending). A late Notification
+    // arriving from a dying Claude process must not re-populate the
+    // pending slot, or a final PTY echo could fire a spurious push.
+    const { tracker } = build({ realTracker: true });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'late.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('SessionEnd', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'SessionEnd',
+      reason: 'logout',
+    });
+
+    // Late Notification fires after teardown.
+    hookServer.fire('Notification', {
+      session_id: 'claude-late-1',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'phantom prompt from dying Claude',
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('Phase 2 + Phase 3: auto-approve pick decision injects the correct index', async () => {
+    // pr-test-analyzer Gap 4: the bridge's 'pick' branch was uncovered
+    // at the wiring layer. Service-level tests verify pick returns
+    // {pickIndex}; this asserts the bridge translates that into the
+    // right PTY submit value.
     build({
       autoApprove: true,
-      autoApproveDecision: 'escalate',
-      autoApproveDelayMs: 30,
-      throwOnQuestionTimes: 1, // first onQuestion (escalation) throws; Notification fallback succeeds
+      autoApproveDecision: 'pick',
+      autoApprovePickIndex: 2,
     });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-381a',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-pick',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'pick.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-381a',
+      session_id: 'claude-pick',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    // Wait until escalation has been attempted (questionCalls increments
-    // even when the call throws — fakeMessageAPI counts on entry).
-    await until(() => messageApiLog.questionCalls >= 1);
+    // Wait for the auto-approve .then() + inject to drain.
+    await new Promise((r) => setTimeout(r, 50));
 
-    // Now fire the Notification AFTER escalation has thrown. Without the
-    // clearPermissionHandled() call in escalateToUser's catch, the dedup
-    // mark would still be active and this Notification would be suppressed.
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-381a',
-      hook_event_name: 'Notification',
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission to use Bash',
+    expect(ptySubmits).toEqual(['2']);
+  });
+
+  test('Phase 2 + Phase 3: mixed-shape suggestions survive the hook->tracker->push merge', async () => {
+    // pr-test-analyzer Gap 3: phase 2 filters object entries out of
+    // permission_suggestions; phase 3 merges the filtered options onto
+    // the PTY question. Both layers are tested in isolation; this
+    // covers the chain end-to-end through the real bridge wiring.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null,
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-mixed',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'mixed.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
-    await until(() => messageApiLog.questionCalls >= 2);
+    // No auto-approve: the listener falls through to escalateToUser,
+    // which calls handlePermissionRequest -> onQuestion ->
+    // tracker.recordPendingHook with the filtered options.
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-mixed',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/x.ts' },
+      permission_suggestions: [{ type: 'addDirectories', directories: ['/tmp'] }, 'Yes', 'No'],
+    });
 
-    // Two attempts: 1 escalation (threw), 1 Notification fallback (succeeded
-    // for counting purposes; throwOnQuestion fires on every call but the
-    // counter increments before the throw so we observe the call).
-    expect(messageApiLog.questionCalls).toBe(2);
+    expect(tracker.hasPendingForTest()).toBe(true);
+
+    // PTY confirms the prompt is on screen with the bland numbered
+    // fallback options. The hook's filtered string options must win
+    // the merge.
+    tracker.onPTYPromptVisible({
+      id: generateId(),
+      text: 'Allow Edit: /tmp/x.ts?',
+      options: [
+        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
+        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(pushed.length).toBe(1);
+    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 
   // -------------------------------------------------------------------------
-  // Issue #382: PTY inject ack timeout. submitInput is fire-and-forget, so a
-  // stuck PTY can swallow the byte while inject() reports success. Combined
-  // with the pre-emptive dedup mark (#379/#381), the user would see no
-  // PTY answer, no question, and no APNS push -- a hard regression compared
-  // to the pre-#381 phantom-Notification behaviour. The fix registers a
-  // PendingAck around submitInput and escalates if no follow-up hook event
-  // arrives within the timeout.
+  // Phase 4 (#419): agent_id demoted from kill-switch to metadata.
+  // Subagent PermissionRequest + Notification events flow through to the
+  // tracker; push is gated by PTY presence, not by the agent_id tag.
   // -------------------------------------------------------------------------
 
-  test('regression #382: approve + PostToolUse arrives in time -> no escalation', async () => {
-    // Happy path: the auto-approve injects "1", Claude proceeds with the
-    // tool call, PostToolUse fires within the ack window. No timeout, no
-    // escalation. questionCalls stays at 0.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-    });
+  test('Phase 4 wiring: subagent PermissionRequest + PTY-visible prompt fires a push', async () => {
+    // The user hot-switches to a subagent's view; the subagent's prompt
+    // is on the user's PTY screen. The hook fires with agent_id set.
+    // Under the new contract, this is an answerable prompt: tracker
+    // records the hook, PTY confirms, push fires with merged metadata.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null, // no auto-approve -> escalate path
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382a',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-sub-A',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subA.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382a',
+      session_id: 'claude-sub-A',
+      agent_id: 'subagent-A',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/tmp/foo.ts' },
+      permission_suggestions: ['Yes', 'Always', 'No'],
+    });
+
+    // Hook recorded the question in the tracker (no push yet).
+    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(pushed.length).toBe(0);
+
+    // PTY parser confirms the prompt is on the user's terminal.
+    tracker.onPTYPromptVisible({
+      id: generateId(),
+      text: 'Allow Edit: /tmp/foo.ts?',
+      options: [
+        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
+        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
+        { label: '3', value: '3', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(pushed.length).toBe(1);
+    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Always', 'No']);
+  });
+
+  test('Phase 4 wiring: subagent PermissionRequest with no PTY confirmation drops cleanly', async () => {
+    // Background subagent path: hook fires (agent_id set), no PTY emit
+    // because the user is not hot-switched into this subagent's view.
+    // The tracker holds the pending; a subsequent status transition
+    // (PostToolUse -> 'thinking') clears it. No push reaches iOS.
+    const pushed: Question[] = [];
+    const localApi = fakeMessageAPI(messageApiLog);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
+    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+
+    setupHookBridge(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        autoApproveService: null,
+        currentPort: () => 8765,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+      },
+    );
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-B',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subB.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-B',
+      agent_id: 'subagent-B',
+      agent_type: 'task',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
+    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(pushed.length).toBe(0);
 
-    // Simulate Claude advancing past the prompt: PostToolUse for the tool.
+    // Subagent finished without the user seeing the prompt (background).
     hookServer.fire('PostToolUse', {
-      session_id: 'claude-locked-382a',
+      session_id: 'claude-sub-B',
       hook_event_name: 'PostToolUse',
       tool_name: 'Bash',
-      tool_use_id: 'tool-use-382a',
       tool_input: { command: 'ls' },
-      tool_output: { exit_code: 0 },
+      tool_response: { exit_code: 0 },
     });
 
-    // Wait past 2.5x the ack timeout to leave headroom for CI scheduler
-    // jitter (a Bun timer + microtask flush on a loaded macOS runner has
-    // shown >40 ms drift). If a late timeout escalation slips through,
-    // questionCalls becomes 1 and this assertion fails.
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(0);
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(pushed.length).toBe(0);
   });
 
-  test('regression #382: approve + no follow-up event -> ack timeout escalates', async () => {
-    // Silent PTY scenario: inject reports success but no PreToolUse /
-    // PostToolUse / Stop arrives. The ack timer fires, clears the dedup
-    // mark, and emits the canonical question via escalateToUser.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-    });
+  test('Phase 4 wiring: subagent Notification(permission_prompt) records in tracker', async () => {
+    // Notification(permission_prompt) used to be dropped at the listener
+    // when agent_id was present. Under phase 4 it flows to the tracker
+    // just like its PermissionRequest sibling.
+    const { tracker } = build({ realTracker: true });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382b',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-sub-N',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subN.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('Notification', {
+      session_id: 'claude-sub-N',
+      agent_id: 'subagent-N',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+
+    expect(tracker.hasPendingForTest()).toBe(true);
+  });
+
+  test('subagent PermissionRequest with no PTY-visible prompt: inject is dropped, fallback escalates', async () => {
+    // Regression guard for the dev.3 misfiring: a background subagent's
+    // PermissionRequest cannot answer by injecting into the MAIN PTY
+    // because the subagent's prompt isn't there — "1" would land in the
+    // main agent's input. inject() must gate on
+    // tracker.isPromptVisibleOnPTY(); when false (no PTY confirmation),
+    // it returns false so the approve branch falls through to
+    // escalateToUser, which records into the tracker. The PassthroughTracker
+    // collapses that into a push (one question call). In production the
+    // real tracker would wait for PTY confirmation that never arrives →
+    // pending dropped on next status change → no spurious push.
+    build({ autoApprove: true, autoApproveDecision: 'approve' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-AA',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subAA.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382b',
+      session_id: 'claude-sub-AA',
+      agent_id: 'subagent-AA',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
+    await new Promise((r) => setTimeout(r, 50));
 
-    // No follow-up event: ack timer should fire and emit a fallback Q.
-    await until(() => messageApiLog.questionCalls >= 1, 1000);
+    // Inject was gated → no submit. Escalation fires → one question call.
+    expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(1);
   });
 
-  test('regression #382: deny + Stop arrives in time -> no escalation', async () => {
-    // Mirror of the approve happy path for the deny branch. Stop is the
-    // expected ack signal when Claude abandons the requested tool.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'deny',
-      injectAckTimeoutMs: 100,
-    });
+  test('subagent PermissionRequest with PTY-visible prompt (hot-switched view) still injects', async () => {
+    // Preserves PR #419's hot-switched-subagent case: when the user
+    // has switched to the subagent's view, its permission prompt IS
+    // rendered on the main PTY. Simulate that by firing
+    // onPTYPromptVisible BEFORE the PermissionRequest so the tracker's
+    // ptyShowingQuestion flag is true when inject's gate checks it.
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382c',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-sub-hot',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subhot.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // PTY rendered the subagent's prompt on the user's screen.
+    tracker.onPTYPromptVisible({
+      id: 'pty-q-1',
+      text: 'Allow Bash?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382c',
+      session_id: 'claude-sub-hot',
+      agent_id: 'subagent-hot',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual(['1']);
+  });
+
+  test('subagent PermissionRequest + auto-approve deny with no PTY presence: inject dropped, escalates', async () => {
+    // Mirrors the approve case for the deny branch — same gate, same
+    // fallthrough. The non-hang guarantee for background subagents is
+    // now structural: with no PTY presence the subagent has no answerable
+    // prompt to hang on (the inject never could have reached it), so
+    // dropping is correct.
+    build({ autoApprove: true, autoApproveDecision: 'deny' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-deny',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subdeny.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-deny',
+      agent_id: 'subagent-deny',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'rm -rf /' },
     });
 
-    await until(() => ptySubmits.length >= 1);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1);
+  });
+
+  test('subagent PermissionRequest + auto-approve deny with PTY-visible prompt injects "3"', async () => {
+    const { tracker } = build({ autoApprove: true, autoApproveDecision: 'deny' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-sub-deny-hot',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'subdenyhot.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    tracker.onPTYPromptVisible({
+      id: 'pty-q-2',
+      text: 'Allow Bash: rm -rf /?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-sub-deny-hot',
+      agent_id: 'subagent-deny-hot',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
     expect(ptySubmits).toEqual(['3']);
-
-    hookServer.fire('Stop', {
-      session_id: 'claude-locked-382c',
-      hook_event_name: 'Stop',
-      stop_hook_active: false,
-    });
-
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  // (The previous "ack timeout AFTER Notification dedup expired" test was
-  // dropped: the timeout path's explicit clearPermissionHandled() is
-  // defensive -- handlePermissionRequest immediately re-arms
-  // lastPermissionEmitAt when escalateToUser emits, so a late Notification
-  // is correctly suppressed as a duplicate of the canonical escalation.
-  // The meaningful "timeout -> escalation fires" behavior is covered by
-  // the "approve + no follow-up event" test above.)
-
-  test('regression #382: submitInput throws -> ack cancelled, single escalation only', async () => {
-    // inject() catch path: cancel pendingAck before returning false so the
-    // caller's escalateToUser fires once, not once + a stale timeout
-    // escalation a second later.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-      submitInputThrows: true,
-    });
+  test('Phase 4 wiring: escalate + active Task context default-denies (no hang)', async () => {
+    // PR #424 review pr-test-analyzer Gap 2 (criticality 8): when
+    // auto-approve cannot decide ('escalate') AND a Task tool call is
+    // open on the main session, the bridge must inject '3' rather than
+    // surface a question (the user can't answer a subagent's prompt
+    // visible only to the subagent). With the TOCTOU fix from this
+    // commit, the subagent context is read live in the .then(), so a
+    // Task that opens mid-eval is correctly caught.
+    build({ autoApprove: true, autoApproveDecision: 'escalate' });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382e',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-esc-task',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'esctask.jsonl'),
+      source: 'startup',
+      model: 'test',
     });
 
+    // Open a synchronous Task context.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-esc-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: { subagent_type: 'general-purpose', prompt: 'do stuff' },
+      tool_use_id: 'tu_task_esc',
+    });
+
+    // Subagent-internal Bash PermissionRequest (no agent_id; the
+    // Task-context safety net catches it).
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382e',
+      session_id: 'claude-esc-task',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    // PTY recorded the byte (fakePTY pushes BEFORE throwing) but inject
-    // returned false; caller escalates once via the inject-failure path.
-    await until(() => messageApiLog.questionCalls >= 1, 500);
-    expect(messageApiLog.questionCalls).toBe(1);
+    await new Promise((r) => setTimeout(r, 50));
 
-    // Wait past the ack timeout to confirm no SECOND escalation lands.
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messageApiLog.questionCalls).toBe(1);
+    expect(ptySubmits).toEqual(['3']);
+    expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  test('regression #382: default ack timeout is non-trivial (no override -> no fast escalation)', async () => {
-    // Pins the args.injectAckTimeoutMs ?? 1000 fallback. If a refactor
-    // dropped the default and the field became required (or undefined
-    // -> setTimeout interpreted as 1ms), the timer would fire almost
-    // immediately and escalate during this 200 ms quiet window.
-    build({ autoApprove: true, autoApproveDecision: 'approve' }); // no injectAckTimeoutMs
+  test('Phase 4 wiring: autoApproveThrows + active Task context default-denies', async () => {
+    // PR #424 review pr-test-analyzer Gap 3 (criticality 7): the
+    // .catch() handler's `if (hookBridge.isInSubagentContext())` branch.
+    // A dropped guard would route the catch through escalateToUser
+    // instead of inject-deny, hanging the subagent.
+    build({ autoApprove: true, autoApproveThrows: true });
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382f',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-throws-task',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'throws-task.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-throws-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {},
+      tool_use_id: 'tu_task_throws',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382f',
+      session_id: 'claude-throws-task',
+      hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
+    await new Promise((r) => setTimeout(r, 50));
 
-    // 200 ms is a fraction of the 1000 ms default; no escalation expected.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(messageApiLog.questionCalls).toBe(0);
+    expect(ptySubmits).toEqual(['3']);
   });
 
-  test('regression #382: Notification(idle_prompt) resolves the ack (Edit-style approve)', async () => {
-    // When auto-approve approves an Edit (the same tool that triggered
-    // the prompt), Claude doesn't fire a fresh PreToolUse. The next
-    // signal that "Claude moved on" is often a Notification(idle_prompt).
-    // Code-reviewer flagged this as a phantom-escalation gap; this test
-    // pins ackAllPending() being called from the Notification handler
-    // when the type is anything other than permission_prompt.
-    build({
-      autoApprove: true,
-      autoApproveDecision: 'approve',
-      injectAckTimeoutMs: 100,
-    });
+  test('Phase 4 wiring: no auto-approve + active Task context default-denies', async () => {
+    // PR #424 review pr-test-analyzer #4 (criticality 6): the
+    // synchronous fallback `if (hookBridge.isInSubagentContext())` at
+    // the bottom of the listener (no autoApproveService case). Uses a
+    // Task context, not an agent_id-tagged event, so the
+    // SubagentContextTracker bookkeeping is what carries the gate.
+    build(); // no autoApprove
 
     hookServer.fire('SessionStart', {
-      session_id: 'claude-locked-382g',
-      transcript_path: path.join(tmpDir, 't.jsonl'),
+      session_id: 'claude-noaa-task',
       hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'noaatask.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: {},
+      tool_use_id: 'tu_task_noaa',
     });
 
     hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-382g',
-      tool_name: 'Edit',
-      tool_input: { file_path: '/tmp/x.ts', old_str: 'a', new_str: 'b' },
+      session_id: 'claude-noaa-task',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
     });
 
-    await until(() => ptySubmits.length >= 1);
-    expect(ptySubmits).toEqual(['1']);
-
-    // idle_prompt is a "Claude moved on" signal -- must ack the pending
-    // inject so the timer doesn't fire a phantom escalation.
-    hookServer.fire('Notification', {
-      session_id: 'claude-locked-382g',
-      hook_event_name: 'Notification',
-      notification_type: 'idle_prompt',
-      message: '',
-    });
-
-    await new Promise((r) => setTimeout(r, 250));
+    expect(ptySubmits).toEqual(['3']);
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
@@ -959,5 +1723,361 @@ describe('setupHookBridge', () => {
 
     expect(ptySubmits).toHaveLength(0); // no inject
     expect(messageApiLog.questionCalls).toBe(0); // no escalate
+  });
+
+  describe('session_rotated emission on rotation (#430 #438)', () => {
+    /**
+     * Set up a hook bridge that captures every protocol message it tries
+     * to send. We can't use the shared `build` helper because that swallows
+     * sendAndRecord; rotation emission is the whole point we need to assert
+     * on.
+     */
+    function buildWithCapture(): { sent: import('@remi/shared').ProtocolMessage[] } {
+      const sent: import('@remi/shared').ProtocolMessage[] = [];
+      const tracker = new PassthroughTracker((q) => {
+        messageApiLog.questionCalls += 1;
+        const _ = q;
+      });
+      setupHookBridge(
+        {
+          sessionRegistry,
+          sessionStore,
+          liveSessionsRegistry,
+          transcriptWatchers: transcriptWatchers as unknown as Map<
+            UUID,
+            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+          >,
+          transcriptFallbackTimers,
+          autoApproveService: null,
+          currentPort: () => 8765,
+        },
+        {
+          hookServer: hookServer as unknown as HookServer,
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          messageApi: {
+            handleMessage: () => {},
+            handleQuestion: () => {},
+            handleStatusChange: () => {},
+            reset: () => {
+              messageApiLog.resetCalls.n += 1;
+            },
+          } as unknown as import('../../../src/api/message-api.ts').MessageAPI,
+          sendAndRecord: (msg) => sent.push(msg),
+          tracker: tracker as unknown as QuestionPresenceTracker,
+        },
+      );
+      return { sent };
+    }
+
+    test('first-init does NOT emit (no rotation, only hello_ack covers initial)', () => {
+      const { sent } = buildWithCapture();
+
+      // Register the session so the bridge proceeds past hasSession() checks.
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-first-id',
+        transcript_path: path.join(tmpDir, 'first.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      expect(sent.filter((m) => m.type === 'session_rotated')).toHaveLength(0);
+    });
+
+    test('second SessionStart with a different id emits one session_rotated', () => {
+      const { sent } = buildWithCapture();
+      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
+        handleMessage: () => {},
+        handleQuestion: () => {},
+        handleStatusChange: () => {},
+        reset: () => {},
+      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-first-id',
+        transcript_path: path.join(tmpDir, 'first.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-second-id',
+        transcript_path: path.join(tmpDir, 'second.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+
+      const events = sent.filter((m) => m.type === 'session_rotated') as Array<{
+        sessionId: string;
+        oldClaudeSessionId?: string;
+        newClaudeSessionId: string;
+        newTranscriptPath: string;
+        reason: string;
+      }>;
+      expect(events).toHaveLength(1);
+      expect(events[0]?.sessionId).toBe(SID);
+      expect(events[0]?.oldClaudeSessionId).toBe('claude-first-id');
+      expect(events[0]?.newClaudeSessionId).toBe('claude-second-id');
+      expect(events[0]?.newTranscriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
+      expect(events[0]?.reason).toBe('restart');
+    });
+  });
+
+  describe('child-liveness + port-ownership rotation (#451)', () => {
+    /** Write a co-located sibling registry entry. `child` controls how its
+     *  Claude liveness is recorded: alive pid, a dead pid, or none (legacy). */
+    function writeSibling(
+      name: string,
+      child: { claudeChildPid?: number; claudeChildExited?: boolean } = {},
+    ): void {
+      fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+      fs.writeFileSync(
+        path.join(liveSessionsRegistry.dirPath, name),
+        JSON.stringify({
+          sessionId: `sib-${name}`,
+          pid: process.pid, // sibling DAEMON is alive
+          wsPort: 18999,
+          hookPort: 18001,
+          projectPath: tmpDir,
+          name: 'sibling',
+          startedAt: new Date().toISOString(),
+          ...child,
+        }),
+      );
+    }
+
+    /** Write a transcript whose head optionally carries the remi:<port> marker. */
+    function writeTranscript(claudeId: string, ownerPort: number | null): string {
+      const p = path.join(tmpDir, `${claudeId}.jsonl`);
+      const head =
+        ownerPort !== null
+          ? `${JSON.stringify({ type: 'custom-title', customTitle: `remi:${ownerPort}` })}\n`
+          : '';
+      fs.writeFileSync(
+        p,
+        `${head}${JSON.stringify({
+          type: 'user',
+          uuid: 'u1',
+          sessionId: claudeId,
+          message: { role: 'user', content: 'hi' },
+        })}\n`,
+      );
+      return p;
+    }
+
+    /** Pre-seed the store binding so the first event adopts the lock. */
+    function seedLock(claudeId: string): void {
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: claudeId,
+        projectPath: tmpDir,
+        port: 8765, // matches the harness currentPort()
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+    }
+
+    function stopWatchers(): void {
+      for (const w of transcriptWatchers.values()) {
+        try {
+          w.stop();
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+
+    const CLAUDE_A = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const CLAUDE_B = 'bbbbbbbb-2222-2222-2222-222222222222';
+
+    test('zombie sibling (dead Claude child) no longer wedges our rotation', async () => {
+      // The exact bug: a leftover daemon (process alive, Claude dead) shares
+      // the dir. Pre-fix it permanently deferred rotation handling. The
+      // rotated transcript here carries NO port marker, proving the zombie is
+      // fully ignored rather than relying on the ownership signal.
+      const deadProc = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore' });
+      await deadProc.exited;
+      writeSibling('zombie.json', { claudeChildPid: deadProc.pid });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, null);
+      const pathB = writeTranscript(CLAUDE_B, null);
+
+      build();
+      // Event 1: establish lock=CLAUDE_A from the store.
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      // Event 2: in-process rotation to CLAUDE_B.
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
+        expect(transcriptWatchers.has(SID)).toBe(true);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('genuine live sibling: our own rotation adopts via the remi:<port> marker', async () => {
+      // A real second daemon (live Claude child) shares the dir. Our rotation
+      // must still rebind because the new transcript carries OUR port marker.
+      writeSibling('live.json', { claudeChildPid: process.pid }); // alive
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, 8765);
+      const pathB = writeTranscript(CLAUDE_B, 8765); // ours
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
+        expect(transcriptWatchers.has(SID)).toBe(true);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test("genuine live sibling: the SIBLING's rotation is NOT adopted (no latching)", () => {
+      // Mirror of the above, but the rotating transcript carries the SIBLING's
+      // port. We must not overwrite our binding or start a watcher on it.
+      writeSibling('live2.json', { claudeChildPid: process.pid });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, 8765);
+      const siblingId = 'cccccccc-3333-3333-3333-333333333333';
+      const pathSib = writeTranscript(siblingId, 18999); // sibling's port
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: siblingId,
+        transcript_path: pathSib,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        // Binding unchanged: the sibling's rotation never overwrote ours.
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
+        // Our watcher (started for CLAUDE_A on event 1) is still intact and was
+        // never torn down or re-pointed at the sibling's transcript.
+        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+        expect(transcriptWatchers.get(SID)?.filePath).not.toBe(pathSib);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('live sibling + rotation with NO port marker is not adopted', () => {
+      // Guards the &&-not-|| shape of the ownership check: with a live sibling
+      // present and a rotated transcript carrying no remi:<port> marker, we
+      // cannot prove ownership, so we must defer rather than latch.
+      writeSibling('live-nomarker.json', { claudeChildPid: process.pid });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, 8765); // ours, lets event 1 lock cleanly
+      const pathB = writeTranscript(CLAUDE_B, null); // rotation, unmarked
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        // Unproven rotation deferred: binding stays, watcher stays on CLAUDE_A.
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
+        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('sibling explicitly flagged claudeChildExited is ignored (recycle-proof)', () => {
+      // The recycle-proof tombstone path: an entry that went alive -> exited via
+      // markClaudeChildExited must not count as a sibling even though its pid is
+      // alive. Rotation proceeds with no port marker, as in the zombie case.
+      writeSibling('flagged-exited.json', {
+        claudeChildPid: process.pid, // alive pid...
+        claudeChildExited: true, // ...but explicitly tombstoned
+      });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, null);
+      const pathB = writeTranscript(CLAUDE_B, null);
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
+        expect(transcriptWatchers.has(SID)).toBe(true);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('self-heals the watcher when locked-from-store but the fallback gave up', () => {
+      // The osa case: single daemon, no sibling. The lock is adopted from the
+      // store (deterministic pre-spawn binding), but no watcher exists because
+      // the 30s fallback poll timed out before Claude wrote its first transcript
+      // line. The next hook event from our own Claude must start the watcher
+      // (no port marker needed: the session_id match is proof of ownership).
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, null);
+
+      build();
+      // No fallback ran in this harness, so we start with no watcher.
+      expect(transcriptWatchers.has(SID)).toBe(false);
+
+      hookServer.fire('PreToolUse', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        hook_event_name: 'PreToolUse',
+      });
+
+      try {
+        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+      } finally {
+        stopWatchers();
+      }
+    });
   });
 });

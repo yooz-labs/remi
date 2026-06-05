@@ -43,10 +43,22 @@ export interface ServerEvents {
   onClientDisconnect: (connectionId: UUID, reason: string) => void;
 
   /** User input from client */
-  onUserInput: (connectionId: UUID, sessionId: UUID, content: string, raw?: boolean) => void;
+  onUserInput: (
+    connectionId: UUID,
+    sessionId: UUID,
+    content: string,
+    raw?: boolean,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Answer from client */
-  onAnswer: (connectionId: UUID, sessionId: UUID, questionId: UUID, answer: string) => void;
+  onAnswer: (
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+  ) => void;
 
   /** Bullet expand request from client */
   onBulletExpandRequest: (
@@ -208,6 +220,18 @@ export class WebSocketServer {
           return new Response('WebSocket upgrade failed', { status: 400 });
         }
 
+        // CORS headers for HTTP endpoints. The daemon is a local-network
+        // service that already accepts arbitrary WebSocket clients;
+        // wildcard CORS does not add a security risk and is required for
+        // the Capacitor iOS app (origin `capacitor://localhost`) to fetch
+        // /auth-info during port-scan discovery. Without it, every probe
+        // fails silently and the port-scan added in #393 reports "no
+        // daemon found" even when daemons are actively serving (#403).
+        const jsonCorsHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        };
+
         // Health check endpoint
         if (url.pathname === '/health') {
           return new Response(
@@ -215,7 +239,7 @@ export class WebSocketServer {
               status: 'ok',
               connections: self.connections.size,
             }),
-            { headers: { 'Content-Type': 'application/json' } },
+            { headers: jsonCorsHeaders },
           );
         }
 
@@ -234,11 +258,14 @@ export class WebSocketServer {
               authRequired,
               fingerprint: authenticator?.serverFingerprint ?? null,
             }),
-            { headers: { 'Content-Type': 'application/json' } },
+            { headers: jsonCorsHeaders },
           );
         }
 
-        return new Response('Not found', { status: 404 });
+        return new Response('Not found', {
+          status: 404,
+          headers: { 'Access-Control-Allow-Origin': '*' },
+        });
       },
 
       websocket: {
@@ -323,12 +350,18 @@ export class WebSocketServer {
         this.events.onClientDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (sessionId, content, raw) => {
-        this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw);
+      onUserInput: (sessionId, content, raw, claudeSessionId) => {
+        this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw, claudeSessionId);
       },
 
-      onAnswer: (sessionId, questionId, answer) => {
-        this.events.onAnswer?.(ws.data.connectionId, sessionId, questionId, answer);
+      onAnswer: (sessionId, questionId, answer, claudeSessionId) => {
+        this.events.onAnswer?.(
+          ws.data.connectionId,
+          sessionId,
+          questionId,
+          answer,
+          claudeSessionId,
+        );
       },
 
       onBulletExpandRequest: (sessionId, bulletId, requestId) => {

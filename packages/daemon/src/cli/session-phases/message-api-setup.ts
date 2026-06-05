@@ -24,6 +24,7 @@ import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } fro
 import type { MessageAPIEvents } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
 import { sendPushTrigger } from '../../notifications/push-client.ts';
+import { PushDedup } from '../../notifications/push-dedup.ts';
 import type { SessionRegistry } from '../../session/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { DeviceTokenEntry } from '../handlers/trivial-events.ts';
@@ -48,6 +49,15 @@ export interface MessageApiSetupDeps {
   updateRemiStatus: (patch: { sessionStatus: AgentStatus }) => void;
   maxBulletLength: number;
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
+  /**
+   * Returns the current Claude session UUID this PTY is bound to (#429).
+   * Called on every question emission; returns null if no binding is
+   * recorded for this session (the normal spawn path sets one pre-spawn,
+   * so null is rare in production). Same synchronous/non-throwing
+   * contract as pushConfig — implementations must absorb their own I/O
+   * errors rather than throwing into the emission path.
+   */
+  getClaudeSessionId?: () => UUID | null;
 }
 
 export interface MessageApiHandle {
@@ -79,6 +89,7 @@ export function createMessageApiForSession(
     updateRemiStatus,
     maxBulletLength,
     sendMessage,
+    getClaudeSessionId,
   } = deps;
 
   const sendAndRecord = (message: ProtocolMessage): void => {
@@ -89,6 +100,12 @@ export function createMessageApiForSession(
     sendMessage(sessionId, message);
     sessionRegistry.recordOutgoingMessage(recordId, message);
   };
+
+  // Per-session push-dedup baseline. PTY + Hook double-emit one prompt
+  // with different ids; without this, the user gets two lock-screen
+  // notifications per prompt (#409). Reset whenever status leaves
+  // 'waiting' so a fresh prompt cycle starts with a clean baseline.
+  const pushDedup = new PushDedup();
 
   const callbacks: MessageAPIEvents = {
     onStructuredMessage: (structured) => {
@@ -111,21 +128,30 @@ export function createMessageApiForSession(
     onQuestion: (question: Question) => {
       log(`Question detected: ${question.text.substring(0, 50)}...`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
+      const claudeSessionId = getClaudeSessionId?.() ?? undefined;
       const msg: ProtocolMessage = {
         type: 'question',
         id: generateId(),
         timestamp: now(),
         question,
         sessionId: questionSessionId,
+        ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
       };
       sendAndRecord(msg);
-      sessionRegistry.updateQuestion(questionSessionId, question);
+      sessionRegistry.addQuestion(questionSessionId, question);
 
       // Push only when no client is attached; attached clients see it in-app.
       const sessionForPush = sessionRegistry.getSession(questionSessionId);
       const hasActiveClient =
         sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
       if (deviceTokens.size > 0 && !hasActiveClient) {
+        // Push-dedup gate (#409): suppress the PTY/Hook double-emission
+        // for one prompt cycle. Mirrors the client's richer-wins guard
+        // so phone and in-app converge on the same option set.
+        if (!pushDedup.shouldPush(question)) {
+          log(`Push suppressed by dedup for session ${questionSessionId}`);
+          return;
+        }
         const session = sessionRegistry.getSession(sessionId);
         const sessionName = session?.name || 'Agent';
         const cfg = pushConfig();
@@ -149,6 +175,13 @@ export function createMessageApiForSession(
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);
+      // Reset the push-dedup baseline whenever Claude moves past the
+      // 'waiting' state — same lifecycle as QuestionDedup so a new
+      // prompt cycle starts fresh and is not silently absorbed by a
+      // stale prior push (#409).
+      if (status !== 'waiting') {
+        pushDedup.reset();
+      }
       const msg: ProtocolMessage = {
         type: 'session_update',
         id: generateId(),

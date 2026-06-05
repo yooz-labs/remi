@@ -105,6 +105,28 @@ describe('WebSocketServer', () => {
       const response = await fetch(`http://localhost:${testPort}/unknown`);
       expect(response.status).toBe(404);
     });
+
+    test('/health includes CORS header so cross-origin clients can fetch (#403)', async () => {
+      await server.start();
+      const response = await fetch(`http://localhost:${testPort}/health`);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    });
+
+    test('/auth-info includes CORS header (#403)', async () => {
+      await server.start();
+      const response = await fetch(`http://localhost:${testPort}/auth-info`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      const data = await response.json();
+      expect(typeof data.authRequired).toBe('boolean');
+    });
+
+    test('404 fallthrough includes CORS header (#403)', async () => {
+      await server.start();
+      const response = await fetch(`http://localhost:${testPort}/nonexistent`);
+      expect(response.status).toBe(404);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    });
   });
 
   describe('Connection management', () => {

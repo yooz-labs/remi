@@ -263,7 +263,7 @@ export class TelegramAdapter implements ConnectionAdapter {
     return true;
   }
 
-  sendQuestion(connectionId: UUID, question: Question, _sessionId?: UUID): boolean {
+  sendQuestion(connectionId: UUID, question: Question, _sessionId: UUID): boolean {
     const sessionKey = this.connectionToSession.get(connectionId);
     if (!sessionKey) {
       return false;
@@ -326,7 +326,11 @@ export class TelegramAdapter implements ConnectionAdapter {
       }
 
       case 'question':
-        return this.sendQuestion(connectionId, (message as QuestionMessage).question);
+        return this.sendQuestion(
+          connectionId,
+          (message as QuestionMessage).question,
+          (message as QuestionMessage).sessionId,
+        );
 
       case 'session_update':
         return this.sendStatus(connectionId, (message as SessionUpdateMessage).session.status);

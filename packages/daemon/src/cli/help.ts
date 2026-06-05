@@ -261,6 +261,8 @@ export function formatHelp(version: string): string {
     entry('--auto-approve-allow STR', 'Allow-list pattern (repeatable, substring match)'),
     entry('--auto-approve-deny STR', 'Deny-list pattern (repeatable, substring match)'),
     entry('--auto-approve-instructions T', 'Natural-language guidance for the LLM'),
+    entry('--auto-approve-multichoice MODE', 'skip (default) | evaluate (LLM picks index)'),
+    entry('--auto-approve-multichoice-model M', 'Alt-model for multi-choice; empty = main model'),
     '',
     bold('Remote Access:'),
     entry('remi ls --host <ip>', 'List sessions on remote machine'),

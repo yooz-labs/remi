@@ -10,6 +10,7 @@
 
 import type { AgentStatus } from '@remi/shared';
 import { cleanForParsing } from './ansi.ts';
+import { PROMPT_CHROME } from './question-parser.ts';
 
 /** Status detection result */
 export interface StatusResult {
@@ -62,9 +63,15 @@ const THINKING_PATTERNS: readonly RegExp[] = [
   /^[✳✢]\s*$/,
 ];
 
-/** Waiting indicators (question or input prompt) */
+/** Waiting indicators (question or input prompt).
+ *
+ * A bare trailing `?` is deliberately NOT here: prose ending in `?` is not a
+ * prompt (it was a false-positive source). Claude's own prompts are matched by
+ * the selection-box chrome; the remaining patterns catch subprocess prompts. */
 const WAITING_PATTERNS: readonly RegExp[] = [
-  /\?\s*$/,
+  // Claude Code selection-box chrome (❯ cursor on a numbered option). Reuses
+  // the question-parser constant so the two detectors cannot drift apart.
+  PROMPT_CHROME,
   /\(y\/n\)/i,
   /\[y\/n\]/i,
   /waiting for/i,

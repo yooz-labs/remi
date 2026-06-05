@@ -187,20 +187,24 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.isNo).toBe(true);
   });
 
-  // Matrix of inputs that must NOT reach the `.toLowerCase()` path and must
-  // fall back to the default 3-option set. Observed in the wild as
-  // "suggestion.toLowerCase is not a function".
-  const badSuggestionCases: Array<[string, unknown]> = [
+  // Inputs that yield fewer than 2 usable string labels: must fall back to
+  // the default 3-option set so the iOS card always renders something the
+  // user can act on. Object entries (e.g. {type:"addDirectories",...}) are
+  // an expected shape and are silently filtered out of UI options here;
+  // the auto-approve path receives the raw array separately and handles
+  // them via the multi-choice classifier.
+  const fallbackCases: Array<[string, unknown]> = [
     ['all non-string entries', [null, 42, { label: 'Yes' }]],
-    ['mixed valid + null', ['Yes', null, 'No']],
-    ['mixed valid + empty string', ['Yes', '', 'No']],
-    ['single valid element (below min length 2)', ['Yes']],
+    ['pure object array (addDirectories)', [{ type: 'addDirectories', directories: ['/x'] }]],
+    ['object + null', [{ type: 'setMode', mode: 'plan' }, null]],
+    ['single string + object', ['Yes', { type: 'addDirectories', directories: ['/x'] }]],
+    ['single valid element', ['Yes']],
     ['empty array', []],
     ['string passed directly (not an array)', 'Yes'],
     ['number passed directly (not an array)', 7],
     ['array-like object', { 0: 'Yes', 1: 'No', length: 2 }],
   ];
-  for (const [label, value] of badSuggestionCases) {
+  for (const [label, value] of fallbackCases) {
     it(`PermissionRequest falls back to default options: ${label}`, () => {
       const { bridge, statuses, questions } = createBridge();
 
@@ -218,6 +222,36 @@ describe('HookEventBridge', () => {
       expect(questions[0]?.options[0]?.label).toBe('Yes');
       expect(questions[0]?.options[1]?.label).toBe('Yes, always');
       expect(questions[0]?.options[2]?.label).toBe('No');
+    });
+  }
+
+  // Mixed arrays where at least 2 string entries survive the filter:
+  // render those strings as the option set. This accepts Claude Code's
+  // newer permission_suggestions union where object entries (addDirectories
+  // etc) sit alongside Yes/No string labels.
+  const partialStringCases: Array<[string, unknown[], string[]]> = [
+    ['strings + object entry', ['Yes', { type: 'addDirectories' }, 'No'], ['Yes', 'No']],
+    ['strings + null', ['Yes', null, 'No'], ['Yes', 'No']],
+    ['strings + empty string', ['Yes', '', 'No'], ['Yes', 'No']],
+  ];
+  for (const [label, value, expected] of partialStringCases) {
+    it(`PermissionRequest uses filtered string labels: ${label}`, () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Edit',
+        tool_input: {},
+        permission_suggestions: value as unknown as string[],
+      } as PermissionRequestHookInput);
+
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.options.map((o) => o.label)).toEqual(expected);
+      // isYes / isNo are the load-bearing flags the iOS response handler
+      // uses to route taps; verify they survive the filtered-string path.
+      expect(questions[0]?.options[0]?.isYes).toBe(true);
+      expect(questions[0]?.options[1]?.isNo).toBe(true);
     });
   }
 
@@ -320,8 +354,13 @@ describe('HookEventBridge', () => {
     expect(handlers.onSessionEnd).toBeDefined();
   });
 
-  describe('PermissionRequest + Notification dedup', () => {
-    it('suppresses Notification after PermissionRequest with suggestions', () => {
+  describe('PermissionRequest + Notification forwarding', () => {
+    it('emits BOTH question events when PermissionRequest is followed by Notification(permission_prompt)', () => {
+      // Phase 3: the 5 s `lastPermissionEmitAt` dedup window is gone. Both
+      // hook events now forward their metadata; QuestionPresenceTracker
+      // (cli.ts wiring) collapses them into a single push because the
+      // tracker only holds one `pending` slot at a time and PTY confirms
+      // once. This test pins the bridge contract: hand both events through.
       const { bridge, questions } = createBridge();
 
       bridge.handlePermissionRequest({
@@ -331,10 +370,6 @@ describe('HookEventBridge', () => {
         tool_input: { file_path: '/tmp/foo.ts' },
         permission_suggestions: ['Yes', 'Always', 'No'],
       } as PermissionRequestHookInput);
-
-      expect(questions.length).toBe(1);
-
-      // Notification arrives after; should be suppressed
       bridge.handleNotification({
         ...makeCommon(),
         hook_event_name: 'Notification',
@@ -342,36 +377,12 @@ describe('HookEventBridge', () => {
         message: 'Allow Edit: /tmp/foo.ts?',
       } as NotificationHookInput);
 
-      expect(questions.length).toBe(1);
+      expect(questions.length).toBe(2);
     });
 
-    it('suppresses Notification after PermissionRequest without suggestions', () => {
+    it('allows standalone Notification when no preceding PermissionRequest', () => {
       const { bridge, questions } = createBridge();
 
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'npm test' },
-      } as PermissionRequestHookInput);
-
-      expect(questions.length).toBe(1);
-
-      // Notification with "Claude needs your permission" text arrives; suppressed
-      bridge.handleNotification({
-        ...makeCommon(),
-        hook_event_name: 'Notification',
-        notification_type: 'permission_prompt',
-        message: 'Claude needs your permission to use Bash',
-      } as NotificationHookInput);
-
-      expect(questions.length).toBe(1);
-    });
-
-    it('allows standalone Notification when no recent PermissionRequest', () => {
-      const { bridge, questions } = createBridge();
-
-      // No preceding PermissionRequest
       bridge.handleNotification({
         ...makeCommon(),
         hook_event_name: 'Notification',
@@ -398,8 +409,13 @@ describe('HookEventBridge', () => {
     });
   });
 
-  describe('subagent context filtering (issue #316)', () => {
-    it('suppresses PermissionRequest while inside a Task tool call', () => {
+  describe('subagent context filtering (issue #316, phase 4 #419)', () => {
+    it('forwards PermissionRequest during a Task tool call (tracker handles presence)', () => {
+      // Phase 4 (#419): the subagentContext drop in handlePermissionRequest
+      // is removed. The bridge now forwards every question; whether a push
+      // fires is decided by the QuestionPresenceTracker downstream, based
+      // on PTY confirmation. A hot-switched subagent view that renders
+      // a permission prompt on the user's PTY IS user-answerable.
       const { bridge, questions } = createBridge();
 
       // Main agent spawns subagent via Task
@@ -421,8 +437,9 @@ describe('HookEventBridge', () => {
         tool_input: { command: 'nmap --version' },
       } as PermissionRequestHookInput);
 
-      // User should NOT see this question
-      expect(questions).toHaveLength(0);
+      // Bridge forwards the question; the tracker (cli.ts wiring) gates push.
+      expect(questions).toHaveLength(1);
+      expect(questions[0]?.text).toContain('nmap --version');
 
       // Task completes; context exits
       bridge.handlePostToolUse({
@@ -436,7 +453,7 @@ describe('HookEventBridge', () => {
 
       expect(bridge.isInSubagentContext()).toBe(false);
 
-      // Now a real user-facing PermissionRequest SHOULD pass through
+      // Post-Task PermissionRequest passes through unchanged.
       bridge.handlePermissionRequest({
         ...makeCommon(),
         hook_event_name: 'PermissionRequest',
@@ -444,11 +461,14 @@ describe('HookEventBridge', () => {
         tool_input: { command: 'dig example.com' },
       } as PermissionRequestHookInput);
 
-      expect(questions).toHaveLength(1);
-      expect(questions[0]?.text).toContain('dig example.com');
+      expect(questions).toHaveLength(2);
+      expect(questions[1]?.text).toContain('dig example.com');
     });
 
-    it('suppresses Notification(permission_prompt) while in subagent context', () => {
+    it('forwards Notification(permission_prompt) during a Task tool call', () => {
+      // Mirror of the PermissionRequest test above. The bridge no longer
+      // drops Notification(permission_prompt) based on subagent context;
+      // the tracker collapses hook+PTY events into a single push.
       const { bridge, questions } = createBridge();
 
       bridge.handlePreToolUse({
@@ -459,7 +479,6 @@ describe('HookEventBridge', () => {
         tool_use_id: 'tu_1',
       } as PreToolUseHookInput);
 
-      // Notification(permission_prompt) that would fire during subagent work
       bridge.handleNotification({
         ...makeCommon(),
         hook_event_name: 'Notification',
@@ -467,7 +486,8 @@ describe('HookEventBridge', () => {
         message: 'Claude needs your permission to use Bash',
       } as NotificationHookInput);
 
-      expect(questions).toHaveLength(0);
+      expect(questions).toHaveLength(1);
+      expect(questions[0]?.text).toBe('Claude needs your permission to use Bash');
     });
 
     it('concurrent Task calls: context exits only when all complete', () => {
@@ -500,13 +520,17 @@ describe('HookEventBridge', () => {
 
       expect(bridge.isInSubagentContext()).toBe(true); // B still running
 
+      // Phase 4: PermissionRequest forwards even in subagent context; the
+      // tracker handles push gating downstream. This test now only
+      // verifies the subagentContext bookkeeping (reset semantics), not
+      // bridge-level suppression.
       bridge.handlePermissionRequest({
         ...makeCommon(),
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
         tool_input: { command: 'ls' },
       } as PermissionRequestHookInput);
-      expect(questions).toHaveLength(0);
+      expect(questions).toHaveLength(1);
 
       // Close B
       bridge.handlePostToolUse({

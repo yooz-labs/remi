@@ -14,8 +14,9 @@
  *   2. **Transcript discovery via hooks.** Most events carry
  *      `transcript_path`; when present (and not shadowed by a sibling), we
  *      can start the watcher immediately instead of waiting for the
- *      2s mtime poll. A restart (/clear /compact /resume) tears down the
- *      old watcher and starts a fresh one.
+ *      2s mtime poll. A rotation (/clear or /resume — NOT /compact, which
+ *      keeps the same session id) tears down the old watcher, starts a fresh
+ *      one, and emits a single session_rotated event.
  *
  *   3. **Auto-approve gate.** PermissionRequest events are intercepted
  *      before they reach the user. If auto-approve returns approve/deny we
@@ -31,15 +32,18 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionReset, errorToString } from '@remi/shared';
+import { createSessionRotated, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
+import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
 import { classifySessionEvent } from '../../hooks/session-lock-classifier.ts';
+import { claudeChildLooksAlive } from '../../session/index.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
+import { readTranscriptOwnerPort } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
@@ -62,9 +66,12 @@ export interface HookBridgeArgs {
   workingDirectory: string;
   messageApi: MessageAPI;
   sendAndRecord: (message: ProtocolMessage) => void;
-  /** Override the default inject ack timeout. Tests use a short value to
-   *  exercise the timeout path without slowing the suite. */
-  injectAckTimeoutMs?: number;
+  /** Pairs hook metadata with PTY screen presence: hook events stash the
+   *  question via recordPendingHook (no push), the PTY parser fires the
+   *  push on confirmation, and status transitions out of 'waiting' drop
+   *  stale pending records. Required when wired into the createNewSession
+   *  flow; tests construct their own per-bridge tracker. */
+  tracker: QuestionPresenceTracker;
 }
 
 export interface HookBridgeHandle {
@@ -87,14 +94,41 @@ export function setupHookBridge(
     autoApproveService,
     currentPort,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord } = args;
-  const PERMISSION_INJECT_ACK_TIMEOUT_MS = args.injectAckTimeoutMs ?? 1000;
+  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
 
   // Track the Claude session ID so we can filter hook events by session.
   // Before SessionStart fires, we let events through (claudeSessionId is null).
   let claudeSessionId: string | null = null;
+
+  /**
+   * Adopt the canonical claudeSessionId from `sessionStore`. After phase 1
+   * (#427), `cli.ts:createNewSession` pre-writes the binding to the store
+   * BEFORE Bun.spawn, so the value is authoritative the moment the bridge
+   * starts receiving hook events — no inference from filesystem mtime,
+   * no risk of latching a sibling daemon's id. The same call also covers
+   * subsequent rotations: if a hook-driven restart (/clear, /resume) flips
+   * the closure to null and writes a new id to the store, the next event
+   * re-adopts the new value. Logs only on change to avoid spam on
+   * steady-state hooks. Wrapped in try/catch so an EMFILE / permission
+   * flake on the sessions file does not propagate into the hook dispatch
+   * loop; on failure we leave the closure untouched.
+   */
+  const adoptLockFromStore = (): void => {
+    try {
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const storedId = stored?.claudeSessionId ?? null;
+      if (storedId === null || storedId === claudeSessionId) return;
+      const previous = claudeSessionId;
+      claudeSessionId = storedId;
+      log(
+        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from sessionStore: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
+      );
+    } catch (err) {
+      logError(`[Hooks] adoptLockFromStore failed: ${errorToString(err)}`);
+    }
+  };
 
   // Our PTY is the ground truth for "main interactive session". A hook event
   // with a different session_id is NEVER our main:
@@ -109,79 +143,18 @@ export function setupHookBridge(
 
   // Extract transcript info from hook events. Most Claude Code hook events
   // include session_id and transcript_path. When present, the first event
-  // gives us the transcript path, bypassing the slower mtime fallback.
+  // gives us the transcript path immediately, bypassing the deterministic-
+  // path fallback poll in transcript-fallback.ts.
   //
   // GUARD: when sibling daemons serve the same directory, all Claudes POST
   // to all hook URLs (shared settings.local.json), so a sibling's event may
   // arrive before our own Claude fires. Skip hook-based discovery and let
-  // the mtime fallback handle it. Re-evaluated per event so a sibling dying
-  // (or a fresh sibling appearing) is reflected immediately. Issue #321:
-  // a stale `null`-once cache wedged this state and permanently disabled
-  // hook-driven discovery for both daemons.
-
-  // ---- Inject ack tracking ------------------------------------------------
-  //
-  // session.pty.submitInput() is fire-and-forget: it writes the byte (and
-  // 50 ms later the carriage return) without confirming Claude consumed
-  // them. If the PTY drops the input (mid-render, buffer overflow, raw-mode
-  // glitch), `inject()` would still report success and refresh the dedup
-  // mark, leaving the user with no PTY answer, no question, and no push.
-  //
-  // To detect this, we register a PendingAck right before submitInput. Any
-  // qualifying hook event for our session resolves it (see ackAllPending()
-  // call sites below) -- those are ground truth that Claude advanced past
-  // the prompt. If no such event arrives within the ack timeout, we assume
-  // the inject was lost: clear the dedup mark and escalate so the user
-  // actually sees the question on iOS.
-  //
-  // The PendingAck Set is per-session (closure-scoped). Multiple injects
-  // in flight share the set; ackAllPending() resolves them all on any
-  // qualifying event. KNOWN LIMITATION: with two injects in flight, the
-  // qualifying event for inject-A also resolves inject-B's ack -- if
-  // inject-B's PTY write was actually lost, the silent failure is masked.
-  // Same-tick double-prompts are rare; per-tool_use_id correlation is the
-  // long-term fix.
-
-  type PendingAck = {
-    timer: ReturnType<typeof setTimeout> | null;
-    resolved: boolean;
-    onTimeout: () => void;
-  };
-  const pendingAcks: Set<PendingAck> = new Set();
-
-  const startPendingAck = (onTimeout: () => void): PendingAck => {
-    const ack: PendingAck = { timer: null, resolved: false, onTimeout };
-    ack.timer = setTimeout(() => {
-      ack.timer = null;
-      if (ack.resolved) return;
-      ack.resolved = true;
-      pendingAcks.delete(ack);
-      try {
-        ack.onTimeout();
-      } catch (err) {
-        logError(`[Hooks] PendingAck onTimeout threw: ${errorToString(err)}`);
-      }
-    }, PERMISSION_INJECT_ACK_TIMEOUT_MS);
-    pendingAcks.add(ack);
-    return ack;
-  };
-
-  const resolvePendingAck = (ack: PendingAck): void => {
-    if (ack.resolved) return;
-    ack.resolved = true;
-    if (ack.timer !== null) {
-      clearTimeout(ack.timer);
-      ack.timer = null;
-    }
-    pendingAcks.delete(ack);
-  };
-
-  const ackAllPending = (): void => {
-    if (pendingAcks.size === 0) return;
-    for (const ack of pendingAcks) {
-      resolvePendingAck(ack);
-    }
-  };
+  // the deterministic-path fallback handle it (post-#427 the fallback waits
+  // for our pre-assigned UUID rather than racing on mtime). Re-evaluated
+  // per event so a sibling dying (or a fresh sibling appearing) is
+  // reflected immediately. Issue #321: a stale `null`-once cache wedged
+  // this state and permanently disabled hook-driven discovery for both
+  // daemons.
 
   /**
    * Cancel any in-flight auto-approve LLM eval. Called on hook events that
@@ -221,23 +194,42 @@ export function setupHookBridge(
       );
       return true;
     }
-    return liveSessionsRegistry
-      .listLive()
-      .some(
-        (e) =>
-          e.projectPath === workingDirectory &&
-          e.sessionId !== sessionId &&
-          e.wsPort !== currentPort(),
-      );
+    return liveSessionsRegistry.listLive().some(
+      (e) =>
+        e.projectPath === workingDirectory &&
+        e.sessionId !== sessionId &&
+        e.wsPort !== currentPort() &&
+        // A daemon whose process is alive but whose Claude child has died
+        // (a zombie) must not count as a sibling: it posts no hook events,
+        // yet its lingering registry entry would otherwise permanently
+        // defer our rotation handling (#451). Legacy entries with no
+        // recorded child pid stay fail-safe "live".
+        claudeChildLooksAlive(e),
+    );
   };
 
   /**
-   * Safely tear down an existing transcript watcher, reset messages, and
-   * notify clients. Errors from stop() and sendAndRecord() are swallowed so
-   * they never prevent the new watcher from being created. Shared by
-   * initFromHookEvent and onSessionInfo.
+   * Whether the transcript named by a hook event was written by OUR claude.
+   * Each daemon spawns `claude -n remi:<wsPort>`, so the transcript head's
+   * `custom-title` marker carries the owning port — content the owning daemon
+   * caused Claude to write. When a genuine sibling shares the directory, this
+   * is what lets us adopt our OWN rotation without latching onto the sibling's
+   * (its transcript carries the sibling's port). Returns false when the marker
+   * is absent (older Claude/remi, or a user-supplied `-n`), in which case the
+   * caller falls back to the sibling-guard default.
    */
-  function teardownWatcher(reason: string, label: string): void {
+  const ownsTranscript = (transcriptPath: string | undefined): boolean =>
+    typeof transcriptPath === 'string' && readTranscriptOwnerPort(transcriptPath) === currentPort();
+
+  /**
+   * Safely tear down an existing transcript watcher and reset message state.
+   * Errors from stop() are swallowed so they never prevent the new watcher
+   * from being created. Does NOT emit a wire message: a rotation is announced
+   * by a single atomic `session_rotated` from the adopt path (#438), so the
+   * client clears + rebinds + re-fetches in one step rather than reacting to a
+   * separate reset. Shared by initFromHookEvent and onSessionInfo.
+   */
+  function teardownWatcher(label: string): void {
     const watcher = transcriptWatchers.get(sessionId);
     if (!watcher) return;
     transcriptWatchers.delete(sessionId); // Remove FIRST to unblock the new watcher.
@@ -247,11 +239,47 @@ export function setupHookBridge(
       logError(`[Hooks] Failed to stop watcher (${label}): ${errorToString(stopErr)}`);
     }
     messageApi.reset();
-    try {
-      sendAndRecord(createSessionReset(sessionId, reason));
-    } catch (sendErr) {
-      logError(`[Hooks] Failed to send ${reason} for ${sessionId}: ${errorToString(sendErr)}`);
+  }
+
+  /**
+   * Start the transcript watcher for our own session if one is not already
+   * running. Self-heals the case where the lock was adopted from the store
+   * (so first-init never ran) but no watcher exists because the fallback poll
+   * gave up after its 30s window — common when Claude writes its first
+   * transcript line late on an idle start (observed across many sessions:
+   * "[Fallback] Timed out ..."). Only called for events whose session_id
+   * matches our lock (classification 'match'), i.e. our own Claude's events,
+   * whose transcript_path is therefore ours.
+   */
+  function ensureWatcher(transcriptPath: string | undefined): void {
+    // Steady-state no-op: a watcher is already running. Checked first so a
+    // healthy session never logs the "no path" warning below.
+    if (transcriptWatchers.has(sessionId)) return;
+    if (!sessionRegistry.hasSession(sessionId)) return;
+    if (!transcriptPath) {
+      // We need a watcher (none running) but this match event carried no path,
+      // so we can't self-heal on it. Normally the next event supplies one; log
+      // so a SYSTEMATIC absence (e.g. a changed hook payload) is visible rather
+      // than an invisible locked-but-unwatched wedge.
+      logError(
+        `[Hooks] ensureWatcher: match event without transcript_path for ${sessionId.slice(0, 8)}; watcher still missing`,
+      );
+      return;
     }
+    // We have the exact path now; cancel any lingering fallback poll.
+    const fallbackTimer = transcriptFallbackTimers.get(sessionId);
+    if (fallbackTimer) {
+      clearInterval(fallbackTimer);
+      transcriptFallbackTimers.delete(sessionId);
+    }
+    log(`[Hooks] Ensuring watcher (self-heal) for ${sessionId.slice(0, 8)}: ${transcriptPath}`);
+    startTranscriptWatcher(
+      { transcriptWatchers },
+      sessionId,
+      transcriptPath,
+      messageApi,
+      sendAndRecord,
+    );
   }
 
   function initFromHookEvent(input: {
@@ -260,6 +288,29 @@ export function setupHookBridge(
     hook_event_name?: string;
   }): void {
     if (!input.session_id) return;
+
+    // Snapshot the closure BEFORE adoptLockFromStore mutates it.
+    // adoptLockFromStore can race-pull the new id from sessionStore when
+    // the transcript-fallback wrote it first; without this snapshot the
+    // classifier sees the post-adopt value, returns 'match', and the
+    // rotation event silently never emits (#430 review #433).
+    const previousClaudeSessionId = claudeSessionId;
+    let isRotation = false;
+    let rotationAnnounced = false;
+
+    // If the transcript-fallback has already discovered our Claude
+    // session ID (the multi-wrapper-in-same-dir case), adopt it before
+    // classifying so the classifier sees the right currentLock instead
+    // of a stale null.
+    adoptLockFromStore();
+
+    // Detect rotation by comparing the pre-adopt snapshot against the
+    // incoming id. We do this here (independent of classifySessionEvent)
+    // so the rotation is observable even when adoptLockFromStore raced
+    // ahead and the classifier returns 'match'.
+    if (previousClaudeSessionId !== null && previousClaudeSessionId !== input.session_id) {
+      isRotation = true;
+    }
 
     const classification = classifySessionEvent({
       currentLock: claudeSessionId,
@@ -280,16 +331,60 @@ export function setupHookBridge(
       log(
         `[Hooks] Claude restart detected (ended=${mainSessionEnded}): ${claudeSessionId} -> ${input.session_id}`,
       );
-      teardownWatcher('claude_restarted', 'restart');
+      teardownWatcher('restart');
+      // Drop any hook record stashed before /clear or /compact: the new
+      // Claude session's first PTY prompt must not merge stale option
+      // labels from the dying session. Also drop the pending-question
+      // collection so answers to the dead session's prompts are refused.
+      tracker.clearPending();
+      sessionRegistry.clearQuestions(sessionId);
+      // Announce the rotation NOW, before the sibling / no-transcript_path
+      // guards below can early-return. teardownWatcher already reset the
+      // client's view, so the client must learn of the rotation (clear +
+      // rebind + re-fetch) even when we can't (re)start the watcher yet — the
+      // sibling guard only defers WATCHER setup, not this notification. The
+      // flag suppresses the duplicate emit in the adopt block.
+      if (isRotation && input.transcript_path) {
+        try {
+          sendAndRecord(
+            createSessionRotated(
+              sessionId,
+              input.session_id as UUID,
+              input.transcript_path,
+              'restart',
+              previousClaudeSessionId ?? undefined,
+            ),
+          );
+          rotationAnnounced = true;
+        } catch (err) {
+          logError(`[Hooks] Failed to emit session_rotated (restart): ${errorToString(err)}`);
+        }
+      }
       claudeSessionId = null;
       mainSessionEnded = false;
+      // isRotation was already computed above against the pre-adopt
+      // snapshot; restart is a stricter signal but does not override
+      // a true value coming from the race-detector path.
     }
     // classification === 'match': either our tracked session or first-time lock.
-    if (claudeSessionId) return; // already initialized
+    if (claudeSessionId) {
+      // Lock already held (typically adopted from the store before first-init
+      // ran). This event is from our own Claude (session_id matches our lock),
+      // so its transcript_path is ours — make sure a watcher is running. Without
+      // this, a session whose fallback poll timed out before Claude wrote its
+      // transcript stays locked-but-unwatched: no live stream and
+      // transcript_load returns NOT_FOUND.
+      ensureWatcher(input.transcript_path);
+      return;
+    }
     if (!input.transcript_path) return;
 
-    if (hasSiblingInDir()) {
-      // Cannot trust which Claude sent this event; defer to fallback.
+    if (hasSiblingInDir() && !ownsTranscript(input.transcript_path)) {
+      // A sibling shares the directory and the transcript's port marker does
+      // not prove this event is ours — cannot trust which Claude sent it;
+      // defer to the deterministic-path fallback. When the marker DOES match
+      // our port (the common rotation case, #451) we fall through and adopt,
+      // so an in-process rotation is not wedged by the sibling guard.
       return;
     }
 
@@ -299,6 +394,29 @@ export function setupHookBridge(
         `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
       );
       sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+
+      // Announce the rotation as ONE atomic event so the client clears, swaps
+      // the binding, and re-fetches the new transcript in a single step (#438).
+      // Skip on first-init (not a rotation): that's covered by
+      // session_list_response / the queue-promotion hello_ack. Also skip if the
+      // restart branch already announced it (the common path); this covers the
+      // race-detector case where isRotation is true without a 'restart'
+      // classification (adoptLockFromStore got ahead of us).
+      if (isRotation && !rotationAnnounced) {
+        try {
+          sendAndRecord(
+            createSessionRotated(
+              sessionId,
+              claudeSessionId as UUID,
+              input.transcript_path,
+              'restart',
+              previousClaudeSessionId ?? undefined,
+            ),
+          );
+        } catch (err) {
+          logError(`[Hooks] Failed to emit session_rotated: ${errorToString(err)}`);
+        }
+      }
 
       // Cancel the fallback timer since we have the exact path.
       const fallbackTimer = transcriptFallbackTimers.get(sessionId);
@@ -317,7 +435,7 @@ export function setupHookBridge(
         log(
           `[Hooks] Replacing stale watcher: ${existingWatcher.filePath} -> ${input.transcript_path}`,
         );
-        teardownWatcher('transcript_changed', 'stale-replace');
+        teardownWatcher('stale-replace');
       }
 
       if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
@@ -340,13 +458,17 @@ export function setupHookBridge(
   const hookBridge = new HookEventBridge(sessionId, {
     onStatusChange: (status: AgentStatus, context?: string) => {
       messageApi.handleStatusChange(status, context);
+      tracker.onStatusChange(status);
     },
     onQuestion: (question) => {
-      messageApi.handleQuestion(question);
+      tracker.recordPendingHook(question);
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
-      // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude).
-      if (hasSiblingInDir()) return;
+      // Guard: skip if sibling daemons share this directory AND the transcript's
+      // port marker does not prove this SessionStart is ours (#451). When the
+      // marker matches our port we proceed so our own rotation rebinds even
+      // with a genuine sibling co-located.
+      if (hasSiblingInDir() && !ownsTranscript(transcriptPath)) return;
 
       // Use the same classifier as initFromHookEvent so both paths share
       // one rule for distinguishing foreign (subagent/sibling) from restart.
@@ -362,19 +484,44 @@ export function setupHookBridge(
         );
         return;
       }
+      const previousClaudeSessionId = claudeSessionId;
+      let isRotation = false;
       if (classification === 'restart') {
         log(
           `[Hooks] Claude restart (SessionInfo, ended=${mainSessionEnded}): ${claudeSessionId} -> ${hookClaudeSessionId}`,
         );
-        teardownWatcher('claude_restarted', 'restart-sessioninfo');
+        teardownWatcher('restart-sessioninfo');
+        // Mirror the initFromHookEvent restart branch: drop any hook
+        // record and the pending-question collection so the new session's
+        // first PTY prompt cannot merge stale options, and stale answers
+        // are refused.
+        tracker.clearPending();
+        sessionRegistry.clearQuestions(sessionId);
         claudeSessionId = null;
         mainSessionEnded = false;
+        isRotation = previousClaudeSessionId !== null;
       }
 
       try {
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
         sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+
+        if (isRotation) {
+          try {
+            sendAndRecord(
+              createSessionRotated(
+                sessionId,
+                hookClaudeSessionId as UUID,
+                transcriptPath,
+                'restart',
+                previousClaudeSessionId ?? undefined,
+              ),
+            );
+          } catch (err) {
+            logError(`[Hooks] Failed to emit session_rotated (SessionInfo): ${errorToString(err)}`);
+          }
+        }
 
         const existingWatcher = transcriptWatchers.get(sessionId);
         if (
@@ -384,7 +531,7 @@ export function setupHookBridge(
           log(
             `[Hooks] Replacing stale watcher (SessionInfo): ${existingWatcher.filePath} -> ${transcriptPath}`,
           );
-          teardownWatcher('transcript_changed', 'stale-replace-sessioninfo');
+          teardownWatcher('stale-replace-sessioninfo');
         }
 
         if (!transcriptWatchers.has(sessionId) && sessionRegistry.hasSession(sessionId)) {
@@ -409,31 +556,52 @@ export function setupHookBridge(
   // is known, block events when siblings exist (they could be from the
   // sibling's Claude).
   const filterBySession = (input: { session_id?: string }): boolean => {
+    adoptLockFromStore();
     if (claudeSessionId) return input.session_id === claudeSessionId;
     return !hasSiblingInDir();
   };
 
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
-  // transcript, so session-id filtering cannot distinguish them. Drop these
-  // at the hook layer so status updates, auto-approve, question emission,
-  // and PTY injection all stay scoped to the main interactive session.
+  // transcript, so session-id filtering cannot distinguish them.
+  //
+  // Split policy:
+  //   - `PreToolUse` / `PostToolUse` / `SessionStart`: dropped here so
+  //     status updates and Task-tool tracking stay scoped to the main
+  //     interactive session.
+  //   - `PermissionRequest` / `Notification(permission_prompt)`: forwarded
+  //     (phase 4, #419). Push is gated by PTY presence in the tracker,
+  //     not by agent_id. A hot-switched subagent view that renders a
+  //     permission prompt IS user-answerable; dropping the hook loses
+  //     the rich tool/option metadata for that case.
   const isSubagentEvent = (input: { agent_id?: string }): boolean =>
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
   hookServer.on('SessionStart', (input) => {
-    // SessionStart with an explicit main-transition source (/clear /compact
-    // /resume) is the authoritative signal that our main Claude took a new
-    // session_id while our PTY kept running. Pre-empt the classifier by
-    // treating the old session as ended, so the classifier sees a 'restart'
-    // and cleanly switches the lock.
-    if (input.source === 'clear' || input.source === 'compact' || input.source === 'resume') {
-      if (claudeSessionId && input.session_id && input.session_id !== claudeSessionId) {
-        log(
-          `[Hooks] Main lifecycle transition (${input.source}): ${claudeSessionId} -> ${input.session_id}`,
-        );
-        mainSessionEnded = true; // classifier will pick this up as 'restart'
-      }
+    // Pre-empt the classifier into 'restart' on any session_id rotation while
+    // our PTY is alive, regardless of `source` (Claude Code rotates session_id
+    // through flows that omit source or carry undocumented values; the narrow
+    // source-allowlist that used to gate this would wedge the lock).
+    // isSubagentEvent guard mirrors the pattern used by other hookServer
+    // handlers: subagents share the main session_id today, but if a future
+    // version ever fires SessionStart with agent_id set and a different
+    // session_id, we must not tear down main's watcher.
+    if (
+      !isSubagentEvent(input) &&
+      claudeSessionId &&
+      input.session_id &&
+      input.session_id !== claudeSessionId &&
+      // Only treat this as OUR lifecycle transition when there is no genuine
+      // sibling, or the new transcript's port marker proves it is ours (#451).
+      // Otherwise a sibling's SessionStart, fanned out via the shared
+      // settings.local.json hook URLs, would wrongly flip mainSessionEnded and
+      // make us tear down our own (still-live) session.
+      (!hasSiblingInDir() || ownsTranscript(input.transcript_path))
+    ) {
+      log(
+        `[Hooks] Main lifecycle transition (source=${input.source ?? 'unknown'}): ${claudeSessionId} -> ${input.session_id}`,
+      );
+      mainSessionEnded = true; // classifier will pick this up as 'restart'
     }
     initFromHookEvent(input);
     handlers.onSessionStart?.(input);
@@ -443,7 +611,6 @@ export function setupHookBridge(
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
-    ackAllPending();
     cancelStaleAutoApprove('PreToolUse');
     handlers.onPreToolUse?.(input);
   });
@@ -451,100 +618,114 @@ export function setupHookBridge(
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
-    ackAllPending();
     cancelStaleAutoApprove('PostToolUse');
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
-    // Subagent notifications must not bubble up to the user (phantom prompts).
-    if (isSubagentEvent(input)) {
-      log(`[Hooks] Dropped subagent Notification: agent=${input.agent_id?.slice(0, 8)}`);
+    // SessionEnd already cleared status to 'idle'; a late
+    // Notification(permission_prompt) for the dying session would
+    // re-populate tracker.pending and a final PTY echo could fire a
+    // spurious push the user cannot answer. Gate at the listener
+    // boundary; restart resets mainSessionEnded so legitimate
+    // post-restart notifications still pass.
+    if (mainSessionEnded) {
+      log(`[Hooks] Dropped post-SessionEnd Notification: type=${input.notification_type}`);
       return;
     }
-    // permission_prompt is the same prompt our inject is answering; do
-    // NOT treat it as ack. All other notification types (idle_prompt,
-    // auth_success, etc.) are evidence Claude moved on -- without this,
-    // an Edit-style approve where Claude doesn't re-emit PreToolUse
-    // would time out into a phantom escalation.
-    if (input.notification_type !== 'permission_prompt') {
-      // Ack pending injects (idle/auth/elicitation are evidence Claude
-      // moved on after our PTY write), but do NOT cancel a live LLM eval:
-      // idle_prompt in particular can fire concurrently with a still-valid
-      // PermissionRequest evaluation we want to complete normally.
-      ackAllPending();
-    }
+    // Phase 4 (#419): subagent notifications previously dropped here
+    // based on agent_id presence. Now we forward; QuestionPresenceTracker
+    // gates the push by PTY presence. A hot-switched subagent view that
+    // renders a permission prompt on the user's PTY produces a push;
+    // a background subagent does not (PTY never confirms presence).
     handlers.onNotification?.(input);
   });
   hookServer.on('PermissionRequest', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
 
-    // Subagent PermissionRequest: Claude Code sets `agent_id` on events
-    // originating from Task/Agent-spawned subagents or team members. Those
-    // events share the main session_id and transcript but are handled
-    // internally by Claude Code, so they MUST NOT be injected into our main PTY.
+    // Phase 4 (#419): subagent PermissionRequest events (events with
+    // agent_id set, originating from Task/Agent-spawned subagents) used
+    // to be dropped at this seam. Under phase 3's PTY-presence model,
+    // "what's on screen" is the truth: a hot-switched subagent view
+    // that renders a permission prompt IS user-answerable, and dropping
+    // the hook here loses the rich tool/option metadata. Forward the
+    // event; the tracker pairs it with PTY confirmation. Auto-approve
+    // and the inSubagent default-deny safety net below still gate
+    // injection independently.
     if (isSubagentEvent(input)) {
       log(
-        `[Hooks] Dropped subagent PermissionRequest: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
-      return;
     }
 
-    // Legacy nested-Task context kept as a secondary safety net for the
-    // rare case where agent_id is absent but the hook bridge's nested-task
-    // tracker caught the descent.
-    const inSubagent = hookBridge.isInSubagentContext();
+    // Nested-Task context (secondary safety net for cases where
+    // agent_id is absent). Used by the auto-approve default-deny path
+    // below to avoid hanging a subagent whose only escalation route is
+    // a main-PTY prompt the user cannot see.
+    //
+    // Read live (not captured) at each branch: auto-approve evaluate()
+    // is async, so the Task context can open or close between when this
+    // listener fires and when the .then()/.catch() runs. Capturing
+    // would TOCTOU — a Task that closed mid-eval would still trigger
+    // default-deny, and a Task that opened mid-eval would escape it.
     const sessionTag = sessionId.slice(0, 8);
 
     // Inject an answer into the PTY. Returns true on success. On failure
-    // (session missing, PTY not running, submitInput throws) it logs and
-    // returns false so callers can fall back to escalating the prompt.
+    // (session missing, PTY not running, submitInput throws, subagent
+    // off-screen gate trips) it logs and returns false so callers can
+    // fall back to escalating the prompt.
     //
-    // Registers a PendingAck around the submitInput call. The next
-    // qualifying hook event for our session resolves it. If the timeout
-    // fires first, the inject is treated as silently lost -- the dedup
-    // mark is cleared and we escalate so the user still gets a question.
-    const inject = async (value: '1' | '3', reason: string): Promise<boolean> => {
-      let ack: PendingAck | null = null;
+    // Value is a 1-based numeric option index serialised as a string. Most
+    // permissions only need '1' (approve) or '3' (deny); multi-choice picks
+    // can land any index in the prompt's option range (#399).
+    //
+    // PTY-presence gate (subagent-only): a background subagent emits
+    // PermissionRequest hooks for its own tool calls, but its prompts
+    // never render on the main PTY — only a hot-switched subagent view
+    // does. Without this gate, auto-approve would type "1"/"3" into the
+    // MAIN AGENT's input every time a background subagent asked for
+    // permission.
+    //
+    // Detect subagent context two ways: (a) explicit `agent_id` on the
+    // hook event (Task tool with agent_id set), and (b)
+    // `hookBridge.isInSubagentContext()` (nested-Task tracker — the
+    // secondary safety net for legacy events without agent_id). Both
+    // are read at inject time, not captured, so the hot-switched case
+    // (PTY has rendered the subagent prompt between the hook firing
+    // and the LLM eval returning) still injects.
+    //
+    // Asymmetry: the default-deny path (subagent-escalate / subagent-
+    // error) passes `bypassSubagentPtyGate=true` to keep firing even
+    // without PTY confirmation, because the alternative is hanging the
+    // subagent indefinitely with no one to answer. That is a
+    // deliberately-different trade-off from the approve/deny/pick path,
+    // which falls through to escalateToUser when gated.
+    const inject = async (
+      value: string,
+      reason: string,
+      bypassSubagentPtyGate = false,
+    ): Promise<boolean> => {
       try {
         const session = sessionRegistry.getSession(sessionId);
         if (!session) {
           logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
           return false;
         }
-        // Register the pending ack BEFORE the await so a hook event that
-        // races with submitInput (Claude responding faster than the 50 ms
-        // CR delay) finds the ack already pending and resolves it cleanly.
-        ack = startPendingAck(() => {
-          // Suppress the phantom escalation if our session has already
-          // ended (Claude exited, PTY torn down, etc.). Without this
-          // gate the timer fires a stale question + push for a session
-          // that no longer exists.
-          if (mainSessionEnded || claudeSessionId === null) {
-            log(
-              `[AutoApprove ${sessionTag}] inject ack timeout fired post-teardown; suppressing phantom escalation`,
-            );
-            return;
-          }
+        const inSubagentContext = isSubagentEvent(input) || hookBridge.isInSubagentContext();
+        if (!bypassSubagentPtyGate && inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
           log(
-            `[AutoApprove ${sessionTag}] inject("${value}") ack timeout (${PERMISSION_INJECT_ACK_TIMEOUT_MS}ms); clearing dedup + escalating`,
+            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8) ?? 'nested'} type=${input.agent_type ?? 'n/a'})`,
           );
-          hookBridge.clearPermissionHandled();
-          escalateToUser();
-        });
+          return false;
+        }
         await session.pty.submitInput(value);
         log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
         sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
-        hookBridge.markPermissionHandled();
         return true;
       } catch (err) {
         logError(`[AutoApprove ${sessionTag}] inject("${value}") threw:`, err);
-        // submitInput failed: caller will escalate via inject() returning
-        // false, so we must NOT also let the ack timeout fire its own
-        // escalation. Cancel before returning.
-        if (ack !== null) resolvePendingAck(ack);
         return false;
       }
     };
@@ -552,41 +733,38 @@ export function setupHookBridge(
     // Safe escalation to the user. Used when inject fails or when auto-approve
     // is off and we're in main context. Wrapped so bridge/push failures don't
     // leave the hook handler with a dangling unhandled rejection.
-    // On throw we clear the pre-emptive dedup mark so the trailing
-    // Notification(permission_prompt) can surface a fallback question
-    // instead of being silently suppressed for 5 s.
     const escalateToUser = () => {
       try {
         handlers.onPermissionRequest?.(input);
       } catch (err) {
         logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
-        hookBridge.clearPermissionHandled();
       }
     };
 
     // Auto-approve gate: evaluate before creating a Question object.
     if (autoApproveService) {
-      // Pre-empt the Notification(permission_prompt) dedup window before
-      // kicking off async evaluation: Claude Code emits Notification ~10 ms
-      // after PermissionRequest, well inside any LLM eval latency, and
-      // without this mark a phantom 3-option question + push would fire
-      // for a prompt auto-approve is about to handle silently.
-      // Refresh after eval is the inject()/handlePermissionRequest's
-      // responsibility; this call only covers the eval-in-progress gap.
-      // Failure paths must call clearPermissionHandled() to keep the
-      // Notification fallback usable.
-      hookBridge.markPermissionHandled();
       const aaService = autoApproveService;
+      // Pass the raw suggestions array; AutoApproveService does its own
+      // strict-string filtering before feeding the LLM. We forward the
+      // raw shape (rather than coercing) so the multi-choice classifier
+      // can see "non-string entry" and route through escalate instead
+      // of crashing on a future Claude Code permission_suggestions
+      // schema change.
       aaService
-        .evaluate(input.tool_name, input.tool_input, sessionTag)
+        .evaluate(
+          input.tool_name,
+          input.tool_input,
+          sessionTag,
+          input.permission_suggestions as readonly unknown[] | undefined,
+        )
         .then(async (result) => {
           if (result.decision === 'cancelled') {
             // User already advanced past the prompt (terminal answer or
             // hook event confirmed the tool ran). Do not inject, do not
-            // escalate. Clear the pre-emptive dedup mark we set above so a
-            // genuinely independent Notification(permission_prompt) within
-            // the 5 s window is not silently suppressed.
-            hookBridge.clearPermissionHandled();
+            // escalate. Drop the pending hook record so its stale option
+            // labels cannot merge onto the next unrelated PTY prompt
+            // (e.g. user typed /compact, no PreToolUse fires).
+            tracker.clearPending();
             log(`[AutoApprove ${sessionTag}] Decision dropped: ${result.reasoning}`);
             return;
           }
@@ -598,13 +776,26 @@ export function setupHookBridge(
             if (!(await inject('3', 'denied'))) escalateToUser();
             return;
           }
+          if (result.decision === 'pick' && result.pickIndex !== undefined) {
+            // Multi-choice pick (#399): inject the 1-based index Claude Code
+            // expects on the terminal. parseMultiChoiceDecision already
+            // validated the index against options length, so out-of-range
+            // values cannot reach this branch.
+            if (!(await inject(String(result.pickIndex), `multichoice-pick-${result.pickIndex}`))) {
+              escalateToUser();
+            }
+            return;
+          }
           // escalate: in a subagent context, default-deny to avoid hanging
-          // the subagent. The user could not answer it anyway.
-          if (inSubagent) {
+          // the subagent. The user could not answer it anyway. Bypass the
+          // subagent PTY gate (`bypassSubagentPtyGate=true`) because the
+          // alternative is letting the subagent hang forever; typing '3'
+          // into the parent PTY is accepted as the lesser evil here. The
+          // approve/deny/pick branches above use the gate because they
+          // have a fallback (escalateToUser); this branch does not.
+          if (hookBridge.isInSubagentContext()) {
             log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
-            // If inject fails, the subagent is hung regardless (no main
-            // PTY to escalate to). Log and accept.
-            await inject('3', 'subagent-escalate-default-deny');
+            await inject('3', 'subagent-escalate-default-deny', true);
             return;
           }
           escalateToUser();
@@ -613,27 +804,26 @@ export function setupHookBridge(
           // Last line of defense; must not leave an unhandled rejection.
           try {
             logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
-            if (inSubagent) {
-              await inject('3', 'subagent-error-default-deny');
+            if (hookBridge.isInSubagentContext()) {
+              await inject('3', 'subagent-error-default-deny', true);
               return;
             }
             escalateToUser();
           } catch (inner) {
             logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
-            // Both eval AND escalation failed: clear the dedup mark so the
-            // trailing Notification(permission_prompt) becomes the fallback
-            // question. Otherwise the user sees nothing for 5 s.
-            hookBridge.clearPermissionHandled();
           }
         });
       return;
     }
 
     // No auto-approve. In a subagent context, still must not hang the
-    // subagent: default-deny rather than emit a question the user can't answer.
-    if (inSubagent) {
+    // subagent: default-deny rather than emit a question the user can't
+    // answer. Synchronous fallback — read live for symmetry with the
+    // async branches above; no TOCTOU here but the consistent shape
+    // helps a future maintainer.
+    if (hookBridge.isInSubagentContext()) {
       log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
-      inject('3', 'subagent-no-aa-default-deny').catch((err) => {
+      inject('3', 'subagent-no-aa-default-deny', true).catch((err) => {
         logError(`[${sessionTag}] Failed to inject default-deny:`, err);
       });
       return;
@@ -644,7 +834,6 @@ export function setupHookBridge(
   hookServer.on('Stop', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
-    ackAllPending();
     cancelStaleAutoApprove('Stop');
     handlers.onStop?.(input);
   });
@@ -655,9 +844,6 @@ export function setupHookBridge(
       mainSessionEnded = true;
     }
     if (!filterBySession(input)) return;
-    // Resolve pending acks before SessionEnd handlers run; otherwise a
-    // timeout could fire a phantom escalation after shutdown.
-    ackAllPending();
     cancelStaleAutoApprove('SessionEnd');
     handlers.onSessionEnd?.(input);
   });

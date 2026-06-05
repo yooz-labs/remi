@@ -34,12 +34,31 @@ export interface WebSocketClientEvents {
   onMessage?: (message: ProtocolMessage) => void;
   /** Called on error */
   onError?: (error: Error) => void;
+  /**
+   * Called when auto-reconnect exhausts `maxReconnectAttempts` on the current
+   * URL (the daemon's port is closed or it moved). The owner should escalate:
+   * re-resolve the port from the host and `reconnectWithUrl`, or give up and
+   * present a terminal `unreachable` state. If no handler is provided the
+   * client falls back to `disconnected`.
+   */
+  onReconnectExhausted?: () => void;
 }
+
+/**
+ * Default ceiling on consecutive reconnect attempts before `onReconnectExhausted`
+ * fires. Finite (was Infinity) so a daemon that closed or moved its port stops
+ * being retried forever and instead triggers port rediscovery / a terminal state.
+ *
+ * At the default backoff (1s base, doubling, capped at 30s) six attempts span
+ * roughly 1+2+4+8+16+30 ≈ 60s of retries before escalating — long enough to
+ * ride out a daemon restart, short enough that a real move is noticed quickly.
+ */
+export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 6;
 
 /** Default configuration */
 const DEFAULT_CONFIG: Required<Omit<WebSocketClientConfig, 'url'>> = {
   autoReconnect: true,
-  maxReconnectAttempts: Number.POSITIVE_INFINITY,
+  maxReconnectAttempts: DEFAULT_MAX_RECONNECT_ATTEMPTS,
   reconnectDelay: 1000,
   maxReconnectDelay: 30000,
   connectionTimeout: 10000,
@@ -62,10 +81,19 @@ export class WebSocketClient {
   private lastDataReceived = 0;
   private missedHeartbeats = 0;
   private intentionalDisconnect = false;
+  /** Live target URL. Starts at config.url; `reconnectWithUrl` rebinds it to a
+   *  rediscovered port without recreating the client. */
+  private currentUrl: string;
 
   constructor(config: WebSocketClientConfig, events: WebSocketClientEvents = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.events = events;
+    this.currentUrl = config.url;
+  }
+
+  /** The URL the client is currently targeting. */
+  get url(): string {
+    return this.currentUrl;
   }
 
   /** Get current connection status */
@@ -89,7 +117,7 @@ export class WebSocketClient {
     this.clearTimers();
 
     try {
-      this.ws = new WebSocket(this.config.url);
+      this.ws = new WebSocket(this.currentUrl);
 
       // Set connection timeout
       this.connectionTimer = setTimeout(() => {
@@ -124,6 +152,25 @@ export class WebSocketClient {
     this.setStatus('reconnecting');
     // Small delay for the new network interface to stabilize
     setTimeout(() => this.connect(), 500);
+  }
+
+  /** Rebind to a (re-resolved) URL and reconnect immediately, resetting the
+   *  reconnect counter. Used by the owner's `onReconnectExhausted` escalation
+   *  after port rediscovery finds a live daemon port (which may be the same
+   *  port, if the daemon simply restarted, or a sibling). */
+  reconnectWithUrl(url: string): void {
+    this.currentUrl = url;
+    this.intentionalDisconnect = false;
+    this.reconnectAttempts = 0;
+    this.clearTimers();
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this.connect();
   }
 
   /** Disconnect from the daemon */
@@ -177,14 +224,24 @@ export class WebSocketClient {
     this.clearConnectionTimer();
     this.stopHeartbeat();
 
-    if (
-      this.config.autoReconnect &&
-      !this.intentionalDisconnect &&
-      this.reconnectAttempts < this.config.maxReconnectAttempts
-    ) {
-      this.scheduleReconnect();
-    } else {
+    if (this.intentionalDisconnect || !this.config.autoReconnect) {
       this.setStatus('disconnected');
+      return;
+    }
+
+    if (this.reconnectAttempts < this.config.maxReconnectAttempts) {
+      this.scheduleReconnect();
+      return;
+    }
+
+    // Exhausted the ceiling on this URL. Clear the 'reconnecting' status first
+    // so the client never reports a phantom in-progress reconnect after it has
+    // stopped (and so the owner's onStatusChange runs its disconnect cleanup),
+    // then hand off to the owner to rediscover the port or surface a terminal
+    // state. With no handler we simply stay 'disconnected'.
+    this.setStatus('disconnected');
+    if (this.events.onReconnectExhausted) {
+      this.events.onReconnectExhausted();
     }
   }
 
