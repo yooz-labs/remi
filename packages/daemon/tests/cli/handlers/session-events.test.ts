@@ -8,6 +8,7 @@ import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
+import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
@@ -38,6 +39,7 @@ describe('createSessionHandlers', () => {
   let tmpDir: string;
   let sessionRegistry: SessionRegistry;
   let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
   let liveSessionsRegistry: SessionRegistryFile;
   let transcriptDiscovery: TranscriptDiscovery;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
@@ -50,6 +52,7 @@ describe('createSessionHandlers', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-session-events-'));
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
     liveSessionsRegistry = new SessionRegistryFile(tmpDir);
     transcriptDiscovery = new TranscriptDiscovery({
       projectsDir: path.join(tmpDir, 'claude-projects'),
@@ -73,7 +76,7 @@ describe('createSessionHandlers', () => {
   function makeHandlers() {
     return createSessionHandlers({
       sessionRegistry,
-      sessionStore,
+      bindingStore,
       transcriptDiscovery,
       liveSessionsRegistry,
       currentPort: () => PORT,

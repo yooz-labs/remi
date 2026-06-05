@@ -106,59 +106,6 @@ export class TranscriptDiscovery {
   }
 
   /**
-   * @deprecated Superseded by deterministic path construction in
-   * `transcript-fallback.ts:expectedTranscriptPath` (#427/phase 1). The
-   * daemon now knows the bound `.jsonl` path before Claude writes a
-   * single line; no mtime-based discovery is performed at runtime. Only
-   * the test suite still references this method.
-   *
-   * Find the most recent transcript file for a given project directory
-   * by modification time.
-   */
-  findLatestTranscript(projectPath: string): string | null {
-    const transcriptDir = this.getProjectTranscriptDir(projectPath);
-
-    if (!fs.existsSync(transcriptDir)) {
-      return null;
-    }
-
-    const files = this.listJsonlFiles(transcriptDir);
-    if (files.length === 0) {
-      return null;
-    }
-
-    // Sort by modification time, most recent first
-    files.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
-    return files[0]?.filePath ?? null;
-  }
-
-  /**
-   * @deprecated Superseded by deterministic binding (#427/phase 1). The
-   * sibling-exclusion race this guarded against is now structurally
-   * impossible because each daemon writes its claudeSessionId into the
-   * store before spawn. Only the test suite still references this
-   * method.
-   *
-   * Find the most recent transcript for a project, skipping specific
-   * session IDs.
-   */
-  findLatestTranscriptExcluding(projectPath: string, excludeIds: Set<string>): string | null {
-    const transcriptDir = this.getProjectTranscriptDir(projectPath);
-    if (!fs.existsSync(transcriptDir)) return null;
-
-    const files = this.listJsonlFiles(transcriptDir);
-    if (files.length === 0) return null;
-
-    files.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
-    for (const file of files) {
-      if (!excludeIds.has(file.sessionId)) {
-        return file.filePath;
-      }
-    }
-    return null;
-  }
-
-  /**
    * Find a transcript file path by its session ID (the UUID filename without .jsonl).
    * Returns the file path if found, null otherwise.
    */

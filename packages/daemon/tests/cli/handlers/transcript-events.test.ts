@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
@@ -43,6 +44,7 @@ describe('createTranscriptHandlers', () => {
   let transcriptDiscovery: TranscriptDiscovery;
   let transcriptWatchers: Map<UUID, TranscriptWatcher>;
   let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
 
   function send(connectionId: UUID, message: ProtocolMessage): boolean {
@@ -57,6 +59,7 @@ describe('createTranscriptHandlers', () => {
     transcriptDiscovery = new TranscriptDiscovery({ projectsDir });
     transcriptWatchers = new Map();
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
     sendCalls = [];
     configureLogger({ writeLog: () => {} });
   });
@@ -70,7 +73,7 @@ describe('createTranscriptHandlers', () => {
     return createTranscriptHandlers({
       transcriptDiscovery,
       transcriptWatchers,
-      sessionStore,
+      bindingStore,
       send,
     });
   }

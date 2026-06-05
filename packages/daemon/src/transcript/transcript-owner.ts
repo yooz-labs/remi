@@ -21,6 +21,8 @@
 
 import * as fs from 'node:fs';
 
+import { logError } from '../cli/logger.ts';
+
 /** Only the first few lines can hold the head marker; cap the read. */
 const HEAD_BYTES = 8192;
 
@@ -75,7 +77,7 @@ export function readTranscriptOwnerPort(transcriptPath: string): number | null {
     // see why ownership checks are coming up empty.
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== undefined && code !== 'ENOENT') {
-      console.error(`[transcript-owner] Failed to read ${transcriptPath}: ${code}`);
+      logError(`[transcript-owner] Failed to read ${transcriptPath}: ${code}`);
     }
     return null;
   } finally {
