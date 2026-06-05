@@ -27,7 +27,7 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
-import type { SessionRegistry, SessionStore } from '../../session/index.ts';
+import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import { resolveDirectory } from '../path-resolver.ts';
@@ -48,7 +48,11 @@ export type CreateNewSessionFn = (
 
 export interface ResumeSessionHandlerDeps {
   sessionRegistry: SessionRegistry;
+  /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
+  /** Binding-only reverse lookup (resolve by claude session id) — routed through
+   *  the accessor so it cannot diverge from the other resume resolver. */
+  bindingStore: SessionBindingStore;
   transcriptDiscovery: TranscriptDiscovery;
   createNewSession: CreateNewSessionFn;
   send: SendToConnection;
@@ -57,7 +61,14 @@ export interface ResumeSessionHandlerDeps {
 export type ResumeSessionHandlers = ReturnType<typeof createResumeSessionHandlers>;
 
 export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
-  const { sessionRegistry, sessionStore, transcriptDiscovery, createNewSession, send } = deps;
+  const {
+    sessionRegistry,
+    sessionStore,
+    bindingStore,
+    transcriptDiscovery,
+    createNewSession,
+    send,
+  } = deps;
 
   return {
     onResumeSessionRequest: async (
@@ -120,7 +131,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       }
 
       if (!claudeSessionId) {
-        const storedByClaude = sessionStore.findByClaudeSessionId(targetSessionId);
+        const storedByClaude = bindingStore.getByClaudeSessionId(targetSessionId);
         if (storedByClaude) {
           claudeSessionId = storedByClaude.claudeSessionId;
           projectPath = storedByClaude.projectPath;

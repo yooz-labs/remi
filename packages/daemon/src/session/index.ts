@@ -13,6 +13,8 @@ export {
 
 export { SessionStore, type StoredSession } from './session-store.ts';
 
+export { SessionBindingStore, type SessionBinding } from './session-binding-store.ts';
+
 export {
   SessionRegistryFile,
   type LiveSessionEntry,

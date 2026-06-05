@@ -9,6 +9,7 @@ import {
   extractClaudeSessionId,
   startTranscriptWatcher,
 } from '../../src/cli/transcript-watcher-setup.ts';
+import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import type { TranscriptWatcher } from '../../src/transcript/transcript-watcher.ts';
 
@@ -25,10 +26,12 @@ function fakeMessageAPI(): MessageAPI {
 describe('transcript-watcher-setup', () => {
   let tmpDir: string;
   let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-tws-'));
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
     configureLogger({ writeLog: () => {} });
     // Seed a session so updateClaudeSessionId has a row to update
     sessionStore.save({
@@ -53,7 +56,7 @@ describe('transcript-watcher-setup', () => {
       const claudeId = '11111111-2222-3333-4444-555555555555';
       const filePath = path.join(tmpDir, `${claudeId}.jsonl`);
 
-      const result = extractClaudeSessionId({ sessionStore }, filePath, SID);
+      const result = extractClaudeSessionId({ bindingStore }, filePath, SID);
 
       expect(result).toBe(claudeId);
       expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(claudeId);
@@ -63,14 +66,14 @@ describe('transcript-watcher-setup', () => {
       const claudeId = '66666666-7777-8888-9999-000000000000';
       const filePath = path.join(tmpDir, `prefix_${claudeId}.jsonl`);
 
-      const result = extractClaudeSessionId({ sessionStore }, filePath, SID);
+      const result = extractClaudeSessionId({ bindingStore }, filePath, SID);
 
       expect(result).toBe(claudeId);
     });
 
     test('returns null and does not persist when the filename has no usable id', () => {
       const filePath = path.join(tmpDir, 'ab.jsonl'); // under 8 chars
-      const result = extractClaudeSessionId({ sessionStore }, filePath, SID);
+      const result = extractClaudeSessionId({ bindingStore }, filePath, SID);
       expect(result).toBeNull();
       expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBeNull();
     });

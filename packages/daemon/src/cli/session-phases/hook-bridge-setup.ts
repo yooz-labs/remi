@@ -45,7 +45,11 @@ import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
 import { classifySessionEvent } from '../../hooks/session-lock-classifier.ts';
 import { claudeChildLooksAlive } from '../../session/index.ts';
-import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
+import type {
+  SessionBindingStore,
+  SessionRegistry,
+  SessionRegistryFile,
+} from '../../session/index.ts';
 import { readTranscriptOwnerPort } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
@@ -53,7 +57,7 @@ import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
 
 export interface HookBridgeDeps {
   sessionRegistry: SessionRegistry;
-  sessionStore: SessionStore;
+  bindingStore: SessionBindingStore;
   liveSessionsRegistry: SessionRegistryFile;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
@@ -90,7 +94,7 @@ export function setupHookBridge(
 ): HookBridgeHandle {
   const {
     sessionRegistry,
-    sessionStore,
+    bindingStore,
     liveSessionsRegistry,
     transcriptWatchers,
     transcriptFallbackTimers,
@@ -120,13 +124,15 @@ export function setupHookBridge(
    */
   const adoptLockFromStore = (): void => {
     try {
-      const stored = sessionStore.findByRemiSessionId(sessionId);
-      const storedId = stored?.claudeSessionId ?? null;
+      // Disk-backed read (no cache) via the binding accessor: a sibling/fallback
+      // write is observed every call, which is what preserves the #430 re-adopt
+      // and #321 no-wedge guarantees.
+      const storedId = bindingStore.get(sessionId)?.claudeSessionId ?? null;
       if (storedId === null || storedId === claudeSessionId) return;
       const previous = claudeSessionId;
       claudeSessionId = storedId;
       log(
-        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from sessionStore: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
+        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from binding store: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
       );
     } catch (err) {
       logError(`[Hooks] adoptLockFromStore failed: ${errorToString(err)}`);
@@ -377,7 +383,7 @@ export function setupHookBridge(
       log(
         `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
       );
-      sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+      bindingStore.update(sessionId, claudeSessionId);
 
       // Announce the rotation as ONE atomic event so the client clears, swaps
       // the binding, and re-fetches the new transcript in a single step (#438).
@@ -489,7 +495,7 @@ export function setupHookBridge(
       try {
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
-        sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+        bindingStore.update(sessionId, hookClaudeSessionId);
 
         if (isRotation) {
           try {
