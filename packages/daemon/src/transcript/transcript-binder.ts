@@ -468,6 +468,19 @@ export class TranscriptBinder {
     }
   }
 
+  /**
+   * Session filter (DRIVE-mode replacement for the old `filterBySession`,
+   * `hook-bridge-setup.ts:603-607`). Accept events only from our own Claude.
+   * Before the lock is known, block events when a live sibling exists (they
+   * could be from the sibling's Claude). Ported line-for-line: adopt the
+   * disk-fresh lock first, then gate on it (or the sibling guard). Pure read
+   * (the adopt is a store read, never a write); no rotation, no watcher.
+   */
+  admits(event: BinderHookEvent): boolean {
+    this.adoptLockFromStore();
+    return this.currentBoundId ? event.session_id === this.currentBoundId : !this.hasSiblingInDir();
+  }
+
   // =========================================================================
   // Watcher lifecycle.
   // =========================================================================
@@ -911,5 +924,18 @@ export class TranscriptBinder {
       claudeSessionId: this.currentBoundId,
       transcriptPath: this.lastTranscriptPath,
     };
+  }
+
+  /**
+   * Whether our main session has ended (SessionEnd id-match fired and no
+   * subsequent restart reset it). Read by the bridge's post-SessionEnd
+   * Notification drop so that gate reads the binder's single source of truth in
+   * drive mode rather than a duplicated closure flag (the closure
+   * `mainSessionEnded` is reset on restart by `rotate()`; mirroring that reset
+   * outside the binder would be fragile). The Notification-drop gate itself is
+   * a question-pipeline concern that moves onto the binder in phase 4.
+   */
+  isMainEnded(): boolean {
+    return this.mainSessionEnded;
   }
 }
