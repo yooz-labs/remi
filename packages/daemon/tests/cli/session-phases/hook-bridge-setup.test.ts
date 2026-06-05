@@ -262,7 +262,7 @@ describe('setupHookBridge', () => {
     return { tracker };
   }
 
-  test('registers listeners for all 7 hook events', () => {
+  test('registers listeners for all 11 hook events', () => {
     build();
     const events = new Set(hookServer.listeners.keys());
     expect(events).toEqual(
@@ -274,8 +274,87 @@ describe('setupHookBridge', () => {
         'PermissionRequest',
         'Stop',
         'SessionEnd',
+        // Wired in phase 4 (#453).
+        'StopFailure',
+        'PostToolUseFailure',
+        'SubagentStart',
+        'SubagentStop',
       ]),
     );
+  });
+
+  describe('phase 4 (#453): the 4 previously-dropped events', () => {
+    /** Fire a SessionStart so the bridge locks onto `id` (admit gate then passes). */
+    function lock(id: string): void {
+      hookServer.fire('SessionStart', {
+        session_id: id,
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('StopFailure emits a "Retry?" question + waiting status (no agent_id drop)', () => {
+      build();
+      lock('claude-A');
+      hookServer.fire('StopFailure', { session_id: 'claude-A', error_type: 'timeout' });
+      expect(messageApiLog.questionCalls).toBeGreaterThanOrEqual(1);
+      expect(messageApiLog.statusCalls).toContain('waiting');
+    });
+
+    test('StopFailure for a FOREIGN session_id is dropped by the admit gate', () => {
+      build();
+      lock('claude-A');
+      hookServer.fire('StopFailure', { session_id: 'claude-OTHER', error_type: 'timeout' });
+      expect(messageApiLog.questionCalls).toBe(0);
+    });
+
+    test('PostToolUseFailure sets executing status (main); a subagent failure is dropped', () => {
+      build();
+      lock('claude-A');
+      hookServer.fire('PostToolUseFailure', {
+        session_id: 'claude-A',
+        tool_name: 'Bash',
+        error: 'exit 1',
+      });
+      expect(messageApiLog.statusCalls).toEqual(['executing']);
+
+      // A subagent's tool failure (agent_id set) must NOT flip main's status.
+      messageApiLog.statusCalls.length = 0;
+      hookServer.fire('PostToolUseFailure', {
+        session_id: 'claude-A',
+        agent_id: 'sub-1',
+        tool_name: 'Bash',
+        error: 'exit 1',
+      });
+      expect(messageApiLog.statusCalls).toEqual([]);
+    });
+
+    test('SubagentStart/Stop set the status breadcrumb (admit-gated, NOT agent_id-dropped)', () => {
+      build();
+      lock('claude-A');
+      // SubagentStart/Stop ALWAYS carry agent_id; they must NOT be dropped.
+      hookServer.fire('SubagentStart', {
+        session_id: 'claude-A',
+        agent_id: 'sub-1',
+        agent_type: 'code-architect',
+      });
+      expect(messageApiLog.statusCalls).toEqual(['executing']);
+
+      messageApiLog.statusCalls.length = 0;
+      hookServer.fire('SubagentStop', { session_id: 'claude-A', agent_id: 'sub-1' });
+      expect(messageApiLog.statusCalls).toEqual(['thinking']);
+    });
+
+    test('SubagentStart for a FOREIGN session_id is dropped by the admit gate', () => {
+      build();
+      lock('claude-A');
+      hookServer.fire('SubagentStart', {
+        session_id: 'claude-OTHER',
+        agent_id: 'sub-1',
+        agent_type: 'task',
+      });
+      expect(messageApiLog.statusCalls).toEqual([]);
+    });
   });
 
   test('does not throw when autoApproveService is null (common case)', () => {
