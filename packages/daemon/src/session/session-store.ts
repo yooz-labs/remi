@@ -79,9 +79,25 @@ export class SessionStore {
   private write(sessions: StoredSession[]): void {
     this.ensureDir();
     const data: SessionsFile = { version: 1, sessions };
-    const tmpPath = `${this.filePath}.tmp`;
+    // Per-writer-unique tmp path. A fixed `${filePath}.tmp` shared across
+    // processes is a multi-writer race (#461): when two daemons in the same
+    // ~/.remi write concurrently, both target the same tmp file and whichever
+    // renames second hits ENOENT because the first already moved it away.
+    // The pid scopes the tmp per process; the synchronous write+rename
+    // serialize within a process, so the pid alone makes collisions impossible.
+    const tmpPath = `${this.filePath}.${process.pid}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, this.filePath);
+    try {
+      fs.renameSync(tmpPath, this.filePath);
+    } catch (err) {
+      // Don't leave our tmp file behind if the rename fails.
+      try {
+        fs.rmSync(tmpPath, { force: true });
+      } catch {
+        // best-effort cleanup; surface the original error
+      }
+      throw err;
+    }
   }
 
   /** Save or update a session record. Trims to MAX_SESSIONS. */
