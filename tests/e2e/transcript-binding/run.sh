@@ -11,6 +11,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
 
+# reset_cwd deletes this dir's transcript history AND its .claude (trust+hooks).
+# Refuse to run unless E2E_TRUSTED is a throwaway temp path, so a wrong value
+# can never delete a real project's history/config.
+case "$E2E_TRUSTED" in
+  /tmp/* | /private/tmp/* | /var/folders/*) ;;
+  *) echo "ABORT: E2E_TRUSTED must be under a temp dir (/tmp, /private/tmp, /var/folders); got: $E2E_TRUSTED"; exit 1 ;;
+esac
+
 PASS=0; FAIL=0
 ok()   { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 bad()  { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -62,7 +70,6 @@ echo "### Scenario 2: DRIVE (the binder itself) — bind + /clear via dir-poll +
 # ---------------------------------------------------------------------------
 reset_cwd
 start_daemon s2 "$CWD" 18812 drive; wait_ready s2 || exit 1
-check "drive: shadow suppressed when enabled" "[ \$(grep -c 'ShadowBinder' '$E2E_STATE/s2.log') -eq 0 ]"
 SID=$(session_id 18812); attach_start s2 18812 "$SID"; sleep 2
 prompt s2 "$EXPLORE"
 A2=$(wait_bound "$CWD" 18812 8 100) || { bad "drive: initial bind"; A2=""; }
@@ -79,6 +86,9 @@ check "drive: no Transcript-not-found wedge" "[ \$(grep -ci 'not found' '$E2E_ST
 rc=$(grep -c 'rotation detected\|restart detected\|DirPollRotation' "$E2E_STATE/s2.log")
 prompt s2 "/compact"; sleep 12
 check "drive: /compact did NOT over-fire the dir-poll" "[ \$(grep -c 'rotation detected\|restart detected\|DirPollRotation' '$E2E_STATE/s2.log') -eq $rc ]"
+# Checked after events have flowed (a bind + a real rotation), so a leaked
+# shadow comparison would have had its chance to log.
+check "drive: shadow suppressed throughout (no [ShadowBinder] lines)" "[ \$(grep -c 'ShadowBinder' '$E2E_STATE/s2.log') -eq 0 ]"
 attach_stop s2; stop_daemon s2
 
 # ---------------------------------------------------------------------------

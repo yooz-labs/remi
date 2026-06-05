@@ -16,7 +16,7 @@ set -uo pipefail
 
 REMI_BIN="${REMI_BIN:?set REMI_BIN to the remi binary under test}"
 E2E_TRUSTED="${E2E_TRUSTED:?set E2E_TRUSTED to a claude-trusted working dir}"
-E2E_STATE="${E2E_STATE:-$(mktemp -d "${TMPDIR:-/tmp}/remi-tbe2e-XXXXXX")}"
+E2E_STATE="${E2E_STATE:-$(mktemp -d "${TMPDIR:-/tmp}/remi-tb-e2e-XXXXXX")}"
 mkdir -p "$E2E_STATE"
 
 # Strip ANSI/OSC so logs and renders are greppable.
