@@ -2,9 +2,8 @@
  * Wire the Claude Code hook event stream into our PTY's MessageAPI during
  * createNewSession.
  *
- * Three concerns are tangled here and kept together because they all depend
- * on the same per-session locks (claudeSessionId, mainSessionEnded,
- * hasSiblingInDir()):
+ * Two concerns live here, both depending on the same per-session locks
+ * (claudeSessionId, mainSessionEnded, hasSiblingInDir()):
  *
  *   1. **Session filtering.** Claude Code fires hook events that may belong
  *      to our PTY, a subagent inside it, or a sibling daemon's PTY in the
@@ -18,11 +17,14 @@
  *      keeps the same session id) tears down the old watcher, starts a fresh
  *      one, and emits a single session_rotated event.
  *
- *   3. **Auto-approve gate.** PermissionRequest events are intercepted
- *      before they reach the user. If auto-approve returns approve/deny we
- *      inject "1"/"3" into the PTY; otherwise (or on subagent PTY failure)
- *      we escalate to the user or default-deny to avoid hanging a subagent
- *      with no one to answer.
+ * A third concern, the **auto-approve gate**, used to be inlined here; it is now
+ * delegated to `AutoApproveGate` (#453 phase 1). The bridge does the session
+ * filtering, then routes PermissionRequest to the gate, which runs the
+ * auto-approve eval and injects "1"/"3"/pick into the PTY, escalates to the user,
+ * or default-denies a subagent prompt no one can answer. The gate is wired with
+ * the bridge's `isInSubagentContext` + the router's `onPermissionRequest` as
+ * callbacks; Pre/PostToolUse/Stop/SessionEnd call `gate.cancelStale()` to abort a
+ * stale in-flight eval once Claude has advanced past the prompt.
  *
  * The function registers 7 hookServer listeners (SessionStart, PreToolUse,
  * PostToolUse, Notification, PermissionRequest, Stop, SessionEnd) and
@@ -37,6 +39,7 @@ import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
+import { AutoApproveGate } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
@@ -155,25 +158,6 @@ export function setupHookBridge(
   // reflected immediately. Issue #321: a stale `null`-once cache wedged
   // this state and permanently disabled hook-driven discovery for both
   // daemons.
-
-  /**
-   * Cancel any in-flight auto-approve LLM eval. Called on hook events that
-   * unambiguously confirm Claude advanced past a prompt: PreToolUse /
-   * PostToolUse / Stop / SessionEnd. At that point the user has already
-   * answered (probably in the local terminal) and a stale LLM result would
-   * either inject into the wrong PTY position or emit a phantom question.
-   *
-   * Deliberately NOT called on Notification events: idle_prompt can fire
-   * while a permission eval is still legitimately in flight, and
-   * auth_success / elicitation_dialog don't carry "user answered" semantics
-   * either.
-   */
-  const cancelStaleAutoApprove = (reason: string): void => {
-    if (autoApproveService === null) return;
-    if (autoApproveService.cancel(reason)) {
-      log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
-    }
-  };
 
   // ---- Helpers ------------------------------------------------------------
 
@@ -552,6 +536,21 @@ export function setupHookBridge(
 
   const handlers = hookBridge.hookHandlers();
 
+  // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
+  // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
+  // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
+  // injected callbacks, read live at inject time (async TOCTOU).
+  const autoApproveGate = new AutoApproveGate(
+    {
+      service: autoApproveService,
+      sessionRegistry,
+      tracker,
+      isInSubagentContext: () => hookBridge.isInSubagentContext(),
+      escalate: (i) => handlers.onPermissionRequest?.(i),
+    },
+    sessionId,
+  );
+
   // Filter: accept events only from our own Claude. Before claudeSessionId
   // is known, block events when siblings exist (they could be from the
   // sibling's Claude).
@@ -611,14 +610,14 @@ export function setupHookBridge(
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
-    cancelStaleAutoApprove('PreToolUse');
+    autoApproveGate.cancelStale('PreToolUse');
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
     if (isSubagentEvent(input)) return;
-    cancelStaleAutoApprove('PostToolUse');
+    autoApproveGate.cancelStale('PostToolUse');
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
@@ -644,197 +643,17 @@ export function setupHookBridge(
   hookServer.on('PermissionRequest', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
-
-    // Phase 4 (#419): subagent PermissionRequest events (events with
-    // agent_id set, originating from Task/Agent-spawned subagents) used
-    // to be dropped at this seam. Under phase 3's PTY-presence model,
-    // "what's on screen" is the truth: a hot-switched subagent view
-    // that renders a permission prompt IS user-answerable, and dropping
-    // the hook here loses the rich tool/option metadata. Forward the
-    // event; the tracker pairs it with PTY confirmation. Auto-approve
-    // and the inSubagent default-deny safety net below still gate
-    // injection independently.
-    if (isSubagentEvent(input)) {
-      log(
-        `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
-      );
-    }
-
-    // Nested-Task context (secondary safety net for cases where
-    // agent_id is absent). Used by the auto-approve default-deny path
-    // below to avoid hanging a subagent whose only escalation route is
-    // a main-PTY prompt the user cannot see.
-    //
-    // Read live (not captured) at each branch: auto-approve evaluate()
-    // is async, so the Task context can open or close between when this
-    // listener fires and when the .then()/.catch() runs. Capturing
-    // would TOCTOU — a Task that closed mid-eval would still trigger
-    // default-deny, and a Task that opened mid-eval would escape it.
-    const sessionTag = sessionId.slice(0, 8);
-
-    // Inject an answer into the PTY. Returns true on success. On failure
-    // (session missing, PTY not running, submitInput throws, subagent
-    // off-screen gate trips) it logs and returns false so callers can
-    // fall back to escalating the prompt.
-    //
-    // Value is a 1-based numeric option index serialised as a string. Most
-    // permissions only need '1' (approve) or '3' (deny); multi-choice picks
-    // can land any index in the prompt's option range (#399).
-    //
-    // PTY-presence gate (subagent-only): a background subagent emits
-    // PermissionRequest hooks for its own tool calls, but its prompts
-    // never render on the main PTY — only a hot-switched subagent view
-    // does. Without this gate, auto-approve would type "1"/"3" into the
-    // MAIN AGENT's input every time a background subagent asked for
-    // permission.
-    //
-    // Detect subagent context two ways: (a) explicit `agent_id` on the
-    // hook event (Task tool with agent_id set), and (b)
-    // `hookBridge.isInSubagentContext()` (nested-Task tracker — the
-    // secondary safety net for legacy events without agent_id). Both
-    // are read at inject time, not captured, so the hot-switched case
-    // (PTY has rendered the subagent prompt between the hook firing
-    // and the LLM eval returning) still injects.
-    //
-    // Asymmetry: the default-deny path (subagent-escalate / subagent-
-    // error) passes `bypassSubagentPtyGate=true` to keep firing even
-    // without PTY confirmation, because the alternative is hanging the
-    // subagent indefinitely with no one to answer. That is a
-    // deliberately-different trade-off from the approve/deny/pick path,
-    // which falls through to escalateToUser when gated.
-    const inject = async (
-      value: string,
-      reason: string,
-      bypassSubagentPtyGate = false,
-    ): Promise<boolean> => {
-      try {
-        const session = sessionRegistry.getSession(sessionId);
-        if (!session) {
-          logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
-          return false;
-        }
-        const inSubagentContext = isSubagentEvent(input) || hookBridge.isInSubagentContext();
-        if (!bypassSubagentPtyGate && inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
-          log(
-            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8) ?? 'nested'} type=${input.agent_type ?? 'n/a'})`,
-          );
-          return false;
-        }
-        await session.pty.submitInput(value);
-        log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
-        sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
-        return true;
-      } catch (err) {
-        logError(`[AutoApprove ${sessionTag}] inject("${value}") threw:`, err);
-        return false;
-      }
-    };
-
-    // Safe escalation to the user. Used when inject fails or when auto-approve
-    // is off and we're in main context. Wrapped so bridge/push failures don't
-    // leave the hook handler with a dangling unhandled rejection.
-    const escalateToUser = () => {
-      try {
-        handlers.onPermissionRequest?.(input);
-      } catch (err) {
-        logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
-      }
-    };
-
-    // Auto-approve gate: evaluate before creating a Question object.
-    if (autoApproveService) {
-      const aaService = autoApproveService;
-      // Pass the raw suggestions array; AutoApproveService does its own
-      // strict-string filtering before feeding the LLM. We forward the
-      // raw shape (rather than coercing) so the multi-choice classifier
-      // can see "non-string entry" and route through escalate instead
-      // of crashing on a future Claude Code permission_suggestions
-      // schema change.
-      aaService
-        .evaluate(
-          input.tool_name,
-          input.tool_input,
-          sessionTag,
-          input.permission_suggestions as readonly unknown[] | undefined,
-        )
-        .then(async (result) => {
-          if (result.decision === 'cancelled') {
-            // User already advanced past the prompt (terminal answer or
-            // hook event confirmed the tool ran). Do not inject, do not
-            // escalate. Drop the pending hook record so its stale option
-            // labels cannot merge onto the next unrelated PTY prompt
-            // (e.g. user typed /compact, no PreToolUse fires).
-            tracker.clearPending();
-            log(`[AutoApprove ${sessionTag}] Decision dropped: ${result.reasoning}`);
-            return;
-          }
-          if (result.decision === 'approve') {
-            if (!(await inject('1', 'approved'))) escalateToUser();
-            return;
-          }
-          if (result.decision === 'deny') {
-            if (!(await inject('3', 'denied'))) escalateToUser();
-            return;
-          }
-          if (result.decision === 'pick' && result.pickIndex !== undefined) {
-            // Multi-choice pick (#399): inject the 1-based index Claude Code
-            // expects on the terminal. parseMultiChoiceDecision already
-            // validated the index against options length, so out-of-range
-            // values cannot reach this branch.
-            if (!(await inject(String(result.pickIndex), `multichoice-pick-${result.pickIndex}`))) {
-              escalateToUser();
-            }
-            return;
-          }
-          // escalate: in a subagent context, default-deny to avoid hanging
-          // the subagent. The user could not answer it anyway. Bypass the
-          // subagent PTY gate (`bypassSubagentPtyGate=true`) because the
-          // alternative is letting the subagent hang forever; typing '3'
-          // into the parent PTY is accepted as the lesser evil here. The
-          // approve/deny/pick branches above use the gate because they
-          // have a fallback (escalateToUser); this branch does not.
-          if (hookBridge.isInSubagentContext()) {
-            log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
-            await inject('3', 'subagent-escalate-default-deny', true);
-            return;
-          }
-          escalateToUser();
-        })
-        .catch(async (err) => {
-          // Last line of defense; must not leave an unhandled rejection.
-          try {
-            logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
-            if (hookBridge.isInSubagentContext()) {
-              await inject('3', 'subagent-error-default-deny', true);
-              return;
-            }
-            escalateToUser();
-          } catch (inner) {
-            logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
-          }
-        });
-      return;
-    }
-
-    // No auto-approve. In a subagent context, still must not hang the
-    // subagent: default-deny rather than emit a question the user can't
-    // answer. Synchronous fallback — read live for symmetry with the
-    // async branches above; no TOCTOU here but the consistent shape
-    // helps a future maintainer.
-    if (hookBridge.isInSubagentContext()) {
-      log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
-      inject('3', 'subagent-no-aa-default-deny', true).catch((err) => {
-        logError(`[${sessionTag}] Failed to inject default-deny:`, err);
-      });
-      return;
-    }
-
-    escalateToUser();
+    // Auto-approve eval + inject, or escalate to the user (#453 phase 1). The gate
+    // owns the PTY injection, the subagent PTY-presence gate, the default-deny
+    // safety net, and the escalate fallback; session filtering above stays here in
+    // the bridge. isInSubagentContext / onPermissionRequest are injected into the
+    // gate and read live at inject time (async TOCTOU).
+    autoApproveGate.handlePermissionRequest(input);
   });
   hookServer.on('Stop', (input) => {
     initFromHookEvent(input);
     if (!filterBySession(input)) return;
-    cancelStaleAutoApprove('Stop');
+    autoApproveGate.cancelStale('Stop');
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
@@ -844,7 +663,7 @@ export function setupHookBridge(
       mainSessionEnded = true;
     }
     if (!filterBySession(input)) return;
-    cancelStaleAutoApprove('SessionEnd');
+    autoApproveGate.cancelStale('SessionEnd');
     handlers.onSessionEnd?.(input);
   });
 

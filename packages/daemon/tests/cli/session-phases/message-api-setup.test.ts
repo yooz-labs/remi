@@ -3,14 +3,12 @@ import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } fro
 import { generateId, now } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import {
-  createMessageApiForSession,
-  selectPushCategory,
-} from '../../../src/cli/session-phases/message-api-setup.ts';
+import { createMessageApiForSession } from '../../../src/cli/session-phases/message-api-setup.ts';
 import {
   __resetSessionStateForTests,
   setPrimarySessionId,
 } from '../../../src/cli/session-state.ts';
+import { selectPushCategory } from '../../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import type { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
