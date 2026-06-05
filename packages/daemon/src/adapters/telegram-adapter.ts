@@ -12,15 +12,20 @@ import { generateId, now } from '@remi/shared';
 import type {
   AgentOutputMessage,
   AgentStatus,
+  DaemonUpdateAvailableMessage,
   EditMessage,
   ErrorMessage,
   HelloAckMessage,
+  KillSessionResponseMessage,
   Message,
   ProtocolMessage,
   Question,
   QuestionMessage,
   ReplayBatchMessage,
+  ResumeSessionResponseMessage,
+  SessionHistoryResponseMessage,
   SessionListResponseMessage,
+  SessionRotatedMessage,
   SessionUpdateMessage,
   StructuredAgentOutputMessage,
   TranscriptContentMessage,
@@ -440,15 +445,108 @@ export class TelegramAdapter implements ConnectionAdapter {
         return true;
       }
 
-      // Messages that don't need Telegram rendering
+      case 'kill_session_response': {
+        const kill = message as KillSessionResponseMessage;
+        const killSession = this.getSession(connectionId);
+        if (killSession && this.bot) {
+          const text = kill.success
+            ? 'Session stopped.'
+            : `Session stop failed: ${kill.error ?? 'unknown error'}`;
+          this.bot.api
+            .sendMessage(killSession.chatId, text, {
+              message_thread_id: killSession.topicId,
+            })
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'resume_session_response': {
+        const resume = message as ResumeSessionResponseMessage;
+        const resumeSession = this.getSession(connectionId);
+        if (resumeSession && this.bot) {
+          const text = resume.success
+            ? `Resumed session ${resume.sessionId ?? '(unknown id)'}.`
+            : `Resume failed: ${resume.error ?? 'unknown error'}`;
+          this.bot.api
+            .sendMessage(resumeSession.chatId, text, {
+              message_thread_id: resumeSession.topicId,
+            })
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'session_rotated': {
+        const rotated = message as SessionRotatedMessage;
+        const rotatedSession = this.getSession(connectionId);
+        if (rotatedSession && this.bot) {
+          this.bot.api
+            .sendMessage(
+              rotatedSession.chatId,
+              `Session restarted (${rotated.reason}). New Claude session id: ${rotated.newClaudeSessionId}`,
+              { message_thread_id: rotatedSession.topicId },
+            )
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'daemon_update_available': {
+        const update = message as DaemonUpdateAvailableMessage;
+        const updateSession = this.getSession(connectionId);
+        if (updateSession && this.bot) {
+          this.bot.api
+            .sendMessage(
+              updateSession.chatId,
+              `A newer remi is on disk. Restart this session to pick up the update (current: ${update.currentVersion}).`,
+              { message_thread_id: updateSession.topicId },
+            )
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      case 'session_history_response': {
+        const history = message as SessionHistoryResponseMessage;
+        const historySession = this.getSession(connectionId);
+        if (historySession && this.bot) {
+          this.bot.api
+            .sendMessage(
+              historySession.chatId,
+              `History: ${history.directories.length} recent directories. Open the app for detail.`,
+              { message_thread_id: historySession.topicId },
+            )
+            .catch(() => {
+              /* ignore send errors */
+            });
+        }
+        return true;
+      }
+
+      // Messages that don't need Telegram rendering.
+      // N/A on Telegram: no PTY/attach/wire-auth; content surfaces via other branches.
       case 'create_session_response':
       case 'ping':
       case 'pong':
       case 'ack':
       case 'bullet_expand_response':
+      case 'detach_session_ack':
+      case 'raw_pty_output':
+      case 'auth_challenge':
+      case 'auth_result':
         return true;
 
       default:
+        console.warn(`TelegramAdapter: unhandled outbound message type "${message.type}"`);
         return false;
     }
   }
