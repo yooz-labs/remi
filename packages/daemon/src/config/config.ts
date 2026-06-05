@@ -49,6 +49,21 @@ export interface TelegramConfig {
   readonly authorized_user_ids: readonly number[];
 }
 
+/**
+ * Experimental feature flags (epic #453). Default OFF. Snapshotted into a const at
+ * daemon boot and treated as immutable for the process lifetime — never re-read per
+ * session (a mid-process flip would split sessions across the old/new code paths,
+ * which share the transcriptWatchers map).
+ */
+export interface FeaturesConfig {
+  /** Phase 3: run the TranscriptBinder in compute-only shadow mode alongside the old
+   *  path and log decision disagreements. No side effects; observation only. */
+  readonly transcript_binder_shadow: boolean;
+  /** Phase 3: the TranscriptBinder DRIVES the session-binding/watcher/rotation; the
+   *  old initFromHookEvent/onSessionInfo path is skipped. */
+  readonly transcript_binder_enabled: boolean;
+}
+
 /** Complete Remi configuration */
 export interface RemiConfig {
   readonly daemon: DaemonConfig;
@@ -57,6 +72,7 @@ export interface RemiConfig {
   readonly display: DisplayConfig;
   readonly telegram: TelegramConfig;
   readonly auto_approve: AutoApproveConfig;
+  readonly features: FeaturesConfig;
 }
 
 /** Built-in defaults used when no config file or CLI flags are provided */
@@ -98,6 +114,10 @@ export const DEFAULT_CONFIG: RemiConfig = {
     multichoice: 'skip',
     multichoice_model: '',
   },
+  features: {
+    transcript_binder_shadow: false,
+    transcript_binder_enabled: false,
+  },
 };
 
 /**
@@ -129,6 +149,10 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
     auto_approve: mergeSection(
       base.auto_approve,
       partial['auto_approve'] as Record<string, unknown> | undefined,
+    ),
+    features: mergeSection(
+      base.features,
+      partial['features'] as Record<string, unknown> | undefined,
     ),
   };
 }
@@ -346,6 +370,19 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL'];
   }
 
+  // Experimental feature flags (#453 phase 3). Default OFF; env opt-in only.
+  const features = { ...config.features };
+  if (env['REMI_TRANSCRIPT_BINDER_SHADOW'] === 'true') {
+    (features as { transcript_binder_shadow: boolean }).transcript_binder_shadow = true;
+  } else if (env['REMI_TRANSCRIPT_BINDER_SHADOW'] === 'false') {
+    (features as { transcript_binder_shadow: boolean }).transcript_binder_shadow = false;
+  }
+  if (env['REMI_TRANSCRIPT_BINDER_ENABLED'] === 'true') {
+    (features as { transcript_binder_enabled: boolean }).transcript_binder_enabled = true;
+  } else if (env['REMI_TRANSCRIPT_BINDER_ENABLED'] === 'false') {
+    (features as { transcript_binder_enabled: boolean }).transcript_binder_enabled = false;
+  }
+
   return {
     ...config,
     daemon,
@@ -353,6 +390,7 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     display,
     telegram,
     auto_approve,
+    features,
   };
 }
 
@@ -490,6 +528,11 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  instructions = ${instrDisplay}`);
   lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
+  lines.push('');
+  lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');
+  lines.push('[features]');
+  lines.push(`  transcript_binder_shadow = ${config.features.transcript_binder_shadow}`);
+  lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
 
   return lines.join('\n');
 }

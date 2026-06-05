@@ -14,7 +14,13 @@
  *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
  */
 
-import { createAgentOutput, createAuthResult, createQuestion, generateId } from '@remi/shared';
+import {
+  createAgentOutput,
+  createAuthResult,
+  createError,
+  createQuestion,
+  generateId,
+} from '@remi/shared';
 import type {
   AgentStatus,
   AuthResponseMessage,
@@ -332,11 +338,56 @@ export class RelayAdapter implements ConnectionAdapter {
         }
         this.events.onTerminalResize?.(connectionId, msg['cols'], msg['rows']);
         break;
+      case 'kill_session_request':
+        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
+          console.warn('Invalid kill_session_request payload: missing sessionId or id');
+          return;
+        }
+        this.events.onKillSessionRequest?.(connectionId, msg['sessionId'], msg['id']);
+        break;
+      case 'detach_session':
+        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
+          console.warn('Invalid detach_session payload: missing sessionId or id');
+          return;
+        }
+        this.events.onDetachSession?.(connectionId, msg['sessionId'], msg['id']);
+        break;
+      case 'session_history_request': {
+        if (typeof msg['id'] !== 'string') {
+          console.warn('Invalid session_history_request payload: missing id');
+          return;
+        }
+        const limit = typeof msg['limit'] === 'number' ? msg['limit'] : undefined;
+        this.events.onSessionHistoryRequest?.(connectionId, msg['id'], limit);
+        break;
+      }
+      case 'register_device_token':
+        if (typeof msg['token'] !== 'string') {
+          console.warn('Invalid register_device_token payload: missing token');
+          return;
+        }
+        if (msg['platform'] !== 'ios' && msg['platform'] !== 'android') {
+          console.warn('Invalid register_device_token payload: platform must be ios or android');
+          return;
+        }
+        this.events.onRegisterDeviceToken?.(connectionId, msg['token'], msg['platform']);
+        break;
+      case 'ping':
+        // Liveness ping needs no reply over relay.
+        break;
       case 'hello':
         // Hello is handled at connection level, not message level
         break;
       default:
         console.warn(`Unknown relay message type: ${msg['type']}`);
+        this.client?.sendRelay(
+          JSON.stringify(
+            createError(
+              'UNSUPPORTED',
+              `Message type '${String(msg['type'])}' is not supported over relay`,
+            ),
+          ),
+        );
     }
   }
 

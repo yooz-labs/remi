@@ -22,14 +22,18 @@ import {
 } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
-import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
+import type {
+  SessionBindingStore,
+  SessionRegistry,
+  SessionRegistryFile,
+} from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
   sessionRegistry: SessionRegistry;
-  sessionStore: SessionStore;
+  bindingStore: SessionBindingStore;
   transcriptDiscovery: TranscriptDiscovery;
   liveSessionsRegistry: SessionRegistryFile;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
@@ -46,7 +50,7 @@ export type SessionHandlers = ReturnType<typeof createSessionHandlers>;
 export function createSessionHandlers(deps: SessionHandlerDeps) {
   const {
     sessionRegistry,
-    sessionStore,
+    bindingStore,
     transcriptDiscovery,
     liveSessionsRegistry,
     currentPort,
@@ -67,10 +71,10 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       const daemonSessionsRaw = sessionRegistry.listSessions();
       const daemonSessions = daemonSessionsRaw.map((s) => {
         try {
-          const stored = sessionStore.findByRemiSessionId(s.sessionId as UUID);
-          if (!stored?.claudeSessionId) return s;
-          const transcriptPath = `${transcriptDiscovery.getProjectTranscriptDir(s.projectPath)}/${stored.claudeSessionId}.jsonl`;
-          return { ...s, claudeSessionId: stored.claudeSessionId, transcriptPath };
+          const binding = bindingStore.get(s.sessionId as UUID);
+          if (!binding?.claudeSessionId) return s;
+          const transcriptPath = `${transcriptDiscovery.getProjectTranscriptDir(s.projectPath)}/${binding.claudeSessionId}.jsonl`;
+          return { ...s, claudeSessionId: binding.claudeSessionId, transcriptPath };
         } catch (err) {
           logError(
             `[SessionList] Failed to decorate session ${s.sessionId.slice(0, 8)}; serving raw entry: ${errorToString(err)}`,
@@ -83,10 +87,19 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       if (includeExternal) {
         const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
         // Also exclude by Claude session ID (JSONL filename UUID is a different namespace from remi IDs).
+        // Per-entry try/catch (mirrors the decoration loop above): a disk hiccup on
+        // one lookup must not throw out of this void handler and hang the whole
+        // session-list response — degrade to a possibly-incomplete exclude set.
         for (const remiId of [...managedIds]) {
-          const stored = sessionStore.findByRemiSessionId(remiId as UUID);
-          if (stored?.claudeSessionId) {
-            managedIds.add(stored.claudeSessionId);
+          try {
+            const binding = bindingStore.get(remiId as UUID);
+            if (binding?.claudeSessionId) {
+              managedIds.add(binding.claudeSessionId);
+            }
+          } catch (err) {
+            logError(
+              `[SessionList] binding lookup failed for ${remiId.slice(0, 8)}; external exclusion may be incomplete: ${errorToString(err)}`,
+            );
           }
         }
         const externalSessions = transcriptDiscovery.discoverSessions(managedIds);

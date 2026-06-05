@@ -9,6 +9,14 @@ export { TranscriptWatcher } from './transcript-watcher.ts';
 export { TranscriptDiscovery } from './transcript-discovery.ts';
 export { TranscriptMessageBridge } from './transcript-message-bridge.ts';
 export { readTranscriptOwnerPort } from './transcript-owner.ts';
+export { TranscriptBinder } from './transcript-binder.ts';
+export type {
+  BinderDecision,
+  BinderHookEvent,
+  BinderMode,
+  TranscriptBinderArgs,
+  TranscriptBinderDeps,
+} from './transcript-binder.ts';
 export type { TranscriptDiscoveryConfig } from './transcript-discovery.ts';
 export type {
   TranscriptMessageBridgeConfig,

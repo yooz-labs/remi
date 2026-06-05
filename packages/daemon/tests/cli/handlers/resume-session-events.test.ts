@@ -8,6 +8,7 @@ import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createResumeSessionHandlers } from '../../../src/cli/handlers/resume-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
+import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
@@ -35,6 +36,7 @@ describe('createResumeSessionHandlers', () => {
   let projectsDir: string;
   let sessionRegistry: SessionRegistry;
   let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
   let transcriptDiscovery: TranscriptDiscovery;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
 
@@ -49,6 +51,7 @@ describe('createResumeSessionHandlers', () => {
     fs.mkdirSync(projectsDir, { recursive: true });
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
     transcriptDiscovery = new TranscriptDiscovery({ projectsDir });
     sendCalls = [];
     configureLogger({ writeLog: () => {} });
@@ -73,6 +76,7 @@ describe('createResumeSessionHandlers', () => {
     return createResumeSessionHandlers({
       sessionRegistry,
       sessionStore,
+      bindingStore,
       transcriptDiscovery,
       createNewSession,
       send,

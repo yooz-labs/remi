@@ -2,9 +2,8 @@
  * Wire the Claude Code hook event stream into our PTY's MessageAPI during
  * createNewSession.
  *
- * Three concerns are tangled here and kept together because they all depend
- * on the same per-session locks (claudeSessionId, mainSessionEnded,
- * hasSiblingInDir()):
+ * Two concerns live here, both depending on the same per-session locks
+ * (claudeSessionId, mainSessionEnded, hasSiblingInDir()):
  *
  *   1. **Session filtering.** Claude Code fires hook events that may belong
  *      to our PTY, a subagent inside it, or a sibling daemon's PTY in the
@@ -18,16 +17,23 @@
  *      keeps the same session id) tears down the old watcher, starts a fresh
  *      one, and emits a single session_rotated event.
  *
- *   3. **Auto-approve gate.** PermissionRequest events are intercepted
- *      before they reach the user. If auto-approve returns approve/deny we
- *      inject "1"/"3" into the PTY; otherwise (or on subagent PTY failure)
- *      we escalate to the user or default-deny to avoid hanging a subagent
- *      with no one to answer.
+ * A third concern, the **auto-approve gate**, used to be inlined here; it is now
+ * delegated to `AutoApproveGate` (#453 phase 1). The bridge does the session
+ * filtering, then routes PermissionRequest to the gate, which runs the
+ * auto-approve eval and injects "1"/"3"/pick into the PTY, escalates to the user,
+ * or default-denies a subagent prompt no one can answer. The gate is wired with
+ * the bridge's `isInSubagentContext` + the router's `onPermissionRequest` as
+ * callbacks; Pre/PostToolUse/Stop/SessionEnd call `gate.cancelStale()` to abort a
+ * stale in-flight eval once Claude has advanced past the prompt.
  *
- * The function registers 7 hookServer listeners (SessionStart, PreToolUse,
- * PostToolUse, Notification, PermissionRequest, Stop, SessionEnd) and
- * returns void. It runs once per session at createNewSession time, only
- * when a hookServer is configured.
+ * This listener block IS the per-session hook router (admit-then-fan-out); a
+ * formal HookRouter class is deferred until the shadow/drive dual path is
+ * deleted (the `driveBinder ? … : oldPath` ternaries collapse first). The
+ * function registers 11 hookServer listeners — the original 7 (SessionStart,
+ * PreToolUse, PostToolUse, Notification, PermissionRequest, Stop, SessionEnd)
+ * plus the 4 wired in phase 4 (StopFailure, PostToolUseFailure, SubagentStart,
+ * SubagentStop) — and returns void. It runs once per session at
+ * createNewSession time, only when a hookServer is configured.
  */
 
 import * as fs from 'node:fs';
@@ -37,26 +43,63 @@ import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
+import { AutoApproveGate } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
 import { classifySessionEvent } from '../../hooks/session-lock-classifier.ts';
 import { claudeChildLooksAlive } from '../../session/index.ts';
-import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
-import { readTranscriptOwnerPort } from '../../transcript/index.ts';
+import type {
+  SessionBindingStore,
+  SessionRegistry,
+  SessionRegistryFile,
+} from '../../session/index.ts';
+import { TranscriptBinder, readTranscriptOwnerPort } from '../../transcript/index.ts';
+import type { BinderDecision, BinderHookEvent } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
+import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
 import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
 
 export interface HookBridgeDeps {
   sessionRegistry: SessionRegistry;
-  sessionStore: SessionStore;
+  bindingStore: SessionBindingStore;
   liveSessionsRegistry: SessionRegistryFile;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   autoApproveService: AutoApproveService | null;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
+  /**
+   * #453 phase 3, commit 3 (SHADOW MODE). When true, a compute-only
+   * `TranscriptBinder` runs alongside the old initFromHookEvent/onSessionInfo
+   * path and logs control-plane disagreements. It is constructed with no-op
+   * effect deps (no send, no store write, no watcher start, no rotation
+   * callback) so it is PROVABLY side-effect-free; the old path stays the sole
+   * driver. Default OFF (undefined) — zero behavior change when unset.
+   */
+  shadowBinder?: boolean;
+  /**
+   * #453 phase 3, commit 5 (DRIVE MODE). When true, a single drive-mode
+   * `TranscriptBinder` per session OWNS the binding/watcher/rotation control
+   * plane: each hook listener routes to `binder.onHookEvent` /
+   * `binder.admits` / `binder.preemptOnSessionStart` / `binder.onSessionEnd`
+   * INSTEAD of the old `initFromHookEvent` / `onSessionInfo` / `filterBySession`
+   * bodies, and `binder.start()` arms the fallback poll + #452 dir-watch. The
+   * binder's decisions are already proven equivalent to the old path by the
+   * shadow differential harness (commit 3); this flag lets it DRIVE. Mutually
+   * exclusive with `shadowBinder` (enabled wins; the caller never sets both).
+   * Default OFF (undefined) — flag-off path is byte-identical to pre-commit.
+   * Requires `transcriptDiscovery` (the binder's `start()` reads it).
+   */
+  binderEnabled?: boolean;
+  /**
+   * Required by the `TranscriptBinder` constructor (its `start()` reads it).
+   * Shadow never calls `start()`, but drive mode does; the dep is part of the
+   * binder's construction contract. Optional so callers/tests that use neither
+   * binder mode are unaffected.
+   */
+  transcriptDiscovery?: TranscriptDiscovery;
 }
 
 export interface HookBridgeArgs {
@@ -79,6 +122,15 @@ export interface HookBridgeHandle {
    *  alternate question sources (e.g. PTY parser) so subagent prompts are
    *  not surfaced to the user. */
   bridge: HookEventBridge;
+  /**
+   * Tear down the drive-mode `TranscriptBinder` for this session (its watcher,
+   * fallback timer, and the #452 rotation dir-poll). No-op when binderEnabled is
+   * off (no binder was constructed). The caller must invoke this on session
+   * teardown so the binder's rotation dir-poll interval — which the shared
+   * `transcriptWatchers` / `transcriptFallbackTimers` cleanup in cli.ts does NOT
+   * reach — never outlives the session.
+   */
+  closeBinder: () => void;
 }
 
 export function setupHookBridge(
@@ -87,14 +139,38 @@ export function setupHookBridge(
 ): HookBridgeHandle {
   const {
     sessionRegistry,
-    sessionStore,
+    bindingStore,
     liveSessionsRegistry,
     transcriptWatchers,
     transcriptFallbackTimers,
     autoApproveService,
     currentPort,
+    shadowBinder,
+    binderEnabled,
+    transcriptDiscovery,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
+  const {
+    hookServer,
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord: rawSendAndRecord,
+    tracker,
+  } = args;
+
+  // ---- Shadow-mode plumbing (#453 phase 3, commit 3) ----------------------
+  // When shadowBinder is OFF (the default), `sendAndRecord` and the binding
+  // writer below are the untouched originals: ZERO behavior change. When ON,
+  // sendAndRecord is wrapped in a forwarding tap that records (per old-path
+  // event) whether a session_rotated crossed the wire, then forwards EVERY
+  // message untouched. The tap never alters or drops a message.
+  let oldPathRotationEmitted = false;
+  const sendAndRecord = shadowBinder
+    ? (message: ProtocolMessage): void => {
+        if (message.type === 'session_rotated') oldPathRotationEmitted = true;
+        rawSendAndRecord(message);
+      }
+    : rawSendAndRecord;
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
 
@@ -117,13 +193,15 @@ export function setupHookBridge(
    */
   const adoptLockFromStore = (): void => {
     try {
-      const stored = sessionStore.findByRemiSessionId(sessionId);
-      const storedId = stored?.claudeSessionId ?? null;
+      // Disk-backed read (no cache) via the binding accessor: a sibling/fallback
+      // write is observed every call, which is what preserves the #430 re-adopt
+      // and #321 no-wedge guarantees.
+      const storedId = bindingStore.get(sessionId)?.claudeSessionId ?? null;
       if (storedId === null || storedId === claudeSessionId) return;
       const previous = claudeSessionId;
       claudeSessionId = storedId;
       log(
-        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from sessionStore: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
+        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from binding store: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
       );
     } catch (err) {
       logError(`[Hooks] adoptLockFromStore failed: ${errorToString(err)}`);
@@ -155,25 +233,6 @@ export function setupHookBridge(
   // reflected immediately. Issue #321: a stale `null`-once cache wedged
   // this state and permanently disabled hook-driven discovery for both
   // daemons.
-
-  /**
-   * Cancel any in-flight auto-approve LLM eval. Called on hook events that
-   * unambiguously confirm Claude advanced past a prompt: PreToolUse /
-   * PostToolUse / Stop / SessionEnd. At that point the user has already
-   * answered (probably in the local terminal) and a stale LLM result would
-   * either inject into the wrong PTY position or emit a phantom question.
-   *
-   * Deliberately NOT called on Notification events: idle_prompt can fire
-   * while a permission eval is still legitimately in flight, and
-   * auth_success / elicitation_dialog don't carry "user answered" semantics
-   * either.
-   */
-  const cancelStaleAutoApprove = (reason: string): void => {
-    if (autoApproveService === null) return;
-    if (autoApproveService.cancel(reason)) {
-      log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
-    }
-  };
 
   // ---- Helpers ------------------------------------------------------------
 
@@ -393,7 +452,7 @@ export function setupHookBridge(
       log(
         `[Hooks] Transcript from ${input.hook_event_name ?? 'hook'}: claude=${claudeSessionId}, transcript=${input.transcript_path}`,
       );
-      sessionStore.updateClaudeSessionId(sessionId, claudeSessionId);
+      bindingStore.update(sessionId, claudeSessionId);
 
       // Announce the rotation as ONE atomic event so the client clears, swaps
       // the binding, and re-fetches the new transcript in a single step (#438).
@@ -464,6 +523,12 @@ export function setupHookBridge(
       tracker.recordPendingHook(question);
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
+      // DRIVE: the binder's onHookEvent (fired from the SessionStart listener)
+      // already subsumes this SessionInfo bind/rotation; skip the old body so we
+      // never double-bind or double-emit. The bridge still fires this callback
+      // (status/subagent tracking lives on handlers.onSessionStart), but the
+      // binding control plane is the binder's alone.
+      if (binderEnabled) return;
       // Guard: skip if sibling daemons share this directory AND the transcript's
       // port marker does not prove this SessionStart is ours (#451). When the
       // marker matches our port we proceed so our own rotation rebinds even
@@ -505,7 +570,7 @@ export function setupHookBridge(
       try {
         claudeSessionId = hookClaudeSessionId;
         log(`[Hooks] SessionStart: claude=${hookClaudeSessionId}, transcript=${transcriptPath}`);
-        sessionStore.updateClaudeSessionId(sessionId, hookClaudeSessionId);
+        bindingStore.update(sessionId, hookClaudeSessionId);
 
         if (isRotation) {
           try {
@@ -552,6 +617,21 @@ export function setupHookBridge(
 
   const handlers = hookBridge.hookHandlers();
 
+  // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
+  // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
+  // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
+  // injected callbacks, read live at inject time (async TOCTOU).
+  const autoApproveGate = new AutoApproveGate(
+    {
+      service: autoApproveService,
+      sessionRegistry,
+      tracker,
+      isInSubagentContext: () => hookBridge.isInSubagentContext(),
+      escalate: (i) => handlers.onPermissionRequest?.(i),
+    },
+    sessionId,
+  );
+
   // Filter: accept events only from our own Claude. Before claudeSessionId
   // is known, block events when siblings exist (they could be from the
   // sibling's Claude).
@@ -577,7 +657,235 @@ export function setupHookBridge(
   const isSubagentEvent = (input: { agent_id?: string }): boolean =>
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
+  // ---- Shadow TranscriptBinder (#453 phase 3, commit 3) -------------------
+  //
+  // ONE compute-only binder per session, constructed only when shadowBinder is
+  // on. It is provably side-effect-free:
+  //   - `sendAndRecord: () => {}`  -> cannot emit (no session_rotated on the wire).
+  //   - `bindingStore` wrapped read-only: `update()` is a no-op; `get(ourSession)`
+  //     returns the PER-EVENT snapshot (the store as it stood before the old path
+  //     ran) so the old path's same-event write cannot leak into the shadow's
+  //     adoptLockFromStore and race the classifier; foreign ids delegate through.
+  //   - `messageApi` no-op: `reset()` does nothing (the binder calls it on teardown).
+  //   - `onRotation: () => {}` -> no presence-tracker / question side effects.
+  //   - `start()` is a no-op in 'shadow' mode (no fs.watch, no fallback timer),
+  //     and we never call it anyway.
+  //
+  // After each old-path listener body runs, the same input is fed to the shadow
+  // binder mirroring the old listener order (preemptOnSessionStart + decide for
+  // SessionStart; decide for the events that call initFromHookEvent; onSessionEnd
+  // for SessionEnd), then we compare the binder's decision against the old path's
+  // observable outcome captured live from state.
+
+  // The real store's binding for OUR session as it stood at the START of the
+  // current event (captured before the old path runs). The shadow reads THIS,
+  // not the live store, so the old path's same-event write does not leak into
+  // the shadow's adoptLockFromStore and race the classifier into 'match' when
+  // the old path saw 'restart' (the #430/#433 snapshot invariant). For other
+  // sessions the wrapper delegates straight through (the binder only ever reads
+  // its own sessionId via get(), so this is exact).
+  let oldPathStoreSnapshot: ReturnType<SessionBindingStore['get']> = null;
+
+  const shadow: TranscriptBinder | null =
+    shadowBinder && transcriptDiscovery
+      ? new TranscriptBinder(
+          {
+            sessionRegistry,
+            // Read-only wrapper: get() delegates to the real store but, for our
+            // own session, returns the per-event entry snapshot taken before the
+            // old path mutated it (so the shadow adopts the same value the old
+            // path's adoptLockFromStore saw, not the old path's just-written id).
+            // update() is a no-op — the shadow must never write the binding.
+            bindingStore: {
+              get: (id: UUID) => (id === sessionId ? oldPathStoreSnapshot : bindingStore.get(id)),
+              getByClaudeSessionId: (id: string) => bindingStore.getByClaudeSessionId(id),
+              update: () => {},
+              preAssign: () => {},
+            } as unknown as SessionBindingStore,
+            liveSessionsRegistry,
+            transcriptWatchers,
+            transcriptFallbackTimers,
+            transcriptDiscovery,
+            // No-op MessageAPI: only reset() is reachable from the binder, and it
+            // must do nothing in shadow.
+            messageApi: { reset: () => {} } as unknown as MessageAPI,
+            sendAndRecord: () => {},
+            currentPort,
+            onRotation: () => {},
+          },
+          { sessionId, workingDirectory },
+          'shadow',
+        )
+      : null;
+
+  if (shadowBinder && !transcriptDiscovery) {
+    logError(
+      `[ShadowBinder] shadowBinder=true but no transcriptDiscovery dep supplied for ${sessionId.slice(0, 8)}; shadow comparison disabled`,
+    );
+  }
+
+  // ---- Drive TranscriptBinder (#453 phase 3, commit 5) --------------------
+  //
+  // ONE drive-mode binder per session, constructed only when binderEnabled is on
+  // (mutually exclusive with shadowBinder; the caller never sets both). It OWNS
+  // the binding/watcher/rotation control plane: the hook listeners below route to
+  // its `onHookEvent` / `admits` / `preemptOnSessionStart` / `onSessionEnd`
+  // INSTEAD of the old `initFromHookEvent` / `onSessionInfo` / `filterBySession`
+  // bodies. Wired with the REAL effect deps (the same `sendAndRecord`,
+  // `bindingStore`, `messageApi` the old path used) and the REAL rotation side
+  // effect (clear the presence tracker's pending record + sessionRegistry
+  // questions, exactly the old restart branch's
+  // `tracker.clearPending(); sessionRegistry.clearQuestions(sessionId)`).
+  //
+  // `start()` arms BOTH the existing fallback poll (Case A: our pre-assigned file
+  // appears) AND the #452 re-arming dir-watch (Case B: a no-hooks rotation), so
+  // in drive mode the cli.ts-level `startTranscriptFallback` is NOT also called
+  // (the caller skips it to avoid double-arming). The pre-assigned claudeSessionId
+  // is the binding cli.ts wrote to the store before spawn (#427); read it here.
+  const driveBinder: TranscriptBinder | null =
+    binderEnabled && transcriptDiscovery
+      ? new TranscriptBinder(
+          {
+            sessionRegistry,
+            bindingStore,
+            liveSessionsRegistry,
+            transcriptWatchers,
+            transcriptFallbackTimers,
+            transcriptDiscovery,
+            messageApi,
+            sendAndRecord: rawSendAndRecord,
+            currentPort,
+            onRotation: () => {
+              // The old restart branch's injected side effects: drop any hook
+              // record stashed before the rotation so the new session's first
+              // PTY prompt cannot merge stale option labels, and drop the
+              // pending-question collection so stale answers are refused.
+              tracker.clearPending();
+              sessionRegistry.clearQuestions(sessionId);
+            },
+          },
+          { sessionId, workingDirectory },
+          'drive',
+        )
+      : null;
+
+  if (binderEnabled && !transcriptDiscovery) {
+    logError(
+      `[Binder] binderEnabled=true but no transcriptDiscovery dep supplied for ${sessionId.slice(0, 8)}; drive mode disabled`,
+    );
+  }
+
+  if (driveBinder) {
+    // Arm the fallback poll + #452 dir-watch on the pre-assigned id (the binding
+    // cli.ts wrote to the store before Bun.spawn). On a fresh store read this is
+    // the deterministic claude id Claude will write under.
+    const preAssignedClaudeId = bindingStore.get(sessionId)?.claudeSessionId ?? null;
+    if (preAssignedClaudeId) {
+      driveBinder.start(preAssignedClaudeId);
+    } else {
+      logError(
+        `[Binder] No pre-assigned claudeSessionId for ${sessionId.slice(0, 8)}; fallback poll + dir-watch not armed`,
+      );
+    }
+  }
+
+  /**
+   * Capture the old path's observable control-plane outcome from LIVE state,
+   * read right after the old-path listener body ran. `boundId` is a disk-fresh
+   * read of the binding the old path may have written; `watcherPath` is the
+   * path of the watcher the old path may have (re)started; `rotationEmitted` is
+   * the per-event flag set by the sendAndRecord tap above.
+   */
+  const observeOldState = (): {
+    boundId: string | null;
+    watcherPath: string | null;
+    rotationEmitted: boolean;
+  } => ({
+    boundId: bindingStore.get(sessionId)?.claudeSessionId ?? null,
+    watcherPath: transcriptWatchers.get(sessionId)?.filePath ?? null,
+    rotationEmitted: oldPathRotationEmitted,
+  });
+
+  /**
+   * Emit a single structured DISAGREE line ONLY when the binder's decision and
+   * the old path's observed outcome diverge on a LOAD-BEARING control-plane
+   * field: the DURABLE store binding after the event, or whether a rotation was
+   * emitted. watcherPath is compared path-normalized but is advisory (the binder
+   * reports intent, the old path reports the live watcher). Silent on agreement.
+   *
+   * The compared "bound id" is the DURABLE store binding, not the binder's
+   * in-memory lock. The two diverge intentionally on a path-less restart: the
+   * old path NULLs its in-closure lock but does NOT write the store (no path to
+   * rebind on), so the store keeps the prior id; the binder likewise drops its
+   * in-memory `currentBoundId` to null WITHOUT writing the store. So the binder's
+   * store-after = `boundIdAfter` when it (re)bound this event, else the prior
+   * snapshot (it wrote nothing). That reconstruction matches the old path's
+   * post-event store exactly — which is the #430/#433 invariant we are pinning.
+   */
+  const compareAndLog = (
+    eventName: string,
+    input: BinderHookEvent,
+    decision: BinderDecision,
+    old: { boundId: string | null; watcherPath: string | null; rotationEmitted: boolean },
+  ): void => {
+    const diffs: string[] = [];
+    // The binder writes the store only when it (re)binds (boundIdAfter non-null);
+    // otherwise it leaves the durable binding untouched at its pre-event value.
+    const binderStoreAfter = decision.boundIdAfter ?? oldPathStoreSnapshot?.claudeSessionId ?? null;
+    if (binderStoreAfter !== old.boundId) {
+      diffs.push(`boundId binder=${binderStoreAfter ?? 'null'} old=${old.boundId ?? 'null'}`);
+    }
+    if (decision.wouldEmitRotation !== old.rotationEmitted) {
+      diffs.push(`rotation binder=${decision.wouldEmitRotation} old=${old.rotationEmitted}`);
+    }
+    const binderWatcher = decision.watcherPath ? path.resolve(decision.watcherPath) : null;
+    const oldWatcher = old.watcherPath ? path.resolve(old.watcherPath) : null;
+    if (decision.wouldStartWatcher && binderWatcher !== oldWatcher) {
+      diffs.push(`watcherPath binder=${binderWatcher ?? 'null'} old=${oldWatcher ?? 'null'}`);
+    }
+    if (diffs.length > 0) {
+      logError(
+        `[ShadowBinder] DISAGREE ${eventName}: ${diffs.join('; ')} (class=${decision.classification} incoming=${input.session_id?.slice(0, 8) ?? 'none'})`,
+      );
+    }
+  };
+
+  /**
+   * Run at the TOP of every listener (before the old path executes). Resets the
+   * per-event rotation tap and snapshots the real store's current binding for
+   * our session so the shadow's read reflects the pre-event truth. No-op when
+   * shadow is off.
+   */
+  const shadowEnterEvent = (): void => {
+    if (!shadow) return;
+    oldPathRotationEmitted = false;
+    oldPathStoreSnapshot = bindingStore.get(sessionId);
+  };
+
+  /**
+   * Feed an event that went through the `initFromHookEvent` old path to the
+   * shadow binder via `decide()`, then compare. `shadowEnterEvent` must have run
+   * at handler entry; here we just read the captured outcome. Called at the END
+   * of each old-path listener body.
+   */
+  const shadowDecide = (eventName: string, input: BinderHookEvent): void => {
+    if (!shadow) return;
+    const decision = shadow.decide(input);
+    compareAndLog(eventName, input, decision, observeOldState());
+  };
+
   hookServer.on('SessionStart', (input) => {
+    shadowEnterEvent(); // reset rotation tap + snapshot store (shadow-only)
+    if (driveBinder) {
+      // DRIVE: the binder owns the pre-empt + bind. Mirror the old listener
+      // order — pre-empt (flip its own mainSessionEnded) BEFORE onHookEvent.
+      // The old closure pre-empt + initFromHookEvent below are skipped; the
+      // bridge's onSessionInfo body is also skipped (binder subsumes it).
+      driveBinder.preemptOnSessionStart(input);
+      driveBinder.onHookEvent(input);
+      handlers.onSessionStart?.(input);
+      return;
+    }
     // Pre-empt the classifier into 'restart' on any session_id rotation while
     // our PTY is alive, regardless of `source` (Claude Code rotates session_id
     // through flows that omit source or carry undocumented values; the narrow
@@ -605,32 +913,49 @@ export function setupHookBridge(
     }
     initFromHookEvent(input);
     handlers.onSessionStart?.(input);
+    // Shadow: mirror the old listener order — pre-empt BEFORE decide so the
+    // binder flips its own mainSessionEnded exactly like the closure above did.
+    if (shadow) {
+      shadow.preemptOnSessionStart(input);
+      shadowDecide('SessionStart', input);
+    }
   });
 
   hookServer.on('PreToolUse', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PreToolUse', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     if (isSubagentEvent(input)) return;
-    cancelStaleAutoApprove('PreToolUse');
+    autoApproveGate.cancelStale('PreToolUse');
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PostToolUse', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     if (isSubagentEvent(input)) return;
-    cancelStaleAutoApprove('PostToolUse');
+    autoApproveGate.cancelStale('PostToolUse');
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('Notification', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     // SessionEnd already cleared status to 'idle'; a late
     // Notification(permission_prompt) for the dying session would
     // re-populate tracker.pending and a final PTY echo could fire a
     // spurious push the user cannot answer. Gate at the listener
     // boundary; restart resets mainSessionEnded so legitimate
-    // post-restart notifications still pass.
-    if (mainSessionEnded) {
+    // post-restart notifications still pass. In drive mode the binder owns
+    // mainSessionEnded (and resets it on restart via rotate()), so read it
+    // there as the single source of truth; the closure flag is the old path's.
+    if (driveBinder ? driveBinder.isMainEnded() : mainSessionEnded) {
       log(`[Hooks] Dropped post-SessionEnd Notification: type=${input.notification_type}`);
       return;
     }
@@ -642,213 +967,114 @@ export function setupHookBridge(
     handlers.onNotification?.(input);
   });
   hookServer.on('PermissionRequest', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
-
-    // Phase 4 (#419): subagent PermissionRequest events (events with
-    // agent_id set, originating from Task/Agent-spawned subagents) used
-    // to be dropped at this seam. Under phase 3's PTY-presence model,
-    // "what's on screen" is the truth: a hot-switched subagent view
-    // that renders a permission prompt IS user-answerable, and dropping
-    // the hook here loses the rich tool/option metadata. Forward the
-    // event; the tracker pairs it with PTY confirmation. Auto-approve
-    // and the inSubagent default-deny safety net below still gate
-    // injection independently.
-    if (isSubagentEvent(input)) {
-      log(
-        `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
-      );
-    }
-
-    // Nested-Task context (secondary safety net for cases where
-    // agent_id is absent). Used by the auto-approve default-deny path
-    // below to avoid hanging a subagent whose only escalation route is
-    // a main-PTY prompt the user cannot see.
-    //
-    // Read live (not captured) at each branch: auto-approve evaluate()
-    // is async, so the Task context can open or close between when this
-    // listener fires and when the .then()/.catch() runs. Capturing
-    // would TOCTOU — a Task that closed mid-eval would still trigger
-    // default-deny, and a Task that opened mid-eval would escape it.
-    const sessionTag = sessionId.slice(0, 8);
-
-    // Inject an answer into the PTY. Returns true on success. On failure
-    // (session missing, PTY not running, submitInput throws, subagent
-    // off-screen gate trips) it logs and returns false so callers can
-    // fall back to escalating the prompt.
-    //
-    // Value is a 1-based numeric option index serialised as a string. Most
-    // permissions only need '1' (approve) or '3' (deny); multi-choice picks
-    // can land any index in the prompt's option range (#399).
-    //
-    // PTY-presence gate (subagent-only): a background subagent emits
-    // PermissionRequest hooks for its own tool calls, but its prompts
-    // never render on the main PTY — only a hot-switched subagent view
-    // does. Without this gate, auto-approve would type "1"/"3" into the
-    // MAIN AGENT's input every time a background subagent asked for
-    // permission.
-    //
-    // Detect subagent context two ways: (a) explicit `agent_id` on the
-    // hook event (Task tool with agent_id set), and (b)
-    // `hookBridge.isInSubagentContext()` (nested-Task tracker — the
-    // secondary safety net for legacy events without agent_id). Both
-    // are read at inject time, not captured, so the hot-switched case
-    // (PTY has rendered the subagent prompt between the hook firing
-    // and the LLM eval returning) still injects.
-    //
-    // Asymmetry: the default-deny path (subagent-escalate / subagent-
-    // error) passes `bypassSubagentPtyGate=true` to keep firing even
-    // without PTY confirmation, because the alternative is hanging the
-    // subagent indefinitely with no one to answer. That is a
-    // deliberately-different trade-off from the approve/deny/pick path,
-    // which falls through to escalateToUser when gated.
-    const inject = async (
-      value: string,
-      reason: string,
-      bypassSubagentPtyGate = false,
-    ): Promise<boolean> => {
-      try {
-        const session = sessionRegistry.getSession(sessionId);
-        if (!session) {
-          logError(`[AutoApprove ${sessionTag}] Session not found; cannot inject "${value}"`);
-          return false;
-        }
-        const inSubagentContext = isSubagentEvent(input) || hookBridge.isInSubagentContext();
-        if (!bypassSubagentPtyGate && inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
-          log(
-            `[AutoApprove ${sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8) ?? 'nested'} type=${input.agent_type ?? 'n/a'})`,
-          );
-          return false;
-        }
-        await session.pty.submitInput(value);
-        log(`[AutoApprove ${sessionTag}] Injected "${value}" into PTY (${reason})`);
-        sessionRegistry.updateStatus(sessionId, value === '1' ? 'executing' : 'thinking');
-        return true;
-      } catch (err) {
-        logError(`[AutoApprove ${sessionTag}] inject("${value}") threw:`, err);
-        return false;
-      }
-    };
-
-    // Safe escalation to the user. Used when inject fails or when auto-approve
-    // is off and we're in main context. Wrapped so bridge/push failures don't
-    // leave the hook handler with a dangling unhandled rejection.
-    const escalateToUser = () => {
-      try {
-        handlers.onPermissionRequest?.(input);
-      } catch (err) {
-        logError(`[AutoApprove ${sessionTag}] escalateToUser threw:`, err);
-      }
-    };
-
-    // Auto-approve gate: evaluate before creating a Question object.
-    if (autoApproveService) {
-      const aaService = autoApproveService;
-      // Pass the raw suggestions array; AutoApproveService does its own
-      // strict-string filtering before feeding the LLM. We forward the
-      // raw shape (rather than coercing) so the multi-choice classifier
-      // can see "non-string entry" and route through escalate instead
-      // of crashing on a future Claude Code permission_suggestions
-      // schema change.
-      aaService
-        .evaluate(
-          input.tool_name,
-          input.tool_input,
-          sessionTag,
-          input.permission_suggestions as readonly unknown[] | undefined,
-        )
-        .then(async (result) => {
-          if (result.decision === 'cancelled') {
-            // User already advanced past the prompt (terminal answer or
-            // hook event confirmed the tool ran). Do not inject, do not
-            // escalate. Drop the pending hook record so its stale option
-            // labels cannot merge onto the next unrelated PTY prompt
-            // (e.g. user typed /compact, no PreToolUse fires).
-            tracker.clearPending();
-            log(`[AutoApprove ${sessionTag}] Decision dropped: ${result.reasoning}`);
-            return;
-          }
-          if (result.decision === 'approve') {
-            if (!(await inject('1', 'approved'))) escalateToUser();
-            return;
-          }
-          if (result.decision === 'deny') {
-            if (!(await inject('3', 'denied'))) escalateToUser();
-            return;
-          }
-          if (result.decision === 'pick' && result.pickIndex !== undefined) {
-            // Multi-choice pick (#399): inject the 1-based index Claude Code
-            // expects on the terminal. parseMultiChoiceDecision already
-            // validated the index against options length, so out-of-range
-            // values cannot reach this branch.
-            if (!(await inject(String(result.pickIndex), `multichoice-pick-${result.pickIndex}`))) {
-              escalateToUser();
-            }
-            return;
-          }
-          // escalate: in a subagent context, default-deny to avoid hanging
-          // the subagent. The user could not answer it anyway. Bypass the
-          // subagent PTY gate (`bypassSubagentPtyGate=true`) because the
-          // alternative is letting the subagent hang forever; typing '3'
-          // into the parent PTY is accepted as the lesser evil here. The
-          // approve/deny/pick branches above use the gate because they
-          // have a fallback (escalateToUser); this branch does not.
-          if (hookBridge.isInSubagentContext()) {
-            log(`[AutoApprove ${sessionTag}] Subagent context; escalate->deny to prevent hang`);
-            await inject('3', 'subagent-escalate-default-deny', true);
-            return;
-          }
-          escalateToUser();
-        })
-        .catch(async (err) => {
-          // Last line of defense; must not leave an unhandled rejection.
-          try {
-            logError(`[AutoApprove ${sessionTag}] Unexpected error:`, err);
-            if (hookBridge.isInSubagentContext()) {
-              await inject('3', 'subagent-error-default-deny', true);
-              return;
-            }
-            escalateToUser();
-          } catch (inner) {
-            logError(`[AutoApprove ${sessionTag}] catch handler threw:`, inner);
-          }
-        });
-      return;
-    }
-
-    // No auto-approve. In a subagent context, still must not hang the
-    // subagent: default-deny rather than emit a question the user can't
-    // answer. Synchronous fallback — read live for symmetry with the
-    // async branches above; no TOCTOU here but the consistent shape
-    // helps a future maintainer.
-    if (hookBridge.isInSubagentContext()) {
-      log(`[${sessionTag}] Subagent context without auto-approve; default-deny`);
-      inject('3', 'subagent-no-aa-default-deny', true).catch((err) => {
-        logError(`[${sessionTag}] Failed to inject default-deny:`, err);
-      });
-      return;
-    }
-
-    escalateToUser();
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PermissionRequest', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    // Auto-approve eval + inject, or escalate to the user (#453 phase 1). The gate
+    // owns the PTY injection, the subagent PTY-presence gate, the default-deny
+    // safety net, and the escalate fallback; session filtering above stays here in
+    // the bridge. isInSubagentContext / onPermissionRequest are injected into the
+    // gate and read live at inject time (async TOCTOU).
+    autoApproveGate.handlePermissionRequest(input);
   });
   hookServer.on('Stop', (input) => {
-    initFromHookEvent(input);
-    if (!filterBySession(input)) return;
-    cancelStaleAutoApprove('Stop');
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('Stop', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    autoApproveGate.cancelStale('Stop');
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) {
+      // DRIVE: the binder owns mainSessionEnded on id-match (and resets it on
+      // restart via rotate()). The post-SessionEnd Notification drop reads
+      // driveBinder.isMainEnded() directly, so there is no closure flag to keep
+      // in sync here — the binder is the single source of truth.
+      driveBinder.onSessionEnd(input);
+      if (!driveBinder.admits(input)) return;
+      autoApproveGate.cancelStale('SessionEnd');
+      handlers.onSessionEnd?.(input);
+      return;
+    }
     // Only mark our main as ended when the session_id matches what we locked.
     // Foreign SessionEnds (subagents, siblings) must not unlock our tracking.
     if (input.session_id && claudeSessionId && input.session_id === claudeSessionId) {
       mainSessionEnded = true;
     }
+    // Shadow: SessionEnd does NOT run initFromHookEvent/decide; it only flips
+    // mainSessionEnded on id-match. Mirror with onSessionEnd (no decide, no
+    // compare — there is no binding/rotation outcome to diff on this event).
+    shadow?.onSessionEnd(input);
     if (!filterBySession(input)) return;
-    cancelStaleAutoApprove('SessionEnd');
+    autoApproveGate.cancelStale('SessionEnd');
     handlers.onSessionEnd?.(input);
+  });
+
+  // ---- The 4 previously-dropped events (#453 phase 4) -----------------------
+  // These were registered with Claude Code (REMI_REGISTERED_HOOK_EVENTS) but had
+  // NO listener here, so they reached only (absent) dynamic listeners — a silent
+  // no-op. Wired now, each following the same admit-then-fan-out template as the
+  // tool listeners (drive the binder first so admits() sees an up-to-date lock,
+  // then the per-event policy). The bridge handlers already exist + are tested.
+
+  hookServer.on('StopFailure', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('StopFailure', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    // Question event: a failed Stop hook leaves the agent in an unknown state, so
+    // the bridge emits a "Retry?" card via onQuestion. Like PermissionRequest it
+    // is NOT agent_id-dropped — PTY-presence gating happens downstream in the
+    // tracker (#419).
+    handlers.onStopFailure?.(input);
+  });
+
+  hookServer.on('PostToolUseFailure', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PostToolUseFailure', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    // Status event: a subagent's tool failure must not flip MAIN's status, so
+    // drop on agent_id — the same split policy as Pre/PostToolUse (#419).
+    if (isSubagentEvent(input)) return;
+    handlers.onPostToolUseFailure?.(input);
+  });
+
+  // SubagentStart/SubagentStop are subagent-LIFECYCLE events: they ALWAYS carry
+  // agent_id by definition, so the isSubagentEvent drop would discard them
+  // entirely. The whole point is to surface subagent activity as a status
+  // breadcrumb, so gate them with admits() ONLY (the sibling defer + session
+  // scoping still apply via session_id) — a deliberate divergence from the
+  // Pre/PostToolUse agent_id drop (#453 phase 4).
+  hookServer.on('SubagentStart', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('SubagentStart', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    handlers.onSubagentStart?.(input);
+  });
+
+  hookServer.on('SubagentStop', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('SubagentStop', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    handlers.onSubagentStop?.(input);
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
 
-  return { bridge: hookBridge };
+  return {
+    bridge: hookBridge,
+    closeBinder: () => driveBinder?.close(),
+  };
 }

@@ -140,6 +140,30 @@ describe('applyEnvOverrides', () => {
     expect(config.display.max_bullet_length).toBe(100);
   });
 
+  test('transcript-binder feature flags default OFF', () => {
+    expect(DEFAULT_CONFIG.features.transcript_binder_shadow).toBe(false);
+    expect(DEFAULT_CONFIG.features.transcript_binder_enabled).toBe(false);
+  });
+
+  test('REMI_TRANSCRIPT_BINDER_SHADOW=true enables shadow only', () => {
+    process.env['REMI_TRANSCRIPT_BINDER_SHADOW'] = 'true';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.features.transcript_binder_shadow).toBe(true);
+    expect(config.features.transcript_binder_enabled).toBe(false);
+  });
+
+  test('REMI_TRANSCRIPT_BINDER_ENABLED=true enables drive', () => {
+    process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'true';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.features.transcript_binder_enabled).toBe(true);
+  });
+
+  test('REMI_TRANSCRIPT_BINDER_SHADOW=false keeps shadow off', () => {
+    process.env['REMI_TRANSCRIPT_BINDER_SHADOW'] = 'false';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.features.transcript_binder_shadow).toBe(false);
+  });
+
   test('TELEGRAM_BOT_TOKEN enables telegram', () => {
     process.env['TELEGRAM_BOT_TOKEN'] = 'test-token-123';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
