@@ -17,7 +17,13 @@ bad()  { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 CWD="$E2E_TRUSTED"
-reset_cwd() { rm -rf "$CWD/.claude" 2>/dev/null; }
+# Isolate each scenario: drop the daemon hook config AND the transcript history
+# for this cwd, so a prior run's same-port transcripts cannot contaminate the
+# dir-poll. E2E_TRUSTED MUST be a throwaway scratch dir (see README).
+reset_cwd() {
+  rm -rf "$CWD/.claude" 2>/dev/null
+  rm -f "$(tdir_for "$CWD")"/*.jsonl 2>/dev/null
+}
 
 EXPLORE="Read README.md or list the files here, then give a 2-sentence summary. Read-only, do not modify anything."
 
@@ -32,10 +38,11 @@ A=$(wait_bound "$CWD" 18811 8 100) || { bad "shadow: initial bind"; A=""; }
 [ -n "$A" ] && ok "shadow: claude bound (honoured pre-assigned --session-id): $A"
 check "shadow: 0 DISAGREE on a normal session" "[ \$(grep -c 'ShadowBinder] DISAGREE' '$E2E_STATE/s1.log') -eq 0 ]"
 
-prompt s1 "/clear"; sleep 6
+prompt s1 "/clear"
+wait_log s1 "restart detected" 25   # the new transcript file appears slightly before the daemon logs the rotation
 B=$(bound_transcript "$CWD" 18811 2>/dev/null | awk '{print $1}')
 check "shadow: /clear rotated to a NEW id (B != A)" "[ -n '$B' ] && [ '$B' != '$A' ]"
-check "shadow: rotation announced exactly once"     "[ \$(grep -c 'restart detected' '$E2E_STATE/s1.log') -eq 1 ]"
+check "shadow: rotation announced exactly once (old path drives)" "[ \$(grep -c '\[Hooks\] Claude restart detected' '$E2E_STATE/s1.log') -eq 1 ]"
 check "shadow: still 0 DISAGREE after /clear"        "[ \$(grep -c 'ShadowBinder] DISAGREE' '$E2E_STATE/s1.log') -eq 0 ]"
 
 Bf=$(tdir_for "$CWD")/$B.jsonl; Af=$(tdir_for "$CWD")/$A.jsonl
@@ -61,7 +68,8 @@ prompt s2 "$EXPLORE"
 A2=$(wait_bound "$CWD" 18812 8 100) || { bad "drive: initial bind"; A2=""; }
 check "drive: binder drove the bind" "grep -q 'Binder] Lock adopted' '$E2E_STATE/s2.log'"
 
-prompt s2 "/clear"; sleep 6
+prompt s2 "/clear"
+wait_log s2 "DirPollRotation|restart detected" 25
 B2=$(bound_transcript "$CWD" 18812 2>/dev/null | awk '{print $1}')
 check "drive: /clear rotated (B != A)" "[ -n '$B2' ] && [ '$B2' != '$A2' ]"
 check "drive: new dir-poll detected the rotation (#452 machinery)" "grep -q 'No-hooks rotation detected via dir poll' '$E2E_STATE/s2.log'"
@@ -95,7 +103,9 @@ check "two-daemon: each binds its own port marker" "head -c 4000 '$F1' | grep -q
 CC=$(pgrep -f "claude .*remi:18813" | head -1)
 kill -9 "$CC" 2>/dev/null
 check "zombie: D1 daemon wrapper still alive (false-live sibling)" "kill -0 \$(cat '$E2E_STATE/d1.pid') 2>/dev/null"
-prompt d2 "/clear"; sleep 6; prompt d2 "Say the word GAMMA."
+prompt d2 "/clear"
+wait_log d2 "owned by port 18813, not 18814|DirPollRotation|restart detected" 25
+prompt d2 "Say the word GAMMA."
 C2B=$(bound_transcript "$CWD" 18814 2>/dev/null | awk '{print $1}')
 check "zombie: D2 rebound despite the zombie sibling" "[ -n '$C2B' ] && [ '$C2B' != '$C2' ]"
 check "zombie: D2 ignored the foreign/zombie transcript by marker" "grep -q 'owned by port 18813, not 18814; ignoring' '$E2E_STATE/d2.log'"

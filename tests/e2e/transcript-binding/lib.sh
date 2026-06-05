@@ -125,6 +125,17 @@ bound_transcript() {
   return 1
 }
 
+# Wait until a log line matching PATTERN (grep -E) appears, or time out.
+wait_log() {
+  local name=$1 pattern=$2 secs=${3:-20} i
+  local log="$E2E_STATE/$name.log"
+  for ((i = 0; i < secs; i++)); do
+    grep -qE "$pattern" "$log" 2>/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
 # Wait until a daemon binds a transcript with >= MINLINES lines. Prints id.
 wait_bound() {
   local cwd=$1 port=$2 minlines=${3:-8} secs=${4:-100} i bt cid f
