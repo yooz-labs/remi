@@ -134,6 +134,17 @@ describe('setupHookBridge', () => {
 
   afterEach(async () => {
     __resetLoggerForTests();
+    // Stop any transcript watchers a test left running (tests that fire
+    // SessionStart start a real TranscriptWatcher with an fs.watch + 1s poll;
+    // without this they leak a timer + fd past the test). Covers the
+    // pre-existing rotation tests too.
+    for (const w of transcriptWatchers.values()) {
+      try {
+        w.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
     await sessionRegistry.shutdown();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
