@@ -25,11 +25,14 @@ jobs:
   bump:
     name: Auto Bump Dev
     # Skip the bot's own bump commits (so this never loops) and any commit that
-    # opts out with [skip-bump] in its message.
+    # opts out with [skip-bump]. The message prefix is the primary guard — it
+    # exactly matches bump-version.sh's commit; the author-email checks (both
+    # noreply forms GitHub may emit) are belt-and-suspenders.
     if: >-
-      github.event.head_commit.author.email != 'github-actions[bot]@users.noreply.github.com'
-      && !startsWith(github.event.head_commit.message, 'chore: bump version to')
+      !startsWith(github.event.head_commit.message, 'chore: bump version to')
       && !contains(github.event.head_commit.message, '[skip-bump]')
+      && github.event.head_commit.author.email != 'github-actions[bot]@users.noreply.github.com'
+      && github.event.head_commit.author.email != '41898282+github-actions[bot]@users.noreply.github.com'
     runs-on: ubuntu-latest
     steps:
       - name: Generate App Token
@@ -64,3 +67,10 @@ jobs:
           # Push the branch only. bump-version.sh also creates a local v<ver> tag
           # which we intentionally do NOT push — dev versions are never released.
           git push origin develop
+          # Belt-and-suspenders: a dev tag must never reach origin (it would
+          # trigger release.yml). Fail loudly if a future edit ever pushes one.
+          NEW=$(jq -r '.version' package.json)
+          if git ls-remote --tags origin "refs/tags/v$NEW" | grep -q .; then
+            echo "ERROR: dev tag v$NEW was unexpectedly pushed to origin" >&2
+            exit 1
+          fi
