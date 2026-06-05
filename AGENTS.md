@@ -155,37 +155,51 @@ bun run build:binary   # /opt/homebrew/bin/remi picks it up
 
 ## Releasing
 
-**Always use `bump-version.sh`** — never hand-edit version numbers.
+**Always use `bump-version.sh`** — never hand-edit version numbers. Most of the
+release flow is automated by CI; you rarely run the script by hand.
+
+**What's automated:**
+
+- **Dev counter** — `auto-bump-dev.yml` increments `-dev.N` on every push to
+  `develop` (e.g. `0.6.2-dev.1` → `0.6.2-dev.2`). Version-only; no builds or
+  publishes. Skip it on a given commit with `[skip-bump]` in the message.
+- **Stable release** — merging `develop` → `main` triggers `auto-release`
+  (ci.yml): it strips the `-dev.N` suffix, commits, and pushes the stable tag
+  `vX.Y.Z`, which triggers `release.yml` (per-platform binary build, npm
+  `@latest` publish to `@yooz-labs/remi` + platform packages, GitHub release,
+  Homebrew tap update).
+- **Post-release sync** — `sync-develop` (ci.yml) then merges `main` back into
+  `develop` and bumps to the next dev line (`X.Y.Z` → `X.Y.(Z+1)-dev.1`).
+
+**What you do by hand:**
 
 ```bash
-# Dev release on develop (npm @dev tag, GitHub prerelease)
-git checkout develop
-./scripts/bump-version.sh --push dev   # 0.4.3 → 0.4.4-dev.1
-./scripts/bump-version.sh --push dev   # 0.4.4-dev.1 → 0.4.4-dev.2
+# Cut a release: PR develop -> main (never push to main directly), merge when
+# green. CI does the strip/tag/publish/sync. Update CHANGELOG before the PR.
 
-# Promote to main when stable (CI strips dev suffix and releases)
-git checkout main && git merge develop && git push origin main
-# CI: 0.4.4-dev.6 → 0.4.4 (tag + npm publish + Homebrew)
+# Start a new minor/major (or explicit) line on develop, via a normal PR.
+# The dev counter then auto-increments from there on each push.
+./scripts/bump-version.sh minor          # 0.6.x-dev.N -> 0.7.0-dev.1
+./scripts/bump-version.sh major          # -> 1.0.0-dev.1
+./scripts/bump-version.sh set 1.2.0-dev.1
+# 'dev' (manual counter bump) and 'patch' still exist but are rarely needed
+# now that auto-bump-dev / sync-develop handle them.
 
-# After release: sync develop and start the next dev cycle
-git checkout develop && git merge origin/main && git push origin develop
-./scripts/bump-version.sh --push dev   # 0.4.4 → 0.4.5-dev.1
-
-# Stable release (CI: build, npm @latest, GitHub release, Homebrew)
-./scripts/bump-version.sh --push patch     # 0.4.4-dev.2 → 0.4.4
-./scripts/bump-version.sh --push minor     # 0.3.9 → 0.4.0
-./scripts/bump-version.sh --push major     # 0.3.9 → 1.0.0
-./scripts/bump-version.sh --push set 1.0.0 # explicit
-
-# Without --push: commits and tags locally, prints push commands
-./scripts/bump-version.sh patch
+# Without --push: commits + tags locally, prints push commands.
 ```
 
-The script updates `package.json` and the `REMI_COMPILED_VERSION` fallback in `cli.ts`, commits, tags, and (with `--push`) pushes to trigger the release pipeline.
+The script updates `package.json` and the `REMI_COMPILED_VERSION` fallback in
+`cli.ts`, commits, and tags. `stable` is blocked on `develop` (CI-only).
 
 ## CI
 
-GitHub Actions on push / PR to `main`: `bunx biome check`, `bun run typecheck`, `bun test --coverage` with a 60% minimum threshold.
+GitHub Actions:
+- **Gates** (PR to `main`/`develop`, push to `main`): `bunx biome check`,
+  `bun run typecheck`, `bun test --coverage` (60% minimum), spelling (`typos`).
+- **auto-bump-dev** (push to `develop`): increments the dev counter.
+- **auto-release + sync-develop** (push to `main`): stable release + dev sync.
+- **release.yml** (stable `vX.Y.Z` tag): build, npm publish, GitHub release,
+  Homebrew.
 
 ---
 

@@ -1,0 +1,76 @@
+name: Auto Bump Dev
+
+# Increment the -dev.N counter on every push to develop, so each dev build has a
+# unique version. Version-only: NO builds and NO npm publish (those happen on
+# main via release.yml, triggered by stable version tags). Stable releases and
+# the post-release main->develop sync are handled by the auto-release and
+# sync-develop jobs in ci.yml.
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: write
+
+concurrency:
+  # Serialize bumps so two quick pushes can't race the branch push.
+  group: auto-bump-dev
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 1.3.11
+
+jobs:
+  bump:
+    name: Auto Bump Dev
+    # Skip the bot's own bump commits (so this never loops) and any commit that
+    # opts out with [skip-bump]. The message prefix is the primary guard — it
+    # exactly matches bump-version.sh's commit; the author-email checks (both
+    # noreply forms GitHub may emit) are belt-and-suspenders.
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore: bump version to')
+      && !contains(github.event.head_commit.message, '[skip-bump]')
+      && github.event.head_commit.author.email != 'github-actions[bot]@users.noreply.github.com'
+      && github.event.head_commit.author.email != '41898282+github-actions[bot]@users.noreply.github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Bump dev counter and push branch (no tag)
+        run: |
+          CURRENT=$(jq -r '.version' package.json)
+          if [[ ! "$CURRENT" =~ -dev\.[0-9]+$ ]]; then
+            echo "Version $CURRENT has no -dev.N suffix; nothing to increment."
+            echo "Start a new dev line with bump-version.sh patch|minor|major first."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bun install --frozen-lockfile
+          ./scripts/bump-version.sh dev
+          # Push the branch only. bump-version.sh also creates a local v<ver> tag
+          # which we intentionally do NOT push — dev versions are never released.
+          git push origin develop
+          # Belt-and-suspenders: a dev tag must never reach origin (it would
+          # trigger release.yml). Fail loudly if a future edit ever pushes one.
+          NEW=$(jq -r '.version' package.json)
+          if git ls-remote --tags origin "refs/tags/v$NEW" | grep -q .; then
+            echo "ERROR: dev tag v$NEW was unexpectedly pushed to origin" >&2
+            exit 1
+          fi
