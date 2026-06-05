@@ -63,14 +63,23 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
       // rotation handler keeps current (#451), so history loads even when the
       // streaming watcher is absent rather than failing with NOT_FOUND.
       if (!filePath) {
-        const boundClaudeId = bindingStore.get(sessionId as UUID)?.claudeSessionId;
-        if (boundClaudeId) {
-          filePath = transcriptDiscovery.findTranscriptBySessionId(boundClaudeId);
-          if (filePath) {
-            log(
-              `[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via store binding ${boundClaudeId.slice(0, 8)}`,
-            );
+        // A disk hiccup on the binding lookup must not throw out of this void
+        // handler (the client would hang with no response). Fail soft: log and
+        // fall through to the NOT_FOUND path below.
+        try {
+          const boundClaudeId = bindingStore.get(sessionId as UUID)?.claudeSessionId;
+          if (boundClaudeId) {
+            filePath = transcriptDiscovery.findTranscriptBySessionId(boundClaudeId);
+            if (filePath) {
+              log(
+                `[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via store binding ${boundClaudeId.slice(0, 8)}`,
+              );
+            }
           }
+        } catch (err) {
+          logError(
+            `[TranscriptLoad] binding lookup failed for ${sessionId}; proceeding without store resolution: ${errorToString(err)}`,
+          );
         }
       }
 

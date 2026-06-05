@@ -132,7 +132,7 @@ export function setupHookBridge(
       const previous = claudeSessionId;
       claudeSessionId = storedId;
       log(
-        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from sessionStore: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
+        `[Hooks] Lock ${previous === null ? 'adopted' : 'updated'} from binding store: claude=${storedId.slice(0, 8)}${previous ? ` (was ${previous.slice(0, 8)})` : ''}`,
       );
     } catch (err) {
       logError(`[Hooks] adoptLockFromStore failed: ${errorToString(err)}`);

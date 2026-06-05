@@ -58,7 +58,12 @@ export class SessionBindingStore {
     this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);
   }
 
-  /** Pre-spawn deterministic assignment: persist the full session record. */
+  /**
+   * Pre-spawn deterministic assignment: persist the full session record. Takes the
+   * whole StoredSession (not just the binding) because save() creates the row,
+   * including the liveness fields (pid/port/exitedAt) which are the CALLER's
+   * responsibility to populate correctly — the accessor does not own them.
+   */
   preAssign(session: StoredSession): void {
     this.store.save(session);
   }

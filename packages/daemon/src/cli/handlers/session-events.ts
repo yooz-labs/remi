@@ -87,10 +87,19 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       if (includeExternal) {
         const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
         // Also exclude by Claude session ID (JSONL filename UUID is a different namespace from remi IDs).
+        // Per-entry try/catch (mirrors the decoration loop above): a disk hiccup on
+        // one lookup must not throw out of this void handler and hang the whole
+        // session-list response — degrade to a possibly-incomplete exclude set.
         for (const remiId of [...managedIds]) {
-          const binding = bindingStore.get(remiId as UUID);
-          if (binding?.claudeSessionId) {
-            managedIds.add(binding.claudeSessionId);
+          try {
+            const binding = bindingStore.get(remiId as UUID);
+            if (binding?.claudeSessionId) {
+              managedIds.add(binding.claudeSessionId);
+            }
+          } catch (err) {
+            logError(
+              `[SessionList] binding lookup failed for ${remiId.slice(0, 8)}; external exclusion may be incomplete: ${errorToString(err)}`,
+            );
           }
         }
         const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
