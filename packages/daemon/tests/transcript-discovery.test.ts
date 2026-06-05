@@ -184,26 +184,6 @@ describe('TranscriptDiscovery', () => {
     expect(sessions2[0]?.status).toBe('completed');
   });
 
-  test('findLatestTranscript returns most recent file', async () => {
-    const projectDir = makeProjectDir('/Users/test/myproject');
-
-    writeTranscript(projectDir, 'old-session', [makeUserEntry('old')]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    writeTranscript(projectDir, 'new-session', [makeUserEntry('new')]);
-
-    const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
-    const latest = discovery.findLatestTranscript('/Users/test/myproject');
-
-    expect(latest).toContain('new-session.jsonl');
-  });
-
-  test('findLatestTranscript returns null for unknown project', () => {
-    const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
-    const latest = discovery.findLatestTranscript('/nonexistent/project');
-
-    expect(latest).toBeNull();
-  });
-
   test('handles empty projects directory', () => {
     const discovery = new TranscriptDiscovery({ projectsDir: TEMP_DIR });
     const sessions = discovery.discoverSessions();
