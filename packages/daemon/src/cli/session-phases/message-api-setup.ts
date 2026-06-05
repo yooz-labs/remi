@@ -19,22 +19,19 @@
  */
 
 import { createStructuredAgentOutput, generateId, now } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared';
 
 import type { MessageAPIEvents } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
-import { sendPushTrigger } from '../../notifications/push-client.ts';
-import { PushDedup } from '../../notifications/push-dedup.ts';
+import { NotificationDispatcher } from '../../notifications/notification-dispatcher.ts';
+import type { PushConfig } from '../../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../../session/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { DeviceTokenEntry } from '../handlers/trivial-events.ts';
 import { log, logError } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
 
-export interface PushConfig {
-  signalingUrl: string;
-  pushSecret?: string | undefined;
-}
+export type { PushConfig };
 
 export interface MessageApiSetupDeps {
   sessionRegistry: SessionRegistry;
@@ -65,18 +62,6 @@ export interface MessageApiHandle {
   sendAndRecord: (message: ProtocolMessage) => void;
 }
 
-/**
- * Select the APNS notification category based on the number of question
- * options. iOS renders action buttons matching the category; watchOS mirrors
- * them automatically.
- */
-export function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
-  if (options.length === 2) return 'REMI_YN';
-  if (options.length === 3) return 'REMI_YNA';
-  if (options.length === 4) return 'REMI_MULTI';
-  return undefined;
-}
-
 export function createMessageApiForSession(
   deps: MessageApiSetupDeps,
   sessionId: UUID,
@@ -101,11 +86,13 @@ export function createMessageApiForSession(
     sessionRegistry.recordOutgoingMessage(recordId, message);
   };
 
-  // Per-session push-dedup baseline. PTY + Hook double-emit one prompt
-  // with different ids; without this, the user gets two lock-screen
-  // notifications per prompt (#409). Reset whenever status leaves
-  // 'waiting' so a fresh prompt cycle starts with a clean baseline.
-  const pushDedup = new PushDedup();
+  // APNS push for this session's questions (#453 phase 1). Owns the
+  // active-client gate, the per-prompt PushDedup baseline (#409), and the
+  // device-token fan-out; the MessageAPI callback just hands it the question.
+  const notifications = new NotificationDispatcher(
+    { sessionRegistry, deviceTokens, pushConfig },
+    sessionId,
+  );
 
   const callbacks: MessageAPIEvents = {
     onStructuredMessage: (structured) => {
@@ -141,37 +128,7 @@ export function createMessageApiForSession(
       sessionRegistry.addQuestion(questionSessionId, question);
 
       // Push only when no client is attached; attached clients see it in-app.
-      const sessionForPush = sessionRegistry.getSession(questionSessionId);
-      const hasActiveClient =
-        sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
-      if (deviceTokens.size > 0 && !hasActiveClient) {
-        // Push-dedup gate (#409): suppress the PTY/Hook double-emission
-        // for one prompt cycle. Mirrors the client's richer-wins guard
-        // so phone and in-app converge on the same option set.
-        if (!pushDedup.shouldPush(question)) {
-          log(`Push suppressed by dedup for session ${questionSessionId}`);
-          return;
-        }
-        const session = sessionRegistry.getSession(sessionId);
-        const sessionName = session?.name || 'Agent';
-        const cfg = pushConfig();
-        const pushSessionId = getPrimarySessionId() ?? sessionId;
-        const pushCategory = selectPushCategory(question.options);
-        const pushOptions = question.options.map((o) => o.value);
-        for (const dt of deviceTokens.values()) {
-          sendPushTrigger(cfg.signalingUrl, dt.token, {
-            title: `${sessionName} needs input`,
-            body: question.text.slice(0, 100),
-            ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
-            sessionId: pushSessionId,
-            questionId: question.id,
-            ...(pushCategory !== undefined ? { category: pushCategory } : {}),
-            ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
-          })
-            .then(() => log(`Push notification sent for session ${pushSessionId}`))
-            .catch((err) => log(`Push notification failed: ${err}`));
-        }
-      }
+      notifications.maybePush(questionSessionId, question);
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);
@@ -180,7 +137,7 @@ export function createMessageApiForSession(
       // prompt cycle starts fresh and is not silently absorbed by a
       // stale prior push (#409).
       if (status !== 'waiting') {
-        pushDedup.reset();
+        notifications.resetDedup();
       }
       const msg: ProtocolMessage = {
         type: 'session_update',
