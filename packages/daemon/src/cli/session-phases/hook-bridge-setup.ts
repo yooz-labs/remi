@@ -241,6 +241,36 @@ export function setupHookBridge(
     messageApi.reset();
   }
 
+  /**
+   * Start the transcript watcher for our own session if one is not already
+   * running. Self-heals the case where the lock was adopted from the store
+   * (so first-init never ran) but no watcher exists because the fallback poll
+   * gave up after its 30s window — common when Claude writes its first
+   * transcript line late on an idle start (observed across many sessions:
+   * "[Fallback] Timed out ..."). Only called for events whose session_id
+   * matches our lock (classification 'match'), i.e. our own Claude's events,
+   * whose transcript_path is therefore ours.
+   */
+  function ensureWatcher(transcriptPath: string | undefined): void {
+    if (!transcriptPath) return;
+    if (transcriptWatchers.has(sessionId)) return;
+    if (!sessionRegistry.hasSession(sessionId)) return;
+    // We have the exact path now; cancel any lingering fallback poll.
+    const fallbackTimer = transcriptFallbackTimers.get(sessionId);
+    if (fallbackTimer) {
+      clearInterval(fallbackTimer);
+      transcriptFallbackTimers.delete(sessionId);
+    }
+    log(`[Hooks] Ensuring watcher (self-heal) for ${sessionId.slice(0, 8)}: ${transcriptPath}`);
+    startTranscriptWatcher(
+      { transcriptWatchers },
+      sessionId,
+      transcriptPath,
+      messageApi,
+      sendAndRecord,
+    );
+  }
+
   function initFromHookEvent(input: {
     session_id?: string;
     transcript_path?: string;
@@ -326,7 +356,16 @@ export function setupHookBridge(
       // a true value coming from the race-detector path.
     }
     // classification === 'match': either our tracked session or first-time lock.
-    if (claudeSessionId) return; // already initialized
+    if (claudeSessionId) {
+      // Lock already held (typically adopted from the store before first-init
+      // ran). This event is from our own Claude (session_id matches our lock),
+      // so its transcript_path is ours — make sure a watcher is running. Without
+      // this, a session whose fallback poll timed out before Claude wrote its
+      // transcript stays locked-but-unwatched: no live stream and
+      // transcript_load returns NOT_FOUND.
+      ensureWatcher(input.transcript_path);
+      return;
+    }
     if (!input.transcript_path) return;
 
     if (hasSiblingInDir() && !ownsTranscript(input.transcript_path)) {

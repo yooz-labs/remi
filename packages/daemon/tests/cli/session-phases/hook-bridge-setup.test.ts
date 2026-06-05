@@ -2051,5 +2051,33 @@ describe('setupHookBridge', () => {
         stopWatchers();
       }
     });
+
+    test('self-heals the watcher when locked-from-store but the fallback gave up', () => {
+      // The osa case: single daemon, no sibling. The lock is adopted from the
+      // store (deterministic pre-spawn binding), but no watcher exists because
+      // the 30s fallback poll timed out before Claude wrote its first transcript
+      // line. The next hook event from our own Claude must start the watcher
+      // (no port marker needed: the session_id match is proof of ownership).
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, null);
+
+      build();
+      // No fallback ran in this harness, so we start with no watcher.
+      expect(transcriptWatchers.has(SID)).toBe(false);
+
+      hookServer.fire('PreToolUse', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        hook_event_name: 'PreToolUse',
+      });
+
+      try {
+        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+      } finally {
+        stopWatchers();
+      }
+    });
   });
 });
