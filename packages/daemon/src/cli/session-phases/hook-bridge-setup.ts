@@ -26,10 +26,14 @@
  * callbacks; Pre/PostToolUse/Stop/SessionEnd call `gate.cancelStale()` to abort a
  * stale in-flight eval once Claude has advanced past the prompt.
  *
- * The function registers 7 hookServer listeners (SessionStart, PreToolUse,
- * PostToolUse, Notification, PermissionRequest, Stop, SessionEnd) and
- * returns void. It runs once per session at createNewSession time, only
- * when a hookServer is configured.
+ * This listener block IS the per-session hook router (admit-then-fan-out); a
+ * formal HookRouter class is deferred until the shadow/drive dual path is
+ * deleted (the `driveBinder ? … : oldPath` ternaries collapse first). The
+ * function registers 11 hookServer listeners — the original 7 (SessionStart,
+ * PreToolUse, PostToolUse, Notification, PermissionRequest, Stop, SessionEnd)
+ * plus the 4 wired in phase 4 (StopFailure, PostToolUseFailure, SubagentStart,
+ * SubagentStop) — and returns void. It runs once per session at
+ * createNewSession time, only when a hookServer is configured.
  */
 
 import * as fs from 'node:fs';
@@ -1009,6 +1013,62 @@ export function setupHookBridge(
     if (!filterBySession(input)) return;
     autoApproveGate.cancelStale('SessionEnd');
     handlers.onSessionEnd?.(input);
+  });
+
+  // ---- The 4 previously-dropped events (#453 phase 4) -----------------------
+  // These were registered with Claude Code (REMI_REGISTERED_HOOK_EVENTS) but had
+  // NO listener here, so they reached only (absent) dynamic listeners — a silent
+  // no-op. Wired now, each following the same admit-then-fan-out template as the
+  // tool listeners (drive the binder first so admits() sees an up-to-date lock,
+  // then the per-event policy). The bridge handlers already exist + are tested.
+
+  hookServer.on('StopFailure', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('StopFailure', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    // Question event: a failed Stop hook leaves the agent in an unknown state, so
+    // the bridge emits a "Retry?" card via onQuestion. Like PermissionRequest it
+    // is NOT agent_id-dropped — PTY-presence gating happens downstream in the
+    // tracker (#419).
+    handlers.onStopFailure?.(input);
+  });
+
+  hookServer.on('PostToolUseFailure', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('PostToolUseFailure', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    // Status event: a subagent's tool failure must not flip MAIN's status, so
+    // drop on agent_id — the same split policy as Pre/PostToolUse (#419).
+    if (isSubagentEvent(input)) return;
+    handlers.onPostToolUseFailure?.(input);
+  });
+
+  // SubagentStart/SubagentStop are subagent-LIFECYCLE events: they ALWAYS carry
+  // agent_id by definition, so the isSubagentEvent drop would discard them
+  // entirely. The whole point is to surface subagent activity as a status
+  // breadcrumb, so gate them with admits() ONLY (the sibling defer + session
+  // scoping still apply via session_id) — a deliberate divergence from the
+  // Pre/PostToolUse agent_id drop (#453 phase 4).
+  hookServer.on('SubagentStart', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('SubagentStart', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    handlers.onSubagentStart?.(input);
+  });
+
+  hookServer.on('SubagentStop', (input) => {
+    shadowEnterEvent();
+    if (driveBinder) driveBinder.onHookEvent(input);
+    else initFromHookEvent(input);
+    shadowDecide('SubagentStop', input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
+    handlers.onSubagentStop?.(input);
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
