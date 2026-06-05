@@ -4,6 +4,29 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-05
+
+### Changed
+- Internal: the session-binding + transcript-watcher subsystem is unified
+  into a single `TranscriptBinder` (epic #453). Ships **behind a feature
+  flag, default off** (`transcript_binder_shadow` / `transcript_binder_enabled`)
+  — no behavior change in the default configuration, verified at runtime
+  against the old path. Includes a re-arming directory poll for no-hooks
+  rotations, an extracted `QuestionPipeline` (notification dispatch +
+  auto-approve gate), a no-cache `SessionBindingStore`, the four
+  previously-unwired hook events (StopFailure, PostToolUseFailure,
+  SubagentStart/Stop), and relay/telegram adapter silent-drop fixes
+  (#459, #462, #464, #466, #468, #471, #472).
+
+### Fixed
+- `sessions.json` write now uses a per-process temp path, fixing a
+  multi-writer race where two daemons starting in the same `~/.remi` could
+  crash one on the atomic rename (#461).
+
+### Internal
+- Added a manual real-Claude e2e harness for the transcript-binding
+  subsystem under `tests/e2e/transcript-binding/` (not wired into CI) (#475).
+
 ## [0.6.0] - 2026-06-04
 
 Redesign + a sweep of session/transcript reliability work. Changelog
