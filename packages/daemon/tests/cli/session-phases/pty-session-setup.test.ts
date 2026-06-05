@@ -131,4 +131,71 @@ describe('createPtySessionForSession', () => {
     const b = build(false);
     expect(a.id).not.toBe(b.id);
   });
+
+  // Real-PTY wiring for #451 Part 2: when the Claude child exits, onExit must
+  // mark the live-sessions entry's child as exited so co-located daemons stop
+  // counting us as a live sibling. Drives a genuine PTY by putting a fake,
+  // immediately-exiting `claude` on PATH (no mocks).
+  test('onExit marks the live-sessions child as exited (#451 Part 2)', async () => {
+    const fakeBin = path.join(tmpDir, 'bin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeClaude = path.join(fakeBin, 'claude');
+    fs.writeFileSync(fakeClaude, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(fakeClaude, 0o755);
+
+    // Pre-register the live-sessions entry with a (currently alive) child pid,
+    // mirroring the post-spawn setClaudeChildPid state.
+    liveSessionsRegistry.register({
+      sessionId: SID,
+      pid: process.pid,
+      wsPort: 9999,
+      hookPort: 9998,
+      projectPath: tmpDir,
+      name: 'pty-exit-test',
+      startedAt: new Date().toISOString(),
+      claudeChildPid: process.pid,
+    });
+
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        outputProcessor,
+        wsPort: 9999,
+        sendMessage: (sid, message) => sendCalls.push({ sessionId: sid, message }),
+        cleanup: async () => {},
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: false },
+    );
+    // Register so handlePTYExit in onExit resolves the session.
+    sessionRegistry.registerSession(SID, tmpDir, pty, {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+      reset: () => {},
+    } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
+
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${fakeBin}:${originalPath ?? ''}`;
+    try {
+      await pty.start();
+      // Wait for the fake claude to exit and onExit to fire.
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline) {
+        const entry = liveSessionsRegistry.findBySessionId(SID);
+        if (entry?.claudeChildExited === true) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(liveSessionsRegistry.findBySessionId(SID)?.claudeChildExited).toBe(true);
+    } finally {
+      // Restore PATH (originalPath is effectively always defined in practice).
+      process.env['PATH'] = originalPath ?? '';
+      try {
+        await pty.close();
+      } catch {
+        /* already exited */
+      }
+    }
+  });
 });

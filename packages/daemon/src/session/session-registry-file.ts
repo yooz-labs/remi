@@ -136,7 +136,13 @@ export class SessionRegistryFile {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
       const data: unknown = JSON.parse(raw);
-      if (!isValidEntry(data)) return;
+      if (!isValidEntry(data)) {
+        // The on-disk entry is malformed (e.g. a torn write). Skipping the
+        // patch silently would disable the zombie guard for this session with
+        // no trace; surface it (listLive will reap the bad entry separately).
+        console.error(`[live-sessions] Cannot patch ${sessionId}: existing entry is invalid`);
+        return;
+      }
       this.register({ ...data, ...patch });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;

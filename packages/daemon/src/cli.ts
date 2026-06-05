@@ -1136,6 +1136,12 @@ async function createNewSession(
   const claudeChildPid = ptySession.childPid;
   if (claudeChildPid !== null) {
     liveSessionsRegistry.setClaudeChildPid(sessionId, claudeChildPid);
+  } else {
+    // Unreachable after a successful start() (the child pid is assigned
+    // synchronously by the spawn). Log rather than silently skip: without the
+    // pid the entry stays "unknown" and peers keep treating this live session
+    // as a zombie's sibling, re-opening the wedge this fix closes (#451).
+    logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
   }
 
   startTranscriptFallback(

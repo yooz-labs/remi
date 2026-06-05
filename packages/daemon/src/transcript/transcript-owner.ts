@@ -68,7 +68,15 @@ export function readTranscriptOwnerPort(transcriptPath: string): number | null {
       }
     }
     return null;
-  } catch {
+  } catch (err) {
+    // Fail safe: a missing/unflushed file (ENOENT) is routine during the
+    // fallback window, so callers treat null as "no marker". But a non-routine
+    // I/O error (EMFILE, ENOMEM, EACCES) is worth surfacing so an operator can
+    // see why ownership checks are coming up empty.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== undefined && code !== 'ENOENT') {
+      console.error(`[transcript-owner] Failed to read ${transcriptPath}: ${code}`);
+    }
     return null;
   } finally {
     if (fd !== null) {

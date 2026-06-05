@@ -1981,13 +1981,72 @@ describe('setupHookBridge', () => {
       try {
         // Binding unchanged: the sibling's rotation never overwrote ours.
         expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
-        // If a watcher exists it must be on OUR transcript, never latched onto
-        // the sibling's path.
-        const watched = transcriptWatchers.get(SID)?.filePath;
-        if (watched !== undefined) {
-          expect(watched).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
-          expect(watched).not.toBe(pathSib);
-        }
+        // Our watcher (started for CLAUDE_A on event 1) is still intact and was
+        // never torn down or re-pointed at the sibling's transcript.
+        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+        expect(transcriptWatchers.get(SID)?.filePath).not.toBe(pathSib);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('live sibling + rotation with NO port marker is not adopted', () => {
+      // Guards the &&-not-|| shape of the ownership check: with a live sibling
+      // present and a rotated transcript carrying no remi:<port> marker, we
+      // cannot prove ownership, so we must defer rather than latch.
+      writeSibling('live-nomarker.json', { claudeChildPid: process.pid });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, 8765); // ours, lets event 1 lock cleanly
+      const pathB = writeTranscript(CLAUDE_B, null); // rotation, unmarked
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        // Unproven rotation deferred: binding stays, watcher stays on CLAUDE_A.
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
+        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('sibling explicitly flagged claudeChildExited is ignored (recycle-proof)', () => {
+      // The recycle-proof tombstone path: an entry that went alive -> exited via
+      // markClaudeChildExited must not count as a sibling even though its pid is
+      // alive. Rotation proceeds with no port marker, as in the zombie case.
+      writeSibling('flagged-exited.json', {
+        claudeChildPid: process.pid, // alive pid...
+        claudeChildExited: true, // ...but explicitly tombstoned
+      });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, null);
+      const pathB = writeTranscript(CLAUDE_B, null);
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
+        expect(transcriptWatchers.has(SID)).toBe(true);
       } finally {
         stopWatchers();
       }
