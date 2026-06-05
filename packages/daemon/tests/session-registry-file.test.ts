@@ -6,7 +6,15 @@ import {
   DEFAULT_BASE_PORT,
   type LiveSessionEntry,
   SessionRegistryFile,
+  claudeChildLooksAlive,
 } from '../src/session/session-registry-file.ts';
+
+/** Spawn a trivial process and await its exit to obtain a really-dead pid. */
+async function deadChildPid(): Promise<number> {
+  const proc = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore' });
+  await proc.exited;
+  return proc.pid;
+}
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'remi-registry-test-'));
@@ -268,5 +276,81 @@ describe('SessionRegistryFile', () => {
     const live = registry.listLive();
     expect(live).toHaveLength(1);
     expect(live[0]!.wsPort).toBe(18770);
+  });
+
+  // ---- Claude-child liveness (#451) ---------------------------------------
+
+  describe('Claude child liveness', () => {
+    test('claudeChildPid round-trips through register/list', () => {
+      registry.register(makeEntry({ sessionId: 's', claudeChildPid: 4242 }));
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(live[0]!.claudeChildPid).toBe(4242);
+    });
+
+    test('legacy entry without the field parses and is treated as live', () => {
+      // listLive keeps it (daemon pid alive); the liveness helper fail-safes.
+      registry.register(makeEntry({ sessionId: 'legacy' }));
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(live[0]!.claudeChildPid).toBeUndefined();
+      expect(claudeChildLooksAlive(live[0]!)).toBe(true);
+    });
+
+    test('listLive still keeps an entry whose daemon is alive but child is dead', async () => {
+      // The whole point of #451: daemon-pid liveness is unchanged, so the
+      // entry survives; the per-entry helper is what flips it to not-a-sibling.
+      const childPid = await deadChildPid();
+      registry.register(makeEntry({ sessionId: 'zombie', claudeChildPid: childPid }));
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(claudeChildLooksAlive(live[0]!)).toBe(false);
+    });
+
+    test('setClaudeChildPid preserves other fields (notably startedAt)', () => {
+      const entry = makeEntry({ sessionId: 's', wsPort: 18767 });
+      registry.register(entry);
+      registry.setClaudeChildPid('s', 5150);
+      const live = registry.listLive();
+      expect(live[0]!.claudeChildPid).toBe(5150);
+      expect(live[0]!.claudeChildExited).toBe(false);
+      expect(live[0]!.startedAt).toBe(entry.startedAt);
+      expect(live[0]!.wsPort).toBe(18767);
+    });
+
+    test('markClaudeChildExited keeps the entry but flags it not-alive (recycle-proof)', () => {
+      // Use the CURRENT pid as the child pid: still alive, but the explicit
+      // exited flag must override the pid probe so reuse cannot resurrect it.
+      registry.register(makeEntry({ sessionId: 's', claudeChildPid: process.pid }));
+      registry.markClaudeChildExited('s');
+      const live = registry.listLive();
+      expect(live).toHaveLength(1); // entry retained for ls/attach/resume
+      expect(live[0]!.claudeChildExited).toBe(true);
+      expect(claudeChildLooksAlive(live[0]!)).toBe(false);
+    });
+
+    test('patch methods are a no-op for a missing entry', () => {
+      registry.setClaudeChildPid('ghost', 1);
+      registry.markClaudeChildExited('ghost');
+      expect(registry.listLive()).toHaveLength(0);
+    });
+
+    test('an entry with an invalid claudeChildPid is rejected by listLive', () => {
+      const filePath = path.join(tmpDir, 'bad.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ ...makeEntry({ sessionId: 'bad' }), claudeChildPid: -3 }),
+      );
+      // Invalid entries are removed on read.
+      expect(registry.listLive()).toHaveLength(0);
+    });
+
+    test('claudeChildLooksAlive: live pid → true, undefined → true, exited → false', () => {
+      expect(claudeChildLooksAlive(makeEntry({ claudeChildPid: process.pid }))).toBe(true);
+      expect(claudeChildLooksAlive(makeEntry())).toBe(true);
+      expect(
+        claudeChildLooksAlive(makeEntry({ claudeChildPid: process.pid, claudeChildExited: true })),
+      ).toBe(false);
+    });
   });
 });

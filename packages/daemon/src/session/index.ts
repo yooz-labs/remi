@@ -16,6 +16,7 @@ export { SessionStore, type StoredSession } from './session-store.ts';
 export {
   SessionRegistryFile,
   type LiveSessionEntry,
+  claudeChildLooksAlive,
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
 } from './session-registry-file.ts';

@@ -118,7 +118,12 @@ describe('setupHookBridge', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hook-bridge-'));
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
-    liveSessionsRegistry = new SessionRegistryFile(tmpDir);
+    // Live-sessions registry gets its OWN subdir so its listLive() scan does
+    // not see (and delete as "invalid") the SessionStore's sessions.json that
+    // shares the tmp root. Create it up front so tests that write sibling
+    // entries directly into dirPath don't need their own mkdir.
+    liveSessionsRegistry = new SessionRegistryFile(path.join(tmpDir, 'live-sessions'));
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
     transcriptWatchers = new Map();
     transcriptFallbackTimers = new Map();
     hookServer = new RecordingHookServer();
@@ -1818,6 +1823,174 @@ describe('setupHookBridge', () => {
       expect(events[0]?.newClaudeSessionId).toBe('claude-second-id');
       expect(events[0]?.newTranscriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
       expect(events[0]?.reason).toBe('restart');
+    });
+  });
+
+  describe('child-liveness + port-ownership rotation (#451)', () => {
+    /** Write a co-located sibling registry entry. `child` controls how its
+     *  Claude liveness is recorded: alive pid, a dead pid, or none (legacy). */
+    function writeSibling(
+      name: string,
+      child: { claudeChildPid?: number; claudeChildExited?: boolean } = {},
+    ): void {
+      fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+      fs.writeFileSync(
+        path.join(liveSessionsRegistry.dirPath, name),
+        JSON.stringify({
+          sessionId: `sib-${name}`,
+          pid: process.pid, // sibling DAEMON is alive
+          wsPort: 18999,
+          hookPort: 18001,
+          projectPath: tmpDir,
+          name: 'sibling',
+          startedAt: new Date().toISOString(),
+          ...child,
+        }),
+      );
+    }
+
+    /** Write a transcript whose head optionally carries the remi:<port> marker. */
+    function writeTranscript(claudeId: string, ownerPort: number | null): string {
+      const p = path.join(tmpDir, `${claudeId}.jsonl`);
+      const head =
+        ownerPort !== null
+          ? `${JSON.stringify({ type: 'custom-title', customTitle: `remi:${ownerPort}` })}\n`
+          : '';
+      fs.writeFileSync(
+        p,
+        `${head}${JSON.stringify({
+          type: 'user',
+          uuid: 'u1',
+          sessionId: claudeId,
+          message: { role: 'user', content: 'hi' },
+        })}\n`,
+      );
+      return p;
+    }
+
+    /** Pre-seed the store binding so the first event adopts the lock. */
+    function seedLock(claudeId: string): void {
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: claudeId,
+        projectPath: tmpDir,
+        port: 8765, // matches the harness currentPort()
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+    }
+
+    function stopWatchers(): void {
+      for (const w of transcriptWatchers.values()) {
+        try {
+          w.stop();
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+
+    const CLAUDE_A = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const CLAUDE_B = 'bbbbbbbb-2222-2222-2222-222222222222';
+
+    test('zombie sibling (dead Claude child) no longer wedges our rotation', async () => {
+      // The exact bug: a leftover daemon (process alive, Claude dead) shares
+      // the dir. Pre-fix it permanently deferred rotation handling. The
+      // rotated transcript here carries NO port marker, proving the zombie is
+      // fully ignored rather than relying on the ownership signal.
+      const deadProc = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore' });
+      await deadProc.exited;
+      writeSibling('zombie.json', { claudeChildPid: deadProc.pid });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, null);
+      const pathB = writeTranscript(CLAUDE_B, null);
+
+      build();
+      // Event 1: establish lock=CLAUDE_A from the store.
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      // Event 2: in-process rotation to CLAUDE_B.
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
+        expect(transcriptWatchers.has(SID)).toBe(true);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test('genuine live sibling: our own rotation adopts via the remi:<port> marker', async () => {
+      // A real second daemon (live Claude child) shares the dir. Our rotation
+      // must still rebind because the new transcript carries OUR port marker.
+      writeSibling('live.json', { claudeChildPid: process.pid }); // alive
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, 8765);
+      const pathB = writeTranscript(CLAUDE_B, 8765); // ours
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_B,
+        transcript_path: pathB,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
+        expect(transcriptWatchers.has(SID)).toBe(true);
+      } finally {
+        stopWatchers();
+      }
+    });
+
+    test("genuine live sibling: the SIBLING's rotation is NOT adopted (no latching)", () => {
+      // Mirror of the above, but the rotating transcript carries the SIBLING's
+      // port. We must not overwrite our binding or start a watcher on it.
+      writeSibling('live2.json', { claudeChildPid: process.pid });
+      seedLock(CLAUDE_A);
+      writeTranscript(CLAUDE_A, 8765);
+      const siblingId = 'cccccccc-3333-3333-3333-333333333333';
+      const pathSib = writeTranscript(siblingId, 18999); // sibling's port
+
+      build();
+      hookServer.fire('SessionStart', {
+        session_id: CLAUDE_A,
+        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+      hookServer.fire('SessionStart', {
+        session_id: siblingId,
+        transcript_path: pathSib,
+        hook_event_name: 'SessionStart',
+      });
+
+      try {
+        // Binding unchanged: the sibling's rotation never overwrote ours.
+        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
+        // If a watcher exists it must be on OUR transcript, never latched onto
+        // the sibling's path.
+        const watched = transcriptWatchers.get(SID)?.filePath;
+        if (watched !== undefined) {
+          expect(watched).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
+          expect(watched).not.toBe(pathSib);
+        }
+      } finally {
+        stopWatchers();
+      }
     });
   });
 });

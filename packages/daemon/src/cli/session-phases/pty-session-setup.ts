@@ -24,7 +24,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
-import type { SessionRegistry, SessionStore } from '../../session/index.ts';
+import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import {
   getPtyStdoutFd,
@@ -36,6 +36,12 @@ import {
 export interface PtySessionSetupDeps {
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;
+  /**
+   * Live-sessions registry. On PTY exit the daemon may keep running (daemon
+   * mode), so we mark this session's Claude child exited in its registry
+   * entry; co-located daemons then stop treating us as a live sibling (#451).
+   */
+  liveSessionsRegistry: SessionRegistryFile;
   outputProcessor: OutputProcessor;
   /** Value passed to PTYSession.env as REMI_PORT so hooks can report back. */
   wsPort: number;
@@ -75,7 +81,15 @@ export function createPtySessionForSession(
   deps: Readonly<PtySessionSetupDeps>,
   args: Readonly<PtySessionSetupArgs>,
 ): PTYSession {
-  const { sessionRegistry, sessionStore, outputProcessor, wsPort, sendMessage, cleanup } = deps;
+  const {
+    sessionRegistry,
+    sessionStore,
+    liveSessionsRegistry,
+    outputProcessor,
+    wsPort,
+    sendMessage,
+    cleanup,
+  } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough } = args;
 
   if (!Number.isInteger(wsPort) || wsPort <= 0) {
@@ -146,6 +160,14 @@ export function createPtySessionForSession(
         log(`PTY ${ptySession.id} exited with code ${code}`);
         sessionRegistry.handlePTYExit(sessionId);
         sessionStore.markExited(sessionId, code);
+        // The daemon process can outlive its Claude child (daemon mode). Record
+        // the child as dead so co-located daemons stop counting us as a live
+        // sibling and their rotation handling is not wedged (#451). Best-effort.
+        try {
+          liveSessionsRegistry.markClaudeChildExited(sessionId);
+        } catch (err) {
+          logError(`[live-sessions] markClaudeChildExited failed: ${errorToString(err)}`);
+        }
 
         if (passThrough) {
           cleanup()

@@ -41,7 +41,9 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
 import { classifySessionEvent } from '../../hooks/session-lock-classifier.ts';
+import { claudeChildLooksAlive } from '../../session/index.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
+import { readTranscriptOwnerPort } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
@@ -192,15 +194,32 @@ export function setupHookBridge(
       );
       return true;
     }
-    return liveSessionsRegistry
-      .listLive()
-      .some(
-        (e) =>
-          e.projectPath === workingDirectory &&
-          e.sessionId !== sessionId &&
-          e.wsPort !== currentPort(),
-      );
+    return liveSessionsRegistry.listLive().some(
+      (e) =>
+        e.projectPath === workingDirectory &&
+        e.sessionId !== sessionId &&
+        e.wsPort !== currentPort() &&
+        // A daemon whose process is alive but whose Claude child has died
+        // (a zombie) must not count as a sibling: it posts no hook events,
+        // yet its lingering registry entry would otherwise permanently
+        // defer our rotation handling (#451). Legacy entries with no
+        // recorded child pid stay fail-safe "live".
+        claudeChildLooksAlive(e),
+    );
   };
+
+  /**
+   * Whether the transcript named by a hook event was written by OUR claude.
+   * Each daemon spawns `claude -n remi:<wsPort>`, so the transcript head's
+   * `custom-title` marker carries the owning port — content the owning daemon
+   * caused Claude to write. When a genuine sibling shares the directory, this
+   * is what lets us adopt our OWN rotation without latching onto the sibling's
+   * (its transcript carries the sibling's port). Returns false when the marker
+   * is absent (older Claude/remi, or a user-supplied `-n`), in which case the
+   * caller falls back to the sibling-guard default.
+   */
+  const ownsTranscript = (transcriptPath: string | undefined): boolean =>
+    typeof transcriptPath === 'string' && readTranscriptOwnerPort(transcriptPath) === currentPort();
 
   /**
    * Safely tear down an existing transcript watcher and reset message state.
@@ -310,8 +329,12 @@ export function setupHookBridge(
     if (claudeSessionId) return; // already initialized
     if (!input.transcript_path) return;
 
-    if (hasSiblingInDir()) {
-      // Cannot trust which Claude sent this event; defer to fallback.
+    if (hasSiblingInDir() && !ownsTranscript(input.transcript_path)) {
+      // A sibling shares the directory and the transcript's port marker does
+      // not prove this event is ours — cannot trust which Claude sent it;
+      // defer to the deterministic-path fallback. When the marker DOES match
+      // our port (the common rotation case, #451) we fall through and adopt,
+      // so an in-process rotation is not wedged by the sibling guard.
       return;
     }
 
@@ -391,8 +414,11 @@ export function setupHookBridge(
       tracker.recordPendingHook(question);
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
-      // Guard: skip if sibling daemons share this directory (event may be from sibling's Claude).
-      if (hasSiblingInDir()) return;
+      // Guard: skip if sibling daemons share this directory AND the transcript's
+      // port marker does not prove this SessionStart is ours (#451). When the
+      // marker matches our port we proceed so our own rotation rebinds even
+      // with a genuine sibling co-located.
+      if (hasSiblingInDir() && !ownsTranscript(transcriptPath)) return;
 
       // Use the same classifier as initFromHookEvent so both paths share
       // one rule for distinguishing foreign (subagent/sibling) from restart.
@@ -514,7 +540,13 @@ export function setupHookBridge(
       !isSubagentEvent(input) &&
       claudeSessionId &&
       input.session_id &&
-      input.session_id !== claudeSessionId
+      input.session_id !== claudeSessionId &&
+      // Only treat this as OUR lifecycle transition when there is no genuine
+      // sibling, or the new transcript's port marker proves it is ours (#451).
+      // Otherwise a sibling's SessionStart, fanned out via the shared
+      // settings.local.json hook URLs, would wrongly flip mainSessionEnded and
+      // make us tear down our own (still-live) session.
+      (!hasSiblingInDir() || ownsTranscript(input.transcript_path))
     ) {
       log(
         `[Hooks] Main lifecycle transition (source=${input.source ?? 'unknown'}): ${claudeSessionId} -> ${input.session_id}`,

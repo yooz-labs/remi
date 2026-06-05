@@ -10,6 +10,7 @@ import {
 } from '../../../src/cli/session-phases/pty-session-setup.ts';
 import { __resetWrapperStateForTests } from '../../../src/cli/wrapper-state.ts';
 import { OutputProcessor } from '../../../src/parser/output-processor.ts';
+import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 
@@ -51,6 +52,7 @@ describe('createPtySessionForSession', () => {
   let tmpDir: string;
   let sessionRegistry: SessionRegistry;
   let sessionStore: SessionStore;
+  let liveSessionsRegistry: SessionRegistryFile;
   let outputProcessor: OutputProcessor;
   let sendCalls: Array<{ sessionId: UUID; message: ProtocolMessage }>;
 
@@ -58,6 +60,7 @@ describe('createPtySessionForSession', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-pty-setup-'));
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    liveSessionsRegistry = new SessionRegistryFile(path.join(tmpDir, 'live-sessions'));
     outputProcessor = new OutputProcessor(
       { sessionId: SID, streamStatusOnly: true },
       { onMessage: () => {}, onQuestion: () => {}, onStatusChange: () => {} },
@@ -78,6 +81,7 @@ describe('createPtySessionForSession', () => {
       {
         sessionRegistry,
         sessionStore,
+        liveSessionsRegistry,
         outputProcessor,
         wsPort: 9999,
         sendMessage: (sid, message) => sendCalls.push({ sessionId: sid, message }),
@@ -106,6 +110,7 @@ describe('createPtySessionForSession', () => {
         {
           sessionRegistry,
           sessionStore,
+          liveSessionsRegistry,
           outputProcessor,
           wsPort: 0,
           sendMessage: () => {},
