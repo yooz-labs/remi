@@ -641,6 +641,247 @@ describe('TranscriptBinder', () => {
   // ensureWatching idempotency + self-heal
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // Re-arming rotation dir-poll (#452 no-hooks rotation)
+  // -------------------------------------------------------------------------
+
+  describe('rotation dir-poll (#452 no-hooks rotation)', () => {
+    /** The dir the rotation poll re-stats (Claude's encoded project dir). */
+    function rotationDir(): string {
+      return transcriptDiscovery.getProjectTranscriptDir(tmpDir);
+    }
+
+    /** Write a transcript file. With `port` it carries a remi:<port> marker. */
+    function writeTranscript(claudeId: string, port?: number): string {
+      const dir = rotationDir();
+      fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, `${claudeId}.jsonl`);
+      const head =
+        port === undefined
+          ? '{"type":"user","message":{"role":"user","content":"hi"}}\n'
+          : `${JSON.stringify({ type: 'custom-title', customTitle: `remi:${port}`, sessionId: claudeId })}\n`;
+      fs.writeFileSync(filePath, head);
+      return filePath;
+    }
+
+    /** A binder with a fast poll cadence for deterministic tests. */
+    function makeDriveBinder(): TranscriptBinder {
+      return new TranscriptBinder(deps(), { sessionId: SID, workingDirectory: tmpDir }, 'drive', {
+        rotationPollIntervalMs: 20,
+      });
+    }
+
+    test('marker-ready: empty new .jsonl does NOT rotate; once the remi marker is written it DOES', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      // Lock on A first (our current bind).
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+      binder.start('claude-A');
+
+      // A NEW rotation file appears EMPTY (the #452 empty-file edge): the marker
+      // is not yet flushed. A poll tick must NOT classify it as a rotation.
+      const dir = rotationDir();
+      const newPath = path.join(dir, 'claude-B.jsonl');
+      fs.writeFileSync(newPath, ''); // zero bytes -> readTranscriptOwnerPort === null
+      ptyState.running = false; // PTY exited so a different id would classify restart
+
+      binder.rotationPollTick();
+      expect(rotations()).toHaveLength(0);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A'); // unchanged
+
+      // Now Claude flushes the head marker (our port). The next tick rotates.
+      fs.writeFileSync(
+        newPath,
+        `${JSON.stringify({ type: 'custom-title', customTitle: 'remi:8765', sessionId: 'claude-B' })}\n`,
+      );
+      binder.rotationPollTick();
+
+      expect(rotations()).toEqual([
+        { old: 'claude-A', new: 'claude-B', path: newPath, reason: 'restart' },
+      ]);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      binder.close();
+    });
+
+    test('exactly-once: repeated ticks seeing the same new file rotate only once', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      binder.start('claude-A');
+
+      // A fully-flushed rotation file (marker present) appears.
+      writeTranscript('claude-B', 8765);
+      ptyState.running = false;
+
+      // Drive several ticks; the file persists on disk and is re-listed each time.
+      binder.rotationPollTick();
+      binder.rotationPollTick();
+      binder.rotationPollTick();
+
+      // Despite the poll re-stat'ing the same file every tick, exactly ONE
+      // session_rotated crossed the wire (lastAnnouncedRotationId + seen-set).
+      expect(rotations()).toEqual([
+        {
+          old: 'claude-A',
+          new: 'claude-B',
+          path: path.join(rotationDir(), 'claude-B.jsonl'),
+          reason: 'restart',
+        },
+      ]);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      binder.close();
+    });
+
+    test('sibling gate: a new .jsonl carrying a DIFFERENT port marker does NOT rotate us', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      binder.start('claude-A');
+
+      // A sibling daemon (port 19999) writes its own fresh transcript into the
+      // SHARED project dir. Its marker proves it is the sibling's, not ours.
+      writeTranscript('claude-SIB', 19999);
+      ptyState.running = false;
+
+      binder.rotationPollTick();
+      binder.rotationPollTick(); // a 2nd tick must not change the verdict
+
+      expect(rotations()).toHaveLength(0);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A'); // not rotated
+      binder.close();
+    });
+
+    test('markerless RECENT file is re-polled (never rotates), never permanently dropped', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      binder.start('claude-A');
+
+      // A markerless transcript (non-remi / user `-n`). It never proves
+      // ownership -> never rotated. Because it stays RECENT it is re-polled
+      // (not seen-set), so a later-appearing marker is NOT permanently lost.
+      writeTranscript('claude-NOMARK'); // no port -> no remi marker
+      ptyState.running = false;
+
+      for (let i = 0; i < 8; i++) binder.rotationPollTick();
+
+      expect(rotations()).toHaveLength(0);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+      binder.close();
+    });
+
+    test('#452: a SLOW-FLUSH rotation (marker appears after many empty ticks) is NOT dropped', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      binder.start('claude-A');
+
+      // The rotated file is created EMPTY and stays empty across MANY ticks (more
+      // than the old hard cap of 4) — the slow-flush / transient-EMFILE case the
+      // old tick-cap permanently dropped. The dir-poll must keep re-polling.
+      const dir = rotationDir();
+      const newPath = path.join(dir, 'claude-B.jsonl');
+      fs.writeFileSync(newPath, '');
+      ptyState.running = false;
+      for (let i = 0; i < 10; i++) binder.rotationPollTick();
+      expect(rotations()).toHaveLength(0); // no false rotation on the empty edge
+
+      // Claude finally flushes the head marker. Because the candidate was never
+      // permanently dropped, the next tick rotates it (the #452 fix).
+      fs.writeFileSync(
+        newPath,
+        `${JSON.stringify({ type: 'custom-title', customTitle: 'remi:8765', sessionId: 'claude-B' })}\n`,
+      );
+      binder.rotationPollTick();
+      expect(rotations()).toEqual([
+        { old: 'claude-A', new: 'claude-B', path: newPath, reason: 'restart' },
+      ]);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      binder.close();
+    });
+
+    test('markerless SETTLED file (mtime past the grace window) is recorded seen', () => {
+      registerSession();
+      // Short settle window so the test is fast + deterministic.
+      const binder = new TranscriptBinder(
+        deps(),
+        { sessionId: SID, workingDirectory: tmpDir },
+        'drive',
+        { rotationPollIntervalMs: 20, markerSettleMs: 50 },
+      );
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      binder.start('claude-A');
+
+      // A markerless file whose mtime is already well past the settle window: a
+      // genuine settled non-remi file we will never own. It is recorded seen so
+      // the poll stops re-reading it (bounds the re-stat cost).
+      const stale = writeTranscript('claude-NOMARK');
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(stale, old, old);
+      ptyState.running = false;
+
+      binder.rotationPollTick();
+      expect(rotations()).toHaveLength(0);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+      binder.close();
+    });
+
+    test('close() clears the dir-poll (no leaked timer/handle after close)', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      binder.start('claude-A');
+      // Drive-mode start armed BOTH the fallback poll and the rotation poll.
+      expect(transcriptFallbackTimers.has(SID)).toBe(true);
+
+      binder.close();
+      expect(transcriptFallbackTimers.has(SID)).toBe(false);
+
+      // After close, a new fully-marked rotation file must NOT rotate: the poll
+      // is torn down, and a late manual tick is inert (mode-guard / dir null).
+      writeTranscript('claude-B', 8765);
+      ptyState.running = false;
+      binder.rotationPollTick();
+      expect(rotations()).toHaveLength(0);
+    });
+
+    test('shadow mode arms NO dir-poll', () => {
+      registerSession();
+      const binder = new TranscriptBinder(
+        deps(),
+        { sessionId: SID, workingDirectory: tmpDir },
+        'shadow',
+        { rotationPollIntervalMs: 20 },
+      );
+      binder.start('claude-A');
+      // No fallback timer (shadow start is a no-op) AND a manual tick is inert.
+      expect(transcriptFallbackTimers.has(SID)).toBe(false);
+
+      writeTranscript('claude-B', 8765);
+      ptyState.running = false;
+      binder.rotationPollTick();
+      expect(rotations()).toHaveLength(0);
+    });
+  });
+
   describe('ensureWatching', () => {
     test('idempotent: no-op when a watcher already exists', () => {
       registerSession();

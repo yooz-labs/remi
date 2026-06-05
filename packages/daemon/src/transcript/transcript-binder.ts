@@ -55,6 +55,27 @@ import type { TranscriptDiscovery } from './transcript-discovery.ts';
 import { readTranscriptOwnerPort } from './transcript-owner.ts';
 import type { TranscriptWatcher } from './transcript-watcher.ts';
 
+/**
+ * Re-stat cadence for the #452 no-hooks rotation detector. 1500ms is a
+ * deliberate middle: fast enough that a no-hooks rotation surfaces within
+ * ~1.5–3s (comparable to the existing 2s fallback poll), slow enough that
+ * readdir+stat on a ~tens-of-files dir is negligible CPU.
+ */
+const ROTATION_POLL_INTERVAL_MS = 1500;
+/**
+ * How long a NEW `.jsonl` may sit with an unreadable `remi:<port>` head marker
+ * before we stop re-polling it. The marker-ready guard: an empty/unflushed file
+ * reads `null` and is re-polled (it may still be flushing), never classified on
+ * the empty edge. We discriminate "still flushing" from "settled non-remi file"
+ * by the file's mtime AGE, not a tick count — so a slow-flushing OWN transcript
+ * (or a transient EMFILE read) is NEVER permanently dropped within this window
+ * (that permanent drop would be the exact #452 wedge: the kept fallback poll
+ * only ever waits for the INITIAL transcript, not a rotated id). Only a file
+ * settled-and-markerless for longer than this is recorded as seen. 10s is far
+ * beyond Claude's synchronous create-to-marker gap.
+ */
+const MARKER_SETTLE_MS = 10_000;
+
 /** A hook event as the binder consumes it (the subset it reads). */
 export interface BinderHookEvent {
   readonly session_id?: string;
@@ -109,6 +130,14 @@ export interface TranscriptBinderArgs {
   workingDirectory: string;
 }
 
+/** Test-only overrides for the rotation dir-poll cadence. */
+export interface TranscriptBinderTuning {
+  /** Rotation re-stat cadence (ms). Defaults to ROTATION_POLL_INTERVAL_MS. */
+  rotationPollIntervalMs?: number;
+  /** Marker-settle window (ms). Defaults to MARKER_SETTLE_MS. */
+  markerSettleMs?: number;
+}
+
 export class TranscriptBinder {
   // --- Owned binding state (the OWN pre-adopt copy is the snapshot source) ---
   /** Our currently-bound Claude session id, or null before first adopt. */
@@ -121,16 +150,54 @@ export class TranscriptBinder {
   /** Last transcript path we (re)started a watcher on; for snapshot(). */
   private lastTranscriptPath: string | null = null;
 
+  // --- Re-arming rotation dir-poll (#452, drive-mode only) ---
+  /**
+   * The periodic dir RE-STAT interval handle; null when unarmed (shadow mode,
+   * pre-start, post-close). Distinct from `deps.transcriptFallbackTimers` —
+   * this is the rotation detector, NOT the first-bind fallback poll.
+   */
+  private rotationPollTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * The project transcript dir we re-stat. Resolved once at start() so the poll
+   * never recomputes the lossy path encoding per tick; null when unarmed.
+   */
+  private rotationPollDir: string | null = null;
+  /**
+   * Every Claude session id we have ALREADY considered for rotation — fed,
+   * bound, announced, or proven-foreign. A candidate in this set is never
+   * re-fed, so each rotation fires `onHookEvent` exactly once even though the
+   * poll re-stats the dir every tick. Seeded with the initial claudeId at
+   * start(); cleared by close().
+   */
+  private readonly seenRotationIds: Set<string> = new Set();
+  /** Test override for the poll cadence; defaults to ROTATION_POLL_INTERVAL_MS. */
+  private rotationPollIntervalMs: number = ROTATION_POLL_INTERVAL_MS;
+  /** Marker-settle window (ms): a new candidate whose `remi:<port>` marker is not
+   *  yet readable is re-polled until its file has been settled-and-markerless for
+   *  this long (by mtime), then recorded as seen. Test-overridable. */
+  private markerSettleMs: number = MARKER_SETTLE_MS;
+
   private readonly deps: TranscriptBinderDeps;
   private readonly sessionId: UUID;
   private readonly workingDirectory: string;
   private readonly mode: BinderMode;
 
-  constructor(deps: TranscriptBinderDeps, args: TranscriptBinderArgs, mode: BinderMode) {
+  constructor(
+    deps: TranscriptBinderDeps,
+    args: TranscriptBinderArgs,
+    mode: BinderMode,
+    tuning?: TranscriptBinderTuning,
+  ) {
     this.deps = deps;
     this.sessionId = args.sessionId;
     this.workingDirectory = args.workingDirectory;
     this.mode = mode;
+    if (tuning?.rotationPollIntervalMs !== undefined) {
+      this.rotationPollIntervalMs = tuning.rotationPollIntervalMs;
+    }
+    if (tuning?.markerSettleMs !== undefined) {
+      this.markerSettleMs = tuning.markerSettleMs;
+    }
   }
 
   // =========================================================================
@@ -632,13 +699,14 @@ export class TranscriptBinder {
   // =========================================================================
 
   /**
-   * Arm the transcript discovery. In SHADOW mode this is a NO-OP (no fs.watch,
+   * Arm the transcript discovery. In SHADOW mode this is a NO-OP (no dir-poll,
    * no fallback timer — the binder is provably side-effect-free, design §3.1
-   * v4 #8). In DRIVE mode it arms the existing fallback poll only.
+   * v4 #8). In DRIVE mode it arms BOTH:
    *
-   * TODO(#453 commit 4): add the re-arming directory watcher (the #452
-   * no-hooks-rotation fix) here. That is a separate commit; this seam stays
-   * fallback-poll-only for now.
+   *   - the existing fallback poll (Case A: our pre-assigned file appears), the
+   *     safety net the #452 critic mandated — KEPT, unchanged;
+   *   - the re-arming rotation dir-poll (Case B: a NEW Claude id with NO hook
+   *     event — the hooks-down / no-hooks rotation the #452 dir-watcher targets).
    */
   start(claudeId: string): void {
     if (this.mode === 'shadow') return;
@@ -655,15 +723,186 @@ export class TranscriptBinder {
       this.deps.messageApi,
       this.deps.sendAndRecord,
     );
+    this.armRotationPoll(claudeId);
   }
 
   /**
-   * Single teardown owner: clears the watcher AND the fallback/dir-watch timer
-   * (fixes the transcriptFallbackTimers leak at cli.ts:822-829).
+   * Single teardown owner: clears the watcher, the fallback timer, AND the
+   * rotation dir-poll (fixes the transcriptFallbackTimers leak at
+   * cli.ts:822-829 and ensures the dir-poll never outlives the binder).
    */
   close(): void {
     this.teardownWatcher('close');
     this.cancelFallbackTimer();
+    this.cancelRotationPoll();
+  }
+
+  // =========================================================================
+  // Re-arming rotation dir-poll (#452 no-hooks rotation). Drive-mode only.
+  //
+  // ROBUSTNESS: a level-triggered RE-STAT poll over SETTLED state, not an
+  // edge-triggered fs.watch. The empty-file edge that wedged #452 is
+  // structurally absent — the poll observes the new `.jsonl` only at quantized
+  // ticks, by which point Claude has flushed the `remi:<port>` head marker. The
+  // marker-ready guard re-polls a not-yet-flushed candidate (RECENT by mtime),
+  // only seen-setting a settled-and-markerless file so a slow flush is never
+  // permanently dropped (#452); the seen-set is the exactly-once gate; the
+  // marker == currentPort check is
+  // the sibling gate. NON-EMITTING: every detection routes through the single
+  // funnel onHookEvent(); we never call rotate()/emitRotated directly.
+  // =========================================================================
+
+  /**
+   * Arm the periodic dir RE-STAT poll. Idempotent (no-op if already armed, so
+   * the post-rotation re-arm — which is a no-op by construction here — is safe).
+   * Seeds `seenRotationIds` with the initial claudeId so our own first
+   * transcript is never mistaken for a rotation. Resolves the dir ONCE.
+   */
+  private armRotationPoll(initialClaudeId: string): void {
+    if (this.mode === 'shadow') return;
+    if (this.rotationPollTimer !== null) return; // already armed
+    this.rotationPollDir = this.deps.transcriptDiscovery.getProjectTranscriptDir(
+      this.workingDirectory,
+    );
+    this.seenRotationIds.add(initialClaudeId);
+    this.rotationPollTimer = setInterval(
+      () => this.rotationPollTick(),
+      this.rotationPollIntervalMs,
+    );
+  }
+
+  private cancelRotationPoll(): void {
+    if (this.rotationPollTimer !== null) {
+      clearInterval(this.rotationPollTimer);
+      this.rotationPollTimer = null;
+    }
+    this.rotationPollDir = null;
+    this.seenRotationIds.clear();
+  }
+
+  /**
+   * One rotation-poll tick. Re-stats the project transcript dir, finds a NEW
+   * Claude session id (not our current bind, not previously seen), verifies the
+   * `remi:<port>` head marker proves it is OURS, and — only then — synthesizes a
+   * hook-shaped event into the SINGLE funnel `onHookEvent()`. NEVER calls
+   * `rotate()` / `emitRotated()` directly. Exposed (package-private) so a test
+   * can drive a deterministic tick without waiting on the interval.
+   */
+  rotationPollTick(): void {
+    if (this.mode === 'shadow') return;
+    // Session gone -> the lifecycle owner will close() us; do nothing meanwhile.
+    if (!this.deps.sessionRegistry.hasSession(this.sessionId)) return;
+    if (this.rotationPollDir === null) return;
+
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(this.rotationPollDir);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOENT is routine before Claude first writes the project dir; stay quiet.
+      if (code !== undefined && code !== 'ENOENT') {
+        logError(`[Binder] rotation poll readdir failed: ${errorToString(err)}`);
+      }
+      return;
+    }
+
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const candidateId = name.slice(0, -'.jsonl'.length);
+
+      // (a) EXACTLY-ONCE + non-duplication gate. Skip our current bind, the last
+      //     id we announced, and anything already considered. Re-read the lock
+      //     disk-fresh so a hook/fallback bind we already absorbed is excluded.
+      this.adoptLockFromStore();
+      if (candidateId === this.currentBoundId) continue;
+      if (candidateId === this.lastAnnouncedRotationId) continue;
+      if (this.seenRotationIds.has(candidateId)) continue;
+
+      const candidatePath = path.join(this.rotationPollDir, name);
+
+      // (b) MARKER-READY GUARD. Unlike fs.watch's instant rename edge, by the
+      //     time a tick observes the file Claude has almost always flushed the
+      //     head marker. We still bounded-re-poll: a null read (empty/unflushed
+      //     OR markerless) gives the candidate a few more ticks rather than
+      //     classifying on an unproven edge.
+      const ownerPort = readTranscriptOwnerPort(candidatePath);
+
+      if (ownerPort === null) {
+        // Null marker = empty/unflushed (mid-create), a non-remi session that
+        // will never carry our marker, OR a transient read error. Do NOT
+        // permanently drop on a tick count — a slow-flushing OWN transcript (or a
+        // transient EMFILE) would then silently never rotate (the #452 wedge).
+        // Keep re-polling RECENT files (still flushing); only stop touching a
+        // file once it has been settled-and-markerless (by mtime) beyond the
+        // grace window — a genuine non-remi/sibling file we'll never own.
+        let ageMs = 0;
+        try {
+          ageMs = Date.now() - fs.statSync(candidatePath).mtimeMs;
+        } catch {
+          ageMs = 0; // raced a delete/rename -> treat as recent, re-poll.
+        }
+        if (ageMs > this.markerSettleMs) {
+          this.seenRotationIds.add(candidateId);
+        }
+        continue;
+      }
+
+      // (c) SIBLING-MARKER GATE. The marker is readable AND must be OURS. A
+      //     sibling daemon's fresh transcript carries the sibling's port; it
+      //     must NOT rotate us. Mark seen so we never re-read it.
+      if (ownerPort !== this.deps.currentPort()) {
+        this.seenRotationIds.add(candidateId);
+        log(
+          `[Binder] rotation poll: ${candidateId.slice(0, 8)} owned by port ${ownerPort}, not ${this.deps.currentPort()}; ignoring`,
+        );
+        continue;
+      }
+
+      // (d) OURS + NEW. Mark seen BEFORE feeding so a re-entrant readdir on the
+      //     next tick (or a throw) can never double-feed.
+      this.seenRotationIds.add(candidateId);
+      this.feedSyntheticRotation(candidateId, candidatePath);
+
+      // One rotation per tick is enough; the next new id (if any) is picked up
+      // next tick. Bounding to one keeps the tick cheap and avoids feeding two
+      // synthetic restarts in a single synchronous frame.
+      return;
+    }
+  }
+
+  /**
+   * NON-EMITTING FEEDER: synthesizes a hook-shaped event and routes it through
+   * the SINGLE funnel `onHookEvent()`. Never calls `rotate()` / `emitRotated()`.
+   * The no-hooks case means NO SessionStart fired to flip `mainSessionEnded`, so
+   * we mirror `preemptOnSessionStart` first (gated identically) to make
+   * `classify()` return 'restart' rather than 'foreign' while our PTY is alive.
+   * Ownership is already proven (marker == our port), so the sibling guard
+   * inside the pre-empt is satisfied. After the funnel runs, re-arm (a no-op by
+   * construction for the dir-poll, but keeps the lifecycle explicit).
+   */
+  private feedSyntheticRotation(candidateId: string, candidatePath: string): void {
+    if (this.mode === 'shadow') return;
+    log(
+      `[Binder] No-hooks rotation detected via dir poll: ${this.currentBoundId?.slice(0, 8) ?? 'none'} -> ${candidateId.slice(0, 8)} (${candidatePath})`,
+    );
+    const synthetic: BinderHookEvent = {
+      session_id: candidateId,
+      transcript_path: candidatePath,
+      hook_event_name: 'DirPollRotation', // sentinel; not a real CC hook
+    };
+    try {
+      // Flip mainSessionEnded so a different id with a live PTY classifies as a
+      // restart, not foreign — the SessionStart that would normally do this
+      // never arrived (the hooks-down premise of #452).
+      this.preemptOnSessionStart(synthetic);
+      this.onHookEvent(synthetic);
+    } catch (err) {
+      logError(`[Binder] synthetic rotation funnel failed: ${errorToString(err)}`);
+    }
+    // Re-arm for the NEXT rotation. The interval keeps running, so this is a
+    // no-op in the common case; it only re-creates the timer if a prior
+    // teardown nulled it (defensive, keeps the lifecycle symmetric).
+    this.armRotationPoll(candidateId);
   }
 
   /** Current binding for callers that stamp outgoing messages. */
