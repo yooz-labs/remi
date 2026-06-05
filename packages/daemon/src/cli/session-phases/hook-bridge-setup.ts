@@ -252,9 +252,20 @@ export function setupHookBridge(
    * whose transcript_path is therefore ours.
    */
   function ensureWatcher(transcriptPath: string | undefined): void {
-    if (!transcriptPath) return;
+    // Steady-state no-op: a watcher is already running. Checked first so a
+    // healthy session never logs the "no path" warning below.
     if (transcriptWatchers.has(sessionId)) return;
     if (!sessionRegistry.hasSession(sessionId)) return;
+    if (!transcriptPath) {
+      // We need a watcher (none running) but this match event carried no path,
+      // so we can't self-heal on it. Normally the next event supplies one; log
+      // so a SYSTEMATIC absence (e.g. a changed hook payload) is visible rather
+      // than an invisible locked-but-unwatched wedge.
+      logError(
+        `[Hooks] ensureWatcher: match event without transcript_path for ${sessionId.slice(0, 8)}; watcher still missing`,
+      );
+      return;
+    }
     // We have the exact path now; cancel any lingering fallback poll.
     const fallbackTimer = transcriptFallbackTimers.get(sessionId);
     if (fallbackTimer) {
