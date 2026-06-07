@@ -130,6 +130,11 @@ export class OutputProcessor {
     if (this.currentMessageId !== null) {
       this.finalizeMessage();
     }
+
+    // Drop the rising-edge gate on PTY exit so a reused processor can't suppress
+    // the next session's first identical prompt. (flush() is exit-only.)
+    this.pendingQuestion = null;
+    this.pendingQuestionFp = null;
   }
 
   /**
@@ -196,10 +201,18 @@ export class OutputProcessor {
     const statusResult = parseStatus(content);
     if (statusResult.status !== this.currentStatus && statusResult.confidence >= 0.5) {
       this.currentStatus = statusResult.status;
-      // The prompt (if any) is gone once the agent advances past 'waiting'.
-      // Clear the rising-edge gate so the NEXT prompt — even one with identical
-      // text — re-emits instead of being mistaken for the one just answered.
+      // Clear the rising-edge gate at BOTH edges of a non-waiting span so the
+      // NEXT prompt — even one with identical text — re-emits instead of being
+      // mistaken for the one just answered. We bias toward re-emit (a duplicate
+      // is recoverable; a missed prompt is not): the gate only suppresses
+      // re-parses WITHIN a single 'waiting' span.
       if (statusResult.status !== 'waiting') {
+        // Left 'waiting': the prompt (if any) is gone.
+        this.pendingQuestion = null;
+        this.pendingQuestionFp = null;
+      } else if (this.currentStatus !== 'waiting') {
+        // Entered 'waiting' from a non-waiting state: a fresh prompt cycle, so
+        // a same-text prompt must not be suppressed as the previous one.
         this.pendingQuestion = null;
         this.pendingQuestionFp = null;
       }
