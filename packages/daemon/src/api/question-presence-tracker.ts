@@ -110,15 +110,18 @@ export class QuestionPresenceTracker {
   onPTYPromptVisible(ptyQuestion: Question): void {
     const key = agentKey(ptyQuestion);
     let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
-    if (recordKey === undefined && this.pending.size > 0) {
-      // Most-recent pending hook (Map preserves insertion order). The PTY did
-      // not name an agent we have a record for, so this may attach the wrong
-      // agent's option labels (#425). Log it so the misattribution is
-      // observable rather than silent.
-      const keys = [...this.pending.keys()];
-      recordKey = keys[keys.length - 1];
+    if (recordKey === undefined && this.pending.size === 1) {
+      // Exactly one pending hook and the PTY did not name an agent we have a
+      // record for: pairing is unambiguous (one candidate), so attach it.
+      recordKey = [...this.pending.keys()][0];
+    } else if (recordKey === undefined && this.pending.size > 1) {
+      // 2+ pending hooks from DIFFERENT agents and the PTY question matches
+      // none: do NOT guess. Pairing the most-recent would attach the wrong
+      // agent's option labels (#425). Push the bare PTY question instead — its
+      // numbered options suffice for the user to answer — and log loudly so the
+      // ambiguity is observable rather than a silent misattribution.
       console.warn(
-        `[QuestionPresenceTracker] PTY prompt (agent "${key}") has no matching hook; pairing most-recent "${recordKey}" of [${keys.join(', ')}] — option labels may be misattributed`,
+        `[QuestionPresenceTracker] PTY prompt (agent "${key}") matches none of [${[...this.pending.keys()].join(', ')}]; pushing bare to avoid cross-agent misattribution`,
       );
     }
     const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;

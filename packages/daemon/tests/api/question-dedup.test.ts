@@ -41,6 +41,20 @@ describe('QuestionDedup', () => {
     expect(dedup.shouldEmit(q('Allow Bash: ls', 3))).toBe(false);
   });
 
+  test('does NOT suppress an identical prompt from a DIFFERENT agent (#483)', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    // Main agent asks; then a background subagent asks the identical thing.
+    expect(dedup.shouldEmit({ ...q('Allow Bash: ls', 3) })).toBe(true);
+    t += 200;
+    const subagent: Question = { ...q('Allow Bash: ls', 3), agentId: 'subagent-A' };
+    // Different agent -> a genuinely distinct question the user must answer.
+    expect(dedup.shouldEmit(subagent)).toBe(true);
+    // But the subagent's own re-emit within the window is still suppressed.
+    t += 100;
+    expect(dedup.shouldEmit({ ...q('Allow Bash: ls', 3), agentId: 'subagent-A' })).toBe(false);
+  });
+
   test('suppresses same-fingerprint question with fewer options within window', () => {
     let t = 1000;
     const dedup = new QuestionDedup(5000, () => t);

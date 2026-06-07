@@ -6,10 +6,12 @@
  * richer (more options, or gains allowsFreeText) — that is allowed through
  * as an upgrade and replaces the baseline.
  *
- * Single-slot tracking is deliberate: callers (`MessageAPI`) are expected
- * to clear the state on every meaningful boundary (status change away from
- * 'waiting', session reset). The window is a safety net against same-tick
- * re-renders, not a long-lived cache.
+ * Tracking is PER-AGENT (keyed by `question.agentId ?? 'main'`): a background
+ * subagent's "Allow Bash?" must NOT suppress the main agent's identically-worded
+ * prompt (they are two distinct questions the user must answer). Within one
+ * agent it is single-slot. Callers (`MessageAPI`) clear the state on every
+ * meaningful boundary (status change away from 'waiting', session reset). The
+ * window is a safety net against same-tick re-renders, not a long-lived cache.
  *
  * The fingerprint normalizes case + whitespace and truncates to 80 chars,
  * so minor terminal redraw differences don't defeat the dedup. Genuinely
@@ -18,7 +20,7 @@
  * which are usually <80 chars after normalization.
  */
 
-import { QUESTION_DEDUP_WINDOW_MS, type Question } from '@remi/shared';
+import { MAIN_AGENT_ID, QUESTION_DEDUP_WINDOW_MS, type Question } from '@remi/shared';
 
 interface LastEmitted {
   fingerprint: string;
@@ -28,7 +30,9 @@ interface LastEmitted {
 }
 
 export class QuestionDedup {
-  private last: LastEmitted | null = null;
+  /** Most-recent emission per agent (`agentId ?? 'main'`), so concurrent
+   *  prompts from different agents never suppress each other. */
+  private readonly last = new Map<string, LastEmitted>();
 
   constructor(
     private readonly windowMs: number = QUESTION_DEDUP_WINDOW_MS,
@@ -38,37 +42,38 @@ export class QuestionDedup {
   /**
    * Returns true if the question should be emitted, false to suppress.
    * On true, internal state is updated so subsequent same-fingerprint
-   * lower-rank questions are suppressed within the window.
+   * lower-rank questions FROM THE SAME AGENT are suppressed within the window.
    */
   shouldEmit(question: Question): boolean {
     const fp = fingerprint(question.text);
     const t = this.clock();
-    const last = this.last;
+    const agent = question.agentId ?? MAIN_AGENT_ID;
+    const last = this.last.get(agent);
 
-    if (last !== null && t - last.emittedAt < this.windowMs && last.fingerprint === fp) {
+    if (last !== undefined && t - last.emittedAt < this.windowMs && last.fingerprint === fp) {
       const richer =
         question.options.length > last.optionCount ||
         (question.allowsFreeText && !last.allowsFreeText);
       if (!richer) {
         console.debug(
-          `[QuestionDedup] Suppressed (lastOpts=${last.optionCount}, newOpts=${question.options.length}, ageMs=${t - last.emittedAt}): ${question.text.slice(0, 80)}`,
+          `[QuestionDedup] Suppressed agent=${agent} (lastOpts=${last.optionCount}, newOpts=${question.options.length}, ageMs=${t - last.emittedAt}): ${question.text.slice(0, 80)}`,
         );
         return false;
       }
     }
 
-    this.last = {
+    this.last.set(agent, {
       fingerprint: fp,
       optionCount: question.options.length,
       allowsFreeText: question.allowsFreeText,
       emittedAt: t,
-    };
+    });
     return true;
   }
 
-  /** Clear state (call on session reset / new prompt cycle). */
+  /** Clear state for all agents (call on session reset / new prompt cycle). */
   reset(): void {
-    this.last = null;
+    this.last.clear();
   }
 }
 
