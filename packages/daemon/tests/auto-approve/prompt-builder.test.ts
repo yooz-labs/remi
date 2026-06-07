@@ -101,5 +101,8 @@ describe('buildPrompt', () => {
     expect(content).toContain('gh pr merge'); // named as an escalation
     // The approve clause must mention fetching read-only data without mutation.
     expect(content.toLowerCase()).toContain('fetch data');
+    // `gh api -f/-F` silently switches GET->POST, so the field flags must be
+    // named as an escalation (a 4B model would otherwise read it as a GET).
+    expect(content).toContain('--field');
   });
 });
