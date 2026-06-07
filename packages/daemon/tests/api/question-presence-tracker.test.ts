@@ -57,6 +57,33 @@ describe('QuestionPresenceTracker', () => {
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
+  it('2+ pending hooks from different agents, PTY names none -> pushes BARE (#483)', () => {
+    // Fail-safe: concurrent prompts from two subagents + a PTY question that
+    // matches neither must NOT guess — push the bare PTY question rather than
+    // attach the wrong agent's option labels (#425).
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+    tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash A?'), agentId: 'subagent-A' });
+    tracker.recordPendingHook({ ...makeHookQuestion('Allow Edit B?'), agentId: 'subagent-B' });
+    const ptyQ = makePTYQuestion('Some prompt'); // no agentId -> 'main', matches neither
+    tracker.onPTYPromptVisible(ptyQ);
+    expect(pushes.length).toBe(1);
+    expect(pushes[0]).toBe(ptyQ); // bare, not merged
+    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['1', '2', '3']);
+    // Ambiguous hooks are dropped, not leaked into the next prompt cycle.
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  it('exactly one pending hook, PTY names no agent -> still pairs unambiguously (#483)', () => {
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+    tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash?'), agentId: 'subagent-A' });
+    const ptyQ = makePTYQuestion('Allow Bash?'); // no agentId, but only one candidate
+    tracker.onPTYPromptVisible(ptyQ);
+    expect(pushes.length).toBe(1);
+    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+  });
+
   it('hook then PTY — pushes once with merged options from hook metadata', () => {
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
