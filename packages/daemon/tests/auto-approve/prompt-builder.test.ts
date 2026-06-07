@@ -89,4 +89,17 @@ describe('buildPrompt', () => {
     const [system] = buildPrompt('Bash', { command: 'ls && cat foo' });
     expect(system?.content).toContain('Compound commands');
   });
+
+  test('system prompt approves read-only gh queries and escalates gh mutations (#482)', () => {
+    // PR review (/review-pr) leans on read-only gh; without this clause the
+    // catch-all "talks to a remote -> escalate" rule made the LLM escalate
+    // every gh command. Read-only fetches approve; remote mutations escalate.
+    const [system] = buildPrompt('Bash', { command: 'gh pr view 123' });
+    const content = system?.content ?? '';
+    expect(content).toContain('gh pr view');
+    expect(content).toContain('gh api'); // GET approvable, mutating verbs escalate
+    expect(content).toContain('gh pr merge'); // named as an escalation
+    // The approve clause must mention fetching read-only data without mutation.
+    expect(content.toLowerCase()).toContain('fetch data');
+  });
 });
