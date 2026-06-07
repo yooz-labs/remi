@@ -70,6 +70,8 @@ describe('QuestionPresenceTracker', () => {
     expect(pushes.length).toBe(1);
     expect(pushes[0]).toBe(ptyQ); // bare, not merged
     expect(pushes[0]?.options.map((o) => o.label)).toEqual(['1', '2', '3']);
+    // Ambiguous hooks are dropped, not leaked into the next prompt cycle.
+    expect(tracker.hasPendingForTest()).toBe(false);
   });
 
   it('exactly one pending hook, PTY names no agent -> still pairs unambiguously (#483)', () => {

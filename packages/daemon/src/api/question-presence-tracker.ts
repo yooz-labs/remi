@@ -54,8 +54,9 @@ export class QuestionPresenceTracker {
   /** Hook-derived questions not yet paired with PTY confirmation or cleared,
    *  keyed by agent. At most one per agent: a second hook for the SAME agent
    *  (e.g. PermissionRequest then Notification for one prompt) replaces the
-   *  first, but different agents keep separate entries. Insertion order is
-   *  preserved so the PTY-pairing fallback can pick the most recent. */
+   *  first, but different agents keep separate entries. A PTY prompt pairs with
+   *  the same-agent entry, or (only when exactly one entry exists) the sole
+   *  candidate; with 2+ different-agent entries it pushes bare (no guessing). */
   private pending = new Map<string, Question>();
 
   /** True while a permission prompt is on the main PTY. Set by
@@ -95,9 +96,11 @@ export class QuestionPresenceTracker {
 
   /**
    * PTY parser saw a prompt on screen. Push immediately. Pair with a hook
-   * record for option labels / agent_id: prefer the same agent, else fall
-   * back to the most-recent pending hook (PTY output does not reliably name
-   * the agent — #425). When paired, the hook contributes `options` and
+   * record for option labels / agent_id: prefer the same-agent entry, else the
+   * sole pending hook when exactly one exists (unambiguous). With 2+ pending
+   * hooks from different agents and no agent match, push bare to avoid
+   * misattributing another agent's labels (#425 / #483). When paired, the hook
+   * contributes `options` and
    * `agentId` (so the client keys the prompt to the right agent) while PTY
    * contributes `id` / `text` / `allowsFreeText` / `isAnswered` (it reflects
    * the screen). The consumed hook entry is removed.
@@ -123,6 +126,10 @@ export class QuestionPresenceTracker {
       console.warn(
         `[QuestionPresenceTracker] PTY prompt (agent "${key}") matches none of [${[...this.pending.keys()].join(', ')}]; pushing bare to avoid cross-agent misattribution`,
       );
+      // The ambiguous hooks are unresolvable for this prompt; drop them so they
+      // can't stale-merge onto a later unrelated prompt (recordKey stays
+      // undefined here, so the delete below would otherwise skip them).
+      this.pending.clear();
     }
     const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;
     if (recordKey !== undefined) {
