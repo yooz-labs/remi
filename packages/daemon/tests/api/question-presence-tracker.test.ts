@@ -364,5 +364,17 @@ describe('QuestionPresenceTracker', () => {
       tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
       expect(pushes.length).toBe(1);
     });
+
+    it('onAutoApproveHandled discards the buffer and closes the window (#484)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
+      tracker.onAutoApproveHandled(); // auto-approved -> discard, no push
+      expect(pushes.length).toBe(0);
+      // Window is closed (not stuck): a later prompt pushes normally.
+      tracker.onPTYPromptVisible(makePTYQuestion('Next?'));
+      expect(pushes.length).toBe(1);
+    });
   });
 });

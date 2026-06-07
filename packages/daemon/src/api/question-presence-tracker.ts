@@ -218,6 +218,19 @@ export class QuestionPresenceTracker {
   }
 
   /**
+   * The auto-approve verdict was HANDLED automatically (approve/deny/pick
+   * injected, or a subagent default-deny): the user must NOT see this prompt.
+   * Close the buffer window and discard any buffered prompt. Surgical (does not
+   * touch pending hook records of OTHER agents). EVERY `onAutoApproveStart` must
+   * be matched by exactly one of escalate / handled / a status-or-clear reset,
+   * or the buffer would stick true and silently drop later prompts.
+   */
+  onAutoApproveHandled(): void {
+    this.autoApproveInFlight = false;
+    this.bufferedDuringEval = null;
+  }
+
+  /**
    * Drop all pending hook records without firing a push, and clear the
    * PTY-presence flag. Used by the auto-approve cancelled branch and on
    * Claude restart (where the dying session's prompts must not merge stale

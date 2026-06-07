@@ -147,11 +147,15 @@ export class AutoApproveGate {
             return;
           }
           if (result.decision === 'approve') {
-            if (!(await this.inject(input, '1', 'approved'))) this.escalateToUser(input);
+            // inject success -> auto-handled (close the buffer; user never sees
+            // it); inject failure -> escalate (which releases the buffer). #484.
+            if (await this.inject(input, '1', 'approved')) this.deps.tracker.onAutoApproveHandled();
+            else this.escalateToUser(input);
             return;
           }
           if (result.decision === 'deny') {
-            if (!(await this.inject(input, '3', 'denied'))) this.escalateToUser(input);
+            if (await this.inject(input, '3', 'denied')) this.deps.tracker.onAutoApproveHandled();
+            else this.escalateToUser(input);
             return;
           }
           if (result.decision === 'pick' && result.pickIndex !== undefined) {
@@ -159,12 +163,14 @@ export class AutoApproveGate {
             // parseMultiChoiceDecision already validated the index against options
             // length, so out-of-range values cannot reach this branch.
             if (
-              !(await this.inject(
+              await this.inject(
                 input,
                 String(result.pickIndex),
                 `multichoice-pick-${result.pickIndex}`,
-              ))
+              )
             ) {
+              this.deps.tracker.onAutoApproveHandled();
+            } else {
               this.escalateToUser(input);
             }
             return;
@@ -179,6 +185,7 @@ export class AutoApproveGate {
               `[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`,
             );
             await this.inject(input, '3', 'subagent-escalate-default-deny', true);
+            this.deps.tracker.onAutoApproveHandled(); // close the buffer window (#484)
             return;
           }
           this.escalateToUser(input);
@@ -189,6 +196,7 @@ export class AutoApproveGate {
             logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
             if (isInSubagentContext()) {
               await this.inject(input, '3', 'subagent-error-default-deny', true);
+              this.deps.tracker.onAutoApproveHandled(); // close the buffer window (#484)
               return;
             }
             this.escalateToUser(input);
@@ -274,9 +282,13 @@ export class AutoApproveGate {
       // FIRST, then onEscalate releases the buffered PTY prompt so the pair+push
       // finds that record. Order matters; do not reorder. #484.
       this.deps.escalate(input);
-      this.deps.onEscalate?.();
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalateToUser threw:`, err);
+    } finally {
+      // Release the buffer UNCONDITIONALLY: the verdict is "user must answer".
+      // Even if escalate() threw (push will fail), the buffer must not stay
+      // locked, or every later prompt in this session would buffer forever. #484.
+      this.deps.onEscalate?.();
     }
   }
 }
