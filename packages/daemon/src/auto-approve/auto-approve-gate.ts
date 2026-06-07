@@ -65,6 +65,12 @@ export interface AutoApproveGateDeps {
    *  absorbed rather than propagated; implementations should still prefer to
    *  handle their own errors. */
   escalate: (input: PermissionRequestHookInput) => void;
+  /** Called right before the LLM eval starts, so the tracker can BUFFER the PTY
+   *  prompt until the verdict (don't push an auto-approved permission). #484. */
+  onEvalStart?: () => void;
+  /** Called when the verdict is escalate (the user must answer), so the tracker
+   *  releases the buffered PTY prompt. #484. */
+  onEscalate?: () => void;
 }
 
 export class AutoApproveGate {
@@ -115,6 +121,9 @@ export class AutoApproveGate {
 
     // Auto-approve gate: evaluate before creating a Question object.
     if (service) {
+      // Open the buffer window: a PTY prompt that renders during the eval is
+      // held (not pushed) until we know the verdict. #484.
+      this.deps.onEvalStart?.();
       // Pass the raw suggestions array; AutoApproveService does its own strict-string
       // filtering before feeding the LLM. We forward the raw shape (rather than
       // coercing) so the multi-choice classifier can see "non-string entry" and route
@@ -261,7 +270,11 @@ export class AutoApproveGate {
    */
   private escalateToUser(input: PermissionRequestHookInput): void {
     try {
+      // escalate() stashes the hook record (onPermissionRequest -> recordPendingHook)
+      // FIRST, then onEscalate releases the buffered PTY prompt so the pair+push
+      // finds that record. Order matters; do not reorder. #484.
       this.deps.escalate(input);
+      this.deps.onEscalate?.();
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalateToUser threw:`, err);
     }
