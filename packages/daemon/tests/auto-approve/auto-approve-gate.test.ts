@@ -155,6 +155,35 @@ describe('AutoApproveGate', () => {
     expect(escalations[0]?.tool_name).toBe('Bash');
   });
 
+  test('escalate that THROWS still fires onEscalate (buffer must not stick) (#484)', async () => {
+    // The worst outcome is a stuck buffer that silently drops later prompts.
+    // onEscalate is in a finally, so it runs even when the escalate target throws.
+    let onEscalateCalls = 0;
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const gate = new AutoApproveGate(
+      {
+        service: evaluator(escalate),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => {
+          throw new Error('test: escalate target down');
+        },
+        onEscalate: () => {
+          onEscalateCalls++;
+        },
+      },
+      SID,
+    );
+    gate.handlePermissionRequest(pr());
+    await flush();
+    expect(onEscalateCalls).toBe(1);
+  });
+
   test('escalate in subagent context default-denies ("3"), never escalates', async () => {
     subagent = true;
     gateWith(evaluator(escalate)).handlePermissionRequest(pr());

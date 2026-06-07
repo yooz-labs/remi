@@ -132,6 +132,39 @@ describe('OutputProcessor', () => {
     expect(questions[0]?.text).toBe('Do you want to proceed?');
   });
 
+  test('emits onQuestion only on the rising edge: same prompt re-parsed does not re-emit (#486)', () => {
+    const questions: Question[] = [];
+    const processor = new OutputProcessor({ sessionId }, { onQuestion: (q) => questions.push(q) });
+
+    // The same on-screen prompt re-parsed across buffer cycles must emit ONCE
+    // (it is one pending question, not many). This is the duplicate-APNS source.
+    processor.process('Do you want to proceed? (y/n)\n');
+    processor.process('Do you want to proceed? (y/n)\n');
+    processor.process('Do you want to proceed? (y/n)\n');
+    processor.flush();
+    expect(questions.length).toBe(1);
+
+    // Agent advances past 'waiting' -> the rising-edge gate clears.
+    processor.process('Thinking...\n');
+    processor.flush();
+
+    // A new decision with identical text must re-emit (not be mistaken for the
+    // one just answered).
+    processor.process('Do you want to proceed? (y/n)\n');
+    processor.flush();
+    expect(questions.length).toBe(2);
+  });
+
+  test('a genuinely different prompt re-emits without a status change (#486)', () => {
+    const questions: Question[] = [];
+    const processor = new OutputProcessor({ sessionId }, { onQuestion: (q) => questions.push(q) });
+
+    processor.process('Do you want to proceed? (y/n)\n');
+    processor.process('Overwrite the existing file? (y/n)\n');
+    processor.flush();
+    expect(questions.length).toBe(2);
+  });
+
   test('does not emit messages in streamStatusOnly mode', () => {
     const messages: Message[] = [];
     const processor = new OutputProcessor(

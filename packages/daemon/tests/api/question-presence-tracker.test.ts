@@ -57,6 +57,33 @@ describe('QuestionPresenceTracker', () => {
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
+  it('2+ pending hooks from different agents, PTY names none -> pushes BARE (#483)', () => {
+    // Fail-safe: concurrent prompts from two subagents + a PTY question that
+    // matches neither must NOT guess — push the bare PTY question rather than
+    // attach the wrong agent's option labels (#425).
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+    tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash A?'), agentId: 'subagent-A' });
+    tracker.recordPendingHook({ ...makeHookQuestion('Allow Edit B?'), agentId: 'subagent-B' });
+    const ptyQ = makePTYQuestion('Some prompt'); // no agentId -> 'main', matches neither
+    tracker.onPTYPromptVisible(ptyQ);
+    expect(pushes.length).toBe(1);
+    expect(pushes[0]).toBe(ptyQ); // bare, not merged
+    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['1', '2', '3']);
+    // Ambiguous hooks are dropped, not leaked into the next prompt cycle.
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  it('exactly one pending hook, PTY names no agent -> still pairs unambiguously (#483)', () => {
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+    tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash?'), agentId: 'subagent-A' });
+    const ptyQ = makePTYQuestion('Allow Bash?'); // no agentId, but only one candidate
+    tracker.onPTYPromptVisible(ptyQ);
+    expect(pushes.length).toBe(1);
+    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+  });
+
   it('hook then PTY — pushes once with merged options from hook metadata', () => {
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
@@ -290,6 +317,64 @@ describe('QuestionPresenceTracker', () => {
       tracker.onPTYPromptVisible(makePTYQuestion());
       tracker.onStatusChange('idle');
       expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    });
+  });
+
+  describe('auto-approve buffer (#484)', () => {
+    it('PTY prompt during an eval is BUFFERED, not pushed', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0); // held until the verdict
+    });
+
+    it('escalate verdict releases the buffered prompt once, merged with the hook', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0);
+      // escalate() stashes the hook record first, THEN onEscalate releases.
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate();
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    });
+
+    it('auto-approved (no escalate): status-leaves-waiting discards the buffer, never pushes', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
+      tracker.onStatusChange('idle'); // injected silently -> agent advanced
+      expect(pushes.length).toBe(0);
+      // A later prompt (new cycle, eval window closed) pushes normally.
+      tracker.onPTYPromptVisible(makePTYQuestion('Different prompt?'));
+      expect(pushes.length).toBe(1);
+    });
+
+    it('escalate before any PTY prompt -> the next PTY prompt pushes normally', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate(); // nothing buffered yet
+      expect(pushes.length).toBe(0);
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(1);
+    });
+
+    it('onAutoApproveHandled discards the buffer and closes the window (#484)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
+      tracker.onAutoApproveHandled(); // auto-approved -> discard, no push
+      expect(pushes.length).toBe(0);
+      // Window is closed (not stuck): a later prompt pushes normally.
+      tracker.onPTYPromptVisible(makePTYQuestion('Next?'));
+      expect(pushes.length).toBe(1);
     });
   });
 });

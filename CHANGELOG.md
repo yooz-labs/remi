@@ -4,6 +4,33 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-07
+
+A pass over the question -> auto-approve -> notification pipeline, plus a
+duplicate-notification fix and CI automation.
+
+### Fixed
+- Duplicate APNS notifications: the output processor re-emitted the same
+  on-screen prompt on every parse cycle (a fresh question id each time),
+  flooding the notification pipeline. It now emits a question only on the
+  rising edge (when the on-screen prompt actually changes), cleared when the
+  agent leaves the `waiting` state (#486).
+
+### Changed
+- Auto-approve now buffers a permission prompt while the local LLM is
+  evaluating it and pushes a notification **only when the verdict is
+  escalate** (the user must answer). Auto-approved/denied permissions no
+  longer fire a phantom push. Auto-approve remains opt-in (`enabled = false`),
+  and read-only tools (`Read`/`Glob`/`Grep`) plus read-only `gh`/`git` queries
+  are approved by default while remote mutations escalate (#482, #484).
+- Question dedup is now per-agent, so a background subagent's prompt no longer
+  suppresses the main agent's identically-worded one; ambiguous cross-agent
+  prompts are surfaced without misattributed option labels (#483).
+
+### Internal
+- `auto-bump-dev` workflow: the `-dev.N` counter now increments automatically
+  on every push to `develop` (version-only; no publish) (#479).
+
 ## [0.6.1] - 2026-06-05
 
 ### Changed

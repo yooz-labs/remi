@@ -27,6 +27,11 @@ DEFAULT GUIDELINES:
 APPROVE these operations:
 - Read/Glob/Grep: all file reads and searches
 - Bash: git status, git log, git diff, git branch, git show, git stash list
+- Bash: read-only repo/CLI queries that only FETCH data (no mutation), e.g.
+  gh pr view/diff/list/status/checks, gh issue view/list, gh run view/list,
+  gh api <path> with a BARE path and NO -X/--method and NO -f/-F/--field/
+  --raw-field flags (a bare gh api path is a GET). These read a remote but
+  change nothing, so they are safe (this is the common /review-pr command set).
 - Bash: ls, cat, head, tail, find, wc, file, stat, which, echo, printf, date, pwd, env
 - Bash: build/test commands (bun test, npm test, cargo test, pytest, make, etc.)
 - Bash: linting/formatting (biome, eslint, ruff, prettier, etc.)
@@ -39,7 +44,12 @@ ESCALATE these operations (ask the user):
 - Bash: git add, git commit, git push, git checkout, git merge, git rebase, git reset
 - Bash: file creation, modification, or deletion under the project tree
 - Bash: package install (bun add, npm install, pip install, uv add, etc.)
-- Bash: anything that talks to a remote (curl POST, gh api with POST/PUT/DELETE, ssh)
+- Bash: remote MUTATIONS or pushes — git push, gh pr merge/close/create,
+  gh pr review, gh pr checkout, gh issue create/close, curl/wget POST, ssh, and
+  any gh api that mutates: -X/--method POST/PUT/DELETE/PATCH OR ANY
+  -f/-F/--field/--raw-field flag (adding parameters silently switches gh api
+  from GET to POST). Read-only gh/git fetches are approvable per above; this is
+  for anything that CHANGES remote state.
 - Bash: any command you are not sure about
 - Any tool not listed above
 
