@@ -628,6 +628,10 @@ export function setupHookBridge(
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
       escalate: (i) => handlers.onPermissionRequest?.(i),
+      // #484: buffer the PTY prompt while the eval runs; release it only on an
+      // escalate verdict, so silently auto-approved permissions never push APNS.
+      onEvalStart: () => tracker.onAutoApproveStart(),
+      onEscalate: () => tracker.onAutoApproveEscalate(),
     },
     sessionId,
   );

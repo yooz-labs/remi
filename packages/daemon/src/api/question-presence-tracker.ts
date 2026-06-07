@@ -54,8 +54,9 @@ export class QuestionPresenceTracker {
   /** Hook-derived questions not yet paired with PTY confirmation or cleared,
    *  keyed by agent. At most one per agent: a second hook for the SAME agent
    *  (e.g. PermissionRequest then Notification for one prompt) replaces the
-   *  first, but different agents keep separate entries. Insertion order is
-   *  preserved so the PTY-pairing fallback can pick the most recent. */
+   *  first, but different agents keep separate entries. A PTY prompt pairs with
+   *  the same-agent entry, or (only when exactly one entry exists) the sole
+   *  candidate; with 2+ different-agent entries it pushes bare (no guessing). */
   private pending = new Map<string, Question>();
 
   /** True while a permission prompt is on the main PTY. Set by
@@ -67,6 +68,19 @@ export class QuestionPresenceTracker {
    *  on the main PTY, so this flag stays false and the inject is
    *  dropped instead of typing into the main agent's input. */
   private ptyShowingQuestion = false;
+
+  /** True while the auto-approve LLM is deciding a permission. A PTY prompt
+   *  that appears during this window is BUFFERED (not pushed): if the verdict
+   *  is approve/deny/pick the prompt is auto-handled and must never reach the
+   *  user; only an escalate verdict releases the buffered prompt. This is the
+   *  fix for "every auto-approved permission still pushed APNS" (#484) — and it
+   *  must buffer (not suppress-and-replay) because the rising-edge PTY emit
+   *  (#486) fires only once, so a suppressed prompt would never re-emit. */
+  private autoApproveInFlight = false;
+  /** The PTY prompt held while an auto-approve eval is in flight. Released by
+   *  `onAutoApproveEscalate` (verdict = escalate), discarded by the
+   *  status/clearPending resets (verdict = handled, or the prompt is gone). */
+  private bufferedDuringEval: Question | null = null;
 
   constructor(private readonly push: PushQuestion) {}
 
@@ -95,9 +109,11 @@ export class QuestionPresenceTracker {
 
   /**
    * PTY parser saw a prompt on screen. Push immediately. Pair with a hook
-   * record for option labels / agent_id: prefer the same agent, else fall
-   * back to the most-recent pending hook (PTY output does not reliably name
-   * the agent — #425). When paired, the hook contributes `options` and
+   * record for option labels / agent_id: prefer the same-agent entry, else the
+   * sole pending hook when exactly one exists (unambiguous). With 2+ pending
+   * hooks from different agents and no agent match, push bare to avoid
+   * misattributing another agent's labels (#425 / #483). When paired, the hook
+   * contributes `options` and
    * `agentId` (so the client keys the prompt to the right agent) while PTY
    * contributes `id` / `text` / `allowsFreeText` / `isAnswered` (it reflects
    * the screen). The consumed hook entry is removed.
@@ -108,18 +124,32 @@ export class QuestionPresenceTracker {
    * numbered options), which beats crashing on a network blip during APNS.
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
+    if (this.autoApproveInFlight) {
+      // A permission eval owns this prompt: buffer it, do not push yet. The
+      // verdict decides — onAutoApproveEscalate releases it; a status-leaves-
+      // waiting / clearPending reset (auto-handled, or prompt gone) discards it.
+      this.bufferedDuringEval = ptyQuestion;
+      return;
+    }
     const key = agentKey(ptyQuestion);
     let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
-    if (recordKey === undefined && this.pending.size > 0) {
-      // Most-recent pending hook (Map preserves insertion order). The PTY did
-      // not name an agent we have a record for, so this may attach the wrong
-      // agent's option labels (#425). Log it so the misattribution is
-      // observable rather than silent.
-      const keys = [...this.pending.keys()];
-      recordKey = keys[keys.length - 1];
+    if (recordKey === undefined && this.pending.size === 1) {
+      // Exactly one pending hook and the PTY did not name an agent we have a
+      // record for: pairing is unambiguous (one candidate), so attach it.
+      recordKey = [...this.pending.keys()][0];
+    } else if (recordKey === undefined && this.pending.size > 1) {
+      // 2+ pending hooks from DIFFERENT agents and the PTY question matches
+      // none: do NOT guess. Pairing the most-recent would attach the wrong
+      // agent's option labels (#425). Push the bare PTY question instead — its
+      // numbered options suffice for the user to answer — and log loudly so the
+      // ambiguity is observable rather than a silent misattribution.
       console.warn(
-        `[QuestionPresenceTracker] PTY prompt (agent "${key}") has no matching hook; pairing most-recent "${recordKey}" of [${keys.join(', ')}] — option labels may be misattributed`,
+        `[QuestionPresenceTracker] PTY prompt (agent "${key}") matches none of [${[...this.pending.keys()].join(', ')}]; pushing bare to avoid cross-agent misattribution`,
       );
+      // The ambiguous hooks are unresolvable for this prompt; drop them so they
+      // can't stale-merge onto a later unrelated prompt (recordKey stays
+      // undefined here, so the delete below would otherwise skip them).
+      this.pending.clear();
     }
     const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;
     if (recordKey !== undefined) {
@@ -155,7 +185,49 @@ export class QuestionPresenceTracker {
     if (status !== 'waiting') {
       this.pending.clear();
       this.ptyShowingQuestion = false;
+      // The verdict window is over: any buffered prompt was auto-handled (the
+      // agent advanced) or left the screen. Discard it — do not ping the user.
+      this.autoApproveInFlight = false;
+      this.bufferedDuringEval = null;
     }
+  }
+
+  /**
+   * An auto-approve LLM eval has STARTED for a permission. Until it resolves,
+   * a PTY prompt for it is buffered, not pushed (so a silently auto-approved
+   * permission never reaches the user). Paired with `onAutoApproveEscalate`
+   * (release) and the status/clearPending resets (discard).
+   */
+  onAutoApproveStart(): void {
+    this.autoApproveInFlight = true;
+  }
+
+  /**
+   * The auto-approve verdict was ESCALATE: the user must answer. End the buffer
+   * window and release the held PTY prompt (re-running the normal pair+push
+   * path, which now finds the hook record the escalation just stashed). If no
+   * prompt was buffered yet, the next `onPTYPromptVisible` pushes normally.
+   */
+  onAutoApproveEscalate(): void {
+    this.autoApproveInFlight = false;
+    const buffered = this.bufferedDuringEval;
+    this.bufferedDuringEval = null;
+    if (buffered !== null) {
+      this.onPTYPromptVisible(buffered);
+    }
+  }
+
+  /**
+   * The auto-approve verdict was HANDLED automatically (approve/deny/pick
+   * injected, or a subagent default-deny): the user must NOT see this prompt.
+   * Close the buffer window and discard any buffered prompt. Surgical (does not
+   * touch pending hook records of OTHER agents). EVERY `onAutoApproveStart` must
+   * be matched by exactly one of escalate / handled / a status-or-clear reset,
+   * or the buffer would stick true and silently drop later prompts.
+   */
+  onAutoApproveHandled(): void {
+    this.autoApproveInFlight = false;
+    this.bufferedDuringEval = null;
   }
 
   /**
@@ -167,6 +239,8 @@ export class QuestionPresenceTracker {
   clearPending(): void {
     this.pending.clear();
     this.ptyShowingQuestion = false;
+    this.autoApproveInFlight = false;
+    this.bufferedDuringEval = null;
   }
 
   /**

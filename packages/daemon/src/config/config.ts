@@ -108,7 +108,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
     base_url: 'http://localhost:11434/v1',
     timeout: 30,
     log_decisions: true,
-    allow: [],
+    // Safe read-only TOOLS, fast-pathed without an LLM call. These are
+    // tool-name matches (not Bash substrings), so a compound command cannot
+    // bypass them — `Read` matches the Read tool, never a `Bash` string. Bash
+    // git/gh commands are intentionally NOT defaulted here (substring matching
+    // is compound-command-unsafe); the LLM prompt evaluates those in full.
+    allow: ['Read', 'Glob', 'Grep'],
     deny: [],
     instructions: '',
     multichoice: 'skip',

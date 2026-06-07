@@ -145,6 +145,18 @@ describe('applyEnvOverrides', () => {
     expect(DEFAULT_CONFIG.features.transcript_binder_enabled).toBe(false);
   });
 
+  test('auto-approve stays opt-in but defaults safe read-only tools in allow (#482)', () => {
+    // Off by default (the trust line we never cross silently).
+    expect(DEFAULT_CONFIG.auto_approve.enabled).toBe(false);
+    // Read-only TOOL-NAME matches (not Bash substrings) so a compound command
+    // cannot bypass them; these fast-path file reads without an LLM call.
+    expect(DEFAULT_CONFIG.auto_approve.allow).toContain('Read');
+    expect(DEFAULT_CONFIG.auto_approve.allow).toContain('Glob');
+    expect(DEFAULT_CONFIG.auto_approve.allow).toContain('Grep');
+    // No Bash command substrings are defaulted (compound-command-unsafe).
+    expect(DEFAULT_CONFIG.auto_approve.allow.some((p) => p.includes(' '))).toBe(false);
+  });
+
   test('REMI_TRANSCRIPT_BINDER_SHADOW=true enables shadow only', () => {
     process.env['REMI_TRANSCRIPT_BINDER_SHADOW'] = 'true';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
@@ -290,7 +302,7 @@ describe('auto_approve config', () => {
       base_url: 'http://localhost:11434/v1',
       timeout: 30,
       log_decisions: true,
-      allow: [],
+      allow: ['Read', 'Glob', 'Grep'],
       deny: [],
       instructions: '',
       multichoice: 'skip',
@@ -402,10 +414,12 @@ Escalate anything touching secrets.
     expect(config.auto_approve.instructions).toContain('Escalate anything touching secrets');
   });
 
-  test('allow/deny default to empty arrays', () => {
+  test('allow defaults to safe read-only tools; deny/instructions default empty (#482)', () => {
+    // An [auto_approve] section that omits `allow` inherits the safe read-only
+    // tool defaults (Read/Glob/Grep); deny and instructions stay empty.
     fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nenabled = true\n');
     const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.allow).toEqual([]);
+    expect(config.auto_approve.allow).toEqual(['Read', 'Glob', 'Grep']);
     expect(config.auto_approve.deny).toEqual([]);
     expect(config.auto_approve.instructions).toBe('');
   });
