@@ -63,6 +63,19 @@ const DEFAULT_BUFFER_SIZE = 4096;
  * - Parsing questions and status
  * - Progressive updates for long outputs
  */
+/**
+ * Stable fingerprint of a prompt's content (NOT its id, which is minted fresh
+ * on every parse). Two detections of the same on-screen prompt produce the same
+ * fingerprint, so the rising-edge gate can suppress the re-emit. Keyed on the
+ * normalized text + option values + free-text flag — a genuine prompt change
+ * (different text or options) yields a different fingerprint and re-emits.
+ */
+function questionFingerprint(q: Question): string {
+  const text = q.text.trim().toLowerCase().replace(/\s+/g, ' ');
+  const opts = q.options.map((o) => o.value).join('');
+  return `${text}${opts}${q.allowsFreeText ? 'f' : ''}`;
+}
+
 export class OutputProcessor {
   private readonly config: Required<ProcessorConfig>;
   private readonly events: Partial<OutputEvents>;
@@ -73,6 +86,10 @@ export class OutputProcessor {
   private currentStatus: AgentStatus = 'idle';
   private lastUpdateTime = 0;
   private pendingQuestion: Question | null = null;
+  /** Fingerprint of the prompt currently on screen, so the SAME prompt
+   *  re-parsed on later buffer cycles is not re-emitted as a new question
+   *  (rising-edge gate). Cleared when status leaves 'waiting'. */
+  private pendingQuestionFp: string | null = null;
   private seenContent: Set<string> = new Set(); // Track unique content chunks
   private hasEmittedCurrentMessage = false; // Track if onMessage was called for currentMessageId
 
@@ -113,6 +130,11 @@ export class OutputProcessor {
     if (this.currentMessageId !== null) {
       this.finalizeMessage();
     }
+
+    // Drop the rising-edge gate on PTY exit so a reused processor can't suppress
+    // the next session's first identical prompt. (flush() is exit-only.)
+    this.pendingQuestion = null;
+    this.pendingQuestionFp = null;
   }
 
   /**
@@ -125,6 +147,7 @@ export class OutputProcessor {
     this.currentStatus = 'idle';
     this.lastUpdateTime = 0;
     this.pendingQuestion = null;
+    this.pendingQuestionFp = null;
     this.seenContent.clear();
     this.hasEmittedCurrentMessage = false;
   }
@@ -178,15 +201,38 @@ export class OutputProcessor {
     const statusResult = parseStatus(content);
     if (statusResult.status !== this.currentStatus && statusResult.confidence >= 0.5) {
       this.currentStatus = statusResult.status;
+      // Clear the rising-edge gate at BOTH edges of a non-waiting span so the
+      // NEXT prompt — even one with identical text — re-emits instead of being
+      // mistaken for the one just answered. We bias toward re-emit (a duplicate
+      // is recoverable; a missed prompt is not): the gate only suppresses
+      // re-parses WITHIN a single 'waiting' span.
+      if (statusResult.status !== 'waiting') {
+        // Left 'waiting': the prompt (if any) is gone.
+        this.pendingQuestion = null;
+        this.pendingQuestionFp = null;
+      } else if (this.currentStatus !== 'waiting') {
+        // Entered 'waiting' from a non-waiting state: a fresh prompt cycle, so
+        // a same-text prompt must not be suppressed as the previous one.
+        this.pendingQuestion = null;
+        this.pendingQuestionFp = null;
+      }
       this.events.onStatusChange?.(statusResult.status, statusResult.context);
     }
 
-    // Check for questions
+    // Check for questions. A prompt that stays on screen is re-parsed on every
+    // buffer cycle; emitting it each time mints a fresh question id and floods
+    // the notification pipeline (downstream dedup can't catch a new id once its
+    // window lapses). Emit only on the RISING EDGE — when the on-screen prompt's
+    // fingerprint actually changes. See #486.
     if (hasQuestionIndicator(content)) {
       const parseResult = parseQuestion(content);
       if (parseResult.detected && parseResult.question) {
-        this.pendingQuestion = parseResult.question;
-        this.events.onQuestion?.(parseResult.question);
+        const fp = questionFingerprint(parseResult.question);
+        if (fp !== this.pendingQuestionFp) {
+          this.pendingQuestion = parseResult.question;
+          this.pendingQuestionFp = fp;
+          this.events.onQuestion?.(parseResult.question);
+        }
       }
     }
 
