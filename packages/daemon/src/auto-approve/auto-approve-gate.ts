@@ -65,6 +65,12 @@ export interface AutoApproveGateDeps {
    *  absorbed rather than propagated; implementations should still prefer to
    *  handle their own errors. */
   escalate: (input: PermissionRequestHookInput) => void;
+  /** Called right before the LLM eval starts, so the tracker can BUFFER the PTY
+   *  prompt until the verdict (don't push an auto-approved permission). #484. */
+  onEvalStart?: () => void;
+  /** Called when the verdict is escalate (the user must answer), so the tracker
+   *  releases the buffered PTY prompt. #484. */
+  onEscalate?: () => void;
 }
 
 export class AutoApproveGate {
@@ -115,6 +121,9 @@ export class AutoApproveGate {
 
     // Auto-approve gate: evaluate before creating a Question object.
     if (service) {
+      // Open the buffer window: a PTY prompt that renders during the eval is
+      // held (not pushed) until we know the verdict. #484.
+      this.deps.onEvalStart?.();
       // Pass the raw suggestions array; AutoApproveService does its own strict-string
       // filtering before feeding the LLM. We forward the raw shape (rather than
       // coercing) so the multi-choice classifier can see "non-string entry" and route
@@ -138,11 +147,15 @@ export class AutoApproveGate {
             return;
           }
           if (result.decision === 'approve') {
-            if (!(await this.inject(input, '1', 'approved'))) this.escalateToUser(input);
+            // inject success -> auto-handled (close the buffer; user never sees
+            // it); inject failure -> escalate (which releases the buffer). #484.
+            if (await this.inject(input, '1', 'approved')) this.deps.tracker.onAutoApproveHandled();
+            else this.escalateToUser(input);
             return;
           }
           if (result.decision === 'deny') {
-            if (!(await this.inject(input, '3', 'denied'))) this.escalateToUser(input);
+            if (await this.inject(input, '3', 'denied')) this.deps.tracker.onAutoApproveHandled();
+            else this.escalateToUser(input);
             return;
           }
           if (result.decision === 'pick' && result.pickIndex !== undefined) {
@@ -150,12 +163,14 @@ export class AutoApproveGate {
             // parseMultiChoiceDecision already validated the index against options
             // length, so out-of-range values cannot reach this branch.
             if (
-              !(await this.inject(
+              await this.inject(
                 input,
                 String(result.pickIndex),
                 `multichoice-pick-${result.pickIndex}`,
-              ))
+              )
             ) {
+              this.deps.tracker.onAutoApproveHandled();
+            } else {
               this.escalateToUser(input);
             }
             return;
@@ -170,6 +185,7 @@ export class AutoApproveGate {
               `[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`,
             );
             await this.inject(input, '3', 'subagent-escalate-default-deny', true);
+            this.deps.tracker.onAutoApproveHandled(); // close the buffer window (#484)
             return;
           }
           this.escalateToUser(input);
@@ -180,6 +196,7 @@ export class AutoApproveGate {
             logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
             if (isInSubagentContext()) {
               await this.inject(input, '3', 'subagent-error-default-deny', true);
+              this.deps.tracker.onAutoApproveHandled(); // close the buffer window (#484)
               return;
             }
             this.escalateToUser(input);
@@ -261,9 +278,17 @@ export class AutoApproveGate {
    */
   private escalateToUser(input: PermissionRequestHookInput): void {
     try {
+      // escalate() stashes the hook record (onPermissionRequest -> recordPendingHook)
+      // FIRST, then onEscalate releases the buffered PTY prompt so the pair+push
+      // finds that record. Order matters; do not reorder. #484.
       this.deps.escalate(input);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalateToUser threw:`, err);
+    } finally {
+      // Release the buffer UNCONDITIONALLY: the verdict is "user must answer".
+      // Even if escalate() threw (push will fail), the buffer must not stay
+      // locked, or every later prompt in this session would buffer forever. #484.
+      this.deps.onEscalate?.();
     }
   }
 }

@@ -319,4 +319,62 @@ describe('QuestionPresenceTracker', () => {
       expect(tracker.isPromptVisibleOnPTY()).toBe(false);
     });
   });
+
+  describe('auto-approve buffer (#484)', () => {
+    it('PTY prompt during an eval is BUFFERED, not pushed', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0); // held until the verdict
+    });
+
+    it('escalate verdict releases the buffered prompt once, merged with the hook', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0);
+      // escalate() stashes the hook record first, THEN onEscalate releases.
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate();
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    });
+
+    it('auto-approved (no escalate): status-leaves-waiting discards the buffer, never pushes', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
+      tracker.onStatusChange('idle'); // injected silently -> agent advanced
+      expect(pushes.length).toBe(0);
+      // A later prompt (new cycle, eval window closed) pushes normally.
+      tracker.onPTYPromptVisible(makePTYQuestion('Different prompt?'));
+      expect(pushes.length).toBe(1);
+    });
+
+    it('escalate before any PTY prompt -> the next PTY prompt pushes normally', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate(); // nothing buffered yet
+      expect(pushes.length).toBe(0);
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(1);
+    });
+
+    it('onAutoApproveHandled discards the buffer and closes the window (#484)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Read?'));
+      tracker.onAutoApproveHandled(); // auto-approved -> discard, no push
+      expect(pushes.length).toBe(0);
+      // Window is closed (not stuck): a later prompt pushes normally.
+      tracker.onPTYPromptVisible(makePTYQuestion('Next?'));
+      expect(pushes.length).toBe(1);
+    });
+  });
 });

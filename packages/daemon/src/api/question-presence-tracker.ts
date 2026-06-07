@@ -69,6 +69,19 @@ export class QuestionPresenceTracker {
    *  dropped instead of typing into the main agent's input. */
   private ptyShowingQuestion = false;
 
+  /** True while the auto-approve LLM is deciding a permission. A PTY prompt
+   *  that appears during this window is BUFFERED (not pushed): if the verdict
+   *  is approve/deny/pick the prompt is auto-handled and must never reach the
+   *  user; only an escalate verdict releases the buffered prompt. This is the
+   *  fix for "every auto-approved permission still pushed APNS" (#484) — and it
+   *  must buffer (not suppress-and-replay) because the rising-edge PTY emit
+   *  (#486) fires only once, so a suppressed prompt would never re-emit. */
+  private autoApproveInFlight = false;
+  /** The PTY prompt held while an auto-approve eval is in flight. Released by
+   *  `onAutoApproveEscalate` (verdict = escalate), discarded by the
+   *  status/clearPending resets (verdict = handled, or the prompt is gone). */
+  private bufferedDuringEval: Question | null = null;
+
   constructor(private readonly push: PushQuestion) {}
 
   /**
@@ -111,6 +124,13 @@ export class QuestionPresenceTracker {
    * numbered options), which beats crashing on a network blip during APNS.
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
+    if (this.autoApproveInFlight) {
+      // A permission eval owns this prompt: buffer it, do not push yet. The
+      // verdict decides — onAutoApproveEscalate releases it; a status-leaves-
+      // waiting / clearPending reset (auto-handled, or prompt gone) discards it.
+      this.bufferedDuringEval = ptyQuestion;
+      return;
+    }
     const key = agentKey(ptyQuestion);
     let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
     if (recordKey === undefined && this.pending.size === 1) {
@@ -165,7 +185,49 @@ export class QuestionPresenceTracker {
     if (status !== 'waiting') {
       this.pending.clear();
       this.ptyShowingQuestion = false;
+      // The verdict window is over: any buffered prompt was auto-handled (the
+      // agent advanced) or left the screen. Discard it — do not ping the user.
+      this.autoApproveInFlight = false;
+      this.bufferedDuringEval = null;
     }
+  }
+
+  /**
+   * An auto-approve LLM eval has STARTED for a permission. Until it resolves,
+   * a PTY prompt for it is buffered, not pushed (so a silently auto-approved
+   * permission never reaches the user). Paired with `onAutoApproveEscalate`
+   * (release) and the status/clearPending resets (discard).
+   */
+  onAutoApproveStart(): void {
+    this.autoApproveInFlight = true;
+  }
+
+  /**
+   * The auto-approve verdict was ESCALATE: the user must answer. End the buffer
+   * window and release the held PTY prompt (re-running the normal pair+push
+   * path, which now finds the hook record the escalation just stashed). If no
+   * prompt was buffered yet, the next `onPTYPromptVisible` pushes normally.
+   */
+  onAutoApproveEscalate(): void {
+    this.autoApproveInFlight = false;
+    const buffered = this.bufferedDuringEval;
+    this.bufferedDuringEval = null;
+    if (buffered !== null) {
+      this.onPTYPromptVisible(buffered);
+    }
+  }
+
+  /**
+   * The auto-approve verdict was HANDLED automatically (approve/deny/pick
+   * injected, or a subagent default-deny): the user must NOT see this prompt.
+   * Close the buffer window and discard any buffered prompt. Surgical (does not
+   * touch pending hook records of OTHER agents). EVERY `onAutoApproveStart` must
+   * be matched by exactly one of escalate / handled / a status-or-clear reset,
+   * or the buffer would stick true and silently drop later prompts.
+   */
+  onAutoApproveHandled(): void {
+    this.autoApproveInFlight = false;
+    this.bufferedDuringEval = null;
   }
 
   /**
@@ -177,6 +239,8 @@ export class QuestionPresenceTracker {
   clearPending(): void {
     this.pending.clear();
     this.ptyShowingQuestion = false;
+    this.autoApproveInFlight = false;
+    this.bufferedDuringEval = null;
   }
 
   /**
