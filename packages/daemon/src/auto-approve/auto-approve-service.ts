@@ -103,6 +103,10 @@ export class AutoApproveService {
       apiKey: config.api_key,
       model: config.model,
       timeoutMs: config.timeout * 1000,
+      // Ollama: use the native /api/chat with `think: false` so the model
+      // skips its reasoning (a quick approve/deny classify needs none, and the
+      // thinking is most of the latency). Other providers use OpenAI-compat.
+      kind: config.provider === 'ollama' ? 'ollama' : 'openai',
     };
     this.logFn = logFn;
     this.logDecisions = config.log_decisions;
