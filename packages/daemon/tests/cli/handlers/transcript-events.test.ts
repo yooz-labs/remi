@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -69,11 +70,12 @@ describe('createTranscriptHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers() {
+  function makeHandlers(currentOwnedSession: () => CurrentOwnedSession | null = () => null) {
     return createTranscriptHandlers({
       transcriptDiscovery,
       transcriptWatchers,
       bindingStore,
+      currentOwnedSession,
       send,
     });
   }
@@ -94,6 +96,44 @@ describe('createTranscriptHandlers', () => {
     const msg = sendCalls[0]?.message as { type: string; code?: string };
     expect(msg.type).toBe('error');
     expect(msg.code).toBe('NOT_FOUND');
+  });
+
+  test('NOT_FOUND redirects to the daemon current session (#499)', async () => {
+    // A stale request must not dead-end: the error carries the current session
+    // so the client can re-bind + re-fetch instead of getting stuck.
+    const current: CurrentOwnedSession = {
+      sessionId: 'cccccccc-0000-0000-0000-000000000000' as UUID,
+      claudeSessionId: '22222222-2222-2222-2222-222222222222' as UUID,
+      transcriptPath: '/p/22222222-2222-2222-2222-222222222222.jsonl',
+    };
+    makeHandlers(() => current).onTranscriptLoadRequest(
+      CID,
+      'd8f1613d-15a3-4f16-94e2-667b740d5fd0',
+      REQ,
+    );
+
+    expect(sendCalls).toHaveLength(1);
+    const msg = sendCalls[0]?.message as {
+      code?: string;
+      details?: Record<string, unknown>;
+    };
+    expect(msg.code).toBe('NOT_FOUND');
+    expect(msg.details).toEqual({
+      currentSessionId: current.sessionId,
+      currentClaudeSessionId: current.claudeSessionId,
+      currentTranscriptPath: current.transcriptPath,
+    });
+  });
+
+  test('NOT_FOUND details omitted when the daemon has no owned session', async () => {
+    makeHandlers(() => null).onTranscriptLoadRequest(
+      CID,
+      'bogus0-0000-0000-0000-000000000000',
+      REQ,
+    );
+    const msg = sendCalls[0]?.message as { code?: string; details?: unknown };
+    expect(msg.code).toBe('NOT_FOUND');
+    expect(msg.details).toBeUndefined();
   });
 
   test('reads a transcript by Claude session id and sends a completion envelope', async () => {

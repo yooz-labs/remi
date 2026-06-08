@@ -12,7 +12,7 @@
  */
 
 import { createError, createTranscriptLoadComplete, errorToString } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
 import type { SessionBindingStore } from '../../session/index.ts';
@@ -22,6 +22,7 @@ import type {
 } from '../../transcript/index.ts';
 import { TranscriptMessageBridge, TranscriptWatcher } from '../../transcript/index.ts';
 import type { AssistantEntry } from '../../transcript/index.ts';
+import type { CurrentOwnedSession } from '../current-session.ts';
 import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
@@ -32,13 +33,16 @@ export interface TranscriptHandlerDeps {
   /** Authoritative Remi-UUID -> claudeSessionId binding, used as a last-resort
    *  resolver when no live watcher exists (e.g. a wedged/rotated session). */
   bindingStore: SessionBindingStore;
+  /** Resolves the daemon's current owned session, so a stale/unknown request is
+   *  redirected to the current session instead of dead-ending on NOT_FOUND (#499). */
+  currentOwnedSession: () => CurrentOwnedSession | null;
   send: SendToConnection;
 }
 
 export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
-  const { transcriptDiscovery, transcriptWatchers, bindingStore, send } = deps;
+  const { transcriptDiscovery, transcriptWatchers, bindingStore, currentOwnedSession, send } = deps;
 
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
@@ -84,9 +88,20 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
       }
 
       if (!filePath) {
+        // Don't dead-end: tell the client the daemon's current authoritative
+        // session so it can re-bind + re-fetch instead of getting stuck on a
+        // stale id (the "Transcript for session X not found" screenshot) (#499).
+        const current = currentOwnedSession();
+        const details: Record<string, unknown> | undefined = current
+          ? ({
+              currentSessionId: current.sessionId,
+              currentClaudeSessionId: current.claudeSessionId,
+              currentTranscriptPath: current.transcriptPath,
+            } satisfies StaleSessionErrorDetails)
+          : undefined;
         send(
           connectionId,
-          createError('NOT_FOUND', `Transcript for session ${sessionId} not found`),
+          createError('NOT_FOUND', `Transcript for session ${sessionId} not found`, details),
         );
         return;
       }

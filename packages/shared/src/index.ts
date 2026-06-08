@@ -58,6 +58,7 @@ export type {
   PingMessage,
   PongMessage,
   ErrorMessage,
+  StaleSessionErrorDetails,
   ReplayBatchMessage,
   BulletExpandRequestMessage,
   BulletExpandResponseMessage,
