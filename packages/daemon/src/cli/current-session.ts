@@ -40,15 +40,22 @@ export function makeCurrentSessionResolver(
 ): () => CurrentOwnedSession | null {
   const { getPrimarySessionId, sessionStore, transcriptDiscovery } = deps;
   return () => {
-    const sessionId = getPrimarySessionId();
-    if (!sessionId) return null;
-    const stored = sessionStore.findByRemiSessionId(sessionId);
-    const claudeSessionId = (stored?.claudeSessionId ?? null) as UUID | null;
-    const projectPath = stored?.projectPath ?? null;
-    const transcriptPath =
-      claudeSessionId && projectPath
-        ? `${transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${claudeSessionId}.jsonl`
-        : null;
-    return { sessionId, claudeSessionId, transcriptPath };
+    // Must never throw: this runs in the void transcript-load handler's
+    // NOT_FOUND path, which is not wrapped — a disk hiccup on the store read
+    // would otherwise escape and leave the client with no response.
+    try {
+      const sessionId = getPrimarySessionId();
+      if (!sessionId) return null;
+      const stored = sessionStore.findByRemiSessionId(sessionId);
+      const claudeSessionId = (stored?.claudeSessionId ?? null) as UUID | null;
+      const projectPath = stored?.projectPath ?? null;
+      const transcriptPath =
+        claudeSessionId && projectPath
+          ? `${transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${claudeSessionId}.jsonl`
+          : null;
+      return { sessionId, claudeSessionId, transcriptPath };
+    } catch {
+      return null;
+    }
   };
 }

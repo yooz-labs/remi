@@ -1097,9 +1097,17 @@ export function setupHookBridge(
     if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     // input.transcript_path is the MAIN transcript; the subagent file is the
     // deterministic <main>/subagents/agent-<id>.jsonl (registry derives it).
-    subagentViews?.recordStart(input.agent_id, input.agent_type, input.transcript_path);
-    pushSubagentViews();
-    handlers.onSubagentStart?.(input);
+    // Wrapped so a send/registry throw can't escape into the hook dispatch loop
+    // (mirrors initFromHookEvent/onSessionInfo) (#499 phase 3).
+    try {
+      subagentViews?.recordStart(input.agent_id, input.agent_type, input.transcript_path);
+      pushSubagentViews();
+      handlers.onSubagentStart?.(input);
+    } catch (err) {
+      logError(
+        `[Hooks] SubagentStart view-tracking failed for ${sessionId}: ${errorToString(err)}`,
+      );
+    }
   });
 
   hookServer.on('SubagentStop', (input) => {
@@ -1108,9 +1116,13 @@ export function setupHookBridge(
     else initFromHookEvent(input);
     shadowDecide('SubagentStop', input);
     if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
-    subagentViews?.recordStop(input.agent_id);
-    pushSubagentViews();
-    handlers.onSubagentStop?.(input);
+    try {
+      subagentViews?.recordStop(input.agent_id);
+      pushSubagentViews();
+      handlers.onSubagentStop?.(input);
+    } catch (err) {
+      logError(`[Hooks] SubagentStop view-tracking failed for ${sessionId}: ${errorToString(err)}`);
+    }
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
