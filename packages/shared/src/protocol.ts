@@ -277,6 +277,23 @@ export interface ErrorMessage {
   readonly details?: Record<string, unknown> | undefined;
 }
 
+/**
+ * Details attached to a `NOT_FOUND` error for a stale transcript/session request
+ * (epic #499). When a client asks for a session the daemon no longer owns, the
+ * daemon answers with its current authoritative session so the client can
+ * self-correct (re-bind + re-fetch) instead of dead-ending on "not found".
+ * All fields may be null if the daemon currently has no owned session.
+ */
+export interface StaleSessionErrorDetails {
+  /** The daemon's current Remi session id. Always present (the daemon only
+   *  attaches these details when it has a current owned session). */
+  readonly currentSessionId: UUID;
+  /** The current Claude session id (rotates on /clear); null if unbound. */
+  readonly currentClaudeSessionId: UUID | null;
+  /** The current transcript file path. */
+  readonly currentTranscriptPath: string | null;
+}
+
 /** Batch of messages to replay on session resume */
 export interface ReplayBatchMessage {
   readonly type: 'replay_batch';
