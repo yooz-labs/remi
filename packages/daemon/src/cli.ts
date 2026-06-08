@@ -453,7 +453,8 @@ const liveSessionsRegistry = new SessionRegistryFile();
 // module-level consts at boot and NEVER re-read per session: a mid-process flip
 // would split sessions across the old/new code paths, which share the
 // transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
-// instant flip-back means a daemon restart (design §3.1 v4 #9). Default OFF.
+// instant flip-back means a daemon restart (design §3.1 v4 #9).
+// transcript_binder_enabled defaults ON (#503); transcript_binder_shadow OFF.
 const binderEnabled = remiConfig.features.transcript_binder_enabled;
 // Drive mode and shadow mode are mutually exclusive: enabled wins. When the
 // binder DRIVES, running the shadow alongside it would be meaningless (and would

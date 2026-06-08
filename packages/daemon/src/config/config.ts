@@ -50,10 +50,12 @@ export interface TelegramConfig {
 }
 
 /**
- * Experimental feature flags (epic #453). Default OFF. Snapshotted into a const at
- * daemon boot and treated as immutable for the process lifetime — never re-read per
- * session (a mid-process flip would split sessions across the old/new code paths,
- * which share the transcriptWatchers map).
+ * TranscriptBinder feature flags (epic #453/#499). `transcript_binder_enabled`
+ * defaults ON (the binder is the default driver, #503); `transcript_binder_shadow`
+ * defaults OFF. Snapshotted into a const at daemon boot and treated as immutable
+ * for the process lifetime — never re-read per session (a mid-process flip would
+ * split sessions across the old/new code paths, which share the transcriptWatchers
+ * map).
  */
 export interface FeaturesConfig {
   /** Phase 3: run the TranscriptBinder in compute-only shadow mode alongside the old
