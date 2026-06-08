@@ -172,6 +172,12 @@ function App() {
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
+  // Stable handle so handleMessage (empty deps) can re-fetch a transcript when
+  // it follows the daemon to its current session (reconnect adopt + stale
+  // redirect), without depending on requestTranscriptLoad's identity (#499).
+  const requestTranscriptLoadRef = useRef<
+    ((connId: ConnectionId, sessionId: string) => void) | null
+  >(null);
   const sessionsRef = useRef<UISession[]>([]);
   const lastQuestionIdRef = useRef<string | null>(null);
   // Mirror replyContexts in a ref so handleSend can read the active
@@ -211,6 +217,15 @@ function App() {
       setMessages((prev) => prev.filter((m) => m.sessionId !== sid));
       setQuestions((prev) => clearSessionQuestions(prev, sid));
       loadedTranscriptsRef.current.delete(sid);
+    };
+
+    // Fetch a session's transcript if we haven't already, so that FOLLOWING the
+    // daemon to its current session (reconnect adopt, stale redirect) loads the
+    // chat automatically instead of waiting for a user tap (#499).
+    const ensureTranscriptLoaded = (connId: ConnectionId, sid: string) => {
+      if (loadedTranscriptsRef.current.has(sid)) return;
+      loadedTranscriptsRef.current.add(sid);
+      requestTranscriptLoadRef.current?.(connId, sid);
     };
 
     switch (message.type) {
@@ -311,6 +326,9 @@ function App() {
             setActiveSessionId(message.sessionId);
             setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
             setQuestions((prev) => clearSessionQuestions(prev, oldActive));
+            // Load the followed session's transcript so the chat isn't left
+            // empty after a reconnect-mid-rotation adopt (#499).
+            ensureTranscriptLoaded(connectionId, message.sessionId);
           }
         }
         break;
@@ -837,6 +855,66 @@ function App() {
         // packages/daemon/src/cli/handlers/input-events.ts:guardBinding;
         // update both ends together if the field names change.
         const errorCode = (message as { code?: string }).code;
+        // NOT_FOUND with a current-session redirect (#499): the requested
+        // session is stale (the daemon restarted or rotated past it). Follow the
+        // daemon to its current session and load it, instead of dead-ending on a
+        // "Transcript for session X not found" bubble the user can't escape.
+        if (errorCode === 'NOT_FOUND') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const currentSessionId = asNonEmptyString(details?.['currentSessionId']) as
+            | UUID
+            | undefined;
+          if (currentSessionId) {
+            const currentClaudeSessionId = asNonEmptyString(details?.['currentClaudeSessionId']);
+            const currentTranscriptPath = asNonEmptyString(details?.['currentTranscriptPath']);
+            const claudePatch = currentClaudeSessionId
+              ? { claudeSessionId: currentClaudeSessionId as UUID }
+              : {};
+            const transcriptPatch = currentTranscriptPath
+              ? { transcriptPath: currentTranscriptPath }
+              : {};
+            // Upsert: patch the binding if the session is already listed, else
+            // add a placeholder row (the NOT_FOUND can race ahead of the
+            // hello_ack that adds it) so setActiveSessionId has something to
+            // render instead of a blank screen (#499 review).
+            setSessions((prev) => {
+              if (prev.some((s) => s.id === currentSessionId && s.connectionId === connectionId)) {
+                return prev.map((s) =>
+                  s.id === currentSessionId && s.connectionId === connectionId
+                    ? { ...s, ...claudePatch, ...transcriptPatch }
+                    : s,
+                );
+              }
+              return [
+                ...prev,
+                {
+                  id: currentSessionId,
+                  name: 'Claude Code Session',
+                  createdAt: new Date().toISOString(),
+                  lastActiveAt: new Date().toISOString(),
+                  status: 'idle',
+                  connectionStatus: 'connected',
+                  connectionId,
+                  unreadCount: 0,
+                  preview: 'Connected',
+                  ...claudePatch,
+                  ...transcriptPatch,
+                } satisfies UISession,
+              ];
+            });
+            // Do NOT clearSessionForRebind here -- that would wipe the current
+            // session's already-rendered messages. ensureTranscriptLoaded gates
+            // on the loaded marker, so it fetches only if not already loaded
+            // (no wipe, no duplicate append) (#499 review).
+            setActiveSessionId(currentSessionId);
+            ensureTranscriptLoaded(connectionId, currentSessionId);
+            console.warn(
+              '[App] Stale transcript request; following daemon to current session',
+              currentSessionId,
+            );
+            break;
+          }
+        }
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const refusedSessionId = asNonEmptyString(details?.['sessionId']) as UUID | undefined;
@@ -964,6 +1042,7 @@ function App() {
   getSessionIdRef.current = getSessionId;
   sessionsRef.current = sessions;
   requestSessionListRef.current = requestSessionList;
+  requestTranscriptLoadRef.current = requestTranscriptLoad;
   connectionsRef.current = connections;
 
   // Derived connection status
