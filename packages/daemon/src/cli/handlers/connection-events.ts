@@ -18,12 +18,16 @@ import type { UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
+import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
   sessionRegistry: SessionRegistry;
+  /** Resolves the daemon's current owned session so every hello_ack carries the
+   *  authoritative claudeSessionId + transcriptPath the client must follow (#499). */
+  currentOwnedSession: () => CurrentOwnedSession | null;
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -42,6 +46,7 @@ export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
 export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
   const {
     sessionRegistry,
+    currentOwnedSession,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -49,6 +54,15 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     cancelOrphanTimeout,
     send,
   } = deps;
+
+  /** The current binding for hello_ack: {claudeSessionId, transcriptPath}. */
+  const currentBinding = (): { claudeSessionId: UUID | null; transcriptPath: string | null } => {
+    const current = currentOwnedSession();
+    return {
+      claudeSessionId: current?.claudeSessionId ?? null,
+      transcriptPath: current?.transcriptPath ?? null,
+    };
+  };
 
   return {
     onConnect: async (connectionId: UUID, metadata: AdapterMetadata): Promise<void> => {
@@ -90,11 +104,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
           if (result.success) {
             send(
               connectionId,
-              createHelloAck('1.0.0', currentPrimary, {
-                isResume: result.replayMessages.length > 0,
-                replayCount: result.replayMessages.length,
-                nextBulletId: result.nextBulletId,
-              }),
+              createHelloAck(
+                '1.0.0',
+                currentPrimary,
+                {
+                  isResume: result.replayMessages.length > 0,
+                  replayCount: result.replayMessages.length,
+                  nextBulletId: result.nextBulletId,
+                },
+                currentBinding(),
+              ),
             );
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
@@ -106,8 +125,9 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         }
 
         // Query mode or attach failed (session busy); send hello_ack without
-        // attach so utility clients (ls, kill) can still send requests.
-        send(connectionId, createHelloAck('1.0.0', currentPrimary));
+        // attach so utility clients (ls, kill) can still send requests. Still
+        // carry the binding so the client follows the current session (#499).
+        send(connectionId, createHelloAck('1.0.0', currentPrimary, undefined, currentBinding()));
         log(
           `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
         );

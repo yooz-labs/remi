@@ -908,6 +908,7 @@ const sessionRegistry = new SessionRegistry(
   },
 );
 
+import { makeCurrentSessionResolver } from './cli/current-session.ts';
 // The primary session ID (in wrapper mode, this is the one running in the terminal).
 // Stored in cli/session-state.ts so extracted handler modules can read it via
 // getPrimarySessionId() without closing over a cli.ts-local `let` that flips
@@ -1246,10 +1247,19 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   send: sendToConnection,
 });
 
+// The single authoritative "current owned session" accessor (#499), shared by
+// the transcript-request redirect and the hello_ack binding so they never diverge.
+const currentOwnedSession = makeCurrentSessionResolver({
+  getPrimarySessionId,
+  sessionStore,
+  transcriptDiscovery,
+});
+
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
   bindingStore,
+  currentOwnedSession,
   send: sendToConnection,
 });
 
@@ -1283,6 +1293,7 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
+  currentOwnedSession,
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),
