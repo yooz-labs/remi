@@ -11,10 +11,12 @@
  * callers don't need to know which naming scheme the session uses.
  */
 
+import * as fs from 'node:fs';
 import { createError, createTranscriptLoadComplete, errorToString } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
+import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import type { SessionBindingStore } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,
@@ -22,6 +24,7 @@ import type {
 } from '../../transcript/index.ts';
 import { TranscriptMessageBridge, TranscriptWatcher } from '../../transcript/index.ts';
 import type { AssistantEntry } from '../../transcript/index.ts';
+import type { CurrentOwnedSession } from '../current-session.ts';
 import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
@@ -32,13 +35,26 @@ export interface TranscriptHandlerDeps {
   /** Authoritative Remi-UUID -> claudeSessionId binding, used as a last-resort
    *  resolver when no live watcher exists (e.g. a wedged/rotated session). */
   bindingStore: SessionBindingStore;
+  /** Resolves the daemon's current owned session, so a stale/unknown request is
+   *  redirected to the current session instead of dead-ending on NOT_FOUND (#499). */
+  currentOwnedSession: () => CurrentOwnedSession | null;
+  /** Resolves a subagent agentId -> its transcript file so the client can load a
+   *  subagent view by the agentId it got in `session_views` (#499 phase 3). */
+  subagentViews: Pick<SubagentViewRegistry, 'resolvePath'>;
   send: SendToConnection;
 }
 
 export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
-  const { transcriptDiscovery, transcriptWatchers, bindingStore, send } = deps;
+  const {
+    transcriptDiscovery,
+    transcriptWatchers,
+    bindingStore,
+    currentOwnedSession,
+    subagentViews,
+    send,
+  } = deps;
 
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
@@ -83,10 +99,44 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         }
       }
 
+      // A subagent view: the client echoes the agent_id back from session_views;
+      // resolve its deterministic <main>/subagents/agent-<id>.jsonl (#499 phase 3).
       if (!filePath) {
+        const subPath = subagentViews.resolvePath(sessionId);
+        if (subPath) {
+          // The path is derived from the hook, not verified — the subagent may
+          // not have written its first line yet (tapped right after start).
+          // Send a plain NOT_FOUND (no current-session redirect, which would
+          // wrongly bounce the user to the main session); the client clears its
+          // loaded marker on the error so a re-tap retries once it's written.
+          if (!fs.existsSync(subPath)) {
+            log(`[TranscriptLoad] Subagent ${sessionId} transcript not written yet: ${subPath}`);
+            send(
+              connectionId,
+              createError('NOT_FOUND', `Subagent transcript not ready: ${sessionId}`),
+            );
+            return;
+          }
+          filePath = subPath;
+          log(`[TranscriptLoad] Resolved subagent ${sessionId} to ${subPath}`);
+        }
+      }
+
+      if (!filePath) {
+        // Don't dead-end: tell the client the daemon's current authoritative
+        // session so it can re-bind + re-fetch instead of getting stuck on a
+        // stale id (the "Transcript for session X not found" screenshot) (#499).
+        const current = currentOwnedSession();
+        const details: Record<string, unknown> | undefined = current
+          ? ({
+              currentSessionId: current.sessionId,
+              currentClaudeSessionId: current.claudeSessionId,
+              currentTranscriptPath: current.transcriptPath,
+            } satisfies StaleSessionErrorDetails)
+          : undefined;
         send(
           connectionId,
-          createError('NOT_FOUND', `Transcript for session ${sessionId} not found`),
+          createError('NOT_FOUND', `Transcript for session ${sessionId} not found`, details),
         );
         return;
       }

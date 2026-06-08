@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
+import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -69,11 +71,16 @@ describe('createTranscriptHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers() {
+  function makeHandlers(
+    currentOwnedSession: () => CurrentOwnedSession | null = () => null,
+    subagentViews: SubagentViewRegistry = new SubagentViewRegistry(),
+  ) {
     return createTranscriptHandlers({
       transcriptDiscovery,
       transcriptWatchers,
       bindingStore,
+      currentOwnedSession,
+      subagentViews,
       send,
     });
   }
@@ -94,6 +101,95 @@ describe('createTranscriptHandlers', () => {
     const msg = sendCalls[0]?.message as { type: string; code?: string };
     expect(msg.type).toBe('error');
     expect(msg.code).toBe('NOT_FOUND');
+  });
+
+  test('NOT_FOUND redirects to the daemon current session (#499)', async () => {
+    // A stale request must not dead-end: the error carries the current session
+    // so the client can re-bind + re-fetch instead of getting stuck.
+    const current: CurrentOwnedSession = {
+      sessionId: 'cccccccc-0000-0000-0000-000000000000' as UUID,
+      claudeSessionId: '22222222-2222-2222-2222-222222222222' as UUID,
+      transcriptPath: '/p/22222222-2222-2222-2222-222222222222.jsonl',
+    };
+    makeHandlers(() => current).onTranscriptLoadRequest(
+      CID,
+      'd8f1613d-15a3-4f16-94e2-667b740d5fd0',
+      REQ,
+    );
+
+    expect(sendCalls).toHaveLength(1);
+    const msg = sendCalls[0]?.message as {
+      code?: string;
+      details?: Record<string, unknown>;
+    };
+    expect(msg.code).toBe('NOT_FOUND');
+    expect(msg.details).toEqual({
+      currentSessionId: current.sessionId,
+      currentClaudeSessionId: current.claudeSessionId,
+      currentTranscriptPath: current.transcriptPath,
+    });
+  });
+
+  test('NOT_FOUND details omitted when the daemon has no owned session', async () => {
+    makeHandlers(() => null).onTranscriptLoadRequest(
+      CID,
+      'bogus0-0000-0000-0000-000000000000',
+      REQ,
+    );
+    const msg = sendCalls[0]?.message as { code?: string; details?: unknown };
+    expect(msg.code).toBe('NOT_FOUND');
+    expect(msg.details).toBeUndefined();
+  });
+
+  test('resolves a subagent view by agentId and loads its transcript (#499 phase 3)', async () => {
+    // The client loads a subagent by the agentId it got in session_views; the
+    // daemon resolves the deterministic <main>/subagents/agent-<id>.jsonl path.
+    const mainPath = path.join(projectsDir, '-Users-test-project', 'mainsess.jsonl');
+    const agentId = 'a1b2c3d4e5f6';
+    const reg = new SubagentViewRegistry();
+    reg.recordStart(agentId, 'Explore', mainPath);
+    const subPath = reg.resolvePath(agentId);
+    expect(subPath).not.toBeNull();
+    if (!subPath) return;
+    fs.mkdirSync(path.dirname(subPath), { recursive: true });
+    fs.writeFileSync(
+      subPath,
+      JSON.stringify({
+        type: 'user',
+        uuid: 'u1',
+        sessionId: agentId,
+        cwd: '/Users/test/project',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: 'subagent prompt' },
+      }),
+    );
+
+    makeHandlers(() => null, reg).onTranscriptLoadRequest(CID, agentId, REQ);
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+    expect(sendCalls.some((c) => (c.message as { code?: string }).code === 'NOT_FOUND')).toBe(
+      false,
+    );
+  });
+
+  test('subagent whose transcript is not written yet -> NOT_FOUND, not an empty load', async () => {
+    // Tapped right after SubagentStart: registry has it, but the file does not
+    // exist yet. Must send NOT_FOUND (so the client retries) rather than a
+    // transcript_load_complete with 0 messages (which would cache an empty chat).
+    const mainPath = path.join(projectsDir, '-Users-test-project', 'mainsess.jsonl');
+    const agentId = 'b9c8d7e6f5a4';
+    const reg = new SubagentViewRegistry();
+    reg.recordStart(agentId, 'Explore', mainPath); // no file written
+
+    makeHandlers(() => null, reg).onTranscriptLoadRequest(CID, agentId, REQ);
+
+    // Synchronous early-return; no microtasks.
+    expect(sendCalls).toHaveLength(1);
+    const msg = sendCalls[0]?.message as { type: string; code?: string };
+    expect(msg.type).toBe('error');
+    expect(msg.code).toBe('NOT_FOUND');
+    expect(sendCalls.some((c) => c.message.type === 'transcript_load_complete')).toBe(false);
   });
 
   test('reads a transcript by Claude session id and sends a completion envelope', async () => {

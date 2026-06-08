@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.2'; // REMI_COMPILED_VERSION
+      return '0.6.3-dev.6'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.2'; // REMI_COMPILED_VERSION
+    return '0.6.3-dev.6'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -453,7 +453,8 @@ const liveSessionsRegistry = new SessionRegistryFile();
 // module-level consts at boot and NEVER re-read per session: a mid-process flip
 // would split sessions across the old/new code paths, which share the
 // transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
-// instant flip-back means a daemon restart (design §3.1 v4 #9). Default OFF.
+// instant flip-back means a daemon restart (design §3.1 v4 #9).
+// transcript_binder_enabled defaults ON (#503); transcript_binder_shadow OFF.
 const binderEnabled = remiConfig.features.transcript_binder_enabled;
 // Drive mode and shadow mode are mutually exclusive: enabled wins. When the
 // binder DRIVES, running the shadow alongside it would be meaningless (and would
@@ -823,6 +824,10 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // transcript_binder_enabled is off (no binder is ever constructed).
 const binderClosers: Map<UUID, () => void> = new Map();
 const sessionStore = new SessionStore();
+// Tracks the subagent chats the primary session spawns, so the client can
+// switch the displayed view to a subagent (epic #499 phase 3). Shared by the
+// hook bridge (writes) and the transcript handler (resolves agentId -> path).
+const subagentViews = new SubagentViewRegistry();
 // Single binding accessor for the whole daemon (#460 phase 2): the one typed,
 // disk-backed surface for remiUUID<->claudeSessionId. Every binding read/write +
 // both resume resolvers route through it. No cache — see session-binding-store.ts.
@@ -869,6 +874,10 @@ const sessionRegistry = new SessionRegistry(
     },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
+      // NOTE: this resolves the hello_ack binding inline rather than via
+      // currentOwnedSession() because the promoted connection may be attaching
+      // to a specific `sessionId` that is not necessarily the daemon's primary.
+      // Both read the same disk-backed store, so they stay in sync (#499).
       const stored = sessionStore.findByRemiSessionId(sessionId);
       const claudeId = stored?.claudeSessionId ?? null;
       const projPath = stored?.projectPath ?? null;
@@ -908,6 +917,8 @@ const sessionRegistry = new SessionRegistry(
   },
 );
 
+import { SubagentViewRegistry } from './api/subagent-view-registry.ts';
+import { makeCurrentSessionResolver } from './cli/current-session.ts';
 // The primary session ID (in wrapper mode, this is the one running in the terminal).
 // Stored in cli/session-state.ts so extracted handler modules can read it via
 // getPrimarySessionId() without closing over a cli.ts-local `let` that flips
@@ -1118,6 +1129,7 @@ async function createNewSession(
         shadowBinder: binderShadow,
         binderEnabled,
         transcriptDiscovery,
+        subagentViews,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
@@ -1246,10 +1258,20 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   send: sendToConnection,
 });
 
+// The single authoritative "current owned session" accessor (#499), shared by
+// the transcript-request redirect and the hello_ack binding so they never diverge.
+const currentOwnedSession = makeCurrentSessionResolver({
+  getPrimarySessionId,
+  sessionStore,
+  transcriptDiscovery,
+});
+
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
   bindingStore,
+  currentOwnedSession,
+  subagentViews,
   send: sendToConnection,
 });
 
@@ -1283,6 +1305,7 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
+  currentOwnedSession,
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),

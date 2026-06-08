@@ -58,6 +58,7 @@ export type {
   PingMessage,
   PongMessage,
   ErrorMessage,
+  StaleSessionErrorDetails,
   ReplayBatchMessage,
   BulletExpandRequestMessage,
   BulletExpandResponseMessage,
@@ -87,6 +88,8 @@ export type {
   RegisterDeviceTokenMessage,
   DaemonUpdateAvailableMessage,
   SessionRotatedMessage,
+  SessionViewsMessage,
+  SessionViewMeta,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -134,6 +137,7 @@ export {
   createRegisterDeviceToken,
   createDaemonUpdateAvailable,
   createSessionRotated,
+  createSessionViews,
   MessageIdTracker,
 } from './protocol.ts';
 

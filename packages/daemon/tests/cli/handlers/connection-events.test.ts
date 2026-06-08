@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import {
@@ -61,9 +62,10 @@ describe('createConnectionHandlers', () => {
     await sessionRegistry.shutdown();
   });
 
-  function makeHandlers() {
+  function makeHandlers(currentOwnedSession: () => CurrentOwnedSession | null = () => null) {
     return createConnectionHandlers({
       sessionRegistry,
+      currentOwnedSession,
       trackConnection: (id, type) => {
         trackedConnections.push({ id, type });
       },
@@ -113,6 +115,31 @@ describe('createConnectionHandlers', () => {
       expect(msg.type).toBe('hello_ack');
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
       expect(cancelOrphanCalls).toBe(1);
+    });
+
+    test('helloAck carries the authoritative current binding (#499)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+      const current: CurrentOwnedSession = {
+        sessionId,
+        claudeSessionId: '22222222-2222-2222-2222-222222222222' as UUID,
+        transcriptPath: '/p/22222222-2222-2222-2222-222222222222.jsonl',
+      };
+
+      await makeHandlers(() => current).onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      const ack = sendCalls[0]?.message as {
+        type: string;
+        claudeSessionId?: string | null;
+        transcriptPath?: string | null;
+      };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.claudeSessionId).toBe(current.claudeSessionId);
+      expect(ack.transcriptPath).toBe(current.transcriptPath);
     });
 
     test('query-mode clients get a helloAck without attaching', async () => {

@@ -38,11 +38,12 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionRotated, errorToString } from '@remi/shared';
+import { createSessionRotated, createSessionViews, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
+import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
@@ -100,6 +101,13 @@ export interface HookBridgeDeps {
    * binder mode are unaffected.
    */
   transcriptDiscovery?: TranscriptDiscovery;
+  /**
+   * Tracks the subagent conversations this session spawns (epic #499 phase 3).
+   * Populated from SubagentStart/Stop; a `session_views` push tells the client
+   * which subagent chats it can switch to. Optional so tests/old callers are
+   * unaffected.
+   */
+  subagentViews?: SubagentViewRegistry;
 }
 
 export interface HookBridgeArgs {
@@ -148,6 +156,7 @@ export function setupHookBridge(
     shadowBinder,
     binderEnabled,
     transcriptDiscovery,
+    subagentViews,
   } = deps;
   const {
     hookServer,
@@ -171,6 +180,24 @@ export function setupHookBridge(
         rawSendAndRecord(message);
       }
     : rawSendAndRecord;
+
+  // Push the session's subagent views to clients (epic #499 phase 3). Declared
+  // here (before the binder/handlers reference it) so there is no fragile
+  // forward-reference. The SessionViewMeta omits the on-disk path: the client
+  // echoes agentId back and the daemon resolves the path via the registry.
+  const pushSubagentViews = (): void => {
+    if (!subagentViews) return;
+    sendAndRecord(
+      createSessionViews(
+        sessionId,
+        subagentViews.list().map((v) => ({
+          agentId: v.agentId,
+          agentType: v.agentType,
+          active: v.active,
+        })),
+      ),
+    );
+  };
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
 
@@ -766,6 +793,11 @@ export function setupHookBridge(
               // pending-question collection so stale answers are refused.
               tracker.clearPending();
               sessionRegistry.clearQuestions(sessionId);
+              // The new session starts with no subagents (#499 phase 3).
+              if (subagentViews) {
+                subagentViews.clear();
+                pushSubagentViews();
+              }
             },
           },
           { sessionId, workingDirectory },
@@ -1063,7 +1095,19 @@ export function setupHookBridge(
     else initFromHookEvent(input);
     shadowDecide('SubagentStart', input);
     if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
-    handlers.onSubagentStart?.(input);
+    // input.transcript_path is the MAIN transcript; the subagent file is the
+    // deterministic <main>/subagents/agent-<id>.jsonl (registry derives it).
+    // Wrapped so a send/registry throw can't escape into the hook dispatch loop
+    // (mirrors initFromHookEvent/onSessionInfo) (#499 phase 3).
+    try {
+      subagentViews?.recordStart(input.agent_id, input.agent_type, input.transcript_path);
+      pushSubagentViews();
+      handlers.onSubagentStart?.(input);
+    } catch (err) {
+      logError(
+        `[Hooks] SubagentStart view-tracking failed for ${sessionId}: ${errorToString(err)}`,
+      );
+    }
   });
 
   hookServer.on('SubagentStop', (input) => {
@@ -1072,7 +1116,13 @@ export function setupHookBridge(
     else initFromHookEvent(input);
     shadowDecide('SubagentStop', input);
     if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
-    handlers.onSubagentStop?.(input);
+    try {
+      subagentViews?.recordStop(input.agent_id);
+      pushSubagentViews();
+      handlers.onSubagentStop?.(input);
+    } catch (err) {
+      logError(`[Hooks] SubagentStop view-tracking failed for ${sessionId}: ${errorToString(err)}`);
+    }
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
