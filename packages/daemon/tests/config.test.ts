@@ -140,9 +140,11 @@ describe('applyEnvOverrides', () => {
     expect(config.display.max_bullet_length).toBe(100);
   });
 
-  test('transcript-binder feature flags default OFF', () => {
+  test('transcript-binder drives by default; shadow off (#499/#503)', () => {
     expect(DEFAULT_CONFIG.features.transcript_binder_shadow).toBe(false);
-    expect(DEFAULT_CONFIG.features.transcript_binder_enabled).toBe(false);
+    // The binder is now the default session-binding driver (kill-switch:
+    // REMI_TRANSCRIPT_BINDER_ENABLED=false).
+    expect(DEFAULT_CONFIG.features.transcript_binder_enabled).toBe(true);
   });
 
   test('auto-approve stays opt-in but defaults safe read-only tools in allow (#482)', () => {
@@ -157,17 +159,19 @@ describe('applyEnvOverrides', () => {
     expect(DEFAULT_CONFIG.auto_approve.allow.some((p) => p.includes(' '))).toBe(false);
   });
 
-  test('REMI_TRANSCRIPT_BINDER_SHADOW=true enables shadow only', () => {
+  test('shadow-only (compare without driving) needs SHADOW=true + ENABLED=false', () => {
+    // Drive is the default now, so shadow-only must explicitly opt out of drive.
     process.env['REMI_TRANSCRIPT_BINDER_SHADOW'] = 'true';
+    process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'false';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
     expect(config.features.transcript_binder_shadow).toBe(true);
     expect(config.features.transcript_binder_enabled).toBe(false);
   });
 
-  test('REMI_TRANSCRIPT_BINDER_ENABLED=true enables drive', () => {
-    process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'true';
+  test('REMI_TRANSCRIPT_BINDER_ENABLED=false is the kill-switch back to the old path', () => {
+    process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'false';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.features.transcript_binder_enabled).toBe(true);
+    expect(config.features.transcript_binder_enabled).toBe(false);
   });
 
   test('REMI_TRANSCRIPT_BINDER_SHADOW=false keeps shadow off', () => {

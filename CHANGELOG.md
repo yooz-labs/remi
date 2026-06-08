@@ -4,6 +4,20 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- Subagent views (epic #499): the app can switch the displayed view to a
+  subagent's chat. The daemon tracks each subagent the session spawns
+  (deterministic transcript path `<main>/subagents/agent-<id>.jsonl`) and
+  pushes a `session_views` message; the client surfaces each subagent as a
+  read-only entry that loads its transcript through the normal flow (#502).
+
+### Changed
+- The TranscriptBinder is now the **default** session-binding driver (epic
+  #499). It is the single source of truth for the live Claude session and was
+  shadow- and real-Claude-validated as equivalent to the old path.
+  `REMI_TRANSCRIPT_BINDER_ENABLED=false` is a kill-switch back to the old path
+  until that path is removed (#503).
+
 ### Fixed
 - Session source of truth (epic #499): the client no longer gets stuck on
   "Transcript for session X not found" after a daemon restart or `/clear`

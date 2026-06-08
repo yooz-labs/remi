@@ -50,10 +50,12 @@ export interface TelegramConfig {
 }
 
 /**
- * Experimental feature flags (epic #453). Default OFF. Snapshotted into a const at
- * daemon boot and treated as immutable for the process lifetime — never re-read per
- * session (a mid-process flip would split sessions across the old/new code paths,
- * which share the transcriptWatchers map).
+ * TranscriptBinder feature flags (epic #453/#499). `transcript_binder_enabled`
+ * defaults ON (the binder is the default driver, #503); `transcript_binder_shadow`
+ * defaults OFF. Snapshotted into a const at daemon boot and treated as immutable
+ * for the process lifetime — never re-read per session (a mid-process flip would
+ * split sessions across the old/new code paths, which share the transcriptWatchers
+ * map).
  */
 export interface FeaturesConfig {
   /** Phase 3: run the TranscriptBinder in compute-only shadow mode alongside the old
@@ -121,7 +123,15 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   features: {
     transcript_binder_shadow: false,
-    transcript_binder_enabled: false,
+    // The TranscriptBinder is now the DEFAULT session-binding driver (epic
+    // #499 / #503 step 1). It was shadow- and real-Claude-e2e-validated as
+    // equivalent to the old path, and is the single source of truth for the
+    // live session. Kept as a flag so `REMI_TRANSCRIPT_BINDER_ENABLED=false`
+    // is a kill-switch back to the old path until that path is deleted (#503
+    // step 2, after this default soaks). Setting `transcript_binder_shadow`
+    // alone no longer yields shadow-only — drive wins; for compare-only set
+    // `transcript_binder_enabled=false` too.
+    transcript_binder_enabled: true,
   },
 };
 
