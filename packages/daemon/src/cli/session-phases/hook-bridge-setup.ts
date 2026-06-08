@@ -181,6 +181,24 @@ export function setupHookBridge(
       }
     : rawSendAndRecord;
 
+  // Push the session's subagent views to clients (epic #499 phase 3). Declared
+  // here (before the binder/handlers reference it) so there is no fragile
+  // forward-reference. The SessionViewMeta omits the on-disk path: the client
+  // echoes agentId back and the daemon resolves the path via the registry.
+  const pushSubagentViews = (): void => {
+    if (!subagentViews) return;
+    sendAndRecord(
+      createSessionViews(
+        sessionId,
+        subagentViews.list().map((v) => ({
+          agentId: v.agentId,
+          agentType: v.agentType,
+          active: v.active,
+        })),
+      ),
+    );
+  };
+
   // ---- Per-session locks (mutable across event callbacks) -----------------
 
   // Track the Claude session ID so we can filter hook events by session.
@@ -1071,23 +1089,6 @@ export function setupHookBridge(
   // breadcrumb, so gate them with admits() ONLY (the sibling defer + session
   // scoping still apply via session_id) — a deliberate divergence from the
   // Pre/PostToolUse agent_id drop (#453 phase 4).
-  // Push the session's subagent views to clients (epic #499 phase 3). The
-  // SessionViewMeta omits the on-disk path: the client echoes agentId back and
-  // the daemon resolves the path via the registry.
-  const pushSubagentViews = (): void => {
-    if (!subagentViews) return;
-    sendAndRecord(
-      createSessionViews(
-        sessionId,
-        subagentViews.list().map((v) => ({
-          agentId: v.agentId,
-          agentType: v.agentType,
-          active: v.active,
-        })),
-      ),
-    );
-  };
-
   hookServer.on('SubagentStart', (input) => {
     shadowEnterEvent();
     if (driveBinder) driveBinder.onHookEvent(input);

@@ -36,10 +36,23 @@ export class SubagentViewRegistry {
     string,
     { agentType: string; transcriptPath: string; active: boolean }
   >();
+  /** The parent main-transcript path the current views belong to. When the
+   *  parent session rotates (/clear) its path changes, so we drop the old
+   *  session's subagents — robust regardless of which binding path drives the
+   *  rotation (the drive-mode onRotation also clears+pushes for immediacy). */
+  private currentMain: string | null = null;
 
   /** Record (or refresh) a subagent from a SubagentStart event. No-op without an agentId. */
   recordStart(agentId: string | undefined, agentType: string, mainTranscriptPath: string): void {
     if (!agentId || !mainTranscriptPath) return;
+    // agentId becomes a filesystem path segment (agent-<id>.jsonl), so reject
+    // anything that could escape the subagents dir. Real values are hex like
+    // "ab2e2dd0b25acb847"; a path-traversal payload must never reach the FS.
+    if (!/^[A-Za-z0-9_-]+$/.test(agentId)) return;
+    if (this.currentMain !== null && this.currentMain !== mainTranscriptPath) {
+      this.views.clear();
+    }
+    this.currentMain = mainTranscriptPath;
     this.views.set(agentId, {
       agentType,
       transcriptPath: deriveSubagentTranscriptPath(mainTranscriptPath, agentId),
@@ -78,5 +91,6 @@ export class SubagentViewRegistry {
   /** Forget all views (call on session rotation / clear). */
   clear(): void {
     this.views.clear();
+    this.currentMain = null;
   }
 }

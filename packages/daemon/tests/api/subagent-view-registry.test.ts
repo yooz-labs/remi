@@ -64,4 +64,24 @@ describe('SubagentViewRegistry', () => {
     expect(reg.size).toBe(0);
     expect(reg.list()).toEqual([]);
   });
+
+  test('rejects a path-traversal agentId (it becomes a path segment)', () => {
+    const reg = new SubagentViewRegistry();
+    reg.recordStart('../../etc/passwd', 'X', MAIN);
+    reg.recordStart('a/b', 'X', MAIN);
+    reg.recordStart('a.b', 'X', MAIN);
+    expect(reg.size).toBe(0);
+    reg.recordStart('ab2e2dd0b25acb847', 'Explore', MAIN); // the real hex shape
+    expect(reg.size).toBe(1);
+  });
+
+  test('self-clears when the parent session rotates (main transcript path changes)', () => {
+    const reg = new SubagentViewRegistry();
+    const MAIN2 = MAIN.replace('7c3a497d', '99999999');
+    reg.recordStart('a1', 'Explore', MAIN);
+    reg.recordStart('a2', 'code-reviewer', MAIN); // same parent -> both kept
+    expect(reg.size).toBe(2);
+    reg.recordStart('a3', 'Explore', MAIN2); // new parent -> drop a1/a2
+    expect(reg.list().map((v) => v.agentId)).toEqual(['a3']);
+  });
 });

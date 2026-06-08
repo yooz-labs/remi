@@ -1487,6 +1487,10 @@ function App() {
   const handleSend = useCallback(
     (content: string) => {
       if (!activeSessionId) return;
+      // Subagent views are read-only monitoring: their id is an agentId, not a
+      // real daemon session, so input would route nowhere. Block the send
+      // (the input is also hidden in ChatView) (#499 phase 3).
+      if (sessionsRef.current.find((s) => s.id === activeSessionId)?.isSubagent) return;
       const connId = getActiveConnectionId();
       if (!connId) {
         const systemMsg: UIMessage = {
