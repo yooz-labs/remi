@@ -173,6 +173,25 @@ describe('createTranscriptHandlers', () => {
     );
   });
 
+  test('subagent whose transcript is not written yet -> NOT_FOUND, not an empty load', async () => {
+    // Tapped right after SubagentStart: registry has it, but the file does not
+    // exist yet. Must send NOT_FOUND (so the client retries) rather than a
+    // transcript_load_complete with 0 messages (which would cache an empty chat).
+    const mainPath = path.join(projectsDir, '-Users-test-project', 'mainsess.jsonl');
+    const agentId = 'b9c8d7e6f5a4';
+    const reg = new SubagentViewRegistry();
+    reg.recordStart(agentId, 'Explore', mainPath); // no file written
+
+    makeHandlers(() => null, reg).onTranscriptLoadRequest(CID, agentId, REQ);
+
+    // Synchronous early-return; no microtasks.
+    expect(sendCalls).toHaveLength(1);
+    const msg = sendCalls[0]?.message as { type: string; code?: string };
+    expect(msg.type).toBe('error');
+    expect(msg.code).toBe('NOT_FOUND');
+    expect(sendCalls.some((c) => c.message.type === 'transcript_load_complete')).toBe(false);
+  });
+
   test('reads a transcript by Claude session id and sends a completion envelope', async () => {
     const claudeSessionId = '11111111-1111-1111-1111-111111111111';
     writeTranscript(claudeSessionId, [

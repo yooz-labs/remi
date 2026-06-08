@@ -223,7 +223,12 @@ function App() {
     // daemon to its current session (reconnect adopt, stale redirect) loads the
     // chat automatically instead of waiting for a user tap (#499).
     const ensureTranscriptLoaded = (connId: ConnectionId, sid: string) => {
-      if (loadedTranscriptsRef.current.has(sid)) return;
+      if (loadedTranscriptsRef.current.has(sid)) {
+        // Already loaded -> intentionally not re-fetched (the content is the
+        // current session's). Logged so the skip is diagnosable (#499 review).
+        console.debug('[App] ensureTranscriptLoaded: already loaded, skipping', sid);
+        return;
+      }
       loadedTranscriptsRef.current.add(sid);
       requestTranscriptLoadRef.current?.(connId, sid);
     };

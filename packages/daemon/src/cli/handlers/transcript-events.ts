@@ -11,6 +11,7 @@
  * callers don't need to know which naming scheme the session uses.
  */
 
+import * as fs from 'node:fs';
 import { createError, createTranscriptLoadComplete, errorToString } from '@remi/shared';
 import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
@@ -103,6 +104,19 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
       if (!filePath) {
         const subPath = subagentViews.resolvePath(sessionId);
         if (subPath) {
+          // The path is derived from the hook, not verified — the subagent may
+          // not have written its first line yet (tapped right after start).
+          // Send a plain NOT_FOUND (no current-session redirect, which would
+          // wrongly bounce the user to the main session); the client clears its
+          // loaded marker on the error so a re-tap retries once it's written.
+          if (!fs.existsSync(subPath)) {
+            log(`[TranscriptLoad] Subagent ${sessionId} transcript not written yet: ${subPath}`);
+            send(
+              connectionId,
+              createError('NOT_FOUND', `Subagent transcript not ready: ${sessionId}`),
+            );
+            return;
+          }
           filePath = subPath;
           log(`[TranscriptLoad] Resolved subagent ${sessionId} to ${subPath}`);
         }

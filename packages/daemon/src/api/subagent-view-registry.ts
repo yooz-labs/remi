@@ -49,6 +49,9 @@ export class SubagentViewRegistry {
     // anything that could escape the subagents dir. Real values are hex like
     // "ab2e2dd0b25acb847"; a path-traversal payload must never reach the FS.
     if (!/^[A-Za-z0-9_-]+$/.test(agentId)) return;
+    // The path is derived by replacing the `.jsonl` suffix with a subdir; if a
+    // future Claude format drops it, the derivation would be wrong, so require it.
+    if (!mainTranscriptPath.endsWith('.jsonl')) return;
     if (this.currentMain !== null && this.currentMain !== mainTranscriptPath) {
       this.views.clear();
     }

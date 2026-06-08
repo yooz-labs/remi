@@ -75,6 +75,12 @@ describe('SubagentViewRegistry', () => {
     expect(reg.size).toBe(1);
   });
 
+  test('rejects a main transcript path without a .jsonl suffix (derivation guard)', () => {
+    const reg = new SubagentViewRegistry();
+    reg.recordStart('a1', 'Explore', '/Users/y/.claude/projects/-Users-y-proj/sess'); // no .jsonl
+    expect(reg.size).toBe(0);
+  });
+
   test('self-clears when the parent session rotates (main transcript path changes)', () => {
     const reg = new SubagentViewRegistry();
     const MAIN2 = MAIN.replace('7c3a497d', '99999999');
