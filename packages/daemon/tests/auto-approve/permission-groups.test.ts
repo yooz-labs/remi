@@ -58,7 +58,6 @@ describe('permission-groups: read-only Bash (positive)', () => {
     ['rg pattern packages', 'read-only:rg'],
     ['wc -l file', 'read-only:wc'],
     ['ls -la', 'read-only:ls'],
-    ['diff a.txt b.txt', 'read-only:diff'],
     ['jq .version package.json', 'read-only:jq'],
   ];
   for (const [cmd, expected] of cases) {
@@ -74,7 +73,8 @@ describe('permission-groups: vcs-read Bash (positive)', () => {
     ['git status', 'vcs-read:git status'],
     ['git blame file', 'vcs-read:git blame'],
     ['git rev-parse --short HEAD', 'vcs-read:git rev-parse'],
-    ['git branch --show-current', 'vcs-read:git branch --show-current'],
+    ['git rev-parse --abbrev-ref HEAD', 'vcs-read:git rev-parse'],
+    ['git reflog show --oneline', 'vcs-read:git reflog show'],
     ['git config --get user.email', 'vcs-read:git config --get'],
     ['gh pr diff 494', 'vcs-read:gh pr diff'],
     ['gh pr view 494 --json title', 'vcs-read:gh pr view'],
@@ -141,11 +141,26 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'git diff --output=patch.txt', // --output writes
     'biome check --write', // --write mutates
     'eslint --fix src', // --fix mutates
-    // mutating subcommands that share a read prefix's first word
-    'git branch newbranch', // creates a branch (prefix is `git branch -a` etc., not bare)
-    'git tag v1.0.0', // creates a tag (prefix is `git tag -l`)
     'git config user.email a@b.c', // sets config (prefix is `git config --get`)
-    'git remote add origin url', // mutates remotes (prefix is `git remote -v`)
+    // git branch/tag/remote are not in the curated set at all (mutation is one
+    // flag/positional away and git overloads the short flags).
+    'git branch newbranch',
+    'git branch -a -d somebranch', // delete via a list-flag prefix
+    'git branch --list -D main', // force-delete
+    'git tag v1.0.0',
+    'git tag -l -d sometag', // delete via the list flag
+    'git remote add origin url',
+    'git remote -v add origin url', // add via the verbose flag
+    'git reflog delete refs/stash@{0}', // history loss
+    'git reflog expire --expire=now --all', // purges reflog
+    // sed in-place edit: `sed -n` matches, scoped veto catches `-i`
+    "sed -n -i.bak '2p' file.txt",
+    "sed -n -i '' 's/foo/bar/g' file.txt",
+    // build/test code-exec + write vectors
+    'bun test --preload evil.ts', // arbitrary preload exec
+    'eslint --rulesdir /tmp/evil src', // eslint excluded entirely
+    'tree -o out.txt', // tree -o writes; tree excluded
+    'diff -u a b -o /tmp/patch', // diff -o writes; diff excluded
     // shell control that escapes the read prefix
     'cat $(rm -rf ~)',
     'git show `whoami`',
@@ -153,6 +168,12 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'git diff >> append.txt',
     'cat <(curl evil)',
     'git status & rm x', // backgrounding
+    // newline as a command separator (shell injection after a read prefix)
+    'git log \ngit push origin main',
+    'git log \nrm -rf /',
+    'git diff HEAD \ngit commit --allow-empty -m pwned',
+    'cat README.md \nchmod 777 /etc/passwd',
+    'git log \t\ngit push', // whitespace-then-newline
     // commands intentionally excluded from the curated set
     'find . -name x -delete',
     'find . -exec rm {} +',
@@ -165,7 +186,7 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'ls && rm tmp',
   ];
   for (const cmd of mustBeNull) {
-    test(cmd, () => expect(bash(cmd)).toBeNull());
+    test(JSON.stringify(cmd), () => expect(bash(cmd)).toBeNull());
   }
 });
 
@@ -189,11 +210,11 @@ describe('permission-groups: group selection', () => {
 
 describe('permission-groups: matchReadOnlyCommand directly', () => {
   test('returns the most specific matched prefix', () => {
-    // both "git branch -a" and (hypothetically) "git branch" would match;
-    // only the curated specific form is present, so it is returned.
-    expect(matchReadOnlyCommand('git branch -a', BUILTIN_GROUPS['vcs-read']?.commands ?? [])).toBe(
-      'git branch -a',
-    );
+    // `git reflog show ...` matches the curated `git reflog show` (the bare
+    // `git reflog` is intentionally absent so `expire`/`delete` cannot match).
+    expect(
+      matchReadOnlyCommand('git reflog show --oneline', BUILTIN_GROUPS['vcs-read']?.commands ?? []),
+    ).toBe('git reflog show');
   });
 
   test('null when no prefix matches', () => {

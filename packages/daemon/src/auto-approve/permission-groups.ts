@@ -46,13 +46,11 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'wc',
       'file',
       'stat',
-      'tree',
       'column',
       'cut',
       'uniq',
       'jq',
       'ls',
-      'diff',
     ],
   },
   'vcs-read': {
@@ -71,24 +69,22 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'git show-ref',
       'git for-each-ref',
       'git shortlog',
-      'git reflog',
+      // `git reflog` alone exposes `git reflog expire|delete` (history loss);
+      // pin to the read-only subcommands.
+      'git reflog show',
+      'git reflog exists',
       'git whatchanged',
       'git grep',
-      'git remote -v',
-      'git remote show',
-      'git remote get-url',
-      'git branch -a',
-      'git branch -r',
-      'git branch -v',
-      'git branch -vv',
-      'git branch --list',
-      'git branch --show-current',
-      'git tag -l',
-      'git tag --list',
       'git stash list',
       'git config --get',
       'git config --list',
       'git config -l',
+      // `git branch`/`git tag`/`git remote` are intentionally omitted: their
+      // list flags (`-a`/`-l`/`-v`) sit one positional or `-d`/`-D`/`-m` away
+      // from a delete/rename/add, and git overloads those short flags (e.g.
+      // `-d` is delete for branch but `--directories` for `git grep`), so a
+      // flag veto is unreliable. Use `git rev-parse --abbrev-ref HEAD` for the
+      // current branch; users can add others to the `allow` list explicitly.
       'gh pr view',
       'gh pr diff',
       'gh pr list',
@@ -117,10 +113,13 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'tsc --noEmit',
       'biome check',
       'bunx biome check',
-      'eslint',
       'pytest',
       'uv run pytest',
       'vitest run',
+      // `eslint` is omitted: `--rulesdir`/`--resolve-plugins-relative-to` load
+      // and execute arbitrary JS. NOTE: enabling build-test means you trust
+      // running your project's own test/build commands, which execute project
+      // code by design (and may write coverage/report artifacts).
     ],
   },
 };
@@ -147,9 +146,10 @@ export function knownGroupNames(): string[] {
 }
 
 /**
- * Split a command into compound segments on `&&`, `||`, `;`, and `|`,
- * respecting single/double quotes (best-effort). Backgrounding `&` is left in
- * the segment for the shell-control veto to catch.
+ * Split a command into compound segments on `&&`, `||`, `;`, `|`, and newlines
+ * (`\n`/`\r` — the shell treats an unquoted newline as a command separator,
+ * exactly like `;`), respecting single/double quotes (best-effort).
+ * Backgrounding `&` is left in the segment for the shell-control veto to catch.
  */
 function splitCompound(command: string): string[] {
   const segments: string[] = [];
@@ -168,7 +168,10 @@ function splitCompound(command: string): string[] {
       current += c;
       continue;
     }
-    if (c === ';') {
+    // Unquoted newline / carriage return == a command separator. Without this,
+    // `git log \ngit push` is one segment that prefix-matches `git log` and the
+    // injected `git push` is never examined (shell-injection bypass).
+    if (c === ';' || c === '\n' || c === '\r') {
       segments.push(current);
       current = '';
       continue;
@@ -221,6 +224,29 @@ function hasShellControl(segment: string): boolean {
   return false;
 }
 
+/**
+ * Family-scoped flag vetoes: a flag that flips a curated read prefix into a
+ * write or code-execution, but whose flag letter is overloaded (it reads for
+ * other commands), so it cannot live in the global MUTATION_TOKEN.
+ */
+const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
+  // `sed -n` is read; `sed -n -i`/`--in-place` rewrites the file. The suffix
+  // can attach directly (`-i.bak`), so match any `-i` token (no read sed flag
+  // starts with `-i`). `-i` is case-insensitive for grep, so it cannot be a
+  // global mutation token — this veto is scoped to sed.
+  { family: /^sed\b/, flag: /(^|\s)(-i|--in-place)/ },
+  // `bun test --preload <file>` executes an arbitrary file before the suite.
+  { family: /^bunx?\b/, flag: /(^|\s)--preload(\s|=|$)/ },
+];
+
+/** True if a family-scoped veto flag applies to this segment. */
+function hasScopedVeto(segment: string): boolean {
+  for (const { family, flag } of SCOPED_VETOES) {
+    if (family.test(segment) && flag.test(segment)) return true;
+  }
+  return false;
+}
+
 /** Word-boundary prefix match: `seg === p` or `seg` starts with `p + ' '`. */
 function matchPrefix(segment: string, prefixes: readonly string[]): string | null {
   let best: string | null = null;
@@ -248,7 +274,7 @@ export function matchReadOnlyCommand(command: string, prefixes: readonly string[
   for (const raw of segments) {
     const seg = raw.trim();
     if (seg === '') continue;
-    if (hasShellControl(seg) || MUTATION_TOKEN.test(seg)) return null;
+    if (hasShellControl(seg) || MUTATION_TOKEN.test(seg) || hasScopedVeto(seg)) return null;
     if (matchPrefix(seg, NEUTRAL_PREFIXES) !== null) continue;
     const hit = matchPrefix(seg, prefixes);
     if (hit === null) return null;
