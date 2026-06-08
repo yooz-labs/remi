@@ -129,6 +129,18 @@ export interface UISession {
   readonly claudeSessionId?: UUID;
   /** Absolute path to the bound .jsonl transcript (#430). */
   readonly transcriptPath?: string;
+  /**
+   * This entry is a subagent view spawned by a parent session, not a
+   * top-level session (epic #499 phase 3). Its `id` is the subagent's
+   * `agentId`; tapping it loads `agent-<id>.jsonl` via the normal flow.
+   */
+  readonly isSubagent?: boolean;
+  /** For a subagent view: the parent session's id. */
+  readonly parentSessionId?: UUID;
+  /** For a subagent view: e.g. "Explore", "pr-review-toolkit:code-reviewer". */
+  readonly agentType?: string;
+  /** For a subagent view: false once it finished (transcript stays viewable). */
+  readonly subagentActive?: boolean;
 }
 
 /** Structured option for a question */

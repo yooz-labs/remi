@@ -823,6 +823,10 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // transcript_binder_enabled is off (no binder is ever constructed).
 const binderClosers: Map<UUID, () => void> = new Map();
 const sessionStore = new SessionStore();
+// Tracks the subagent chats the primary session spawns, so the client can
+// switch the displayed view to a subagent (epic #499 phase 3). Shared by the
+// hook bridge (writes) and the transcript handler (resolves agentId -> path).
+const subagentViews = new SubagentViewRegistry();
 // Single binding accessor for the whole daemon (#460 phase 2): the one typed,
 // disk-backed surface for remiUUID<->claudeSessionId. Every binding read/write +
 // both resume resolvers route through it. No cache — see session-binding-store.ts.
@@ -912,6 +916,7 @@ const sessionRegistry = new SessionRegistry(
   },
 );
 
+import { SubagentViewRegistry } from './api/subagent-view-registry.ts';
 import { makeCurrentSessionResolver } from './cli/current-session.ts';
 // The primary session ID (in wrapper mode, this is the one running in the terminal).
 // Stored in cli/session-state.ts so extracted handler modules can read it via
@@ -1123,6 +1128,7 @@ async function createNewSession(
         shadowBinder: binderShadow,
         binderEnabled,
         transcriptDiscovery,
+        subagentViews,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
@@ -1264,6 +1270,7 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptWatchers,
   bindingStore,
   currentOwnedSession,
+  subagentViews,
   send: sendToConnection,
 });
 

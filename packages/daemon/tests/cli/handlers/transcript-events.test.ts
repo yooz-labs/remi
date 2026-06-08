@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
@@ -70,12 +71,16 @@ describe('createTranscriptHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers(currentOwnedSession: () => CurrentOwnedSession | null = () => null) {
+  function makeHandlers(
+    currentOwnedSession: () => CurrentOwnedSession | null = () => null,
+    subagentViews: SubagentViewRegistry = new SubagentViewRegistry(),
+  ) {
     return createTranscriptHandlers({
       transcriptDiscovery,
       transcriptWatchers,
       bindingStore,
       currentOwnedSession,
+      subagentViews,
       send,
     });
   }
@@ -134,6 +139,38 @@ describe('createTranscriptHandlers', () => {
     const msg = sendCalls[0]?.message as { code?: string; details?: unknown };
     expect(msg.code).toBe('NOT_FOUND');
     expect(msg.details).toBeUndefined();
+  });
+
+  test('resolves a subagent view by agentId and loads its transcript (#499 phase 3)', async () => {
+    // The client loads a subagent by the agentId it got in session_views; the
+    // daemon resolves the deterministic <main>/subagents/agent-<id>.jsonl path.
+    const mainPath = path.join(projectsDir, '-Users-test-project', 'mainsess.jsonl');
+    const agentId = 'a1b2c3d4e5f6';
+    const reg = new SubagentViewRegistry();
+    reg.recordStart(agentId, 'Explore', mainPath);
+    const subPath = reg.resolvePath(agentId);
+    expect(subPath).not.toBeNull();
+    if (!subPath) return;
+    fs.mkdirSync(path.dirname(subPath), { recursive: true });
+    fs.writeFileSync(
+      subPath,
+      JSON.stringify({
+        type: 'user',
+        uuid: 'u1',
+        sessionId: agentId,
+        cwd: '/Users/test/project',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: 'subagent prompt' },
+      }),
+    );
+
+    makeHandlers(() => null, reg).onTranscriptLoadRequest(CID, agentId, REQ);
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+    expect(sendCalls.some((c) => (c.message as { code?: string }).code === 'NOT_FOUND')).toBe(
+      false,
+    );
   });
 
   test('reads a transcript by Claude session id and sends a completion envelope', async () => {

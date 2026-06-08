@@ -15,6 +15,7 @@ import { createError, createTranscriptLoadComplete, errorToString } from '@remi/
 import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
+import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import type { SessionBindingStore } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,
@@ -36,13 +37,23 @@ export interface TranscriptHandlerDeps {
   /** Resolves the daemon's current owned session, so a stale/unknown request is
    *  redirected to the current session instead of dead-ending on NOT_FOUND (#499). */
   currentOwnedSession: () => CurrentOwnedSession | null;
+  /** Resolves a subagent agentId -> its transcript file so the client can load a
+   *  subagent view by the agentId it got in `session_views` (#499 phase 3). */
+  subagentViews: Pick<SubagentViewRegistry, 'resolvePath'>;
   send: SendToConnection;
 }
 
 export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
-  const { transcriptDiscovery, transcriptWatchers, bindingStore, currentOwnedSession, send } = deps;
+  const {
+    transcriptDiscovery,
+    transcriptWatchers,
+    bindingStore,
+    currentOwnedSession,
+    subagentViews,
+    send,
+  } = deps;
 
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
@@ -84,6 +95,16 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
           logError(
             `[TranscriptLoad] binding lookup failed for ${sessionId}; proceeding without store resolution: ${errorToString(err)}`,
           );
+        }
+      }
+
+      // A subagent view: the client echoes the agent_id back from session_views;
+      // resolve its deterministic <main>/subagents/agent-<id>.jsonl (#499 phase 3).
+      if (!filePath) {
+        const subPath = subagentViews.resolvePath(sessionId);
+        if (subPath) {
+          filePath = subPath;
+          log(`[TranscriptLoad] Resolved subagent ${sessionId} to ${subPath}`);
         }
       }
 

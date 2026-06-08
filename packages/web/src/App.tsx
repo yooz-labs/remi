@@ -463,6 +463,41 @@ function App() {
         break;
       }
 
+      case 'session_views': {
+        // The parent session's subagent chats (#499 phase 3). Surface each as a
+        // navigable entry whose id IS the agentId; opening it loads
+        // agent-<id>.jsonl through the normal transcript flow. Replace this
+        // parent's whole subagent set each push (active first, finished kept).
+        const parentId = message.sessionId;
+        const subs = message.subagents;
+        setSessions((prev) => {
+          const parent = prev.find((s) => s.id === parentId);
+          const withoutOldSubs = prev.filter(
+            (s) =>
+              !(s.isSubagent && s.parentSessionId === parentId && s.connectionId === connectionId),
+          );
+          const subRows: UISession[] = subs.map((v) => {
+            const existing = prev.find((s) => s.id === (v.agentId as UUID));
+            return {
+              id: v.agentId as UUID,
+              name: v.agentType,
+              connectionId,
+              createdAt: existing?.createdAt ?? new Date().toISOString(),
+              lastActiveAt: new Date().toISOString(),
+              status: 'idle',
+              connectionStatus: parent?.connectionStatus ?? 'connected',
+              unreadCount: 0,
+              isSubagent: true,
+              parentSessionId: parentId,
+              agentType: v.agentType,
+              subagentActive: v.active,
+            } satisfies UISession;
+          });
+          return [...withoutOldSubs, ...subRows];
+        });
+        break;
+      }
+
       case 'session_rotated': {
         // Atomic rotation (#438): /clear or /resume started a NEW transcript
         // under a new Claude session id (NOT /compact, which keeps the same
