@@ -285,9 +285,10 @@ export interface ErrorMessage {
  * All fields may be null if the daemon currently has no owned session.
  */
 export interface StaleSessionErrorDetails {
-  /** The daemon's current Remi session id. */
-  readonly currentSessionId: UUID | null;
-  /** The current Claude session id (rotates on /clear). */
+  /** The daemon's current Remi session id. Always present (the daemon only
+   *  attaches these details when it has a current owned session). */
+  readonly currentSessionId: UUID;
+  /** The current Claude session id (rotates on /clear); null if unbound. */
   readonly currentClaudeSessionId: UUID | null;
   /** The current transcript file path. */
   readonly currentTranscriptPath: string | null;
