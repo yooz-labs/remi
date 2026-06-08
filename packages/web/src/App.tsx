@@ -867,20 +867,45 @@ function App() {
           if (currentSessionId) {
             const currentClaudeSessionId = asNonEmptyString(details?.['currentClaudeSessionId']);
             const currentTranscriptPath = asNonEmptyString(details?.['currentTranscriptPath']);
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id === currentSessionId && s.connectionId === connectionId
-                  ? {
-                      ...s,
-                      ...(currentClaudeSessionId && {
-                        claudeSessionId: currentClaudeSessionId as UUID,
-                      }),
-                      ...(currentTranscriptPath && { transcriptPath: currentTranscriptPath }),
-                    }
-                  : s,
-              ),
-            );
-            clearSessionForRebind(currentSessionId);
+            const claudePatch = currentClaudeSessionId
+              ? { claudeSessionId: currentClaudeSessionId as UUID }
+              : {};
+            const transcriptPatch = currentTranscriptPath
+              ? { transcriptPath: currentTranscriptPath }
+              : {};
+            // Upsert: patch the binding if the session is already listed, else
+            // add a placeholder row (the NOT_FOUND can race ahead of the
+            // hello_ack that adds it) so setActiveSessionId has something to
+            // render instead of a blank screen (#499 review).
+            setSessions((prev) => {
+              if (prev.some((s) => s.id === currentSessionId && s.connectionId === connectionId)) {
+                return prev.map((s) =>
+                  s.id === currentSessionId && s.connectionId === connectionId
+                    ? { ...s, ...claudePatch, ...transcriptPatch }
+                    : s,
+                );
+              }
+              return [
+                ...prev,
+                {
+                  id: currentSessionId,
+                  name: 'Claude Code Session',
+                  createdAt: new Date().toISOString(),
+                  lastActiveAt: new Date().toISOString(),
+                  status: 'idle',
+                  connectionStatus: 'connected',
+                  connectionId,
+                  unreadCount: 0,
+                  preview: 'Connected',
+                  ...claudePatch,
+                  ...transcriptPatch,
+                } satisfies UISession,
+              ];
+            });
+            // Do NOT clearSessionForRebind here -- that would wipe the current
+            // session's already-rendered messages. ensureTranscriptLoaded gates
+            // on the loaded marker, so it fetches only if not already loaded
+            // (no wipe, no duplicate append) (#499 review).
             setActiveSessionId(currentSessionId);
             ensureTranscriptLoaded(connectionId, currentSessionId);
             console.warn(
