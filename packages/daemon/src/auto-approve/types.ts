@@ -109,4 +109,16 @@ export interface AutoApproveConfig {
    * Ignored unless `multichoice = "evaluate"`.
    */
   readonly multichoice_model: string;
+  /**
+   * Ollama only: route through the native /api/chat with `think: false` to
+   * turn OFF the model's reasoning. This is FASTER but lowers decision quality
+   * — live testing showed the chain-of-thought is load-bearing for following
+   * broad user `instructions` (without it even a 35B model reverts to its
+   * cautious prior and escalates mutations it would otherwise approve). The
+   * buffer-until-verdict design already hides eval latency from the user, so
+   * the default is `false` (keep thinking). Opt in only if you value raw speed
+   * over nuance. No effect on non-Ollama providers (the OpenAI-compat endpoint
+   * has no knob to disable reasoning).
+   */
+  readonly disable_thinking: boolean;
 }

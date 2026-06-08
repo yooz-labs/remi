@@ -311,6 +311,7 @@ describe('auto_approve config', () => {
       instructions: '',
       multichoice: 'skip',
       multichoice_model: '',
+      disable_thinking: false,
     });
   });
 
