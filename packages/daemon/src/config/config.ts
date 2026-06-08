@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
@@ -115,6 +116,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // is compound-command-unsafe); the LLM prompt evaluates those in full.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
+    // Built-in read-by-definition groups, fast-pathed without an LLM call
+    // using compound-segment-aware matching (epic #494). All three on by
+    // default so enabling auto-approve immediately stops paying LLM latency
+    // for reads / VCS queries / read-only build+test runs.
+    approve_groups: ['read-only', 'vcs-read', 'build-test'],
+    deny_groups: [],
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
@@ -245,6 +252,23 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     throw new Error(
       `Invalid auto_approve.deny in ${configPath}: must be an array of strings. Example: deny = ["rm -rf /", "sudo "]`,
     );
+  }
+  if (!isStringArray(cfg.approve_groups)) {
+    throw new Error(
+      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read"]`,
+    );
+  }
+  if (!isStringArray(cfg.deny_groups)) {
+    throw new Error(
+      `Invalid auto_approve.deny_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}.`,
+    );
+  }
+  for (const g of [...cfg.approve_groups, ...cfg.deny_groups]) {
+    if (!isKnownGroup(g)) {
+      console.warn(
+        `[AutoApprove] Warning: unknown permission group "${g}" in ${configPath}; ignored. Known groups: ${knownGroupNames().join(', ')}.`,
+      );
+    }
   }
   if (typeof cfg.instructions !== 'string') {
     throw new Error(

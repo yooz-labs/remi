@@ -88,6 +88,20 @@ export interface AutoApproveConfig {
    */
   readonly deny: readonly string[];
   /**
+   * Built-in permission groups to approve without calling the LLM (epic #494).
+   * A group is a curated set of read-by-definition operations matched with
+   * compound-segment-aware prefix logic (see `permission-groups.ts`), safer
+   * than the substring `allow` list for Bash. Known groups: "read-only",
+   * "vcs-read", "build-test". Default: all three.
+   */
+  readonly approve_groups: readonly string[];
+  /**
+   * Built-in permission groups to deny without calling the LLM. Checked before
+   * `approve_groups` (and before `allow`); any group/pattern deny wins.
+   * Default: empty.
+   */
+  readonly deny_groups: readonly string[];
+  /**
    * Natural-language guidance appended to the LLM system prompt.
    * Lets users steer the LLM for ambiguous cases not covered by allow/deny.
    * Empty string means no extra guidance (use default prompt only).

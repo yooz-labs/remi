@@ -44,6 +44,8 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     log_decisions: false,
     allow: [],
     deny: [],
+    approve_groups: [],
+    deny_groups: [],
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
@@ -517,6 +519,71 @@ describe('AutoApproveService - allow/deny lists', () => {
     // Should escalate via LLM fall-through (unreachable), NOT via patterns
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).not.toContain('allow-matched');
+  });
+});
+
+describe('AutoApproveService - permission groups (#494)', () => {
+  // Unreachable base_url: if any of these hit the LLM, the test is slow and the
+  // group fast-path is broken.
+  function groupService(over: Partial<AutoApproveConfig>): AutoApproveService {
+    return new AutoApproveService(
+      makeConfig({ base_url: 'http://10.255.255.1', timeout: 30, ...over }),
+      logFn,
+    );
+  }
+
+  test('approve_groups fast-paths a read-by-definition Bash command without the LLM', async () => {
+    // The pipe spans two groups: `git show` (vcs-read) and `sed -n` (read-only).
+    // Every segment must be covered, so both groups are required.
+    const service = groupService({ approve_groups: ['read-only', 'vcs-read'] });
+    const start = Date.now();
+    const result = await service.evaluate('Bash', {
+      command: "git show abc:file | sed -n '1,40p'",
+    });
+    expect(result.decision).toBe('approve');
+    expect(result.reasoning).toContain('approve-matched group');
+    expect(result.reasoning).toContain('vcs-read:git show');
+    expect(result.durationMs).toBe(0);
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  test('approve_groups fast-paths a read tool', async () => {
+    const service = groupService({ approve_groups: ['read-only'] });
+    const result = await service.evaluate('Grep', { pattern: 'foo' });
+    expect(result.decision).toBe('approve');
+    expect(result.reasoning).toContain('read-only:Grep');
+  });
+
+  test('deny_groups wins over approve_groups', async () => {
+    const service = groupService({
+      approve_groups: ['build-test'],
+      deny_groups: ['build-test'],
+    });
+    const result = await service.evaluate('Bash', { command: 'bun test' });
+    expect(result.decision).toBe('deny');
+    expect(result.reasoning).toContain('deny-matched group');
+  });
+
+  test('a mutating command not covered by any group falls through to the LLM', async () => {
+    const service = groupService({
+      approve_groups: ['read-only', 'vcs-read', 'build-test'],
+      base_url: 'http://localhost:1',
+      timeout: 1,
+    });
+    const result = await service.evaluate('Bash', { command: 'git push origin main' });
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).not.toContain('approve-matched group');
+  });
+
+  test('empty approve_groups does nothing', async () => {
+    const service = groupService({
+      approve_groups: [],
+      base_url: 'http://localhost:1',
+      timeout: 1,
+    });
+    const result = await service.evaluate('Bash', { command: 'git status' });
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).not.toContain('approve-matched group');
   });
 });
 
