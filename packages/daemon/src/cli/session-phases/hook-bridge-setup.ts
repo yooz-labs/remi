@@ -60,6 +60,7 @@ import type { BinderDecision, BinderHookEvent } from '../../transcript/index.ts'
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
+import type { TerminalIndicator } from '../terminal-indicator.ts';
 import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
 
 export interface HookBridgeDeps {
@@ -108,6 +109,12 @@ export interface HookBridgeDeps {
    * unaffected.
    */
   subagentViews?: SubagentViewRegistry;
+  /**
+   * Process-wide terminal cue (#513): animates the wrapper terminal title and
+   * fires a desktop notification across the auto-approve lifecycle. Shared by
+   * all sessions (one terminal). Optional; inert when absent or headless.
+   */
+  terminalIndicator?: TerminalIndicator | undefined;
 }
 
 export interface HookBridgeArgs {
@@ -657,8 +664,17 @@ export function setupHookBridge(
       escalate: (i) => handlers.onPermissionRequest?.(i),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
-      onEvalStart: () => tracker.onAutoApproveStart(),
-      onEscalate: () => tracker.onAutoApproveEscalate(),
+      // #513: the same lifecycle drives the terminal cue (spinner -> done / needs-you).
+      onEvalStart: () => {
+        tracker.onAutoApproveStart();
+        deps.terminalIndicator?.start();
+      },
+      onEscalate: () => {
+        tracker.onAutoApproveEscalate();
+        deps.terminalIndicator?.resolve('escalate');
+      },
+      onHandled: () => deps.terminalIndicator?.resolve('handled'),
+      onCancelled: () => deps.terminalIndicator?.stop(),
     },
     sessionId,
   );

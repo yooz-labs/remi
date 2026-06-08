@@ -134,6 +134,7 @@ import { createMessageApiForSession } from './cli/session-phases/message-api-set
 import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
+import { type TerminalIndicator, createTerminalIndicator } from './cli/terminal-indicator.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
@@ -783,6 +784,19 @@ let autoApproveService: AutoApproveService | null = null;
 }
 
 // ---------------------------------------------------------------------------
+// Terminal cue (#513): animates the wrapper terminal title + fires a desktop
+// notification across the auto-approve lifecycle. Built only when auto-approve
+// is enabled (the gate is its sole driver). Process-wide; one terminal. The
+// writer no-ops in headless/daemon mode (no real terminal fd).
+// ---------------------------------------------------------------------------
+const terminalIndicator: TerminalIndicator | undefined = autoApproveService
+  ? createTerminalIndicator(
+      { notify: remiConfig.terminal.notify, statusCue: remiConfig.terminal.status_cue },
+      process.cwd(),
+    )
+  : undefined;
+
+// ---------------------------------------------------------------------------
 // SIGTSTP / Ctrl+Z handling.
 //
 // Wrapper mode (`remi <args>`): the wrapper installs `cli/suspend-handler.ts`
@@ -1130,6 +1144,7 @@ async function createNewSession(
         binderEnabled,
         transcriptDiscovery,
         subagentViews,
+        terminalIndicator,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );

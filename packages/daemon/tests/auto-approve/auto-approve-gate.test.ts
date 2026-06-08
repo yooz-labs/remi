@@ -287,3 +287,108 @@ describe('AutoApproveGate', () => {
     expect(cancels).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Lifecycle callbacks that drive the terminal cue (#513). They must fire on the
+// matching verdict and never cross-fire (a leaked spinner / missed notification
+// would be the symptom).
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate lifecycle callbacks (#513)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let submits: string[];
+  let events: string[];
+  let tracker: QuestionPresenceTracker;
+  let subagent: boolean;
+
+  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
+    return { evaluate: async () => result, cancel: () => true };
+  }
+
+  function gate(service: AutoApproveEvaluator, ptyThrows = false): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY(submits, { throws: ptyThrows }), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => subagent,
+        escalate: () => {},
+        onEvalStart: () => events.push('start'),
+        onEscalate: () => events.push('escalate'),
+        onHandled: () => events.push('handled'),
+        onCancelled: () => events.push('cancelled'),
+      },
+      SID,
+    );
+  }
+
+  function pr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    submits = [];
+    events = [];
+    subagent = false;
+    tracker = new QuestionPresenceTracker(() => {});
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('approve fires start then handled (never escalate/cancelled)', async () => {
+    gate(evaluator(approve)).handlePermissionRequest(pr());
+    await flush();
+    expect(events).toEqual(['start', 'handled']);
+  });
+
+  test('deny fires start then handled', async () => {
+    gate(evaluator(deny)).handlePermissionRequest(pr());
+    await flush();
+    expect(events).toEqual(['start', 'handled']);
+  });
+
+  test('escalate fires start then escalate (never handled)', async () => {
+    gate(evaluator(escalate)).handlePermissionRequest(pr());
+    await flush();
+    expect(events).toEqual(['start', 'escalate']);
+  });
+
+  test('cancelled fires start then cancelled (never handled/escalate)', async () => {
+    gate(evaluator(cancelled)).handlePermissionRequest(pr());
+    await flush();
+    expect(events).toEqual(['start', 'cancelled']);
+  });
+
+  test('approve whose inject fails escalates -> start then escalate (not handled)', async () => {
+    gate(evaluator(approve), /* ptyThrows */ true).handlePermissionRequest(pr());
+    await flush();
+    expect(events).toEqual(['start', 'escalate']);
+  });
+
+  test('subagent default-deny still fires handled (buffer + cue close)', async () => {
+    subagent = true;
+    gate(evaluator(escalate)).handlePermissionRequest(pr());
+    await flush();
+    // Subagent escalate default-denies via inject "3" -> markHandled.
+    expect(submits).toEqual(['3']);
+    expect(events).toEqual(['start', 'handled']);
+  });
+});
