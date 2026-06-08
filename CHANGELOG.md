@@ -4,6 +4,11 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-06-08
+
+Epic #499: a single source of truth for the live Claude session, plus
+subagent views.
+
 ### Added
 - Subagent views (epic #499): the app can switch the displayed view to a
   subagent's chat. The daemon tracks each subagent the session spawns
