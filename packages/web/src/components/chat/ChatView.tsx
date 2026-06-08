@@ -151,23 +151,27 @@ export function ChatView({
         showTimestamps={showTimestamps}
       />
 
-      <InputArea
-        onSend={onSend}
-        onAnswer={(answer) => {
-          if (primaryQuestion) onAnswer(primaryQuestion, answer);
-        }}
-        onCancel={onCancel}
-        question={null}
-        isAgentBusy={isAgentBusy}
-        disabled={!isConnected}
-        replyContext={replyContext ?? null}
-        onClearReply={onClearReply}
-        // Session-scoped draft persistence so a half-typed message survives
-        // app suspension on iOS (#226) and switching to a different session
-        // doesn't leak the draft across.
-        draftKey={`remi-draft-${session.id}`}
-        placeholder={!isConnected ? 'Not connected' : 'Type a message...'}
-      />
+      {/* Subagent views are read-only monitoring (their id is an agentId, not a
+          real daemon session), so there is no input to route (#499 phase 3). */}
+      {!session.isSubagent && (
+        <InputArea
+          onSend={onSend}
+          onAnswer={(answer) => {
+            if (primaryQuestion) onAnswer(primaryQuestion, answer);
+          }}
+          onCancel={onCancel}
+          question={null}
+          isAgentBusy={isAgentBusy}
+          disabled={!isConnected}
+          replyContext={replyContext ?? null}
+          onClearReply={onClearReply}
+          // Session-scoped draft persistence so a half-typed message survives
+          // app suspension on iOS (#226) and switching to a different session
+          // doesn't leak the draft across.
+          draftKey={`remi-draft-${session.id}`}
+          placeholder={!isConnected ? 'Not connected' : 'Type a message...'}
+        />
+      )}
     </div>
   );
 }

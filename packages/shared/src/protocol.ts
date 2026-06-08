@@ -100,7 +100,8 @@ export type ProtocolMessage =
   | DetachSessionAckMessage
   | RegisterDeviceTokenMessage
   | DaemonUpdateAvailableMessage
-  | SessionRotatedMessage;
+  | SessionRotatedMessage
+  | SessionViewsMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -378,6 +379,30 @@ export interface SessionRotatedMessage {
   readonly newTranscriptPath: string;
   /** Diagnostic: what triggered the rotation. */
   readonly reason: 'clear' | 'resume' | 'restart';
+}
+
+/** One selectable view a session exposes: a subagent's chat (epic #499 phase 3). */
+export interface SessionViewMeta {
+  /** The subagent's agent_id; the client echoes it back to load that view. */
+  readonly agentId: string;
+  /** e.g. "general-purpose", "Explore", "pr-review-toolkit:code-reviewer". */
+  readonly agentType: string;
+  /** false once the subagent finished (its transcript stays viewable). */
+  readonly active: boolean;
+}
+
+/**
+ * Daemon -> client push: the subagent conversations a session has spawned, so
+ * the client can switch the displayed view to a subagent's chat. The main
+ * conversation is always implicitly available; this lists only the subagents.
+ */
+export interface SessionViewsMessage {
+  readonly type: 'session_views';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** The Remi session these views belong to. */
+  readonly sessionId: UUID;
+  readonly subagents: readonly SessionViewMeta[];
 }
 
 /** Token usage information from a transcript entry */
@@ -753,6 +778,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'register_device_token',
     'daemon_update_available',
     'session_rotated',
+    'session_views',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1446,6 +1472,20 @@ export function createSessionRotated(
     newClaudeSessionId,
     newTranscriptPath,
     reason,
+  };
+}
+
+/** Create a session_views push listing the session's subagent views. */
+export function createSessionViews(
+  sessionId: UUID,
+  subagents: readonly SessionViewMeta[],
+): SessionViewsMessage {
+  return {
+    type: 'session_views',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    subagents,
   };
 }
 
