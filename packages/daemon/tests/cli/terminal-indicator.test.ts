@@ -171,6 +171,17 @@ describe('TerminalIndicator lifecycle', () => {
     expect(h.out.at(-1)).toBe(oscTitle('proj'));
   });
 
+  test('stop clears a pending linger from a prior handled (no late idle write)', () => {
+    const h = makeHarness(FULL);
+    h.ind.start();
+    h.ind.resolve('handled'); // schedules the linger timeout
+    h.ind.stop(); // must clear that linger and write idle exactly once
+    expect(h.out.at(-1)).toBe(oscTitle('proj'));
+    const afterStop = h.out.length;
+    h.fireLinger(); // the linger was cleared -> no-op
+    expect(h.out.length).toBe(afterStop);
+  });
+
   test('tmux mode wraps every sequence in passthrough', () => {
     const h = makeHarness(FULL, { tmux: true });
     h.ind.start();

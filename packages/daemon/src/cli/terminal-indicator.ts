@@ -23,6 +23,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { logError } from './logger.ts';
 import { getPtyStdoutFd, isWrapperDetached } from './wrapper-state.ts';
 
 const ESC = '\x1b';
@@ -174,9 +175,11 @@ export class TerminalIndicator {
   }
 
   /** Eval ended without a verdict (cancelled — user already advanced). Stop the
-   *  spinner and restore the idle title; no notification. */
+   *  spinner AND any pending linger, then restore the idle title; no
+   *  notification. clearTimers (not just stopSpinner) so a linger scheduled by a
+   *  prior resolve('handled') cannot fire a redundant idle-title write later. */
   stop(): void {
-    this.stopSpinner();
+    this.clearTimers();
     if (this.config.statusCue) this.setTitle(this.idleTitle);
   }
 
@@ -231,8 +234,14 @@ function writeToRealTerminal(sequence: string): void {
   if (fd === null || isWrapperDetached()) return;
   try {
     fs.writeSync(fd, sequence);
-  } catch {
-    // Terminal vanished; the raw pass-through write will flip detach state.
+  } catch (err) {
+    // EBADF/EPIPE/EIO/ENXIO == the terminal vanished; expected and silent (the
+    // raw pass-through write owns the authoritative detach flip). Anything else
+    // is unexpected — surface it rather than swallow (no silent failures).
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EBADF' && code !== 'EPIPE' && code !== 'EIO' && code !== 'ENXIO') {
+      logError('[TerminalIndicator] terminal write failed:', err);
+    }
   }
 }
 

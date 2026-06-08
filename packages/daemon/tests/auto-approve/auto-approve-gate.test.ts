@@ -391,4 +391,35 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     expect(submits).toEqual(['3']);
     expect(events).toEqual(['start', 'handled']);
   });
+
+  test('a throwing cue callback is absorbed: decision not re-run, no re-escalation', async () => {
+    // The cue is cosmetic. If onHandled throws it must NOT propagate into the
+    // .then()/.catch() chain (where the catch would re-run the decision and
+    // could re-open the #484 buffer). The permission stays approved-once.
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    let escalations = 0;
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(approve),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => {
+          escalations++;
+        },
+        onHandled: () => {
+          throw new Error('test: cue boom');
+        },
+      },
+      SID,
+    );
+    g.handlePermissionRequest(pr());
+    await flush();
+    expect(submits).toEqual(['1']); // approved exactly once
+    expect(escalations).toBe(0); // the catch did NOT re-escalate
+  });
 });
