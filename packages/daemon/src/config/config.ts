@@ -121,7 +121,15 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   features: {
     transcript_binder_shadow: false,
-    transcript_binder_enabled: false,
+    // The TranscriptBinder is now the DEFAULT session-binding driver (epic
+    // #499 / #503 step 1). It was shadow- and real-Claude-e2e-validated as
+    // equivalent to the old path, and is the single source of truth for the
+    // live session. Kept as a flag so `REMI_TRANSCRIPT_BINDER_ENABLED=false`
+    // is a kill-switch back to the old path until that path is deleted (#503
+    // step 2, after this default soaks). Setting `transcript_binder_shadow`
+    // alone no longer yields shadow-only — drive wins; for compare-only set
+    // `transcript_binder_enabled=false` too.
+    transcript_binder_enabled: true,
   },
 };
 
