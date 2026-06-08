@@ -4,6 +4,16 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Session source of truth (epic #499): the client no longer gets stuck on
+  "Transcript for session X not found" after a daemon restart or `/clear`
+  rotation. The daemon now answers a stale transcript request with its
+  **current** session (`currentSessionId` / `currentClaudeSessionId` /
+  `currentTranscriptPath`) instead of a dead-end `NOT_FOUND`, and always
+  stamps `hello_ack` with the authoritative binding; the client follows that
+  redirect (and the reconnect-mid-rotation adopt) by switching to the current
+  session and auto-loading its transcript (#500, #501).
+
 ## [0.6.2] - 2026-06-07
 
 A pass over the question -> auto-approve -> notification pipeline, plus a
