@@ -324,7 +324,6 @@ export class AutoApproveGate {
     input: PermissionRequestHookInput,
     value: string,
     reason: string,
-    bypassSubagentPtyGate = false,
   ): Promise<boolean> {
     const { sessionRegistry, tracker, isInSubagentContext } = this.deps;
     try {
@@ -334,7 +333,7 @@ export class AutoApproveGate {
         return false;
       }
       const inSubagentContext = this.isSubagentEvent(input) || isInSubagentContext();
-      if (!bypassSubagentPtyGate && inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
+      if (inSubagentContext && !tracker.isPromptVisibleOnPTY()) {
         log(
           `[AutoApprove ${this.sessionTag}] Subagent ${input.tool_name}: skipping inject "${value}" (${reason}); no prompt visible on main PTY (agent=${input.agent_id?.slice(0, 8) ?? 'nested'} type=${input.agent_type ?? 'n/a'})`,
         );
