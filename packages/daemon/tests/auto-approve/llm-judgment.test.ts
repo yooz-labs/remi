@@ -59,6 +59,8 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     log_decisions: true,
     allow: [],
     deny: [],
+    approve_groups: [],
+    deny_groups: [],
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
