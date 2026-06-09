@@ -283,6 +283,9 @@ describe('formatConfig', () => {
     expect(output).toContain('[auto_approve]');
     expect(output).toContain('enabled = false');
     expect(output).toContain('provider = "ollama"');
+    // disable_thinking must be visible in `config show` so a user who set it
+    // can confirm it (it was missed in the initial formatConfig wiring).
+    expect(output).toContain('disable_thinking = false');
   });
 
   test('masks auto_approve api_key', () => {
