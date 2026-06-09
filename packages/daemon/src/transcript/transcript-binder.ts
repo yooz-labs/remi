@@ -385,13 +385,21 @@ export class TranscriptBinder {
       // The single rotation funnel. Performs teardown -> onRotation ->
       // emitRotated (path-guarded) -> bindingStore.update -> currentBoundId=new
       // -> mainSessionEnded=false. emitRotated only fires when a path is
-      // present and isRotation holds.
-      rotationAnnounced = this.rotate(
-        event.session_id,
-        event.transcript_path,
-        previous,
-        isRotation,
-      );
+      // present and isRotation holds. Wrapped: rotate() runs the injected
+      // onRotation + teardown, and a throw must not escape into the hook
+      // dispatch loop. rotate() nulls the lock first, so a failure leaves the
+      // safe re-adopt-on-next-event state.
+      try {
+        rotationAnnounced = this.rotate(
+          event.session_id,
+          event.transcript_path,
+          previous,
+          isRotation,
+        );
+      } catch (err) {
+        logError(`[Binder] rotate() failed for session ${this.sessionId}: ${errorToString(err)}`);
+        return;
+      }
     }
 
     // classification === 'match' (or restart fell through with the new lock).
@@ -500,8 +508,11 @@ export class TranscriptBinder {
     if (event.session_id === this.currentBoundId) return true;
     // Stale-lock recovery (#518): the lock disagrees, but the incoming event's
     // transcript carries OUR port marker, so it is provably ours. Admit it; the
-    // next binding event's onHookEvent re-adopts the lock. Pure read (the marker
-    // check is read-only), so admits() stays side-effect-free.
+    // next binding event's onHookEvent re-adopts the lock. No state mutation —
+    // the marker check is a read. After a successful onHookEvent reclaim this
+    // id-matches above (no read); the marker read only fires while the event
+    // stays genuinely foreign (a real sibling), where the 8KB head read is
+    // bounded and acceptable.
     return this.incomingReclaimsViaMarker(event);
   }
 
@@ -517,7 +528,14 @@ export class TranscriptBinder {
    * cross-session isolation (#451) is preserved.
    */
   private incomingReclaimsViaMarker(event: BinderHookEvent): boolean {
-    return !!event.transcript_path && this.ownsTranscript(event.transcript_path);
+    try {
+      return !!event.transcript_path && this.ownsTranscript(event.transcript_path);
+    } catch (err) {
+      // Fail closed: an unexpected throw (e.g. currentPort()) must not escape
+      // into the hook dispatch loop. Stays foreign — the safe default.
+      logError(`[Binder] incomingReclaimsViaMarker failed (fail-closed): ${errorToString(err)}`);
+      return false;
+    }
   }
 
   // =========================================================================
