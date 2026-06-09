@@ -1,9 +1,14 @@
 import { errorToString } from '@remi/shared';
 /**
- * Minimal OpenAI-compatible chat completions client using raw fetch().
+ * Chat-completions client for the auto-approve evaluator.
  *
- * Works with Ollama (localhost:11434/v1), OpenRouter, and any endpoint
- * that implements the OpenAI chat completions API.
+ * Two transports:
+ *  - 'openai': the OpenAI-compatible /v1/chat/completions (OpenRouter, custom).
+ *  - 'ollama': Ollama's NATIVE /api/chat, so we can pass `think: false` and turn
+ *    OFF the model's reasoning. The OpenAI-compat /v1 endpoint has no way to
+ *    disable thinking, and for a quick approve/deny classify the reasoning is
+ *    pure latency (a 4B model spends most of its tokens "thinking"). When we
+ *    move to the Yooz engine this stays a clean transport seam.
  */
 
 export interface ChatMessage {
@@ -16,6 +21,11 @@ export interface LLMClientConfig {
   readonly apiKey: string;
   readonly model: string;
   readonly timeoutMs: number;
+  /**
+   * Transport. 'ollama' uses the native /api/chat with `think: false` (no
+   * reasoning). Defaults to 'openai' (the OpenAI-compatible /v1 endpoint).
+   */
+  readonly kind?: 'openai' | 'ollama';
 }
 
 export interface LLMResponse {
@@ -52,8 +62,17 @@ export function resolveProviderUrl(provider: string, fallbackUrl: string): strin
 }
 
 /**
- * Send a chat completion request to an OpenAI-compatible endpoint.
- * Throws on network errors, timeouts, or non-200 responses.
+ * Derive the Ollama NATIVE API root (…/api/chat) from a base URL that may end
+ * in /v1 (the OpenAI-compat path). `http://h:11434/v1` -> `http://h:11434`.
+ * Exported for testing.
+ */
+export function ollamaNativeBase(baseUrl: string): string {
+  return baseUrl.replace(/\/v1\/?$/, '');
+}
+
+/**
+ * Send a chat completion request. Throws on network errors, timeouts, or
+ * non-200 responses.
  *
  * If `externalSignal` is provided and aborts before the request completes,
  * the fetch is aborted and the abort propagates as a DOMException
@@ -65,7 +84,6 @@ export async function chatCompletion(
   messages: readonly ChatMessage[],
   externalSignal?: AbortSignal,
 ): Promise<LLMResponse> {
-  const url = `${config.baseUrl}/chat/completions`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
   const onExternalAbort = (): void => controller.abort();
@@ -74,38 +92,69 @@ export async function chatCompletion(
     else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (config.apiKey) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
+
+  const ollama = config.kind === 'ollama';
+  const url = ollama
+    ? `${ollamaNativeBase(config.baseUrl)}/api/chat`
+    : `${config.baseUrl}/chat/completions`;
+  // Ollama native: `think: false` disables reasoning; `format: 'json'` forces a
+  // JSON body. OpenAI-compat: temperature 0 + json_object response format.
+  const body = ollama
+    ? {
+        model: config.model,
+        messages,
+        stream: false,
+        think: false,
+        format: 'json',
+        options: { temperature: 0 },
+      }
+    : {
+        model: config.model,
+        messages,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+      };
 
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      const body = await response.text().catch((e) => `[body unreadable: ${errorToString(e)}]`);
-      throw new Error(`LLM API error ${response.status}: ${body.slice(0, 200)}`);
+      const errBody = await response.text().catch((e) => `[body unreadable: ${errorToString(e)}]`);
+      throw new Error(`LLM API error ${response.status}: ${errBody.slice(0, 200)}`);
     }
 
-    // biome-ignore lint/suspicious/noExplicitAny: OpenAI response shape
+    // biome-ignore lint/suspicious/noExplicitAny: provider response shapes differ
     const data: any = await response.json();
+
+    if (ollama) {
+      const content = data.message?.content;
+      if (!content) throw new Error('LLM response missing content (ollama /api/chat)');
+      return {
+        content,
+        model: data.model ?? config.model,
+        usage:
+          data.prompt_eval_count != null || data.eval_count != null
+            ? {
+                prompt_tokens: data.prompt_eval_count ?? 0,
+                completion_tokens: data.eval_count ?? 0,
+              }
+            : undefined,
+      };
+    }
+
     const choice = data.choices?.[0];
     if (!choice?.message?.content) {
       throw new Error('LLM response missing content');
     }
-
     return {
       content: choice.message.content,
       model: data.model ?? config.model,

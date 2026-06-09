@@ -4,6 +4,30 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-06-08
+
+Auto-approve fixes (instruction-following + an Ollama transport seam) and a
+terminal cue so escalations are visible without looking at the phone.
+
+### Added
+- Terminal cue for the auto-approve lifecycle (#513): an animated terminal-title
+  status (spinner while the LLM evaluates, then a check when auto-handled or a
+  warning when escalated) plus a desktop notification on escalation. Configurable
+  via a new `[terminal]` section: `notify = "osc9"` (default; also `osc777`,
+  `bell`, `off`) and `status_cue = true`. Written out-of-band to the terminal, so
+  it never disturbs Claude's display; tmux-passthrough aware; inert when
+  auto-approve is off or running headless.
+- Optional Ollama-native transport for auto-approve (`auto_approve.disable_thinking`,
+  default off): routes through `/api/chat` with reasoning disabled. Faster, but it
+  lowers decision quality (the reasoning is load-bearing for following broad
+  instructions), so it stays opt-in (#512).
+
+### Fixed
+- Auto-approve now follows the user's `instructions` over the built-in defaults:
+  the guidance is framed as the primary authority and only the deny floor can
+  override it, so a broad "approve everything except irreversible deletes" policy
+  is honored instead of being silently escalated (#512).
+
 ## [0.6.3] - 2026-06-08
 
 Epic #499: a single source of truth for the live Claude session, plus

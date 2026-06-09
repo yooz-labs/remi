@@ -47,6 +47,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
+    disable_thinking: false,
     ...overrides,
   };
 }

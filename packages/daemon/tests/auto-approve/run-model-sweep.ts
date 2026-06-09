@@ -327,6 +327,7 @@ function makeConfig(model: string): AutoApproveConfig {
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
+    disable_thinking: false,
   };
 }
 

@@ -37,33 +37,42 @@ describe('buildPrompt', () => {
     expect(user?.content).toContain('{}');
   });
 
-  test('instructions appended to system prompt when provided', () => {
+  test('instructions injected into system prompt as primary authority', () => {
     const [system] = buildPrompt('Bash', { command: 'bun test' }, 'Approve bun test runs.');
-    expect(system?.content).toContain('USER-SPECIFIC GUIDANCE');
+    expect(system?.content).toContain('USER GUIDANCE');
+    expect(system?.content).toContain('HIGHEST PRIORITY, MANDATORY');
     expect(system?.content).toContain('Approve bun test runs.');
   });
 
-  test('empty instructions omit the USER-SPECIFIC GUIDANCE section', () => {
+  test('empty instructions omit the USER GUIDANCE section', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '');
-    expect(system?.content).not.toContain('USER-SPECIFIC GUIDANCE');
+    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
   });
 
   test('whitespace-only instructions treated as empty', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '   \n  \n ');
-    expect(system?.content).not.toContain('USER-SPECIFIC GUIDANCE');
+    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
   });
 
   test('undefined instructions use default prompt', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' });
-    expect(system?.content).not.toContain('USER-SPECIFIC GUIDANCE');
+    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
   });
 
-  test('instructions appear after default guidelines (user refines defaults)', () => {
+  test('user guidance appears BEFORE the default guidelines (authoritative position)', () => {
+    // The fix: user guidance must outrank the defaults for a small model, so it
+    // is injected ahead of DEFAULT GUIDELINES, not appended after them.
     const [system] = buildPrompt('Bash', { command: 'bun test' }, 'Approve bun test.');
-    const defaultIdx = system?.content.indexOf('DEFAULT GUIDELINES') ?? -1;
-    const userIdx = system?.content.indexOf('USER-SPECIFIC GUIDANCE') ?? -1;
-    expect(defaultIdx).toBeGreaterThanOrEqual(0);
-    expect(userIdx).toBeGreaterThan(defaultIdx);
+    const userIdx = system?.content.indexOf('HIGHEST PRIORITY, MANDATORY') ?? -1;
+    const defaultIdx = system?.content.indexOf('DEFAULT GUIDELINES (fallback') ?? -1;
+    expect(userIdx).toBeGreaterThanOrEqual(0);
+    expect(defaultIdx).toBeGreaterThan(userIdx);
+  });
+
+  test('DENY FLOOR remains a hard floor even with user guidance present', () => {
+    const [system] = buildPrompt('Bash', { command: 'echo hi' }, 'Approve everything.');
+    expect(system?.content).toContain('DENY FLOOR');
+    expect(system?.content).toContain('always applies, even over USER GUIDANCE');
   });
 
   test('system prompt states the reversibility rule', () => {
