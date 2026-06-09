@@ -80,8 +80,8 @@ const MARKER_SETTLE_MS = 10_000;
  * marker (#518 follow-up). A real no-hooks rotation produces a FRESHLY-written
  * transcript; a historical same-port transcript (a prior daemon run reusing this
  * port in this directory — remi reuses one port per dir) is stale. Without this
- * gate the poll crawls the dir's accumulated `remi:<port>` history and mis-locks
- * onto a dead session, then drops the live session's hooks as foreign. 5 minutes
+ * gate the poll crawls the dir's accumulated `remi:<port>` history and wrongly
+ * locks onto a dead session, then drops the live session's hooks as foreign. 5 min
  * is far longer than any gap between writes in an active session, and far shorter
  * than the hours/days that separate historical transcripts.
  */
