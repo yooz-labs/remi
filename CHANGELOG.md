@@ -4,6 +4,22 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-06-09
+
+A reliability fix for session binding. When a project directory accumulates many
+past Remi sessions (Remi reuses one loopback port per directory, so each run
+leaves a `remi:<port>` transcript behind), the no-hooks rotation detector could
+crawl that history and lock onto a long-dead session, then drop the live
+session's hook events as "foreign". This made auto-approve appear dead in a
+freshly restarted session.
+
+### Fixed
+- **Binder dir-poll no longer locks onto stale history** (#529): the no-hooks
+  rotation poll now applies a freshness gate, so a same-port transcript whose
+  file is older than 5 minutes is treated as historical and ignored rather than
+  adopted as a live rotation. A genuine rotation writes a fresh transcript and
+  is still picked up immediately.
+
 ## [0.6.5] - 2026-06-09
 
 Auto-approve becomes synchronous and far more reliable: the daemon now answers

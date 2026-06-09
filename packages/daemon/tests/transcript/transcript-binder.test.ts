@@ -861,6 +861,32 @@ describe('TranscriptBinder', () => {
       binder.close();
     });
 
+    test('freshness gate: a STALE same-port transcript (old mtime) does NOT rotate us (#518)', () => {
+      registerSession();
+      const binder = makeDriveBinder();
+      binder.onHookEvent({
+        session_id: 'claude-A',
+        transcript_path: writeTranscript('claude-A', 8765),
+      });
+      binder.start('claude-A');
+
+      // A HISTORICAL transcript from a prior run on the SAME port (remi reuses
+      // one port per dir, so the dir accumulates our-port transcripts). It
+      // carries our marker but is an hour old -> not a live rotation. Without the
+      // freshness gate the poll would crawl onto it and strand the live session.
+      const stalePath = writeTranscript('claude-OLD', 8765);
+      const old = new Date(Date.now() - 3_600_000); // 1h ago (> ROTATION_FRESHNESS_MS)
+      fs.utimesSync(stalePath, old, old);
+      ptyState.running = false;
+
+      binder.rotationPollTick();
+      binder.rotationPollTick();
+
+      expect(rotations()).toHaveLength(0);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A'); // stays on the live bind
+      binder.close();
+    });
+
     test('markerless RECENT file is re-polled (never rotates), never permanently dropped', () => {
       registerSession();
       const binder = makeDriveBinder();
