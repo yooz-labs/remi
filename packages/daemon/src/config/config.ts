@@ -640,6 +640,12 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
   lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
+  lines.push(
+    `  approve_groups = [${config.auto_approve.approve_groups.map((s) => `"${s}"`).join(', ')}]`,
+  );
+  lines.push(
+    `  deny_groups = [${config.auto_approve.deny_groups.map((s) => `"${s}"`).join(', ')}]`,
+  );
   const instr = config.auto_approve.instructions;
   const instrDisplay = instr ? `"${instr.slice(0, 40)}${instr.length > 40 ? '...' : ''}"` : '""';
   lines.push(`  instructions = ${instrDisplay}`);
