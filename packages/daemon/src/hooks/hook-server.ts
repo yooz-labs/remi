@@ -53,11 +53,30 @@ export interface HookServerConfig {
 
 type Listener<T> = (input: T) => void;
 
+/**
+ * Synchronous decision for a PermissionRequest (#496). Claude Code BLOCKS on
+ * the hook response and honors `hookSpecificOutput.decision.behavior`:
+ *   - 'allow' / 'deny' => Claude proceeds WITHOUT rendering the prompt.
+ *   - 'passthrough'    => `{}` body; Claude renders the prompt as usual (the
+ *                         resolver has already escalated to the user / injected
+ *                         a multi-choice pick).
+ */
+export type PermissionDecision = 'allow' | 'deny' | 'passthrough';
+
+export type PermissionResolver = (input: PermissionRequestHookInput) => Promise<PermissionDecision>;
+
 export class HookServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private readonly config: Required<HookServerConfig>;
   private readonly events: Partial<HookServerEvents>;
   private readonly listeners: Map<string, Listener<HookInput>[]> = new Map();
+  /**
+   * Synchronous PermissionRequest decider (#496). When set, `handleRequest`
+   * AWAITS it for PermissionRequest events and returns the decision in the 2xx
+   * body INSTEAD of the fire-and-forget dispatch + `{}`. Null => legacy path
+   * (dispatch to listeners, return `{}`; the old PTY-injection answers).
+   */
+  private permissionResolver: PermissionResolver | null = null;
   /** Whether we've already warned about REMI_HOOK_DEBUG write failures. Throttles spam. */
   private diagLogWarned = false;
 
@@ -94,6 +113,17 @@ export class HookServer {
         if (idx !== -1) current.splice(idx, 1);
       }
     };
+  }
+
+  /**
+   * Install the synchronous PermissionRequest decider (#496). At most one; a
+   * later call replaces the earlier. Pass null to clear (revert to the legacy
+   * dispatch path). The resolver MUST resolve (not reject) — it is wrapped so a
+   * rejection is treated as 'passthrough' (fail to the user), but it should
+   * return 'passthrough' explicitly on its own errors.
+   */
+  setPermissionResolver(resolver: PermissionResolver | null): void {
+    this.permissionResolver = resolver;
   }
 
   /** Remove all listeners for a specific event or all events */
@@ -176,6 +206,24 @@ export class HookServer {
       });
     }
 
+    // Synchronous PermissionRequest decision (#496). When a resolver is
+    // installed, Claude BLOCKS on this response; we AWAIT the verdict and
+    // return allow/deny (Claude proceeds without rendering the prompt) or
+    // passthrough ({}). The resolver owns the eval + escalate-to-user side
+    // effects, so we do NOT also fire the legacy dispatch for this event.
+    if (eventName === 'PermissionRequest' && this.permissionResolver) {
+      let decision: PermissionDecision = 'passthrough';
+      try {
+        decision = await this.permissionResolver(body as unknown as PermissionRequestHookInput);
+      } catch (err) {
+        // Fail to the user: a resolver error must never block Claude or
+        // silently allow. passthrough renders the prompt for a human.
+        this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+        decision = 'passthrough';
+      }
+      return this.permissionDecisionResponse(decision);
+    }
+
     // Accept all events with 200 to future-proof against new Claude Code events.
     // Only dispatch known events to typed handlers; unknown events are logged.
     if (isValidHookEvent(eventName)) {
@@ -192,6 +240,25 @@ export class HookServer {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  /**
+   * Serialise a PermissionDecision into the Claude Code hook response. allow/deny
+   * use the verified `hookSpecificOutput.decision.behavior` shape; passthrough is
+   * the bare `{}` that lets Claude render the prompt.
+   */
+  private permissionDecisionResponse(decision: PermissionDecision): Response {
+    const headers = { 'Content-Type': 'application/json' };
+    if (decision === 'passthrough') {
+      return new Response('{}', { status: 200, headers });
+    }
+    const body = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: decision },
+      },
+    });
+    return new Response(body, { status: 200, headers });
   }
 
   private dispatch(input: HookInput): void {

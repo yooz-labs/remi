@@ -25,7 +25,7 @@ import type { UUID } from '@remi/shared';
 
 import type { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
 import { log, logError } from '../cli/logger.ts';
-import type { PermissionRequestHookInput } from '../hooks/index.ts';
+import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import type { AutoApproveResult } from './types.ts';
 
@@ -112,120 +112,103 @@ export class AutoApproveGate {
    * Caller is responsible for session filtering (the bridge runs initFromHookEvent
    * + filterBySession before delegating here).
    */
-  handlePermissionRequest(input: PermissionRequestHookInput): void {
+  /**
+   * Resolve a PermissionRequest to a synchronous decision (#496). Claude BLOCKS
+   * on the hook response, so this returns the verdict INSTEAD of injecting it:
+   *   - approve -> 'allow', deny -> 'deny' (Claude proceeds; NO PTY inject).
+   *   - escalate (main) -> escalateToUser + 'passthrough' (Claude renders the
+   *     prompt; the user answers).
+   *   - escalate / no-service in a SUBAGENT context -> 'deny' via the hook
+   *     response. This is the core fix: the old PTY-inject default-deny couldn't
+   *     tell whose prompt was on the PTY for parallel subagents and leaked; the
+   *     synchronous deny needs no PTY at all.
+   *   - pick (multi-choice) -> inject the index + 'passthrough' (the hook
+   *     response can't express "pick option N"; keep the PTY for this rare case).
+   *   - cancelled -> 'passthrough' (the user already advanced).
+   */
+  async resolvePermission(input: PermissionRequestHookInput): Promise<PermissionDecision> {
     const { service, isInSubagentContext } = this.deps;
 
-    // Phase 4 (#419): subagent PermissionRequest events are forwarded (not dropped).
-    // The PTY-presence model treats "what's on screen" as truth: a hot-switched
-    // subagent view that renders a permission prompt IS user-answerable, and
-    // dropping the hook here would lose the rich tool/option metadata.
     if (this.isSubagentEvent(input)) {
       log(
         `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
     }
 
-    // Auto-approve gate: evaluate before creating a Question object.
-    if (service) {
-      // Open the buffer window: a PTY prompt that renders during the eval is
-      // held (not pushed) until we know the verdict. #484. The terminal cue
-      // (#513) rides this signal but must never throw into the dispatch loop.
-      this.safeCue('onEvalStart', this.deps.onEvalStart);
-      // Pass the raw suggestions array; AutoApproveService does its own strict-string
-      // filtering before feeding the LLM. We forward the raw shape (rather than
-      // coercing) so the multi-choice classifier can see "non-string entry" and route
-      // through escalate instead of crashing on a future permission_suggestions schema
-      // change.
-      service
-        .evaluate(
-          input.tool_name,
-          input.tool_input,
-          this.sessionTag,
-          input.permission_suggestions as readonly unknown[] | undefined,
-        )
-        .then(async (result) => {
-          if (result.decision === 'cancelled') {
-            // User already advanced past the prompt. Do not inject, do not escalate.
-            // Drop the pending hook record so its stale option labels cannot merge
-            // onto the next unrelated PTY prompt (e.g. user typed /compact, no
-            // PreToolUse fires).
-            this.deps.tracker.clearPending();
-            this.safeCue('onCancelled', this.deps.onCancelled);
-            log(`[AutoApprove ${this.sessionTag}] Decision dropped: ${result.reasoning}`);
-            return;
-          }
-          if (result.decision === 'approve') {
-            // inject success -> auto-handled (close the buffer; user never sees
-            // it); inject failure -> escalate (which releases the buffer). #484.
-            if (await this.inject(input, '1', 'approved')) this.markHandled();
-            else this.escalateToUser(input);
-            return;
-          }
-          if (result.decision === 'deny') {
-            if (await this.inject(input, '3', 'denied')) this.markHandled();
-            else this.escalateToUser(input);
-            return;
-          }
-          if (result.decision === 'pick' && result.pickIndex !== undefined) {
-            // Multi-choice pick (#399): inject the 1-based index Claude Code expects.
-            // parseMultiChoiceDecision already validated the index against options
-            // length, so out-of-range values cannot reach this branch.
-            if (
-              await this.inject(
-                input,
-                String(result.pickIndex),
-                `multichoice-pick-${result.pickIndex}`,
-              )
-            ) {
-              this.markHandled();
-            } else {
-              this.escalateToUser(input);
-            }
-            return;
-          }
-          // escalate: in a subagent context, default-deny to avoid hanging the
-          // subagent (the user could not answer it anyway). Bypass the subagent PTY
-          // gate because the alternative is letting it hang forever; typing '3' into
-          // the parent PTY is the lesser evil. The approve/deny/pick branches above
-          // use the gate because they have a fallback (escalateToUser); this does not.
-          if (isInSubagentContext()) {
-            log(
-              `[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`,
-            );
-            await this.inject(input, '3', 'subagent-escalate-default-deny', true);
-            this.markHandled(); // close the buffer window (#484)
-            return;
-          }
-          this.escalateToUser(input);
-        })
-        .catch(async (err) => {
-          // Last line of defense; must not leave an unhandled rejection.
-          try {
-            logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
-            if (isInSubagentContext()) {
-              await this.inject(input, '3', 'subagent-error-default-deny', true);
-              this.markHandled(); // close the buffer window (#484)
-              return;
-            }
-            this.escalateToUser(input);
-          } catch (inner) {
-            logError(`[AutoApprove ${this.sessionTag}] catch handler threw:`, inner);
-          }
-        });
-      return;
+    // No auto-approve: subagent default-denies via the response (no PTY, no
+    // leak); main escalates to the user.
+    if (!service) {
+      if (isInSubagentContext()) {
+        log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
+        return 'deny';
+      }
+      this.escalateToUser(input);
+      return 'passthrough';
     }
 
-    // No auto-approve. In a subagent context, still must not hang the subagent:
-    // default-deny rather than emit a question the user can't answer.
+    // Open the buffer/cue window (#484/#513). With synchronous decisions Claude
+    // does not render the prompt during the eval, so the buffer rarely holds a
+    // PTY prompt now; the cue lifecycle still rides these signals.
+    this.safeCue('onEvalStart', this.deps.onEvalStart);
+
+    let result: AutoApproveResult;
+    try {
+      // Raw suggestions: the service does its own strict-string filtering; we
+      // forward the raw shape so the multi-choice classifier can route a
+      // non-string entry through escalate instead of crashing.
+      result = await service.evaluate(
+        input.tool_name,
+        input.tool_input,
+        this.sessionTag,
+        input.permission_suggestions as readonly unknown[] | undefined,
+      );
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
+      if (isInSubagentContext()) {
+        this.markHandled();
+        return 'deny';
+      }
+      this.escalateToUser(input);
+      return 'passthrough';
+    }
+
+    if (result.decision === 'cancelled') {
+      // The user already advanced past the prompt. Drop the pending hook record
+      // so its stale option labels cannot merge onto the next PTY prompt.
+      this.deps.tracker.clearPending();
+      this.safeCue('onCancelled', this.deps.onCancelled);
+      log(`[AutoApprove ${this.sessionTag}] Decision dropped: ${result.reasoning}`);
+      return 'passthrough';
+    }
+    if (result.decision === 'approve') {
+      this.markHandled();
+      return 'allow';
+    }
+    if (result.decision === 'deny') {
+      this.markHandled();
+      return 'deny';
+    }
+    if (result.decision === 'pick' && result.pickIndex !== undefined) {
+      // Multi-choice pick (#399): the response can't express it, so render the
+      // prompt (passthrough) and inject the 1-based index into the PTY. The
+      // index was validated against options length upstream.
+      if (
+        await this.inject(input, String(result.pickIndex), `multichoice-pick-${result.pickIndex}`)
+      ) {
+        this.markHandled();
+      } else {
+        this.escalateToUser(input);
+      }
+      return 'passthrough';
+    }
+    // escalate
     if (isInSubagentContext()) {
-      log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
-      this.inject(input, '3', 'subagent-no-aa-default-deny', true).catch((err) => {
-        logError(`[${this.sessionTag}] Failed to inject default-deny:`, err);
-      });
-      return;
+      log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
+      this.markHandled();
+      return 'deny';
     }
-
     this.escalateToUser(input);
+    return 'passthrough';
   }
 
   /**

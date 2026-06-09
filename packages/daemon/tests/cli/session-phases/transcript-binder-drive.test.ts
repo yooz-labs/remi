@@ -50,11 +50,21 @@ import type { TranscriptWatcher } from '../../../src/transcript/transcript-watch
 /** Recording HookServer: capture `.on()` registrations, fire them directly. */
 class RecordingHookServer {
   readonly listeners = new Map<string, (input: unknown) => void>();
+  permissionResolver: ((input: unknown) => Promise<string>) | null = null;
   on(event: string, listener: (input: unknown) => void): () => void {
     this.listeners.set(event, listener);
     return () => this.listeners.delete(event);
   }
+  setPermissionResolver(resolver: ((input: unknown) => Promise<string>) | null): void {
+    this.permissionResolver = resolver;
+  }
   fire(event: string, input: unknown): void {
+    // PermissionRequest is the synchronous resolver (#496), not a .on() listener;
+    // fire it through the resolver (the binder bind runs synchronously inside).
+    if (event === 'PermissionRequest' && !this.listeners.has(event) && this.permissionResolver) {
+      void this.permissionResolver(input);
+      return;
+    }
     const fn = this.listeners.get(event);
     if (!fn) throw new Error(`No listener registered for ${event}`);
     fn(input);

@@ -22,16 +22,36 @@ import { SessionStore } from '../../../src/session/session-store.ts';
  */
 class RecordingHookServer {
   readonly listeners = new Map<string, (input: unknown) => void>();
+  /** The synchronous PermissionRequest resolver (#496); set via setPermissionResolver. */
+  permissionResolver: ((input: unknown) => Promise<string>) | null = null;
   on(event: string, listener: (input: unknown) => void): () => void {
     // Only the last listener per event survives; for setupHookBridge this is
     // fine because it installs exactly one per event name.
     this.listeners.set(event, listener);
     return () => this.listeners.delete(event);
   }
+  setPermissionResolver(resolver: ((input: unknown) => Promise<string>) | null): void {
+    this.permissionResolver = resolver;
+  }
   fire(event: string, input: unknown): void {
+    // PermissionRequest is no longer a `.on()` listener (#496) — it is the
+    // synchronous resolver. Tests that fire it purely to drive the binder
+    // (binding/foreign-drop/rotation) keep working: the binder bind + admit run
+    // SYNCHRONOUSLY inside the resolver before the async decision, which we
+    // fire-and-forget here. Decision-asserting tests use `await firePermission`.
+    if (event === 'PermissionRequest' && !this.listeners.has(event) && this.permissionResolver) {
+      void this.permissionResolver(input);
+      return;
+    }
     const fn = this.listeners.get(event);
     if (!fn) throw new Error(`No listener registered for ${event}`);
     fn(input);
+  }
+  /** Fire a PermissionRequest through the synchronous resolver (#496) and return
+   *  the decision ('allow' | 'deny' | 'passthrough'). */
+  async firePermission(input: unknown): Promise<string> {
+    if (!this.permissionResolver) throw new Error('No permission resolver registered');
+    return this.permissionResolver(input);
   }
 }
 
@@ -262,16 +282,17 @@ describe('setupHookBridge', () => {
     return { tracker };
   }
 
-  test('registers listeners for all 11 hook events', () => {
+  test('registers 10 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
     build();
     const events = new Set(hookServer.listeners.keys());
+    // PermissionRequest is NO LONGER a .on() listener — it is the synchronous
+    // resolver (#496), installed via setPermissionResolver.
     expect(events).toEqual(
       new Set([
         'SessionStart',
         'PreToolUse',
         'PostToolUse',
         'Notification',
-        'PermissionRequest',
         'Stop',
         'SessionEnd',
         // Wired in phase 4 (#453).
@@ -281,6 +302,7 @@ describe('setupHookBridge', () => {
         'SubagentStop',
       ]),
     );
+    expect(hookServer.permissionResolver).not.toBeNull();
   });
 
   describe('phase 4 (#453): the 4 previously-dropped events', () => {
@@ -386,7 +408,7 @@ describe('setupHookBridge', () => {
       isAnswered: false,
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-sub-123',
       agent_id: 'subagent-abc',
       agent_type: 'task',
@@ -394,10 +416,11 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // Wait for evaluate() + inject() to resolve.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(ptySubmits).toEqual(['1']);
+    // #496: approve returns 'allow' via the hook response — no PTY inject
+    // (the old inject was what the PTY-presence gate guarded; approve no
+    // longer needs the PTY at all).
+    expect(decision).toBe('allow');
+    expect(ptySubmits).toEqual([]);
   });
 
   test('PTY gate covers legacy subagents: nested-Task PermissionRequest WITHOUT agent_id is dropped when no PTY presence', async () => {
@@ -442,7 +465,7 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual([]);
   });
 
-  test('PermissionRequest with auto-approve APPROVE injects "1" (status: executing)', async () => {
+  test('PermissionRequest with auto-approve APPROVE returns "allow" (no inject) (#496)', async () => {
     build({ autoApprove: true });
 
     // Fire SessionStart first so claudeSessionId locks; subsequent events
@@ -453,17 +476,17 @@ describe('setupHookBridge', () => {
       hook_event_name: 'SessionStart',
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-locked-123',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    // Auto-approve .evaluate() is async; wait for the inject promise chain.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(ptySubmits).toEqual(['1']);
-    expect(sessionRegistry.getSession(SID)?.currentStatus).toBe('executing');
+    // #496: synchronous APPROVE returns 'allow'; Claude proceeds without a
+    // prompt and remi never injects. (Status is no longer set here — the tool's
+    // own PreToolUse hook sets 'executing' when Claude runs it.)
+    expect(decision).toBe('allow');
+    expect(ptySubmits).toEqual([]);
   });
 
   test('regression #321: sibling daemon dying re-enables hook lock acquisition AND filterBySession recovers', () => {
@@ -566,7 +589,7 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.statusCalls).toContain('executing');
   });
 
-  test('sibling-in-dir + fallback-discovered claudeSessionId: lock adopted from sessionStore on next hook', () => {
+  test('sibling-in-dir + fallback-discovered claudeSessionId: lock adopted from sessionStore on next hook', async () => {
     // The dev.3 inconsistency the user hit: when 2+ Remi wrappers share a
     // project directory, hasSiblingInDir() defers hook-event-based locking
     // to the transcript-fallback poll. The fallback discovers our own
@@ -616,21 +639,17 @@ describe('setupHookBridge', () => {
     // The first hook arrives WHILE hasSiblingInDir is still true. Pre-fix
     // this dropped silently. Post-fix, adoptLockFromStore pulls the lock
     // from sessionStore and filterBySession returns true.
-    hookServer.fire('PermissionRequest', {
+    // If the lock was adopted, the event is admitted and auto-approve evaluates
+    // -> 'allow' (#496). If not (regression), it is dropped as foreign ->
+    // 'passthrough'. So the decision proves adoption (the old proof was an inject).
+    const decision = await hookServer.firePermission({
       session_id: 'claude-mine-via-fallback',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
-
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        // If the lock was adopted, auto-approve fired and injected '1'.
-        // If not (regression), ptySubmits is empty.
-        expect(ptySubmits).toEqual(['1']);
-        resolve();
-      }, 50);
-    });
+    expect(decision).toBe('allow');
+    expect(ptySubmits).toEqual([]);
   });
 
   test("sibling-in-dir + fallback-discovered lock: foreign session's hooks still drop", () => {
@@ -683,7 +702,7 @@ describe('setupHookBridge', () => {
     });
   });
 
-  test('sibling-in-dir + sessionStore rotation: adoptLockFromStore re-adopts the new claudeSessionId', () => {
+  test('sibling-in-dir + sessionStore rotation: adoptLockFromStore re-adopts the new claudeSessionId', async () => {
     // After initial adoption from sessionStore (claude-A), the user runs
     // /clear in the sibling-wrapper scenario. The transcript-fallback
     // rediscovers and writes claude-B to the store. The hook-bridge MUST
@@ -717,45 +736,39 @@ describe('setupHookBridge', () => {
 
     build({ autoApprove: true, autoApproveDecision: 'approve' });
 
-    // Initial adoption: hook for claude-A passes the filter.
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-A-initial',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
+    // Initial adoption: hook for claude-A is admitted -> approve -> 'allow' (#496).
+    expect(
+      await hookServer.firePermission({
+        session_id: 'claude-A-initial',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      }),
+    ).toBe('allow');
+
+    // Fallback rediscovers after /clear and writes the new id.
+    sessionStore.save({
+      remiSessionId: SID,
+      claudeSessionId: 'claude-B-rotated',
+      projectPath: tmpDir,
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
     });
 
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        expect(ptySubmits).toEqual(['1']);
-
-        // Fallback rediscovers after /clear and writes the new id.
-        sessionStore.save({
-          remiSessionId: SID,
-          claudeSessionId: 'claude-B-rotated',
-          projectPath: tmpDir,
-          port: 8765,
-          pid: process.pid,
-          startedAt: new Date().toISOString(),
-          exitedAt: null,
-          exitCode: null,
-        });
-
-        // Hook for claude-B arrives. Lock must rotate; otherwise filterBySession
-        // sees claudeSessionId='claude-A-initial' and drops the event.
-        hookServer.fire('PermissionRequest', {
-          session_id: 'claude-B-rotated',
-          hook_event_name: 'PermissionRequest',
-          tool_name: 'Bash',
-          tool_input: { command: 'pwd' },
-        });
-
-        setTimeout(() => {
-          expect(ptySubmits).toEqual(['1', '1']);
-          resolve();
-        }, 50);
-      }, 50);
-    });
+    // Hook for claude-B: the lock must re-adopt; otherwise it is dropped as
+    // foreign -> 'passthrough'. 'allow' proves the rotation was picked up.
+    expect(
+      await hookServer.firePermission({
+        session_id: 'claude-B-rotated',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'pwd' },
+      }),
+    ).toBe('allow');
+    expect(ptySubmits).toEqual([]);
   });
 
   test('adoptLockFromStore catches sessionStore throws and keeps the daemon running', () => {
@@ -1439,7 +1452,7 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(true);
   });
 
-  test('subagent PermissionRequest with no PTY-visible prompt: inject is dropped, fallback escalates', async () => {
+  test('subagent approve returns "allow" via the response — no inject, no escalate (#496)', async () => {
     // Regression guard for the dev.3 misfiring: a background subagent's
     // PermissionRequest cannot answer by injecting into the MAIN PTY
     // because the subagent's prompt isn't there — "1" would land in the
@@ -1460,7 +1473,7 @@ describe('setupHookBridge', () => {
       model: 'test',
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-sub-AA',
       agent_id: 'subagent-AA',
       agent_type: 'general-purpose',
@@ -1469,14 +1482,14 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Inject was gated → no submit. Escalation fires → one question call.
+    // approve -> 'allow' via the response; no PTY inject and no escalation,
+    // regardless of subagent PTY presence.
+    expect(decision).toBe('allow');
     expect(ptySubmits).toEqual([]);
-    expect(messageApiLog.questionCalls).toBe(1);
+    expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  test('subagent PermissionRequest with PTY-visible prompt (hot-switched view) still injects', async () => {
+  test('subagent approve with PTY-visible prompt returns "allow" (no inject) (#496)', async () => {
     // Preserves PR #419's hot-switched-subagent case: when the user
     // has switched to the subagent's view, its permission prompt IS
     // rendered on the main PTY. Simulate that by firing
@@ -1501,7 +1514,7 @@ describe('setupHookBridge', () => {
       isAnswered: false,
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-sub-hot',
       agent_id: 'subagent-hot',
       agent_type: 'general-purpose',
@@ -1510,12 +1523,13 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(ptySubmits).toEqual(['1']);
+    // #496: approve allows via the response even with a hot-switched subagent
+    // view; no inject.
+    expect(decision).toBe('allow');
+    expect(ptySubmits).toEqual([]);
   });
 
-  test('subagent PermissionRequest + auto-approve deny with no PTY presence: inject dropped, escalates', async () => {
+  test('subagent deny returns "deny" via the response — no inject, no escalate (#496)', async () => {
     // Mirrors the approve case for the deny branch — same gate, same
     // fallthrough. The non-hang guarantee for background subagents is
     // now structural: with no PTY presence the subagent has no answerable
@@ -1531,7 +1545,7 @@ describe('setupHookBridge', () => {
       model: 'test',
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-sub-deny',
       agent_id: 'subagent-deny',
       agent_type: 'general-purpose',
@@ -1540,13 +1554,13 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'rm -rf /' },
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
+    // deny -> 'deny' via the response; no inject, no escalation.
+    expect(decision).toBe('deny');
     expect(ptySubmits).toEqual([]);
-    expect(messageApiLog.questionCalls).toBe(1);
+    expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  test('subagent PermissionRequest + auto-approve deny with PTY-visible prompt injects "3"', async () => {
+  test('subagent deny with PTY-visible prompt returns "deny" (no inject) (#496)', async () => {
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'deny' });
 
     hookServer.fire('SessionStart', {
@@ -1565,7 +1579,7 @@ describe('setupHookBridge', () => {
       isAnswered: false,
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-sub-deny-hot',
       agent_id: 'subagent-deny-hot',
       agent_type: 'general-purpose',
@@ -1574,9 +1588,10 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'rm -rf /' },
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(ptySubmits).toEqual(['3']);
+    // #496: deny returns 'deny' via the response; no PTY inject even with a
+    // visible prompt.
+    expect(decision).toBe('deny');
+    expect(ptySubmits).toEqual([]);
   });
 
   test('Phase 4 wiring: escalate + active Task context default-denies (no hang)', async () => {
@@ -1608,16 +1623,17 @@ describe('setupHookBridge', () => {
 
     // Subagent-internal Bash PermissionRequest (no agent_id; the
     // Task-context safety net catches it).
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-esc-task',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(ptySubmits).toEqual(['3']);
+    // #496: escalate in a subagent (Task) context -> 'deny' via the response —
+    // no hang, no PTY inject, no question.
+    expect(decision).toBe('deny');
+    expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
@@ -1644,16 +1660,16 @@ describe('setupHookBridge', () => {
       tool_use_id: 'tu_task_throws',
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-throws-task',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(ptySubmits).toEqual(['3']);
+    // #496: eval error in a subagent (Task) context -> 'deny' via the response.
+    expect(decision).toBe('deny');
+    expect(ptySubmits).toEqual([]);
   });
 
   test('Phase 4 wiring: no auto-approve + active Task context default-denies', async () => {
@@ -1680,14 +1696,16 @@ describe('setupHookBridge', () => {
       tool_use_id: 'tu_task_noaa',
     });
 
-    hookServer.fire('PermissionRequest', {
+    const decision = await hookServer.firePermission({
       session_id: 'claude-noaa-task',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    expect(ptySubmits).toEqual(['3']);
+    // #496: no auto-approve + subagent (Task) context -> 'deny' via the response.
+    expect(decision).toBe('deny');
+    expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
