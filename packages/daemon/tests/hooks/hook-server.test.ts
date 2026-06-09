@@ -438,4 +438,83 @@ describe('HookServer', () => {
     server = new HookServer({ port });
     expect(server.url).toBe(`http://127.0.0.1:${port}/hooks`);
   });
+
+  // -------------------------------------------------------------------------
+  // Synchronous PermissionRequest resolver (#496)
+  // -------------------------------------------------------------------------
+  describe('synchronous PermissionRequest decision', () => {
+    async function postPermission(p: number): Promise<Response> {
+      return fetch(makeUrl(p), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+      });
+    }
+
+    it("returns hookSpecificOutput decision behavior 'allow'", async () => {
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => 'allow');
+      server.start();
+      const res = await postPermission(port);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
+      });
+    });
+
+    it("returns hookSpecificOutput decision behavior 'deny'", async () => {
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => 'deny');
+      server.start();
+      const res = await postPermission(port);
+      expect(await res.json()).toEqual({
+        hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny' } },
+      });
+    });
+
+    it("returns {} for 'passthrough' (Claude renders the prompt)", async () => {
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => 'passthrough');
+      server.start();
+      const res = await postPermission(port);
+      expect(await res.json()).toEqual({});
+    });
+
+    it('falls back to {} when no resolver is installed (legacy path)', async () => {
+      server = new HookServer({ port });
+      server.start();
+      const res = await postPermission(port);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({});
+    });
+
+    it('a throwing resolver fails to passthrough ({}) and reports onError', async () => {
+      const errors: Error[] = [];
+      server = new HookServer({ port }, { onError: (e) => errors.push(e) });
+      server.setPermissionResolver(async () => {
+        throw new Error('resolver boom');
+      });
+      server.start();
+      const res = await postPermission(port);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({}); // fail to the user, never block/allow
+      expect(errors.length).toBe(1);
+    });
+
+    it('only intercepts PermissionRequest; other events still dispatch + {}', async () => {
+      let preToolFired = 0;
+      server = new HookServer({ port }, { onPreToolUse: () => preToolFired++ });
+      server.setPermissionResolver(async () => 'deny');
+      server.start();
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'PreToolUse', tool_name: 'Bash' })),
+      });
+      expect(await res.json()).toEqual({});
+      expect(preToolFired).toBe(1);
+    });
+  });
 });

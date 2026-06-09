@@ -286,6 +286,29 @@ describe('formatConfig', () => {
     // disable_thinking must be visible in `config show` so a user who set it
     // can confirm it (it was missed in the initial formatConfig wiring).
     expect(output).toContain('disable_thinking = false');
+    // approve_groups/deny_groups likewise visible (#494 phase 1).
+    expect(output).toContain('approve_groups = ["read-only", "vcs-read", "build-test"]');
+    expect(output).toContain('deny_groups = []');
+    // escalate_model visible (#522).
+    expect(output).toContain('escalate_model = ""');
+  });
+
+  test('default model is a fast 4b; escalate_model empty (#522)', () => {
+    expect(DEFAULT_CONFIG.auto_approve.model).toBe('qwen3.5:4b');
+    expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
+  });
+
+  test('REMI_AUTO_APPROVE_ESCALATE_MODEL env override (#522)', () => {
+    process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'] = 'qwen3.5:35b';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.escalate_model).toBe('qwen3.5:35b');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
+  });
+
+  test('rejects escalate_model as a non-string (#522)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nescalate_model = 35\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/escalate_model/);
   });
 
   test('masks auto_approve api_key', () => {
@@ -304,16 +327,19 @@ describe('auto_approve config', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
       provider: 'ollama',
-      model: 'gemma4:e2b',
+      model: 'qwen3.5:4b',
       api_key: '',
       base_url: 'http://localhost:11434/v1',
       timeout: 30,
       log_decisions: true,
       allow: ['Read', 'Glob', 'Grep'],
       deny: [],
+      approve_groups: ['read-only', 'vcs-read', 'build-test'],
+      deny_groups: [],
       instructions: '',
       multichoice: 'skip',
       multichoice_model: '',
+      escalate_model: '',
       disable_thinking: false,
     });
   });
@@ -445,6 +471,37 @@ Escalate anything touching secrets.
   test('rejects instructions as array', () => {
     fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ninstructions = ["line1", "line2"]\n');
     expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.instructions/);
+  });
+
+  test('rejects approve_groups as string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\napprove_groups = "read-only"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.approve_groups/);
+  });
+
+  test('rejects deny_groups as string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndeny_groups = "build-test"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.deny_groups/);
+  });
+
+  test('omitted *_groups inherit the default groups', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nenabled = true\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.approve_groups).toEqual(['read-only', 'vcs-read', 'build-test']);
+    expect(config.auto_approve.deny_groups).toEqual([]);
+  });
+
+  test('unknown group name warns but does not throw (ignored)', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg?: unknown) => warnings.push(String(msg));
+    try {
+      fs.writeFileSync(TEST_CONFIG, '[auto_approve]\napprove_groups = ["read-only", "bogus"]\n');
+      const config = loadConfig(TEST_CONFIG);
+      expect(config.auto_approve.approve_groups).toEqual(['read-only', 'bogus']);
+      expect(warnings.some((w) => w.includes('unknown permission group "bogus"'))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
   });
 
   test('rejects allow with non-string elements', () => {

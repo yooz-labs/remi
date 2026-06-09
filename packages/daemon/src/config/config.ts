@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
@@ -130,7 +131,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
   auto_approve: {
     enabled: false,
     provider: 'ollama',
-    model: 'gemma4:e2b',
+    // Fast small default: with synchronous decisions (#496) the eval blocks
+    // Claude, so the default must be quick + RAM-light across platforms (incl.
+    // MacBook Air). qwen3.5:4b is benchmarked safe (38/38). Heavier models go in
+    // `escalate_model` (second opinion only on would-escalate cases).
+    model: 'qwen3.5:4b',
     api_key: '',
     base_url: 'http://localhost:11434/v1',
     timeout: 30,
@@ -142,9 +147,19 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // is compound-command-unsafe); the LLM prompt evaluates those in full.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
+    // Built-in read-by-definition groups, fast-pathed without an LLM call
+    // using compound-segment-aware matching (epic #494). All three on by
+    // default so enabling auto-approve immediately stops paying LLM latency
+    // for reads / VCS queries / read-only build+test runs.
+    approve_groups: ['read-only', 'vcs-read', 'build-test'],
+    deny_groups: [],
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
+    // Second-opinion model on a primary 'escalate' (main context only). Empty =
+    // no second opinion. Put a heavy model here (e.g. qwen3.5:35b) to honor a
+    // broad approve policy without paying its latency on every permission.
+    escalate_model: '',
     // Keep the model's reasoning ON by default: live testing showed it is
     // load-bearing for following broad user instructions. Opt in (Ollama only)
     // for raw speed over decision nuance.
@@ -291,6 +306,23 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
       `Invalid auto_approve.deny in ${configPath}: must be an array of strings. Example: deny = ["rm -rf /", "sudo "]`,
     );
   }
+  if (!isStringArray(cfg.approve_groups)) {
+    throw new Error(
+      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read"]`,
+    );
+  }
+  if (!isStringArray(cfg.deny_groups)) {
+    throw new Error(
+      `Invalid auto_approve.deny_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}.`,
+    );
+  }
+  for (const g of [...cfg.approve_groups, ...cfg.deny_groups]) {
+    if (!isKnownGroup(g)) {
+      console.warn(
+        `[AutoApprove] Warning: unknown permission group "${g}" in ${configPath}; ignored. Known groups: ${knownGroupNames().join(', ')}.`,
+      );
+    }
+  }
   if (typeof cfg.instructions !== 'string') {
     throw new Error(
       `Invalid auto_approve.instructions in ${configPath}: must be a string (use triple-quoted """ for multiline).`,
@@ -303,6 +335,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     );
   }
   expectString('multichoice_model', cfg.multichoice_model);
+  expectString('escalate_model', cfg.escalate_model);
 
   // Warn about dangerously short patterns that would match too broadly.
   const MIN_PATTERN_LENGTH = 2;
@@ -446,6 +479,10 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     (auto_approve as { multichoice_model: string }).multichoice_model =
       env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL'];
   }
+  if (env['REMI_AUTO_APPROVE_ESCALATE_MODEL']) {
+    (auto_approve as { escalate_model: string }).escalate_model =
+      env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
+  }
 
   // Experimental feature flags (#453 phase 3). Default OFF; env opt-in only.
   const features = { ...config.features };
@@ -512,7 +549,7 @@ authorized_user_ids = []
 # [auto_approve]
 # enabled = false
 # provider = "ollama"           # "ollama" | "openrouter" | custom base URL
-# model = "gemma4:e2b"
+# model = "qwen3.5:4b"          # Fast small default; the eval blocks Claude (#496)
 # api_key = ""                  # Required for OpenRouter, empty for Ollama
 # base_url = "http://localhost:11434/v1"
 # timeout = 30                  # Seconds; falls through to user if exceeded
@@ -541,6 +578,10 @@ authorized_user_ids = []
 #                                  # model without paying its latency for
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
+# escalate_model = ""              # Second opinion on a primary 'escalate'
+#                                  # (main context only). Put a heavy model here
+#                                  # (e.g. qwen3.5:35b) to honor a broad approve
+#                                  # policy without its latency on every prompt.
 # disable_thinking = false         # Ollama only: native /api/chat with
 #                                  # think:false (no reasoning). Faster but
 #                                  # lowers decision quality (reasoning helps
@@ -616,11 +657,18 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
   lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
+  lines.push(
+    `  approve_groups = [${config.auto_approve.approve_groups.map((s) => `"${s}"`).join(', ')}]`,
+  );
+  lines.push(
+    `  deny_groups = [${config.auto_approve.deny_groups.map((s) => `"${s}"`).join(', ')}]`,
+  );
   const instr = config.auto_approve.instructions;
   const instrDisplay = instr ? `"${instr.slice(0, 40)}${instr.length > 40 ? '...' : ''}"` : '""';
   lines.push(`  instructions = ${instrDisplay}`);
   lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
+  lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
   lines.push('');
   lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');

@@ -18,6 +18,7 @@ import {
   parseMultiChoiceDecision,
 } from './multichoice.ts';
 import { matchPattern } from './pattern-matcher.ts';
+import { matchGroups } from './permission-groups.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
 
@@ -83,10 +84,15 @@ export class AutoApproveService {
   private readonly logDecisions: boolean;
   private readonly allow: readonly string[];
   private readonly deny: readonly string[];
+  private readonly approveGroups: readonly string[];
+  private readonly denyGroups: readonly string[];
   private readonly instructions: string;
   private readonly multichoiceMode: MultiChoiceMode;
   /** Falls back to llmConfig.model when empty. */
   private readonly multichoiceModel: string;
+  /** Second-opinion model on a primary 'escalate' (#522); empty = none. Public
+   *  so the gate can read it without re-threading the config. */
+  readonly escalateModel: string;
   /** Prevents concurrent evaluations. Second request escalates immediately. */
   private evaluating = false;
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
@@ -113,9 +119,12 @@ export class AutoApproveService {
     this.logDecisions = config.log_decisions;
     this.allow = config.allow;
     this.deny = config.deny;
+    this.approveGroups = config.approve_groups;
+    this.denyGroups = config.deny_groups;
     this.instructions = config.instructions;
     this.multichoiceMode = config.multichoice;
     this.multichoiceModel = config.multichoice_model;
+    this.escalateModel = config.escalate_model;
   }
 
   /**
@@ -136,9 +145,13 @@ export class AutoApproveService {
     toolInput: Record<string, unknown>,
     tag?: string,
     permissionSuggestions?: readonly unknown[],
+    modelOverride?: string,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
-    const model = this.llmConfig.model;
+    // modelOverride (#522: the escalate_model second opinion) replaces the base
+    // model for this call; the fast-path deny/allow/group checks below still run.
+    const baseModel = modelOverride || this.llmConfig.model;
+    const model = baseModel;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
 
     const normalisedSuggestions = Array.isArray(permissionSuggestions)
@@ -150,18 +163,32 @@ export class AutoApproveService {
     // Entire body wrapped in try/catch so the "never throws" contract holds
     // even if matchPattern or other sync code fails (e.g. malformed config).
     try {
-      // Deny list: checked first, always wins. No LLM call.
+      // Deny list + deny groups: checked first, always win. No LLM call.
       const denyMatch = matchPattern(toolName, toolInput, this.deny);
       if (denyMatch !== null) {
         const reasoning = `deny-matched pattern: "${denyMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
         return { decision: 'deny', reasoning, durationMs: 0, model };
       }
+      const denyGroupMatch = matchGroups(toolName, toolInput, this.denyGroups);
+      if (denyGroupMatch !== null) {
+        const reasoning = `deny-matched group: "${denyGroupMatch}"`;
+        this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
+        return { decision: 'deny', reasoning, durationMs: 0, model };
+      }
 
-      // Allow list: bypasses LLM for known-safe operations.
+      // Allow list + approve groups: bypass the LLM for known-safe operations.
       const allowMatch = matchPattern(toolName, toolInput, this.allow);
       if (allowMatch !== null) {
         const reasoning = `allow-matched pattern: "${allowMatch}"`;
+        if (this.logDecisions) {
+          this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
+        }
+        return { decision: 'approve', reasoning, durationMs: 0, model };
+      }
+      const approveGroupMatch = matchGroups(toolName, toolInput, this.approveGroups);
+      if (approveGroupMatch !== null) {
+        const reasoning = `approve-matched group: "${approveGroupMatch}"`;
         if (this.logDecisions) {
           this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
         }
@@ -227,7 +254,7 @@ export class AutoApproveService {
         // Otherwise the binary approve/deny prompt.
         const useMultiChoice = isMultiChoice && this.multichoiceMode === 'evaluate';
         const callModel =
-          useMultiChoice && this.multichoiceModel ? this.multichoiceModel : this.llmConfig.model;
+          useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
         const callConfig: LLMClientConfig =
           callModel === this.llmConfig.model
             ? this.llmConfig

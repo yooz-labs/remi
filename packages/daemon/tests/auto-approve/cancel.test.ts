@@ -109,9 +109,12 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     log_decisions: false,
     allow: [],
     deny: [],
+    approve_groups: [],
+    deny_groups: [],
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
+    escalate_model: '',
     disable_thinking: false,
   };
 }

@@ -4,6 +4,44 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-06-09
+
+Auto-approve becomes synchronous and far more reliable: the daemon now answers
+permission hooks with a decision instead of typing into the terminal, which
+removes the parallel-subagent leak and the dropped-decision races. Plus
+permission groups, a heavy-model "second opinion" tier, richer phone prompts,
+and a session-binding fix.
+
+### Added
+- **Permission groups** (#495): read-only / VCS-read / build-test commands are
+  fast-pathed to approve with **no LLM call at all**, using compound-segment-aware
+  matching. Configurable via `[auto_approve] approve_groups` / `deny_groups`.
+- **`escalate_model` second-opinion tier** (#522): an optional heavier model
+  consulted ONLY when the fast model would escalate a main-agent permission. If
+  it approves, the action is auto-approved; otherwise you are asked. The heavy
+  model's latency only hits would-escalate cases, never the common path.
+- Escalated permission prompts now carry **tool + command context** on the
+  phone, e.g. `Allow Bash: git push origin develop`, and name the agent for
+  subagent prompts (`code-reviewer · Bash: …`) instead of a bare "Do you want
+  to proceed?" (#497).
+
+### Changed
+- **Synchronous permission decisions** (#496): the daemon returns the verdict in
+  the Claude Code hook response (`allow` / `deny`) instead of injecting `1`/`3`
+  into the PTY. This fixes the parallel-subagent leak (a subagent's prompt could
+  leak to the app and strand the pending list) and the `Cancelled stale eval`
+  dropped-decision races. The auto-approve eval now blocks Claude until it
+  returns (well under the hook timeout); the permission-groups fast-path keeps
+  the common case instant.
+- Default auto-approve model is now `qwen3.5:4b` (fast, RAM-light across
+  platforms); heavier models belong in `escalate_model` (#522).
+
+### Fixed
+- Session binder no longer wedges on a stale lock: when a daemon restarts or
+  attaches mid-session and adopts a dead session id, it now re-adopts the live
+  session that owns its `remi:<port>` transcript marker instead of dropping its
+  own hooks as "foreign" forever (#518).
+
 ## [0.6.4] - 2026-06-08
 
 Auto-approve fixes (instruction-following + an Ollama transport seam) and a

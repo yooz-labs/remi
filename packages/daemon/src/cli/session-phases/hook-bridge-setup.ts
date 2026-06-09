@@ -675,6 +675,9 @@ export function setupHookBridge(
       },
       onHandled: () => deps.terminalIndicator?.resolve('handled'),
       onCancelled: () => deps.terminalIndicator?.stop(),
+      // #522: second-opinion model on a primary escalate (read from the service's
+      // config). Empty when unset -> escalate straight to the user.
+      escalateModel: autoApproveService?.escalateModel ?? '',
     },
     sessionId,
   );
@@ -1018,18 +1021,19 @@ export function setupHookBridge(
     // a background subagent does not (PTY never confirms presence).
     handlers.onNotification?.(input);
   });
-  hookServer.on('PermissionRequest', (input) => {
+  // Synchronous PermissionRequest decision (#496). Claude BLOCKS on this
+  // response; the gate returns allow/deny (Claude proceeds without rendering the
+  // prompt) or passthrough (escalated to the user / multi-choice inject). The
+  // binder binding + shadow tap run first (as for any event); a foreign event we
+  // do not own returns 'passthrough' ({}) so we ABSTAIN and the owning daemon
+  // decides. Replaces the old fire-and-forget PTY-injection handler.
+  hookServer.setPermissionResolver(async (input) => {
     shadowEnterEvent();
     if (driveBinder) driveBinder.onHookEvent(input);
     else initFromHookEvent(input);
     shadowDecide('PermissionRequest', input);
-    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
-    // Auto-approve eval + inject, or escalate to the user (#453 phase 1). The gate
-    // owns the PTY injection, the subagent PTY-presence gate, the default-deny
-    // safety net, and the escalate fallback; session filtering above stays here in
-    // the bridge. isInSubagentContext / onPermissionRequest are injected into the
-    // gate and read live at inject time (async TOCTOU).
-    autoApproveGate.handlePermissionRequest(input);
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return 'passthrough';
+    return autoApproveGate.resolvePermission(input);
   });
   hookServer.on('Stop', (input) => {
     shadowEnterEvent();
@@ -1145,6 +1149,11 @@ export function setupHookBridge(
 
   return {
     bridge: hookBridge,
-    closeBinder: () => driveBinder?.close(),
+    closeBinder: () => {
+      driveBinder?.close();
+      // Drop the per-session PermissionRequest resolver (#496) so a stale
+      // closure (over this session's gate/tracker) can't fire after teardown.
+      hookServer.setPermissionResolver(null);
+    },
   };
 }

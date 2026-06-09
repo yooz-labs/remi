@@ -88,6 +88,20 @@ export interface AutoApproveConfig {
    */
   readonly deny: readonly string[];
   /**
+   * Built-in permission groups to approve without calling the LLM (epic #494).
+   * A group is a curated set of read-by-definition operations matched with
+   * compound-segment-aware prefix logic (see `permission-groups.ts`), safer
+   * than the substring `allow` list for Bash. Known groups: "read-only",
+   * "vcs-read", "build-test". Default: all three.
+   */
+  readonly approve_groups: readonly string[];
+  /**
+   * Built-in permission groups to deny without calling the LLM. Checked before
+   * `approve_groups` (and before `allow`); any group/pattern deny wins.
+   * Default: empty.
+   */
+  readonly deny_groups: readonly string[];
+  /**
    * Natural-language guidance appended to the LLM system prompt.
    * Lets users steer the LLM for ambiguous cases not covered by allow/deny.
    * Empty string means no extra guidance (use default prompt only).
@@ -109,6 +123,16 @@ export interface AutoApproveConfig {
    * Ignored unless `multichoice = "evaluate"`.
    */
   readonly multichoice_model: string;
+  /**
+   * Optional second-opinion model consulted ONLY when the primary `model`
+   * returns `escalate` in a main (non-subagent) context (#522). If it approves
+   * the broad-but-mutating action -> auto-approve; if it denies -> deny;
+   * otherwise the user is asked. Lets a heavy model (e.g. a 35B that honors a
+   * broad "approve everything except deletes" policy) improve only the cases
+   * that would otherwise interrupt the user, so its latency never hits the
+   * common fast path. Empty (default) = no second opinion.
+   */
+  readonly escalate_model: string;
   /**
    * Ollama only: route through the native /api/chat with `think: false` to
    * turn OFF the model's reasoning. This is FASTER but lowers decision quality
