@@ -134,6 +134,20 @@ describe('TranscriptBinder', () => {
     return new TranscriptBinder(deps(), { sessionId: SID, workingDirectory: tmpDir }, mode);
   }
 
+  /**
+   * Write a real transcript file whose head carries Claude's `custom-title`
+   * ownership marker `remi:<port>` (what `-n remi:<port>` produces). Returns the
+   * path. currentPort() in deps() is 8765, so port 8765 == "owned by us".
+   */
+  function writeMarkedTranscript(name: string, port: number): string {
+    const p = path.join(tmpDir, name);
+    fs.writeFileSync(
+      p,
+      `${JSON.stringify({ type: 'custom-title', customTitle: `remi:${port}`, sessionId: 's' })}\n`,
+    );
+    return p;
+  }
+
   /** Insert a fake watcher into the map so teardown/stale-replace has a target. */
   function seedWatcher(filePath: string, stopCalls: number[]): void {
     transcriptWatchers.set(SID, {
@@ -209,6 +223,92 @@ describe('TranscriptBinder', () => {
       // Binding + watcher unchanged.
       expect(binder.snapshot().claudeSessionId).toBe('claude-A');
       expect(transcriptWatchers.get(SID)?.filePath).toBe(before);
+    });
+
+    // -----------------------------------------------------------------------
+    // Stale-lock recovery via the port marker (#518)
+    // -----------------------------------------------------------------------
+
+    test('reclaim: a "foreign" event whose transcript owns our port marker re-adopts (drive)', () => {
+      registerSession();
+      const binder = makeBinder();
+      // Lock on a STALE id (simulates a mid-session attach / dead prior session).
+      binder.onHookEvent({
+        session_id: 'claude-STALE',
+        transcript_path: path.join(tmpDir, 'stale.jsonl'),
+      });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-STALE');
+
+      // The live session arrives; its transcript carries OUR marker (remi:8765).
+      const livePath = writeMarkedTranscript('live.jsonl', 8765);
+      binder.onHookEvent({ session_id: 'claude-LIVE', transcript_path: livePath });
+
+      // Re-adopted, not dropped: lock moved, rotation announced, watcher re-pointed.
+      expect(binder.snapshot().claudeSessionId).toBe('claude-LIVE');
+      expect(transcriptWatchers.get(SID)?.filePath).toBe(livePath);
+      const rs = rotations();
+      expect(rs).toHaveLength(1);
+      expect(rs[0]?.new).toBe('claude-LIVE');
+    });
+
+    test('reclaim: decide() reports restart (not foreign) for an owned-marker event', () => {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'claude-STALE',
+        transcript_path: path.join(tmpDir, 'stale.jsonl'),
+      });
+      const d = binder.decide({
+        session_id: 'claude-LIVE',
+        transcript_path: writeMarkedTranscript('live.jsonl', 8765),
+      });
+      expect(d.classification).toBe('restart');
+    });
+
+    test('no reclaim: a foreign transcript owning a DIFFERENT port stays foreign (sibling isolation)', () => {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'claude-STALE',
+        transcript_path: path.join(tmpDir, 'stale.jsonl'),
+      });
+      // A genuine sibling: its transcript carries the sibling's port (9999), not ours.
+      const siblingPath = writeMarkedTranscript('sibling.jsonl', 9999);
+      const d = binder.decide({ session_id: 'claude-SIBLING', transcript_path: siblingPath });
+      expect(d.classification).toBe('foreign');
+      binder.onHookEvent({ session_id: 'claude-SIBLING', transcript_path: siblingPath });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-STALE'); // unchanged
+      expect(rotations()).toHaveLength(0);
+    });
+
+    test('admits: owned-marker event is admitted despite a disagreeing lock; sibling is not', () => {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'claude-STALE',
+        transcript_path: path.join(tmpDir, 'stale.jsonl'),
+      });
+      // Owns our marker -> admitted even though session_id != lock.
+      expect(
+        binder.admits({
+          session_id: 'claude-LIVE',
+          transcript_path: writeMarkedTranscript('live.jsonl', 8765),
+        }),
+      ).toBe(true);
+      // Sibling port -> rejected.
+      expect(
+        binder.admits({
+          session_id: 'claude-SIBLING',
+          transcript_path: writeMarkedTranscript('sibling.jsonl', 9999),
+        }),
+      ).toBe(false);
+      // Lock match -> admitted (no marker needed).
+      expect(
+        binder.admits({
+          session_id: 'claude-STALE',
+          transcript_path: path.join(tmpDir, 's.jsonl'),
+        }),
+      ).toBe(true);
     });
 
     test('restart: a different session_id after PTY exited classifies restart', () => {

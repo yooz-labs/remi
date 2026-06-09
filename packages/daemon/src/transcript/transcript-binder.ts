@@ -239,16 +239,23 @@ export class TranscriptBinder {
     const isRotation = previous !== null && previous !== event.session_id;
 
     // 4) Classify.
-    const classification = this.classify(event.session_id);
+    let classification = this.classify(event.session_id);
 
     if (classification === 'foreign') {
-      return {
-        classification: 'foreign',
-        wouldEmitRotation: false,
-        wouldStartWatcher: false,
-        watcherPath: null,
-        boundIdAfter: this.currentBoundId,
-      };
+      // Stale-lock recovery (#518): an event the classifier calls foreign is
+      // actually OURS when its transcript carries our port marker. Re-adopt it
+      // as a restart instead of dropping. See `incomingReclaimsViaMarker`.
+      if (this.incomingReclaimsViaMarker(event)) {
+        classification = 'restart';
+      } else {
+        return {
+          classification: 'foreign',
+          wouldEmitRotation: false,
+          wouldStartWatcher: false,
+          watcherPath: null,
+          boundIdAfter: this.currentBoundId,
+        };
+      }
     }
 
     // Restart PROLOGUE (pure mirror of rotate()): announce (idempotent +
@@ -350,13 +357,24 @@ export class TranscriptBinder {
     const isRotation = previous !== null && previous !== event.session_id;
 
     // 4) Classify.
-    const classification = this.classify(event.session_id);
+    let classification = this.classify(event.session_id);
 
     if (classification === 'foreign') {
-      log(
-        `[Binder] Dropped foreign ${event.hook_event_name ?? 'event'}: lock=${this.currentBoundId?.slice(0, 8)} incoming=${event.session_id.slice(0, 8)}`,
-      );
-      return;
+      // Stale-lock recovery (#518): the incoming transcript carries OUR port
+      // marker, so it is provably our own Claude — a rotation we missed because
+      // we adopted a stale lock (mid-session attach / restart) and never saw the
+      // SessionStart. Re-adopt it as a restart instead of dropping it forever.
+      if (this.incomingReclaimsViaMarker(event)) {
+        log(
+          `[Binder] Reclaiming own session via port marker (stale lock): lock=${this.currentBoundId?.slice(0, 8)} -> ${event.session_id.slice(0, 8)}`,
+        );
+        classification = 'restart';
+      } else {
+        log(
+          `[Binder] Dropped foreign ${event.hook_event_name ?? 'event'}: lock=${this.currentBoundId?.slice(0, 8)} incoming=${event.session_id.slice(0, 8)}`,
+        );
+        return;
+      }
     }
 
     let rotationAnnounced = false;
@@ -478,7 +496,28 @@ export class TranscriptBinder {
    */
   admits(event: BinderHookEvent): boolean {
     this.adoptLockFromStore();
-    return this.currentBoundId ? event.session_id === this.currentBoundId : !this.hasSiblingInDir();
+    if (!this.currentBoundId) return !this.hasSiblingInDir();
+    if (event.session_id === this.currentBoundId) return true;
+    // Stale-lock recovery (#518): the lock disagrees, but the incoming event's
+    // transcript carries OUR port marker, so it is provably ours. Admit it; the
+    // next binding event's onHookEvent re-adopts the lock. Pure read (the marker
+    // check is read-only), so admits() stays side-effect-free.
+    return this.incomingReclaimsViaMarker(event);
+  }
+
+  /**
+   * Stale-lock recovery test (#518). The classifier calls an event `foreign`
+   * whenever its session_id differs from our lock and our PTY is running. That
+   * is wrong when the daemon adopted a STALE lock (a mid-session attach or a
+   * restart that missed the live session's SessionStart): the live session is
+   * then dropped forever. Its transcript, however, carries our `remi:<port>`
+   * head marker — content only OUR daemon's `-n remi:<port>` causes Claude to
+   * write — so `ownsTranscript` proves it is ours. A genuine sibling's
+   * transcript carries the sibling's port, so this stays false for it and
+   * cross-session isolation (#451) is preserved.
+   */
+  private incomingReclaimsViaMarker(event: BinderHookEvent): boolean {
+    return !!event.transcript_path && this.ownsTranscript(event.transcript_path);
   }
 
   // =========================================================================
