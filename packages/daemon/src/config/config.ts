@@ -621,6 +621,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  instructions = ${instrDisplay}`);
   lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
+  lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
   lines.push('');
   lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');
   lines.push('[features]');
