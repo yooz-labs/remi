@@ -275,6 +275,22 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.label).toBe('No');
   });
 
+  it('a subagent PermissionRequest names the agent in the text (#497)', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      agent_id: 'agent-1',
+      agent_type: 'code-reviewer',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push origin main' },
+    } as PermissionRequestHookInput);
+
+    // The user sees WHO is asking + the command, not a bare "Allow Bash".
+    expect(questions[0]?.text).toBe('code-reviewer · Bash: git push origin main');
+  });
+
   it('maps PostToolUseFailure to executing status with error context', () => {
     const { bridge, statuses } = createBridge();
 
