@@ -41,6 +41,24 @@ export interface DisplayConfig {
   readonly max_bullet_length: number;
 }
 
+/**
+ * Terminal cue settings (#513): out-of-band feedback drawn on the wrapper's
+ * real terminal during the auto-approve lifecycle. Only fires when auto-approve
+ * is enabled (it is driven by the gate). Inert in headless/daemon mode.
+ */
+export interface TerminalConfig {
+  /**
+   * Desktop notification fired when auto-approve escalates a permission to the
+   * user. 'osc9' (iTerm2/Ghostty), 'osc777' (kitty/wezterm), 'bell', or 'off'.
+   */
+  readonly notify: 'osc9' | 'osc777' | 'bell' | 'off';
+  /**
+   * Animate the terminal title during evaluation (spinner -> check / warning).
+   * The title bar is the only cue channel that does not fight Claude's renderer.
+   */
+  readonly status_cue: boolean;
+}
+
 /** Telegram settings */
 export interface TelegramConfig {
   readonly enabled: boolean;
@@ -72,6 +90,7 @@ export interface RemiConfig {
   readonly network: NetworkConfig;
   readonly auth: AuthConfig;
   readonly display: DisplayConfig;
+  readonly terminal: TerminalConfig;
   readonly telegram: TelegramConfig;
   readonly auto_approve: AutoApproveConfig;
   readonly features: FeaturesConfig;
@@ -95,6 +114,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   display: {
     max_bullet_length: 500,
+  },
+  terminal: {
+    // Fires only when auto-approve is enabled and escalates; osc9 reaches
+    // iTerm2/Ghostty. The animated title is a subtle in-terminal cue.
+    notify: 'osc9',
+    status_cue: true,
   },
   telegram: {
     enabled: false,
@@ -161,6 +186,10 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
     network: mergeSection(base.network, partial['network'] as Record<string, unknown> | undefined),
     auth: mergeSection(base.auth, partial['auth'] as Record<string, unknown> | undefined),
     display: mergeSection(base.display, partial['display'] as Record<string, unknown> | undefined),
+    terminal: mergeSection(
+      base.terminal,
+      partial['terminal'] as Record<string, unknown> | undefined,
+    ),
     telegram: mergeSection(
       base.telegram,
       partial['telegram'] as Record<string, unknown> | undefined,
@@ -200,6 +229,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     const parsed = parseToml(raw) as Record<string, unknown>;
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     validateAutoApprove(merged.auto_approve, configPath);
+    validateTerminal(merged.terminal, configPath);
     return merged;
   } catch (err) {
     throw new Error(
@@ -292,6 +322,21 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
 }
 
+/** Validate the terminal cue section has correct runtime types. */
+function validateTerminal(cfg: TerminalConfig, configPath: string): void {
+  const channels = ['osc9', 'osc777', 'bell', 'off'];
+  if (!channels.includes(cfg.notify)) {
+    throw new Error(
+      `Invalid terminal.notify in ${configPath}: must be one of ${channels.map((c) => `"${c}"`).join(', ')}, got ${typeof cfg.notify === 'string' ? `"${cfg.notify}"` : typeof cfg.notify}.`,
+    );
+  }
+  if (typeof cfg.status_cue !== 'boolean') {
+    throw new Error(
+      `Invalid terminal.status_cue in ${configPath}: must be a boolean (true/false), got ${typeof cfg.status_cue === 'string' ? `string "${cfg.status_cue}"` : typeof cfg.status_cue}.`,
+    );
+  }
+}
+
 /**
  * Apply environment variable overrides to a config.
  * Env vars take precedence over config file values.
@@ -302,6 +347,7 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
   const daemon = { ...config.daemon };
   const network = { ...config.network };
   const display = { ...config.display };
+  const terminal = { ...config.terminal };
   const telegram = { ...config.telegram };
 
   // REMI_PORT overrides base_port
@@ -318,6 +364,17 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     if (!Number.isNaN(len) && len >= 0) {
       (display as { max_bullet_length: number }).max_bullet_length = len;
     }
+  }
+
+  // Terminal cue env vars
+  const tn = env['REMI_TERMINAL_NOTIFY'];
+  if (tn === 'osc9' || tn === 'osc777' || tn === 'bell' || tn === 'off') {
+    (terminal as { notify: TerminalConfig['notify'] }).notify = tn;
+  }
+  if (env['REMI_TERMINAL_STATUS_CUE'] === 'true') {
+    (terminal as { status_cue: boolean }).status_cue = true;
+  } else if (env['REMI_TERMINAL_STATUS_CUE'] === 'false') {
+    (terminal as { status_cue: boolean }).status_cue = false;
   }
 
   // Telegram env vars
@@ -408,6 +465,7 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     daemon,
     network,
     display,
+    terminal,
     telegram,
     auto_approve,
     features,
@@ -438,6 +496,12 @@ enabled = "${DEFAULT_CONFIG.auth.enabled}"  # "auto" | true | false
 
 [display]
 max_bullet_length = ${DEFAULT_CONFIG.display.max_bullet_length}  # 0 = disabled
+
+[terminal]
+# Out-of-band cue on the wrapper terminal during auto-approve (only active when
+# auto_approve is enabled). notify fires when a permission ESCALATES to you.
+notify = "${DEFAULT_CONFIG.terminal.notify}"        # osc9 | osc777 | bell | off
+status_cue = ${DEFAULT_CONFIG.terminal.status_cue}     # animate the title: evaluating -> done/needs-you
 
 [telegram]
 enabled = ${DEFAULT_CONFIG.telegram.enabled}
@@ -531,6 +595,10 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('');
   lines.push('[display]');
   lines.push(`  max_bullet_length = ${config.display.max_bullet_length}`);
+  lines.push('');
+  lines.push('[terminal]');
+  lines.push(`  notify = "${config.terminal.notify}"`);
+  lines.push(`  status_cue = ${config.terminal.status_cue}`);
   lines.push('');
   lines.push('[telegram]');
   lines.push(`  enabled = ${config.telegram.enabled}`);

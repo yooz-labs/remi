@@ -475,3 +475,63 @@ Escalate anything touching secrets.
     delete process.env['REMI_AUTO_APPROVE_INSTRUCTIONS'];
   });
 });
+
+describe('terminal config (#513)', () => {
+  test('defaults: osc9 notify + status cue on', () => {
+    expect(DEFAULT_CONFIG.terminal).toEqual({ notify: 'osc9', status_cue: true });
+  });
+
+  test('loads terminal from TOML', () => {
+    fs.writeFileSync(TEST_CONFIG, '[terminal]\nnotify = "osc777"\nstatus_cue = false\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.terminal.notify).toBe('osc777');
+    expect(config.terminal.status_cue).toBe(false);
+  });
+
+  test('preserves terminal defaults when section missing', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.terminal).toEqual(DEFAULT_CONFIG.terminal);
+  });
+
+  test('rejects an unknown notify channel', () => {
+    fs.writeFileSync(TEST_CONFIG, '[terminal]\nnotify = "growl"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/terminal\.notify/);
+  });
+
+  test('rejects status_cue as a string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[terminal]\nstatus_cue = "yes"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/terminal\.status_cue/);
+  });
+
+  test('REMI_TERMINAL_NOTIFY env override', () => {
+    process.env['REMI_TERMINAL_NOTIFY'] = 'bell';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.terminal.notify).toBe('bell');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_TERMINAL_NOTIFY'];
+  });
+
+  test('REMI_TERMINAL_NOTIFY ignores an invalid value', () => {
+    process.env['REMI_TERMINAL_NOTIFY'] = 'nonsense';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.terminal.notify).toBe('osc9'); // default preserved
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_TERMINAL_NOTIFY'];
+  });
+
+  test('REMI_TERMINAL_STATUS_CUE=false disables the cue', () => {
+    process.env['REMI_TERMINAL_STATUS_CUE'] = 'false';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.terminal.status_cue).toBe(false);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_TERMINAL_STATUS_CUE'];
+  });
+
+  test('formatConfig includes the terminal section', () => {
+    const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
+    expect(output).toContain('[terminal]');
+    expect(output).toContain('notify = "osc9"');
+    expect(output).toContain('status_cue = true');
+  });
+});

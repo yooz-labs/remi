@@ -71,6 +71,12 @@ export interface AutoApproveGateDeps {
   /** Called when the verdict is escalate (the user must answer), so the tracker
    *  releases the buffered PTY prompt. #484. */
   onEscalate?: () => void;
+  /** Called when the permission was auto-approved/denied silently (inject
+   *  succeeded; the user never sees it). Drives the terminal "done" cue. #513. */
+  onHandled?: () => void;
+  /** Called when the eval ended without a verdict (cancelled — the user already
+   *  advanced past the prompt). Drives the terminal cue back to idle. #513. */
+  onCancelled?: () => void;
 }
 
 export class AutoApproveGate {
@@ -122,8 +128,9 @@ export class AutoApproveGate {
     // Auto-approve gate: evaluate before creating a Question object.
     if (service) {
       // Open the buffer window: a PTY prompt that renders during the eval is
-      // held (not pushed) until we know the verdict. #484.
-      this.deps.onEvalStart?.();
+      // held (not pushed) until we know the verdict. #484. The terminal cue
+      // (#513) rides this signal but must never throw into the dispatch loop.
+      this.safeCue('onEvalStart', this.deps.onEvalStart);
       // Pass the raw suggestions array; AutoApproveService does its own strict-string
       // filtering before feeding the LLM. We forward the raw shape (rather than
       // coercing) so the multi-choice classifier can see "non-string entry" and route
@@ -143,18 +150,19 @@ export class AutoApproveGate {
             // onto the next unrelated PTY prompt (e.g. user typed /compact, no
             // PreToolUse fires).
             this.deps.tracker.clearPending();
+            this.safeCue('onCancelled', this.deps.onCancelled);
             log(`[AutoApprove ${this.sessionTag}] Decision dropped: ${result.reasoning}`);
             return;
           }
           if (result.decision === 'approve') {
             // inject success -> auto-handled (close the buffer; user never sees
             // it); inject failure -> escalate (which releases the buffer). #484.
-            if (await this.inject(input, '1', 'approved')) this.deps.tracker.onAutoApproveHandled();
+            if (await this.inject(input, '1', 'approved')) this.markHandled();
             else this.escalateToUser(input);
             return;
           }
           if (result.decision === 'deny') {
-            if (await this.inject(input, '3', 'denied')) this.deps.tracker.onAutoApproveHandled();
+            if (await this.inject(input, '3', 'denied')) this.markHandled();
             else this.escalateToUser(input);
             return;
           }
@@ -169,7 +177,7 @@ export class AutoApproveGate {
                 `multichoice-pick-${result.pickIndex}`,
               )
             ) {
-              this.deps.tracker.onAutoApproveHandled();
+              this.markHandled();
             } else {
               this.escalateToUser(input);
             }
@@ -185,7 +193,7 @@ export class AutoApproveGate {
               `[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`,
             );
             await this.inject(input, '3', 'subagent-escalate-default-deny', true);
-            this.deps.tracker.onAutoApproveHandled(); // close the buffer window (#484)
+            this.markHandled(); // close the buffer window (#484)
             return;
           }
           this.escalateToUser(input);
@@ -196,7 +204,7 @@ export class AutoApproveGate {
             logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
             if (isInSubagentContext()) {
               await this.inject(input, '3', 'subagent-error-default-deny', true);
-              this.deps.tracker.onAutoApproveHandled(); // close the buffer window (#484)
+              this.markHandled(); // close the buffer window (#484)
               return;
             }
             this.escalateToUser(input);
@@ -218,6 +226,33 @@ export class AutoApproveGate {
     }
 
     this.escalateToUser(input);
+  }
+
+  /**
+   * Buffer-closing success path: the permission was auto-approved/denied
+   * silently (inject succeeded), so the user never sees it. Notifies the
+   * tracker (closes the #484 buffer window) AND the terminal cue (#513). Every
+   * silent-handle site routes through here so neither signal can be missed.
+   */
+  private markHandled(): void {
+    this.deps.tracker.onAutoApproveHandled();
+    this.safeCue('onHandled', this.deps.onHandled);
+  }
+
+  /**
+   * Invoke a COSMETIC lifecycle callback (the #513 terminal cue). The cue must
+   * never affect the decision path or the #484 buffer state, so a throw is
+   * logged and absorbed here rather than propagating into the .then()/.catch()
+   * chain (where the outer catch would re-run the decision and could re-open an
+   * already-closed buffer). Mirrors how `escalateToUser` shields `onEscalate`.
+   */
+  private safeCue(label: string, fn: (() => void) | undefined): void {
+    if (!fn) return;
+    try {
+      fn();
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
+    }
   }
 
   /** Subagent/team-member events carry a non-empty `agent_id`; main events do not. */
@@ -288,7 +323,9 @@ export class AutoApproveGate {
       // Release the buffer UNCONDITIONALLY: the verdict is "user must answer".
       // Even if escalate() threw (push will fail), the buffer must not stay
       // locked, or every later prompt in this session would buffer forever. #484.
-      this.deps.onEscalate?.();
+      // safeCue: the wired callback releases the buffer (critical) then fires the
+      // terminal cue (#513, cosmetic); a cue throw must not break the finally.
+      this.safeCue('onEscalate', this.deps.onEscalate);
     }
   }
 }
