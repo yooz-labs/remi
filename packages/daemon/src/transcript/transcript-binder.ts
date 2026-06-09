@@ -75,6 +75,17 @@ const ROTATION_POLL_INTERVAL_MS = 1500;
  * beyond Claude's synchronous create-to-marker gap.
  */
 const MARKER_SETTLE_MS = 10_000;
+/**
+ * Freshness window for a dir-poll rotation candidate that already owns our port
+ * marker (#518 follow-up). A real no-hooks rotation produces a FRESHLY-written
+ * transcript; a historical same-port transcript (a prior daemon run reusing this
+ * port in this directory — remi reuses one port per dir) is stale. Without this
+ * gate the poll crawls the dir's accumulated `remi:<port>` history and mis-locks
+ * onto a dead session, then drops the live session's hooks as foreign. 5 minutes
+ * is far longer than any gap between writes in an active session, and far shorter
+ * than the hours/days that separate historical transcripts.
+ */
+const ROTATION_FRESHNESS_MS = 5 * 60_000;
 
 /** A hook event as the binder consumes it (the subset it reads). */
 export interface BinderHookEvent {
@@ -942,6 +953,26 @@ export class TranscriptBinder {
       // (d) OURS + NEW. Mark seen BEFORE feeding so a re-entrant readdir on the
       //     next tick (or a throw) can never double-feed.
       this.seenRotationIds.add(candidateId);
+
+      // FRESHNESS GATE (#518 follow-up). The marker proves the port, NOT that
+      // this is the LIVE session: a directory where remi has run before
+      // accumulates historical `remi:<port>` transcripts (port is reused per
+      // dir). A genuine no-hooks rotation is a freshly-written transcript; a
+      // stale historical one must NOT rotate us onto a dead session (the
+      // nemar-cli "auto-approve never fires / hooks dropped foreign" wedge).
+      let ageMs = 0;
+      try {
+        ageMs = Date.now() - fs.statSync(candidatePath).mtimeMs;
+      } catch {
+        ageMs = 0; // raced a delete/rename -> treat as fresh, attempt.
+      }
+      if (ageMs > ROTATION_FRESHNESS_MS) {
+        log(
+          `[Binder] rotation poll: ${candidateId.slice(0, 8)} owns our port but is stale (${Math.round(ageMs / 1000)}s old); not a live rotation, ignoring`,
+        );
+        continue;
+      }
+
       this.feedSyntheticRotation(candidateId, candidatePath);
 
       // One rotation per tick is enough; the next new id (if any) is picked up
