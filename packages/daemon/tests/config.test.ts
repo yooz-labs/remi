@@ -340,6 +340,7 @@ describe('auto_approve config', () => {
       multichoice: 'skip',
       multichoice_model: '',
       escalate_model: '',
+      escalate_timeout: 0,
       disable_thinking: false,
     });
   });

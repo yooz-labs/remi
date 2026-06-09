@@ -134,6 +134,16 @@ export interface AutoApproveConfig {
    */
   readonly escalate_model: string;
   /**
+   * Timeout (seconds) for the `escalate_model` second opinion specifically. The
+   * heavy model is larger and frequently COLD (escalations are sporadic, so it
+   * has usually been unloaded by the host), so its first call pays a model-load
+   * penalty that easily exceeds the fast model's `timeout`. Without a dedicated,
+   * longer budget the cold load aborts and the second opinion degrades to an
+   * error->escalate, adding latency without ever acting. 0 (default) means "use
+   * `timeout`". Ignored when `escalate_model` is empty.
+   */
+  readonly escalate_timeout: number;
+  /**
    * Ollama only: route through the native /api/chat with `think: false` to
    * turn OFF the model's reasoning. This is FASTER but lowers decision quality
    * — live testing showed the chain-of-thought is load-bearing for following

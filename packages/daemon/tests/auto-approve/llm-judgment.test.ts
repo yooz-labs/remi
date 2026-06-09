@@ -65,6 +65,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     multichoice: 'skip',
     multichoice_model: '',
     escalate_model: '',
+    escalate_timeout: 0,
     disable_thinking: false,
     ...overrides,
   };
