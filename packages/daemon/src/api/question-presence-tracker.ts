@@ -130,6 +130,14 @@ export class QuestionPresenceTracker {
       // A permission eval owns this prompt: buffer it, do not push yet. The
       // verdict decides — onAutoApproveEscalate releases it; a status-leaves-
       // waiting / clearPending reset (auto-handled, or prompt gone) discards it.
+      //
+      // DORMANT under synchronous decisions (#496): Claude now BLOCKS on the
+      // hook response and does not render the permission prompt during the eval,
+      // so this branch is effectively never taken (the verdict is returned before
+      // any prompt renders; escalate clears the flag before the passthrough
+      // prompt appears). Retained as defense-in-depth — it is the #484
+      // APNS-flood guard for any future async/parallel eval path, and removing it
+      // buys nothing while risking the flood it prevents.
       this.bufferedDuringEval = ptyQuestion;
       return;
     }
