@@ -50,8 +50,6 @@ const pick = (pickIndex: number): AutoApproveResult => ({
   model: 'm',
 });
 
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
-
 describe('AutoApproveGate', () => {
   const SID = generateId() as UUID;
   let registry: SessionRegistry;
@@ -124,32 +122,46 @@ describe('AutoApproveGate', () => {
     await registry.shutdown();
   });
 
-  test('approve injects "1" and sets status executing (main context)', async () => {
-    gateWith(evaluator(approve)).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['1']);
-    expect(registry.getSession(SID)?.currentStatus).toBe('executing');
+  test('approve returns "allow" with NO inject (main context) (#496)', async () => {
+    const d = await gateWith(evaluator(approve)).resolvePermission(pr());
+    expect(d).toBe('allow');
+    expect(submits).toHaveLength(0); // synchronous decision, no PTY inject
     expect(escalations).toHaveLength(0);
   });
 
-  test('deny injects "3" and sets status thinking (main context)', async () => {
-    gateWith(evaluator(deny)).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['3']);
-    expect(registry.getSession(SID)?.currentStatus).toBe('thinking');
+  test('deny returns "deny" with NO inject (main context) (#496)', async () => {
+    const d = await gateWith(evaluator(deny)).resolvePermission(pr());
+    expect(d).toBe('deny');
+    expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
 
-  test('pick injects the 1-based index (main context)', async () => {
-    gateWith(evaluator(pick(2))).handlePermissionRequest(pr());
-    await flush();
+  test('pick injects the 1-based index and returns passthrough (main context)', async () => {
+    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr());
+    expect(d).toBe('passthrough');
     expect(submits).toEqual(['2']);
     expect(escalations).toHaveLength(0);
   });
 
-  test('escalate in main context calls escalate, never injects', async () => {
-    gateWith(evaluator(escalate)).handlePermissionRequest(pr());
-    await flush();
+  test('malformed pick (no pickIndex) escalates, never silently denies (#521 review)', async () => {
+    const malformed = {
+      decision: 'pick',
+      reasoning: 't',
+      durationMs: 0,
+      model: 'm',
+    } as unknown as AutoApproveResult;
+    const d = await gateWith({
+      evaluate: async () => malformed,
+      cancel: () => true,
+    }).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(1);
+  });
+
+  test('escalate in main context escalates + passthrough, never injects', async () => {
+    const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
+    expect(d).toBe('passthrough');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(1);
     expect(escalations[0]?.tool_name).toBe('Bash');
@@ -179,20 +191,20 @@ describe('AutoApproveGate', () => {
       },
       SID,
     );
-    gate.handlePermissionRequest(pr());
-    await flush();
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('passthrough');
     expect(onEscalateCalls).toBe(1);
   });
 
-  test('escalate in subagent context default-denies ("3"), never escalates', async () => {
+  test('escalate in subagent context default-denies via the response, no inject (#496)', async () => {
     subagent = true;
-    gateWith(evaluator(escalate)).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['3']);
+    const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
+    expect(d).toBe('deny');
+    expect(submits).toHaveLength(0); // the core fix: deny without touching the PTY
     expect(escalations).toHaveLength(0);
   });
 
-  test('cancelled clears the tracker pending; no inject, no escalate', async () => {
+  test('cancelled clears the tracker pending and returns passthrough; no inject/escalate', async () => {
     // Stash a pending hook so clearPending() is observable.
     tracker.recordPendingHook({
       id: generateId(),
@@ -203,23 +215,33 @@ describe('AutoApproveGate', () => {
     });
     expect(tracker.hasPendingForTest()).toBe(true);
 
-    gateWith(evaluator(cancelled)).handlePermissionRequest(pr());
-    await flush();
+    const d = await gateWith(evaluator(cancelled)).resolvePermission(pr());
 
+    expect(d).toBe('passthrough');
     expect(tracker.hasPendingForTest()).toBe(false);
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
 
-  test('subagent + no PTY presence: inject is gated; approve falls back to escalate', async () => {
-    subagent = true; // background subagent, prompt not on the main PTY
-    gateWith(evaluator(approve)).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toHaveLength(0); // PTY-presence gate blocked the inject
-    expect(escalations).toHaveLength(1); // approve has a fallback -> escalate
+  test('approve in a subagent returns "allow" with NO inject (no leak; #496)', async () => {
+    // The headline fix: approve no longer needs the PTY, so a parallel subagent
+    // read approves with no inject and no contention, regardless of presence.
+    subagent = true;
+    const d = await gateWith(evaluator(approve)).resolvePermission(pr());
+    expect(d).toBe('allow');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
   });
 
-  test('subagent + PTY prompt visible: inject proceeds', async () => {
+  test('pick in a subagent without PTY presence is gated -> escalate (the only inject path)', async () => {
+    subagent = true; // background subagent, prompt not on the main PTY
+    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr());
+    expect(submits).toHaveLength(0); // PTY-presence gate blocked the pick inject
+    expect(escalations).toHaveLength(1); // pick has a fallback -> escalate
+    expect(d).toBe('passthrough');
+  });
+
+  test('pick in a subagent WITH PTY presence injects', async () => {
     subagent = true;
     tracker.onPTYPromptVisible({
       id: generateId(),
@@ -228,51 +250,43 @@ describe('AutoApproveGate', () => {
       allowsFreeText: false,
       isAnswered: false,
     });
-    gateWith(evaluator(approve)).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['1']);
+    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr());
+    expect(submits).toEqual(['2']);
+    expect(d).toBe('passthrough');
   });
 
-  test('explicit agent_id (no isInSubagentContext) also gates inject by PTY presence', async () => {
-    subagent = false; // gate must rely on input.agent_id alone
-    gateWith(evaluator(approve)).handlePermissionRequest(pr({ agent_id: 'agent-xyz' }));
-    await flush();
-    expect(submits).toHaveLength(0); // no PTY presence -> gated
+  test('pick inject failure (PTY throws) falls back to escalate (main context)', async () => {
+    const d = await gateWith(evaluator(pick(2)), /* ptyThrows */ true).resolvePermission(pr());
     expect(escalations).toHaveLength(1);
+    expect(d).toBe('passthrough');
   });
 
-  test('inject failure (PTY throws) falls back to escalate (main context)', async () => {
-    gateWith(evaluator(approve), /* ptyThrows */ true).handlePermissionRequest(pr());
-    await flush();
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('eval rejection in main context escalates (the outer .catch)', async () => {
-    gateWith(evaluator(approve, { throws: true })).handlePermissionRequest(pr());
-    await flush();
+  test('eval rejection in main context escalates + passthrough', async () => {
+    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(pr());
+    expect(d).toBe('passthrough');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(1);
   });
 
-  test('eval rejection in subagent context default-denies', async () => {
+  test('eval rejection in subagent context default-denies via the response', async () => {
     subagent = true;
-    gateWith(evaluator(approve, { throws: true })).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['3']);
+    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(pr());
+    expect(d).toBe('deny');
+    expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
 
-  test('no service + subagent: default-deny "3"', async () => {
+  test('no service + subagent: default-deny via the response', async () => {
     subagent = true;
-    gateWith(null).handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['3']);
+    const d = await gateWith(null).resolvePermission(pr());
+    expect(d).toBe('deny');
+    expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
 
-  test('no service + main context: escalate to user', async () => {
-    gateWith(null).handlePermissionRequest(pr());
-    await flush();
+  test('no service + main context: escalate to user, passthrough', async () => {
+    const d = await gateWith(null).resolvePermission(pr());
+    expect(d).toBe('passthrough');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(1);
   });
@@ -354,48 +368,44 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
   });
 
   test('approve fires start then handled (never escalate/cancelled)', async () => {
-    gate(evaluator(approve)).handlePermissionRequest(pr());
-    await flush();
+    expect(await gate(evaluator(approve)).resolvePermission(pr())).toBe('allow');
     expect(events).toEqual(['start', 'handled']);
   });
 
   test('deny fires start then handled', async () => {
-    gate(evaluator(deny)).handlePermissionRequest(pr());
-    await flush();
+    expect(await gate(evaluator(deny)).resolvePermission(pr())).toBe('deny');
     expect(events).toEqual(['start', 'handled']);
   });
 
   test('escalate fires start then escalate (never handled)', async () => {
-    gate(evaluator(escalate)).handlePermissionRequest(pr());
-    await flush();
+    expect(await gate(evaluator(escalate)).resolvePermission(pr())).toBe('passthrough');
     expect(events).toEqual(['start', 'escalate']);
   });
 
   test('cancelled fires start then cancelled (never handled/escalate)', async () => {
-    gate(evaluator(cancelled)).handlePermissionRequest(pr());
-    await flush();
+    expect(await gate(evaluator(cancelled)).resolvePermission(pr())).toBe('passthrough');
     expect(events).toEqual(['start', 'cancelled']);
   });
 
-  test('approve whose inject fails escalates -> start then escalate (not handled)', async () => {
-    gate(evaluator(approve), /* ptyThrows */ true).handlePermissionRequest(pr());
-    await flush();
+  test('pick whose inject fails escalates -> start then escalate (not handled)', async () => {
+    // approve/deny no longer inject; the inject-failure->escalate path is now pick-only.
+    expect(await gate(evaluator(pick(2)), /* ptyThrows */ true).resolvePermission(pr())).toBe(
+      'passthrough',
+    );
     expect(events).toEqual(['start', 'escalate']);
   });
 
-  test('subagent default-deny still fires handled (buffer + cue close)', async () => {
+  test('subagent escalate->deny still fires handled (buffer + cue close), no inject', async () => {
     subagent = true;
-    gate(evaluator(escalate)).handlePermissionRequest(pr());
-    await flush();
-    // Subagent escalate default-denies via inject "3" -> markHandled.
-    expect(submits).toEqual(['3']);
+    expect(await gate(evaluator(escalate)).resolvePermission(pr())).toBe('deny');
+    // Subagent escalate default-denies via the RESPONSE (no inject) -> markHandled.
+    expect(submits).toHaveLength(0);
     expect(events).toEqual(['start', 'handled']);
   });
 
   test('a throwing cue callback is absorbed: decision not re-run, no re-escalation', async () => {
-    // The cue is cosmetic. If onHandled throws it must NOT propagate into the
-    // .then()/.catch() chain (where the catch would re-run the decision and
-    // could re-open the #484 buffer). The permission stays approved-once.
+    // The cue is cosmetic. If onHandled throws it must NOT change the verdict
+    // (approve stays 'allow') or trigger an escalation.
     registry.registerSession(SID, '/d', fakePTY(submits), {
       handleMessage: () => {},
       handleQuestion: () => {},
@@ -417,9 +427,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
       },
       SID,
     );
-    g.handlePermissionRequest(pr());
-    await flush();
-    expect(submits).toEqual(['1']); // approved exactly once
-    expect(escalations).toBe(0); // the catch did NOT re-escalate
+    expect(await g.resolvePermission(pr())).toBe('allow'); // approved once, verdict intact
+    expect(escalations).toBe(0); // no re-escalation
   });
 });
