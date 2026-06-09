@@ -84,23 +84,36 @@ describe('QuestionPresenceTracker', () => {
     expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
   });
 
-  it('hook then PTY — pushes once with merged options from hook metadata', () => {
+  it('hook then PTY — pushes once with the hook rich text + options (#497)', () => {
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
-    const hookMeta = makeHookQuestion('Edit');
-    const ptyQ = makePTYQuestion('Allow Edit: /tmp/foo.ts?');
+    // Reality: the hook carries the rich tool/command text; the PTY is the bare
+    // terminal prompt that confirms the prompt is on screen.
+    const hookMeta = makeHookQuestion('Allow Edit: /tmp/foo.ts');
+    const ptyQ = makePTYQuestion('Do you want to proceed?');
 
     tracker.recordPendingHook(hookMeta);
     tracker.onPTYPromptVisible(ptyQ);
 
     expect(pushes.length).toBe(1);
-    expect(pushes[0]?.text).toBe('Allow Edit: /tmp/foo.ts?');
-    // PTY id/text wins; hook options replace PTY's numbered fallback.
+    // The hook's rich text wins so the user sees the command, not the bare prompt.
+    expect(pushes[0]?.text).toBe('Allow Edit: /tmp/foo.ts');
+    // PTY id (answer routing) + hook options.
     expect(pushes[0]?.id).toBe(ptyQ.id);
     expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
     expect(pushes[0]?.options[0]?.isYes).toBe(true);
     expect(pushes[0]?.options[2]?.isNo).toBe(true);
     expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  it('falls back to the PTY text when the hook text is empty (#497)', () => {
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+    const hookMeta = { ...makeHookQuestion(''), text: '' };
+    const ptyQ = makePTYQuestion('Do you want to proceed?');
+    tracker.recordPendingHook(hookMeta);
+    tracker.onPTYPromptVisible(ptyQ);
+    expect(pushes[0]?.text).toBe('Do you want to proceed?');
   });
 
   it('hook only — no push until PTY confirms or status clears', () => {

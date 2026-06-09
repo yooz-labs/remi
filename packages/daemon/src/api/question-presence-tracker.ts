@@ -113,10 +113,12 @@ export class QuestionPresenceTracker {
    * sole pending hook when exactly one exists (unambiguous). With 2+ pending
    * hooks from different agents and no agent match, push bare to avoid
    * misattributing another agent's labels (#425 / #483). When paired, the hook
-   * contributes `options` and
-   * `agentId` (so the client keys the prompt to the right agent) while PTY
-   * contributes `id` / `text` / `allowsFreeText` / `isAnswered` (it reflects
-   * the screen). The consumed hook entry is removed.
+   * contributes `options`, `agentId` (so the client keys the prompt to the right
+   * agent), AND `text` — the hook's text carries the tool + command + agent
+   * context (e.g. "code-reviewer · Bash: git push origin main"), whereas the
+   * PTY's literal screen text is the bare terminal prompt ("Do you want to
+   * proceed?"). The PTY contributes `id` / `allowsFreeText` / `isAnswered` and
+   * its presence is the push trigger (#497). The consumed hook entry is removed.
    *
    * Pending is mutated BEFORE the push so a re-entrant call cannot re-merge
    * the same record. Push errors are caught and logged but not rethrown — the
@@ -160,6 +162,9 @@ export class QuestionPresenceTracker {
       hookRecord && hookRecord.options.length > 0
         ? {
             ...ptyQuestion,
+            // The hook text carries the tool/command/agent context; the PTY's is
+            // the bare terminal prompt. Use the hook's when it has one (#497).
+            text: hookRecord.text || ptyQuestion.text,
             options: [...hookRecord.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
           }

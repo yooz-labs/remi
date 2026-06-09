@@ -189,7 +189,11 @@ export class HookEventBridge {
     // cases; this method now only builds the question payload.
     const toolName = input.tool_name || 'unknown tool';
     const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
-    const promptText = inputSummary ? `Allow ${toolName}: ${inputSummary}` : `Allow ${toolName}?`;
+    // The action carries the command/path/pattern context (#497).
+    const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
+    // A subagent prompt names the agent so the user knows WHO is asking, e.g.
+    // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
+    const promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
 
     let options: QuestionOption[];
 
