@@ -1146,6 +1146,11 @@ export function setupHookBridge(
 
   return {
     bridge: hookBridge,
-    closeBinder: () => driveBinder?.close(),
+    closeBinder: () => {
+      driveBinder?.close();
+      // Drop the per-session PermissionRequest resolver (#496) so a stale
+      // closure (over this session's gate/tracker) can't fire after teardown.
+      hookServer.setPermissionResolver(null);
+    },
   };
 }

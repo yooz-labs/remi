@@ -143,6 +143,22 @@ describe('AutoApproveGate', () => {
     expect(escalations).toHaveLength(0);
   });
 
+  test('malformed pick (no pickIndex) escalates, never silently denies (#521 review)', async () => {
+    const malformed = {
+      decision: 'pick',
+      reasoning: 't',
+      durationMs: 0,
+      model: 'm',
+    } as unknown as AutoApproveResult;
+    const d = await gateWith({
+      evaluate: async () => malformed,
+      cancel: () => true,
+    }).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(1);
+  });
+
   test('escalate in main context escalates + passthrough, never injects', async () => {
     const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
     expect(d).toBe('passthrough');

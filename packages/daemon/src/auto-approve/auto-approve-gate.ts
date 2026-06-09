@@ -188,10 +188,17 @@ export class AutoApproveGate {
       this.markHandled();
       return 'deny';
     }
-    if (result.decision === 'pick' && result.pickIndex !== undefined) {
+    if (result.decision === 'pick') {
       // Multi-choice pick (#399): the response can't express it, so render the
       // prompt (passthrough) and inject the 1-based index into the PTY. The
-      // index was validated against options length upstream.
+      // index was validated against options length upstream. The discriminated
+      // union guarantees pickIndex, but guard defensively: a malformed result
+      // must escalate, not silently fall through to the subagent-deny below.
+      if (result.pickIndex === undefined) {
+        logError(`[AutoApprove ${this.sessionTag}] pick result missing pickIndex; escalating`);
+        this.escalateToUser(input);
+        return 'passthrough';
+      }
       if (
         await this.inject(input, String(result.pickIndex), `multichoice-pick-${result.pickIndex}`)
       ) {
@@ -201,8 +208,17 @@ export class AutoApproveGate {
       }
       return 'passthrough';
     }
-    // escalate
+    // escalate: a subagent prompt the user cannot answer is default-denied via
+    // the response (no hang, no PTY).
     if (isInSubagentContext()) {
+      if (!this.isSubagentEvent(input)) {
+        // A MAIN-agent event reaching here means the subagent-context tracker
+        // leaked (a PostToolUse(Task) was dropped). Surface it loudly — otherwise
+        // the main session silently denies every permission.
+        logError(
+          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}); denying. Possible subagent-context tracker leak.`,
+        );
+      }
       log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
       this.markHandled();
       return 'deny';
@@ -248,16 +264,14 @@ export class AutoApproveGate {
    * missing, PTY not running, submitInput throws, subagent off-screen gate trips)
    * it logs and returns false so callers can fall back to escalating.
    *
-   * `value` is a 1-based numeric option index serialised as a string. Most
-   * permissions only need '1' (approve) or '3' (deny); multi-choice picks can land
-   * any index in the prompt's option range (#399).
+   * `value` is a 1-based numeric option index serialised as a string. Since #496
+   * (synchronous decisions) approve/deny no longer inject — this is now reached
+   * ONLY for a multi-choice pick, where `value` is the chosen index (#399).
    *
    * PTY-presence gate (subagent-only): a background subagent emits PermissionRequest
    * hooks for its own tool calls, but its prompts never render on the main PTY — only
-   * a hot-switched subagent view does. Without this gate, auto-approve would type
-   * "1"/"3" into the MAIN AGENT's input every time a background subagent asked.
-   * `bypassSubagentPtyGate` is set by the default-deny paths, whose alternative is
-   * hanging the subagent indefinitely.
+   * a hot-switched subagent view does. Without this gate, auto-approve would type the
+   * pick index into the MAIN AGENT's input every time a background subagent asked.
    */
   private async inject(
     input: PermissionRequestHookInput,
@@ -281,7 +295,9 @@ export class AutoApproveGate {
       }
       await session.pty.submitInput(value);
       log(`[AutoApprove ${this.sessionTag}] Injected "${value}" into PTY (${reason})`);
-      sessionRegistry.updateStatus(this.sessionId, value === '1' ? 'executing' : 'thinking');
+      // Optimistic: the picked option will run a tool. The authoritative status
+      // follows from Claude's own PreToolUse hook.
+      sessionRegistry.updateStatus(this.sessionId, 'executing');
       return true;
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] inject("${value}") threw:`, err);
