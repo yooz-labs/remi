@@ -103,6 +103,11 @@ export class AutoApproveService {
       apiKey: config.api_key,
       model: config.model,
       timeoutMs: config.timeout * 1000,
+      // Opt-in (Ollama only): native /api/chat with `think: false` to disable
+      // reasoning. Faster, but lowers decision quality (the chain-of-thought is
+      // load-bearing for following broad user instructions), so default OFF.
+      // Everyone else uses the OpenAI-compat path with reasoning on.
+      kind: config.provider === 'ollama' && config.disable_thinking ? 'ollama' : 'openai',
     };
     this.logFn = logFn;
     this.logDecisions = config.log_decisions;

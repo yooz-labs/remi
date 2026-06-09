@@ -145,6 +145,10 @@ export const DEFAULT_CONFIG: RemiConfig = {
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
+    // Keep the model's reasoning ON by default: live testing showed it is
+    // load-bearing for following broad user instructions. Opt in (Ollama only)
+    // for raw speed over decision nuance.
+    disable_thinking: false,
   },
   features: {
     transcript_binder_shadow: false,
@@ -265,6 +269,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
 
   expectBool('enabled', cfg.enabled);
   expectBool('log_decisions', cfg.log_decisions);
+  expectBool('disable_thinking', cfg.disable_thinking);
   expectString('provider', cfg.provider);
   expectString('model', cfg.model);
   expectString('api_key', cfg.api_key);
@@ -536,6 +541,11 @@ authorized_user_ids = []
 #                                  # model without paying its latency for
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
+# disable_thinking = false         # Ollama only: native /api/chat with
+#                                  # think:false (no reasoning). Faster but
+#                                  # lowers decision quality (reasoning helps
+#                                  # the model follow broad instructions), so
+#                                  # default off. Opt in for raw speed.
 `;
 }
 
