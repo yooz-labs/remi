@@ -90,6 +90,9 @@ export class AutoApproveService {
   private readonly multichoiceMode: MultiChoiceMode;
   /** Falls back to llmConfig.model when empty. */
   private readonly multichoiceModel: string;
+  /** Second-opinion model on a primary 'escalate' (#522); empty = none. Public
+   *  so the gate can read it without re-threading the config. */
+  readonly escalateModel: string;
   /** Prevents concurrent evaluations. Second request escalates immediately. */
   private evaluating = false;
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
@@ -121,6 +124,7 @@ export class AutoApproveService {
     this.instructions = config.instructions;
     this.multichoiceMode = config.multichoice;
     this.multichoiceModel = config.multichoice_model;
+    this.escalateModel = config.escalate_model;
   }
 
   /**
@@ -141,9 +145,13 @@ export class AutoApproveService {
     toolInput: Record<string, unknown>,
     tag?: string,
     permissionSuggestions?: readonly unknown[],
+    modelOverride?: string,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
-    const model = this.llmConfig.model;
+    // modelOverride (#522: the escalate_model second opinion) replaces the base
+    // model for this call; the fast-path deny/allow/group checks below still run.
+    const baseModel = modelOverride || this.llmConfig.model;
+    const model = baseModel;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
 
     const normalisedSuggestions = Array.isArray(permissionSuggestions)
@@ -246,7 +254,7 @@ export class AutoApproveService {
         // Otherwise the binary approve/deny prompt.
         const useMultiChoice = isMultiChoice && this.multichoiceMode === 'evaluate';
         const callModel =
-          useMultiChoice && this.multichoiceModel ? this.multichoiceModel : this.llmConfig.model;
+          useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
         const callConfig: LLMClientConfig =
           callModel === this.llmConfig.model
             ? this.llmConfig

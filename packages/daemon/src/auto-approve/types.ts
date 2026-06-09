@@ -124,6 +124,16 @@ export interface AutoApproveConfig {
    */
   readonly multichoice_model: string;
   /**
+   * Optional second-opinion model consulted ONLY when the primary `model`
+   * returns `escalate` in a main (non-subagent) context (#522). If it approves
+   * the broad-but-mutating action -> auto-approve; if it denies -> deny;
+   * otherwise the user is asked. Lets a heavy model (e.g. a 35B that honors a
+   * broad "approve everything except deletes" policy) improve only the cases
+   * that would otherwise interrupt the user, so its latency never hits the
+   * common fast path. Empty (default) = no second opinion.
+   */
+  readonly escalate_model: string;
+  /**
    * Ollama only: route through the native /api/chat with `think: false` to
    * turn OFF the model's reasoning. This is FASTER but lowers decision quality
    * — live testing showed the chain-of-thought is load-bearing for following

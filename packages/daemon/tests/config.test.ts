@@ -289,6 +289,26 @@ describe('formatConfig', () => {
     // approve_groups/deny_groups likewise visible (#494 phase 1).
     expect(output).toContain('approve_groups = ["read-only", "vcs-read", "build-test"]');
     expect(output).toContain('deny_groups = []');
+    // escalate_model visible (#522).
+    expect(output).toContain('escalate_model = ""');
+  });
+
+  test('default model is a fast 4b; escalate_model empty (#522)', () => {
+    expect(DEFAULT_CONFIG.auto_approve.model).toBe('qwen3.5:4b');
+    expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
+  });
+
+  test('REMI_AUTO_APPROVE_ESCALATE_MODEL env override (#522)', () => {
+    process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'] = 'qwen3.5:35b';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.escalate_model).toBe('qwen3.5:35b');
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
+  });
+
+  test('rejects escalate_model as a non-string (#522)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nescalate_model = 35\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/escalate_model/);
   });
 
   test('masks auto_approve api_key', () => {
@@ -307,7 +327,7 @@ describe('auto_approve config', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
       provider: 'ollama',
-      model: 'gemma4:e2b',
+      model: 'qwen3.5:4b',
       api_key: '',
       base_url: 'http://localhost:11434/v1',
       timeout: 30,
@@ -319,6 +339,7 @@ describe('auto_approve config', () => {
       instructions: '',
       multichoice: 'skip',
       multichoice_model: '',
+      escalate_model: '',
       disable_thinking: false,
     });
   });
