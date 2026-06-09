@@ -675,6 +675,9 @@ export function setupHookBridge(
       },
       onHandled: () => deps.terminalIndicator?.resolve('handled'),
       onCancelled: () => deps.terminalIndicator?.stop(),
+      // #522: second-opinion model on a primary escalate (read from the service's
+      // config). Empty when unset -> escalate straight to the user.
+      escalateModel: autoApproveService?.escalateModel ?? '',
     },
     sessionId,
   );

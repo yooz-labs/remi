@@ -131,7 +131,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
   auto_approve: {
     enabled: false,
     provider: 'ollama',
-    model: 'gemma4:e2b',
+    // Fast small default: with synchronous decisions (#496) the eval blocks
+    // Claude, so the default must be quick + RAM-light across platforms (incl.
+    // MacBook Air). qwen3.5:4b is benchmarked safe (38/38). Heavier models go in
+    // `escalate_model` (second opinion only on would-escalate cases).
+    model: 'qwen3.5:4b',
     api_key: '',
     base_url: 'http://localhost:11434/v1',
     timeout: 30,
@@ -152,6 +156,10 @@ export const DEFAULT_CONFIG: RemiConfig = {
     instructions: '',
     multichoice: 'skip',
     multichoice_model: '',
+    // Second-opinion model on a primary 'escalate' (main context only). Empty =
+    // no second opinion. Put a heavy model here (e.g. qwen3.5:35b) to honor a
+    // broad approve policy without paying its latency on every permission.
+    escalate_model: '',
     // Keep the model's reasoning ON by default: live testing showed it is
     // load-bearing for following broad user instructions. Opt in (Ollama only)
     // for raw speed over decision nuance.
@@ -327,6 +335,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     );
   }
   expectString('multichoice_model', cfg.multichoice_model);
+  expectString('escalate_model', cfg.escalate_model);
 
   // Warn about dangerously short patterns that would match too broadly.
   const MIN_PATTERN_LENGTH = 2;
@@ -470,6 +479,10 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     (auto_approve as { multichoice_model: string }).multichoice_model =
       env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL'];
   }
+  if (env['REMI_AUTO_APPROVE_ESCALATE_MODEL']) {
+    (auto_approve as { escalate_model: string }).escalate_model =
+      env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
+  }
 
   // Experimental feature flags (#453 phase 3). Default OFF; env opt-in only.
   const features = { ...config.features };
@@ -536,7 +549,7 @@ authorized_user_ids = []
 # [auto_approve]
 # enabled = false
 # provider = "ollama"           # "ollama" | "openrouter" | custom base URL
-# model = "gemma4:e2b"
+# model = "qwen3.5:4b"          # Fast small default; the eval blocks Claude (#496)
 # api_key = ""                  # Required for OpenRouter, empty for Ollama
 # base_url = "http://localhost:11434/v1"
 # timeout = 30                  # Seconds; falls through to user if exceeded
@@ -565,6 +578,10 @@ authorized_user_ids = []
 #                                  # model without paying its latency for
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
+# escalate_model = ""              # Second opinion on a primary 'escalate'
+#                                  # (main context only). Put a heavy model here
+#                                  # (e.g. qwen3.5:35b) to honor a broad approve
+#                                  # policy without its latency on every prompt.
 # disable_thinking = false         # Ollama only: native /api/chat with
 #                                  # think:false (no reasoning). Faster but
 #                                  # lowers decision quality (reasoning helps
@@ -651,6 +668,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  instructions = ${instrDisplay}`);
   lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
+  lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
   lines.push('');
   lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');

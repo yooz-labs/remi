@@ -6,11 +6,15 @@
  * QuestionPipeline boundary, alongside `NotificationDispatcher` and the already-
  * standalone `QuestionPresenceTracker`.
  *
- * Given a PermissionRequest hook event, it either:
- *   - runs the auto-approve LLM eval and injects "1" (approve) / "3" (deny) /
- *     a 1-based pick index into the PTY, or
- *   - escalates the prompt to the user (the normal Question flow), or
- *   - default-denies a subagent prompt the user cannot answer (to avoid hanging it).
+ * Given a PermissionRequest hook event, `resolvePermission` returns a synchronous
+ * decision (#496) that Claude honors in the hook response — it either:
+ *   - returns 'allow'/'deny' from the auto-approve LLM verdict (NO PTY inject), or
+ *   - escalates the prompt to the user and returns 'passthrough' (normal Question flow), or
+ *   - default-denies a subagent prompt the user cannot answer via 'deny' (no hang, no PTY), or
+ *   - on a primary 'escalate', consults an optional `escalate_model` second opinion
+ *     (#522) before bothering the user.
+ * The PTY inject path now survives only for multi-choice picks, which the response
+ * cannot express.
  *
  * The two outward couplings the hook bridge used directly are injected as callbacks
  * so the gate has no back-reference to the bridge or the hook router:
@@ -47,6 +51,7 @@ export interface AutoApproveEvaluator {
     toolInput: Record<string, unknown>,
     tag?: string,
     permissionSuggestions?: readonly unknown[],
+    modelOverride?: string,
   ): Promise<AutoApproveResult>;
   /** Abort any in-flight `evaluate`. Returns true if an abort was issued, false
    *  if nothing was in flight (idempotent). */
@@ -77,6 +82,9 @@ export interface AutoApproveGateDeps {
   /** Called when the eval ended without a verdict (cancelled — the user already
    *  advanced past the prompt). Drives the terminal cue back to idle. #513. */
   onCancelled?: () => void;
+  /** Second-opinion model consulted on a primary 'escalate' in main context
+   *  (#522). Empty/absent => no second opinion (escalate straight to the user). */
+  escalateModel?: string;
 }
 
 export class AutoApproveGate {
@@ -107,11 +115,6 @@ export class AutoApproveGate {
     }
   }
 
-  /**
-   * Handle a PermissionRequest hook event: auto-approve eval + inject, or escalate.
-   * Caller is responsible for session filtering (the bridge runs initFromHookEvent
-   * + filterBySession before delegating here).
-   */
   /**
    * Resolve a PermissionRequest to a synchronous decision (#496). Claude BLOCKS
    * on the hook response, so this returns the verdict INSTEAD of injecting it:
@@ -222,6 +225,42 @@ export class AutoApproveGate {
       log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
       this.markHandled();
       return 'deny';
+    }
+    // Second opinion (#522): the fast model would escalate, but a heavier
+    // escalate_model may resolve it (honoring a broad approve policy) before we
+    // bother the user. Its latency only hits would-escalate cases. Main context
+    // only; never re-escalates into a third call.
+    const escalateModel = this.deps.escalateModel;
+    if (escalateModel) {
+      let second: AutoApproveResult;
+      try {
+        second = await service.evaluate(
+          input.tool_name,
+          input.tool_input,
+          this.sessionTag,
+          input.permission_suggestions as readonly unknown[] | undefined,
+          escalateModel,
+        );
+      } catch (err) {
+        logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
+        second = {
+          decision: 'escalate',
+          reasoning: 'second-opinion error',
+          durationMs: 0,
+          model: escalateModel,
+        };
+      }
+      if (second.decision === 'approve') {
+        log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) approved`);
+        this.markHandled();
+        return 'allow';
+      }
+      if (second.decision === 'deny') {
+        log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) denied`);
+        this.markHandled();
+        return 'deny';
+      }
+      // second opinion still unsure (escalate/pick/cancelled) -> ask the user.
     }
     this.escalateToUser(input);
     return 'passthrough';

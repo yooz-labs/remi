@@ -94,6 +94,32 @@ describe('AutoApproveGate', () => {
     );
   }
 
+  /** Gate whose PRIMARY model escalates but whose escalate_model ('big-model')
+   *  returns `secondResult` (#522 second opinion). */
+  function gateWithSecondOpinion(secondResult: AutoApproveResult): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const service: AutoApproveEvaluator = {
+      evaluate: async (_t, _i, _tag, _s, modelOverride) =>
+        modelOverride === 'big-model' ? secondResult : escalate,
+      cancel: () => true,
+    };
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => subagent,
+        escalate: (i) => escalations.push(i),
+        escalateModel: 'big-model',
+      },
+      SID,
+    );
+  }
+
   function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
     return {
       session_id: 'claude-test',
@@ -289,6 +315,35 @@ describe('AutoApproveGate', () => {
     expect(d).toBe('passthrough');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(1);
+  });
+
+  test('escalate_model second opinion approves -> "allow" (no escalation) (#522)', async () => {
+    const d = await gateWithSecondOpinion(approve).resolvePermission(pr());
+    expect(d).toBe('allow');
+    expect(escalations).toHaveLength(0);
+    expect(submits).toHaveLength(0);
+  });
+
+  test('escalate_model second opinion denies -> "deny" (no escalation) (#522)', async () => {
+    const d = await gateWithSecondOpinion(deny).resolvePermission(pr());
+    expect(d).toBe('deny');
+    expect(escalations).toHaveLength(0);
+    expect(submits).toHaveLength(0);
+  });
+
+  test('escalate_model still unsure -> escalate to the user (#522)', async () => {
+    const d = await gateWithSecondOpinion(escalate).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+  });
+
+  test('escalate_model is NOT consulted in a subagent context (denies via response) (#522)', async () => {
+    subagent = true;
+    const d = await gateWithSecondOpinion(approve).resolvePermission(pr());
+    // Subagent escalate denies directly; the second opinion (which would allow)
+    // must not run, since the user could not answer a subagent prompt anyway.
+    expect(d).toBe('deny');
+    expect(escalations).toHaveLength(0);
   });
 
   test('cancelStale forwards the reason to service.cancel', () => {
