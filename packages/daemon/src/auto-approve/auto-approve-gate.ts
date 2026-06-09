@@ -260,7 +260,15 @@ export class AutoApproveGate {
         this.markHandled();
         return 'deny';
       }
-      // second opinion still unsure (escalate/pick/cancelled) -> ask the user.
+      if (second.decision === 'cancelled') {
+        // Claude already advanced (cancelStale fired during the slower second
+        // eval). Mirror the primary cancelled path — do NOT escalate a phantom.
+        this.deps.tracker.clearPending();
+        this.safeCue('onCancelled', this.deps.onCancelled);
+        log(`[AutoApprove ${this.sessionTag}] Second-opinion cancelled: ${second.reasoning}`);
+        return 'passthrough';
+      }
+      // second opinion still unsure (escalate/pick) -> ask the user.
     }
     this.escalateToUser(input);
     return 'passthrough';

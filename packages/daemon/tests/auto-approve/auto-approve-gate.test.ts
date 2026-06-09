@@ -337,6 +337,20 @@ describe('AutoApproveGate', () => {
     expect(escalations).toHaveLength(1);
   });
 
+  test('escalate_model cancelled -> passthrough, clears pending, no phantom escalation (#523 review)', async () => {
+    tracker.recordPendingHook({
+      id: generateId(),
+      text: 'proceed?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    const d = await gateWithSecondOpinion(cancelled).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(0); // no phantom question
+    expect(tracker.hasPendingForTest()).toBe(false); // pending cleared
+  });
+
   test('escalate_model is NOT consulted in a subagent context (denies via response) (#522)', async () => {
     subagent = true;
     const d = await gateWithSecondOpinion(approve).resolvePermission(pr());
