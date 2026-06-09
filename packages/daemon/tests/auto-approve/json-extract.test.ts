@@ -50,6 +50,12 @@ describe('extractJsonObject', () => {
     expect(extractJsonObject('[{"decision":"approve"}]')).toBeNull();
   });
 
+  test('returns null for a FENCED JSON array (must not lift the inner object)', () => {
+    // Security guard: a fenced array must escalate, never have its first object
+    // extracted (which would flip escalate->approve on a crafted response).
+    expect(extractJsonObject('```json\n[{"decision":"approve","reasoning":"x"}]\n```')).toBeNull();
+  });
+
   test('returns null for a JSON null/number literal', () => {
     expect(extractJsonObject('null')).toBeNull();
     expect(extractJsonObject('42')).toBeNull();

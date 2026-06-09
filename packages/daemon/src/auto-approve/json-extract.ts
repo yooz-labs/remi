@@ -51,12 +51,16 @@ export function extractJsonObject(raw: string): Record<string, unknown> | null {
   if (defenced !== null) {
     const parsed = tryParse(defenced);
     if (parsed !== null) return parsed;
-    // A fence around an array/preamble: fall through to balanced-object scan on
-    // the de-fenced text rather than the raw (so the fence markers don't count).
-    const inner = firstBalancedObject(defenced);
-    if (inner !== null) {
-      const innerParsed = tryParse(inner);
-      if (innerParsed !== null) return innerParsed;
+    // A fence around a preamble: scan the de-fenced text for a balanced object
+    // (so the fence markers don't count). Deliberately NOT applied when the
+    // de-fenced content is array-shaped — a `[ … ]` must escalate, never have an
+    // inner object lifted out of it (same conservatism as the preamble branch).
+    if (!defenced.startsWith('[')) {
+      const inner = firstBalancedObject(defenced);
+      if (inner !== null) {
+        const innerParsed = tryParse(inner);
+        if (innerParsed !== null) return innerParsed;
+      }
     }
     return null;
   }
