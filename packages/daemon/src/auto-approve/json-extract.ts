@@ -55,7 +55,7 @@ export function extractJsonObject(raw: string): Record<string, unknown> | null {
     // (so the fence markers don't count). Deliberately NOT applied when the
     // de-fenced content is array-shaped — a `[ … ]` must escalate, never have an
     // inner object lifted out of it (same conservatism as the preamble branch).
-    if (!defenced.startsWith('[')) {
+    if (!isArrayShaped(defenced)) {
       const inner = firstBalancedObject(defenced);
       if (inner !== null) {
         const innerParsed = tryParse(inner);
@@ -68,7 +68,9 @@ export function extractJsonObject(raw: string): Record<string, unknown> | null {
   // Preamble case ("Here it is: {…}"). Deliberately NOT applied when the
   // response is array-shaped: a top-level `[ … ]` must escalate rather than
   // have an object silently lifted out of it (conservative for an approve path).
-  if (!raw.trim().startsWith('[')) {
+  // isArrayShaped also catches a preamble BEFORE an array ("Here: [ {…} ]") so
+  // an object nested inside an array is never lifted out as the verdict.
+  if (!isArrayShaped(raw)) {
     const candidate = firstBalancedObject(raw);
     if (candidate !== null) {
       const parsed = tryParse(candidate);
@@ -77,6 +79,22 @@ export function extractJsonObject(raw: string): Record<string, unknown> | null {
   }
 
   return null;
+}
+
+/**
+ * True when the response is array-shaped at the top level: the first structural
+ * bracket is a `[` (or there is a `[` but no `{` at all). Such a response must
+ * escalate — an object nested inside an array must never be lifted out and
+ * treated as the verdict (conservative for an approve path). Erring toward
+ * "array-shaped" (e.g. prose that happens to contain a `[` before the object)
+ * over-escalates to the user, which is the safe direction.
+ */
+function isArrayShaped(raw: string): boolean {
+  const obj = raw.indexOf('{');
+  const arr = raw.indexOf('[');
+  if (arr === -1) return false; // no array bracket → object/preamble path is safe
+  if (obj === -1) return true; // an array and no object → array-shaped
+  return arr < obj; // whichever bracket opens first decides the shape
 }
 
 /**

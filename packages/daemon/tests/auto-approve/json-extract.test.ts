@@ -56,6 +56,21 @@ describe('extractJsonObject', () => {
     expect(extractJsonObject('```json\n[{"decision":"approve","reasoning":"x"}]\n```')).toBeNull();
   });
 
+  test('returns null for a PREAMBLE before an array (must not lift the inner object)', () => {
+    // Security guard (symmetric to the bare/fenced array cases): a preamble that
+    // precedes an array must escalate, never have the array's first object lifted
+    // out as the verdict.
+    expect(
+      extractJsonObject('Here is my answer: [{"decision":"approve","reasoning":"safe"}]'),
+    ).toBeNull();
+  });
+
+  test('returns null for a FENCED preamble before an array', () => {
+    expect(
+      extractJsonObject('```json\nResult: [{"decision":"approve","reasoning":"x"}]\n```'),
+    ).toBeNull();
+  });
+
   test('returns null for a JSON null/number literal', () => {
     expect(extractJsonObject('null')).toBeNull();
     expect(extractJsonObject('42')).toBeNull();
