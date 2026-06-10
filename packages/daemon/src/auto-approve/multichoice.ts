@@ -27,6 +27,7 @@
  * string labels — the UI prompt is the default Yes/Yes-always/No.
  */
 
+import { extractJsonObject } from './json-extract.ts';
 import type { ChatMessage } from './llm-client.ts';
 
 /**
@@ -149,25 +150,16 @@ export function parseMultiChoiceDecision(
 ):
   | { decision: 'pick'; index: number; reasoning: string }
   | { decision: 'escalate'; reasoning: string } {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    const e = err as Error;
+  // Tolerate a code fence / short preamble around the JSON (deterministic,
+  // string-aware — see json-extract.ts). Models that fence every response would
+  // otherwise escalate every multi-choice prompt on formatting alone.
+  const obj = extractJsonObject(raw);
+  if (obj === null) {
     return {
       decision: 'escalate',
-      reasoning: `Unparsable multi-choice response (${e.name}: ${e.message}): ${raw.slice(0, 100)}`,
+      reasoning: `Unparsable multi-choice response (no JSON object): ${raw.slice(0, 100)}`,
     };
   }
-
-  if (typeof parsed !== 'object' || parsed === null) {
-    return {
-      decision: 'escalate',
-      reasoning: `Multi-choice response was not a JSON object: ${raw.slice(0, 100)}`,
-    };
-  }
-
-  const obj = parsed as Record<string, unknown>;
   const decisionStr = String(obj['decision'] ?? '').toLowerCase();
   const reasoning = String(obj['reasoning'] ?? '');
 

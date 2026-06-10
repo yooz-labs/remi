@@ -4,6 +4,37 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-06-10
+
+Makes auto-approve actually work with reasoning-tuned local models. A model that
+wraps its verdict in a markdown code fence (notably `qwen3.6:35b-mlx`, which
+fences every response) was escalating 100% of its decisions on formatting alone:
+the parser did a strict `JSON.parse` of the raw text, choked on the leading
+backtick, and fell back to "ask the user" even when the model had clearly
+approved. This release makes the parser tolerant and tunes the heavy
+second-opinion tier so it can actually answer.
+
+### Fixed
+- **Fenced-JSON verdicts are now parsed, not escalated** (#533): a deterministic,
+  string-aware extractor strips a `` ```json `` code fence or a short preamble
+  and parses the inner object, wired into both the binary decision parser and the
+  multi-choice parser. Free text still escalates (no keyword guessing), and a
+  top-level array still escalates rather than having an inner object lifted out as
+  the verdict, including when the array follows a preamble or sits inside a fence.
+  The model sweep for `qwen3.6:35b-mlx` went from 25/38 to 37/38 with no code
+  change other than this parse fix.
+
+### Added
+- **Dedicated `escalate_model` timeout** (`[auto_approve] escalate_timeout`,
+  seconds; `0` = reuse `timeout`): the heavy second-opinion model is usually cold
+  and needs a longer budget than the fast model, so it no longer degrades into a
+  timeout-then-escalate.
+- **Second-opinion model warm-up**: on Ollama, the daemon pre-loads
+  `escalate_model` at startup (best-effort, `keep_alive` 30m) so the first
+  escalation isn't a cold start.
+- The startup banner now logs `escalate_model` and `escalate_timeout`, so a
+  configured second opinion is visible in the log.
+
 ## [0.6.6] - 2026-06-09
 
 A reliability fix for session binding. When a project directory accumulates many

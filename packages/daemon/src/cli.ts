@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.6'; // REMI_COMPILED_VERSION
+      return '0.6.7-dev.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.6'; // REMI_COMPILED_VERSION
+    return '0.6.7-dev.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -777,9 +777,15 @@ let autoApproveService: AutoApproveService | null = null;
     );
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
     const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
+    const escalateSummary = aaCfg.escalate_model
+      ? `escalate_model=${aaCfg.escalate_model}${aaCfg.escalate_timeout > 0 ? ` (timeout=${aaCfg.escalate_timeout}s)` : ''}`
+      : 'escalate_model=none';
     writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}`,
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}`,
     );
+    // Warm-load the heavy second-opinion model so the first escalation is not a
+    // cold start. Best-effort, fire-and-forget (never blocks daemon startup).
+    void autoApproveService.warmEscalateModel();
   }
 }
 

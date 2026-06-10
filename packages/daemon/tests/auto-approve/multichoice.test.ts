@@ -276,6 +276,15 @@ describe('parseMultiChoiceDecision', () => {
   test('escalates on JSON that is not an object', () => {
     const r = parseMultiChoiceDecision('"just a string"', 4);
     expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('not a JSON object');
+    expect(r.reasoning).toContain('no JSON object');
+  });
+
+  test('parses a markdown-fenced pick (qwen3.6:35b emits ```json fences)', () => {
+    const r = parseMultiChoiceDecision(
+      '```json\n{"decision":"pick","index":2,"reasoning":"opt 2"}\n```',
+      4,
+    );
+    expect(r.decision).toBe('pick');
+    if (r.decision === 'pick') expect(r.index).toBe(2);
   });
 });
