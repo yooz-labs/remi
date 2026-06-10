@@ -10,7 +10,8 @@
  */
 
 import { errorToString } from '@remi/shared';
-import { chatCompletion, resolveProviderUrl } from './llm-client.ts';
+import { extractJsonObject } from './json-extract.ts';
+import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
 import {
   buildMultiChoicePrompt,
@@ -54,27 +55,22 @@ export function normalisePermissionSuggestion(entry: unknown): string | null {
  * Exported for unit testing.
  */
 export function parseDecision(raw: string): { decision: BinaryDecision; reasoning: string } {
-  let parseErr: unknown = null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed === 'object' && parsed !== null) {
-      const decisionStr = String(parsed.decision ?? '').toLowerCase();
-      const reasoning = String(parsed.reasoning ?? '');
-      if (VALID_DECISIONS.has(decisionStr as BinaryDecision)) {
-        return { decision: decisionStr as BinaryDecision, reasoning };
-      }
+  // extractJsonObject tolerates a markdown code fence or a short preamble around
+  // the JSON (deterministic, string-aware — never a free-text keyword guess).
+  // Many reasoning-tuned local models, notably qwen3.6:35b-mlx, fence every
+  // response; without this they escalate every safe verdict on formatting alone.
+  const parsed = extractJsonObject(raw);
+  if (parsed !== null) {
+    const decisionStr = String(parsed['decision'] ?? '').toLowerCase();
+    const reasoning = String(parsed['reasoning'] ?? '');
+    if (VALID_DECISIONS.has(decisionStr as BinaryDecision)) {
+      return { decision: decisionStr as BinaryDecision, reasoning };
     }
-  } catch (err) {
-    // Capture the SyntaxError so the escalation reasoning explains WHY the
-    // raw text could not be parsed (markdown fences, "json\n{...}\n" prefix,
-    // etc. are common with local LLMs and benefit from a class hint).
-    parseErr = err;
   }
 
-  const errHint = parseErr ? ` [${(parseErr as Error).name}: ${(parseErr as Error).message}]` : '';
   return {
     decision: 'escalate',
-    reasoning: `Unparsable LLM response: ${raw.slice(0, 100)}${errHint}`,
+    reasoning: `Unparsable LLM response: ${raw.slice(0, 100)}`,
   };
 }
 
@@ -93,6 +89,12 @@ export class AutoApproveService {
   /** Second-opinion model on a primary 'escalate' (#522); empty = none. Public
    *  so the gate can read it without re-threading the config. */
   readonly escalateModel: string;
+  /** Dedicated timeout (ms) for escalate_model calls; 0 => fall back to the
+   *  fast model's timeout. The heavy model is usually cold, so it needs a longer
+   *  budget than the fast path. */
+  private readonly escalateTimeoutMs: number;
+  /** True when the provider is Ollama (enables the native warm-up load). */
+  private readonly providerIsOllama: boolean;
   /** Prevents concurrent evaluations. Second request escalates immediately. */
   private evaluating = false;
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
@@ -125,6 +127,27 @@ export class AutoApproveService {
     this.multichoiceMode = config.multichoice;
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
+    this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
+    this.providerIsOllama = config.provider === 'ollama';
+  }
+
+  /**
+   * Warm-load the escalate_model so the FIRST second opinion does not pay a
+   * cold model-load (15s+ for a 35B). Ollama only (the native /api/generate
+   * empty-prompt load with a long keep_alive); a no-op otherwise or when no
+   * escalate_model is configured. Best-effort and never throws — a failed warm
+   * just means the first real consult loads the model itself.
+   */
+  async warmEscalateModel(): Promise<void> {
+    if (!this.escalateModel || !this.providerIsOllama) return;
+    try {
+      await warmModel(this.llmConfig.baseUrl, this.escalateModel);
+      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (kept resident 30m)`);
+    } catch (err) {
+      this.logFn(
+        `[AutoApprove] escalate_model warm-up failed (will load on first consult): ${errorToString(err)}`,
+      );
+    }
   }
 
   /**
@@ -242,7 +265,14 @@ export class AutoApproveService {
       this.evaluating = true;
       this.currentAbortController = new AbortController();
       const externalSignal = this.currentAbortController.signal;
-      const timeoutMs = this.llmConfig.timeoutMs;
+      // The heavy escalate_model gets its dedicated (longer) budget when set, so
+      // a cold model-load does not abort the fast model's shorter timeout.
+      const isEscalateModelCall =
+        modelOverride !== undefined && modelOverride === this.escalateModel;
+      const timeoutMs =
+        isEscalateModelCall && this.escalateTimeoutMs > 0
+          ? this.escalateTimeoutMs
+          : this.llmConfig.timeoutMs;
       // Hold the race timer handle so we can clear it whichever side wins.
       // Without clearTimeout, a successful chatCompletion at t=200ms would
       // leave a timer scheduled at t=timeoutMs that fires on the NEXT eval
@@ -255,10 +285,12 @@ export class AutoApproveService {
         const useMultiChoice = isMultiChoice && this.multichoiceMode === 'evaluate';
         const callModel =
           useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
+        // Reuse the base config only when neither the model nor the timeout
+        // differs; the escalate_model path overrides both.
         const callConfig: LLMClientConfig =
-          callModel === this.llmConfig.model
+          callModel === this.llmConfig.model && timeoutMs === this.llmConfig.timeoutMs
             ? this.llmConfig
-            : { ...this.llmConfig, model: callModel };
+            : { ...this.llmConfig, model: callModel, timeoutMs };
         const messages = useMultiChoice
           ? buildMultiChoicePrompt(
               toolName,

@@ -71,6 +71,40 @@ export function ollamaNativeBase(baseUrl: string): string {
 }
 
 /**
+ * Warm-load an Ollama model so a later request does not pay the cold model-load
+ * penalty. Uses the native /api/generate with an EMPTY prompt (the documented
+ * load-only call) and a long `keep_alive` so the model stays resident. Throws on
+ * network errors or non-200 responses; the caller treats it as best-effort.
+ *
+ * `keepAlive` accepts Ollama's duration string ("30m", "-1" for forever).
+ */
+export async function warmModel(
+  baseUrl: string,
+  model: string,
+  keepAlive = '30m',
+  timeoutMs = 120_000,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${ollamaNativeBase(baseUrl)}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt: '', keep_alive: keepAlive, stream: false }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`warm-up failed ${response.status}: ${body.slice(0, 200)}`);
+    }
+    // Drain the body so the connection is released promptly.
+    await response.json().catch(() => undefined);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Send a chat completion request. Throws on network errors, timeouts, or
  * non-200 responses.
  *

@@ -777,9 +777,15 @@ let autoApproveService: AutoApproveService | null = null;
     );
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
     const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
+    const escalateSummary = aaCfg.escalate_model
+      ? `escalate_model=${aaCfg.escalate_model}${aaCfg.escalate_timeout > 0 ? ` (timeout=${aaCfg.escalate_timeout}s)` : ''}`
+      : 'escalate_model=none';
     writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}`,
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}`,
     );
+    // Warm-load the heavy second-opinion model so the first escalation is not a
+    // cold start. Best-effort, fire-and-forget (never blocks daemon startup).
+    void autoApproveService.warmEscalateModel();
   }
 }
 

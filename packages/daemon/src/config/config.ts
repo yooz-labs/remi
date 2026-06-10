@@ -160,6 +160,10 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // no second opinion. Put a heavy model here (e.g. qwen3.5:35b) to honor a
     // broad approve policy without paying its latency on every permission.
     escalate_model: '',
+    // Dedicated timeout (seconds) for the heavy escalate_model. 0 = use
+    // `timeout`. Set higher (e.g. 90) when escalate_model is a large, often-cold
+    // model so its first-call load penalty does not abort into an error.
+    escalate_timeout: 0,
     // Keep the model's reasoning ON by default: live testing showed it is
     // load-bearing for following broad user instructions. Opt in (Ollama only)
     // for raw speed over decision nuance.
@@ -293,6 +297,16 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   if (typeof cfg.timeout !== 'number' || !Number.isFinite(cfg.timeout) || cfg.timeout <= 0) {
     throw new Error(
       `Invalid auto_approve.timeout in ${configPath}: must be a positive number (seconds), got ${typeof cfg.timeout === 'string' ? `string "${cfg.timeout}"` : typeof cfg.timeout}. Example: timeout = 10`,
+    );
+  }
+
+  if (
+    typeof cfg.escalate_timeout !== 'number' ||
+    !Number.isFinite(cfg.escalate_timeout) ||
+    cfg.escalate_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.escalate_timeout in ${configPath}: must be a non-negative number (seconds; 0 = use timeout), got ${typeof cfg.escalate_timeout === 'string' ? `string "${cfg.escalate_timeout}"` : typeof cfg.escalate_timeout}. Example: escalate_timeout = 90`,
     );
   }
 
@@ -483,6 +497,12 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     (auto_approve as { escalate_model: string }).escalate_model =
       env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
   }
+  if (env['REMI_AUTO_APPROVE_ESCALATE_TIMEOUT']) {
+    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_ESCALATE_TIMEOUT'], 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      (auto_approve as { escalate_timeout: number }).escalate_timeout = parsed;
+    }
+  }
 
   // Experimental feature flags (#453 phase 3). Default OFF; env opt-in only.
   const features = { ...config.features };
@@ -582,6 +602,10 @@ authorized_user_ids = []
 #                                  # (main context only). Put a heavy model here
 #                                  # (e.g. qwen3.5:35b) to honor a broad approve
 #                                  # policy without its latency on every prompt.
+# escalate_timeout = 0             # Seconds for escalate_model; 0 = use timeout.
+#                                  # Raise (e.g. 90) for a large, often-cold
+#                                  # second-opinion model so its first-call load
+#                                  # does not abort into an error->escalate.
 # disable_thinking = false         # Ollama only: native /api/chat with
 #                                  # think:false (no reasoning). Faster but
 #                                  # lowers decision quality (reasoning helps
@@ -669,6 +693,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
+  lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
   lines.push('');
   lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');

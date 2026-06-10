@@ -50,6 +50,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     multichoice: 'skip',
     multichoice_model: '',
     escalate_model: '',
+    escalate_timeout: 0,
     disable_thinking: false,
     ...overrides,
   };
@@ -118,8 +119,30 @@ describe('parseDecision', () => {
     expect(r.decision).toBe('escalate');
   });
 
-  test('markdown-wrapped JSON escalates (no guessing)', () => {
+  test('markdown-fenced JSON is parsed (qwen3.6:35b emits ```json fences)', () => {
     const r = parseDecision('```json\n{"decision":"approve","reasoning":"safe"}\n```');
+    expect(r.decision).toBe('approve');
+    expect(r.reasoning).toBe('safe');
+  });
+
+  test('bare ``` fence (no language tag) is parsed', () => {
+    const r = parseDecision('```\n{"decision":"deny","reasoning":"destructive"}\n```');
+    expect(r.decision).toBe('deny');
+  });
+
+  test('JSON with a short preamble before the object is parsed', () => {
+    const r = parseDecision('Here is my verdict:\n{"decision":"escalate","reasoning":"unsure"}');
+    expect(r.decision).toBe('escalate');
+  });
+
+  test('fenced object whose reasoning contains braces parses without miscounting', () => {
+    const r = parseDecision('```json\n{"decision":"deny","reasoning":"matches rm -rf {a,b}"}\n```');
+    expect(r.decision).toBe('deny');
+    expect(r.reasoning).toContain('{a,b}');
+  });
+
+  test('free text mentioning a decision word still escalates (no keyword guessing)', () => {
+    const r = parseDecision('```\nI would approve this but it is risky\n```');
     expect(r.decision).toBe('escalate');
   });
 
