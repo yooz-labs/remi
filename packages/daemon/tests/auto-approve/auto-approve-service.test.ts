@@ -346,15 +346,17 @@ describe('AutoApproveService - concurrency serialization', () => {
       service.evaluate('Read', { file_path: '/tmp/test' }),
     ]);
 
-    // Neither carries the retired escalate-on-busy reasoning.
+    // The regression guard: under the OLD single-flight gate the second result
+    // carried 'Concurrent evaluation in progress' (an instant busy-bail). With
+    // serialization neither ever does — both take the real decision path and
+    // escalate via the failed LLM reach. (We do NOT assert durationMs: an
+    // unroutable IP hangs to the timeout on some networks but fails fast on
+    // others/CI. Deterministic serialization timing is covered in
+    // serialize.test.ts with a gated server.)
     expect(first.reasoning).not.toBe('Concurrent evaluation in progress');
     expect(second.reasoning).not.toBe('Concurrent evaluation in progress');
-    // Both actually ran the LLM (serialized), so both timed out -> escalate
-    // with a non-zero duration rather than an instant busy-bail.
     expect(first.decision).toBe('escalate');
     expect(second.decision).toBe('escalate');
-    expect(first.durationMs).toBeGreaterThan(0);
-    expect(second.durationMs).toBeGreaterThan(0);
   }, 15000);
 
   test('two independent service instances do not share a queue', async () => {
