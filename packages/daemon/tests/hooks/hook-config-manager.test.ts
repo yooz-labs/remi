@@ -79,7 +79,7 @@ describe('HookConfigManager', () => {
       expect(hooks?.[0]?.url).toBe(hookUrl);
       // PermissionRequest must outlast the synchronous auto-approve eval (#537);
       // every other hook keeps the short fail-fast timeout (#203).
-      expect(hooks?.[0]?.timeout).toBe(event === 'PermissionRequest' ? 300 : 5);
+      expect(hooks?.[0]?.timeout).toBe(event === 'PermissionRequest' ? 600 : 5);
     }
   });
 
@@ -91,7 +91,7 @@ describe('HookConfigManager', () => {
     const permHook = settings.hooks['PermissionRequest']
       ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
       ?.hooks.find((h) => h.url === hookUrl);
-    expect(permHook?.timeout).toBe(300);
+    expect(permHook?.timeout).toBe(600);
     // A representative non-permission hook keeps the short timeout.
     const stopHook = settings.hooks['Stop']
       ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
@@ -115,7 +115,7 @@ describe('HookConfigManager', () => {
     const permMatchers = settings.hooks['PermissionRequest'];
     const remiHooks = permMatchers?.flatMap((m) => m.hooks.filter((h) => h.url === hookUrl)) ?? [];
     expect(remiHooks.length).toBe(1); // reconciled in place, not duplicated
-    expect(remiHooks[0]?.timeout).toBe(300);
+    expect(remiHooks[0]?.timeout).toBe(600);
     expect(manager.isInstalled()).toBe(true);
   });
 

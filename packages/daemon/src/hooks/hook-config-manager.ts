@@ -36,8 +36,15 @@ interface HookMatcher {
  * refused), so the long timeout only delays while the daemon is actively
  * deciding. Every other hook keeps the short timeout so a slow/dead daemon never
  * gates worktree creation / prompt submission / compaction (#203).
+ *
+ * 600s = Claude Code's hook-budget ceiling, chosen so a verdict is never dropped
+ * even for the heaviest realistic config: the auto-approve worst case is roughly
+ * `queue_timeout` (default 240s) + `timeout` (user-configurable, e.g. 120s) =
+ * 360s, which a 300s ceiling would still drop. The eval itself self-limits
+ * (`timeout`) and queued requests escalate at `queue_timeout`, so the daemon
+ * always answers well within 600s; this is a ceiling, not a typical wait.
  */
-const PERMISSION_REQUEST_HOOK_TIMEOUT = 300;
+const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
 const DEFAULT_HOOK_TIMEOUT = 5;
 
 function hookTimeoutFor(event: string): number {
