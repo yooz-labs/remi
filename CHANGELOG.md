@@ -4,6 +4,30 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-06-11
+
+Stops auto-approve from dropping correct verdicts when the eval is slow. With a
+heavy local model the daemon would compute "approve" but the decision never
+reached Claude in time, so you ended up hand-approving safe commands. Two causes,
+both fixed.
+
+### Fixed
+- **PermissionRequest now waits for the verdict** (#537): Remi registered every
+  Claude Code hook with a blanket 5-second timeout, so Claude gave up waiting and
+  showed its own prompt before a 5-20s local-model eval could answer. The
+  PermissionRequest hook now gets a long timeout (600s, covering the eval +
+  serialization-queue budget) while every other hook keeps the short fail-fast
+  timeout so a slow or dead daemon never gates worktree creation, prompt
+  submission, or compaction. `install()` reconciles an existing hook's timeout in
+  place, so the fix applies on the next daemon start. (This is why
+  `auto_approve.timeout` alone didn't help: that bounds how long the eval *runs*,
+  not how long Claude *waits*.)
+- **A previous tool's PostToolUse no longer drops the next decision** (#537):
+  `PreToolUse`/`PostToolUse` no longer cancel an in-flight auto-approve eval.
+  Under synchronous decisions Claude blocks on the prompt, so the running eval is
+  the verdict it is waiting for — only `Stop`/`SessionEnd` (a real session end)
+  cancel an eval now.
+
 ## [0.6.8] - 2026-06-10
 
 Fixes the auto-approve regression where permissions piled up as questions
