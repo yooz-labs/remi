@@ -223,10 +223,28 @@ describe('StatusWriter', () => {
     w.autoApproveStart(3_000);
     w.autoApproveEnd('cancelled', 4_000); // must NOT clobber the verdict
     expect(w.state.autoApprove.lastVerdict).toBe('escalated');
-    w.autoApproveStart(5_000);
-    w.autoApproveEnd('approved', 6_000);
+    // A later approve, well past the escalate-fresh window (>60s), DOES record.
+    w.autoApproveStart(70_000);
+    w.autoApproveEnd('approved', 71_000);
     expect(w.state.autoApprove.lastVerdict).toBe('approved');
-    expect(w.state.autoApprove.lastVerdictAtS).toBe(6);
+    expect(w.state.autoApprove.lastVerdictAtS).toBe(71);
+  });
+
+  test('autoApprove: an end with no matching start records no verdict (AA-off escalate path)', () => {
+    const w = aaWriter();
+    w.autoApproveEnd('escalated', 5_000); // no prior start (e.g. auto-approve disabled)
+    expect(w.state.autoApprove.inFlight).toBe(0);
+    expect(w.state.autoApprove.lastVerdict).toBe('none'); // not spuriously stamped
+  });
+
+  test('autoApprove: a concurrent approve does not hide a still-fresh escalate', () => {
+    const w = aaWriter();
+    w.autoApproveStart(1_000); // A
+    w.autoApproveStart(1_500); // B
+    w.autoApproveEnd('escalated', 2_000); // A escalates -> user must act
+    expect(w.state.autoApprove.lastVerdict).toBe('escalated');
+    w.autoApproveEnd('approved', 2_300); // B approves shortly after; must NOT clobber
+    expect(w.state.autoApprove.lastVerdict).toBe('escalated');
   });
 
   test('autoApprove: interleaved concurrent evals never get stuck "evaluating" (the old spinner race)', () => {

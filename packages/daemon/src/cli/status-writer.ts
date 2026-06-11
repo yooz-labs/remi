@@ -52,6 +52,12 @@ export const IDLE_AUTO_APPROVE: AutoApproveState = {
   lastVerdictAtS: 0,
 };
 
+/** Seconds an 'escalated' verdict is considered fresh/actionable. A later
+ *  'approved' from a concurrent eval must not hide a still-fresh escalate, and
+ *  the statusline shows "needs you" only within this window (kept in sync with
+ *  the render in statusline-installer.ts). */
+export const ESCALATE_FRESH_S = 60;
+
 export interface RemiStatus {
   pid: number;
   connections: number;
@@ -121,11 +127,27 @@ export class StatusWriter {
    */
   autoApproveEnd(verdict: 'approved' | 'escalated' | 'cancelled', nowMs: number): void {
     const aa = this.status.autoApprove;
+    // Only record a verdict for an eval that actually ran (a matching start).
+    // When auto-approve is OFF, the gate's normal escalate-to-user path still
+    // fires onEscalate without a prior start; without this guard that would
+    // stamp a spurious permanent 'needs you' (#560 review).
+    const wasInFlight = aa.inFlight > 0;
     aa.inFlight = Math.max(0, aa.inFlight - 1);
     if (aa.inFlight === 0) aa.sinceS = 0;
-    if (verdict === 'approved' || verdict === 'escalated') {
-      aa.lastVerdict = verdict;
-      aa.lastVerdictAtS = Math.floor(nowMs / 1000);
+    if (!wasInFlight) return;
+    const nowS = Math.floor(nowMs / 1000);
+    if (verdict === 'escalated') {
+      aa.lastVerdict = 'escalated';
+      aa.lastVerdictAtS = nowS;
+    } else if (verdict === 'approved') {
+      // A concurrent eval's silent approve must not hide a still-fresh escalate
+      // the user still needs to act on (#560 review).
+      const escalateFresh =
+        aa.lastVerdict === 'escalated' && nowS - aa.lastVerdictAtS < ESCALATE_FRESH_S;
+      if (!escalateFresh) {
+        aa.lastVerdict = 'approved';
+        aa.lastVerdictAtS = nowS;
+      }
     }
     this.schedule();
   }

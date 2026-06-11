@@ -36,14 +36,19 @@ if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
     CLIENT_INFO="no clients"
     [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
     # The status segment reflects auto-approve state when a permission is being
-    # decided, otherwise Claude's agent status (#560).
+    # decided, otherwise Claude's agent status (#560). All arithmetic is guarded
+    # (:-0) so a status file from an older daemon (no autoApprove key) renders
+    # cleanly. The evaluating cap (600s) is leak-safety; "needs you" decays after
+    # 60s so a stale escalate never sticks across sessions.
     NOW=\$(date +%s)
+    AA_ELAPSED=\$((NOW - \${AA_SINCE:-0}))
+    AA_AGE=\$((NOW - \${AA_LASTAT:-0}))
     STATE="\$S_STATUS"
-    if [ "\${AA_INFLIGHT:-0}" -gt 0 ] 2>/dev/null; then
-      STATE="evaluating \$((NOW - AA_SINCE))s"
-    elif [ "\$AA_LASTV" = "escalated" ]; then
+    if [ "\${AA_INFLIGHT:-0}" -gt 0 ] 2>/dev/null && [ "\$AA_ELAPSED" -lt 600 ] 2>/dev/null; then
+      STATE="evaluating \${AA_ELAPSED}s"
+    elif [ "\$AA_LASTV" = "escalated" ] && [ "\$AA_AGE" -lt 60 ] 2>/dev/null; then
       STATE="needs you"
-    elif [ "\$AA_LASTV" = "approved" ] && [ \$((NOW - AA_LASTAT)) -lt 5 ] 2>/dev/null; then
+    elif [ "\$AA_LASTV" = "approved" ] && [ "\$AA_AGE" -lt 5 ] 2>/dev/null; then
       STATE="approved"
     fi
     REMI="remi:\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${STATE}"
