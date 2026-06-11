@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { type RemiStatus, StatusWriter } from '../../src/cli/status-writer.ts';
+import { IDLE_AUTO_APPROVE, type RemiStatus, StatusWriter } from '../../src/cli/status-writer.ts';
 
 function baseStatus(overrides: Partial<RemiStatus> = {}): RemiStatus {
   return {
@@ -14,6 +14,7 @@ function baseStatus(overrides: Partial<RemiStatus> = {}): RemiStatus {
     sessionId: null,
     repo: 'remi',
     branch: 'develop',
+    autoApprove: { ...IDLE_AUTO_APPROVE },
     ...overrides,
   };
 }
@@ -183,5 +184,59 @@ describe('StatusWriter', () => {
       debounceMs: 0,
     });
     expect(() => writer.cleanup()).not.toThrow();
+  });
+
+  // --- auto-approve eval cue (#560) ---
+  const aaWriter = () =>
+    new StatusWriter(baseStatus(), {
+      getTargetFile: () => target,
+      isEnabled: () => false, // pure in-memory state; no disk needed
+      writeLog: () => {},
+      debounceMs: 0,
+    });
+
+  test('autoApprove: count increments on start, decrements on end, never negative', () => {
+    const w = aaWriter();
+    expect(w.state.autoApprove.inFlight).toBe(0);
+    w.autoApproveStart(10_000);
+    expect(w.state.autoApprove.inFlight).toBe(1);
+    expect(w.state.autoApprove.sinceS).toBe(10); // 10_000ms floored to seconds
+    w.autoApproveStart(12_000); // second concurrent eval; batch start unchanged
+    expect(w.state.autoApprove.inFlight).toBe(2);
+    expect(w.state.autoApprove.sinceS).toBe(10);
+    w.autoApproveEnd('approved', 15_000);
+    expect(w.state.autoApprove.inFlight).toBe(1);
+    expect(w.state.autoApprove.sinceS).toBe(10); // still in flight
+    w.autoApproveEnd('approved', 16_000);
+    expect(w.state.autoApprove.inFlight).toBe(0);
+    expect(w.state.autoApprove.sinceS).toBe(0); // cleared on 1->0
+    w.autoApproveEnd('cancelled', 17_000); // unbalanced extra end never goes negative
+    expect(w.state.autoApprove.inFlight).toBe(0);
+  });
+
+  test('autoApprove: records the last actionable verdict; cancelled does not overwrite it', () => {
+    const w = aaWriter();
+    w.autoApproveStart(1_000);
+    w.autoApproveEnd('escalated', 2_000);
+    expect(w.state.autoApprove.lastVerdict).toBe('escalated');
+    expect(w.state.autoApprove.lastVerdictAtS).toBe(2);
+    w.autoApproveStart(3_000);
+    w.autoApproveEnd('cancelled', 4_000); // must NOT clobber the verdict
+    expect(w.state.autoApprove.lastVerdict).toBe('escalated');
+    w.autoApproveStart(5_000);
+    w.autoApproveEnd('approved', 6_000);
+    expect(w.state.autoApprove.lastVerdict).toBe('approved');
+    expect(w.state.autoApprove.lastVerdictAtS).toBe(6);
+  });
+
+  test('autoApprove: interleaved concurrent evals never get stuck "evaluating" (the old spinner race)', () => {
+    const w = aaWriter();
+    w.autoApproveStart(100_000); // A
+    w.autoApproveStart(101_000); // B
+    w.autoApproveEnd('approved', 102_000); // A done; B still in flight
+    expect(w.state.autoApprove.inFlight).toBe(1);
+    w.autoApproveEnd('escalated', 103_000); // B done
+    expect(w.state.autoApprove.inFlight).toBe(0); // back to idle, not stuck
+    expect(w.state.autoApprove.sinceS).toBe(0);
   });
 });

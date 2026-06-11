@@ -26,19 +26,30 @@ import { errorToString } from '@remi/shared';
  */
 export function buildStatuslineScript(remiDir: string): string {
   return `#!/bin/bash
-input=$(cat)
+input=\$(cat)
 REMI=""
 # REMI_PORT is set by remi when spawning Claude; status file is per-port
 REMI_STATUS_FILE="${remiDir}/status-\$REMI_PORT.json"
 if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH AA_INFLIGHT AA_SINCE AA_LASTV AA_LASTAT < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", .autoApprove.inFlight // 0, .autoApprove.sinceS // 0, .autoApprove.lastVerdict // "none", .autoApprove.lastVerdictAtS // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
   if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     CLIENT_INFO="no clients"
     [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
-    REMI="remi :\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${S_STATUS}"
+    # The status segment reflects auto-approve state when a permission is being
+    # decided, otherwise Claude's agent status (#560).
+    NOW=\$(date +%s)
+    STATE="\$S_STATUS"
+    if [ "\${AA_INFLIGHT:-0}" -gt 0 ] 2>/dev/null; then
+      STATE="evaluating \$((NOW - AA_SINCE))s"
+    elif [ "\$AA_LASTV" = "escalated" ]; then
+      STATE="needs you"
+    elif [ "\$AA_LASTV" = "approved" ] && [ \$((NOW - AA_LASTAT)) -lt 5 ] 2>/dev/null; then
+      STATE="approved"
+    fi
+    REMI="remi:\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${STATE}"
   fi
 fi
-IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
+IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "\$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
 echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
 `;
 }
