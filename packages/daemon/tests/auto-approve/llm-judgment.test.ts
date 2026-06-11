@@ -66,6 +66,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     multichoice_model: '',
     escalate_model: '',
     escalate_timeout: 0,
+    queue_timeout: 240,
     disable_thinking: false,
     ...overrides,
   };

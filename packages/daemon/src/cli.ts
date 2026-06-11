@@ -780,8 +780,9 @@ let autoApproveService: AutoApproveService | null = null;
     const escalateSummary = aaCfg.escalate_model
       ? `escalate_model=${aaCfg.escalate_model}${aaCfg.escalate_timeout > 0 ? ` (timeout=${aaCfg.escalate_timeout}s)` : ''}`
       : 'escalate_model=none';
+    const queueSummary = `queue_timeout=${aaCfg.queue_timeout > 0 ? `${aaCfg.queue_timeout}s` : 'none'}`;
     writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}`,
+      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}, ${queueSummary}`,
     );
     // Warm-load the heavy second-opinion model so the first escalation is not a
     // cold start. Best-effort, fire-and-forget (never blocks daemon startup).

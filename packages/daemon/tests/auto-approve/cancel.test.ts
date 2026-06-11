@@ -116,6 +116,7 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     multichoice_model: '',
     escalate_model: '',
     escalate_timeout: 0,
+    queue_timeout: 240,
     disable_thinking: false,
   };
 }
@@ -215,19 +216,9 @@ describe('AutoApproveService.cancel()', () => {
     expect(result.reasoning).toContain('user-answered');
   });
 
-  test('concurrent eval: second call escalates while first is in flight', async () => {
-    const svc = new AutoApproveService(makeConfig(60), noLog);
-    const first = svc.evaluate('Bash', { command: 'ls' });
-    await hanging.awaitNextRequest();
-
-    const second = await svc.evaluate('Bash', { command: 'pwd' });
-    expect(second.decision).toBe('escalate');
-    expect(second.reasoning).toMatch(/concurrent/i);
-
-    svc.cancel('cleanup');
-    const firstResult = await first;
-    expect(firstResult.decision).toBe('cancelled');
-  });
+  // NOTE: escalate-on-busy was retired in #551 — concurrent evals now serialize
+  // (a second request queues instead of escalating). That behavior, including
+  // the cancel-drains-the-queue interaction, is covered in serialize.test.ts.
 
   test('hard-kill timer does not abort a subsequent successful eval', async () => {
     // Regression: prior implementation never cleared the race timer when
