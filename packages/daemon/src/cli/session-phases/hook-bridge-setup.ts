@@ -61,7 +61,7 @@ import type { BinderDecision, BinderHookEvent } from '../../transcript/index.ts'
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
-import type { TerminalIndicator } from '../terminal-indicator.ts';
+import type { StatusWriter } from '../status-writer.ts';
 import { startTranscriptWatcher } from '../transcript-watcher-setup.ts';
 
 export interface HookBridgeDeps {
@@ -115,7 +115,7 @@ export interface HookBridgeDeps {
    * fires a desktop notification across the auto-approve lifecycle. Shared by
    * all sessions (one terminal). Optional; inert when absent or headless.
    */
-  terminalIndicator?: TerminalIndicator | undefined;
+  statusWriter?: StatusWriter | undefined;
 }
 
 export interface HookBridgeArgs {
@@ -665,17 +665,19 @@ export function setupHookBridge(
       escalate: (i) => handlers.onPermissionRequest?.(i),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
-      // #513: the same lifecycle drives the terminal cue (spinner -> done / needs-you).
+      // #560: the same lifecycle drives the auto-approve cue in Claude's native
+      // status line via the StatusWriter. A COUNT (start/end) replaces the old
+      // shared title spinner, which raced under concurrent evals.
       onEvalStart: () => {
         tracker.onAutoApproveStart();
-        deps.terminalIndicator?.start();
+        deps.statusWriter?.autoApproveStart(Date.now());
       },
       onEscalate: () => {
         tracker.onAutoApproveEscalate();
-        deps.terminalIndicator?.resolve('escalate');
+        deps.statusWriter?.autoApproveEnd('escalated', Date.now());
       },
-      onHandled: () => deps.terminalIndicator?.resolve('handled'),
-      onCancelled: () => deps.terminalIndicator?.stop(),
+      onHandled: () => deps.statusWriter?.autoApproveEnd('approved', Date.now()),
+      onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
       // #522: second-opinion model on a primary escalate (read from the service's
       // config). Empty when unset -> escalate straight to the user.
       escalateModel: autoApproveService?.escalateModel ?? '',

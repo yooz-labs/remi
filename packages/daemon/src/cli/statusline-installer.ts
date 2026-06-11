@@ -26,19 +26,35 @@ import { errorToString } from '@remi/shared';
  */
 export function buildStatuslineScript(remiDir: string): string {
   return `#!/bin/bash
-input=$(cat)
+input=\$(cat)
 REMI=""
 # REMI_PORT is set by remi when spawning Claude; status file is per-port
 REMI_STATUS_FILE="${remiDir}/status-\$REMI_PORT.json"
 if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // ""] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH AA_INFLIGHT AA_SINCE AA_LASTV AA_LASTAT < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", .autoApprove.inFlight // 0, .autoApprove.sinceS // 0, .autoApprove.lastVerdict // "none", .autoApprove.lastVerdictAtS // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
   if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     CLIENT_INFO="no clients"
     [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
-    REMI="remi :\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${S_STATUS}"
+    # The status segment reflects auto-approve state when a permission is being
+    # decided, otherwise Claude's agent status (#560). All arithmetic is guarded
+    # (:-0) so a status file from an older daemon (no autoApprove key) renders
+    # cleanly. The evaluating cap (600s) is leak-safety; "needs you" decays after
+    # 60s so a stale escalate never sticks across sessions.
+    NOW=\$(date +%s)
+    AA_ELAPSED=\$((NOW - \${AA_SINCE:-0}))
+    AA_AGE=\$((NOW - \${AA_LASTAT:-0}))
+    STATE="\$S_STATUS"
+    if [ "\${AA_INFLIGHT:-0}" -gt 0 ] 2>/dev/null && [ "\$AA_ELAPSED" -lt 600 ] 2>/dev/null; then
+      STATE="evaluating \${AA_ELAPSED}s"
+    elif [ "\$AA_LASTV" = "escalated" ] && [ "\$AA_AGE" -lt 60 ] 2>/dev/null; then
+      STATE="needs you"
+    elif [ "\$AA_LASTV" = "approved" ] && [ "\$AA_AGE" -lt 5 ] 2>/dev/null; then
+      STATE="approved"
+    fi
+    REMI="remi:\$REMI_PORT \${S_REPO}:\${S_BRANCH} | \${CLIENT_INFO} | \${STATE}"
   fi
 fi
-IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
+IFS=\$'\\t' read -r C_PCT C_MODEL < <(echo "\$input" | jq -r '[(.context_window.used_percentage // 0 | floor), (.model.display_name // "?")] | @tsv' 2>/dev/null)
 echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
 `;
 }

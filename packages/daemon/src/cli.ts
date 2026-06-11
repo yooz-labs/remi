@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.9'; // REMI_COMPILED_VERSION
+      return '0.6.10-dev.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.9'; // REMI_COMPILED_VERSION
+    return '0.6.10-dev.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -62,7 +62,7 @@ function ensureRemiDir(): void {
 // Guard: only writes in wrapper mode (wrapperMode is set during arg parsing)
 // ---------------------------------------------------------------------------
 import { detectGitInfo, loadDotenvFile } from './cli/startup-env.ts';
-import { type RemiStatus, StatusWriter } from './cli/status-writer.ts';
+import { IDLE_AUTO_APPROVE, type RemiStatus, StatusWriter } from './cli/status-writer.ts';
 
 const gitInfo = detectGitInfo();
 
@@ -76,6 +76,7 @@ const statusWriter = new StatusWriter(
     sessionId: null,
     repo: gitInfo.repo,
     branch: gitInfo.branch,
+    autoApprove: { ...IDLE_AUTO_APPROVE },
   },
   {
     getTargetFile: () => (cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE),
@@ -134,7 +135,6 @@ import { createMessageApiForSession } from './cli/session-phases/message-api-set
 import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
-import { type TerminalIndicator, createTerminalIndicator } from './cli/terminal-indicator.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
@@ -790,18 +790,9 @@ let autoApproveService: AutoApproveService | null = null;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Terminal cue (#513): animates the wrapper terminal title + fires a desktop
-// notification across the auto-approve lifecycle. Built only when auto-approve
-// is enabled (the gate is its sole driver). Process-wide; one terminal. The
-// writer no-ops in headless/daemon mode (no real terminal fd).
-// ---------------------------------------------------------------------------
-const terminalIndicator: TerminalIndicator | undefined = autoApproveService
-  ? createTerminalIndicator(
-      { notify: remiConfig.terminal.notify, statusCue: remiConfig.terminal.status_cue },
-      process.cwd(),
-    )
-  : undefined;
+// The auto-approve eval cue (#560) is surfaced in Claude's native status line via
+// the StatusWriter (see the gate cue wiring in setupHookBridge); it replaced the
+// shared title-bar TerminalIndicator, which raced under concurrent evals.
 
 // ---------------------------------------------------------------------------
 // SIGTSTP / Ctrl+Z handling.
@@ -1151,7 +1142,7 @@ async function createNewSession(
         binderEnabled,
         transcriptDiscovery,
         subagentViews,
-        terminalIndicator,
+        statusWriter,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
