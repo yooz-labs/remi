@@ -4,6 +4,29 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-06-10
+
+Fixes the auto-approve regression where permissions piled up as questions
+whenever the model was busy. The evaluator was single-flight: any permission that
+arrived while another evaluation was already running escalated to the user with
+no model decision at all. During a burst (parallel subagents, fast tool
+sequences) or whenever the GPU was occupied with a slow model, this produced a
+flood of escalations even though the model's decisions were fine.
+
+### Fixed
+- **Concurrent permission evals now serialize instead of escalate-on-busy**
+  (#551): evaluations run one at a time (one GPU); a request that arrives while
+  another is in flight waits its turn and gets its own real decision rather than
+  being escalated. The deny / allow / group fast-paths stay instant and are never
+  queued.
+
+### Added
+- **`[auto_approve] queue_timeout`** (seconds, default 240; `0` = no bound): the
+  maximum a permission may wait in the serialization queue before escalating
+  gracefully, so a deep burst can never push a request toward the Claude Code
+  hook budget. Configurable via `REMI_AUTO_APPROVE_QUEUE_TIMEOUT`; shown in
+  `config show` and the startup banner.
+
 ## [0.6.7] - 2026-06-10
 
 Makes auto-approve actually work with reasoning-tuned local models. A model that
