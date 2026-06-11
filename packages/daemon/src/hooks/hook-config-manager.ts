@@ -26,6 +26,24 @@ interface HookMatcher {
   hooks: HookEntry[];
 }
 
+/**
+ * Seconds Claude Code waits for a hook's HTTP response before proceeding
+ * WITHOUT it. PermissionRequest must outlast the synchronous auto-approve eval
+ * (#496/#537): a heavy local model plus the serialization queue can take far
+ * longer than a few seconds, and at the old blanket 5s Claude Code gave up and
+ * showed its own prompt before the daemon's verdict arrived (so a decision that
+ * WOULD approve landed too late). A dead daemon still fails fast (connection
+ * refused), so the long timeout only delays while the daemon is actively
+ * deciding. Every other hook keeps the short timeout so a slow/dead daemon never
+ * gates worktree creation / prompt submission / compaction (#203).
+ */
+const PERMISSION_REQUEST_HOOK_TIMEOUT = 300;
+const DEFAULT_HOOK_TIMEOUT = 5;
+
+function hookTimeoutFor(event: string): number {
+  return event === 'PermissionRequest' ? PERMISSION_REQUEST_HOOK_TIMEOUT : DEFAULT_HOOK_TIMEOUT;
+}
+
 interface ClaudeSettings {
   hooks?: Record<string, HookMatcher[]>;
   [key: string]: unknown;
@@ -80,12 +98,6 @@ export class HookConfigManager {
       settings.hooks = {};
     }
 
-    const remiHookEntry: HookEntry = {
-      type: 'http',
-      url: this.hookUrl,
-      timeout: 5,
-    };
-
     // Register only the subset of events remi actually consumes. Registering
     // every event in HOOK_EVENT_NAMES forces Claude Code into a synchronous
     // HTTP call to remi for every Worktree/UserPrompt/etc. event — and a
@@ -98,14 +110,23 @@ export class HookConfigManager {
       }
 
       const matchers = settings.hooks[event];
-      const alreadyInstalled = matchers.some(
-        (m) =>
-          Array.isArray(m.hooks) &&
-          m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
-      );
+      const desiredTimeout = hookTimeoutFor(event);
+      // Reconcile any existing remi hook for this event to the desired timeout
+      // (so an upgrade — e.g. the #537 PermissionRequest bump — takes effect for
+      // an already-registered hook), and add it when missing.
+      let installed = false;
+      for (const m of matchers) {
+        if (!Array.isArray(m.hooks)) continue;
+        for (const h of m.hooks) {
+          if (h.type === 'http' && h.url === this.hookUrl) {
+            installed = true;
+            h.timeout = desiredTimeout;
+          }
+        }
+      }
 
-      if (!alreadyInstalled) {
-        matchers.push({ hooks: [{ ...remiHookEntry }] });
+      if (!installed) {
+        matchers.push({ hooks: [{ type: 'http', url: this.hookUrl, timeout: desiredTimeout }] });
       }
     }
 
@@ -160,8 +181,13 @@ export class HookConfigManager {
 
     return REMI_REGISTERED_HOOK_EVENTS.every((event) => {
       const matchers = settings.hooks?.[event];
+      // Require the correct timeout too, so a stale registration (e.g. the old
+      // blanket 5s PermissionRequest hook) reports as not-installed and triggers
+      // a reconcile on the next install() (#537).
       return matchers?.some((m) =>
-        m.hooks.some((h) => h.type === 'http' && h.url === this.hookUrl),
+        m.hooks.some(
+          (h) => h.type === 'http' && h.url === this.hookUrl && h.timeout === hookTimeoutFor(event),
+        ),
       );
     });
   }

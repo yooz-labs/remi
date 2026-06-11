@@ -23,8 +23,9 @@
  * auto-approve eval and injects "1"/"3"/pick into the PTY, escalates to the user,
  * or default-denies a subagent prompt no one can answer. The gate is wired with
  * the bridge's `isInSubagentContext` + the router's `onPermissionRequest` as
- * callbacks; Pre/PostToolUse/Stop/SessionEnd call `gate.cancelStale()` to abort a
- * stale in-flight eval once Claude has advanced past the prompt.
+ * callbacks; Stop/SessionEnd call `gate.cancelStale()` to abort an in-flight eval
+ * when the Claude session actually ends. (Pre/PostToolUse deliberately do NOT
+ * cancel — under synchronous decisions the eval is never stale; see #537.)
  *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred until the shadow/drive dual path is
@@ -983,7 +984,13 @@ export function setupHookBridge(
     shadowDecide('PreToolUse', input);
     if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     if (isSubagentEvent(input)) return;
-    autoApproveGate.cancelStale('PreToolUse');
+    // NB: do NOT cancel the in-flight auto-approve eval here (#537). Under
+    // synchronous decisions (#496) Claude BLOCKS on the PermissionRequest until
+    // the daemon answers, so a running eval is never stale — it is the verdict
+    // Claude is waiting for. A PreToolUse/PostToolUse for a PREVIOUS tool would
+    // otherwise abort the NEXT permission's eval mid-flight ("Decision dropped"),
+    // dropping a decision that was about to approve. Only Stop/SessionEnd (a real
+    // session-end) cancel an eval now.
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -993,7 +1000,8 @@ export function setupHookBridge(
     shadowDecide('PostToolUse', input);
     if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return;
     if (isSubagentEvent(input)) return;
-    autoApproveGate.cancelStale('PostToolUse');
+    // See the PreToolUse note above: no cancelStale here (#537). The previous
+    // tool's PostToolUse must not abort the next permission's in-flight eval.
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {

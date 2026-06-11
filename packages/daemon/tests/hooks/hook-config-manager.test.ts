@@ -77,8 +77,46 @@ describe('HookConfigManager', () => {
       expect(hooks?.length).toBe(1);
       expect(hooks?.[0]?.type).toBe('http');
       expect(hooks?.[0]?.url).toBe(hookUrl);
-      expect(hooks?.[0]?.timeout).toBe(5);
+      // PermissionRequest must outlast the synchronous auto-approve eval (#537);
+      // every other hook keeps the short fail-fast timeout (#203).
+      expect(hooks?.[0]?.timeout).toBe(event === 'PermissionRequest' ? 300 : 5);
     }
+  });
+
+  it('#537: PermissionRequest gets a long timeout; other hooks stay short', async () => {
+    await manager.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url: string; timeout: number }> }>>;
+    };
+    const permHook = settings.hooks['PermissionRequest']
+      ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
+      ?.hooks.find((h) => h.url === hookUrl);
+    expect(permHook?.timeout).toBe(300);
+    // A representative non-permission hook keeps the short timeout.
+    const stopHook = settings.hooks['Stop']
+      ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
+      ?.hooks.find((h) => h.url === hookUrl);
+    expect(stopHook?.timeout).toBe(5);
+  });
+
+  it('#537: install() reconciles a stale 5s PermissionRequest hook up to the long timeout', async () => {
+    // Simulate a settings file from a pre-#537 remi: PermissionRequest registered
+    // with the old blanket 5s. install() must update it in place, not duplicate.
+    const stale = {
+      hooks: { PermissionRequest: [{ hooks: [{ type: 'http', url: hookUrl, timeout: 5 }] }] },
+    };
+    writeSettings(stale);
+    expect(manager.isInstalled()).toBe(false); // stale timeout reports not-installed
+
+    await manager.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url: string; timeout: number }> }>>;
+    };
+    const permMatchers = settings.hooks['PermissionRequest'];
+    const remiHooks = permMatchers?.flatMap((m) => m.hooks.filter((h) => h.url === hookUrl)) ?? [];
+    expect(remiHooks.length).toBe(1); // reconciled in place, not duplicated
+    expect(remiHooks[0]?.timeout).toBe(300);
+    expect(manager.isInstalled()).toBe(true);
   });
 
   it('regression #203: install() drops legacy remi entries for events it no longer registers', async () => {
