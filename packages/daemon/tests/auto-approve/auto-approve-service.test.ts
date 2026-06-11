@@ -51,6 +51,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     multichoice_model: '',
     escalate_model: '',
     escalate_timeout: 0,
+    queue_timeout: 240,
     disable_thinking: false,
     ...overrides,
   };
@@ -326,12 +327,15 @@ describe('AutoApproveService - error handling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// AutoApproveService - concurrency guard
+// AutoApproveService - concurrency serialization (#551)
 // ---------------------------------------------------------------------------
-describe('AutoApproveService - concurrency guard', () => {
-  test('second concurrent evaluation escalates immediately', async () => {
-    // Use an unroutable IP so the first request stays in-flight long enough
-    // for the second to race against the concurrency flag.
+describe('AutoApproveService - concurrency serialization', () => {
+  test('concurrent evaluations serialize instead of escalate-on-busy', async () => {
+    // #551: a second request that arrives while the first eval is in flight
+    // must QUEUE and get its own real decision, NOT escalate-on-busy. Use an
+    // unroutable IP so both calls reach the LLM path and time out; the old
+    // behavior gave the second an instant (0ms) "Concurrent evaluation in
+    // progress" escalate, the new behavior runs both (durationMs > 0).
     const service = new AutoApproveService(
       makeConfig({ base_url: 'http://10.255.255.1', timeout: 3 }),
       logFn,
@@ -342,18 +346,20 @@ describe('AutoApproveService - concurrency guard', () => {
       service.evaluate('Read', { file_path: '/tmp/test' }),
     ]);
 
-    const decisions = [first, second];
-    const concurrentResult = decisions.find(
-      (d) => d.reasoning === 'Concurrent evaluation in progress',
-    );
-    expect(concurrentResult).toBeDefined();
-    expect(concurrentResult?.decision).toBe('escalate');
-    expect(concurrentResult?.durationMs).toBe(0);
-  }, 10000);
+    // Neither carries the retired escalate-on-busy reasoning.
+    expect(first.reasoning).not.toBe('Concurrent evaluation in progress');
+    expect(second.reasoning).not.toBe('Concurrent evaluation in progress');
+    // Both actually ran the LLM (serialized), so both timed out -> escalate
+    // with a non-zero duration rather than an instant busy-bail.
+    expect(first.decision).toBe('escalate');
+    expect(second.decision).toBe('escalate');
+    expect(first.durationMs).toBeGreaterThan(0);
+    expect(second.durationMs).toBeGreaterThan(0);
+  }, 15000);
 
-  test('two independent service instances do not share state', async () => {
+  test('two independent service instances do not share a queue', async () => {
     // Regression: in a multi-session daemon, each session should have its own
-    // AutoApproveService instance so they do not serialize through one flag.
+    // AutoApproveService instance so they do not serialize through one queue.
     const serviceA = new AutoApproveService(
       makeConfig({ base_url: 'http://10.255.255.1', timeout: 3 }),
       logFn,
@@ -363,7 +369,7 @@ describe('AutoApproveService - concurrency guard', () => {
       logFn,
     );
 
-    // Both run concurrently; neither should trip the other's concurrency guard.
+    // Both run concurrently; neither should queue behind the other's slot.
     const [a, b] = await Promise.all([
       serviceA.evaluate('Bash', { command: 'ls' }, 'sessA'),
       serviceB.evaluate('Bash', { command: 'pwd' }, 'sessB'),
@@ -371,17 +377,17 @@ describe('AutoApproveService - concurrency guard', () => {
 
     expect(a.decision).toBe('escalate');
     expect(b.decision).toBe('escalate');
-    // Neither should hit the shared-state guard
+    // Neither should hit the retired shared-state busy guard
     expect(a.reasoning).not.toBe('Concurrent evaluation in progress');
     expect(b.reasoning).not.toBe('Concurrent evaluation in progress');
-  }, 10000);
+  }, 15000);
 });
 
 // ---------------------------------------------------------------------------
 // AutoApproveService - session tag in logs (multi-session visibility)
 // ---------------------------------------------------------------------------
 describe('AutoApproveService - session tag in logs', () => {
-  test('tag appears in concurrency-blocked log', async () => {
+  test('tag appears in logs for serialized concurrent evals', async () => {
     const logs: string[] = [];
     const tagLogFn = (msg: string) => logs.push(msg);
     const service = new AutoApproveService(
@@ -389,17 +395,15 @@ describe('AutoApproveService - session tag in logs', () => {
       tagLogFn,
     );
 
-    // Start one, race a second before it completes
+    // Start one, queue a second behind it; both produce tagged logs.
     const [,] = await Promise.all([
       service.evaluate('Bash', { command: 'first' }, 'abc12345'),
       service.evaluate('Bash', { command: 'second' }, 'abc12345'),
     ]);
 
-    const hasTaggedBlock = logs.some((l) =>
-      l.includes('[AutoApprove abc12345] Concurrent evaluation blocked'),
-    );
-    expect(hasTaggedBlock).toBe(true);
-  }, 10000);
+    const hasTagged = logs.some((l) => l.includes('[AutoApprove abc12345]'));
+    expect(hasTagged).toBe(true);
+  }, 15000);
 
   test('tag appears in error log on unreachable LLM', async () => {
     const logs: string[] = [];
