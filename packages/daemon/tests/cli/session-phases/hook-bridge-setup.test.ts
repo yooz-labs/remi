@@ -1713,7 +1713,10 @@ describe('setupHookBridge', () => {
   // Issue #387: cancel stale auto-approve LLM eval on advance signals
   // -------------------------------------------------------------------------
 
-  test('PreToolUse cancels stale auto-approve LLM eval', () => {
+  test('#537: PreToolUse does NOT cancel the in-flight auto-approve eval', () => {
+    // Under synchronous decisions Claude blocks on the PermissionRequest, so a
+    // running eval is the verdict it is waiting for — a previous tool's
+    // PreToolUse must not abort it (that dropped decisions about to approve).
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
     hookServer.fire('SessionStart', {
@@ -1729,10 +1732,10 @@ describe('setupHookBridge', () => {
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
-    expect(cancelLog).toContain('PreToolUse');
+    expect(cancelLog).not.toContain('PreToolUse');
   });
 
-  test('PostToolUse cancels stale auto-approve LLM eval', () => {
+  test('#537: PostToolUse does NOT cancel the in-flight auto-approve eval', () => {
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
     hookServer.fire('SessionStart', {
@@ -1749,7 +1752,7 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
       tool_response: 'ok',
     });
-    expect(cancelLog).toContain('PostToolUse');
+    expect(cancelLog).not.toContain('PostToolUse');
   });
 
   test('Stop cancels stale auto-approve LLM eval', () => {
