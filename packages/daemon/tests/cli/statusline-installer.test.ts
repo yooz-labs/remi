@@ -19,6 +19,22 @@ describe('buildStatuslineScript', () => {
     expect(script).toContain('% context');
     expect(script).toContain('used_percentage');
   });
+
+  test('renders "remi:" with no stray space before the port (#560)', () => {
+    const script = buildStatuslineScript('/x');
+    expect(script).toContain('REMI="remi:$REMI_PORT');
+    expect(script).not.toContain('remi :$REMI_PORT');
+  });
+
+  test('surfaces auto-approve eval state in the status segment (#560)', () => {
+    const script = buildStatuslineScript('/x');
+    // reads the auto-approve fields from the per-port status JSON
+    expect(script).toContain('.autoApprove.inFlight');
+    expect(script).toContain('.autoApprove.lastVerdict');
+    // status segment reflects evaluating / needs-you when a permission is decided
+    expect(script).toContain('STATE="evaluating');
+    expect(script).toContain('STATE="needs you"');
+  });
 });
 
 describe('installStatusLine', () => {
