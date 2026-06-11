@@ -144,6 +144,15 @@ export interface AutoApproveConfig {
    */
   readonly escalate_timeout: number;
   /**
+   * Max seconds a permission eval may WAIT in the serialization queue before it
+   * escalates gracefully (#551). Evals run one at a time (one GPU); concurrent
+   * requests queue instead of escalating. Under a deep burst (parallel
+   * subagents) a request could otherwise wait long enough to risk the Claude
+   * Code hook budget (~600s). A waiter queued longer than this escalates to the
+   * user instead of hanging. 0 = no bound (wait until granted). Default 240.
+   */
+  readonly queue_timeout: number;
+  /**
    * Ollama only: route through the native /api/chat with `think: false` to
    * turn OFF the model's reasoning. This is FASTER but lowers decision quality
    * — live testing showed the chain-of-thought is load-bearing for following

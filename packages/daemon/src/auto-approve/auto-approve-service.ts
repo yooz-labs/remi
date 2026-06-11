@@ -95,10 +95,18 @@ export class AutoApproveService {
   private readonly escalateTimeoutMs: number;
   /** True when the provider is Ollama (enables the native warm-up load). */
   private readonly providerIsOllama: boolean;
-  /** Prevents concurrent evaluations. Second request escalates immediately. */
-  private evaluating = false;
+  /** Max ms a permission eval may wait in the serialization queue before it
+   *  escalates gracefully (#551); 0 = no bound. */
+  private readonly queueTimeoutMs: number;
+  /** Serialize LLM evals: one runs at a time (one GPU). Concurrent requests
+   *  QUEUE here instead of escalating-on-busy (#551). `evalActive` is true while
+   *  a slot is held; `evalQueue` holds the FIFO waiters. The fast-path
+   *  deny/allow/group checks run BEFORE acquiring a slot, so they are never
+   *  queued. */
+  private evalActive = false;
+  private readonly evalQueue: Array<{ grant: () => void }> = [];
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
-   *  aborts via this. Held alongside `evaluating` so they share the same
+   *  aborts via this. Held alongside the active slot so they share the same
    *  lifecycle window. */
   private currentAbortController: AbortController | null = null;
   /** Set by cancel() so the catch block can distinguish a user-driven abort
@@ -128,7 +136,55 @@ export class AutoApproveService {
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
+    this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
     this.providerIsOllama = config.provider === 'ollama';
+  }
+
+  /**
+   * Acquire the single eval slot, serializing concurrent LLM evaluations (one
+   * GPU). Resolves true when the slot is held; resolves false if the wait
+   * exceeded `deadlineMs` (the caller then escalates gracefully rather than
+   * risking the ~600s hook budget). When the slot is free it is taken
+   * immediately; otherwise the caller is queued FIFO and granted by
+   * `releaseSlot`.
+   */
+  private acquireSlot(deadlineMs: number): Promise<boolean> {
+    if (!this.evalActive) {
+      this.evalActive = true;
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const waiter = {
+        grant: () => {
+          if (timer !== null) clearTimeout(timer);
+          resolve(true);
+        },
+      };
+      this.evalQueue.push(waiter);
+      if (deadlineMs > 0) {
+        timer = setTimeout(() => {
+          const i = this.evalQueue.indexOf(waiter);
+          if (i !== -1) {
+            this.evalQueue.splice(i, 1);
+            resolve(false);
+          }
+        }, deadlineMs);
+      }
+    });
+  }
+
+  /**
+   * Release the eval slot. Hands it to the next FIFO waiter (the slot stays
+   * active, just changes owner) or marks the evaluator idle when none wait.
+   */
+  private releaseSlot(): void {
+    const next = this.evalQueue.shift();
+    if (next) {
+      next.grant();
+    } else {
+      this.evalActive = false;
+    }
   }
 
   /**
@@ -252,17 +308,18 @@ export class AutoApproveService {
         return { decision: 'escalate', reasoning, durationMs: 0, model };
       }
 
-      if (this.evaluating) {
-        this.logFn(`${prefix} Concurrent evaluation blocked, escalating to user`);
-        return {
-          decision: 'escalate',
-          reasoning: 'Concurrent evaluation in progress',
-          durationMs: 0,
-          model,
-        };
+      // Serialize concurrent evals (#551): one LLM call at a time (one GPU).
+      // A second request QUEUES instead of escalating-on-busy; only a request
+      // that waits past queue_timeout escalates gracefully so a deep burst
+      // (parallel subagents) never risks the ~600s hook budget.
+      const acquired = await this.acquireSlot(this.queueTimeoutMs);
+      if (!acquired) {
+        const durationMs = Date.now() - start;
+        const reasoning = `eval queue wait exceeded ${this.queueTimeoutMs}ms; escalating to user`;
+        this.logFn(`${prefix} ${toolName}: escalate (${durationMs}ms) - ${reasoning}`);
+        return { decision: 'escalate', reasoning, durationMs, model };
       }
 
-      this.evaluating = true;
       this.currentAbortController = new AbortController();
       const externalSignal = this.currentAbortController.signal;
       // The heavy escalate_model gets its dedicated (longer) budget when set, so
@@ -362,8 +419,8 @@ export class AutoApproveService {
         return result;
       } finally {
         if (raceTimer !== null) clearTimeout(raceTimer);
-        this.evaluating = false;
         this.currentAbortController = null;
+        this.releaseSlot();
       }
     } catch (err) {
       const durationMs = Date.now() - start;
