@@ -4,6 +4,25 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-06-11
+
+The Claude Code status line now shows what auto-approve is doing, so you can tell
+whether to wait (still deciding) or that a permission needs you — useful when a
+heavy local model takes tens of seconds.
+
+### Added
+- **Auto-approve eval state in Claude's native status line** (#560): the status
+  segment shows `evaluating <N>s` while a permission is being decided, `needs you`
+  after an escalate, `approved` briefly after a silent approve, else Claude's
+  agent status. Driven by a per-daemon in-flight count, so concurrent evals
+  (parallel subagents, multiple sessions) can't get it stuck.
+
+### Fixed
+- Status line no longer prints a stray space in `remi :<port>` — now `remi:<port>`.
+- Retired the shared title-bar auto-approve spinner, which could get stuck showing
+  "evaluating" with the model idle when concurrent evals interleaved its
+  start/stop. The status-line cue replaces it.
+
 ## [0.6.9] - 2026-06-11
 
 Stops auto-approve from dropping correct verdicts when the eval is slow. With a
