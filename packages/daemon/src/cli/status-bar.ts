@@ -1,12 +1,19 @@
 /**
  * Reserved last-row status bar for wrapper mode (#565).
  *
- * remi is the PTY wrapper; Claude is its child. By reporting `rows - 1` to
- * Claude's PTY winsize (see `computeTermSize` / the resize handler), Claude
- * lays out entirely within rows `1..N-1` and never touches the real terminal's
- * last row. remi then owns row `N` exclusively and draws a persistent status
- * bar there — visible even while Claude shows a permission/question prompt,
- * which is exactly when the native `statusLine` cue (#560) is hidden.
+ * remi is the PTY wrapper; Claude is its child. Two mechanisms together keep
+ * the last row remi's alone:
+ *   1. **winsize** — report `rows - 1` to Claude's PTY (see `computeTermSize` /
+ *      the resize handler) so Claude lays out within rows `1..N-1`.
+ *   2. **scroll region** — set DECSTBM to `1..N-1` (in every bar paint) so the
+ *      terminal can only scroll the rows above the bar. The winsize trick alone
+ *      is insufficient because Claude renders inline (no alternate screen): on
+ *      output the terminal would scroll the whole screen and the bar would
+ *      bleed up into Claude's content. The region pins row `N` fixed.
+ *
+ * remi then owns row `N` exclusively and draws a persistent status bar there —
+ * visible even while Claude shows a permission/question prompt, which is exactly
+ * when the native `statusLine` cue (#560) is hidden.
  *
  * The draw is bracketed by DECSC/DECRC (ESC7/ESC8) save/restore so it never
  * disturbs Claude's cursor position or character rendition. Origin mode is
@@ -85,20 +92,35 @@ export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): st
  * full-width reverse-video bar, then restores the prior cursor + rendition.
  * `text` is truncated to `cols` and padded with spaces so the bar spans the
  * full width.
+ *
+ * Crucially it also sets the **scroll region** (DECSTBM) to rows `1..row-1`.
+ * The winsize trick alone is not enough: Claude renders inline (no alternate
+ * screen), so without a scroll region the terminal scrolls the *whole* screen
+ * on output and the bar bleeds up into Claude's content (#565). With the region
+ * pinned to `1..row-1`, the terminal can only scroll the rows above the bar, so
+ * `row` stays fixed. The region is re-asserted on every paint in case Claude
+ * ever resets it. DECSTBM homes the cursor, but DECSC/DECRC (ESC7/ESC8) restore
+ * it, and DECRC does not touch the region, so the region persists after.
  */
 export function buildBarSequence(row: number, cols: number, text: string): string {
   const visible = text.length > cols ? text.slice(0, cols) : text;
   const padded = visible.padEnd(cols, ' ');
-  // ESC7   DECSC: save cursor, rendition, charset, origin mode
-  // ESC[?6l DECOM off: absolute addressing, immune to a scroll region
-  // ESC[r;1H CUP to the reserved row   ESC[2K erase line   ESC[7m reverse video
-  // ESC[0m reset rendition             ESC8 DECRC: restore everything DECSC saved
-  return `\x1b7\x1b[?6l\x1b[${row};1H\x1b[2K\x1b[7m${padded}\x1b[0m\x1b8`;
+  // ESC7     DECSC: save cursor, rendition, charset, origin mode
+  // ESC[?6l  DECOM off: absolute addressing, so CUP can reach row `row`
+  // ESC[1;Nr DECSTBM: scroll region = rows 1..row-1 (protects the bar row)
+  // ESC[r;1H CUP to the bar row   ESC[2K erase line   ESC[7m reverse video
+  // ESC[0m   reset rendition      ESC8 DECRC: restore cursor (region persists)
+  return `\x1b7\x1b[?6l\x1b[1;${row - 1}r\x1b[${row};1H\x1b[2K\x1b[7m${padded}\x1b[0m\x1b8`;
 }
 
-/** Build the escape sequence that clears `row` (on teardown). */
+/**
+ * Build the escape sequence that resets the scroll region to the full screen
+ * (ESC[r) and clears `row`, handing the terminal back clean on teardown.
+ * Bracketed by DECSC/DECRC so Claude's cursor is preserved; DECRC does not
+ * restore the region, so the full-screen region persists.
+ */
 export function buildClearSequence(row: number): string {
-  return `\x1b7\x1b[?6l\x1b[${row};1H\x1b[2K\x1b8`;
+  return `\x1b7\x1b[?6l\x1b[r\x1b[${row};1H\x1b[2K\x1b8`;
 }
 
 export interface StatusBarDeps {

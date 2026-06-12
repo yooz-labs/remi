@@ -125,10 +125,16 @@ describe('buildBarSequence', () => {
     expect(seq.startsWith('\x1b7')).toBe(true); // DECSC
     expect(seq.endsWith('\x1b8')).toBe(true); // DECRC
     expect(seq).toContain('\x1b[?6l'); // origin mode off
+    expect(seq).toContain('\x1b[1;39r'); // DECSTBM: scroll region rows 1..39
     expect(seq).toContain('\x1b[40;1H'); // CUP to row 40
     expect(seq).toContain('\x1b[2K'); // erase line
     expect(seq).toContain('\x1b[7m'); // reverse video
     expect(seq).toContain('\x1b[0m'); // reset
+  });
+
+  test('sets the scroll region to exclude exactly the bar row', () => {
+    // 24-row terminal -> region 1..23, bar on row 24.
+    expect(buildBarSequence(24, 80, 'x')).toContain('\x1b[1;23r');
   });
 
   test('pads the content to the full width', () => {
@@ -144,9 +150,9 @@ describe('buildBarSequence', () => {
 });
 
 describe('buildClearSequence', () => {
-  test('positions and erases the reserved row, bracketed by save/restore', () => {
+  test('resets the scroll region and erases the reserved row, bracketed by save/restore', () => {
     const seq = buildClearSequence(24);
-    expect(seq).toBe('\x1b7\x1b[?6l\x1b[24;1H\x1b[2K\x1b8');
+    expect(seq).toBe('\x1b7\x1b[?6l\x1b[r\x1b[24;1H\x1b[2K\x1b8');
   });
 });
 

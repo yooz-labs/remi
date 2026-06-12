@@ -118,13 +118,20 @@ export function createPtySessionForSession(
 
   const termSize = computeTermSize(passThrough, reservedRows);
 
+  // When the reserved-row status bar is active (#565), tell Claude's statusLine
+  // script via REMI_STATUS_BAR so it drops the remi prefix and shows only
+  // model/context — the bar already renders the remi fields, avoiding a
+  // duplicate line just above the bar.
+  const env: Record<string, string> = { REMI_PORT: String(wsPort) };
+  if (reservedRows > 0) env['REMI_STATUS_BAR'] = '1';
+
   const ptySession: PTYSession = new PTYSession(
     {
       command: 'claude',
       args: [...extraArgs],
       cwd: workingDirectory,
       size: termSize,
-      env: { REMI_PORT: String(wsPort) },
+      env,
     },
     {
       onRawData: (data: Uint8Array) => {
