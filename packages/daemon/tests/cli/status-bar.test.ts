@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  MAX_RENDER_ERRORS,
   MIN_ROWS_FOR_BAR,
   StatusBar,
   type StatusBarDeps,
@@ -218,7 +219,7 @@ describe('StatusBar', () => {
     expect(writes.length).toBeGreaterThan(2);
   });
 
-  test('a render error never throws, logs once, and stops the loop', async () => {
+  test('a persistent render error never throws, logs once, and backs off after the threshold', async () => {
     let calls = 0;
     const { bar, writes, logs } = harness({
       writeToFd: () => {
@@ -227,10 +228,32 @@ describe('StatusBar', () => {
       },
     });
     expect(() => bar.start()).not.toThrow();
-    await new Promise((r) => setTimeout(r, 30));
-    // The loop backed off after the first failing paint; no repeated writes.
-    expect(calls).toBe(1);
-    expect(writes).toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 60)); // well past MAX_RENDER_ERRORS ticks
+    // Backed off after MAX consecutive failures, then stopped retrying.
+    expect(calls).toBe(MAX_RENDER_ERRORS);
+    expect(writes).toHaveLength(0); // the throwing write never records a paint
+    expect(logs).toHaveLength(1); // first failure of the streak only
+    const settled = calls;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toBe(settled); // no further attempts once disabled
+    bar.stop();
+  });
+
+  test('a transient render error does not disable the bar', async () => {
+    let attempts = 0;
+    const painted: string[] = [];
+    const { bar, logs } = harness({
+      writeToFd: (_fd, data) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('EINTR'); // one transient blip
+        painted.push(data);
+      },
+    });
+    bar.start();
+    await new Promise((r) => setTimeout(r, 40)); // several ticks past the blip
+    // The streak reset on the first success, so the bar kept painting and never
+    // backed off. The single failure logged exactly once.
+    expect(painted.length).toBeGreaterThan(0);
     expect(logs).toHaveLength(1);
     bar.stop();
   });

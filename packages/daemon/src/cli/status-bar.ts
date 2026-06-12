@@ -35,6 +35,10 @@ export const EVALUATING_CAP_S = 600;
 /** An 'approved' verdict fades from the bar after this many seconds (mirrors the
  *  5s in statusline-installer.ts). */
 export const APPROVED_FRESH_S = 5;
+/** Consecutive render failures tolerated before the bar backs off for good. A
+ *  single transient write error (e.g. an interrupted syscall) must not silence
+ *  the bar for the whole session; a genuinely dead fd trips this within seconds. */
+export const MAX_RENDER_ERRORS = 3;
 
 /**
  * Rows to report to the child PTY given the real terminal height and whether
@@ -110,8 +114,9 @@ export interface StatusBarDeps {
   readonly writeToFd?: (fd: number, data: string) => void;
   /** Current epoch ms. Injectable for tests; defaults to Date.now. */
   readonly now?: () => number;
-  /** Logger for a one-shot render-failure note. */
-  readonly log?: (msg: string) => void;
+  /** Logger for render-failure notes. Required so a draw failure is never
+   *  silently swallowed by an accidental no-op default. */
+  readonly log: (msg: string) => void;
   /** Refresh cadence in ms. Default 1000 (the `evaluating Ns` counter ticks 1Hz). */
   readonly intervalMs?: number;
 }
@@ -126,7 +131,10 @@ export interface StatusBarDeps {
 export class StatusBar {
   private timer: ReturnType<typeof setInterval> | null = null;
   private errorLogged = false;
-  /** Set once a render fails; the bar backs off permanently (the fd is bad). */
+  /** Consecutive render failures; reset to 0 on any success. */
+  private consecutiveErrors = 0;
+  /** Set after MAX_RENDER_ERRORS consecutive failures; the bar backs off for
+   *  good (the fd has gone bad). A success before then clears the streak. */
   private disabled = false;
   private readonly getStdoutFd: () => number | null;
   private readonly getStatus: () => Readonly<RemiStatus>;
@@ -144,7 +152,7 @@ export class StatusBar {
     this.isEnabled = deps.isEnabled;
     this.writeToFd = deps.writeToFd ?? ((fd, data) => fs.writeSync(fd, data));
     this.now = deps.now ?? (() => Date.now());
-    this.log = deps.log ?? (() => {});
+    this.log = deps.log;
     this.intervalMs = deps.intervalMs ?? 1000;
   }
 
@@ -152,7 +160,8 @@ export class StatusBar {
   start(): void {
     if (this.timer || this.disabled) return;
     this.render();
-    // If the initial paint failed, render() set `disabled`; don't arm the loop.
+    // A single failing initial paint does not disable the bar (the loop retries
+    // up to MAX_RENDER_ERRORS); only a prior permanent back-off skips the timer.
     if (this.disabled) return;
     this.timer = setInterval(() => this.render(), this.intervalMs);
     // The bar must never, on its own, keep the process alive.
@@ -175,21 +184,33 @@ export class StatusBar {
     if (fd === null) return;
     const { cols, rows } = this.getSize();
     if (rows < MIN_ROWS_FOR_BAR || cols < 1) return;
+    // The whole draw stays inside the try: an exception escaping into the
+    // setInterval callback would surface as an uncaughtException and could take
+    // the wrapper down — the one thing a cosmetic bar must never do. The
+    // accessors and pure builders don't throw over a well-typed status, so in
+    // practice only the fd write can fail here.
     try {
       const text = formatStatusBar(this.getStatus(), this.now());
       this.writeToFd(fd, buildBarSequence(rows, cols, text));
+      this.consecutiveErrors = 0;
       this.errorLogged = false;
     } catch (err) {
-      // A cosmetic draw must never crash the wrapper. Back off permanently on
-      // failure (the fd has gone bad) and log exactly once.
+      // Log the first failure of a streak (a later success clears it, so a new
+      // streak logs again). Back off for good only after repeated failures so a
+      // single transient error doesn't silence the bar for the whole session.
+      this.consecutiveErrors += 1;
       if (!this.errorLogged) {
-        this.log(`[status-bar] render failed, disabling bar: ${errorToString(err)}`);
+        this.log(
+          `[status-bar] render failed (backs off after ${MAX_RENDER_ERRORS}): ${errorToString(err)}`,
+        );
         this.errorLogged = true;
       }
-      this.disabled = true;
-      if (this.timer) {
-        clearInterval(this.timer);
-        this.timer = null;
+      if (this.consecutiveErrors >= MAX_RENDER_ERRORS) {
+        this.disabled = true;
+        if (this.timer) {
+          clearInterval(this.timer);
+          this.timer = null;
+        }
       }
     }
   }
@@ -202,8 +223,11 @@ export class StatusBar {
     if (rows < MIN_ROWS_FOR_BAR) return;
     try {
       this.writeToFd(fd, buildClearSequence(rows));
-    } catch {
-      // Teardown path: the terminal may already be gone. Nothing to recover.
+    } catch (err) {
+      // Teardown path: the terminal may already be gone on SIGHUP. Nothing to
+      // recover, but on a keybinding-detach with a live fd a failed clear leaves
+      // a stale row in the returned shell, so leave a diagnostic.
+      this.log(`[status-bar] clear failed on teardown: ${errorToString(err)}`);
     }
   }
 }

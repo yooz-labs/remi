@@ -79,6 +79,11 @@ export interface PtySessionSetupArgs {
  * `reservedRows` (#565) shrinks the reported height so the wrapper can own the
  * bottom row(s); it only applies in pass-through mode and only when the
  * terminal is tall enough to spare the row (see `childRows`).
+ *
+ * Caller invariant: pass `reservedRows > 0` only when stdout is a real TTY.
+ * The sole caller (the wrapper block in cli.ts) derives it from
+ * `statusBarActive`, which already requires `process.stdout.isTTY`, so a
+ * non-TTY stdout (no real row count) never reserves a row here.
  */
 export function computeTermSize(
   passThrough: boolean,

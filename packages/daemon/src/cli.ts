@@ -2091,7 +2091,7 @@ if (cliDaemonMode) {
           rows: process.stdout.rows || 40,
         });
       } catch (err) {
-        log(`[Detach] winsize restore failed: ${errorToString(err)}`);
+        logError(`[Detach] winsize restore failed: ${errorToString(err)}`);
       }
     }
 
