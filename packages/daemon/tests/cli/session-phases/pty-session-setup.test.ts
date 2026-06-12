@@ -46,6 +46,18 @@ describe('computeTermSize', () => {
       expect(size.rows).toBe(40);
     }
   });
+
+  test('reservedRows shrinks the pass-through height by one row (#565)', () => {
+    const full = computeTermSize(true, 0);
+    const reserved = computeTermSize(true, 1);
+    expect(reserved.cols).toBe(full.cols);
+    expect(reserved.rows).toBe(full.rows - 1);
+  });
+
+  test('reservedRows never affects the headless deterministic size', () => {
+    // Headless PTYs must stay a reproducible 120x40 regardless of reservedRows.
+    expect(computeTermSize(false, 1)).toEqual({ cols: 120, rows: 40 });
+  });
 });
 
 describe('createPtySessionForSession', () => {

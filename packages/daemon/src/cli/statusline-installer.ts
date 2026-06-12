@@ -28,9 +28,12 @@ export function buildStatuslineScript(remiDir: string): string {
   return `#!/bin/bash
 input=\$(cat)
 REMI=""
-# REMI_PORT is set by remi when spawning Claude; status file is per-port
+# REMI_PORT is set by remi when spawning Claude; status file is per-port.
+# REMI_STATUS_BAR=1 means remi draws its own reserved-row status bar (#565), so
+# the native statusLine drops the remi prefix and shows only model/context to
+# avoid duplicating the remi fields just above the bar.
 REMI_STATUS_FILE="${remiDir}/status-\$REMI_PORT.json"
-if [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
+if [ "\$REMI_STATUS_BAR" != "1" ] && [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
   IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH AA_INFLIGHT AA_SINCE AA_LASTV AA_LASTAT < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", .autoApprove.inFlight // 0, .autoApprove.sinceS // 0, .autoApprove.lastVerdict // "none", .autoApprove.lastVerdictAtS // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
   if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
     CLIENT_INFO="no clients"
