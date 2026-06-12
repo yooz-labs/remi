@@ -4,6 +4,21 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-06-11
+
+A persistent remi status bar on the terminal's last row, visible even while
+Claude shows a permission prompt — exactly when the native status line is hidden.
+
+### Added
+- **Reserved-row status bar in wrapper mode** (#565): remi reports `rows - 1` to
+  Claude and pins the terminal's scroll region to the rows above, so it owns the
+  bottom row exclusively and draws `remi:<port> <repo>:<branch> | <clients> |
+  <state>` there. The auto-approve cue (`evaluating <N>s` / `needs you`) stays
+  visible during prompts, when Claude's own status line is covered. Wrapper +
+  real-TTY only; on by default, off-able via `terminal.status_bar` (or
+  `REMI_TERMINAL_STATUS_BAR=false`). The native status line drops its remi prefix
+  while the bar is active to avoid a duplicate line.
+
 ## [0.6.10] - 2026-06-11
 
 The Claude Code status line now shows what auto-approve is doing, so you can tell

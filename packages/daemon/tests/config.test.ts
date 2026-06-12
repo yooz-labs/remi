@@ -539,8 +539,12 @@ Escalate anything touching secrets.
 });
 
 describe('terminal config (#513)', () => {
-  test('defaults: osc9 notify + status cue on', () => {
-    expect(DEFAULT_CONFIG.terminal).toEqual({ notify: 'osc9', status_cue: true });
+  test('defaults: osc9 notify + status cue on + status bar on', () => {
+    expect(DEFAULT_CONFIG.terminal).toEqual({
+      notify: 'osc9',
+      status_cue: true,
+      status_bar: true,
+    });
   });
 
   test('loads terminal from TOML', () => {
@@ -564,6 +568,25 @@ describe('terminal config (#513)', () => {
   test('rejects status_cue as a string', () => {
     fs.writeFileSync(TEST_CONFIG, '[terminal]\nstatus_cue = "yes"\n');
     expect(() => loadConfig(TEST_CONFIG)).toThrow(/terminal\.status_cue/);
+  });
+
+  test('loads status_bar from TOML', () => {
+    fs.writeFileSync(TEST_CONFIG, '[terminal]\nstatus_bar = false\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.terminal.status_bar).toBe(false);
+  });
+
+  test('rejects status_bar as a string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[terminal]\nstatus_bar = "yes"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/terminal\.status_bar/);
+  });
+
+  test('REMI_TERMINAL_STATUS_BAR=false disables the bar', () => {
+    process.env['REMI_TERMINAL_STATUS_BAR'] = 'false';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.terminal.status_bar).toBe(false);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_TERMINAL_STATUS_BAR'];
   });
 
   test('REMI_TERMINAL_NOTIFY env override', () => {
@@ -595,5 +618,6 @@ describe('terminal config (#513)', () => {
     expect(output).toContain('[terminal]');
     expect(output).toContain('notify = "osc9"');
     expect(output).toContain('status_cue = true');
+    expect(output).toContain('status_bar = true');
   });
 });

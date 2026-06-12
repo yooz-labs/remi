@@ -26,6 +26,13 @@ describe('buildStatuslineScript', () => {
     expect(script).not.toContain('remi :$REMI_PORT');
   });
 
+  test('drops the remi prefix when REMI_STATUS_BAR=1 (#565 de-dup)', () => {
+    const script = buildStatuslineScript('/x');
+    // The remi-fields branch is gated so it is skipped when remi draws its own
+    // reserved-row bar; model/context still renders unconditionally.
+    expect(script).toContain('"$REMI_STATUS_BAR" != "1"');
+  });
+
   test('surfaces auto-approve eval state in the status segment (#560)', () => {
     const script = buildStatuslineScript('/x');
     // reads the auto-approve fields from the per-port status JSON

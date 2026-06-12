@@ -26,6 +26,7 @@ import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
+import { childRows } from '../status-bar.ts';
 import {
   getPtyStdoutFd,
   isWrapperDetached,
@@ -61,6 +62,12 @@ export interface PtySessionSetupArgs {
   extraArgs: readonly string[];
   /** True when the PTY is attached to a local terminal (wrapper mode). */
   passThrough: boolean;
+  /**
+   * Rows the wrapper reserves for its own status bar (#565). When > 0 the child
+   * PTY is reported `rows - reservedRows` so Claude never touches the reserved
+   * row(s). 0 (default) gives Claude the full terminal height.
+   */
+  reservedRows?: number;
 }
 
 /**
@@ -68,12 +75,25 @@ export interface PtySessionSetupArgs {
  * 120x40 so output parsing is reproducible; wrapper-mode PTYs prefer the
  * host terminal's `stdout.columns`/`rows` and fall back to 120x40 if those
  * are unavailable (e.g., stdout not a TTY).
+ *
+ * `reservedRows` (#565) shrinks the reported height so the wrapper can own the
+ * bottom row(s); it only applies in pass-through mode and only when the
+ * terminal is tall enough to spare the row (see `childRows`).
+ *
+ * Caller invariant: pass `reservedRows > 0` only when stdout is a real TTY.
+ * The sole caller (the wrapper block in cli.ts) derives it from
+ * `statusBarActive`, which already requires `process.stdout.isTTY`, so a
+ * non-TTY stdout (no real row count) never reserves a row here.
  */
-export function computeTermSize(passThrough: boolean): { cols: number; rows: number } {
+export function computeTermSize(
+  passThrough: boolean,
+  reservedRows = 0,
+): { cols: number; rows: number } {
   if (!passThrough) return { cols: 120, rows: 40 };
+  const realRows = process.stdout.rows || 40;
   return {
     cols: process.stdout.columns || 120,
-    rows: process.stdout.rows || 40,
+    rows: childRows(realRows, reservedRows > 0),
   };
 }
 
@@ -90,13 +110,20 @@ export function createPtySessionForSession(
     sendMessage,
     cleanup,
   } = deps;
-  const { sessionId, workingDirectory, extraArgs, passThrough } = args;
+  const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
 
   if (!Number.isInteger(wsPort) || wsPort <= 0) {
     throw new Error(`Invalid wsPort: ${wsPort}. Must be a positive integer.`);
   }
 
-  const termSize = computeTermSize(passThrough);
+  const termSize = computeTermSize(passThrough, reservedRows);
+
+  // When the reserved-row status bar is active (#565), tell Claude's statusLine
+  // script via REMI_STATUS_BAR so it drops the remi prefix and shows only
+  // model/context — the bar already renders the remi fields, avoiding a
+  // duplicate line just above the bar.
+  const env: Record<string, string> = { REMI_PORT: String(wsPort) };
+  if (reservedRows > 0) env['REMI_STATUS_BAR'] = '1';
 
   const ptySession: PTYSession = new PTYSession(
     {
@@ -104,7 +131,7 @@ export function createPtySessionForSession(
       args: [...extraArgs],
       cwd: workingDirectory,
       size: termSize,
-      env: { REMI_PORT: String(wsPort) },
+      env,
     },
     {
       onRawData: (data: Uint8Array) => {
