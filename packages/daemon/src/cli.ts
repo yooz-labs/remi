@@ -133,6 +133,7 @@ import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-fi
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
+import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { startTranscriptFallback } from './cli/transcript-fallback.ts';
@@ -1014,6 +1015,11 @@ function startBinaryUpdateWatcher(): void {
 let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
 let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 
+// Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
+// daemon mode. Module-level so cleanup() (defined outside the wrapper block)
+// can clear the row on shutdown.
+let statusBar: StatusBar | null = null;
+
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
@@ -1045,6 +1051,7 @@ async function createNewSession(
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void,
   extraArgs: string[] = [],
   passThrough = false,
+  reservedRows = 0,
 ): Promise<PTYSession> {
   const { messageApi, sendAndRecord } = createMessageApiForSession(
     {
@@ -1162,7 +1169,7 @@ async function createNewSession(
       sendMessage,
       cleanup,
     },
-    { sessionId, workingDirectory, extraArgs: binding.args, passThrough },
+    { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1497,6 +1504,11 @@ async function cleanup(): Promise<void> {
   cleanupRunning = true;
 
   cancelOrphanTimeout();
+
+  // Stop and clear the reserved-row status bar (#565) before the rest of
+  // teardown so the terminal is left clean. No-op in daemon mode (null).
+  statusBar?.stop();
+  statusBar = null;
 
   // Restore terminal state before shutting down
   if (process.stdin.isTTY) {
@@ -1920,6 +1932,13 @@ if (cliDaemonMode) {
     }
   }
 
+  // Reserved-row status bar (#565). Only in wrapper mode with a real TTY, and
+  // off-able via config. When active, Claude is reported `rows - 1` so it never
+  // touches the bottom row, which remi draws into. A non-TTY stdout (piped) has
+  // no row to reserve, so it fails safe to off.
+  const statusBarActive = remiConfig.terminal.status_bar && Boolean(process.stdout.isTTY);
+  const reservedRows = statusBarActive ? 1 : 0;
+
   // Create and start the primary PTY session
   const ptySession = await createNewSession(
     sessionId,
@@ -1936,7 +1955,26 @@ if (cliDaemonMode) {
     },
     claudeArgs,
     true, // pass-through mode
+    reservedRows,
   );
+
+  // Start drawing the reserved-row bar now that the PTY is up. Reads the live
+  // StatusWriter state and repaints on a 1Hz timer (the cadence of the
+  // `evaluating Ns` counter), which also re-asserts the bar if Claude's output
+  // scrolled it. Inert until started, and a no-op when detached.
+  if (statusBarActive) {
+    statusBar = new StatusBar({
+      getStdoutFd: getPtyStdoutFd,
+      getStatus: () => statusWriter.state,
+      getSize: () => ({
+        cols: process.stdout.columns || 120,
+        rows: process.stdout.rows || 40,
+      }),
+      isEnabled: () => !isWrapperDetached(),
+      log: (m) => log(m),
+    });
+    statusBar.start();
+  }
 
   // Print session name to terminal (useful for 'remi new' and general awareness)
   {
@@ -2012,7 +2050,11 @@ if (cliDaemonMode) {
   // Handle terminal resize
   process.stdout.on('resize', () => {
     const cols = process.stdout.columns || 120;
-    const rows = process.stdout.rows || 40;
+    const realRows = process.stdout.rows || 40;
+    // Keep reserving the bottom row for the bar (#565): Claude still sees one
+    // row fewer so it never reflows over the reserved row. Once detached, give
+    // Claude the full height back (the bar is gone).
+    const rows = childRows(realRows, statusBarActive && !isWrapperDetached());
     try {
       if (ptySession.isRunning) {
         ptySession.resize({ cols, rows });
@@ -2020,6 +2062,8 @@ if (cliDaemonMode) {
     } catch (err) {
       log(`[PTY] resize failed: ${errorToString(err)}`);
     }
+    // Repaint the bar at the new last row after the child has reflowed.
+    statusBar?.render();
   });
 
   // Detach local terminal.
@@ -2034,6 +2078,22 @@ if (cliDaemonMode) {
     // Tear down the wrapper-mode SIGTSTP/SIGCONT listeners; once the local
     // terminal is gone there is no value in suspending the process.
     suspendController.dispose();
+
+    // Stop the reserved-row bar and clear it while the real fd is still valid
+    // (the sighup branch nulls it below). Restore Claude's full winsize so the
+    // lingering PTY isn't stuck a row short before a remote client re-attaches.
+    statusBar?.stop();
+    statusBar = null;
+    if (statusBarActive && ptySession.isRunning) {
+      try {
+        ptySession.resize({
+          cols: process.stdout.columns || 120,
+          rows: process.stdout.rows || 40,
+        });
+      } catch (err) {
+        log(`[Detach] winsize restore failed: ${errorToString(err)}`);
+      }
+    }
 
     // Stop reading from stdin
     if (process.stdin.isTTY) {

@@ -58,6 +58,14 @@ export interface TerminalConfig {
    * The title bar is the only cue channel that does not fight Claude's renderer.
    */
   readonly status_cue: boolean;
+  /**
+   * Reserve the wrapper terminal's last row for a persistent remi status bar
+   * (#565). remi reports `rows - 1` to Claude so Claude never touches the last
+   * row, which remi then owns — visible even while Claude shows a prompt (when
+   * the native statusLine cue is hidden). Wrapper mode + a real TTY only;
+   * inert otherwise. Default on; set false to keep the full height for Claude.
+   */
+  readonly status_bar: boolean;
 }
 
 /** Telegram settings */
@@ -121,6 +129,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // iTerm2/Ghostty. The animated title is a subtle in-terminal cue.
     notify: 'osc9',
     status_cue: true,
+    // Reserve the last terminal row for an always-visible remi status bar in
+    // wrapper mode (#565). Default on; off-able for users who want every row.
+    status_bar: true,
   },
   telegram: {
     enabled: false,
@@ -396,6 +407,11 @@ function validateTerminal(cfg: TerminalConfig, configPath: string): void {
       `Invalid terminal.status_cue in ${configPath}: must be a boolean (true/false), got ${typeof cfg.status_cue === 'string' ? `string "${cfg.status_cue}"` : typeof cfg.status_cue}.`,
     );
   }
+  if (typeof cfg.status_bar !== 'boolean') {
+    throw new Error(
+      `Invalid terminal.status_bar in ${configPath}: must be a boolean (true/false), got ${typeof cfg.status_bar === 'string' ? `string "${cfg.status_bar}"` : typeof cfg.status_bar}.`,
+    );
+  }
 }
 
 /**
@@ -436,6 +452,11 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     (terminal as { status_cue: boolean }).status_cue = true;
   } else if (env['REMI_TERMINAL_STATUS_CUE'] === 'false') {
     (terminal as { status_cue: boolean }).status_cue = false;
+  }
+  if (env['REMI_TERMINAL_STATUS_BAR'] === 'true') {
+    (terminal as { status_bar: boolean }).status_bar = true;
+  } else if (env['REMI_TERMINAL_STATUS_BAR'] === 'false') {
+    (terminal as { status_bar: boolean }).status_bar = false;
   }
 
   // Telegram env vars
@@ -579,6 +600,7 @@ max_bullet_length = ${DEFAULT_CONFIG.display.max_bullet_length}  # 0 = disabled
 # auto_approve is enabled). notify fires when a permission ESCALATES to you.
 notify = "${DEFAULT_CONFIG.terminal.notify}"        # osc9 | osc777 | bell | off
 status_cue = ${DEFAULT_CONFIG.terminal.status_cue}     # animate the title: evaluating -> done/needs-you
+status_bar = ${DEFAULT_CONFIG.terminal.status_bar}     # reserve the last terminal row for a remi status bar (#565)
 
 [telegram]
 enabled = ${DEFAULT_CONFIG.telegram.enabled}
@@ -688,6 +710,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[terminal]');
   lines.push(`  notify = "${config.terminal.notify}"`);
   lines.push(`  status_cue = ${config.terminal.status_cue}`);
+  lines.push(`  status_bar = ${config.terminal.status_bar}`);
   lines.push('');
   lines.push('[telegram]');
   lines.push(`  enabled = ${config.telegram.enabled}`);
