@@ -1,9 +1,14 @@
 {
   "name": "remi",
   "version": "0.6.11",
+  "bugs": {
+    "url": "https://github.com/yooz-labs/remi/issues"
+  },
   "private": true,
   "license": "UNLICENSED",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "test": "bun test --coverage",
     "test:watch": "bun test --watch",
