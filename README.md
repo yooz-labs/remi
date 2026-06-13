@@ -20,7 +20,11 @@ You start a Claude Code session on your workstation. It's working on a complex t
 
 ```bash
 # Install
-bun install -g remi
+bun install -g @yooz-labs/remi
+
+# The installed binary is still named `remi`
+# If you previously installed the unrelated unscoped package, remove it first:
+bun remove -g remi
 
 # Start Claude Code with Remi (session persists if terminal closes)
 remi -- claude
