@@ -204,10 +204,17 @@ export class WebSocketClient {
   /** Handle WebSocket open */
   private handleOpen(): void {
     this.clearConnectionTimer();
-    this.reconnectAttempts = 0;
     this.lastDataReceived = Date.now();
     this.missedHeartbeats = 0;
     this.startHeartbeat();
+    // Don't reset reconnectAttempts here: the transport opening is not a
+    // fully-established connection. Resetting on open would pin a connection
+    // that opens but never authenticates (auth fail/timeout, post-auth drop,
+    // heartbeat miss) to the base reconnectDelay forever, so the backoff never
+    // grows and onReconnectExhausted never fires (a ~1s reconnect storm).
+    // The counter is reset in setConnected(), the post-auth 'connected'
+    // transition. See #586.
+    //
     // Don't set 'connected' yet; wait for auth handshake or hello_ack.
     // Set 'authenticating' to signal that the transport is open but auth is pending.
     this.setStatus('authenticating');
@@ -215,6 +222,11 @@ export class WebSocketClient {
 
   /** Transition to connected state (called after auth completes) */
   setConnected(): void {
+    // Only a fully-established (authenticated) connection clears the reconnect
+    // counter, so a healthy connection that drops on a network blip and
+    // reconnects successfully resets here, while an open-but-never-connected
+    // connection keeps its growing backoff toward onReconnectExhausted (#586).
+    this.reconnectAttempts = 0;
     this.setStatus('connected');
   }
 
