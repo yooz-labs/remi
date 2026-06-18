@@ -23,6 +23,7 @@ export type {
   Acknowledgment,
   Question,
   QuestionOption,
+  QuestionSource,
   Session,
   ConnectionInfo,
   Result,
@@ -90,6 +91,7 @@ export type {
   SessionRotatedMessage,
   SessionViewsMessage,
   SessionViewMeta,
+  QuestionResolvedMessage,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -138,6 +140,7 @@ export {
   createDaemonUpdateAvailable,
   createSessionRotated,
   createSessionViews,
+  createQuestionResolved,
   MessageIdTracker,
 } from './protocol.ts';
 

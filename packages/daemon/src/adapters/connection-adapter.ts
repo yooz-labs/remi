@@ -81,6 +81,18 @@ export interface AdapterEvents {
     claudeSessionId?: UUID,
   ) => void;
 
+  /**
+   * Connection-independent answer relay (#575, P4a). Used by the HTTP /answer
+   * endpoint; returns a structured outcome so the route can JSON-encode it.
+   * Only the WebSocket adapter exposes a relay endpoint today.
+   */
+  onAnswerRelay?: (
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+  ) => Promise<'delivered' | 'session-not-found' | 'stale-binding' | 'stale'>;
+
   /** Bullet expand request received */
   onBulletExpandRequest: (
     connectionId: UUID,

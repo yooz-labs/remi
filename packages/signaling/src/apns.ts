@@ -15,12 +15,107 @@ interface ApnsPayload {
   sandbox?: boolean;
   /** UNNotificationCategory identifier for action buttons (lock screen / Watch) */
   category?: string;
+  /**
+   * Collapse identifier (#575, P4a). Sent as the `apns-collapse-id` header AND
+   * used to de-dup at the device. A re-push for the same questionId replaces the
+   * earlier notification instead of stacking a duplicate. Apple caps this at 64
+   * bytes; callers pass a questionId (a UUID, well within the limit).
+   */
+  collapseId?: string;
+  /**
+   * Dismissal push (#585, P7). When true the push is QUIET: no `alert`, no
+   * `sound`, no `badge` bump — only `content-available: 1` plus the
+   * `apns-collapse-id` header. iOS replaces the earlier notification for the same
+   * collapse-id with this contentless update, so the lock-screen card for an
+   * already-resolved question is cleared/superseded. The app's
+   * `didReceiveRemoteNotification` handler then calls
+   * `removeDeliveredNotifications(withIdentifiers:)` to drop it entirely
+   * (native-only; see web/Capacitor handler).
+   */
+  dismiss?: boolean;
 }
 
 interface ApnsConfig {
   keyId: string;
   teamId: string;
   privateKey: string;
+}
+
+/** The fully-resolved APNS HTTP/2 request (URL + headers + JSON body string). */
+export interface ApnsRequest {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * Build the APNS HTTP/2 request (URL, headers, body) from a payload + JWT.
+ *
+ * Extracted as a pure function so the payload shape — including the #575 P4a
+ * `content-available` pre-wake flag and the `apns-collapse-id` header — can be
+ * asserted directly in tests without intercepting the network.
+ *
+ * Throws if `payload.data` contains the reserved `aps` key (would clobber the
+ * APNS dictionary).
+ */
+export function buildApnsRequest(payload: ApnsPayload, jwt: string): ApnsRequest {
+  const apnsHost = payload.sandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+  const url = `https://${apnsHost}/3/device/${payload.token}`;
+
+  // Guard against reserved APNS key collision in custom data
+  if (payload.data && 'aps' in payload.data) {
+    throw new Error('ApnsPayload.data must not contain reserved key "aps"');
+  }
+
+  // apns-collapse-id (#575, P4a): a re-push for the same question replaces the
+  // prior notification on the device instead of stacking a duplicate. Apple
+  // caps the value at 64 bytes; a questionId UUID is well within that.
+  const collapseId =
+    payload.collapseId && payload.collapseId.length > 0
+      ? payload.collapseId.slice(0, 64)
+      : undefined;
+
+  // A dismissal (#585, P7) is a QUIET background push: it carries no alert and
+  // must use the `background` push type at low priority, or APNS rejects a
+  // content-available-only payload sent as `alert`. The collapse-id ties it to
+  // the original card so iOS supersedes it; the app then removes the delivered
+  // notification on receipt.
+  const headers: Record<string, string> = {
+    authorization: `bearer ${jwt}`,
+    'apns-topic': payload.bundleId,
+    'apns-push-type': payload.dismiss ? 'background' : 'alert',
+    'apns-priority': payload.dismiss ? '5' : '10',
+    ...(collapseId ? { 'apns-collapse-id': collapseId } : {}),
+  };
+
+  const aps: Record<string, unknown> = payload.dismiss
+    ? {
+        // Quiet update only: no alert, no sound, no badge bump. iOS replaces the
+        // earlier collapse-id card and wakes the app to remove it.
+        'content-available': 1,
+      }
+    : {
+        alert: {
+          title: payload.title,
+          body: payload.body,
+        },
+        sound: 'default',
+        badge: 1,
+        // content-available pre-wakes the app in the background so the
+        // WebSocket can start reconnecting before the user taps (#575, P4a).
+        // Kept alongside the alert so the interactive notification still
+        // renders; iOS treats this as a normal alert push with a background
+        // wake opportunity.
+        'content-available': 1,
+        ...(payload.category ? { category: payload.category } : {}),
+      };
+
+  const body = JSON.stringify({
+    aps,
+    ...(payload.data ? payload.data : {}),
+  });
+
+  return { url, headers, body };
 }
 
 /**
@@ -32,36 +127,9 @@ export async function sendApnsPush(
   config: ApnsConfig,
 ): Promise<{ success: boolean; error?: string }> {
   const jwt = await createApnsJwt(config);
+  const { url, headers, body } = buildApnsRequest(payload, jwt);
 
-  const apnsHost = payload.sandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
-  const apnsUrl = `https://${apnsHost}/3/device/${payload.token}`;
-
-  // Guard against reserved APNS key collision in custom data
-  if (payload.data && 'aps' in payload.data) {
-    throw new Error('ApnsPayload.data must not contain reserved key "aps"');
-  }
-
-  const response = await fetch(apnsUrl, {
-    method: 'POST',
-    headers: {
-      authorization: `bearer ${jwt}`,
-      'apns-topic': payload.bundleId,
-      'apns-push-type': 'alert',
-      'apns-priority': '10',
-    },
-    body: JSON.stringify({
-      aps: {
-        alert: {
-          title: payload.title,
-          body: payload.body,
-        },
-        sound: 'default',
-        badge: 1,
-        ...(payload.category ? { category: payload.category } : {}),
-      },
-      ...(payload.data ? payload.data : {}),
-    }),
-  });
+  const response = await fetch(url, { method: 'POST', headers, body });
 
   if (response.ok) {
     return { success: true };

@@ -35,10 +35,26 @@ export function sessionPillState(
       void _exhaustive;
     }
   }
-  // A pending question always wins. Note: the 'waiting' AgentStatus has no
-  // distinct pill and intentionally collapses to 'idle'.
+  // A pending question always wins.
   if (session.questionPending) return 'asking';
-  if (session.status === 'thinking' || session.status === 'executing') return 'working';
+  // 'waiting' used to collapse to 'idle' (a blocked agent looked idle). Now
+  // that hook events (PreToolUse / PermissionRequest) drive 'waiting'
+  // authoritatively, surface it as 'asking' — the agent is blocked on the user
+  // even before a discrete question record arrives (#576).
+  if (session.status === 'waiting') return 'asking';
+  // The agent is busy: thinking, executing a tool, auto-approve evaluating a
+  // permission, or just-approved one (transient before the next hook).
+  if (
+    session.status === 'thinking' ||
+    session.status === 'executing' ||
+    session.status === 'evaluating' ||
+    session.status === 'approved'
+  ) {
+    return 'working';
+  }
+  // 'starting' = session spinning up before its first hook; show it like a
+  // connection coming up (non-interactive spinner), not idle.
+  if (session.status === 'starting') return 'connecting';
   return 'idle';
 }
 

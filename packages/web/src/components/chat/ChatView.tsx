@@ -85,7 +85,12 @@ export function ChatView({
   // grouping, pinned question cards). The legacy compact toggle was removed.
   const [viewMode] = useState<ViewMode>('chat');
   const { isVisible: keyboardVisible, height: keyboardHeight } = useKeyboard();
-  const isAgentBusy = session.status === 'thinking' || session.status === 'executing';
+  // 'evaluating' (auto-approve deciding a permission, #576) counts as busy so
+  // the in-chat typing indicator stays consistent with the "Working" pill.
+  const isAgentBusy =
+    session.status === 'thinking' ||
+    session.status === 'executing' ||
+    session.status === 'evaluating';
   const isConnected = session.connectionStatus === 'connected';
 
   // Render a stack of QuestionCards (main + any subagent prompts, #437) pinned

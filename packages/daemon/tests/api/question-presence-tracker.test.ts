@@ -42,6 +42,27 @@ function makeHookQuestion(text = 'Allow Bash?'): Question {
   };
 }
 
+/** Rich PermissionRequest record: tool + command text, real labels (#574). */
+function makePermissionRequestHook(text = 'Allow Bash: git push origin main'): Question {
+  return { ...makeHookQuestion(text), source: 'permission_request' };
+}
+
+/** Generic Notification(permission_prompt) record: bland text, hardcoded 3-set (#574). */
+function makeNotificationHook(text = 'Claude needs your permission to use Bash'): Question {
+  return {
+    id: generateId(),
+    text,
+    options: [
+      makeOption('Yes', '1', { isYes: true, isRecommended: true }),
+      makeOption('Yes, always', '2', { isYes: true }),
+      makeOption('No', '3', { isNo: true }),
+    ],
+    allowsFreeText: false,
+    isAnswered: false,
+    source: 'notification',
+  };
+}
+
 describe('QuestionPresenceTracker', () => {
   it('PTY-only push (no preceding hook) — fires once with PTY question as-is', () => {
     // Covers anthropics/claude-code #23983: subagent permission requests
@@ -330,6 +351,116 @@ describe('QuestionPresenceTracker', () => {
       tracker.onPTYPromptVisible(makePTYQuestion());
       tracker.onStatusChange('idle');
       expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    });
+  });
+
+  describe('PermissionRequest vs Notification merge policy (#574)', () => {
+    it('a trailing generic Notification does NOT overwrite a rich PermissionRequest for the same agent', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      // Claude fires both for one prompt: the rich request first, the bland
+      // notification second. The notification must be dropped.
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: git push origin main'));
+      tracker.recordPendingHook(makeNotificationHook());
+
+      // PTY confirms the prompt is on screen -> single push with the rich text.
+      const ptyQ = makePTYQuestion('Do you want to proceed?');
+      tracker.onPTYPromptVisible(ptyQ);
+
+      expect(pushes.length).toBe(1);
+      // The user sees the command, not "Claude needs your permission to use Bash"
+      // and never the bare PTY "Do you want to proceed?".
+      expect(pushes[0]?.text).toBe('Allow Bash: git push origin main');
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    });
+
+    it('a source-less (StopFailure-shaped) question does NOT evict a pending permission_request, but a newer permission_request DOES replace it (FIX 2A)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: git push'));
+
+      // A StopFailure "Retry?" card for the same agent carries no source; it
+      // must NOT silently evict the rich permission request (which would leave
+      // the real permission prompt without a push).
+      const stopFailureCard: Question = {
+        id: generateId(),
+        text: 'Session stop failed (timeout). Retry?',
+        options: [
+          makeOption('Yes', 'y', { isYes: true, isRecommended: true }),
+          makeOption('No', 'n', { isNo: true }),
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        // source intentionally undefined (StopFailure does not set it)
+      };
+      tracker.recordPendingHook(stopFailureCard);
+
+      tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
+      expect(pushes.length).toBe(1);
+      // The permission request survived the StopFailure arrival.
+      expect(pushes[0]?.text).toBe('Allow Bash: git push');
+
+      // A genuinely new permission cycle (another permission_request) DOES replace it.
+      const tracker2 = new QuestionPresenceTracker(() => {});
+      tracker2.recordPendingHook(makePermissionRequestHook('Allow Bash: old cmd'));
+      tracker2.recordPendingHook(makePermissionRequestHook('Allow Edit: new cmd'));
+      const pushes2: Question[] = [];
+      const tracker3 = new QuestionPresenceTracker((q) => pushes2.push(q));
+      tracker3.recordPendingHook(makePermissionRequestHook('Allow Bash: old cmd'));
+      tracker3.recordPendingHook(makePermissionRequestHook('Allow Edit: new cmd'));
+      tracker3.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
+      expect(pushes2[0]?.text).toBe('Allow Edit: new cmd');
+    });
+
+    it('a PermissionRequest arriving AFTER a Notification still wins (richer replaces generic)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.recordPendingHook(makeNotificationHook());
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Edit: /tmp/foo.ts'));
+
+      tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('Allow Edit: /tmp/foo.ts');
+    });
+
+    it('raw PTY text never wins over the hook text for the notification (#574 issue 3)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: rm -rf build'));
+      // The PTY's literal screen text is the bare prompt; it must not surface.
+      tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
+
+      expect(pushes[0]?.text).toBe('Allow Bash: rm -rf build');
+      expect(pushes[0]?.text).not.toBe('Do you want to proceed?');
+    });
+
+    it('subagent fallback: a Notification with no preceding PermissionRequest is still recorded', () => {
+      // Subagent / no-PermissionRequest escalations must keep a question record
+      // so they remain answerable; the drop only applies when a richer request
+      // for the SAME agent already exists.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.recordPendingHook(makeNotificationHook('Claude needs your permission to use Bash'));
+      expect(tracker.hasPendingForTest()).toBe(true);
+
+      tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    });
+
+    it("different agents: a notification for agent B does not touch agent A's request", () => {
+      const tracker = new QuestionPresenceTracker(() => {});
+      tracker.recordPendingHook({
+        ...makePermissionRequestHook('Allow Bash A'),
+        agentId: 'agent-A',
+      });
+      tracker.recordPendingHook({
+        ...makeNotificationHook(),
+        agentId: 'agent-B',
+      });
+      // Both kept: the per-agent merge policy only drops a same-agent generic.
+      expect(tracker.pendingCountForTest()).toBe(2);
     });
   });
 

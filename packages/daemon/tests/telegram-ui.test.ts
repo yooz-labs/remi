@@ -189,6 +189,13 @@ describe('formatStatusText', () => {
     expect(formatStatusText('waiting')).toContain('Waiting');
   });
 
+  test('formats the auto-approve + lifecycle statuses with human labels (#576)', () => {
+    // No raw "evaluating"/"approved"/"starting" leaking through the default arm.
+    expect(formatStatusText('evaluating')).toContain('Evaluating');
+    expect(formatStatusText('approved')).toContain('Approved');
+    expect(formatStatusText('starting')).toContain('Starting');
+  });
+
   test('returns raw string for unknown status', () => {
     expect(formatStatusText('custom' as AgentStatus)).toBe('custom');
   });

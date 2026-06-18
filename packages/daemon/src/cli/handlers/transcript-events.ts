@@ -17,7 +17,7 @@ import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import type { SessionBindingStore } from '../../session/index.ts';
+import type { SessionBindingStore, TranscriptIndex } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,
   TranscriptWatcher as TranscriptWatcherType,
@@ -35,6 +35,10 @@ export interface TranscriptHandlerDeps {
   /** Authoritative Remi-UUID -> claudeSessionId binding, used as a last-resort
    *  resolver when no live watcher exists (e.g. a wedged/rotated session). */
   bindingStore: SessionBindingStore;
+  /** Durable, long-TTL remiUUID -> {claudeSessionId, projectPath} index that
+   *  outlives sessions.json's 100-entry cap / 7-day purge, so an old session's
+   *  transcript still resolves after the liveness store has dropped it (#577). */
+  transcriptIndex: TranscriptIndex;
   /** Resolves the daemon's current owned session, so a stale/unknown request is
    *  redirected to the current session instead of dead-ending on NOT_FOUND (#499). */
   currentOwnedSession: () => CurrentOwnedSession | null;
@@ -51,6 +55,7 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
     transcriptDiscovery,
     transcriptWatchers,
     bindingStore,
+    transcriptIndex,
     currentOwnedSession,
     subagentViews,
     send,
@@ -95,6 +100,40 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         } catch (err) {
           logError(
             `[TranscriptLoad] binding lookup failed for ${sessionId}; proceeding without store resolution: ${errorToString(err)}`,
+          );
+        }
+      }
+
+      // Durable index fallback (#577): the session was purged from sessions.json
+      // (100-entry cap or 7-day TTL), so bindingStore.get returned null, but the
+      // long-TTL transcript-index still holds its claude id + project path. Rebuild
+      // the deterministic transcript path and load it from disk if it exists. This
+      // is what stops the recurring "Transcript for session <id> not found" for an
+      // old-but-still-on-disk session.
+      if (!filePath) {
+        try {
+          const indexed = transcriptIndex.get(sessionId as UUID);
+          if (indexed) {
+            const candidate = `${transcriptDiscovery.getProjectTranscriptDir(indexed.projectPath)}/${indexed.claudeSessionId}.jsonl`;
+            if (fs.existsSync(candidate)) {
+              filePath = candidate;
+              log(
+                `[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via durable index ${indexed.claudeSessionId.slice(0, 8)}`,
+              );
+            } else {
+              // Indexed but the .jsonl is gone (Claude transcript deleted/moved).
+              // Distinct from "never indexed" so the failure is diagnosable: the
+              // binding survived but the content did not.
+              log(
+                `[TranscriptLoad] Durable index hit for ${sessionId} (claude=${indexed.claudeSessionId.slice(0, 8)}) but transcript is absent on disk: ${candidate}`,
+              );
+            }
+          } else {
+            log(`[TranscriptLoad] No durable index entry for ${sessionId}`);
+          }
+        } catch (err) {
+          logError(
+            `[TranscriptLoad] transcript-index lookup failed for ${sessionId}; proceeding: ${errorToString(err)}`,
           );
         }
       }

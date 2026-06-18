@@ -82,6 +82,17 @@ export class QuestionPresenceTracker {
    *  status/clearPending resets (verdict = handled, or the prompt is gone). */
   private bufferedDuringEval: Question | null = null;
 
+  /** Question ids already pushed via `pushHeldHook` (#573). A binary escalation
+   *  that HOLDS its PermissionRequest hook (Model B, #573) never lets Claude
+   *  render the native prompt, so `onPTYPromptVisible` cannot be the push
+   *  trigger; the gate pushes the held question immediately and idempotently
+   *  through here instead. Membership makes a repeat `pushHeldHook` for the same
+   *  id a no-op, and guards the (rare) hold-timeout fail-open case where the PTY
+   *  finally renders and would otherwise re-push the same prompt. Cleared on any
+   *  reset (status-out-of-waiting / clearPending) so a new prompt cycle starts
+   *  fresh. */
+  private pushedHeldIds = new Set<string>();
+
   constructor(private readonly push: PushQuestion) {}
 
   /**
@@ -90,21 +101,92 @@ export class QuestionPresenceTracker {
    * confirms the prompt is visible, or never if status moves past 'waiting'
    * first.
    *
-   * Replacement policy: per agent, the newer hook wins (correct for the
-   * same-prompt double-fire: PermissionRequest then Notification). Different
-   * agents no longer overwrite each other (#425).
+   * Replacement policy: per agent, the newer hook normally wins. The one
+   * exception (#574): a pending rich `PermissionRequest` is authoritative and
+   * is NOT evicted by any other shape — only a NEWER `PermissionRequest` (a new
+   * permission cycle) may replace it. Claude fires both a PermissionRequest and
+   * a generic `Notification(permission_prompt)` for one prompt; the
+   * PermissionRequest carries the tool + command + real option labels ("Allow
+   * Bash: git push", Edit's Yes/Always/No), while the Notification is the bland
+   * "Claude needs your permission to use Bash" with the hardcoded 3-set.
+   * Letting the trailing notification win is exactly what garbled the push
+   * text/options (issues 3+4). A same-agent source-less question (e.g. a
+   * StopFailure "Retry?" card) must likewise not silently evict the pending
+   * permission request and leave the real prompt without a push. Different
+   * agents never overwrite each other (#425).
    */
   recordPendingHook(question: Question): void {
     const key = agentKey(question);
-    if (this.pending.has(key)) {
+    const existing = this.pending.get(key);
+    if (existing) {
+      // A pending rich permission request stays put unless the incoming is a
+      // newer permission request: a generic Notification or a source-less
+      // StopFailure-shaped question for the same agent must NOT evict it.
+      if (existing.source === 'permission_request' && question.source !== 'permission_request') {
+        console.debug(
+          `[QuestionPresenceTracker] Keeping richer pending permission_request for agent "${key}"; not evicting with source="${question.source ?? 'undefined'}" (kept="${existing.text.slice(0, 50)}", dropped="${question.text.slice(0, 50)}")`,
+        );
+        return;
+      }
       console.debug(
-        `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${this.pending.get(key)?.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
+        `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${existing.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
       );
     }
     // Re-insert so this agent's entry is the most recent (matters for the
     // PTY-pairing fallback below).
     this.pending.delete(key);
     this.pending.set(key, question);
+  }
+
+  /**
+   * Push a held escalation's question IMMEDIATELY, without waiting for a PTY
+   * render (#573). A binary escalation that HOLDS its PermissionRequest hook
+   * (Model B, #573) blocks Claude's hook response, so Claude never renders the
+   * native numbered prompt and `onPTYPromptVisible` never fires — meaning the
+   * normal push trigger never runs and the question is never registered in
+   * `sessionRegistry` nor pushed to the phone, leaving it UNANSWERABLE. The gate
+   * decided the user MUST answer, so the PTY-presence gate (which exists only to
+   * avoid pushing a silently auto-approved permission that never rendered) does
+   * not apply: push now, under the SAME `questionId` the hold is keyed by.
+   *
+   * Locates the stashed hook record by id (the `pending` map is agent-keyed, so
+   * we scan its values for the matching `Question.id`), routes it through the
+   * same `push` sink as `onPTYPromptVisible` (-> MessageAPI.handleQuestion ->
+   * addQuestion + maybePush), and removes the consumed record so the normal
+   * pair-merge cannot push it a second time. Idempotent: a repeat call for the
+   * same id (or one whose record was already consumed) is a no-op, guarded by
+   * `pushedHeldIds`. Returns true iff a push fired.
+   */
+  pushHeldHook(questionId: string): boolean {
+    if (this.pushedHeldIds.has(questionId)) return false;
+    let recordKey: string | undefined;
+    for (const [key, q] of this.pending) {
+      if (q.id === questionId) {
+        recordKey = key;
+        break;
+      }
+    }
+    if (recordKey === undefined) {
+      // No stashed record for this id: the hook was never recorded (e.g. a
+      // restart cleared pending between escalate and this call). Nothing to push.
+      console.debug(
+        `[QuestionPresenceTracker] pushHeldHook: no pending record for question ${questionId.slice(0, 8)}`,
+      );
+      return false;
+    }
+    const question = this.pending.get(recordKey) as Question;
+    // Consume BEFORE the push so a re-entrant call cannot re-push the same
+    // record, and so a later onPTYPromptVisible has no record to merge.
+    this.pending.delete(recordKey);
+    this.pushedHeldIds.add(questionId);
+    try {
+      this.push(question);
+    } catch (err) {
+      console.error(
+        `[QuestionPresenceTracker] pushHeldHook push sink threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return true;
   }
 
   /**
@@ -202,6 +284,10 @@ export class QuestionPresenceTracker {
       // agent advanced) or left the screen. Discard it — do not ping the user.
       this.autoApproveInFlight = false;
       this.bufferedDuringEval = null;
+      // New prompt cycle starts fresh: a held push from the prior cycle must not
+      // suppress an identical id in a future one (ids are unique, so this is
+      // belt-and-suspenders, but keeps the set bounded). (#573)
+      this.pushedHeldIds.clear();
     }
   }
 
@@ -254,6 +340,7 @@ export class QuestionPresenceTracker {
     this.ptyShowingQuestion = false;
     this.autoApproveInFlight = false;
     this.bufferedDuringEval = null;
+    this.pushedHeldIds.clear();
   }
 
   /**

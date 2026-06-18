@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
+import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
@@ -183,6 +184,16 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // load-bearing for following broad user instructions. Opt in (Ollama only)
     // for raw speed over decision nuance.
     disable_thinking: false,
+    // Always escalate these to the user; never auto-decided by the LLM (#572):
+    // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
+    always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
+    // Hold a binary main-context PermissionRequest hook open until the user
+    // answers (Model B, #573). Large + human-paced; on expiry it fails open to
+    // the native prompt. 0 disables holding (escalate -> passthrough as before).
+    hold_timeout: 1800,
+    // Push + hold early if a binary main-context eval is still running after
+    // this many seconds (Part B, #573). 0 disables Part B (A+C only).
+    push_hold_timeout: 60,
   },
   features: {
     transcript_binder_shadow: false,
@@ -335,6 +346,35 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     );
   }
 
+  if (
+    typeof cfg.hold_timeout !== 'number' ||
+    !Number.isFinite(cfg.hold_timeout) ||
+    cfg.hold_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable holding), got ${typeof cfg.hold_timeout === 'string' ? `string "${cfg.hold_timeout}"` : typeof cfg.hold_timeout}. Example: hold_timeout = 1800`,
+    );
+  }
+
+  if (
+    typeof cfg.push_hold_timeout !== 'number' ||
+    !Number.isFinite(cfg.push_hold_timeout) ||
+    cfg.push_hold_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.push_hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable slow-eval push), got ${typeof cfg.push_hold_timeout === 'string' ? `string "${cfg.push_hold_timeout}"` : typeof cfg.push_hold_timeout}. Example: push_hold_timeout = 60`,
+    );
+  }
+
+  // Contradictory pairing: Part B pushes + holds early on a slow eval, but with
+  // holding disabled the held hook immediately falls through to passthrough, so
+  // the early push buys nothing. Warn (not throw) so the daemon still starts.
+  if (cfg.push_hold_timeout > 0 && cfg.hold_timeout === 0) {
+    console.warn(
+      `[AutoApprove] Warning: push_hold_timeout (${cfg.push_hold_timeout}s) > 0 but hold_timeout = 0 in ${configPath}: the slow-eval early push cannot hold the hook (holding is disabled), so it falls through to passthrough immediately. Set hold_timeout > 0 to actually hold, or push_hold_timeout = 0 to disable the early push.`,
+    );
+  }
+
   if (!isStringArray(cfg.allow)) {
     throw new Error(
       `Invalid auto_approve.allow in ${configPath}: must be an array of strings. Example: allow = ["git status", "bun test"]`,
@@ -375,6 +415,18 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
   expectString('multichoice_model', cfg.multichoice_model);
   expectString('escalate_model', cfg.escalate_model);
+  if (!isStringArray(cfg.always_escalate_tools)) {
+    throw new Error(
+      `Invalid auto_approve.always_escalate_tools in ${configPath}: must be an array of tool names. Example: always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]`,
+    );
+  }
+  for (const t of cfg.always_escalate_tools) {
+    if (t.trim().length === 0) {
+      console.warn(
+        `[AutoApprove] Warning: always_escalate_tools entry "${t}" in ${configPath} is empty/whitespace and will never match a tool name.`,
+      );
+    }
+  }
 
   // Warn about dangerously short patterns that would match too broadly.
   const MIN_PATTERN_LENGTH = 2;
@@ -520,6 +572,20 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
   }
+  if (env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']) {
+    const tools = env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (tools.length === 0) {
+      console.warn(
+        '[AutoApprove] REMI_AUTO_APPROVE_ALWAYS_ESCALATE resolved to an empty list; ' +
+          'AskUserQuestion and ExitPlanMode will no longer be structurally escalated. ' +
+          'Set it to "AskUserQuestion,ExitPlanMode" to keep the default safety net.',
+      );
+    }
+    (auto_approve as { always_escalate_tools: readonly string[] }).always_escalate_tools = tools;
+  }
   const mc = env['REMI_AUTO_APPROVE_MULTICHOICE'];
   if (mc === 'skip' || mc === 'evaluate') {
     (auto_approve as { multichoice: 'skip' | 'evaluate' }).multichoice = mc;
@@ -542,6 +608,18 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_QUEUE_TIMEOUT'], 10);
     if (Number.isFinite(parsed) && parsed >= 0) {
       (auto_approve as { queue_timeout: number }).queue_timeout = parsed;
+    }
+  }
+  if (env['REMI_AUTO_APPROVE_HOLD_TIMEOUT']) {
+    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'], 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      (auto_approve as { hold_timeout: number }).hold_timeout = parsed;
+    }
+  }
+  if (env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT']) {
+    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'], 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      (auto_approve as { push_hold_timeout: number }).push_hold_timeout = parsed;
     }
   }
 
@@ -652,11 +730,28 @@ authorized_user_ids = []
 #                                  # queue before escalating. Concurrent evals
 #                                  # run one at a time; a deep burst could risk
 #                                  # the ~600s hook budget. 0 = no bound.
+# hold_timeout = 1800              # Seconds to HOLD a binary permission hook
+#                                  # open after escalating, so the user answers
+#                                  # it via the hook response (Model B, #573) —
+#                                  # no native prompt, no warm-connection race.
+#                                  # Large + human-paced; fails open to the
+#                                  # native prompt on expiry. 0 = no hold
+#                                  # (escalate -> passthrough as before).
+# push_hold_timeout = 60           # Push + hold early if a binary main-context
+#                                  # eval is still running after this many
+#                                  # seconds, so the user can step in while the
+#                                  # model keeps thinking (Part B, #573). A late
+#                                  # verdict resolves the held hook. 0 = off.
 # disable_thinking = false         # Ollama only: native /api/chat with
 #                                  # think:false (no reasoning). Faster but
 #                                  # lowers decision quality (reasoning helps
 #                                  # the model follow broad instructions), so
 #                                  # default off. Opt in for raw speed.
+# always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]
+#                                  # Tools that ALWAYS go to the user, never
+#                                  # auto-decided by the LLM (design / plan-mode
+#                                  # / long-form questions). Add custom MCP tools
+#                                  # that solicit user intent.
 `;
 }
 
@@ -742,7 +837,12 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
+  lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);
+  lines.push(`  push_hold_timeout = ${config.auto_approve.push_hold_timeout}`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
+  lines.push(
+    `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
+  );
   lines.push('');
   lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');
   lines.push('[features]');

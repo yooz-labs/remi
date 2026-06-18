@@ -88,7 +88,10 @@ describe('AutoApproveGate', () => {
         sessionRegistry: registry,
         tracker,
         isInSubagentContext: () => subagent,
-        escalate: (i) => escalations.push(i),
+        escalate: (i) => {
+          escalations.push(i);
+          return generateId();
+        },
       },
       SID,
     );
@@ -113,7 +116,10 @@ describe('AutoApproveGate', () => {
         sessionRegistry: registry,
         tracker,
         isInSubagentContext: () => subagent,
-        escalate: (i) => escalations.push(i),
+        escalate: (i) => {
+          escalations.push(i);
+          return generateId();
+        },
         escalateModel: 'big-model',
       },
       SID,
@@ -400,7 +406,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
         sessionRegistry: registry,
         tracker,
         isInSubagentContext: () => subagent,
-        escalate: () => {},
+        escalate: () => undefined,
         onEvalStart: () => events.push('start'),
         onEscalate: () => events.push('escalate'),
         onHandled: () => events.push('handled'),
@@ -489,6 +495,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
         isInSubagentContext: () => false,
         escalate: () => {
           escalations++;
+          return undefined;
         },
         onHandled: () => {
           throw new Error('test: cue boom');
@@ -498,5 +505,607 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     );
     expect(await g.resolvePermission(pr())).toBe('allow'); // approved once, verdict intact
     expect(escalations).toBe(0); // no re-escalation
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 (#573): hold the hook (Model B) + resolve-on-answer + slow-eval push.
+// All real objects (no mock framework): a plain evaluator literal returns real
+// AutoApproveResult values, and the held hook is a real pending promise.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let submits: string[];
+  let escalations: PermissionRequestHookInput[];
+  let lastQuestionId: UUID | undefined;
+
+  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
+    return { evaluate: async () => result, cancel: () => true };
+  }
+
+  /** A gate that escalates (recording the created Question.id) and holds binary
+   *  main-context hooks for `holdMs`. The created id is exposed via
+   *  `lastQuestionId` so tests can resolve the hold. */
+  function holdGate(
+    service: AutoApproveEvaluator | null,
+    opts: { holdMs?: number; subagent?: boolean; alwaysEscalateTools?: ReadonlySet<string> } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const tracker = new QuestionPresenceTracker(() => {});
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => opts.subagent ?? false,
+        escalate: (i) => {
+          escalations.push(i);
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        alwaysEscalateTools:
+          opts.alwaysEscalateTools ?? new Set(['AskUserQuestion', 'ExitPlanMode']),
+      },
+      SID,
+    );
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    submits = [];
+    escalations = [];
+    lastQuestionId = undefined;
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('binary escalate WITHHOLDS the decision until resolveHeld -> allow', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    // Give the eval + escalate a tick; the promise must still be pending (held).
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    expect(escalations).toHaveLength(1);
+    expect(lastQuestionId).toBeDefined();
+
+    // The user answers Yes -> the held hook resolves 'allow'.
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
+  test('binary escalate held -> deny when the user answers No', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'deny')).toBe(true);
+    expect(await pending).toBe('deny');
+  });
+
+  test('resolveHeld for an unknown id returns false (non-held answer)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(gate.resolveHeld(generateId() as UUID, 'allow')).toBe(false);
+    // The real hold is still pending; resolve it to avoid a dangling promise.
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  test('multi-choice escalate returns passthrough immediately (NO hold)', async () => {
+    // 4+ string suggestions => multi-choice; the hook response cannot pick.
+    const gate = holdGate(evaluator(escalate));
+    const d = await gate.resolvePermission(
+      pr({ permission_suggestions: ['Alpha', 'Beta', 'Gamma', 'Delta'] }),
+    );
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+  });
+
+  test('design question escalate returns passthrough immediately (NO hold)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    // AskUserQuestion is in always_escalate_tools -> design -> not binary.
+    const d = await gate.resolvePermission(
+      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
+    );
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+  });
+
+  test('hold timeout -> passthrough and the pending map is cleaned', async () => {
+    const gate = holdGate(evaluator(escalate), { holdMs: 30 });
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('passthrough'); // failed open after 30ms
+    // The hold timed out; a late answer for the same id must report "no hold".
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
+  });
+
+  test('holdMs <= 0 disables holding: binary escalate -> passthrough', async () => {
+    const gate = holdGate(evaluator(escalate), { holdMs: 0 });
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+  });
+
+  test('releaseHeldAsPassthrough pops a held hook to passthrough (FIX 1)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    const qid = lastQuestionId as UUID;
+    // The user picked "Yes, always": the binary response can't express it, so the
+    // hook is released to passthrough (Claude renders its native prompt).
+    expect(gate.releaseHeldAsPassthrough(qid)).toBe(true);
+    expect(await pending).toBe('passthrough');
+    // The hold is gone; a second release reports no hold.
+    expect(gate.releaseHeldAsPassthrough(qid)).toBe(false);
+  });
+
+  test('releaseHeldAsPassthrough returns false when no hold exists', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(gate.releaseHeldAsPassthrough(generateId() as UUID)).toBe(false);
+    // Resolve the real hold to avoid a dangling promise.
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  test('cancelStale releases a pending hold to passthrough + cancels the eval', async () => {
+    const cancels: string[] = [];
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const tracker = new QuestionPresenceTracker(() => {});
+    const gate = new AutoApproveGate(
+      {
+        service: {
+          evaluate: async () => escalate,
+          cancel: (reason: string) => {
+            cancels.push(reason);
+            return true;
+          },
+        },
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: 60_000,
+        alwaysEscalateTools: new Set(),
+      },
+      SID,
+    );
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    gate.cancelStale('SessionEnd');
+    expect(await pending).toBe('passthrough'); // hold released by teardown
+    expect(cancels).toContain('SessionEnd'); // eval also cancelled
+    // The hold is gone.
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
+  });
+
+  test('per-session isolation: resolving session A does not touch session B', async () => {
+    const SID_B = generateId() as UUID;
+    const registryB = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    registryB.registerSession(SID_B, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    let qidB: UUID | undefined;
+    const gateB = new AutoApproveGate(
+      {
+        service: { evaluate: async () => escalate, cancel: () => true },
+        sessionRegistry: registryB,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          qidB = generateId();
+          return qidB;
+        },
+        holdMs: 60_000,
+        alwaysEscalateTools: new Set(),
+      },
+      SID_B,
+    );
+
+    const gateA = holdGate(evaluator(escalate));
+    const pendingA = gateA.resolvePermission(pr());
+    const pendingB = gateB.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    const qidA = lastQuestionId as UUID;
+
+    // Resolving A's question id on gate B finds no hold; A's own hold is intact.
+    expect(gateB.resolveHeld(qidA, 'allow')).toBe(false);
+    // Resolve each on its own gate.
+    expect(gateA.resolveHeld(qidA, 'allow')).toBe(true);
+    expect(gateB.resolveHeld(qidB as UUID, 'deny')).toBe(true);
+    expect(await pendingA).toBe('allow');
+    expect(await pendingB).toBe('deny');
+    await registryB.shutdown();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part B (#573): slow-eval early push + hold. ISOLATED behind push_hold_timeout.
+// A deferred eval lets the test control whether the eval or the push-hold timer
+// wins the race deterministically.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let escalations: PermissionRequestHookInput[];
+  let lastQuestionId: UUID | undefined;
+
+  /** An evaluator whose verdict is delayed until `release(result)` is called,
+   *  so the test decides when the eval finishes relative to push_hold_timeout. */
+  function deferredEvaluator(): {
+    service: AutoApproveEvaluator;
+    release: (r: AutoApproveResult) => void;
+  } {
+    let resolveEval: (r: AutoApproveResult) => void = () => {};
+    const pending = new Promise<AutoApproveResult>((res) => {
+      resolveEval = res;
+    });
+    return {
+      service: { evaluate: () => pending, cancel: () => true },
+      release: (r) => resolveEval(r),
+    };
+  }
+
+  function gate(
+    service: AutoApproveEvaluator,
+    opts: { holdMs?: number; pushHoldMs?: number } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        pushHoldMs: opts.pushHoldMs ?? 0,
+        alwaysEscalateTools: new Set(),
+      },
+      SID,
+    );
+  }
+
+  function pr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    escalations = [];
+    lastQuestionId = undefined;
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('a slow eval pushes + holds early; a late approve resolves allow (no double push)', async () => {
+    const { service, release } = deferredEvaluator();
+    // push after 20ms; the eval has not finished yet -> early push + hold.
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+
+    await new Promise((r) => setTimeout(r, 40)); // let the push-hold timer fire
+    expect(escalations).toHaveLength(1); // pushed early exactly once
+    expect(lastQuestionId).toBeDefined();
+
+    // The late verdict arrives: approve -> the held hook resolves allow, and the
+    // reconciliation must NOT push a second time.
+    release(approve);
+    expect(await pending).toBe('allow');
+    expect(escalations).toHaveLength(1); // still one push (no double-push)
+  });
+
+  test('a slow eval whose late verdict is deny resolves the held hook deny', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    expect(escalations).toHaveLength(1);
+    release(deny);
+    expect(await pending).toBe('deny');
+    expect(escalations).toHaveLength(1);
+  });
+
+  test('a slow eval whose late verdict is escalate keeps the existing hold (no double push)', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20, holdMs: 60_000 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    expect(escalations).toHaveLength(1);
+    // Late escalate: already pushed + holding, so no second push; the hold stays
+    // pending until the user answers.
+    release(escalate);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(escalations).toHaveLength(1);
+    // The user then answers the (single) held question.
+    expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
+  test('a fast eval (verdict before push_hold_timeout) never pushes early', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 200 });
+    const pending = g.resolvePermission(pr());
+    // Verdict arrives well before the 200ms push-hold timer.
+    release(approve);
+    expect(await pending).toBe('allow');
+    expect(escalations).toHaveLength(0); // no early push
+  });
+
+  test('push_hold_timeout = 0 disables Part B: a slow escalate just holds on verdict', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 0, holdMs: 60_000 });
+    const pending = g.resolvePermission(pr());
+    // No early push while the eval runs.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(escalations).toHaveLength(0);
+    // The eval escalates -> NOW it pushes + holds (Part A path), once.
+    release(escalate);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(escalations).toHaveLength(1);
+    g.resolveHeld(lastQuestionId as UUID, 'allow');
+    expect(await pending).toBe('allow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #585 (P7): onResolved fires when a HELD question resolves WITHOUT a user
+// answer, so the daemon can dismiss the pushed card on every client. It must NOT
+// fire for a user-driven resolveHeld (the answer path broadcasts its own
+// 'answered'), and a throw must be absorbed.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let lastQuestionId: UUID | undefined;
+  let resolved: Array<{ questionId: UUID; reason: string }>;
+
+  function deferredEvaluator(): {
+    service: AutoApproveEvaluator;
+    release: (r: AutoApproveResult) => void;
+  } {
+    let resolveEval: (r: AutoApproveResult) => void = () => {};
+    const pending = new Promise<AutoApproveResult>((res) => {
+      resolveEval = res;
+    });
+    return {
+      service: { evaluate: () => pending, cancel: () => true },
+      release: (r) => resolveEval(r),
+    };
+  }
+
+  function gate(
+    service: AutoApproveEvaluator,
+    opts: { holdMs?: number; pushHoldMs?: number; onResolvedThrows?: boolean } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        pushHoldMs: opts.pushHoldMs ?? 0,
+        alwaysEscalateTools: new Set(),
+        onResolved: (questionId, reason) => {
+          if (opts.onResolvedThrows) throw new Error('test: onResolved synthetic failure');
+          resolved.push({ questionId, reason });
+        },
+      },
+      SID,
+    );
+  }
+
+  function pr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    lastQuestionId = undefined;
+    resolved = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('Part-B late approve fires onResolved auto_approved', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    release(approve);
+    expect(await pending).toBe('allow');
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'auto_approved' }]);
+  });
+
+  test('Part-B late deny fires onResolved auto_denied', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    release(deny);
+    expect(await pending).toBe('deny');
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'auto_denied' }]);
+  });
+
+  test('cancelStale on a held hook fires onResolved cancelled', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    g.cancelStale('SessionEnd');
+    expect(await pending).toBe('passthrough');
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'cancelled' }]);
+  });
+
+  test('hold timeout fires onResolved cancelled', async () => {
+    const { service } = deferredEvaluator();
+    // Short hold so the timeout fail-open fires during the test.
+    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
+    const pending = g.resolvePermission(pr());
+    expect(await pending).toBe('passthrough'); // failed open on hold timeout
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'cancelled' }]);
+  });
+
+  test('a user-driven resolveHeld does NOT fire onResolved (no double-broadcast)', async () => {
+    // Part A: a normal binary escalate holds; the user answers via resolveHeld.
+    // The answer path (input-events) broadcasts 'answered' itself, so the gate
+    // must stay silent here.
+    const service: AutoApproveEvaluator = { evaluate: async () => escalate, cancel: () => true };
+    const g = gate(service, { holdMs: 60_000 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+    expect(resolved).toEqual([]);
+  });
+
+  test('a throwing onResolved never breaks the decision path', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20, onResolvedThrows: true });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    release(approve);
+    // Despite the throwing onResolved, the held hook still resolves allow.
+    expect(await pending).toBe('allow');
+  });
+
+  // #585 P7 FIX 2: a Part-B held question is registered (pushHeldHook ->
+  // addQuestion); the gate-side resolution must drop it from the registry so no
+  // ghost card replays and a late handleAnswer can't find it "live".
+  test('Part-B auto-approve removes the held question from sessionRegistry', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    // Simulate the real push having registered the question under the held id.
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    release(approve);
+    expect(await pending).toBe('allow');
+    // The held question is gone from the registry (no ghost card / misroute).
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('hold timeout removes the held question from sessionRegistry', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 15)); // after the early push, before timeout
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(await pending).toBe('passthrough'); // failed open on hold timeout
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('cancelStale removes the held question from sessionRegistry', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    g.cancelStale('SessionEnd');
+    expect(await pending).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
   });
 });
