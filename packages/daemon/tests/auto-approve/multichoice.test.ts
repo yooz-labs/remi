@@ -374,4 +374,16 @@ describe('isDesignQuestion (#572)', () => {
     // ...but a tool with neither a listed name nor a question field does not escalate.
     expect(isDesignQuestion('Bash', { command: 'ls' }, undefined, new Set())).toBe(false);
   });
+
+  test('a "questions" array of non-question elements does not trigger the heuristic', () => {
+    // Only strings or {question: string} objects count; bare numbers/null/{}
+    // must not over-escalate a custom tool with an unrelated `questions` field.
+    expect(isDesignQuestion('mcp__x', { questions: [42] }, undefined, DEFAULTS)).toBe(false);
+    expect(isDesignQuestion('mcp__x', { questions: [null] }, undefined, DEFAULTS)).toBe(false);
+    expect(isDesignQuestion('mcp__x', { questions: [{}] }, undefined, DEFAULTS)).toBe(false);
+    // ...but the real AskUserQuestion-style {question: string} element does.
+    expect(
+      isDesignQuestion('mcp__x', { questions: [{ question: 'Pick?' }] }, undefined, DEFAULTS),
+    ).toBe(true);
+  });
 });

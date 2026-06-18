@@ -278,17 +278,17 @@ export class AutoApproveService {
         return { decision: 'approve', reasoning, durationMs: 0, model };
       }
 
-      // Design / plan-mode / long-form questions are NEVER auto-decided (#572):
-      // the LLM must not answer something only the user can (AskUserQuestion,
-      // ExitPlanMode, or any tool that structurally poses a non-binary
-      // question). Structural check BEFORE the queue and the LLM, so it costs
-      // zero latency, takes no eval-queue slot, and never triggers the
-      // escalate_model second opinion.
+      // Design / plan-mode / long-form questions are never auto-decided by the
+      // LLM (#572): AskUserQuestion, ExitPlanMode, or any tool that structurally
+      // poses a non-binary question. Runs AFTER the deny/allow/group checks
+      // (those are deterministic, explicit user rules and intentionally win),
+      // but BEFORE the queue and the LLM, so it costs zero latency, takes no
+      // eval-queue slot, and never triggers the escalate_model second opinion.
+      // Logged unconditionally (like the deny branches): a structural router
+      // that bypasses the LLM must be traceable even when log_decisions is off.
       if (isDesignQuestion(toolName, toolInput, permissionSuggestions, this.alwaysEscalateTools)) {
-        const reasoning = `always-escalate (design/plan/long-form), tool=${toolName}; never auto-decided`;
-        if (this.logDecisions) {
-          this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
-        }
+        const reasoning = `always-escalate (design/plan/long-form), tool=${toolName}; never auto-decided by LLM`;
+        this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
         return { decision: 'escalate', reasoning, durationMs: 0, model };
       }
 

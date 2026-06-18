@@ -11,7 +11,11 @@
  *
  * 1. Tool name. `ExitPlanMode` is always multi-choice: the user's intent
  *    (continue planning, accept plan, accept and stop asking) cannot be
- *    derived from tool input, so the LLM should never auto-pick.
+ *    derived from tool input, so the LLM should never auto-pick. (Under the
+ *    default config `ExitPlanMode` is pre-empted even earlier by
+ *    `isDesignQuestion` / `always_escalate_tools` in auto-approve-service.ts;
+ *    this `ALWAYS_MULTI_CHOICE_TOOLS` entry is the fallback if a user removes
+ *    it from that list.)
  * 2. String-label count > 3: a custom plugin tool with 4+ string choices
  *    cannot be expressed in the approve/deny mapping at all.
  * 3. String-label shape: any 2- or 3-label set whose labels are not all
@@ -91,14 +95,34 @@ export function isMultiChoicePermission(
  */
 const QUESTION_INPUT_FIELDS: readonly string[] = ['question', 'questions'];
 
-function hasQuestionField(toolInput: Record<string, unknown> | null | undefined): boolean {
-  if (!toolInput) return false;
-  for (const key of QUESTION_INPUT_FIELDS) {
-    const v = toolInput[key];
-    if (typeof v === 'string' && v.trim().length > 0) return true;
-    if (Array.isArray(v) && v.length > 0) return true;
+function isNonEmptyString(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+/**
+ * A question-bearing value: a non-empty string, or a non-empty array whose
+ * elements are question strings or `{question: string}` objects (the real
+ * AskUserQuestion shape). A bare array of numbers / null / `{}` is NOT a
+ * question, so a custom tool with an unrelated field named `questions` is not
+ * mis-escalated.
+ */
+function isQuestionLike(v: unknown): boolean {
+  if (isNonEmptyString(v)) return true;
+  if (Array.isArray(v)) {
+    return v.some(
+      (item) =>
+        isNonEmptyString(item) ||
+        (item !== null &&
+          typeof item === 'object' &&
+          isNonEmptyString((item as { question?: unknown }).question)),
+    );
   }
   return false;
+}
+
+function hasQuestionField(toolInput: Record<string, unknown> | null | undefined): boolean {
+  if (!toolInput) return false;
+  return QUESTION_INPUT_FIELDS.some((key) => isQuestionLike(toolInput[key]));
 }
 
 /**

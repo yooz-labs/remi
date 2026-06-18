@@ -384,6 +384,13 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
       `Invalid auto_approve.always_escalate_tools in ${configPath}: must be an array of tool names. Example: always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]`,
     );
   }
+  for (const t of cfg.always_escalate_tools) {
+    if (t.trim().length === 0) {
+      console.warn(
+        `[AutoApprove] Warning: always_escalate_tools entry "${t}" in ${configPath} is empty/whitespace and will never match a tool name.`,
+      );
+    }
+  }
 
   // Warn about dangerously short patterns that would match too broadly.
   const MIN_PATTERN_LENGTH = 2;
@@ -530,12 +537,18 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       .filter((s) => s.length > 0);
   }
   if (env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']) {
-    (auto_approve as { always_escalate_tools: readonly string[] }).always_escalate_tools = env[
-      'REMI_AUTO_APPROVE_ALWAYS_ESCALATE'
-    ]
+    const tools = env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']
       .split(/[\n,]/)
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
+    if (tools.length === 0) {
+      console.warn(
+        '[AutoApprove] REMI_AUTO_APPROVE_ALWAYS_ESCALATE resolved to an empty list; ' +
+          'AskUserQuestion and ExitPlanMode will no longer be structurally escalated. ' +
+          'Set it to "AskUserQuestion,ExitPlanMode" to keep the default safety net.',
+      );
+    }
+    (auto_approve as { always_escalate_tools: readonly string[] }).always_escalate_tools = tools;
   }
   const mc = env['REMI_AUTO_APPROVE_MULTICHOICE'];
   if (mc === 'skip' || mc === 'evaluate') {

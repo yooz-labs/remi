@@ -178,7 +178,9 @@ export interface AutoApproveConfig {
    * the LLM (#572) — design / plan-mode / long-form questions whose answers are
    * not yes/no. Matched by tool name BEFORE any LLM call, so it costs zero
    * latency, takes no eval-queue slot, and never triggers the escalate_model
-   * second opinion. Default: ["AskUserQuestion", "ExitPlanMode"]. Extend with
+   * second opinion. Explicit `deny`/`allow` rules are deterministic and still
+   * checked first, so a user can override this for a specific tool.
+   * Default: ["AskUserQuestion", "ExitPlanMode"]. Extend with
    * custom MCP tools that solicit user intent. A free-text heuristic also
    * escalates any tool that structurally carries a question field with
    * non-binary suggestions. See `DEFAULT_ALWAYS_ESCALATE_TOOLS`.

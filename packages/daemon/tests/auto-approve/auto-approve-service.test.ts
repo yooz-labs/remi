@@ -1314,7 +1314,7 @@ describe('design/plan-mode always-escalate (#572)', () => {
     const r = await svc.evaluate('AskUserQuestion', { questions: [{ question: 'Which DB?' }] });
     expect(r.decision).toBe('escalate');
     expect(r.durationMs).toBe(0);
-    if (r.decision !== 'cancelled') expect(r.reasoning).toContain('always-escalate');
+    expect(r.reasoning).toContain('always-escalate');
   });
 
   test('ExitPlanMode escalates structurally even in multichoice=evaluate mode', async () => {
@@ -1356,6 +1356,20 @@ describe('design/plan-mode always-escalate (#572)', () => {
     );
     const r = await svc.evaluate('AskUserQuestion', { questions: [{ question: 'x' }] });
     expect(r.decision).toBe('deny');
+    expect(r.durationMs).toBe(0);
+  });
+
+  test('allow list is still checked first (explicit allow overrides the classifier)', async () => {
+    const svc = new AutoApproveService(
+      makeConfig({
+        ...offline,
+        allow: ['AskUserQuestion'],
+        always_escalate_tools: ['AskUserQuestion'],
+      }),
+      logFn,
+    );
+    const r = await svc.evaluate('AskUserQuestion', { questions: [{ question: 'x' }] });
+    expect(r.decision).toBe('approve');
     expect(r.durationMs).toBe(0);
   });
 });

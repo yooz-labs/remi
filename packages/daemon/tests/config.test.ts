@@ -291,6 +291,8 @@ describe('formatConfig', () => {
     expect(output).toContain('deny_groups = []');
     // escalate_model visible (#522).
     expect(output).toContain('escalate_model = ""');
+    // always_escalate_tools visible (#572).
+    expect(output).toContain('always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]');
   });
 
   test('default model is a fast 4b; escalate_model empty (#522)', () => {
@@ -369,6 +371,25 @@ timeout = 5
     // Defaults preserved for unset fields
     expect(config.auto_approve.base_url).toBe('http://localhost:11434/v1');
     expect(config.auto_approve.log_decisions).toBe(true);
+  });
+
+  test('loads always_escalate_tools from TOML (#572)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nalways_escalate_tools = ["MyTool"]\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.always_escalate_tools).toEqual(['MyTool']);
+  });
+
+  test('rejects always_escalate_tools as a non-array (#572)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nalways_escalate_tools = "AskUserQuestion"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/always_escalate_tools/);
+  });
+
+  test('REMI_AUTO_APPROVE_ALWAYS_ESCALATE env override trims and drops empties (#572)', () => {
+    process.env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE'] = 'AskUserQuestion, mcp__custom , ';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.always_escalate_tools).toEqual(['AskUserQuestion', 'mcp__custom']);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE'];
   });
 
   test('preserves auto_approve defaults when section missing', () => {
