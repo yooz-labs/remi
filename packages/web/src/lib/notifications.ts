@@ -150,6 +150,40 @@ export function openNotificationSettings(): void {
   window.open('app-settings:', '_system');
 }
 
+/**
+ * Clear the delivered lock-screen / notification-center notification for a
+ * resolved question (#585, P7). Called from the `question_resolved` handler so
+ * answering on one device clears the lock-screen card on this one too.
+ *
+ * NATIVE-ONLY: this is meaningful only on iOS/Android. On web there is no
+ * notification center to clear, so it is a no-op. The daemon ALSO sends a quiet
+ * APNS dismissal (apns-collapse-id = questionId) that supersedes the card while
+ * the app is suspended; this handler covers the foreground/just-woken case by
+ * removing any delivered notification whose payload carries the same questionId.
+ *
+ * APNS pushes are delivered through @capacitor/push-notifications, so the
+ * delivered list is queried there and matched on `data.questionId`. Local
+ * notifications scheduled by `pushNotificationReceived` (foreground mirror) carry
+ * no questionId, so they cannot be matched precisely; they auto-clear when the
+ * user opens the app. Errors are swallowed — a failed dismissal must never break
+ * message handling.
+ */
+export async function dismissDeliveredNotification(questionId: string): Promise<void> {
+  if (!isNative()) return;
+  try {
+    const delivered = await PushNotifications.getDeliveredNotifications();
+    const matches = (delivered.notifications ?? []).filter((n) => {
+      const data = (n.data ?? {}) as Record<string, unknown>;
+      return data['questionId'] === questionId;
+    });
+    if (matches.length > 0) {
+      await PushNotifications.removeDeliveredNotifications({ notifications: matches });
+    }
+  } catch (err) {
+    console.warn('[Notifications] Failed to dismiss delivered notification:', err);
+  }
+}
+
 /** Send a local notification for a question/permission prompt. */
 export async function notifyQuestion(sessionName: string, prompt: string): Promise<void> {
   if (!localPermissionGranted) return;

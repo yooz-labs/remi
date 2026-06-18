@@ -1185,4 +1185,83 @@ describe('createInputHandlers', () => {
       expect(ptyCapture.submits).toEqual([]);
     });
   });
+
+  describe('onQuestionResolved cross-client dismissal (#585 P7)', () => {
+    function registerWithQuestion(questionId: UUID): UUID {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: questionId,
+        text: 'proceed?',
+        options: [
+          { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      return sessionId;
+    }
+
+    test('fires onQuestionResolved once with the answered ids on the delivered path', async () => {
+      const sessionId = registerWithQuestion(QID);
+      const resolved: Array<{ sessionId: UUID; questionId: UUID }> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        onQuestionResolved: (s, q) => resolved.push({ sessionId: s, questionId: q }),
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+      expect(resolved).toEqual([{ sessionId, questionId: QID }]);
+    });
+
+    test('does NOT fire for a stale answer (nothing was consumed)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      // No question registered -> the answer is stale.
+      const resolved: UUID[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        onQuestionResolved: (_s, q) => resolved.push(q),
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+      expect(resolved).toEqual([]);
+    });
+
+    test('a throwing onQuestionResolved never breaks answer handling', async () => {
+      const sessionId = registerWithQuestion(QID);
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        onQuestionResolved: () => {
+          throw new Error('broadcast boom');
+        },
+      });
+
+      // The answer still delivers and the question is still consumed despite the
+      // throwing broadcast (it is guarded in the finally).
+      await expect(handlers.onAnswer(CID, sessionId, QID, 'y')).resolves.toBe(undefined);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+  });
 });

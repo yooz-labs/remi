@@ -100,3 +100,46 @@ describe('buildApnsRequest (#575 P4a)', () => {
     expect(req.headers['apns-priority']).toBe('10');
   });
 });
+
+describe('buildApnsRequest dismissal (#585 P7)', () => {
+  const DISMISS = {
+    token: 'device-token-abc',
+    title: ' ',
+    body: ' ',
+    bundleId: 'live.yooz.remi',
+    collapseId: 'question-uuid-1234',
+    dismiss: true,
+  };
+
+  test('quiet dismissal: content-available only, no alert/sound/badge', () => {
+    const req = buildApnsRequest(DISMISS, 'jwt');
+    const payload = parseBody(req.body);
+    expect(payload.aps['content-available']).toBe(1);
+    expect(payload.aps.alert).toBeUndefined();
+    expect(payload.aps.sound).toBeUndefined();
+    expect(payload.aps.badge).toBeUndefined();
+    expect(payload.aps.category).toBeUndefined();
+  });
+
+  test('carries the apns-collapse-id (questionId) so it supersedes the original card', () => {
+    const req = buildApnsRequest(DISMISS, 'jwt');
+    expect(req.headers['apns-collapse-id']).toBe('question-uuid-1234');
+  });
+
+  test('uses the background push type at low priority (a content-available push)', () => {
+    const req = buildApnsRequest(DISMISS, 'jwt');
+    expect(req.headers['apns-push-type']).toBe('background');
+    expect(req.headers['apns-priority']).toBe('5');
+  });
+
+  test('carries custom data (sessionId/questionId) as siblings to aps', () => {
+    const req = buildApnsRequest(
+      { ...DISMISS, data: { sessionId: 's1', questionId: 'q1' } },
+      'jwt',
+    );
+    const payload = parseBody(req.body);
+    expect(payload['sessionId']).toBe('s1');
+    expect(payload['questionId']).toBe('q1');
+    expect(payload.aps['content-available']).toBe(1);
+  });
+});

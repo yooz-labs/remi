@@ -194,6 +194,10 @@ describe('setupHookBridge', () => {
       /** Capture every message the bridge sends via sendAndRecord (#576: the
        *  auto-approve status broadcasts). Defaults to a no-op send. */
       sendLog?: ProtocolMessage[];
+      /** Capture every broadcastQuestionResolved call (#585, P7). Each entry is
+       *  the (questionId, reason) the bridge forwarded. Defaults to undefined
+       *  (dep not wired). */
+      broadcastResolvedLog?: Array<{ questionId: UUID; reason: string }>;
     } = {},
   ): { tracker: QuestionPresenceTracker } {
     const localMessageApi = fakeMessageAPI(
@@ -265,6 +269,15 @@ describe('setupHookBridge', () => {
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => 8765,
+        ...(opts.broadcastResolvedLog
+          ? {
+              broadcastQuestionResolved: (
+                _sid: UUID,
+                questionId: UUID,
+                reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+              ) => opts.broadcastResolvedLog?.push({ questionId, reason }),
+            }
+          : {}),
       },
       {
         hookServer: hookServer as unknown as HookServer,
@@ -860,6 +873,45 @@ describe('setupHookBridge', () => {
     // assert only the tear-down signals, not the final map state.
     expect(stopCalls.length).toBeGreaterThanOrEqual(1);
     expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
+  });
+
+  test('restart (/clear) broadcasts question_resolved for each pending question and clears them (#585 P7)', () => {
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    build({ broadcastResolvedLog });
+
+    // Lock onto claude-A.
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-A',
+      transcript_path: path.join(tmpDir, 'a.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    // A question was pushed before the restart (held-hook or hook+PTY path).
+    const QID = 'q1111111-1111-1111-1111-111111111111' as UUID;
+    sessionRegistry.addQuestion(SID, {
+      id: QID,
+      text: 'proceed?',
+      options: [
+        { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+        { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+
+    // /clear: a new session_id rotates the binding (restart classification).
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-B',
+      transcript_path: path.join(tmpDir, 'b.jsonl'),
+      hook_event_name: 'SessionStart',
+      source: 'clear',
+    });
+
+    // The pending card is dismissed on every client (broadcast) AND dropped from
+    // the registry, so nothing lingers across the rotation.
+    expect(broadcastResolvedLog).toEqual([{ questionId: QID, reason: 'cancelled' }]);
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
   });
 
   // SessionStart restart pre-empt is source-agnostic: any rotation of

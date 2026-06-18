@@ -18,6 +18,7 @@ import {
   createPing,
   createPong,
   createQuestion,
+  createQuestionResolved,
   createReplayBatch,
   createResumeSessionRequest,
   createResumeSessionResponse,
@@ -270,6 +271,7 @@ describe('deserialize()', () => {
       'session_list_request',
       'session_list_response',
       'transcript_content',
+      'question_resolved',
     ] as const;
 
     for (const type of validTypes) {
@@ -307,6 +309,37 @@ describe('deserialize()', () => {
     expect(parsed.message.content).toBe(message.content);
     expect(parsed.message.tool).toBe(message.tool);
     expect(parsed.message.isEditing).toBe(message.isEditing);
+  });
+});
+
+describe('createQuestionResolved() (#585 P7)', () => {
+  test('builds a well-formed question_resolved message', () => {
+    const sessionId = generateId();
+    const questionId = generateId();
+    const msg = createQuestionResolved(sessionId, questionId, 'answered');
+    expect(msg.type).toBe('question_resolved');
+    expect(msg.sessionId).toBe(sessionId);
+    expect(msg.questionId).toBe(questionId);
+    expect(msg.reason).toBe('answered');
+    expect(typeof msg.id).toBe('string');
+    expect(typeof msg.timestamp).toBe('string');
+  });
+
+  test('round-trips through serialize/deserialize for every reason', () => {
+    const reasons = ['answered', 'auto_approved', 'auto_denied', 'cancelled'] as const;
+    for (const reason of reasons) {
+      const sessionId = generateId();
+      const questionId = generateId();
+      const original = createQuestionResolved(sessionId, questionId, reason);
+      const parsed = deserialize(serialize(original));
+      expect(parsed).not.toBeNull();
+      expect(parsed?.type).toBe('question_resolved');
+      if (parsed?.type === 'question_resolved') {
+        expect(parsed.sessionId).toBe(sessionId);
+        expect(parsed.questionId).toBe(questionId);
+        expect(parsed.reason).toBe(reason);
+      }
+    }
   });
 });
 

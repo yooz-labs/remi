@@ -182,4 +182,36 @@ export class NotificationDispatcher {
         .catch((err) => log(`Push notification failed: ${err}`));
     }
   }
+
+  /**
+   * Fire a QUIET APNS dismissal for a resolved question (#585, P7). Sends a
+   * `content-available` push (no alert, no sound) keyed by `apns-collapse-id` =
+   * questionId so a suspended device replaces/clears the earlier lock-screen card
+   * for that exact question. Fans out to every registered device — unlike
+   * `maybePush`, it deliberately does NOT skip when a client is attached: the
+   * card may still sit on another device's lock screen, and the collapse-id makes
+   * a no-op dismissal harmless. No dedup gate (a repeat dismissal is idempotent at
+   * the device). No-op when no tokens are registered.
+   *
+   * `questionSessionId` is the primary id the client knows (from hello_ack), kept
+   * symmetric with `maybePush` so the dismissal carries the same routing id.
+   */
+  dismiss(questionSessionId: UUID, questionId: UUID): void {
+    const { deviceTokens, pushConfig } = this.deps;
+    if (deviceTokens.size === 0) return;
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    for (const dt of deviceTokens.values()) {
+      this.pushFn(cfg.signalingUrl, dt.token, {
+        // No title/body: a dismissal is a silent content-available push, and the
+        // relay skips the title/body requirement for it (#585, P7).
+        ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+        sessionId: pushSessionId,
+        questionId,
+        dismiss: true,
+      })
+        .then(() => log(`Push dismissal sent for question ${questionId}`))
+        .catch((err) => log(`Push dismissal failed: ${err}`));
+    }
+  }
 }

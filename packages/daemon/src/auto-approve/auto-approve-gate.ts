@@ -95,6 +95,18 @@ export interface AutoApproveGateDeps {
   /** Called when the eval ended without a verdict (cancelled — the user already
    *  advanced past the prompt). Drives the terminal cue back to idle. #513. */
   onCancelled?: () => void;
+  /**
+   * Called when a HELD question resolved WITHOUT the user answering it through
+   * the WebSocket/relay answer path (#585, P7): a Part-B slow-eval verdict landed
+   * after the early push (auto_approved/auto_denied), the hold timed out, or
+   * cancelStale released it (cancelled). The daemon broadcasts a `question_resolved`
+   * + fires the APNS dismissal so the pushed card clears on every client. NOT
+   * called for a user answer — that path (input-events.handleAnswer) broadcasts
+   * its own 'answered' resolution, so wiring it here too would double-fire.
+   * Throw-safe at the call site (routed through `safeCueWithArg`), so a broadcast
+   * failure can never break the decision/hold path. Absent => no resolution
+   * broadcast (tests / no-AA callers). */
+  onResolved?: (questionId: UUID, reason: 'auto_approved' | 'auto_denied' | 'cancelled') => void;
   /** Second-opinion model consulted on a primary 'escalate' in main context
    *  (#522). Empty/absent => no second opinion (escalate straight to the user). */
   escalateModel?: string;
@@ -182,6 +194,12 @@ export class AutoApproveGate {
     if (!hold) return false;
     clearTimeout(hold.timer);
     this.pendingHolds.delete(questionId);
+    // Remove the registry entry too (#585, P7 FIX 2): the held question was
+    // registered via pushHeldHook -> addQuestion, so resolving the hold without
+    // this leaves a ghost card that replays on reconnect and lets a late
+    // handleAnswer find it "live" and misroute. The user-answer path also
+    // removes it in handleAnswer's finally; a double-remove is idempotent.
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
     this.markHandled();
     hold.resolve(decision);
     log(
@@ -210,8 +228,13 @@ export class AutoApproveGate {
     log(
       `[AutoApprove ${this.sessionTag}] Releasing ${this.pendingHolds.size} held hook(s) as ${decision} (${reason})`,
     );
-    for (const [, hold] of this.pendingHolds) {
+    for (const [qid, hold] of this.pendingHolds) {
       clearTimeout(hold.timer);
+      // The session is going away (Stop/SessionEnd); dismiss the pushed card on
+      // every client BEFORE resolving so it does not linger after the prompt is
+      // gone (#585, P7), and drop the registry entry so no ghost card replays.
+      this.notifyResolved(qid, 'cancelled');
+      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
       hold.resolve(decision);
     }
     this.pendingHolds.clear();
@@ -265,6 +288,11 @@ export class AutoApproveGate {
         log(
           `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} timed out -> passthrough`,
         );
+        // The pushed card is now stale (Claude will render its own prompt); tell
+        // every client to dismiss it BEFORE failing open (#585, P7), and drop the
+        // registry entry so no ghost card replays. Throw-safe.
+        this.notifyResolved(qid, 'cancelled');
+        this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
         resolve('passthrough');
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;
@@ -575,13 +603,22 @@ export class AutoApproveGate {
       return;
     }
     const result = outcome.result;
+    // Dismiss BEFORE resolving (#585, P7 FIX 5): the broadcast races ahead of
+    // Claude proceeding on the verdict, shrinking the window where Claude has
+    // executed but the card still shows. resolveHeld/releaseHeld then resolve the
+    // hook + drop the registry entry (FIX 2).
     if (result.decision === 'approve') {
+      // The slow verdict landed AFTER the early push, so the card is on screens
+      // the user never needs to act on — dismiss it everywhere (#585, P7).
+      this.notifyResolved(qid, 'auto_approved');
       this.resolveHeld(qid, 'allow');
     } else if (result.decision === 'deny') {
+      this.notifyResolved(qid, 'auto_denied');
       this.resolveHeld(qid, 'deny');
     } else if (result.decision === 'cancelled') {
       // Claude advanced past the prompt during the slow eval; fail the hold open.
       this.deps.tracker.clearPending();
+      this.notifyResolved(qid, 'cancelled');
       this.releaseHeld(qid, 'passthrough');
     }
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
@@ -595,6 +632,10 @@ export class AutoApproveGate {
     if (!hold) return false;
     clearTimeout(hold.timer);
     this.pendingHolds.delete(questionId);
+    // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
+    // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
+    // removes it; a double-remove is idempotent.
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
     hold.resolve(decision);
     return true;
   }
@@ -640,6 +681,26 @@ export class AutoApproveGate {
       fn(arg);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
+    }
+  }
+
+  /**
+   * Notify the daemon that a HELD question resolved without a user answer (#585,
+   * P7), so it can broadcast `question_resolved` + dismiss the pushed card on
+   * every client. Throw-safe like the cosmetic cues: a broadcast/push failure is
+   * logged and absorbed so it can never propagate into the decision/hold path.
+   * No-op when no `onResolved` is wired.
+   */
+  private notifyResolved(
+    questionId: UUID,
+    reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+  ): void {
+    const fn = this.deps.onResolved;
+    if (!fn) return;
+    try {
+      fn(questionId, reason);
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] onResolved threw (ignored):`, err);
     }
   }
 

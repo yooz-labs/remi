@@ -20,8 +20,10 @@ import {
   clearSessionQuestions,
   getSessionQuestions,
   questionKey,
+  removeQuestionById,
   statusClearsMainQuestion,
 } from '@/lib/question-collection';
+import { dismissDeliveredNotification } from '@/lib/notifications';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
@@ -653,6 +655,39 @@ function App() {
         );
 
         // Push (APNS) is the notification channel — no local notification from WebSocket
+        break;
+      }
+
+      case 'question_resolved': {
+        // Cross-client dismissal (#585, P7): the question resolved on some
+        // channel (answered elsewhere, auto-approved/denied, or cancelled), so
+        // drop its card and clear any lock-screen notification for it here.
+        // Idempotent — if we never held it (or already dropped it), this is a
+        // no-op. The message carries no agentId, so locate the card by question
+        // id within the session.
+        const resolvedSessionId = message.sessionId;
+        const resolvedQuestionId = message.questionId;
+        // Compute the post-removal map from the CURRENT committed ref, then drive
+        // both setters from that one value (#585, P7 FIX 3). Reading the updated
+        // map (not the pre-removal ref) is what prevents two concurrent
+        // resolutions from leaving the badge stuck `questionPending: true`. The
+        // ref is the latest committed map (kept in sync by the effect below), so
+        // the second resolution sees the first's removal.
+        const updatedQuestions = removeQuestionById(
+          questionsRef.current,
+          resolvedSessionId,
+          resolvedQuestionId,
+        );
+        const stillPending = getSessionQuestions(updatedQuestions, resolvedSessionId).some(
+          (q) => q.answeredWith === undefined,
+        );
+        questionsRef.current = updatedQuestions;
+        setQuestions(updatedQuestions);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === resolvedSessionId ? { ...s, questionPending: stillPending } : s)),
+        );
+        // Clear the matching delivered lock-screen / in-app notification (native).
+        dismissDeliveredNotification(resolvedQuestionId);
         break;
       }
 

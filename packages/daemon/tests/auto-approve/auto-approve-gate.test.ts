@@ -905,3 +905,207 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
     expect(await pending).toBe('allow');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #585 (P7): onResolved fires when a HELD question resolves WITHOUT a user
+// answer, so the daemon can dismiss the pushed card on every client. It must NOT
+// fire for a user-driven resolveHeld (the answer path broadcasts its own
+// 'answered'), and a throw must be absorbed.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let lastQuestionId: UUID | undefined;
+  let resolved: Array<{ questionId: UUID; reason: string }>;
+
+  function deferredEvaluator(): {
+    service: AutoApproveEvaluator;
+    release: (r: AutoApproveResult) => void;
+  } {
+    let resolveEval: (r: AutoApproveResult) => void = () => {};
+    const pending = new Promise<AutoApproveResult>((res) => {
+      resolveEval = res;
+    });
+    return {
+      service: { evaluate: () => pending, cancel: () => true },
+      release: (r) => resolveEval(r),
+    };
+  }
+
+  function gate(
+    service: AutoApproveEvaluator,
+    opts: { holdMs?: number; pushHoldMs?: number; onResolvedThrows?: boolean } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        pushHoldMs: opts.pushHoldMs ?? 0,
+        alwaysEscalateTools: new Set(),
+        onResolved: (questionId, reason) => {
+          if (opts.onResolvedThrows) throw new Error('test: onResolved synthetic failure');
+          resolved.push({ questionId, reason });
+        },
+      },
+      SID,
+    );
+  }
+
+  function pr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    lastQuestionId = undefined;
+    resolved = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('Part-B late approve fires onResolved auto_approved', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    release(approve);
+    expect(await pending).toBe('allow');
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'auto_approved' }]);
+  });
+
+  test('Part-B late deny fires onResolved auto_denied', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    release(deny);
+    expect(await pending).toBe('deny');
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'auto_denied' }]);
+  });
+
+  test('cancelStale on a held hook fires onResolved cancelled', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    g.cancelStale('SessionEnd');
+    expect(await pending).toBe('passthrough');
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'cancelled' }]);
+  });
+
+  test('hold timeout fires onResolved cancelled', async () => {
+    const { service } = deferredEvaluator();
+    // Short hold so the timeout fail-open fires during the test.
+    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
+    const pending = g.resolvePermission(pr());
+    expect(await pending).toBe('passthrough'); // failed open on hold timeout
+    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'cancelled' }]);
+  });
+
+  test('a user-driven resolveHeld does NOT fire onResolved (no double-broadcast)', async () => {
+    // Part A: a normal binary escalate holds; the user answers via resolveHeld.
+    // The answer path (input-events) broadcasts 'answered' itself, so the gate
+    // must stay silent here.
+    const service: AutoApproveEvaluator = { evaluate: async () => escalate, cancel: () => true };
+    const g = gate(service, { holdMs: 60_000 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+    expect(resolved).toEqual([]);
+  });
+
+  test('a throwing onResolved never breaks the decision path', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20, onResolvedThrows: true });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    release(approve);
+    // Despite the throwing onResolved, the held hook still resolves allow.
+    expect(await pending).toBe('allow');
+  });
+
+  // #585 P7 FIX 2: a Part-B held question is registered (pushHeldHook ->
+  // addQuestion); the gate-side resolution must drop it from the registry so no
+  // ghost card replays and a late handleAnswer can't find it "live".
+  test('Part-B auto-approve removes the held question from sessionRegistry', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    // Simulate the real push having registered the question under the held id.
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    release(approve);
+    expect(await pending).toBe('allow');
+    // The held question is gone from the registry (no ghost card / misroute).
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('hold timeout removes the held question from sessionRegistry', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 15)); // after the early push, before timeout
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(await pending).toBe('passthrough'); // failed open on hold timeout
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('cancelStale removes the held question from sessionRegistry', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    g.cancelStale('SessionEnd');
+    expect(await pending).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+});

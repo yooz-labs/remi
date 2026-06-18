@@ -140,6 +140,18 @@ export interface HookBridgeDeps {
    * Part B disabled (the eval/timer race never arms).
    */
   pushHoldTimeoutSec?: number;
+  /**
+   * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
+   * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
+   * or cancelStale): the daemon broadcasts `question_resolved` to every client and
+   * fires the APNS dismissal so the pushed card clears everywhere. Must be
+   * throw-safe (the gate also guards the call). Absent => no dismissal broadcast.
+   */
+  broadcastQuestionResolved?: (
+    sessionId: UUID,
+    questionId: UUID,
+    reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+  ) => void;
 }
 
 export interface HookBridgeArgs {
@@ -261,6 +273,37 @@ export function setupHookBridge(
         })),
       ),
     );
+  };
+
+  /**
+   * Dismiss every pending question for this session on a Claude restart
+   * (/clear, /compact, /resume), THEN clear the registry collection (#585, P7).
+   * A card pushed before the restart would otherwise linger on every device
+   * forever — the most common dismissal case. Broadcasts
+   * `question_resolved(..., 'cancelled')` for each pending id so all clients drop
+   * the card and the lock-screen push is dismissed, mirroring the gate's own
+   * held-resolution dismissal. Used at all three restart sites
+   * (initFromHookEvent, onSessionInfo, drive-binder onRotation) so none is
+   * missed. Throw-safe: a broadcast failure for one question must never block
+   * clearing the rest, and the clear always runs.
+   */
+  const resolveAndClearQuestions = (): void => {
+    const broadcast = deps.broadcastQuestionResolved;
+    if (broadcast) {
+      const pendingIds = [
+        ...(sessionRegistry.getSession(sessionId)?.currentQuestions.keys() ?? []),
+      ];
+      for (const questionId of pendingIds) {
+        try {
+          broadcast(sessionId, questionId, 'cancelled');
+        } catch (err) {
+          logError(
+            `[Hooks] question_resolved broadcast (restart) failed for ${questionId}: ${errorToString(err)}`,
+          );
+        }
+      }
+    }
+    sessionRegistry.clearQuestions(sessionId);
   };
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
@@ -484,10 +527,11 @@ export function setupHookBridge(
       teardownWatcher('restart');
       // Drop any hook record stashed before /clear or /compact: the new
       // Claude session's first PTY prompt must not merge stale option
-      // labels from the dying session. Also drop the pending-question
-      // collection so answers to the dead session's prompts are refused.
+      // labels from the dying session. Also dismiss + drop the pending-question
+      // collection so cards clear on every device (#585) and answers to the dead
+      // session's prompts are refused.
       tracker.clearPending();
-      sessionRegistry.clearQuestions(sessionId);
+      resolveAndClearQuestions();
       // Announce the rotation NOW, before the sibling / no-transcript_path
       // guards below can early-return. teardownWatcher already reset the
       // client's view, so the client must learn of the rotation (clear +
@@ -648,11 +692,11 @@ export function setupHookBridge(
         );
         teardownWatcher('restart-sessioninfo');
         // Mirror the initFromHookEvent restart branch: drop any hook
-        // record and the pending-question collection so the new session's
-        // first PTY prompt cannot merge stale options, and stale answers
-        // are refused.
+        // record, dismiss + drop the pending-question collection (so cards clear
+        // on every device, #585) so the new session's first PTY prompt cannot
+        // merge stale options, and stale answers are refused.
         tracker.clearPending();
-        sessionRegistry.clearQuestions(sessionId);
+        resolveAndClearQuestions();
         claudeSessionId = null;
         mainSessionEnded = false;
         isRotation = previousClaudeSessionId !== null;
@@ -779,6 +823,11 @@ export function setupHookBridge(
         broadcastAutoApproveStatus('approved');
       },
       onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
+      // #585: a held question that resolves without a user answer (Part-B late
+      // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
+      // pushed card on every client. Forwarded with this session's id.
+      onResolved: (questionId, reason) =>
+        deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
       // #522: second-opinion model on a primary escalate (read from the service's
       // config). Empty when unset -> escalate straight to the user.
       escalateModel: autoApproveService?.escalateModel ?? '',
@@ -919,10 +968,11 @@ export function setupHookBridge(
             onRotation: () => {
               // The old restart branch's injected side effects: drop any hook
               // record stashed before the rotation so the new session's first
-              // PTY prompt cannot merge stale option labels, and drop the
-              // pending-question collection so stale answers are refused.
+              // PTY prompt cannot merge stale option labels, and dismiss + drop
+              // the pending-question collection (cards clear on every device,
+              // #585) so stale answers are refused.
               tracker.clearPending();
-              sessionRegistry.clearQuestions(sessionId);
+              resolveAndClearQuestions();
               // The new session starts with no subagents (#499 phase 3).
               if (subagentViews) {
                 subagentViews.clear();
