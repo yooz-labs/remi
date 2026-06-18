@@ -15,6 +15,7 @@ import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
 import {
   buildMultiChoicePrompt,
+  isDesignQuestion,
   isMultiChoicePermission,
   parseMultiChoiceDecision,
 } from './multichoice.ts';
@@ -84,6 +85,8 @@ export class AutoApproveService {
   private readonly denyGroups: readonly string[];
   private readonly instructions: string;
   private readonly multichoiceMode: MultiChoiceMode;
+  /** Tool names that always escalate to the user, never auto-decided (#572). */
+  private readonly alwaysEscalateTools: ReadonlySet<string>;
   /** Falls back to llmConfig.model when empty. */
   private readonly multichoiceModel: string;
   /** Second-opinion model on a primary 'escalate' (#522); empty = none. Public
@@ -133,6 +136,7 @@ export class AutoApproveService {
     this.denyGroups = config.deny_groups;
     this.instructions = config.instructions;
     this.multichoiceMode = config.multichoice;
+    this.alwaysEscalateTools = new Set(config.always_escalate_tools);
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
@@ -272,6 +276,20 @@ export class AutoApproveService {
           this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
         }
         return { decision: 'approve', reasoning, durationMs: 0, model };
+      }
+
+      // Design / plan-mode / long-form questions are never auto-decided by the
+      // LLM (#572): AskUserQuestion, ExitPlanMode, or any tool that structurally
+      // poses a non-binary question. Runs AFTER the deny/allow/group checks
+      // (those are deterministic, explicit user rules and intentionally win),
+      // but BEFORE the queue and the LLM, so it costs zero latency, takes no
+      // eval-queue slot, and never triggers the escalate_model second opinion.
+      // Logged unconditionally (like the deny branches): a structural router
+      // that bypasses the LLM must be traceable even when log_decisions is off.
+      if (isDesignQuestion(toolName, toolInput, permissionSuggestions, this.alwaysEscalateTools)) {
+        const reasoning = `always-escalate (design/plan/long-form), tool=${toolName}; never auto-decided by LLM`;
+        this.logFn(`${prefix} ${toolName}: escalate (0ms) - ${reasoning}`);
+        return { decision: 'escalate', reasoning, durationMs: 0, model };
       }
 
       const isMultiChoice = isMultiChoicePermission(toolName, permissionSuggestions);

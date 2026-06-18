@@ -11,7 +11,11 @@
  *
  * 1. Tool name. `ExitPlanMode` is always multi-choice: the user's intent
  *    (continue planning, accept plan, accept and stop asking) cannot be
- *    derived from tool input, so the LLM should never auto-pick.
+ *    derived from tool input, so the LLM should never auto-pick. (Under the
+ *    default config `ExitPlanMode` is pre-empted even earlier by
+ *    `isDesignQuestion` / `always_escalate_tools` in auto-approve-service.ts;
+ *    this `ALWAYS_MULTI_CHOICE_TOOLS` entry is the fallback if a user removes
+ *    it from that list.)
  * 2. String-label count > 3: a custom plugin tool with 4+ string choices
  *    cannot be expressed in the approve/deny mapping at all.
  * 3. String-label shape: any 2- or 3-label set whose labels are not all
@@ -82,6 +86,76 @@ export function isMultiChoicePermission(
   // the safe escalate path runs.
   // 2- or 3-label lists: binary only when every label is yes/no-shaped.
   return !stringLabels.every(isBinaryShapedLabel);
+}
+
+/**
+ * Keys under which a tool carries a user-facing question in its `tool_input`.
+ * Deliberately narrow — only structured question fields, never a Bash command
+ * string — so a `Bash` command ending in "?" is not mistaken for a question.
+ */
+const QUESTION_INPUT_FIELDS: readonly string[] = ['question', 'questions'];
+
+function isNonEmptyString(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+/**
+ * A question-bearing value: a non-empty string, or a non-empty array whose
+ * elements are question strings or `{question: string}` objects (the real
+ * AskUserQuestion shape). A bare array of numbers / null / `{}` is NOT a
+ * question, so a custom tool with an unrelated field named `questions` is not
+ * mis-escalated.
+ */
+function isQuestionLike(v: unknown): boolean {
+  if (isNonEmptyString(v)) return true;
+  if (Array.isArray(v)) {
+    return v.some(
+      (item) =>
+        isNonEmptyString(item) ||
+        (item !== null &&
+          typeof item === 'object' &&
+          isNonEmptyString((item as { question?: unknown }).question)),
+    );
+  }
+  return false;
+}
+
+function hasQuestionField(toolInput: Record<string, unknown> | null | undefined): boolean {
+  if (!toolInput) return false;
+  return QUESTION_INPUT_FIELDS.some((key) => isQuestionLike(toolInput[key]));
+}
+
+/**
+ * True when a permission must ALWAYS go to the human — a design / plan-mode /
+ * long-form question the binary approve/deny path cannot answer and the LLM
+ * must never auto-decide (#572). Two layers:
+ *
+ * 1. Tool-name allowlist (`alwaysEscalateTools`, default
+ *    `DEFAULT_ALWAYS_ESCALATE_TOOLS` in types.ts plus any user-configured
+ *    names): definitionally user-intent tools. Immune to tool_input shape drift.
+ * 2. Free-text heuristic: a tool that structurally carries a question field
+ *    (see `QUESTION_INPUT_FIELDS`) whose suggestions are not all yes/no-shaped
+ *    is a long-form question with no binary mapping. Catches MCP / custom tools
+ *    that mimic AskUserQuestion without being on the allowlist.
+ *
+ * Evaluated BEFORE any LLM call so the outcome is structural (not a model
+ * guess), costs zero latency, takes no eval-queue slot, and never triggers the
+ * escalate_model second opinion.
+ */
+export function isDesignQuestion(
+  toolName: string,
+  toolInput: Record<string, unknown> | null | undefined,
+  permissionSuggestions: readonly unknown[] | null | undefined,
+  alwaysEscalateTools: ReadonlySet<string>,
+): boolean {
+  if (alwaysEscalateTools.has(toolName)) return true;
+  if (!hasQuestionField(toolInput)) return false;
+  const stringLabels = Array.isArray(permissionSuggestions)
+    ? permissionSuggestions.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    : [];
+  // A question with no binary-shaped suggestions has no approve/deny mapping —
+  // the user must select or type a long-form answer.
+  return stringLabels.length === 0 || !stringLabels.every(isBinaryShapedLabel);
 }
 
 const MULTI_CHOICE_SYSTEM_PROMPT = `You are a permission evaluator for Claude Code, an AI coding assistant running inside Remi (a remote monitoring tool).

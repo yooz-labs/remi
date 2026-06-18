@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
+import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
@@ -183,6 +184,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // load-bearing for following broad user instructions. Opt in (Ollama only)
     // for raw speed over decision nuance.
     disable_thinking: false,
+    // Always escalate these to the user; never auto-decided by the LLM (#572):
+    // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
+    always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
   },
   features: {
     transcript_binder_shadow: false,
@@ -375,6 +379,18 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
   expectString('multichoice_model', cfg.multichoice_model);
   expectString('escalate_model', cfg.escalate_model);
+  if (!isStringArray(cfg.always_escalate_tools)) {
+    throw new Error(
+      `Invalid auto_approve.always_escalate_tools in ${configPath}: must be an array of tool names. Example: always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]`,
+    );
+  }
+  for (const t of cfg.always_escalate_tools) {
+    if (t.trim().length === 0) {
+      console.warn(
+        `[AutoApprove] Warning: always_escalate_tools entry "${t}" in ${configPath} is empty/whitespace and will never match a tool name.`,
+      );
+    }
+  }
 
   // Warn about dangerously short patterns that would match too broadly.
   const MIN_PATTERN_LENGTH = 2;
@@ -520,6 +536,20 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
   }
+  if (env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']) {
+    const tools = env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (tools.length === 0) {
+      console.warn(
+        '[AutoApprove] REMI_AUTO_APPROVE_ALWAYS_ESCALATE resolved to an empty list; ' +
+          'AskUserQuestion and ExitPlanMode will no longer be structurally escalated. ' +
+          'Set it to "AskUserQuestion,ExitPlanMode" to keep the default safety net.',
+      );
+    }
+    (auto_approve as { always_escalate_tools: readonly string[] }).always_escalate_tools = tools;
+  }
   const mc = env['REMI_AUTO_APPROVE_MULTICHOICE'];
   if (mc === 'skip' || mc === 'evaluate') {
     (auto_approve as { multichoice: 'skip' | 'evaluate' }).multichoice = mc;
@@ -657,6 +687,11 @@ authorized_user_ids = []
 #                                  # lowers decision quality (reasoning helps
 #                                  # the model follow broad instructions), so
 #                                  # default off. Opt in for raw speed.
+# always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]
+#                                  # Tools that ALWAYS go to the user, never
+#                                  # auto-decided by the LLM (design / plan-mode
+#                                  # / long-form questions). Add custom MCP tools
+#                                  # that solicit user intent.
 `;
 }
 
@@ -743,6 +778,9 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
+  lines.push(
+    `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
+  );
   lines.push('');
   lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');
   lines.push('[features]');
