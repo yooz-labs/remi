@@ -116,6 +116,25 @@ export interface HookBridgeDeps {
    * all sessions (one terminal). Optional; inert when absent or headless.
    */
   statusWriter?: StatusWriter | undefined;
+  /**
+   * Tools that always escalate to the user (#572). Passed to the gate so it
+   * classifies an escalation as binary (holdable, #573) vs design/plan-mode
+   * (passthrough). From `config.auto_approve.always_escalate_tools`. Absent =>
+   * empty set (tests / no-AA callers).
+   */
+  alwaysEscalateTools?: ReadonlySet<string>;
+  /**
+   * Seconds to HOLD a binary main-context PermissionRequest hook open until the
+   * user answers (Model B, #573). From `config.auto_approve.hold_timeout`. 0 /
+   * absent => no holding (escalate -> passthrough as before).
+   */
+  holdTimeoutSec?: number;
+  /**
+   * Seconds before a slow binary main-context eval triggers an early push + hold
+   * (Part B, #573). From `config.auto_approve.push_hold_timeout`. 0 / absent =>
+   * Part B disabled (the eval/timer race never arms).
+   */
+  pushHoldTimeoutSec?: number;
 }
 
 export interface HookBridgeArgs {
@@ -133,6 +152,32 @@ export interface HookBridgeArgs {
   tracker: QuestionPresenceTracker;
 }
 
+/**
+ * Per-session control surface for the auto-approve gate (#573). Registered by
+ * cli.ts keyed by `sessionId` so the WebSocket answer handler reaches the RIGHT
+ * session's gate when the user answers a held permission.
+ */
+export interface SessionGateHandle {
+  /**
+   * Resolve a held binary PermissionRequest hook with the user's answer (Model
+   * B). Returns true when a hold for `questionId` existed and was resolved (the
+   * caller then SKIPS the PTY inject — Claude is blocked on the hook, not
+   * rendering); false when no hold exists (the answer takes the PTY path, e.g. a
+   * multi-choice pick or a non-AA session).
+   */
+  resolveHeld: (questionId: UUID, decision: 'allow' | 'deny') => boolean;
+  /**
+   * Release a held hook to 'passthrough' so Claude renders its native numbered
+   * prompt (#573), for answers the binary hook response cannot express ("Yes,
+   * always", a multi-choice pick). Returns true iff a hold existed; the caller
+   * then injects the digit into the rendered prompt.
+   */
+  releaseHeldAsPassthrough: (questionId: UUID) => boolean;
+  /** Cancel any in-flight eval AND release pending holds for this session (the
+   *  user answered / advanced). Forwards to the gate's `cancelStale`. */
+  cancelStale: (reason: string) => void;
+}
+
 export interface HookBridgeHandle {
   /** Live bridge instance. Callers can read `isInSubagentContext()` to gate
    *  alternate question sources (e.g. PTY parser) so subagent prompts are
@@ -147,6 +192,12 @@ export interface HookBridgeHandle {
    * reach — never outlives the session.
    */
   closeBinder: () => void;
+  /**
+   * Per-session auto-approve gate handle (#573): `resolveHeld` + `cancelStale`,
+   * so the WebSocket answer path can resolve a held hook / cancel the eval for
+   * this exact session. Always present (the gate is constructed unconditionally).
+   */
+  gate: SessionGateHandle;
 }
 
 export function setupHookBridge(
@@ -662,7 +713,11 @@ export function setupHookBridge(
       sessionRegistry,
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
-      escalate: (i) => handlers.onPermissionRequest?.(i),
+      // Call the bridge DIRECTLY (not via the void-typed handlers map) so the
+      // created Question.id flows back to the gate; a binary escalation holds
+      // the hook keyed by it (#573). The bridge still does the onQuestion +
+      // status side effects exactly as before.
+      escalate: (i) => hookBridge.handlePermissionRequest(i),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
@@ -681,6 +736,13 @@ export function setupHookBridge(
       // #522: second-opinion model on a primary escalate (read from the service's
       // config). Empty when unset -> escalate straight to the user.
       escalateModel: autoApproveService?.escalateModel ?? '',
+      // #573: classify an escalation as binary (holdable) vs design/multi-choice
+      // (passthrough) the same way the service does; hold binary main-context
+      // hooks open until the user answers (holdMs) and optionally push early on a
+      // slow eval (pushHoldMs). Seconds -> ms; 0 disables (gate treats <=0 as off).
+      alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
+      holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
+      pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
     },
     sessionId,
   );
@@ -1164,6 +1226,12 @@ export function setupHookBridge(
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);
+    },
+    gate: {
+      resolveHeld: (questionId, decision) => autoApproveGate.resolveHeld(questionId, decision),
+      releaseHeldAsPassthrough: (questionId) =>
+        autoApproveGate.releaseHeldAsPassthrough(questionId),
+      cancelStale: (reason) => autoApproveGate.cancelStale(reason),
     },
   };
 }

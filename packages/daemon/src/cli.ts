@@ -131,6 +131,7 @@ import {
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
+import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
@@ -795,6 +796,18 @@ let autoApproveService: AutoApproveService | null = null;
 // the StatusWriter (see the gate cue wiring in setupHookBridge); it replaced the
 // shared title-bar TerminalIndicator, which raced under concurrent evals.
 
+/**
+ * Seconds to pass HookConfigManager as the PermissionRequest hold budget (#573):
+ * the configured `hold_timeout` when auto-approve is actually enabled (so the
+ * registered hook timeout outlasts a long human-paced hold), else 0 (the
+ * baseline 600s ceiling, since a non-AA daemon never holds — it passes through
+ * near-instantly). Keeps the hook timeout from being needlessly inflated when
+ * holding can't happen.
+ */
+function permissionHookHoldTimeoutSec(): number {
+  return autoApproveService ? remiConfig.auto_approve.hold_timeout : 0;
+}
+
 // ---------------------------------------------------------------------------
 // SIGTSTP / Ctrl+Z handling.
 //
@@ -836,6 +849,11 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // interval (it lives inside the binder); close() reaches all three. Empty when
 // transcript_binder_enabled is off (no binder is ever constructed).
 const binderClosers: Map<UUID, () => void> = new Map();
+// Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
+// by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
+// (multi-session daemons). Populated in createNewSession after setupHookBridge;
+// removed on session close. Empty when no hookServer is configured.
+const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 const sessionStore = new SessionStore();
 // Tracks the subagent chats the primary session spawns, so the client can
 // switch the displayed view to a subagent (epic #499 phase 3). Shared by the
@@ -866,6 +884,9 @@ const sessionRegistry = new SessionRegistry(
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
       binderClosers.get(sessionId)?.();
       binderClosers.delete(sessionId);
+      // Drop the per-session gate handle (#573); any held hook was already
+      // released by the gate's closeBinder/cancelStale on teardown.
+      sessionGateHandles.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
       if (watcher) {
         watcher.stop();
@@ -1150,6 +1171,11 @@ async function createNewSession(
         transcriptDiscovery,
         subagentViews,
         statusWriter,
+        // #573: classify holdable escalations + the hold / slow-eval-push budgets
+        // (seconds; the gate converts to ms and treats <=0 as disabled).
+        alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
+        holdTimeoutSec: remiConfig.auto_approve.hold_timeout,
+        pushHoldTimeoutSec: remiConfig.auto_approve.push_hold_timeout,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
@@ -1157,6 +1183,9 @@ async function createNewSession(
     // its start() inside setupHookBridge); record its teardown so cleanup()
     // reaches the rotation dir-poll interval the shared maps below cannot.
     if (binderEnabled) binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
+    // Register the per-session gate handle (#573) so the WebSocket answer path
+    // can resolve a held permission / cancel the eval for this exact session.
+    sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
   }
 
   const ptySession = createPtySessionForSession(
@@ -1264,6 +1293,14 @@ const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
+  // #573: route a held-permission answer / release-to-passthrough / eval-cancel
+  // to the RIGHT session's gate (the map is populated per session in
+  // createNewSession).
+  resolveHeldPermission: (sessionId, questionId, decision) =>
+    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision) ?? false,
+  releaseHeldAsPassthrough: (sessionId, questionId) =>
+    sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
+  cancelAutoApprove: (sessionId, reason) => sessionGateHandles.get(sessionId)?.cancelStale(reason),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
@@ -1672,7 +1709,11 @@ if (cliDaemonMode) {
 
   if (hookServer) {
     try {
-      hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+      hookConfigManager = new HookConfigManager(
+        workingDirectory,
+        hookServer.url,
+        permissionHookHoldTimeoutSec(),
+      );
       await hookConfigManager.install();
     } catch (err) {
       const msg = errorToString(err);
@@ -1865,7 +1906,11 @@ if (cliDaemonMode) {
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
     // Configure Claude Code hooks to POST to our server
-    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+    hookConfigManager = new HookConfigManager(
+      workingDirectory,
+      hookServer.url,
+      permissionHookHoldTimeoutSec(),
+    );
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {

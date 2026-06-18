@@ -10,7 +10,7 @@
  */
 
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { QuestionOption, UUID } from '@remi/shared';
 
 import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
@@ -20,6 +20,37 @@ export interface InputHandlerDeps {
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   send: SendToConnection;
+  /**
+   * Resolve a HELD binary PermissionRequest hook with the user's answer (Model
+   * B, #573), routed to the gate for `sessionId`. Returns true when a hold
+   * existed and was resolved — `onAnswer` then SKIPS the PTY inject (Claude is
+   * blocked on the hook, not rendering a prompt). Absent / false => the answer
+   * takes the existing PTY-submit path (multi-choice pick, non-AA session, or
+   * Part-B-disabled escalation that passed through). Session-keyed by cli.ts.
+   */
+  resolveHeldPermission?: (
+    sessionId: UUID,
+    questionId: UUID,
+    decision: 'allow' | 'deny',
+  ) => boolean;
+  /**
+   * Release a HELD binary PermissionRequest hook to 'passthrough' for `sessionId`
+   * (#573) when the user's answer cannot be expressed by the binary hook
+   * response — a "Yes, always" or a multi-choice pick. Claude then renders its
+   * native numbered prompt and `onAnswer` submits the digit (the only way to
+   * express "always" / a specific pick). Returns true iff a hold existed.
+   * Session-keyed by cli.ts.
+   */
+  releaseHeldAsPassthrough?: (sessionId: UUID, questionId: UUID) => boolean;
+  /**
+   * Cancel the in-flight auto-approve eval (and release holds) for `sessionId`
+   * when the user answers a HELD permission from any channel (#573, issue 2): a
+   * stale eval would otherwise keep running and could inject a phantom decision.
+   * Fired ONLY when a hold was actually resolved/released, so answering an
+   * unrelated passthrough question does not abort a different binary permission's
+   * in-flight eval. Session-keyed.
+   */
+  cancelAutoApprove?: (sessionId: UUID, reason: string) => void;
 }
 
 /**
@@ -80,8 +111,42 @@ function guardBinding(
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
+/**
+ * Map a chosen answer string to a binary allow/deny decision via the active
+ * Question's options (#573). The answer the client sends is an option `value`
+ * (e.g. "1"/"2"/"3" or "y"/"n"); we find the matching option and read its
+ * `isYes` / `isNo` flags. Returns:
+ *   - 'deny' for a no-shaped option;
+ *   - 'allow' for a yes-shaped option ONLY when it is a one-time "Yes" — an
+ *     "always"-shaped label ("Yes, always") is NOT mapped, because the binary
+ *     PermissionRequest hook response can only express allow/deny, never the
+ *     session-wide "always" the user picked. Downgrading it to a one-time allow
+ *     would silently lose that choice, so it returns null and the caller takes
+ *     the native PTY path (which can express "always" via the digit);
+ *   - null otherwise (always-shaped, unknown value, or free text) -> PTY path.
+ */
+function mapAnswerToDecision(
+  options: readonly QuestionOption[],
+  answer: string,
+): 'allow' | 'deny' | null {
+  const option = options.find((o) => o.value === answer);
+  if (!option) return null;
+  if (option.isNo) return 'deny';
+  // "always" cannot be expressed in the binary hook response, so a yes-shaped
+  // "always" option must NOT collapse to a one-time allow.
+  if (option.isYes && !option.label.toLowerCase().includes('always')) return 'allow';
+  return null;
+}
+
 export function createInputHandlers(deps: InputHandlerDeps) {
-  const { sessionRegistry, bindingStore, send } = deps;
+  const {
+    sessionRegistry,
+    bindingStore,
+    send,
+    resolveHeldPermission,
+    releaseHeldAsPassthrough,
+    cancelAutoApprove,
+  } = deps;
 
   return {
     onUserInput: async (
@@ -168,7 +233,39 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return;
       }
 
-      await session.pty.submitInput(answer);
+      // Model B (#573): if the auto-approve gate is HOLDING this permission's
+      // hook, a binary (one-time Yes / No) answer resolves it via the hook
+      // response — Claude is blocked on the hook and is NOT rendering a prompt,
+      // so a PTY submit would land in the wrong place. An answer the binary
+      // response cannot express ("Yes, always", a multi-choice pick, free text)
+      // first RELEASES the held hook to passthrough so Claude renders its native
+      // numbered prompt, then submits the digit (the only way to express
+      // "always" / a specific pick).
+      const decision = mapAnswerToDecision(active.options, answer);
+      let hadHold = false;
+      if (decision !== null) {
+        hadHold = resolveHeldPermission?.(session.sessionId, questionId, decision) ?? false;
+      }
+      if (!hadHold) {
+        // decision === null (always/pick/free-text) OR no hold for this question:
+        // if a hold exists, pop it to passthrough so the native prompt renders,
+        // then submit the digit. If no hold, this is the normal PTY path.
+        const released = releaseHeldAsPassthrough?.(session.sessionId, questionId) ?? false;
+        hadHold = hadHold || released;
+        await session.pty.submitInput(answer);
+      } else {
+        log(
+          `Resolved held permission ${questionId.slice(0, 8)} via hook response: ${decision} (no PTY submit)`,
+        );
+      }
+
+      // Cancel the in-flight eval ONLY when a held permission was actually
+      // resolved/released (#573, issue 2): a stale verdict for THIS permission
+      // must not inject a phantom decision. Answering an unrelated passthrough
+      // question must NOT abort a different binary permission's eval, so this is
+      // gated on hadHold rather than firing on every answer.
+      if (hadHold) cancelAutoApprove?.(session.sessionId, 'user-answered');
+
       // Remove only the answered question; sibling prompts remain answerable.
       sessionRegistry.removeQuestion(session.sessionId, questionId);
     },

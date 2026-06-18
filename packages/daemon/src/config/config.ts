@@ -187,6 +187,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
+    // Hold a binary main-context PermissionRequest hook open until the user
+    // answers (Model B, #573). Large + human-paced; on expiry it fails open to
+    // the native prompt. 0 disables holding (escalate -> passthrough as before).
+    hold_timeout: 1800,
+    // Push + hold early if a binary main-context eval is still running after
+    // this many seconds (Part B, #573). 0 disables Part B (A+C only).
+    push_hold_timeout: 60,
   },
   features: {
     transcript_binder_shadow: false,
@@ -336,6 +343,35 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   ) {
     throw new Error(
       `Invalid auto_approve.queue_timeout in ${configPath}: must be a non-negative number (seconds; 0 = no bound), got ${typeof cfg.queue_timeout === 'string' ? `string "${cfg.queue_timeout}"` : typeof cfg.queue_timeout}. Example: queue_timeout = 240`,
+    );
+  }
+
+  if (
+    typeof cfg.hold_timeout !== 'number' ||
+    !Number.isFinite(cfg.hold_timeout) ||
+    cfg.hold_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable holding), got ${typeof cfg.hold_timeout === 'string' ? `string "${cfg.hold_timeout}"` : typeof cfg.hold_timeout}. Example: hold_timeout = 1800`,
+    );
+  }
+
+  if (
+    typeof cfg.push_hold_timeout !== 'number' ||
+    !Number.isFinite(cfg.push_hold_timeout) ||
+    cfg.push_hold_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.push_hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable slow-eval push), got ${typeof cfg.push_hold_timeout === 'string' ? `string "${cfg.push_hold_timeout}"` : typeof cfg.push_hold_timeout}. Example: push_hold_timeout = 60`,
+    );
+  }
+
+  // Contradictory pairing: Part B pushes + holds early on a slow eval, but with
+  // holding disabled the held hook immediately falls through to passthrough, so
+  // the early push buys nothing. Warn (not throw) so the daemon still starts.
+  if (cfg.push_hold_timeout > 0 && cfg.hold_timeout === 0) {
+    console.warn(
+      `[AutoApprove] Warning: push_hold_timeout (${cfg.push_hold_timeout}s) > 0 but hold_timeout = 0 in ${configPath}: the slow-eval early push cannot hold the hook (holding is disabled), so it falls through to passthrough immediately. Set hold_timeout > 0 to actually hold, or push_hold_timeout = 0 to disable the early push.`,
     );
   }
 
@@ -574,6 +610,18 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       (auto_approve as { queue_timeout: number }).queue_timeout = parsed;
     }
   }
+  if (env['REMI_AUTO_APPROVE_HOLD_TIMEOUT']) {
+    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'], 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      (auto_approve as { hold_timeout: number }).hold_timeout = parsed;
+    }
+  }
+  if (env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT']) {
+    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'], 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      (auto_approve as { push_hold_timeout: number }).push_hold_timeout = parsed;
+    }
+  }
 
   // Experimental feature flags (#453 phase 3). Default OFF; env opt-in only.
   const features = { ...config.features };
@@ -682,6 +730,18 @@ authorized_user_ids = []
 #                                  # queue before escalating. Concurrent evals
 #                                  # run one at a time; a deep burst could risk
 #                                  # the ~600s hook budget. 0 = no bound.
+# hold_timeout = 1800              # Seconds to HOLD a binary permission hook
+#                                  # open after escalating, so the user answers
+#                                  # it via the hook response (Model B, #573) —
+#                                  # no native prompt, no warm-connection race.
+#                                  # Large + human-paced; fails open to the
+#                                  # native prompt on expiry. 0 = no hold
+#                                  # (escalate -> passthrough as before).
+# push_hold_timeout = 60           # Push + hold early if a binary main-context
+#                                  # eval is still running after this many
+#                                  # seconds, so the user can step in while the
+#                                  # model keeps thinking (Part B, #573). A late
+#                                  # verdict resolves the held hook. 0 = off.
 # disable_thinking = false         # Ollama only: native /api/chat with
 #                                  # think:false (no reasoning). Faster but
 #                                  # lowers decision quality (reasoning helps
@@ -777,6 +837,8 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
+  lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);
+  lines.push(`  push_hold_timeout = ${config.auto_approve.push_hold_timeout}`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
   lines.push(
     `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
