@@ -108,7 +108,7 @@ export class TranscriptIndex {
     }
   }
 
-  /** Parse updatedAt to epoch ms; NaN (unparseable) becomes 0 = oldest. */
+  /** Parse updatedAt to epoch ms; NaN (unparsable) becomes 0 = oldest. */
   private static updatedAtMs(entry: TranscriptIndexEntry): number {
     const t = new Date(entry.updatedAt).getTime();
     return Number.isNaN(t) ? 0 : t;
@@ -130,7 +130,7 @@ export class TranscriptIndex {
     });
     if (sawBadTimestamp) {
       logError(
-        '[transcript-index] Found entry with unparseable updatedAt; treating as oldest for cap trimming',
+        '[transcript-index] Found entry with unparsable updatedAt; treating as oldest for cap trimming',
       );
     }
     if (kept.length > this.maxEntries) {

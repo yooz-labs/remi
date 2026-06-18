@@ -123,7 +123,7 @@ describe('TranscriptIndex (#577)', () => {
 
   test('over cap: NaN-timestamp entries are trimmed BEFORE valid ones (#577 FIX 2)', () => {
     // Regression for the prune sort defect: a string compare sorted an
-    // unparseable updatedAt to the FRONT, so the cap trimmed the newest VALID
+    // unparsable updatedAt to the FRONT, so the cap trimmed the newest VALID
     // entries first and a NaN-heavy file looped forever. Numeric NaN->0 (oldest)
     // makes the cap drop the bad entries first.
     const capped = new TranscriptIndex(filePath, 2); // maxEntries = 2

@@ -60,7 +60,7 @@ describe('shouldEvictCachedSession (#577 Fix A)', () => {
     ).toBe(false);
   });
 
-  test('keeps a session with an unparseable timestamp (conservative)', () => {
+  test('keeps a session with an unparsable timestamp (conservative)', () => {
     expect(shouldEvictCachedSession(session('bad', 'not-a-date'), ctx([]), NOW)).toBe(false);
   });
 

@@ -24,7 +24,7 @@
  *     recent session is never a candidate; the minimum-age guard makes that
  *     explicit and independent of the staleness window so a session younger
  *     than MIN_EVICT_AGE_MS is always kept even if STALE_EVICT_AGE_MS were
- *     mis-set.
+ *     set incorrectly.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -72,7 +72,7 @@ export function shouldEvictCachedSession(
   if (ctx.knownIds.has(cached.id)) return false;
 
   const last = new Date(cached.lastActiveAt).getTime();
-  // Unparseable timestamp: keep it (conservative — never evict on bad data).
+  // Unparsable timestamp: keep it (conservative — never evict on bad data).
   if (Number.isNaN(last)) return false;
 
   const age = now - last;
