@@ -112,10 +112,23 @@ function guardBinding(
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
 /**
- * Map a chosen answer string to a binary allow/deny decision via the active
- * Question's options (#573). The answer the client sends is an option `value`
- * (e.g. "1"/"2"/"3" or "y"/"n"); we find the matching option and read its
- * `isYes` / `isNo` flags. Returns:
+ * Resolve an incoming answer string to the active Question's matching option
+ * (#574). The phone now sends the option LABEL for display (e.g. "Yes", "Yes,
+ * always", "No") rather than only the numeric `value` ("1"/"2"/"3"), so match
+ * EITHER field. The in-app WebSocket path may still send a `value`; both
+ * resolve to the same option. Returns the option, or undefined for a free-text
+ * answer that matches neither.
+ */
+function resolveOption(
+  options: readonly QuestionOption[],
+  answer: string,
+): QuestionOption | undefined {
+  return options.find((o) => o.value === answer || o.label === answer);
+}
+
+/**
+ * Map a resolved option to a binary allow/deny decision (#573). Reads the
+ * option's `isYes` / `isNo` flags. Returns:
  *   - 'deny' for a no-shaped option;
  *   - 'allow' for a yes-shaped option ONLY when it is a one-time "Yes" — an
  *     "always"-shaped label ("Yes, always") is NOT mapped, because the binary
@@ -123,13 +136,13 @@ export type InputHandlers = ReturnType<typeof createInputHandlers>;
  *     session-wide "always" the user picked. Downgrading it to a one-time allow
  *     would silently lose that choice, so it returns null and the caller takes
  *     the native PTY path (which can express "always" via the digit);
- *   - null otherwise (always-shaped, unknown value, or free text) -> PTY path.
+ *   - null otherwise (always-shaped, unknown value/label, or free text) -> PTY path.
  */
 function mapAnswerToDecision(
   options: readonly QuestionOption[],
   answer: string,
 ): 'allow' | 'deny' | null {
-  const option = options.find((o) => o.value === answer);
+  const option = resolveOption(options, answer);
   if (!option) return null;
   if (option.isNo) return 'deny';
   // "always" cannot be expressed in the binary hook response, so a yes-shaped
@@ -252,7 +265,22 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // then submit the digit. If no hold, this is the normal PTY path.
         const released = releaseHeldAsPassthrough?.(session.sessionId, questionId) ?? false;
         hadHold = hadHold || released;
-        await session.pty.submitInput(answer);
+        // The phone may send a label for display (#574), but Claude's native
+        // numbered prompt expects the option's VALUE (the 1-based index). Resolve
+        // the answer back to its option and submit the index; a free-text answer
+        // (no option match) is submitted verbatim.
+        const ptyInput = resolveOption(active.options, answer)?.value ?? answer;
+        if (ptyInput !== answer) {
+          log(`[Answer] resolved "${answer}" -> "${ptyInput}" for q ${questionId.slice(0, 8)}`);
+        } else if (
+          active.options.length > 0 &&
+          resolveOption(active.options, answer) === undefined
+        ) {
+          log(
+            `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
+          );
+        }
+        await session.pty.submitInput(ptyInput);
       } else {
         log(
           `Resolved held permission ${questionId.slice(0, 8)} via hook response: ${decision} (no PTY submit)`,

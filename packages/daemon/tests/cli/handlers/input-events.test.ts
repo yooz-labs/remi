@@ -534,6 +534,269 @@ describe('createInputHandlers', () => {
     });
   });
 
+  describe('onAnswer value-or-label resolution (#574)', () => {
+    function addYesNoAlwaysQuestion(sessionId: UUID): void {
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: git push',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'Yes, always', isRecommended: false, isYes: true, isNo: false },
+          { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+    }
+
+    function makeSession(): UUID {
+      const sessionId = sessionRegistry.createSessionId();
+      return sessionId;
+    }
+
+    test('a label "No" (phone display) resolves to deny via the held hook', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoAlwaysQuestion(sessionId);
+
+      const held: Array<'allow' | 'deny'> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d) => {
+          held.push(d);
+          return true;
+        },
+      });
+
+      // The phone sent the LABEL, not the value.
+      await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+      expect(held).toEqual(['deny']); // resolved by label
+      expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
+    });
+
+    test('a label "Yes" resolves to allow via the held hook (no PTY submit)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoAlwaysQuestion(sessionId);
+
+      const held: Array<'allow' | 'deny'> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d) => {
+          held.push(d);
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(held).toEqual(['allow']);
+      expect(ptyCapture.submits).toEqual([]);
+    });
+
+    test('the label "Yes, always" releases to passthrough and submits the option VALUE (index), not the label', async () => {
+      // Phase-2 "always" rule preserved: a label-sent "always" still cannot be
+      // expressed by the binary response, so it pops to passthrough; the PTY
+      // submit must be the digit Claude's native prompt expects ("2"), NOT "Yes, always".
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoAlwaysQuestion(sessionId);
+
+      const released: UUID[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => {
+          throw new Error('resolveHeldPermission must not be called for "always"');
+        },
+        releaseHeldAsPassthrough: (_s, q) => {
+          released.push(q);
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes, always'); // sent as a LABEL
+
+      expect(released).toEqual([QID]);
+      expect(ptyCapture.submits).toEqual(['2']); // index, not the label
+    });
+
+    test('non-held PTY path: a label answer submits the option VALUE (index) into the native prompt', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoAlwaysQuestion(sessionId);
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        // No hold for this question on either path.
+        resolveHeldPermission: () => false,
+        releaseHeldAsPassthrough: () => false,
+      });
+
+      // "No" is no-shaped -> decision 'deny', but no hold exists, so it falls to
+      // the PTY path; the digit "3" must be submitted, not the label "No".
+      await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+      expect(ptyCapture.submits).toEqual(['3']);
+    });
+
+    test('non-held PTY path: a numeric value answer still submits that value (back-compat)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoAlwaysQuestion(sessionId);
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => false,
+        releaseHeldAsPassthrough: () => false,
+      });
+
+      // A Telegram/in-app client still sends the value "1"; it resolves to the
+      // same option and submits "1".
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(ptyCapture.submits).toEqual(['1']);
+    });
+
+    test('multi-choice pick by label submits the picked index, not the label', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      // A multi-choice prompt (ExitPlanMode-style) with non-binary labels.
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'How should I proceed?',
+        options: [
+          { value: '1', label: 'Keep planning', isRecommended: false, isYes: false, isNo: false },
+          { value: '2', label: 'Accept the plan', isRecommended: true, isYes: false, isNo: false },
+          { value: '3', label: 'Cancel', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => false, // non-binary -> decision null -> not consulted
+        releaseHeldAsPassthrough: () => false,
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Accept the plan'); // label pick
+
+      expect(ptyCapture.submits).toEqual(['2']); // index for Claude's native prompt
+    });
+
+    test('a free-text answer with no option match is submitted verbatim', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'What should I name it?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => false,
+        releaseHeldAsPassthrough: () => false,
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'my-widget');
+
+      expect(ptyCapture.submits).toEqual(['my-widget']);
+    });
+
+    test('logs a label->value resolution and an unresolved-label verbatim submit (FIX 1A)', async () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = makeSession();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoAlwaysQuestion(sessionId);
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => false,
+        releaseHeldAsPassthrough: () => false,
+      });
+
+      // Label resolves to a different value -> logged as a translation.
+      await handlers.onAnswer(CID, sessionId, QID, 'No');
+      expect(logs.some((m) => m.includes('[Answer] resolved "No" -> "3"'))).toBe(true);
+
+      // A label that matches no option (options present) -> logged as verbatim submit.
+      addYesNoAlwaysQuestion(sessionId);
+      logs.length = 0;
+      await handlers.onAnswer(CID, sessionId, QID, 'Maybe');
+      expect(logs.some((m) => m.includes('[Answer] "Maybe" matched no option (3)'))).toBe(true);
+      expect(ptyCapture.submits).toContain('Maybe');
+    });
+  });
+
   describe('onBulletExpandRequest', () => {
     test('sends NOT_FOUND when session is missing', () => {
       const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });

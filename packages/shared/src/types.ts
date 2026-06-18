@@ -157,7 +157,26 @@ export interface Question {
    * question id, so concurrency there holds regardless of this field.
    */
   readonly agentId?: string | undefined;
+
+  /**
+   * Where this question came from (#574). The daemon emits two hook-derived
+   * questions for one permission cycle: a rich `PermissionRequest` (tool +
+   * command + agent context) and a generic `Notification(permission_prompt)`
+   * ("Claude needs your permission to use Bash"). The
+   * QuestionPresenceTracker's merge policy uses this so a trailing generic
+   * notification never overwrites the richer permission-request text/options
+   * for the same agent. PTY-parsed prompts are `'pty'`. Optional and
+   * ignored on the wire; consumed only by the daemon's notification path.
+   */
+  readonly source?: QuestionSource | undefined;
 }
+
+/**
+ * Provenance of a {@link Question} (#574). Drives the daemon's
+ * QuestionPresenceTracker merge policy (richer hook text must win over the
+ * generic notification fallback) and is otherwise inert on the wire.
+ */
+export type QuestionSource = 'permission_request' | 'notification' | 'pty';
 
 /** Sentinel agent key for the primary (main) agent, whose questions carry no
  *  `agentId`. Normalize `agentId ?? MAIN_AGENT_ID` when building collection keys. */

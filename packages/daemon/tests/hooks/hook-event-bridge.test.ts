@@ -423,6 +423,26 @@ describe('HookEventBridge', () => {
 
       expect(questions[0]?.text).toBe('Allow Bash: ssh hallu "uv run pytest"');
     });
+
+    it('stamps source so the tracker can prefer the rich request over the generic notification (#574)', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      } as PermissionRequestHookInput);
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'permission_prompt',
+        message: 'Claude needs your permission to use Bash',
+      } as NotificationHookInput);
+
+      expect(questions[0]?.source).toBe('permission_request');
+      expect(questions[1]?.source).toBe('notification');
+    });
   });
 
   describe('subagent context filtering (issue #316, phase 4 #419)', () => {
