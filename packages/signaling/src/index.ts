@@ -195,6 +195,10 @@ export default {
             sandbox,
             data: Object.keys(data).length > 0 ? data : undefined,
             category,
+            // Collapse repeated pushes for the same question (#575, P4a).
+            ...(body.questionId && body.questionId.length > 0
+              ? { collapseId: body.questionId }
+              : {}),
           },
           { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
         );

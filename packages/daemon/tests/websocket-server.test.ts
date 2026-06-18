@@ -3,14 +3,22 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   type UUID,
   createCreateSessionRequest,
   createHello,
+  createIdentity,
   createPing,
   createUserInput,
   serialize,
+  sign,
+  unlockIdentity,
 } from '@remi/shared';
+import { Authenticator } from '../src/auth/authenticator.ts';
+import { IdentityStore } from '../src/auth/identity-store.ts';
 import { WebSocketServer } from '../src/server/websocket-server.ts';
 
 describe('WebSocketServer', () => {
@@ -594,6 +602,199 @@ describe('WebSocketServer', () => {
 
       ws.close();
       await server.stop();
+    });
+  });
+
+  // Connection-independent answer relay (#575, P4a). Real HTTP requests; real
+  // Ed25519 auth via a real IdentityStore + Authenticator (no mocks).
+  describe('POST /answer relay', () => {
+    // Each startServer() call binds a fresh port so a not-yet-released listener
+    // from a prior server in the same/previous test cannot answer this request.
+    let nextAnswerPort = testPort + 30;
+    let answerPort = nextAnswerPort;
+
+    async function startServer(opts: {
+      authenticator?: Authenticator;
+      relayResult?: 'delivered' | 'session-not-found' | 'stale-binding' | 'stale';
+      captureRelay?: (args: { sessionId: string; questionId: string; answer: string }) => void;
+    }): Promise<WebSocketServer> {
+      if (server?.running) await server.stop();
+      answerPort = nextAnswerPort++;
+      const s = new WebSocketServer(
+        {
+          port: answerPort,
+          connection: opts.authenticator ? { authenticator: opts.authenticator } : {},
+        },
+        {
+          onAnswerRelay: async (sessionId, questionId, answer) => {
+            opts.captureRelay?.({ sessionId, questionId, answer });
+            return opts.relayResult ?? 'delivered';
+          },
+        },
+      );
+      await s.start();
+      server = s; // so afterEach stops it
+      return s;
+    }
+
+    function makeAuthDir(): { store: IdentityStore; dir: string } {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-answer-relay-'));
+      return { store: new IdentityStore(dir), dir };
+    }
+
+    test('routes a loopback (no-auth) answer through onAnswerRelay and returns delivered', async () => {
+      const captured: Array<{ sessionId: string; questionId: string; answer: string }> = [];
+      await startServer({ captureRelay: (a) => captured.push(a) });
+
+      const res = await fetch(`http://localhost:${answerPort}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: 'sess-1', questionId: 'q-1', answer: 'Yes' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { result: string };
+      expect(body.result).toBe('delivered');
+      expect(captured).toEqual([{ sessionId: 'sess-1', questionId: 'q-1', answer: 'Yes' }]);
+    });
+
+    test('maps session-not-found to 404 and stale to 409', async () => {
+      await startServer({ relayResult: 'session-not-found' });
+      const r1 = await fetch(`http://localhost:${answerPort}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: 's', questionId: 'q', answer: 'Yes' }),
+      });
+      expect(r1.status).toBe(404);
+      expect(((await r1.json()) as { result: string }).result).toBe('session-not-found');
+
+      await startServer({ relayResult: 'stale' });
+      const r2 = await fetch(`http://localhost:${answerPort}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: 's', questionId: 'q', answer: 'Yes' }),
+      });
+      expect(r2.status).toBe(409);
+      expect(((await r2.json()) as { result: string }).result).toBe('stale');
+    });
+
+    test('returns 400 for missing fields and bad JSON', async () => {
+      await startServer({});
+      const bad = await fetch(`http://localhost:${answerPort}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: 'not json',
+      });
+      expect(bad.status).toBe(400);
+
+      const missing = await fetch(`http://localhost:${answerPort}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: 's' }),
+      });
+      expect(missing.status).toBe(400);
+    });
+
+    test('rejects an oversized body with 413 before parsing', async () => {
+      await startServer({});
+      // 64KiB + 1: just over the guard.
+      const huge = 'x'.repeat(64 * 1024 + 1);
+      const res = await fetch(`http://localhost:${answerPort}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: 's', questionId: 'q', answer: huge }),
+      });
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as { result: string }).result).toBe('payload-too-large');
+    });
+
+    test('loopback peer is exempt from auth even when an authenticator is configured', async () => {
+      // Mirrors the WebSocket loopback bypass: a same-machine peer is trusted
+      // by virtue of the OS, so the route does not require a signature. The test
+      // client connects over 127.0.0.1, so this proves the route is reachable
+      // (and auth-exempt) for loopback even with auth on.
+      const { store, dir } = makeAuthDir();
+      try {
+        await store.generate();
+        const serverIdentity = await store.unlock();
+        const authenticator = new Authenticator({ identity: serverIdentity, identityStore: store });
+        await startServer({ authenticator });
+
+        const res = await fetch(`http://localhost:${answerPort}/answer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: 's', questionId: 'q', answer: 'Yes' }),
+        });
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { result: string }).result).toBe('delivered');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // The route's networked-peer auth gate calls Authenticator.verifyDetachedRequest;
+    // since loopback peers (the only peer a local test can present) are exempt,
+    // the auth-rejection path is exercised directly against that method — the
+    // exact same gate the route uses (verify signature, then require an
+    // authorized key). This is the SAME trust model the WebSocket handshake uses.
+    test('verifyDetachedRequest rejects a valid signature from an UNAUTHORIZED key', async () => {
+      const { store, dir } = makeAuthDir();
+      try {
+        await store.generate();
+        const serverIdentity = await store.unlock();
+        const authenticator = new Authenticator({ identity: serverIdentity, identityStore: store });
+
+        const stranger = await createIdentity();
+        const strangerUnlocked = await unlockIdentity(stranger);
+        const msg = 'sess|q|Yes';
+        const data = new TextEncoder().encode(msg).buffer as ArrayBuffer;
+        const sig = await sign(strangerUnlocked.privateKey, data);
+        // Signature is cryptographically valid, but the key was never authorized.
+        expect(
+          await authenticator.verifyDetachedRequest(
+            msg,
+            sig,
+            stranger.publicKey,
+            stranger.fingerprint,
+          ),
+        ).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('verifyDetachedRequest accepts an authorized key with a valid signature, rejects a tampered message', async () => {
+      const { store, dir } = makeAuthDir();
+      try {
+        await store.generate();
+        const serverIdentity = await store.unlock();
+        const authenticator = new Authenticator({ identity: serverIdentity, identityStore: store });
+
+        const client = await createIdentity();
+        const clientUnlocked = await unlockIdentity(client);
+        await store.addAuthorizedKey(client.publicKey, 'Test Client');
+
+        const msg = 'sess|q|Yes';
+        const data = new TextEncoder().encode(msg).buffer as ArrayBuffer;
+        const sig = await sign(clientUnlocked.privateKey, data);
+
+        // Authorized key + matching signature => accepted.
+        expect(
+          await authenticator.verifyDetachedRequest(msg, sig, client.publicKey, client.fingerprint),
+        ).toBe(true);
+
+        // Same signature over a DIFFERENT message (replay for another answer) => rejected.
+        expect(
+          await authenticator.verifyDetachedRequest(
+            'sess|q|No',
+            sig,
+            client.publicKey,
+            client.fingerprint,
+          ),
+        ).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });

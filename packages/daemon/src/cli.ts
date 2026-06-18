@@ -1380,6 +1380,11 @@ const sharedEvents = {
   ...transcriptHandlers,
   ...createSessionHandlers_,
   ...resumeSessionHandlers,
+  // Expose the shared answer core under the adapter's relay event name (#575,
+  // P4a). The HTTP /answer endpoint routes through the SAME logic as the
+  // WebSocket onAnswer, just reporting a structured outcome instead of an
+  // over-the-connection error frame.
+  onAnswerRelay: inputHandlers.relayAnswer,
 };
 
 // ---------------------------------------------------------------------------

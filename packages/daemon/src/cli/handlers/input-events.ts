@@ -109,6 +109,17 @@ function guardBinding(
   return false;
 }
 
+/**
+ * Outcome of routing an answer to a pending Question. Returned by the shared
+ * answer core so the connection-independent HTTP `/answer` relay (#575, P4a)
+ * can map it to a clear JSON status without re-implementing the routing logic.
+ *   - `delivered`     — the answer was resolved via the held hook OR submitted to the PTY.
+ *   - `session-not-found` — no session matched the sessionId/connectionId.
+ *   - `stale-binding` — the Claude session this answer targeted has rotated.
+ *   - `stale`         — the question is no longer active (already answered/auto-approved).
+ */
+export type AnswerOutcome = 'delivered' | 'session-not-found' | 'stale-binding' | 'stale';
+
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
 /**
@@ -125,6 +136,13 @@ function resolveOption(
 ): QuestionOption | undefined {
   return options.find((o) => o.value === answer || o.label === answer);
 }
+
+/**
+ * No-op `send` for the connection-independent `/answer` relay (#575, P4a),
+ * which has no WebSocket connection to write error frames to. The relay reports
+ * status via its `AnswerOutcome` return value instead.
+ */
+const noopSend: SendToConnection = () => false;
 
 /**
  * Map a resolved option to a binary allow/deny decision (#573). Reads the
@@ -161,80 +179,68 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     cancelAutoApprove,
   } = deps;
 
-  return {
-    onUserInput: async (
-      connectionId: UUID,
-      sessionId: UUID,
-      content: string,
-      raw?: boolean,
-      claudeSessionId?: UUID,
-    ): Promise<void> => {
-      log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
+  /**
+   * Shared answer-routing core for both the WebSocket `onAnswer` event and the
+   * HTTP `/answer` relay (#575, P4a). Resolves a held permission hook (Model B),
+   * releases to passthrough + submits a PTY digit for picks / "always", or
+   * submits free text — then cancels the in-flight eval and removes the
+   * question. Returns the outcome; the WebSocket path additionally surfaces
+   * errors over the connection via `send` (suppressed when `viaRelay`).
+   */
+  async function handleAnswer(
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId: UUID | undefined,
+    viaRelay = false,
+  ): Promise<AnswerOutcome> {
+    log(
+      `Answer ${viaRelay ? '(relay) ' : ''}from ${connectionId} for session ${sessionId}: ${answer}`,
+    );
 
-      const session = sessionRegistry.getSessionForConnection(connectionId);
-      if (!session) {
-        log(`No session found for connection ${connectionId}`);
-        return;
-      }
-
-      if (!guardBinding(bindingStore, send, connectionId, sessionId, claudeSessionId)) {
-        return;
-      }
-
-      if (raw) {
-        // Raw terminal input from attach client: write directly without Enter
-        try {
-          session.pty.write(content);
-        } catch (err) {
-          log(`[PTY] raw write failed: ${errorToString(err)}`);
-        }
-        return;
-      }
-
-      // Structured input from web/mobile client: append Enter
-      await session.pty.submitInput(content);
-    },
-
-    onAnswer: async (
-      connectionId: UUID,
-      sessionId: UUID,
-      questionId: UUID,
-      answer: string,
-      claudeSessionId?: UUID,
-    ): Promise<void> => {
-      log(`Answer from ${connectionId} for session ${sessionId}: ${answer}`);
-
-      // Prefer lookup by sessionId (from push-action answers) so reconnected clients
-      // can answer even before the connection is fully mapped in the registry.
-      const session =
-        sessionRegistry.getSession(sessionId) ??
-        sessionRegistry.getSessionForConnection(connectionId);
-      if (!session) {
-        log(`No session found for connection ${connectionId} or session ${sessionId}`);
+    // Prefer lookup by sessionId (from push-action answers) so reconnected clients
+    // can answer even before the connection is fully mapped in the registry.
+    const session =
+      sessionRegistry.getSession(sessionId) ??
+      sessionRegistry.getSessionForConnection(connectionId);
+    if (!session) {
+      log(`No session found for connection ${connectionId} or session ${sessionId}`);
+      if (!viaRelay) {
         send(
           connectionId,
           createError('SESSION_NOT_FOUND', `Session ${sessionId} not found on this daemon`),
         );
-        return;
       }
+      return 'session-not-found';
+    }
 
-      if (!guardBinding(bindingStore, send, connectionId, sessionId, claudeSessionId)) {
-        return;
-      }
+    if (
+      !guardBinding(
+        bindingStore,
+        viaRelay ? noopSend : send,
+        connectionId,
+        sessionId,
+        claudeSessionId,
+      )
+    ) {
+      return 'stale-binding';
+    }
 
-      // Drop stale answers. APNS tokens persist across disconnect (#286), so a
-      // delayed lock-screen tap can deliver an answer for a question that has
-      // since been auto-approved or resolved. Membership in the pending set
-      // (not equality with a single slot) is the check, so answering one of
-      // several concurrent prompts (main + subagent, #419) never invalidates
-      // the others. Surface the drop so the iOS user gets a "not delivered"
-      // signal instead of silent failure.
-      const active = sessionRegistry.getQuestion(session.sessionId, questionId);
-      if (active === null) {
-        const pendingIds = [...session.currentQuestions.keys()];
-        log(
-          `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]`,
-        );
+    // Drop stale answers. APNS tokens persist across disconnect (#286), so a
+    // delayed lock-screen tap can deliver an answer for a question that has
+    // since been auto-approved or resolved. Membership in the pending set
+    // (not equality with a single slot) is the check, so answering one of
+    // several concurrent prompts (main + subagent, #419) never invalidates
+    // the others. Surface the drop so the iOS user gets a "not delivered"
+    // signal instead of silent failure.
+    const active = sessionRegistry.getQuestion(session.sessionId, questionId);
+    if (active === null) {
+      const pendingIds = [...session.currentQuestions.keys()];
+      log(
+        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]`,
+      );
+      if (!viaRelay) {
         send(
           connectionId,
           createError('STALE_ANSWER', 'The question this answer was for is no longer active', {
@@ -243,19 +249,26 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             pendingQuestionIds: pendingIds,
           }),
         );
-        return;
       }
+      return 'stale';
+    }
 
-      // Model B (#573): if the auto-approve gate is HOLDING this permission's
-      // hook, a binary (one-time Yes / No) answer resolves it via the hook
-      // response — Claude is blocked on the hook and is NOT rendering a prompt,
-      // so a PTY submit would land in the wrong place. An answer the binary
-      // response cannot express ("Yes, always", a multi-choice pick, free text)
-      // first RELEASES the held hook to passthrough so Claude renders its native
-      // numbered prompt, then submits the digit (the only way to express
-      // "always" / a specific pick).
-      const decision = mapAnswerToDecision(active.options, answer);
-      let hadHold = false;
+    // Model B (#573): if the auto-approve gate is HOLDING this permission's
+    // hook, a binary (one-time Yes / No) answer resolves it via the hook
+    // response — Claude is blocked on the hook and is NOT rendering a prompt,
+    // so a PTY submit would land in the wrong place. An answer the binary
+    // response cannot express ("Yes, always", a multi-choice pick, free text)
+    // first RELEASES the held hook to passthrough so Claude renders its native
+    // numbered prompt, then submits the digit (the only way to express
+    // "always" / a specific pick).
+    //
+    // The submit/hold-resolution + question removal are wrapped so the question
+    // is ALWAYS consumed exactly once: if `submitInput` throws, the `finally`
+    // still removes it (no zombie question that a retry could double-submit),
+    // and the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
+    const decision = mapAnswerToDecision(active.options, answer);
+    let hadHold = false;
+    try {
       if (decision !== null) {
         hadHold = resolveHeldPermission?.(session.sessionId, questionId, decision) ?? false;
       }
@@ -293,9 +306,79 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // question must NOT abort a different binary permission's eval, so this is
       // gated on hadHold rather than firing on every answer.
       if (hadHold) cancelAutoApprove?.(session.sessionId, 'user-answered');
-
+    } finally {
       // Remove only the answered question; sibling prompts remain answerable.
+      // In `finally` so a throwing submit cannot leave a zombie question.
       sessionRegistry.removeQuestion(session.sessionId, questionId);
+    }
+    return 'delivered';
+  }
+
+  return {
+    onUserInput: async (
+      connectionId: UUID,
+      sessionId: UUID,
+      content: string,
+      raw?: boolean,
+      claudeSessionId?: UUID,
+    ): Promise<void> => {
+      log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
+
+      const session = sessionRegistry.getSessionForConnection(connectionId);
+      if (!session) {
+        log(`No session found for connection ${connectionId}`);
+        return;
+      }
+
+      if (!guardBinding(bindingStore, send, connectionId, sessionId, claudeSessionId)) {
+        return;
+      }
+
+      if (raw) {
+        // Raw terminal input from attach client: write directly without Enter
+        try {
+          session.pty.write(content);
+        } catch (err) {
+          log(`[PTY] raw write failed: ${errorToString(err)}`);
+        }
+        return;
+      }
+
+      // Structured input from web/mobile client: append Enter
+      await session.pty.submitInput(content);
+    },
+
+    // The WebSocket path: route the answer and reply over the connection on
+    // error. Returns void to match the adapter event signature. The HTTP
+    // `/answer` relay (#575, P4a) calls `relayAnswer` instead, which shares the
+    // exact same routing core but reports a structured outcome.
+    onAnswer: async (
+      connectionId: UUID,
+      sessionId: UUID,
+      questionId: UUID,
+      answer: string,
+      claudeSessionId?: UUID,
+    ): Promise<void> => {
+      await handleAnswer(connectionId, sessionId, questionId, answer, claudeSessionId);
+    },
+
+    /**
+     * Connection-independent answer relay (#575, P4a). Routes an answer through
+     * the SAME core as the WebSocket `onAnswer` so a cold-start push tap can
+     * deliver a held-hook decision / PTY pick over plain HTTP, then returns the
+     * structured outcome for the caller to JSON-encode. There is no WebSocket
+     * connection to reply on, so `send` error frames are suppressed here; the
+     * outcome carries the same information.
+     */
+    relayAnswer: async (
+      sessionId: UUID,
+      questionId: UUID,
+      answer: string,
+      claudeSessionId?: UUID,
+    ): Promise<AnswerOutcome> => {
+      // The relay has no connection; use the sessionId as the synthetic id so
+      // logging stays meaningful and the registry's sessionId-first lookup wins.
+      return handleAnswer(sessionId as UUID, sessionId, questionId, answer, claudeSessionId, true);
     },
 
     onBulletExpandRequest: (

@@ -25,6 +25,7 @@ function fakePTY(capture: {
   writes: string[];
   submits: string[];
   writeError?: Error;
+  submitError?: Error;
 }): PTYSession {
   return {
     id: generateId(),
@@ -33,6 +34,7 @@ function fakePTY(capture: {
       capture.writes.push(content);
     },
     submitInput: async (content: string) => {
+      if (capture.submitError) throw capture.submitError;
       capture.submits.push(content);
     },
     close: async () => {},
@@ -180,6 +182,40 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'yes');
 
       expect(ptyCapture.submits).toEqual(['yes']);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a throwing submitInput still consumes the question (no zombie) and propagates the error', async () => {
+      // Defense against double-submit on retry: even if the PTY submit throws,
+      // the question must be removed exactly once (finally), and the error must
+      // surface to the caller rather than being swallowed.
+      const ptyCapture = {
+        writes: [] as string[],
+        submits: [] as string[],
+        submitError: new Error('pty closed'),
+      };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'proceed?',
+        options: [
+          { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await expect(handlers.onAnswer(CID, sessionId, QID, 'y')).rejects.toThrow('pty closed');
+
+      // No zombie question left behind for a retry to double-submit.
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
@@ -972,6 +1008,181 @@ describe('createInputHandlers', () => {
 
       expect(capture.submits).toEqual(['y']);
       expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+    });
+  });
+
+  // The connection-independent HTTP /answer relay (#575, P4a) shares the exact
+  // same routing core as onAnswer, but reports a structured outcome instead of
+  // sending error frames over a (non-existent) connection.
+  describe('relayAnswer (HTTP /answer relay, #575 P4a)', () => {
+    test('routes a free-text answer through the same PTY-submit core and returns delivered', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'proceed?',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const outcome = await handlers.relayAnswer(sessionId, QID, 'Yes');
+
+      expect(outcome).toBe('delivered');
+      // The phone sends the label; the relay resolves it back to the option value.
+      expect(ptyCapture.submits).toEqual(['1']);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      // No connection, so no error frames are ever sent over the relay path.
+      expect(sendCalls).toHaveLength(0);
+    });
+
+    test('resolves a HELD binary permission via the hook response (no PTY submit)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: git push',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'Yes, always', isRecommended: false, isYes: true, isNo: false },
+          { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const held: Array<{ decision: 'allow' | 'deny' }> = [];
+      const cancels: string[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d) => {
+          held.push({ decision: d });
+          return true;
+        },
+        cancelAutoApprove: (_s, reason) => cancels.push(reason),
+      });
+
+      const outcome = await handlers.relayAnswer(sessionId, QID, '1');
+
+      expect(outcome).toBe('delivered');
+      expect(held).toEqual([{ decision: 'allow' }]); // resolved via the held hook
+      expect(ptyCapture.submits).toEqual([]); // held => no PTY submit
+      expect(cancels).toEqual(['user-answered']);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a throwing submit still consumes the question and propagates (route maps to 500)', async () => {
+      const ptyCapture = {
+        writes: [] as string[],
+        submits: [] as string[],
+        submitError: new Error('pty closed'),
+      };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'proceed?',
+        options: [{ value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      // The relay surfaces the throw (the HTTP route turns it into a 500).
+      await expect(handlers.relayAnswer(sessionId, QID, 'Yes')).rejects.toThrow('pty closed');
+      // Question consumed exactly once despite the throw.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('returns session-not-found for an unknown session (no error frame)', async () => {
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const outcome = await handlers.relayAnswer(
+        'unknown0-0000-0000-0000-000000000000' as UUID,
+        QID,
+        'Yes',
+      );
+      expect(outcome).toBe('session-not-found');
+      expect(sendCalls).toHaveLength(0);
+    });
+
+    test('returns stale when the question is no longer active (delayed lock-screen tap)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      // No question added: the relay must report stale rather than submitting.
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const outcome = await handlers.relayAnswer(sessionId, QID, 'Yes');
+
+      expect(outcome).toBe('stale');
+      expect(ptyCapture.submits).toEqual([]);
+      expect(sendCalls).toHaveLength(0);
+    });
+
+    test('returns stale-binding when the claudeSessionId has rotated', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionStore.save({
+        remiSessionId: sessionId,
+        claudeSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        projectPath: '/test/dir',
+        port: 18765,
+        pid: null,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'proceed?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const outcome = await handlers.relayAnswer(
+        sessionId,
+        QID,
+        'Yes',
+        '99999999-8888-7777-6666-555555555555' as UUID,
+      );
+
+      expect(outcome).toBe('stale-binding');
+      expect(ptyCapture.submits).toEqual([]);
     });
   });
 });
