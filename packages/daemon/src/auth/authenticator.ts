@@ -142,6 +142,45 @@ export class Authenticator {
   }
 
   /**
+   * Verify a detached, connection-independent signed request (#575, P4a).
+   *
+   * Used by the HTTP `/answer` relay, which cannot run the interactive
+   * challenge-response handshake but must still authenticate with the SAME
+   * trust model the WebSocket uses: (1) verify the client's Ed25519 signature
+   * over `message`, then (2) require the key to be in the authorized-keys store
+   * (the exact gate `verifyResponse` step 2 applies). Unlike the live handshake,
+   * this path does NOT TOFU-accept unknown keys — a relayed answer must come
+   * from an already-trusted client, never bootstrap trust.
+   *
+   * `message` is the canonical request string the client signed (the caller is
+   * responsible for binding it to the request, e.g. sessionId|questionId|answer).
+   * Returns true only when the signature verifies AND the key is authorized.
+   */
+  async verifyDetachedRequest(
+    message: string,
+    signatureBase64: string,
+    clientPublicKeyBase64: string,
+    clientFingerprint: string,
+  ): Promise<boolean> {
+    try {
+      const clientPublicKey = await importPublicKey(fromBase64(clientPublicKeyBase64));
+      const data = new TextEncoder().encode(message).buffer as ArrayBuffer;
+      const valid = await verify(clientPublicKey, data, signatureBase64);
+      if (!valid) return false;
+    } catch (err) {
+      console.error(`Detached request verification error: ${errorToString(err)}`);
+      return false;
+    }
+
+    try {
+      return this.store.isAuthorized(clientPublicKeyBase64, clientFingerprint);
+    } catch (err) {
+      console.error(`Auth store error during detached verification: ${errorToString(err)}`);
+      return false;
+    }
+  }
+
+  /**
    * Clean up a pending challenge (e.g., on connection close).
    */
   removePendingChallenge(connectionId: string): void {

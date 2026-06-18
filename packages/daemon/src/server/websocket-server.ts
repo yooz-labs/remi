@@ -60,6 +60,19 @@ export interface ServerEvents {
     claudeSessionId?: UUID,
   ) => void;
 
+  /**
+   * Connection-independent answer relay over HTTP POST /answer (#575, P4a).
+   * Resolves to a structured outcome so the route can report delivered / stale /
+   * session-not-found. Distinct from `onAnswer` because the HTTP path has no
+   * connection to reply on and must surface the result in the HTTP response.
+   */
+  onAnswerRelay: (
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+  ) => Promise<'delivered' | 'session-not-found' | 'stale-binding' | 'stale'>;
+
   /** Bullet expand request from client */
   onBulletExpandRequest: (
     connectionId: UUID,
@@ -262,6 +275,32 @@ export class WebSocketServer {
           );
         }
 
+        // Connection-independent answer relay (#575, P4a). Lets a cold-start
+        // push tap deliver an answer over plain HTTP before any WebSocket is
+        // warm. Authenticated with the SAME trust model as the WebSocket
+        // (loopback bypass + Ed25519 signature over an authorized key); routes
+        // through the SAME answer core as the WebSocket `onAnswer`.
+        if (url.pathname === '/answer') {
+          if (req.method === 'OPTIONS') {
+            return new Response(null, {
+              status: 204,
+              headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type',
+              },
+            });
+          }
+          if (req.method !== 'POST') {
+            return new Response(JSON.stringify({ result: 'method-not-allowed' }), {
+              status: 405,
+              headers: jsonCorsHeaders,
+            });
+          }
+          const peer = server.requestIP(req);
+          return self.handleAnswerRelay(req, peer?.address ?? null, jsonCorsHeaders);
+        }
+
         return new Response('Not found', {
           status: 404,
           headers: { 'Access-Control-Allow-Origin': '*' },
@@ -333,6 +372,118 @@ export class WebSocketServer {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Handle a POST /answer relay request (#575, P4a).
+   *
+   * Auth reuses the WebSocket trust model: loopback peers are exempt (same
+   * `shouldSkipAuthForPeer` bypass as the WS upgrade); networked peers must
+   * sign the canonical request string `sessionId|questionId|answer` with a key
+   * already in the daemon's authorized-keys store (the exact gate the WS
+   * handshake applies). The answer is then routed through the SAME core as the
+   * WebSocket `onAnswer`, so held-hook resolution / pick injection are identical.
+   */
+  private async handleAnswerRelay(
+    req: Request,
+    peerAddress: string | null,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const reply = (status: number, result: string, extra?: Record<string, unknown>): Response =>
+      new Response(JSON.stringify({ result, ...extra }), { status, headers: corsHeaders });
+
+    // Defense-in-depth on a LAN-facing endpoint: cap the body before parsing.
+    // Bun.serve defaults to a 128MB body limit; a permission answer is tiny, so
+    // reject anything over 64KiB outright (before req.json() allocates).
+    const MAX_BODY_BYTES = 64 * 1024;
+    const contentLength = Number.parseInt(req.headers.get('content-length') ?? '', 10);
+    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+      console.warn(
+        `[answer-relay] rejected oversized body (${contentLength} bytes) from peer ${peerAddress ?? 'unknown'}`,
+      );
+      return reply(413, 'payload-too-large', { error: 'request body too large' });
+    }
+
+    let body: {
+      sessionId?: unknown;
+      questionId?: unknown;
+      answer?: unknown;
+      claudeSessionId?: unknown;
+      auth?: {
+        signature?: unknown;
+        clientPublicKey?: unknown;
+        clientFingerprint?: unknown;
+      };
+    };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return reply(400, 'bad-request', { error: 'invalid JSON body' });
+    }
+
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+    const questionId = typeof body.questionId === 'string' ? body.questionId : '';
+    const answer = typeof body.answer === 'string' ? body.answer : '';
+    const claudeSessionId =
+      typeof body.claudeSessionId === 'string' ? body.claudeSessionId : undefined;
+    if (!sessionId || !questionId || !answer) {
+      return reply(400, 'bad-request', {
+        error: 'sessionId, questionId, and answer are required',
+      });
+    }
+
+    // Authenticate with the same trust model as the WebSocket.
+    const authenticator = this.config.connection?.authenticator;
+    if (authenticator && !shouldSkipAuthForPeer(true, peerAddress)) {
+      const auth = body.auth;
+      const signature = typeof auth?.signature === 'string' ? auth.signature : '';
+      const clientPublicKey = typeof auth?.clientPublicKey === 'string' ? auth.clientPublicKey : '';
+      const clientFingerprint =
+        typeof auth?.clientFingerprint === 'string' ? auth.clientFingerprint : '';
+      if (!signature || !clientPublicKey || !clientFingerprint) {
+        console.warn(
+          `[answer-relay] auth rejected: missing signature from peer ${peerAddress ?? 'unknown'}`,
+        );
+        return reply(401, 'unauthorized', { error: 'missing auth signature' });
+      }
+      // Bind the signature to this exact answer so it cannot be replayed for a
+      // different question. Matches the client-side canonicalization.
+      const message = `${sessionId}|${questionId}|${answer}`;
+      const ok = await authenticator.verifyDetachedRequest(
+        message,
+        signature,
+        clientPublicKey,
+        clientFingerprint,
+      );
+      if (!ok) {
+        console.warn(
+          `[answer-relay] auth rejected: signature verification failed from peer ${peerAddress ?? 'unknown'} (key ${clientPublicKey.slice(0, 12)}…)`,
+        );
+        return reply(401, 'unauthorized', { error: 'signature verification failed' });
+      }
+    }
+
+    if (!this.events.onAnswerRelay) {
+      return reply(503, 'unavailable', { error: 'answer relay not wired' });
+    }
+
+    let outcome: 'delivered' | 'session-not-found' | 'stale-binding' | 'stale';
+    try {
+      outcome = await this.events.onAnswerRelay(
+        sessionId as UUID,
+        questionId as UUID,
+        answer,
+        claudeSessionId as UUID | undefined,
+      );
+    } catch (err) {
+      this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+      return reply(500, 'error', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const status = outcome === 'delivered' ? 200 : outcome === 'session-not-found' ? 404 : 409;
+    return reply(status, outcome);
   }
 
   private handleOpen(ws: { data: WSData }): void {

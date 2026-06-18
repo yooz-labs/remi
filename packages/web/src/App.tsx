@@ -9,10 +9,12 @@ import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
-import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
+import { probeAuthInfo } from '@/lib/auth-probe';
+import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
+import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
   clearSessionQuestions,
@@ -1283,13 +1285,74 @@ function App() {
         return;
       }
 
+      // Fast path (#575, P4a): deliver the answer over a plain HTTPS POST to the
+      // daemon's /answer endpoint, bypassing the WebSocket and its handshake.
+      // This is the only reliable path on a cold-start wake where the WS is not
+      // warm. Probe whether the daemon requires auth so we can sign when needed
+      // (loopback daemons skip the probe-derived signature; the daemon exempts
+      // them anyway). probeAuthInfo never throws — it returns null on any
+      // failure — so a null probe means "assume no auth" and let the daemon
+      // reject if it disagrees (a 401 then falls back to WS).
+      const targetUrl = target.url;
+      const authInfo = await probeAuthInfo(targetUrl);
+      const authRequired = authInfo?.authRequired ?? false;
+
+      const relay = await relayAnswerDirect({
+        wsUrl: targetUrl,
+        sessionId,
+        questionId,
+        answer,
+        claudeSessionId: boundId,
+        authRequired,
+      });
+
+      if (relay.kind === 'delivered') return;
+      if (relay.kind === 'rejected') {
+        // The daemon refused as stale (409) or unknown (404). The WebSocket
+        // would refuse identically; tell the user instead of retrying.
+        console.warn('[App] direct relay rejected:', relay.result);
+        notifyFailure();
+        return;
+      }
+      if (relay.kind === 'needs-passphrase') {
+        // No unlocked identity, so neither the relay nor the WebSocket can
+        // authenticate without a prompt. Fail fast rather than waiting out the
+        // (now longer) deadline on a connection that will never complete.
+        console.warn('[App] direct relay blocked: identity needs passphrase');
+        notifyFailure();
+        return;
+      }
+      // relay.kind === 'unreachable' (network / WebRTC-relay-only daemon) or
+      // 'auth-failed' (HTTP 401 — no/invalid detached signature, but the WS
+      // challenge-response may still succeed). Both fall back to the WebSocket
+      // reconnect path.
+      console.debug(
+        `[App] direct relay ${relay.kind}, falling back to WS:`,
+        relay.kind === 'unreachable' ? relay.reason : relay.result,
+      );
+
+      // If auth is required but there is no usable (unlocked) identity, the
+      // WebSocket would stall at auth_challenge forever — fail fast rather than
+      // waiting out the 25s deadline. Covers both "no identity" and "encrypted
+      // identity" (isIdentityEncrypted() is false when none is stored, so both
+      // are checked).
+      if (authRequired && (!hasIdentity() || isIdentityEncrypted())) {
+        console.warn('[App] WS fallback blocked: identity missing or needs passphrase');
+        notifyFailure();
+        return;
+      }
+
       const targetConnId: ConnectionId =
         target.kind === 'pending' && target.connectionId
           ? (target.connectionId as ConnectionId)
-          : connectDirectRef.current(target.url);
+          : connectDirectRef.current(targetUrl);
 
-      // Wait for connection with 10s timeout, then send answer
-      const ANSWER_TIMEOUT_MS = 10_000;
+      // Wait for the connection, then send. Raised from 10s to 25s (#575, P4a):
+      // a cold-start wake includes process resume + TCP/TLS + the Ed25519
+      // handshake, which routinely exceeds 10s; 25s stays within the iOS
+      // background-task window. The loop sends the instant status hits
+      // 'connected', so a fast connect is not penalized by the larger deadline.
+      const ANSWER_TIMEOUT_MS = 25_000;
       const deadline = Date.now() + ANSWER_TIMEOUT_MS;
       const delivered = await new Promise<boolean>((resolve) => {
         const check = setInterval(() => {

@@ -118,6 +118,12 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onAnswer?.(connectionId, sessionId, questionId, answer, claudeSessionId);
       },
 
+      onAnswerRelay: async (sessionId, questionId, answer, claudeSessionId) =>
+        // No relay handler wired => behave like an unknown session rather than
+        // throwing inside the HTTP route.
+        (await this.events.onAnswerRelay?.(sessionId, questionId, answer, claudeSessionId)) ??
+        'session-not-found',
+
       onBulletExpandRequest: (connectionId, sessionId, bulletId, requestId) => {
         this.events.onBulletExpandRequest?.(connectionId, sessionId, bulletId, requestId);
       },
