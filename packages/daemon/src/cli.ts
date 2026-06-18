@@ -1193,8 +1193,12 @@ async function createNewSession(
         // #573: classify holdable escalations + the hold / slow-eval-push budgets
         // (seconds; the gate converts to ms and treats <=0 as disabled).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
-        holdTimeoutSec: remiConfig.auto_approve.hold_timeout,
-        pushHoldTimeoutSec: remiConfig.auto_approve.push_hold_timeout,
+        // Guard on AA being enabled (mirrors permissionHookHoldTimeoutSec): with
+        // no auto-approve service the gate must NOT hold a binary escalation —
+        // that would block Claude until the hook timeout instead of rendering the
+        // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
+        holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
+        pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,

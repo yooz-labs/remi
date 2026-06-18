@@ -16,7 +16,7 @@
 import type { Question, QuestionOption, UUID } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
-import { log } from '../cli/logger.ts';
+import { log, logError } from '../cli/logger.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
@@ -211,7 +211,9 @@ export class NotificationDispatcher {
         dismiss: true,
       })
         .then(() => log(`Push dismissal sent for question ${questionId}`))
-        .catch((err) => log(`Push dismissal failed: ${err}`));
+        .catch((err) =>
+          logError(`Push dismissal failed (signaling worker redeploy needed?): ${err}`),
+        );
     }
   }
 }
