@@ -20,8 +20,25 @@ export type MessageState = 'sending' | 'sent' | 'delivered' | 'read';
 /** Who sent the message */
 export type MessageSender = 'agent' | 'user' | 'system';
 
-/** Agent status while working */
-export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting';
+/**
+ * Agent status while working.
+ *
+ * Hook- and auto-approve-sourced lifecycle states (#576):
+ *   - `waiting`     — blocked on the user (a permission/question is open).
+ *   - `evaluating`  — auto-approve is deciding a permission right now.
+ *   - `approved`    — auto-approve just allowed a permission (transient; the
+ *                     next hook moves the session back to executing/thinking).
+ *   - `starting`    — the session is spinning up before its first hook fires,
+ *                     so clients have a defined pill state from hello_ack.
+ */
+export type AgentStatus =
+  | 'idle'
+  | 'thinking'
+  | 'executing'
+  | 'waiting'
+  | 'evaluating'
+  | 'approved'
+  | 'starting';
 
 /**
  * Core message type.

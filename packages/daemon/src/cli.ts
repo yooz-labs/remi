@@ -97,6 +97,7 @@ import {
   createHelloAck,
   createReplayBatch,
   createSessionListResponse,
+  createSessionUpdate,
   generateId,
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
@@ -1209,6 +1210,17 @@ async function createNewSession(
     messageApi,
     locallyOwned,
   );
+
+  // #576: give clients a defined pill state from the first hello_ack. Without
+  // this, no status reaches the client until the first hook fires (Claude can
+  // take tens of seconds to its first PreToolUse), so the session shows no
+  // signal. Recorded via sendAndRecord so a client that connects later replays
+  // it. Wrapped so a send hiccup can never abort session creation.
+  try {
+    sendAndRecord(createSessionUpdate(sessionId, 'starting'));
+  } catch (err) {
+    logError(`[Session ${sessionId}] Failed to emit starting status:`, err);
+  }
 
   // If the spawn or any post-spawn wiring throws, mark the pre-saved
   // store entry as exited so sibling daemons reading the store don't

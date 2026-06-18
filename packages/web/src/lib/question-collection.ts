@@ -8,7 +8,7 @@
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
-import type { UIQuestion } from '@/types';
+import type { AgentStatus, UIQuestion } from '@/types';
 
 /** Composite map key: a session's prompt, scoped to its agent (main default). */
 export function questionKey(sessionId: string, agentId?: string | undefined): string {
@@ -55,4 +55,20 @@ export function clearSessionQuestions(
   const next = new Map(questions);
   for (const key of keys) next.delete(key);
   return next;
+}
+
+/**
+ * Whether a `session_update` status means the MAIN agent's prompt resolved and
+ * its pending card should be cleared.
+ *
+ * 'waiting' is the blocked state (the prompt is open), so it never clears.
+ * 'evaluating' and 'approved' are TRANSIENT auto-approve broadcasts (#576) that
+ * must NOT clear a pending card: a second permission's onEvalStart
+ * ('evaluating') would otherwise delete the first card the user is still
+ * looking at, and a Part-B early-push question the gate later auto-approves
+ * ('approved') would vanish silently. The card clears on the next real hook
+ * status ('thinking'/'executing'/'idle'/'starting') or when answered.
+ */
+export function statusClearsMainQuestion(status: AgentStatus): boolean {
+  return status !== 'waiting' && status !== 'evaluating' && status !== 'approved';
 }

@@ -305,8 +305,10 @@ export class TelegramAdapter implements ConnectionAdapter {
       return false;
     }
 
-    // Show typing indicator for thinking/executing status
-    if (status === 'thinking' || status === 'executing') {
+    // Show typing indicator while the agent is busy: thinking, executing, or
+    // auto-approve evaluating a permission (#576). 'approved'/'starting' are
+    // transient/non-busy and intentionally produce no typing action.
+    if (status === 'thinking' || status === 'executing' || status === 'evaluating') {
       // Send typing indicator repeatedly while working
       this.bot.api
         .sendChatAction(session.chatId, 'typing', {

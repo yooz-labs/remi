@@ -147,6 +147,13 @@ export function formatStatusText(status: AgentStatus): string {
       return '⚡ Executing...';
     case 'waiting':
       return '⏳ Waiting for input';
+    // Auto-approve + session-lifecycle states (#576).
+    case 'evaluating':
+      return '⏳ Evaluating…';
+    case 'approved':
+      return '✓ Approved';
+    case 'starting':
+      return '⚡ Starting';
     default:
       return status;
   }

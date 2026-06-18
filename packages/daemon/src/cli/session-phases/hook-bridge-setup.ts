@@ -39,7 +39,12 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionRotated, createSessionViews, errorToString } from '@remi/shared';
+import {
+  createSessionRotated,
+  createSessionUpdate,
+  createSessionViews,
+  errorToString,
+} from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
@@ -703,6 +708,28 @@ export function setupHookBridge(
 
   const handlers = hookBridge.hookHandlers();
 
+  // #576: push an auto-approve lifecycle status to clients so the pill reflects
+  // `evaluating` -> `approved` promptly, instead of waiting for the next hook.
+  //
+  // CRITICAL: the gate invokes the cue callbacks below through its `safeCue`
+  // wrapper (cosmetic; a throw there is logged and absorbed so it can never
+  // re-enter the decision/buffer path). This helper adds its OWN try/catch so a
+  // broadcast send error can never propagate into the gate even if the call site
+  // changes. It emits a client-only `session_update` and deliberately does NOT
+  // touch the StatusWriter `sessionStatus` (the wrapper bar + native statusline
+  // already cue the AA state from the `autoApprove` sub-field) nor the existing
+  // hook-driven onStatusChange path, so it neither double-emits nor fights the
+  // real PreToolUse/PermissionRequest status that follows.
+  const broadcastAutoApproveStatus = (status: AgentStatus): void => {
+    try {
+      sendAndRecord(createSessionUpdate(sessionId, status));
+    } catch (err) {
+      logError(
+        `[Hooks] auto-approve status broadcast failed for ${sessionId}: ${errorToString(err)}`,
+      );
+    }
+  };
+
   // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
   // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
   // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
@@ -726,12 +753,22 @@ export function setupHookBridge(
       onEvalStart: () => {
         tracker.onAutoApproveStart();
         deps.statusWriter?.autoApproveStart(Date.now());
+        // #576: surface the in-flight eval on the client pill ('working').
+        broadcastAutoApproveStatus('evaluating');
       },
       onEscalate: () => {
         tracker.onAutoApproveEscalate();
         deps.statusWriter?.autoApproveEnd('escalated', Date.now());
+        // No status broadcast here: escalate already routes through
+        // handlePermissionRequest -> onStatusChange('waiting'), which broadcasts
+        // the 'waiting' session_update. Re-emitting would double-emit.
       },
-      onHandled: () => deps.statusWriter?.autoApproveEnd('approved', Date.now()),
+      onHandled: () => {
+        deps.statusWriter?.autoApproveEnd('approved', Date.now());
+        // #576: the permission was silently allowed; tell clients so the pill
+        // doesn't sit stale on 'evaluating' until the next hook fires.
+        broadcastAutoApproveStatus('approved');
+      },
       onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
       // #522: second-opinion model on a primary escalate (read from the service's
       // config). Empty when unset -> escalate straight to the user.

@@ -225,6 +225,29 @@ describe('StatusBar', () => {
     expect(writes.length).toBeGreaterThan(2);
   });
 
+  test('the default interval is ~250ms so the evaluating counter is smooth (#576)', async () => {
+    // No explicit intervalMs: exercise the constructor default. Within 320ms a
+    // 250ms timer must have ticked at least once past the immediate paint
+    // (the old 1000ms default would not have). Kept comfortably above 250ms to
+    // avoid CI timer jitter flaking the assertion.
+    const writes: string[] = [];
+    const bar = new StatusBar({
+      getStdoutFd: () => 1,
+      getStatus: () => mkStatus(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+      isEnabled: () => true,
+      writeToFd: (_fd, data) => writes.push(data),
+      now: () => NOW_MS,
+      log: () => {},
+      // intervalMs intentionally omitted to test the default.
+    });
+    bar.start();
+    expect(writes).toHaveLength(1); // immediate paint
+    await new Promise((r) => setTimeout(r, 320));
+    bar.stop();
+    expect(writes.length).toBeGreaterThan(1); // at least one timer repaint
+  });
+
   test('a persistent render error never throws, logs once, and backs off after the threshold', async () => {
     let calls = 0;
     const { bar, writes, logs } = harness({
