@@ -24,6 +24,7 @@ import {
 } from '@/lib/question-collection';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
+import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
@@ -76,6 +77,35 @@ function rememberSessionDaemon(sessionId: string, url: string): void {
     localStorage.setItem(LOCALSTORAGE_SESSION_DAEMONS_KEY, JSON.stringify(map));
   } catch (err) {
     console.warn('[App] Failed to persist session-daemon map:', err);
+  }
+}
+
+/**
+ * Forget evicted phantom sessions in localStorage so they don't resurface on a
+ * cold start (#577). Drops them from the session->daemon map and clears
+ * remi-last-session if it points at one. Best-effort; storage errors are logged,
+ * never thrown, so a quota/parse hiccup can't break the message handler.
+ */
+function forgetEvictedSessions(evictedIds: readonly string[]): void {
+  if (evictedIds.length === 0) return;
+  const evicted = new Set(evictedIds);
+  try {
+    const stored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
+    if (stored) {
+      const map = JSON.parse(stored) as Record<string, string>;
+      let changed = false;
+      for (const id of evictedIds) {
+        if (id in map) {
+          delete map[id];
+          changed = true;
+        }
+      }
+      if (changed) localStorage.setItem(LOCALSTORAGE_SESSION_DAEMONS_KEY, JSON.stringify(map));
+    }
+    const last = localStorage.getItem(LOCALSTORAGE_SESSION_KEY);
+    if (last && evicted.has(last)) localStorage.removeItem(LOCALSTORAGE_SESSION_KEY);
+  } catch (err) {
+    console.warn('[App] Failed to forget evicted sessions:', err);
   }
 }
 
@@ -704,13 +734,59 @@ function App() {
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
 
+        // Phantom eviction (#577 Fix A): drop long-dead sessions this daemon no
+        // longer knows, which is what stops the recurring NOT_FOUND retry loop
+        // for a session purged from sessions.json. Computed from the synchronous
+        // sessionsRef snapshot (not inside setSessions) so it stays pure +
+        // StrictMode-safe and we can do the localStorage/ref cleanup after.
+        //
+        // Authoritative known set for THIS connection: the daemon's own
+        // daemon-sourced sessions + the attached hello_ack session. mDNS
+        // 'transcript' discoveries are excluded — they don't prove this daemon
+        // still manages the session, so they must not keep a phantom alive.
+        const knownIds = new Set<string>(
+          message.sessions
+            .filter((ds: DiscoverableSession) => ds.source === 'daemon')
+            .map((ds: DiscoverableSession) => ds.sessionId),
+        );
+        if (helloAckSessionId) knownIds.add(helloAckSessionId);
+        const evictionCtx = { knownIds, connectionAuthoritative: connectionId };
+        const evictionNow = Date.now();
+        // Compute the evicted set ONCE from the synchronous snapshot, then reuse
+        // the SAME set for the state filter, the loadedTranscriptsRef cleanup,
+        // and the active-session reset so there is no two-snapshot drift (every
+        // side effect acts on exactly what the list filter removes).
+        const evictedSet = new Set(
+          sessionsRef.current
+            .filter((s) =>
+              shouldEvictCachedSession(
+                { id: s.id, lastActiveAt: s.lastActiveAt, connectionId: s.connectionId },
+                evictionCtx,
+                evictionNow,
+              ),
+            )
+            .map((s) => s.id),
+        );
+        if (evictedSet.size > 0) {
+          const evictedIds = [...evictedSet];
+          forgetEvictedSessions(evictedIds);
+          for (const id of evictedIds) loadedTranscriptsRef.current.delete(id);
+          // If the active session was evicted, clear it so the UI doesn't sit on
+          // a dead session and re-request its (gone) transcript.
+          if (activeSessionIdRef.current && evictedSet.has(activeSessionIdRef.current)) {
+            setActiveSessionId(null);
+          }
+          console.warn('[App] Evicted stale phantom sessions (#577):', evictedIds);
+        }
+
         // Multi-daemon merge: keep sessions from other connections, preserve attached session
         // for this connection if not in discovered list, add all newly discovered sessions,
         // sort live-first then by recency.
         setSessions((prev) => {
-          const otherConnSessions = prev.filter((s) => s.connectionId !== connectionId);
+          const live = prev.filter((s) => !evictedSet.has(s.id));
+          const otherConnSessions = live.filter((s) => s.connectionId !== connectionId);
           // Keep the attached session for this connection (from hello_ack)
-          const attachedSession = prev.find(
+          const attachedSession = live.find(
             (s) => s.connectionId === connectionId && s.connectionStatus === 'connected',
           );
           const discoveredIds = new Set(discovered.map((s) => s.id));

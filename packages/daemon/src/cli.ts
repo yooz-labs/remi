@@ -153,6 +153,7 @@ import {
   SessionRegistryFile,
   SessionStore,
   type StoredSession,
+  TranscriptIndex,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
@@ -863,7 +864,12 @@ const subagentViews = new SubagentViewRegistry();
 // Single binding accessor for the whole daemon (#460 phase 2): the one typed,
 // disk-backed surface for remiUUID<->claudeSessionId. Every binding read/write +
 // both resume resolvers route through it. No cache — see session-binding-store.ts.
-const bindingStore = new SessionBindingStore(sessionStore);
+// Durable, long-TTL remiUUID -> {claudeSessionId, projectPath} index (#577). Not
+// subject to sessions.json's 100-entry cap or 7-day purge, so a transcript_load
+// for an older session still resolves after the liveness store has dropped it.
+// The binding store mirrors every preAssign/update write into it.
+const transcriptIndex = new TranscriptIndex();
+const bindingStore = new SessionBindingStore(sessionStore, transcriptIndex);
 
 const orphanTimeoutMs =
   cliOrphanTimeout !== undefined
@@ -1339,6 +1345,7 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
   bindingStore,
+  transcriptIndex,
   currentOwnedSession,
   subagentViews,
   send: sendToConnection,
