@@ -235,3 +235,69 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['options']).toEqual(['y', 'No']);
   });
 });
+
+describe('NotificationDispatcher.dismiss (#585 P7)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  let pushed: Array<{ token: string; opts: Record<string, unknown> }>;
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+  const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
+
+  const pushFn: PushFn = async (_url, token, opts) => {
+    pushed.push({ token, opts: opts as unknown as Record<string, unknown> });
+  };
+
+  function make(): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn,
+      },
+      SID,
+    );
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    pushed = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('fires a dismiss push (dismiss flag + questionId) to every device', () => {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    // Attach a client: dismiss must STILL fire (unlike maybePush) — the card may
+    // be on another device's lock screen.
+    registry.attachConnection(SID, 'c0000000-0000-0000-0000-000000000000' as UUID);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    deviceTokens.set('b', { token: 'b', platform: 'ios', registeredAt: 2, connectionId: SID });
+
+    make().dismiss(SID, QID);
+
+    expect(pushed.map((p) => p.token).sort()).toEqual(['a', 'b']);
+    expect(pushed[0]?.opts['dismiss']).toBe(true);
+    expect(pushed[0]?.opts['questionId']).toBe(QID);
+  });
+
+  test('no-op when no device tokens are registered', () => {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    make().dismiss(SID, QID);
+    expect(pushed).toHaveLength(0);
+  });
+});

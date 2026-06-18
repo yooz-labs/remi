@@ -140,6 +140,18 @@ export interface HookBridgeDeps {
    * Part B disabled (the eval/timer race never arms).
    */
   pushHoldTimeoutSec?: number;
+  /**
+   * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
+   * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
+   * or cancelStale): the daemon broadcasts `question_resolved` to every client and
+   * fires the APNS dismissal so the pushed card clears everywhere. Must be
+   * throw-safe (the gate also guards the call). Absent => no dismissal broadcast.
+   */
+  broadcastQuestionResolved?: (
+    sessionId: UUID,
+    questionId: UUID,
+    reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+  ) => void;
 }
 
 export interface HookBridgeArgs {
@@ -779,6 +791,11 @@ export function setupHookBridge(
         broadcastAutoApproveStatus('approved');
       },
       onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
+      // #585: a held question that resolves without a user answer (Part-B late
+      // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
+      // pushed card on every client. Forwarded with this session's id.
+      onResolved: (questionId, reason) =>
+        deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
       // #522: second-opinion model on a primary escalate (read from the service's
       // config). Empty when unset -> escalate straight to the user.
       escalateModel: autoApproveService?.escalateModel ?? '',

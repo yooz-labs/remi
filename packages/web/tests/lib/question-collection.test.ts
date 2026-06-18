@@ -9,6 +9,7 @@ import {
   getSessionQuestions,
   hasSessionQuestion,
   questionKey,
+  removeQuestionById,
   statusClearsMainQuestion,
 } from '../../src/lib/question-collection';
 import type { UIQuestion } from '../../src/types';
@@ -73,6 +74,28 @@ describe('clearSessionQuestions', () => {
   test('returns the same reference when nothing matched (no-op update)', () => {
     const map = build(q('s1', undefined, 'a'));
     expect(clearSessionQuestions(map, 's2')).toBe(map);
+  });
+});
+
+describe('removeQuestionById (#585 P7)', () => {
+  test('removes the matching question by id within the session, keeps siblings', () => {
+    const map = build(q('s1', undefined, 'a'), q('s1', 'sub-7', 'b'), q('s2', undefined, 'c'));
+    const next = removeQuestionById(map, 's1', 'b');
+    // The subagent prompt 'b' is gone; the main 'a' and the other session 'c' remain.
+    expect(getSessionQuestions(next, 's1').map((x) => x.id)).toEqual(['a']);
+    expect(getSessionQuestions(next, 's2').map((x) => x.id)).toEqual(['c']);
+  });
+
+  test('returns the same reference when the id is not present (idempotent / no-op)', () => {
+    const map = build(q('s1', undefined, 'a'));
+    expect(removeQuestionById(map, 's1', 'nope')).toBe(map);
+  });
+
+  test('does not remove a same-id question belonging to a different session', () => {
+    const map = build(q('s1', undefined, 'dup'), q('s2', undefined, 'dup'));
+    const next = removeQuestionById(map, 's1', 'dup');
+    expect(getSessionQuestions(next, 's1')).toEqual([]);
+    expect(getSessionQuestions(next, 's2').map((x) => x.id)).toEqual(['dup']);
   });
 });
 

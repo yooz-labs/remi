@@ -95,6 +95,7 @@ loadDotenvFile();
 import {
   createDaemonUpdateAvailable,
   createHelloAck,
+  createQuestionResolved,
   createReplayBatch,
   createSessionListResponse,
   createSessionUpdate,
@@ -143,6 +144,7 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
+import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
@@ -856,6 +858,11 @@ const binderClosers: Map<UUID, () => void> = new Map();
 // (multi-session daemons). Populated in createNewSession after setupHookBridge;
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
+// Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
+// question-resolved path can fire a quiet lock-screen dismissal through the same
+// device-token fan-out that pushed the card. Populated in createNewSession;
+// removed on session close.
+const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
 const sessionStore = new SessionStore();
 // Tracks the subagent chats the primary session spawns, so the client can
 // switch the displayed view to a subagent (epic #499 phase 3). Shared by the
@@ -894,6 +901,8 @@ const sessionRegistry = new SessionRegistry(
       // Drop the per-session gate handle (#573); any held hook was already
       // released by the gate's closeBinder/cancelStale on teardown.
       sessionGateHandles.delete(sessionId);
+      // Drop the per-session APNS dispatcher (#585, P7).
+      sessionNotifiers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
       if (watcher) {
         watcher.stop();
@@ -1081,7 +1090,7 @@ async function createNewSession(
   passThrough = false,
   reservedRows = 0,
 ): Promise<PTYSession> {
-  const { messageApi, sendAndRecord } = createMessageApiForSession(
+  const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
     {
       sessionRegistry,
       transcriptWatchers,
@@ -1109,6 +1118,9 @@ async function createNewSession(
     },
     sessionId,
   );
+  // Register this session's APNS dispatcher so the question-resolved path can
+  // dismiss a pushed card through the same device-token fan-out (#585, P7).
+  sessionNotifiers.set(sessionId, notifications);
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
@@ -1183,6 +1195,9 @@ async function createNewSession(
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
         holdTimeoutSec: remiConfig.auto_approve.hold_timeout,
         pushHoldTimeoutSec: remiConfig.auto_approve.push_hold_timeout,
+        // #585: a held question the gate resolves without a user answer dismisses
+        // its pushed card on every client.
+        broadcastQuestionResolved: onQuestionResolved,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
@@ -1294,6 +1309,37 @@ const registry = new AdapterRegistry({
   },
 });
 
+/**
+ * Cross-client question dismissal (#585, P7). Fired when a pending question stops
+ * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
+ * reason 'answered'), or (b) resolved by the auto-approve gate without a user
+ * answer (Part-B late verdict / hold timeout / cancelStale, reason
+ * 'auto_approved'/'auto_denied'/'cancelled'). It does TWO throw-safe things:
+ *   1. Broadcast `question_resolved` to every connected client so each dismisses
+ *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
+ *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
+ *      (apns-collapse-id = questionId, content-available) so a suspended device's
+ *      lock-screen card is cleared.
+ * Each step is independently guarded so a failure in one never blocks the other,
+ * and neither can propagate into the answer handler or the gate decision.
+ */
+const onQuestionResolved = (
+  sessionId: UUID,
+  questionId: UUID,
+  reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled',
+): void => {
+  try {
+    registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
+  } catch (err) {
+    logError(`[QuestionResolved] broadcast failed for ${questionId}: ${errorToString(err)}`);
+  }
+  try {
+    sessionNotifiers.get(sessionId)?.dismiss(sessionId, questionId);
+  } catch (err) {
+    logError(`[QuestionResolved] APNS dismissal failed for ${questionId}: ${errorToString(err)}`);
+  }
+};
+
 import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
@@ -1319,6 +1365,10 @@ const inputHandlers: InputHandlers = createInputHandlers({
   releaseHeldAsPassthrough: (sessionId, questionId) =>
     sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
   cancelAutoApprove: (sessionId, reason) => sessionGateHandles.get(sessionId)?.cancelStale(reason),
+  // #585: a locally answered question dismisses its card + lock-screen push on
+  // every other client.
+  onQuestionResolved: (sessionId, questionId) =>
+    onQuestionResolved(sessionId, questionId, 'answered'),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({

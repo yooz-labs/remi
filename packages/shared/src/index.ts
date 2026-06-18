@@ -91,6 +91,7 @@ export type {
   SessionRotatedMessage,
   SessionViewsMessage,
   SessionViewMeta,
+  QuestionResolvedMessage,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -139,6 +140,7 @@ export {
   createDaemonUpdateAvailable,
   createSessionRotated,
   createSessionViews,
+  createQuestionResolved,
   MessageIdTracker,
 } from './protocol.ts';
 

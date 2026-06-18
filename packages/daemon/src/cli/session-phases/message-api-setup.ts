@@ -60,6 +60,12 @@ export interface MessageApiSetupDeps {
 export interface MessageApiHandle {
   messageApi: MessageAPI;
   sendAndRecord: (message: ProtocolMessage) => void;
+  /**
+   * This session's APNS dispatcher (#585, P7). Exposed so the daemon's
+   * question-resolved path can fire a quiet lock-screen dismissal for a resolved
+   * question through the SAME device-token fan-out that pushed it.
+   */
+  notifications: NotificationDispatcher;
 }
 
 export function createMessageApiForSession(
@@ -166,5 +172,5 @@ export function createMessageApiForSession(
 
   const messageApi = new MessageAPI({ sessionId, initialBulletId: 1, maxBulletLength }, callbacks);
 
-  return { messageApi, sendAndRecord };
+  return { messageApi, sendAndRecord, notifications };
 }

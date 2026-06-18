@@ -101,7 +101,8 @@ export type ProtocolMessage =
   | RegisterDeviceTokenMessage
   | DaemonUpdateAvailableMessage
   | SessionRotatedMessage
-  | SessionViewsMessage;
+  | SessionViewsMessage
+  | QuestionResolvedMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -243,6 +244,30 @@ export interface AnswerMessage {
    * Omitted by pre-#429 clients.
    */
   readonly claudeSessionId?: UUID | undefined;
+}
+
+/**
+ * Daemon -> client broadcast: a pending question stopped being pending, so every
+ * client should dismiss its card and clear any local/lock-screen notification for
+ * it (#585, P7). Sent to ALL connected clients (cross-client dismissal) the moment
+ * a question resolves on ANY channel — answered from one device, auto-approved/denied
+ * by the gate, or cancelled because Claude advanced past the prompt. Idempotent: a
+ * client that no longer holds the question simply ignores it.
+ *
+ * The daemon also fires a quiet APNS dismissal (apns-collapse-id = questionId,
+ * content-available) so a suspended device replaces/clears the lock-screen card; this
+ * WebSocket message is the in-app counterpart for connected clients.
+ */
+export interface QuestionResolvedMessage {
+  readonly type: 'question_resolved';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Remi session that owned the question (the id the client keys cards by). */
+  readonly sessionId: UUID;
+  /** The resolved question's id; clients remove the card carrying it. */
+  readonly questionId: UUID;
+  /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
+  readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
 }
 
 /** Session state update */
@@ -779,6 +804,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'daemon_update_available',
     'session_rotated',
     'session_views',
+    'question_resolved',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1006,6 +1032,26 @@ export function createAnswer(
     questionId,
     answer,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
+  };
+}
+
+/**
+ * Create a question-resolved broadcast (#585, P7). Fired by the daemon to ALL
+ * clients when a pending question stops being pending so every client dismisses
+ * its card; `reason` records how it resolved (all clients dismiss identically).
+ */
+export function createQuestionResolved(
+  sessionId: UUID,
+  questionId: UUID,
+  reason: QuestionResolvedMessage['reason'],
+): QuestionResolvedMessage {
+  return {
+    type: 'question_resolved',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionId,
+    reason,
   };
 }
 

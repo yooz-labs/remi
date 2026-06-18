@@ -51,6 +51,16 @@ export interface InputHandlerDeps {
    * in-flight eval. Session-keyed.
    */
   cancelAutoApprove?: (sessionId: UUID, reason: string) => void;
+  /**
+   * Cross-client question dismissal (#585, P7). Called after a question is
+   * answered here so the daemon broadcasts `question_resolved` to every client and
+   * fires the APNS dismissal — answering on one device clears the card (and the
+   * lock-screen notification) on the others. Fired ONCE per answered question, on
+   * the delivered path only (not for stale/session-not-found/stale-binding, where
+   * nothing was consumed). Must be throw-safe: a broadcast failure must never
+   * break answer handling. Absent => no dismissal broadcast (tests/old callers).
+   */
+  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
 }
 
 /**
@@ -177,6 +187,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     resolveHeldPermission,
     releaseHeldAsPassthrough,
     cancelAutoApprove,
+    onQuestionResolved,
   } = deps;
 
   /**
@@ -310,6 +321,16 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // Remove only the answered question; sibling prompts remain answerable.
       // In `finally` so a throwing submit cannot leave a zombie question.
       sessionRegistry.removeQuestion(session.sessionId, questionId);
+      // Cross-client dismissal (#585, P7): tell every client this question is
+      // resolved so its card clears and the lock-screen push is dismissed.
+      // Throw-safe: a broadcast/push failure must never break answer handling,
+      // and it lives in `finally` so even a throwing submit still clears the card
+      // (the question was consumed). Idempotent on the client side.
+      try {
+        onQuestionResolved?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+      }
     }
     return 'delivered';
   }

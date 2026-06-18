@@ -22,6 +22,15 @@ export interface PushTriggerOptions {
   category?: string;
   /** Answer values for action buttons: opt_0, opt_1, ... */
   options?: string[];
+  /**
+   * Dismissal trigger (#585, P7). When true the signaling server sends a QUIET
+   * `content-available` push (no alert) carrying the same `apns-collapse-id` =
+   * questionId, so the device replaces/clears the lock-screen card for an
+   * already-resolved question instead of buzzing again. title/body are still
+   * required by the relay's MISSING_FIELDS check; the dispatcher passes short
+   * placeholders the user never sees (the push is silent).
+   */
+  dismiss?: boolean;
 }
 
 /**
@@ -61,6 +70,9 @@ export async function sendPushTrigger(
   }
   if (opts.options && opts.options.length > 0) {
     payload['options'] = opts.options;
+  }
+  if (opts.dismiss) {
+    payload['dismiss'] = true;
   }
   const response = await fetch(url, {
     method: 'POST',
