@@ -42,6 +42,58 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
   return undefined;
 }
 
+/** Cap for the APNS title; iOS truncates visually but a hard cap keeps the
+ *  payload bounded for long Bash commands. */
+const TITLE_MAX = 120;
+/** Cap for the APNS body (ask + option list). */
+const BODY_MAX = 200;
+
+/**
+ * Normalize text for the notification surface (#574, issue 3). Collapses every
+ * run of whitespace (including the zero-width gaps that the PTY's column-
+ * aligned permission box leaves after ANSI stripping, which produced the
+ * "Doyouwanttoproceed?" garble) into a single ASCII space, then trims. A bare
+ * run-together token with no separators (the worst PTY case) is left as-is by
+ * this pass — but the dispatcher prefers the clean hook text for the body, so
+ * the raw PTY string never reaches the user (see `buildPushText`).
+ */
+function normalizeNotificationText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The compact option list shown in the body, e.g. "1. Yes  2. Yes, always
+ * 3. No". Uses the real option LABELS (#574, issue 4) so the user sees what
+ * they are actually choosing. The prefix is the option's actual `value`, not
+ * its positional index, so it stays accurate for non-indexed values like the
+ * StopFailure y/n set ("y. Yes  n. No"). Empty when there are no options
+ * (free-text prompt) so the body is just the ask.
+ */
+function formatOptionList(options: readonly QuestionOption[]): string {
+  if (options.length === 0) return '';
+  return options.map((o) => `${o.value}. ${o.label || o.value}`).join('  ');
+}
+
+/**
+ * Build the APNS title + body from the question (#574, issues 3+4).
+ *   - title: session context + the clean hook ask (tool + command), never the
+ *     raw PTY screen text.
+ *   - body: the ask repeated as the leading line plus the real option labels,
+ *     so the lock screen shows the choices even where the static action-button
+ *     titles cannot (REMI_MULTI). Whitespace is normalized so a column-aligned
+ *     PTY prompt can never collapse into a run-together string.
+ */
+export function buildPushText(
+  sessionName: string,
+  question: Question,
+): { title: string; body: string } {
+  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
+  const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
+  const optionList = formatOptionList(question.options);
+  const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);
+  return { title, body };
+}
+
 /** Signature of the APNS-relay push call; injectable so the push branch is
  *  observable in tests without mocking a network module. */
 export type PushFn = typeof sendPushTrigger;
@@ -108,12 +160,18 @@ export class NotificationDispatcher {
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     const pushCategory = selectPushCategory(question.options);
-    const pushOptions = question.options.map((o) => o.value);
+    // Send the human-readable LABELS for DISPLAY (#574, issue 4); answer
+    // routing in input-events resolves an incoming label OR value back to the
+    // option, then submits the option's index when a PTY submit is required, so
+    // sending labels here does not break delivery. Fall back to the value when a
+    // label is empty so the button still carries something answerable.
+    const pushOptions = question.options.map((o) => o.label || o.value);
+    const { title, body } = buildPushText(sessionName, question);
 
     for (const dt of deviceTokens.values()) {
       this.pushFn(cfg.signalingUrl, dt.token, {
-        title: `${sessionName} needs input`,
-        body: question.text.slice(0, 100),
+        title,
+        body,
         ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
         sessionId: pushSessionId,
         questionId: question.id,

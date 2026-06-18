@@ -23,6 +23,7 @@ export type {
   Acknowledgment,
   Question,
   QuestionOption,
+  QuestionSource,
   Session,
   ConnectionInfo,
   Result,

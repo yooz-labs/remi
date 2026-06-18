@@ -90,15 +90,35 @@ export class QuestionPresenceTracker {
    * confirms the prompt is visible, or never if status moves past 'waiting'
    * first.
    *
-   * Replacement policy: per agent, the newer hook wins (correct for the
-   * same-prompt double-fire: PermissionRequest then Notification). Different
-   * agents no longer overwrite each other (#425).
+   * Replacement policy: per agent, the newer hook normally wins. The one
+   * exception (#574): a pending rich `PermissionRequest` is authoritative and
+   * is NOT evicted by any other shape — only a NEWER `PermissionRequest` (a new
+   * permission cycle) may replace it. Claude fires both a PermissionRequest and
+   * a generic `Notification(permission_prompt)` for one prompt; the
+   * PermissionRequest carries the tool + command + real option labels ("Allow
+   * Bash: git push", Edit's Yes/Always/No), while the Notification is the bland
+   * "Claude needs your permission to use Bash" with the hardcoded 3-set.
+   * Letting the trailing notification win is exactly what garbled the push
+   * text/options (issues 3+4). A same-agent source-less question (e.g. a
+   * StopFailure "Retry?" card) must likewise not silently evict the pending
+   * permission request and leave the real prompt without a push. Different
+   * agents never overwrite each other (#425).
    */
   recordPendingHook(question: Question): void {
     const key = agentKey(question);
-    if (this.pending.has(key)) {
+    const existing = this.pending.get(key);
+    if (existing) {
+      // A pending rich permission request stays put unless the incoming is a
+      // newer permission request: a generic Notification or a source-less
+      // StopFailure-shaped question for the same agent must NOT evict it.
+      if (existing.source === 'permission_request' && question.source !== 'permission_request') {
+        console.debug(
+          `[QuestionPresenceTracker] Keeping richer pending permission_request for agent "${key}"; not evicting with source="${question.source ?? 'undefined'}" (kept="${existing.text.slice(0, 50)}", dropped="${question.text.slice(0, 50)}")`,
+        );
+        return;
+      }
       console.debug(
-        `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${this.pending.get(key)?.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
+        `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${existing.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
       );
     }
     // Re-insert so this agent's entry is the most recent (matters for the
