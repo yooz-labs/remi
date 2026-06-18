@@ -1048,4 +1048,64 @@ describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
     // Despite the throwing onResolved, the held hook still resolves allow.
     expect(await pending).toBe('allow');
   });
+
+  // #585 P7 FIX 2: a Part-B held question is registered (pushHeldHook ->
+  // addQuestion); the gate-side resolution must drop it from the registry so no
+  // ghost card replays and a late handleAnswer can't find it "live".
+  test('Part-B auto-approve removes the held question from sessionRegistry', async () => {
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40)); // early push + hold
+    // Simulate the real push having registered the question under the held id.
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    release(approve);
+    expect(await pending).toBe('allow');
+    // The held question is gone from the registry (no ghost card / misroute).
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('hold timeout removes the held question from sessionRegistry', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 15)); // after the early push, before timeout
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(await pending).toBe('passthrough'); // failed open on hold timeout
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('cancelStale removes the held question from sessionRegistry', async () => {
+    const { service } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    g.cancelStale('SessionEnd');
+    expect(await pending).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
 });

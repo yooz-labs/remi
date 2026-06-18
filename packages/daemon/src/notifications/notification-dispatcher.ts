@@ -203,10 +203,8 @@ export class NotificationDispatcher {
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
     for (const dt of deviceTokens.values()) {
       this.pushFn(cfg.signalingUrl, dt.token, {
-        // title/body are required by the relay's MISSING_FIELDS check but are
-        // never shown — the dismissal is a silent content-available push.
-        title: ' ',
-        body: ' ',
+        // No title/body: a dismissal is a silent content-available push, and the
+        // relay skips the title/body requirement for it (#585, P7).
         ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
         sessionId: pushSessionId,
         questionId,

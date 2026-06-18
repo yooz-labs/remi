@@ -194,6 +194,12 @@ export class AutoApproveGate {
     if (!hold) return false;
     clearTimeout(hold.timer);
     this.pendingHolds.delete(questionId);
+    // Remove the registry entry too (#585, P7 FIX 2): the held question was
+    // registered via pushHeldHook -> addQuestion, so resolving the hold without
+    // this leaves a ghost card that replays on reconnect and lets a late
+    // handleAnswer find it "live" and misroute. The user-answer path also
+    // removes it in handleAnswer's finally; a double-remove is idempotent.
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
     this.markHandled();
     hold.resolve(decision);
     log(
@@ -225,8 +231,10 @@ export class AutoApproveGate {
     for (const [qid, hold] of this.pendingHolds) {
       clearTimeout(hold.timer);
       // The session is going away (Stop/SessionEnd); dismiss the pushed card on
-      // every client so it does not linger after the prompt is gone (#585, P7).
+      // every client BEFORE resolving so it does not linger after the prompt is
+      // gone (#585, P7), and drop the registry entry so no ghost card replays.
       this.notifyResolved(qid, 'cancelled');
+      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
       hold.resolve(decision);
     }
     this.pendingHolds.clear();
@@ -281,8 +289,10 @@ export class AutoApproveGate {
           `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} timed out -> passthrough`,
         );
         // The pushed card is now stale (Claude will render its own prompt); tell
-        // every client to dismiss it (#585, P7). Throw-safe.
+        // every client to dismiss it BEFORE failing open (#585, P7), and drop the
+        // registry entry so no ghost card replays. Throw-safe.
         this.notifyResolved(qid, 'cancelled');
+        this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
         resolve('passthrough');
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;
@@ -593,19 +603,23 @@ export class AutoApproveGate {
       return;
     }
     const result = outcome.result;
+    // Dismiss BEFORE resolving (#585, P7 FIX 5): the broadcast races ahead of
+    // Claude proceeding on the verdict, shrinking the window where Claude has
+    // executed but the card still shows. resolveHeld/releaseHeld then resolve the
+    // hook + drop the registry entry (FIX 2).
     if (result.decision === 'approve') {
-      this.resolveHeld(qid, 'allow');
       // The slow verdict landed AFTER the early push, so the card is on screens
       // the user never needs to act on — dismiss it everywhere (#585, P7).
       this.notifyResolved(qid, 'auto_approved');
+      this.resolveHeld(qid, 'allow');
     } else if (result.decision === 'deny') {
-      this.resolveHeld(qid, 'deny');
       this.notifyResolved(qid, 'auto_denied');
+      this.resolveHeld(qid, 'deny');
     } else if (result.decision === 'cancelled') {
       // Claude advanced past the prompt during the slow eval; fail the hold open.
       this.deps.tracker.clearPending();
-      this.releaseHeld(qid, 'passthrough');
       this.notifyResolved(qid, 'cancelled');
+      this.releaseHeld(qid, 'passthrough');
     }
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
@@ -618,6 +632,10 @@ export class AutoApproveGate {
     if (!hold) return false;
     clearTimeout(hold.timer);
     this.pendingHolds.delete(questionId);
+    // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
+    // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
+    // removes it; a double-remove is idempotent.
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
     hold.resolve(decision);
     return true;
   }

@@ -48,6 +48,12 @@ interface PushRequestBody {
   options?: string[];
   /** Reserved for future per-request sandbox override; daemon does not send this today */
   sandbox?: boolean;
+  /**
+   * Dismissal trigger (#585, P7). When true, send a QUIET background push (no
+   * alert) keyed by `apns-collapse-id` = questionId so the device clears the
+   * lock-screen card for an already-resolved question.
+   */
+  dismiss?: boolean;
 }
 
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
@@ -153,11 +159,17 @@ export default {
         );
       }
 
-      if (!body.token || !body.title || !body.body) {
+      // A dismissal (#585, P7) is a quiet content-available push with no
+      // user-visible text, so title/body are not required for it — only the
+      // token (the device) and the questionId (the collapse-id target, validated
+      // below by buildApnsRequest's collapse-id handling). An alert push still
+      // requires all three.
+      const isDismiss = body.dismiss === true;
+      if (!body.token || (!isDismiss && (!body.title || !body.body))) {
         return new Response(
           JSON.stringify({
             error: 'MISSING_FIELDS',
-            message: 'token, title, and body are required',
+            message: isDismiss ? 'token is required' : 'token, title, and body are required',
           }),
           { status: 400, headers: corsHeaders },
         );
@@ -189,8 +201,11 @@ export default {
         result = await sendApnsPush(
           {
             token: body.token,
-            title: body.title,
-            body: body.body,
+            // For a dismissal these are absent; buildApnsRequest ignores them in
+            // dismiss mode (no alert), so default to empty strings to satisfy the
+            // ApnsPayload shape without surfacing any text.
+            title: body.title ?? '',
+            body: body.body ?? '',
             bundleId,
             sandbox,
             data: Object.keys(data).length > 0 ? data : undefined,
@@ -199,6 +214,8 @@ export default {
             ...(body.questionId && body.questionId.length > 0
               ? { collapseId: body.questionId }
               : {}),
+            // Quiet dismissal of an already-resolved question (#585, P7).
+            ...(body.dismiss === true ? { dismiss: true } : {}),
           },
           { keyId: env.APNS_KEY_ID, teamId: env.APNS_TEAM_ID, privateKey: env.APNS_PRIVATE_KEY },
         );

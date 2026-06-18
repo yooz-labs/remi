@@ -667,12 +667,22 @@ function App() {
         // id within the session.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
-        setQuestions((prev) => removeQuestionById(prev, resolvedSessionId, resolvedQuestionId));
-        // Recompute the session's pending badge from the latest committed map
-        // (the ref), since the card we just removed may have been the last one.
-        const stillPending = getSessionQuestions(questionsRef.current, resolvedSessionId).some(
-          (q) => q.id !== resolvedQuestionId && q.answeredWith === undefined,
+        // Compute the post-removal map from the CURRENT committed ref, then drive
+        // both setters from that one value (#585, P7 FIX 3). Reading the updated
+        // map (not the pre-removal ref) is what prevents two concurrent
+        // resolutions from leaving the badge stuck `questionPending: true`. The
+        // ref is the latest committed map (kept in sync by the effect below), so
+        // the second resolution sees the first's removal.
+        const updatedQuestions = removeQuestionById(
+          questionsRef.current,
+          resolvedSessionId,
+          resolvedQuestionId,
         );
+        const stillPending = getSessionQuestions(updatedQuestions, resolvedSessionId).some(
+          (q) => q.answeredWith === undefined,
+        );
+        questionsRef.current = updatedQuestions;
+        setQuestions(updatedQuestions);
         setSessions((prev) =>
           prev.map((s) => (s.id === resolvedSessionId ? { ...s, questionPending: stillPending } : s)),
         );
