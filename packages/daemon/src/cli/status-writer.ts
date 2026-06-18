@@ -20,7 +20,9 @@
 import * as fs from 'node:fs';
 import type { AgentStatus, UUID } from '@remi/shared';
 
-export type RemiSessionStatus = AgentStatus | 'starting';
+/** Session status surfaced in the status file. `starting` now lives in the
+ *  shared `AgentStatus` (#576), so this is just an alias kept for callers. */
+export type RemiSessionStatus = AgentStatus;
 
 /**
  * Auto-approve eval state surfaced in Claude's native status line (#560).

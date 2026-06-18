@@ -9,6 +9,7 @@ import {
   getSessionQuestions,
   hasSessionQuestion,
   questionKey,
+  statusClearsMainQuestion,
 } from '../../src/lib/question-collection';
 import type { UIQuestion } from '../../src/types';
 
@@ -72,5 +73,26 @@ describe('clearSessionQuestions', () => {
   test('returns the same reference when nothing matched (no-op update)', () => {
     const map = build(q('s1', undefined, 'a'));
     expect(clearSessionQuestions(map, 's2')).toBe(map);
+  });
+});
+
+describe('statusClearsMainQuestion (#576)', () => {
+  test("'waiting' never clears (the prompt is still open)", () => {
+    expect(statusClearsMainQuestion('waiting')).toBe(false);
+  });
+
+  test("transient auto-approve states 'evaluating'/'approved' do NOT clear the card", () => {
+    // Regression: a second permission's onEvalStart ('evaluating') or a
+    // gate auto-approval ('approved') must not delete a card the user is
+    // still looking at.
+    expect(statusClearsMainQuestion('evaluating')).toBe(false);
+    expect(statusClearsMainQuestion('approved')).toBe(false);
+  });
+
+  test("real hook statuses still clear the resolved main-agent card", () => {
+    expect(statusClearsMainQuestion('thinking')).toBe(true);
+    expect(statusClearsMainQuestion('executing')).toBe(true);
+    expect(statusClearsMainQuestion('idle')).toBe(true);
+    expect(statusClearsMainQuestion('starting')).toBe(true);
   });
 });

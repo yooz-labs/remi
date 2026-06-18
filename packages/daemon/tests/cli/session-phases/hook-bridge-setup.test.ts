@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { Question, UUID } from '@remi/shared';
+import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
@@ -191,6 +191,9 @@ describe('setupHookBridge', () => {
        *  contract through the bridge wiring. Defaults to the passthrough
        *  tracker used by the legacy assertion-style tests. */
       realTracker?: boolean;
+      /** Capture every message the bridge sends via sendAndRecord (#576: the
+       *  auto-approve status broadcasts). Defaults to a no-op send. */
+      sendLog?: ProtocolMessage[];
     } = {},
   ): { tracker: QuestionPresenceTracker } {
     const localMessageApi = fakeMessageAPI(
@@ -268,7 +271,7 @@ describe('setupHookBridge', () => {
         sessionId: SID,
         workingDirectory: tmpDir,
         messageApi: localMessageApi,
-        sendAndRecord: () => {},
+        sendAndRecord: opts.sendLog ? (m) => opts.sendLog?.push(m) : () => {},
         // PassthroughTracker is the default: it collapses
         // recordPendingHook into an immediate push so the legacy
         // "bridge emitted a question to the consumer" assertions via
@@ -2365,6 +2368,142 @@ describe('setupHookBridge', () => {
       } as unknown as Question);
 
       expect(messageApiLog.questionCalls).toBe(1);
+    });
+  });
+
+  describe('#576 auto-approve status broadcasts', () => {
+    /** Pull the AgentStatus values out of the session_update messages a run sent. */
+    function sessionUpdateStatuses(log: ProtocolMessage[]): string[] {
+      return log
+        .filter(
+          (m): m is Extract<ProtocolMessage, { type: 'session_update' }> =>
+            m.type === 'session_update',
+        )
+        .map((m) => m.session.status);
+    }
+
+    test('an APPROVE eval broadcasts "evaluating" then "approved" session_updates', async () => {
+      const sendLog: ProtocolMessage[] = [];
+      // A small eval delay guarantees onEvalStart fires before onHandled.
+      build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 10, sendLog });
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-aa-status',
+        hook_event_name: 'SessionStart',
+        transcript_path: path.join(tmpDir, 'aa-status.jsonl'),
+        source: 'startup',
+        model: 'test',
+      });
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-aa-status',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      expect(decision).toBe('allow');
+
+      const statuses = sessionUpdateStatuses(sendLog);
+      // evaluating (onEvalStart) must precede approved (onHandled).
+      expect(statuses).toContain('evaluating');
+      expect(statuses).toContain('approved');
+      expect(statuses.indexOf('evaluating')).toBeLessThan(statuses.indexOf('approved'));
+    });
+
+    test('an ESCALATE eval broadcasts "evaluating" but NOT "approved" (no double-emit)', async () => {
+      const sendLog: ProtocolMessage[] = [];
+      build({
+        autoApprove: true,
+        autoApproveDecision: 'escalate',
+        autoApproveDelayMs: 10,
+        sendLog,
+      });
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-aa-esc',
+        hook_event_name: 'SessionStart',
+        transcript_path: path.join(tmpDir, 'aa-esc.jsonl'),
+        source: 'startup',
+        model: 'test',
+      });
+
+      await hookServer.firePermission({
+        session_id: 'claude-aa-esc',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      const statuses = sessionUpdateStatuses(sendLog);
+      expect(statuses).toContain('evaluating');
+      // onEscalate deliberately does NOT broadcast (the bridge's
+      // handlePermissionRequest -> onStatusChange('waiting') already does);
+      // and onHandled is not reached on an escalate verdict.
+      expect(statuses).not.toContain('approved');
+    });
+
+    test('a status-broadcast send error never propagates into the gate decision', async () => {
+      // The broadcast helper wraps its own send in try/catch so a throwing
+      // sendAndRecord cannot break the allow/deny decision or the buffer path.
+      // A fresh setup wires a sender that records then throws on every send.
+      const throwingLog: ProtocolMessage[] = [];
+      const localApi = fakeMessageAPI({ resetCalls: { n: 0 }, statusCalls: [], questionCalls: 0 });
+      const freshSid = generateId();
+      sessionRegistry.registerSession(freshSid, tmpDir, fakePTY([]), localApi);
+      const autoApproveService = {
+        evaluate: async () => ({
+          decision: 'approve' as const,
+          reasoning: 'test',
+          durationMs: 0,
+          model: 'test-model',
+        }),
+        cancel: () => false,
+      } as unknown as import('../../../src/auto-approve/index.ts').AutoApproveService;
+      const freshHook = new RecordingHookServer();
+      setupHookBridge(
+        {
+          sessionRegistry,
+          bindingStore,
+          liveSessionsRegistry,
+          transcriptWatchers: transcriptWatchers as unknown as Map<
+            UUID,
+            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+          >,
+          transcriptFallbackTimers,
+          autoApproveService,
+          currentPort: () => 8765,
+        },
+        {
+          hookServer: freshHook as unknown as HookServer,
+          sessionId: freshSid,
+          workingDirectory: tmpDir,
+          messageApi: localApi,
+          sendAndRecord: (m) => {
+            throwingLog.push(m);
+            throw new Error('test: send blew up');
+          },
+          tracker: makePassthroughTracker(localApi),
+        },
+      );
+
+      freshHook.fire('SessionStart', {
+        session_id: 'claude-throw-broadcast',
+        hook_event_name: 'SessionStart',
+        transcript_path: path.join(tmpDir, 'throw-bc.jsonl'),
+        source: 'startup',
+        model: 'test',
+      });
+
+      // The decision must still resolve to 'allow' despite the throwing sender.
+      const decision = await freshHook.firePermission({
+        session_id: 'claude-throw-broadcast',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      expect(decision).toBe('allow');
+      // And the broadcast was at least attempted (proving the throw path ran).
+      expect(throwingLog.length).toBeGreaterThan(0);
     });
   });
 });

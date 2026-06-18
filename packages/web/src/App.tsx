@@ -20,6 +20,7 @@ import {
   clearSessionQuestions,
   getSessionQuestions,
   questionKey,
+  statusClearsMainQuestion,
 } from '@/lib/question-collection';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
@@ -454,11 +455,14 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
-        // If status moved from 'waiting', the MAIN agent's prompt resolved
-        // (auto-approved, answered in terminal, etc.). Session status tracks
-        // the main agent only (subagent events don't change it), so clear just
-        // the main-agent slot — a concurrent subagent prompt must survive.
-        if (sessionData.status !== 'waiting') {
+        // If status moved to a non-waiting, non-transient state, the MAIN
+        // agent's prompt resolved (auto-approved, answered in terminal, etc.).
+        // Session status tracks the main agent only (subagent events don't
+        // change it), so clear just the main-agent slot; a concurrent subagent
+        // prompt must survive. The transient auto-approve broadcasts
+        // ('evaluating'/'approved', #576) must NOT clear a pending card; see
+        // statusClearsMainQuestion for the rationale.
+        if (statusClearsMainQuestion(sessionData.status)) {
           setQuestions((prev) => {
             const key = questionKey(sessionData.id);
             if (!prev.has(key)) return prev;

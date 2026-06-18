@@ -177,8 +177,11 @@ export function MessageList({
     }
   }, [keyboardVisible]);
 
-  // Show typing indicator when agent is thinking/executing
-  const showTyping = agentStatus === 'thinking' || agentStatus === 'executing';
+  // Show typing indicator when the agent is busy: thinking, executing, or
+  // auto-approve evaluating a permission (#576). Kept in lockstep with
+  // ChatView's isAgentBusy so the dots and the "Working" pill never disagree.
+  const showTyping =
+    agentStatus === 'thinking' || agentStatus === 'executing' || agentStatus === 'evaluating';
 
   // In chat mode, collapse tool messages into inline summaries
   const filterTools = viewMode === 'chat';

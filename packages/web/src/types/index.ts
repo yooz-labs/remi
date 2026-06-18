@@ -41,8 +41,17 @@ export interface ConnectionState {
   readonly sessionId: string | null;
 }
 
-/** Agent status as displayed in the UI */
-export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting';
+/** Agent status as displayed in the UI. Mirrors the daemon's `AgentStatus`
+ *  (@remi/shared); `evaluating`/`approved`/`starting` are auto-approve and
+ *  session-lifecycle states surfaced on the pill (#576). */
+export type AgentStatus =
+  | 'idle'
+  | 'thinking'
+  | 'executing'
+  | 'waiting'
+  | 'evaluating'
+  | 'approved'
+  | 'starting';
 
 /** Message sender type */
 export type MessageSender = 'user' | 'agent' | 'system';
