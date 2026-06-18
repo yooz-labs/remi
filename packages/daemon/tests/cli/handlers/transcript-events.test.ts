@@ -9,6 +9,7 @@ import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-e
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
+import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
 
@@ -47,6 +48,7 @@ describe('createTranscriptHandlers', () => {
   let transcriptWatchers: Map<UUID, TranscriptWatcher>;
   let sessionStore: SessionStore;
   let bindingStore: SessionBindingStore;
+  let transcriptIndex: TranscriptIndex;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
 
   function send(connectionId: UUID, message: ProtocolMessage): boolean {
@@ -61,7 +63,8 @@ describe('createTranscriptHandlers', () => {
     transcriptDiscovery = new TranscriptDiscovery({ projectsDir });
     transcriptWatchers = new Map();
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
-    bindingStore = new SessionBindingStore(sessionStore);
+    transcriptIndex = new TranscriptIndex(path.join(tmpDir, 'transcript-index.json'));
+    bindingStore = new SessionBindingStore(sessionStore, transcriptIndex);
     sendCalls = [];
     configureLogger({ writeLog: () => {} });
   });
@@ -79,6 +82,7 @@ describe('createTranscriptHandlers', () => {
       transcriptDiscovery,
       transcriptWatchers,
       bindingStore,
+      transcriptIndex,
       currentOwnedSession,
       subagentViews,
       send,
@@ -271,6 +275,51 @@ describe('createTranscriptHandlers', () => {
     expect(sendCalls.some((c) => (c.message as { code?: string }).code === 'NOT_FOUND')).toBe(
       false,
     );
+  });
+
+  test('resolves a purged session via the durable transcript-index (#577)', async () => {
+    // The session was dropped from sessions.json (100-cap / 7-day TTL), so the
+    // store binding is gone, but the durable index still holds {claudeId,
+    // projectPath} and the .jsonl is still on disk. The handler must rebuild the
+    // path from the index instead of returning NOT_FOUND.
+    const claudeSessionId = '66666666-6666-6666-6666-666666666666';
+    writeTranscript(claudeSessionId, [
+      {
+        type: 'user',
+        uuid: 'u1',
+        sessionId: claudeSessionId,
+        cwd: '/Users/test/project',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: 'old history' },
+      },
+    ]);
+
+    const remiUuid = '77777777-7777-7777-7777-777777777777' as UUID;
+    // Record into the durable index ONLY (sessions.json deliberately empty, as
+    // it would be after a purge); bindingStore.get(remiUuid) therefore returns null.
+    transcriptIndex.record(remiUuid, claudeSessionId, '/Users/test/project');
+    expect(bindingStore.get(remiUuid)).toBeNull();
+
+    makeHandlers().onTranscriptLoadRequest(CID, remiUuid, REQ);
+
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+    expect(sendCalls.some((c) => (c.message as { code?: string }).code === 'NOT_FOUND')).toBe(
+      false,
+    );
+  });
+
+  test('durable index resolves nothing when the .jsonl is gone -> NOT_FOUND', async () => {
+    // Index has the binding but the transcript file was deleted from disk. The
+    // existsSync guard must keep us from claiming a path that does not exist.
+    const remiUuid = '88888888-8888-8888-8888-888888888888' as UUID;
+    transcriptIndex.record(remiUuid, '99999999-9999-9999-9999-999999999999', '/Users/test/project');
+
+    makeHandlers().onTranscriptLoadRequest(CID, remiUuid, REQ);
+
+    expect(sendCalls).toHaveLength(1);
+    expect((sendCalls[0]?.message as { code?: string }).code).toBe('NOT_FOUND');
   });
 
   test('falls back to the active watcher when the id is a Remi UUID', async () => {

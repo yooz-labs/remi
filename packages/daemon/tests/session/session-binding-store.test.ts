@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionStore, type StoredSession } from '../../src/session/session-store.ts';
+import { TranscriptIndex } from '../../src/session/transcript-index.ts';
 
 function makeTmpPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-binding-test-'));
@@ -123,5 +124,25 @@ describe('SessionBindingStore', () => {
     expect(binding.get(session.remiSessionId)?.claudeSessionId).toBe('claude-3');
     expect(binding.getByClaudeSessionId('claude-3')?.remiSessionId).toBe(session.remiSessionId);
     expect(binding.getByClaudeSessionId('claude-1')).toBeNull();
+  });
+
+  test('rotation mirrors the NEW claudeSessionId into the durable index (#577)', () => {
+    // The transcript-index must follow a rotation; otherwise the purged-binding
+    // fallback would load the STALE pre-rotation transcript. Mirroring from the
+    // record returned by updateClaudeSessionId (not a second read) closes the
+    // race where a concurrent purge could null the row between write and mirror.
+    const indexPath = path.join(path.dirname(filePath), 'transcript-index.json');
+    const index = new TranscriptIndex(indexPath);
+    const withIndex = new SessionBindingStore(store, index);
+
+    const session = makeSession({ claudeSessionId: 'claude-old' });
+    withIndex.preAssign(session);
+    expect(index.get(session.remiSessionId)?.claudeSessionId).toBe('claude-old');
+
+    withIndex.update(session.remiSessionId, 'claude-new');
+    // The index now points at the rotated id with the same project path.
+    const entry = index.get(session.remiSessionId);
+    expect(entry?.claudeSessionId).toBe('claude-new');
+    expect(entry?.projectPath).toBe(session.projectPath);
   });
 });

@@ -22,14 +22,26 @@
 
 import type { UUID } from '@remi/shared';
 
+import { log } from '../cli/logger.ts';
 import type { SessionStore, StoredSession } from './session-store.ts';
+import type { TranscriptIndex } from './transcript-index.ts';
 
 export interface SessionBinding {
   claudeSessionId: string | null;
 }
 
 export class SessionBindingStore {
-  constructor(private readonly store: SessionStore) {}
+  /**
+   * Optional durable mirror (#577). Every binding write (preAssign + update)
+   * also records {remiUUID -> claudeSessionId, projectPath} here so the
+   * transcript handler can rebuild an old session's on-disk path after
+   * sessions.json purges it. Co-located on the single binding accessor so a
+   * rotation that updates the binding can never forget to refresh the index.
+   */
+  constructor(
+    private readonly store: SessionStore,
+    private readonly transcriptIndex?: TranscriptIndex,
+  ) {}
 
   /**
    * Current durable binding for this Remi session, or null when no record exists.
@@ -55,7 +67,15 @@ export class SessionBindingStore {
    * today). Together with preAssign, the ONLY claudeSessionId writer.
    */
   update(remiSessionId: UUID, claudeSessionId: string): void {
-    this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);
+    const updated = this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);
+    // Refresh the durable mirror with the (possibly rotated) claude id so a
+    // later transcript load resolves the CURRENT transcript, not a stale one.
+    // Mirror from the SAME record the write produced — a second
+    // findByRemiSessionId read could race a concurrent purgeStale() and observe
+    // a null record, leaving the index pinned to the pre-rotation id (#577).
+    if (updated) {
+      this.transcriptIndex?.record(remiSessionId, claudeSessionId, updated.projectPath);
+    }
   }
 
   /**
@@ -66,5 +86,20 @@ export class SessionBindingStore {
    */
   preAssign(session: StoredSession): void {
     this.store.save(session);
+    // Seed the durable mirror at spawn so the binding is recoverable even if the
+    // session never rotates and is later purged from sessions.json (#577).
+    if (session.claudeSessionId) {
+      this.transcriptIndex?.record(
+        session.remiSessionId,
+        session.claudeSessionId,
+        session.projectPath,
+      );
+    } else if (this.transcriptIndex) {
+      // No claude id yet (deferred to the first update() on hook adopt/rotation).
+      // Log so the deferred index seed is traceable rather than silently skipped.
+      log(
+        `[transcript-index] preAssign for ${session.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
+      );
+    }
   }
 }

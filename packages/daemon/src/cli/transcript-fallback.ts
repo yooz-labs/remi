@@ -14,7 +14,11 @@
  * settings.local.json absent, hook server disabled, or in the sibling-in-dir
  * case where the bridge defers to filesystem ground-truth).
  *
- * Poll every 2 seconds. Give up after 30 seconds and log the reason.
+ * Poll every 2 seconds. Give up after 120 seconds and log the reason. Claude
+ * routinely takes 30-90s to write its first transcript line on a large context,
+ * so a 30s window timed out on nearly every session (the self-heal path still
+ * covered it, but noisily, and left a race window for a client that loaded
+ * during startup). 120s covers the common slow-start case (#577).
  */
 
 import * as fs from 'node:fs';
@@ -29,7 +33,7 @@ import { log, logError } from './logger.ts';
 import { startTranscriptWatcher } from './transcript-watcher-setup.ts';
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
-const DEFAULT_POLL_TIMEOUT_MS = 30000;
+const DEFAULT_POLL_TIMEOUT_MS = 120000;
 
 export interface TranscriptFallbackDeps {
   sessionRegistry: SessionRegistry;
@@ -38,7 +42,7 @@ export interface TranscriptFallbackDeps {
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   /** Override for tests. Defaults to 2000ms. */
   pollIntervalMs?: number;
-  /** Override for tests. Defaults to 30000ms. */
+  /** Override for tests. Defaults to 120000ms. */
   pollTimeoutMs?: number;
 }
 
@@ -84,6 +88,10 @@ export function startTranscriptFallback(
     claudeSessionId,
   );
 
+  // Emit one "still waiting" log at the halfway mark so a genuine early failure
+  // is visible during the longer 120s window instead of an ~85s silent gap (#577).
+  let midLogged = false;
+
   const stopPoll = (): void => {
     clearInterval(fallbackInterval);
     transcriptFallbackTimers.delete(sessionId);
@@ -97,6 +105,14 @@ export function startTranscriptFallback(
     if (!sessionRegistry.hasSession(sessionId)) {
       stopPoll();
       return;
+    }
+
+    const elapsed = Date.now() - startupTime;
+    if (!midLogged && elapsed >= pollTimeoutMs / 2) {
+      midLogged = true;
+      log(
+        `[Fallback] Still waiting for transcript after ${Math.round(elapsed / 1000)}s: ${expectedPath} (claude=${claudeSessionId.slice(0, 8)}). Claude is likely still loading context; self-heal via hooks remains primary.`,
+      );
     }
 
     if (fs.existsSync(expectedPath)) {
@@ -125,7 +141,7 @@ export function startTranscriptFallback(
       return;
     }
 
-    if (Date.now() - startupTime > pollTimeoutMs) {
+    if (elapsed > pollTimeoutMs) {
       stopPoll();
       logError(
         `[Fallback] Timed out waiting for transcript: ${expectedPath} (claude=${claudeSessionId.slice(0, 8)}). Claude may have failed to start, or wrote to an unexpected path.`,
