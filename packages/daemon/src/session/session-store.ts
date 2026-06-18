@@ -211,13 +211,21 @@ export class SessionStore {
     }
   }
 
-  /** Update the Claude session ID (extracted from transcript after startup). */
-  updateClaudeSessionId(remiSessionId: UUID, claudeSessionId: string): void {
+  /**
+   * Update the Claude session ID (extracted from transcript after startup).
+   * Returns the updated record (already in memory from the read-modify-write) so
+   * callers that mirror the binding elsewhere don't need a second disk read — a
+   * separate read could race a concurrent purgeStale() and observe a null record
+   * mid-rotation (#577). Returns null when no record exists (a no-op, as before).
+   */
+  updateClaudeSessionId(remiSessionId: UUID, claudeSessionId: string): StoredSession | null {
     const sessions = this.read();
     const session = sessions.find((s) => s.remiSessionId === remiSessionId);
     if (session) {
       session.claudeSessionId = claudeSessionId;
       this.write(sessions);
+      return session;
     }
+    return null;
   }
 }

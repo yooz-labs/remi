@@ -70,6 +70,53 @@ describe('createTrivialHandlers', () => {
     expect(typeof entry?.registeredAt).toBe('number');
   });
 
+  test('onRegisterDeviceToken: registering the same token twice yields ONE entry (#585 P7)', () => {
+    const deviceTokens = new Map<string, DeviceTokenEntry>();
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({ deviceTokens, sessionStore, sessionRegistry, send });
+    configureLogger({ writeLog: () => {} });
+
+    handlers.onRegisterDeviceToken(CID, 'same-token', 'ios');
+    handlers.onRegisterDeviceToken(CID, 'same-token', 'ios');
+
+    expect(deviceTokens.size).toBe(1);
+    expect(deviceTokens.has('same-token')).toBe(true);
+  });
+
+  test('onRegisterDeviceToken: a rotated token from the same connection prunes the old one (#585 P7)', () => {
+    // APNS token rotation: the same physical device (same client connection)
+    // re-registers a NEW token while the old one is still live -> a push would
+    // otherwise fan out to BOTH (the 2x duplicate). The old token from this
+    // connection is pruned, leaving only the new one.
+    const deviceTokens = new Map<string, DeviceTokenEntry>();
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({ deviceTokens, sessionStore, sessionRegistry, send });
+    configureLogger({ writeLog: () => {} });
+
+    handlers.onRegisterDeviceToken(CID, 'old-token', 'ios');
+    handlers.onRegisterDeviceToken(CID, 'new-token', 'ios');
+
+    expect(deviceTokens.size).toBe(1);
+    expect(deviceTokens.has('new-token')).toBe(true);
+    expect(deviceTokens.has('old-token')).toBe(false);
+  });
+
+  test('onRegisterDeviceToken: a different connection keeps its own token (no cross-device prune)', () => {
+    const OTHER = 'conn1111-1111-1111-1111-111111111111' as UUID;
+    const deviceTokens = new Map<string, DeviceTokenEntry>();
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({ deviceTokens, sessionStore, sessionRegistry, send });
+    configureLogger({ writeLog: () => {} });
+
+    handlers.onRegisterDeviceToken(CID, 'token-a', 'ios');
+    handlers.onRegisterDeviceToken(OTHER, 'token-b', 'ios');
+
+    // Two genuinely distinct devices on different connections must both survive.
+    expect(deviceTokens.size).toBe(2);
+    expect(deviceTokens.has('token-a')).toBe(true);
+    expect(deviceTokens.has('token-b')).toBe(true);
+  });
+
   test('onTerminalResize logs and returns when no session is attached', () => {
     const logs: string[] = [];
     const { send } = makeSend();

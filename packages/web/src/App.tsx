@@ -9,18 +9,24 @@ import { AppLayout } from '@/components/layout';
 import { ConnectModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
-import { hasIdentity, unlockStoredIdentity } from '@/lib/identity-client';
+import { probeAuthInfo } from '@/lib/auth-probe';
+import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { setSoundEnabled } from '@/lib/notifications';
+import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
   clearSessionQuestions,
   getSessionQuestions,
   questionKey,
+  removeQuestionById,
+  statusClearsMainQuestion,
 } from '@/lib/question-collection';
+import { dismissDeliveredNotification } from '@/lib/notifications';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
+import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
@@ -73,6 +79,35 @@ function rememberSessionDaemon(sessionId: string, url: string): void {
     localStorage.setItem(LOCALSTORAGE_SESSION_DAEMONS_KEY, JSON.stringify(map));
   } catch (err) {
     console.warn('[App] Failed to persist session-daemon map:', err);
+  }
+}
+
+/**
+ * Forget evicted phantom sessions in localStorage so they don't resurface on a
+ * cold start (#577). Drops them from the session->daemon map and clears
+ * remi-last-session if it points at one. Best-effort; storage errors are logged,
+ * never thrown, so a quota/parse hiccup can't break the message handler.
+ */
+function forgetEvictedSessions(evictedIds: readonly string[]): void {
+  if (evictedIds.length === 0) return;
+  const evicted = new Set(evictedIds);
+  try {
+    const stored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
+    if (stored) {
+      const map = JSON.parse(stored) as Record<string, string>;
+      let changed = false;
+      for (const id of evictedIds) {
+        if (id in map) {
+          delete map[id];
+          changed = true;
+        }
+      }
+      if (changed) localStorage.setItem(LOCALSTORAGE_SESSION_DAEMONS_KEY, JSON.stringify(map));
+    }
+    const last = localStorage.getItem(LOCALSTORAGE_SESSION_KEY);
+    if (last && evicted.has(last)) localStorage.removeItem(LOCALSTORAGE_SESSION_KEY);
+  } catch (err) {
+    console.warn('[App] Failed to forget evicted sessions:', err);
   }
 }
 
@@ -452,11 +487,14 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === sessionData.id ? { ...s, status: sessionData.status } : s)),
         );
-        // If status moved from 'waiting', the MAIN agent's prompt resolved
-        // (auto-approved, answered in terminal, etc.). Session status tracks
-        // the main agent only (subagent events don't change it), so clear just
-        // the main-agent slot — a concurrent subagent prompt must survive.
-        if (sessionData.status !== 'waiting') {
+        // If status moved to a non-waiting, non-transient state, the MAIN
+        // agent's prompt resolved (auto-approved, answered in terminal, etc.).
+        // Session status tracks the main agent only (subagent events don't
+        // change it), so clear just the main-agent slot; a concurrent subagent
+        // prompt must survive. The transient auto-approve broadcasts
+        // ('evaluating'/'approved', #576) must NOT clear a pending card; see
+        // statusClearsMainQuestion for the rationale.
+        if (statusClearsMainQuestion(sessionData.status)) {
           setQuestions((prev) => {
             const key = questionKey(sessionData.id);
             if (!prev.has(key)) return prev;
@@ -620,6 +658,39 @@ function App() {
         break;
       }
 
+      case 'question_resolved': {
+        // Cross-client dismissal (#585, P7): the question resolved on some
+        // channel (answered elsewhere, auto-approved/denied, or cancelled), so
+        // drop its card and clear any lock-screen notification for it here.
+        // Idempotent — if we never held it (or already dropped it), this is a
+        // no-op. The message carries no agentId, so locate the card by question
+        // id within the session.
+        const resolvedSessionId = message.sessionId;
+        const resolvedQuestionId = message.questionId;
+        // Compute the post-removal map from the CURRENT committed ref, then drive
+        // both setters from that one value (#585, P7 FIX 3). Reading the updated
+        // map (not the pre-removal ref) is what prevents two concurrent
+        // resolutions from leaving the badge stuck `questionPending: true`. The
+        // ref is the latest committed map (kept in sync by the effect below), so
+        // the second resolution sees the first's removal.
+        const updatedQuestions = removeQuestionById(
+          questionsRef.current,
+          resolvedSessionId,
+          resolvedQuestionId,
+        );
+        const stillPending = getSessionQuestions(updatedQuestions, resolvedSessionId).some(
+          (q) => q.answeredWith === undefined,
+        );
+        questionsRef.current = updatedQuestions;
+        setQuestions(updatedQuestions);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === resolvedSessionId ? { ...s, questionPending: stillPending } : s)),
+        );
+        // Clear the matching delivered lock-screen / in-app notification (native).
+        dismissDeliveredNotification(resolvedQuestionId);
+        break;
+      }
+
       case 'replay_batch': {
         // Replay batches arrive on connect/reconnect. Suppress notifications during replay
         // to prevent spamming the user with old events.
@@ -698,13 +769,59 @@ function App() {
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
           });
 
+        // Phantom eviction (#577 Fix A): drop long-dead sessions this daemon no
+        // longer knows, which is what stops the recurring NOT_FOUND retry loop
+        // for a session purged from sessions.json. Computed from the synchronous
+        // sessionsRef snapshot (not inside setSessions) so it stays pure +
+        // StrictMode-safe and we can do the localStorage/ref cleanup after.
+        //
+        // Authoritative known set for THIS connection: the daemon's own
+        // daemon-sourced sessions + the attached hello_ack session. mDNS
+        // 'transcript' discoveries are excluded — they don't prove this daemon
+        // still manages the session, so they must not keep a phantom alive.
+        const knownIds = new Set<string>(
+          message.sessions
+            .filter((ds: DiscoverableSession) => ds.source === 'daemon')
+            .map((ds: DiscoverableSession) => ds.sessionId),
+        );
+        if (helloAckSessionId) knownIds.add(helloAckSessionId);
+        const evictionCtx = { knownIds, connectionAuthoritative: connectionId };
+        const evictionNow = Date.now();
+        // Compute the evicted set ONCE from the synchronous snapshot, then reuse
+        // the SAME set for the state filter, the loadedTranscriptsRef cleanup,
+        // and the active-session reset so there is no two-snapshot drift (every
+        // side effect acts on exactly what the list filter removes).
+        const evictedSet = new Set(
+          sessionsRef.current
+            .filter((s) =>
+              shouldEvictCachedSession(
+                { id: s.id, lastActiveAt: s.lastActiveAt, connectionId: s.connectionId },
+                evictionCtx,
+                evictionNow,
+              ),
+            )
+            .map((s) => s.id),
+        );
+        if (evictedSet.size > 0) {
+          const evictedIds = [...evictedSet];
+          forgetEvictedSessions(evictedIds);
+          for (const id of evictedIds) loadedTranscriptsRef.current.delete(id);
+          // If the active session was evicted, clear it so the UI doesn't sit on
+          // a dead session and re-request its (gone) transcript.
+          if (activeSessionIdRef.current && evictedSet.has(activeSessionIdRef.current)) {
+            setActiveSessionId(null);
+          }
+          console.warn('[App] Evicted stale phantom sessions (#577):', evictedIds);
+        }
+
         // Multi-daemon merge: keep sessions from other connections, preserve attached session
         // for this connection if not in discovered list, add all newly discovered sessions,
         // sort live-first then by recency.
         setSessions((prev) => {
-          const otherConnSessions = prev.filter((s) => s.connectionId !== connectionId);
+          const live = prev.filter((s) => !evictedSet.has(s.id));
+          const otherConnSessions = live.filter((s) => s.connectionId !== connectionId);
           // Keep the attached session for this connection (from hello_ack)
-          const attachedSession = prev.find(
+          const attachedSession = live.find(
             (s) => s.connectionId === connectionId && s.connectionStatus === 'connected',
           );
           const discoveredIds = new Set(discovered.map((s) => s.id));
@@ -1283,13 +1400,74 @@ function App() {
         return;
       }
 
+      // Fast path (#575, P4a): deliver the answer over a plain HTTPS POST to the
+      // daemon's /answer endpoint, bypassing the WebSocket and its handshake.
+      // This is the only reliable path on a cold-start wake where the WS is not
+      // warm. Probe whether the daemon requires auth so we can sign when needed
+      // (loopback daemons skip the probe-derived signature; the daemon exempts
+      // them anyway). probeAuthInfo never throws — it returns null on any
+      // failure — so a null probe means "assume no auth" and let the daemon
+      // reject if it disagrees (a 401 then falls back to WS).
+      const targetUrl = target.url;
+      const authInfo = await probeAuthInfo(targetUrl);
+      const authRequired = authInfo?.authRequired ?? false;
+
+      const relay = await relayAnswerDirect({
+        wsUrl: targetUrl,
+        sessionId,
+        questionId,
+        answer,
+        claudeSessionId: boundId,
+        authRequired,
+      });
+
+      if (relay.kind === 'delivered') return;
+      if (relay.kind === 'rejected') {
+        // The daemon refused as stale (409) or unknown (404). The WebSocket
+        // would refuse identically; tell the user instead of retrying.
+        console.warn('[App] direct relay rejected:', relay.result);
+        notifyFailure();
+        return;
+      }
+      if (relay.kind === 'needs-passphrase') {
+        // No unlocked identity, so neither the relay nor the WebSocket can
+        // authenticate without a prompt. Fail fast rather than waiting out the
+        // (now longer) deadline on a connection that will never complete.
+        console.warn('[App] direct relay blocked: identity needs passphrase');
+        notifyFailure();
+        return;
+      }
+      // relay.kind === 'unreachable' (network / WebRTC-relay-only daemon) or
+      // 'auth-failed' (HTTP 401 — no/invalid detached signature, but the WS
+      // challenge-response may still succeed). Both fall back to the WebSocket
+      // reconnect path.
+      console.debug(
+        `[App] direct relay ${relay.kind}, falling back to WS:`,
+        relay.kind === 'unreachable' ? relay.reason : relay.result,
+      );
+
+      // If auth is required but there is no usable (unlocked) identity, the
+      // WebSocket would stall at auth_challenge forever — fail fast rather than
+      // waiting out the 25s deadline. Covers both "no identity" and "encrypted
+      // identity" (isIdentityEncrypted() is false when none is stored, so both
+      // are checked).
+      if (authRequired && (!hasIdentity() || isIdentityEncrypted())) {
+        console.warn('[App] WS fallback blocked: identity missing or needs passphrase');
+        notifyFailure();
+        return;
+      }
+
       const targetConnId: ConnectionId =
         target.kind === 'pending' && target.connectionId
           ? (target.connectionId as ConnectionId)
-          : connectDirectRef.current(target.url);
+          : connectDirectRef.current(targetUrl);
 
-      // Wait for connection with 10s timeout, then send answer
-      const ANSWER_TIMEOUT_MS = 10_000;
+      // Wait for the connection, then send. Raised from 10s to 25s (#575, P4a):
+      // a cold-start wake includes process resume + TCP/TLS + the Ed25519
+      // handshake, which routinely exceeds 10s; 25s stays within the iOS
+      // background-task window. The loop sends the instant status hits
+      // 'connected', so a fast connect is not penalized by the larger deadline.
+      const ANSWER_TIMEOUT_MS = 25_000;
       const deadline = Date.now() + ANSWER_TIMEOUT_MS;
       const delivered = await new Promise<boolean>((resolve) => {
         const check = setInterval(() => {

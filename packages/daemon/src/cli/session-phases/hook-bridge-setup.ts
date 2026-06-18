@@ -39,7 +39,12 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createSessionRotated, createSessionViews, errorToString } from '@remi/shared';
+import {
+  createSessionRotated,
+  createSessionUpdate,
+  createSessionViews,
+  errorToString,
+} from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../../api/message-api.ts';
@@ -116,6 +121,37 @@ export interface HookBridgeDeps {
    * all sessions (one terminal). Optional; inert when absent or headless.
    */
   statusWriter?: StatusWriter | undefined;
+  /**
+   * Tools that always escalate to the user (#572). Passed to the gate so it
+   * classifies an escalation as binary (holdable, #573) vs design/plan-mode
+   * (passthrough). From `config.auto_approve.always_escalate_tools`. Absent =>
+   * empty set (tests / no-AA callers).
+   */
+  alwaysEscalateTools?: ReadonlySet<string>;
+  /**
+   * Seconds to HOLD a binary main-context PermissionRequest hook open until the
+   * user answers (Model B, #573). From `config.auto_approve.hold_timeout`. 0 /
+   * absent => no holding (escalate -> passthrough as before).
+   */
+  holdTimeoutSec?: number;
+  /**
+   * Seconds before a slow binary main-context eval triggers an early push + hold
+   * (Part B, #573). From `config.auto_approve.push_hold_timeout`. 0 / absent =>
+   * Part B disabled (the eval/timer race never arms).
+   */
+  pushHoldTimeoutSec?: number;
+  /**
+   * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
+   * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
+   * or cancelStale): the daemon broadcasts `question_resolved` to every client and
+   * fires the APNS dismissal so the pushed card clears everywhere. Must be
+   * throw-safe (the gate also guards the call). Absent => no dismissal broadcast.
+   */
+  broadcastQuestionResolved?: (
+    sessionId: UUID,
+    questionId: UUID,
+    reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+  ) => void;
 }
 
 export interface HookBridgeArgs {
@@ -133,6 +169,32 @@ export interface HookBridgeArgs {
   tracker: QuestionPresenceTracker;
 }
 
+/**
+ * Per-session control surface for the auto-approve gate (#573). Registered by
+ * cli.ts keyed by `sessionId` so the WebSocket answer handler reaches the RIGHT
+ * session's gate when the user answers a held permission.
+ */
+export interface SessionGateHandle {
+  /**
+   * Resolve a held binary PermissionRequest hook with the user's answer (Model
+   * B). Returns true when a hold for `questionId` existed and was resolved (the
+   * caller then SKIPS the PTY inject — Claude is blocked on the hook, not
+   * rendering); false when no hold exists (the answer takes the PTY path, e.g. a
+   * multi-choice pick or a non-AA session).
+   */
+  resolveHeld: (questionId: UUID, decision: 'allow' | 'deny') => boolean;
+  /**
+   * Release a held hook to 'passthrough' so Claude renders its native numbered
+   * prompt (#573), for answers the binary hook response cannot express ("Yes,
+   * always", a multi-choice pick). Returns true iff a hold existed; the caller
+   * then injects the digit into the rendered prompt.
+   */
+  releaseHeldAsPassthrough: (questionId: UUID) => boolean;
+  /** Cancel any in-flight eval AND release pending holds for this session (the
+   *  user answered / advanced). Forwards to the gate's `cancelStale`. */
+  cancelStale: (reason: string) => void;
+}
+
 export interface HookBridgeHandle {
   /** Live bridge instance. Callers can read `isInSubagentContext()` to gate
    *  alternate question sources (e.g. PTY parser) so subagent prompts are
@@ -147,6 +209,12 @@ export interface HookBridgeHandle {
    * reach — never outlives the session.
    */
   closeBinder: () => void;
+  /**
+   * Per-session auto-approve gate handle (#573): `resolveHeld` + `cancelStale`,
+   * so the WebSocket answer path can resolve a held hook / cancel the eval for
+   * this exact session. Always present (the gate is constructed unconditionally).
+   */
+  gate: SessionGateHandle;
 }
 
 export function setupHookBridge(
@@ -205,6 +273,37 @@ export function setupHookBridge(
         })),
       ),
     );
+  };
+
+  /**
+   * Dismiss every pending question for this session on a Claude restart
+   * (/clear, /compact, /resume), THEN clear the registry collection (#585, P7).
+   * A card pushed before the restart would otherwise linger on every device
+   * forever — the most common dismissal case. Broadcasts
+   * `question_resolved(..., 'cancelled')` for each pending id so all clients drop
+   * the card and the lock-screen push is dismissed, mirroring the gate's own
+   * held-resolution dismissal. Used at all three restart sites
+   * (initFromHookEvent, onSessionInfo, drive-binder onRotation) so none is
+   * missed. Throw-safe: a broadcast failure for one question must never block
+   * clearing the rest, and the clear always runs.
+   */
+  const resolveAndClearQuestions = (): void => {
+    const broadcast = deps.broadcastQuestionResolved;
+    if (broadcast) {
+      const pendingIds = [
+        ...(sessionRegistry.getSession(sessionId)?.currentQuestions.keys() ?? []),
+      ];
+      for (const questionId of pendingIds) {
+        try {
+          broadcast(sessionId, questionId, 'cancelled');
+        } catch (err) {
+          logError(
+            `[Hooks] question_resolved broadcast (restart) failed for ${questionId}: ${errorToString(err)}`,
+          );
+        }
+      }
+    }
+    sessionRegistry.clearQuestions(sessionId);
   };
 
   // ---- Per-session locks (mutable across event callbacks) -----------------
@@ -428,10 +527,11 @@ export function setupHookBridge(
       teardownWatcher('restart');
       // Drop any hook record stashed before /clear or /compact: the new
       // Claude session's first PTY prompt must not merge stale option
-      // labels from the dying session. Also drop the pending-question
-      // collection so answers to the dead session's prompts are refused.
+      // labels from the dying session. Also dismiss + drop the pending-question
+      // collection so cards clear on every device (#585) and answers to the dead
+      // session's prompts are refused.
       tracker.clearPending();
-      sessionRegistry.clearQuestions(sessionId);
+      resolveAndClearQuestions();
       // Announce the rotation NOW, before the sibling / no-transcript_path
       // guards below can early-return. teardownWatcher already reset the
       // client's view, so the client must learn of the rotation (clear +
@@ -592,11 +692,11 @@ export function setupHookBridge(
         );
         teardownWatcher('restart-sessioninfo');
         // Mirror the initFromHookEvent restart branch: drop any hook
-        // record and the pending-question collection so the new session's
-        // first PTY prompt cannot merge stale options, and stale answers
-        // are refused.
+        // record, dismiss + drop the pending-question collection (so cards clear
+        // on every device, #585) so the new session's first PTY prompt cannot
+        // merge stale options, and stale answers are refused.
         tracker.clearPending();
-        sessionRegistry.clearQuestions(sessionId);
+        resolveAndClearQuestions();
         claudeSessionId = null;
         mainSessionEnded = false;
         isRotation = previousClaudeSessionId !== null;
@@ -652,6 +752,28 @@ export function setupHookBridge(
 
   const handlers = hookBridge.hookHandlers();
 
+  // #576: push an auto-approve lifecycle status to clients so the pill reflects
+  // `evaluating` -> `approved` promptly, instead of waiting for the next hook.
+  //
+  // CRITICAL: the gate invokes the cue callbacks below through its `safeCue`
+  // wrapper (cosmetic; a throw there is logged and absorbed so it can never
+  // re-enter the decision/buffer path). This helper adds its OWN try/catch so a
+  // broadcast send error can never propagate into the gate even if the call site
+  // changes. It emits a client-only `session_update` and deliberately does NOT
+  // touch the StatusWriter `sessionStatus` (the wrapper bar + native statusline
+  // already cue the AA state from the `autoApprove` sub-field) nor the existing
+  // hook-driven onStatusChange path, so it neither double-emits nor fights the
+  // real PreToolUse/PermissionRequest status that follows.
+  const broadcastAutoApproveStatus = (status: AgentStatus): void => {
+    try {
+      sendAndRecord(createSessionUpdate(sessionId, status));
+    } catch (err) {
+      logError(
+        `[Hooks] auto-approve status broadcast failed for ${sessionId}: ${errorToString(err)}`,
+      );
+    }
+  };
+
   // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
   // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
   // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
@@ -662,7 +784,11 @@ export function setupHookBridge(
       sessionRegistry,
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
-      escalate: (i) => handlers.onPermissionRequest?.(i),
+      // Call the bridge DIRECTLY (not via the void-typed handlers map) so the
+      // created Question.id flows back to the gate; a binary escalation holds
+      // the hook keyed by it (#573). The bridge still does the onQuestion +
+      // status side effects exactly as before.
+      escalate: (i) => hookBridge.handlePermissionRequest(i),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
@@ -671,16 +797,47 @@ export function setupHookBridge(
       onEvalStart: () => {
         tracker.onAutoApproveStart();
         deps.statusWriter?.autoApproveStart(Date.now());
+        // #576: surface the in-flight eval on the client pill ('working').
+        broadcastAutoApproveStatus('evaluating');
       },
       onEscalate: () => {
         tracker.onAutoApproveEscalate();
         deps.statusWriter?.autoApproveEnd('escalated', Date.now());
+        // No status broadcast here: escalate already routes through
+        // handlePermissionRequest -> onStatusChange('waiting'), which broadcasts
+        // the 'waiting' session_update. Re-emitting would double-emit.
       },
-      onHandled: () => deps.statusWriter?.autoApproveEnd('approved', Date.now()),
+      // #573: a binary escalation that HOLDS its hook blocks Claude's response,
+      // so Claude never renders the native prompt and the tracker's PTY-render
+      // push trigger (onPTYPromptVisible) never fires. Without this, the held
+      // question is stashed via recordPendingHook but never registered in
+      // sessionRegistry nor pushed -> the user cannot answer it and the hold sits
+      // until hold_timeout. The gate calls this ONLY in the held branch with the
+      // held Question.id, so the tracker pushes that exact question immediately
+      // (-> addQuestion + maybePush) under the id the hold is keyed by.
+      onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
+      onHandled: () => {
+        deps.statusWriter?.autoApproveEnd('approved', Date.now());
+        // #576: the permission was silently allowed; tell clients so the pill
+        // doesn't sit stale on 'evaluating' until the next hook fires.
+        broadcastAutoApproveStatus('approved');
+      },
       onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
+      // #585: a held question that resolves without a user answer (Part-B late
+      // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
+      // pushed card on every client. Forwarded with this session's id.
+      onResolved: (questionId, reason) =>
+        deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
       // #522: second-opinion model on a primary escalate (read from the service's
       // config). Empty when unset -> escalate straight to the user.
       escalateModel: autoApproveService?.escalateModel ?? '',
+      // #573: classify an escalation as binary (holdable) vs design/multi-choice
+      // (passthrough) the same way the service does; hold binary main-context
+      // hooks open until the user answers (holdMs) and optionally push early on a
+      // slow eval (pushHoldMs). Seconds -> ms; 0 disables (gate treats <=0 as off).
+      alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
+      holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
+      pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
     },
     sessionId,
   );
@@ -811,10 +968,11 @@ export function setupHookBridge(
             onRotation: () => {
               // The old restart branch's injected side effects: drop any hook
               // record stashed before the rotation so the new session's first
-              // PTY prompt cannot merge stale option labels, and drop the
-              // pending-question collection so stale answers are refused.
+              // PTY prompt cannot merge stale option labels, and dismiss + drop
+              // the pending-question collection (cards clear on every device,
+              // #585) so stale answers are refused.
               tracker.clearPending();
-              sessionRegistry.clearQuestions(sessionId);
+              resolveAndClearQuestions();
               // The new session starts with no subagents (#499 phase 3).
               if (subagentViews) {
                 subagentViews.clear();
@@ -1164,6 +1322,12 @@ export function setupHookBridge(
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);
+    },
+    gate: {
+      resolveHeld: (questionId, decision) => autoApproveGate.resolveHeld(questionId, decision),
+      releaseHeldAsPassthrough: (questionId) =>
+        autoApproveGate.releaseHeldAsPassthrough(questionId),
+      cancelStale: (reason) => autoApproveGate.cancelStale(reason),
     },
   };
 }

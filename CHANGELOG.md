@@ -4,6 +4,55 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-06-18
+
+The biggest auto-approve UX change: escalated permissions are now held on the
+hook and answered via the hook response (Model B), delivered and presented
+faithfully, and the local model never decides design/plan questions (epic #571).
+Plus a fix for a multi-host reconnect storm.
+
+### Added
+- **Hold the hook (Model B)** (#573): a binary permission the local model
+  escalates HOLDS its `PermissionRequest` hook open and is answered via the
+  `allow`/`deny` hook response — no PTY digit, no render race, no dependence on a
+  warm socket. A long human-paced `auto_approve.hold_timeout` (default 1800s)
+  fails open to the native prompt; a slow-eval fallback push fires at
+  `auto_approve.push_hold_timeout` (default 60s). Holding only engages when
+  auto-approve is on.
+- **Never auto-decide design / plan-mode / long-form questions** (#572):
+  `AskUserQuestion`, `ExitPlanMode`, and non-binary questions escalate to the
+  user before the LLM, at zero latency. New `auto_approve.always_escalate_tools`.
+- **Faithful notification** (#574): notification text comes from the hook
+  (no more run-together "Doyouwanttoproceed?"); the real option labels are shown.
+- **Connection-independent answer relay** (#575): a daemon `POST /answer`
+  endpoint (same auth as the WebSocket) lets a tapped answer reach the daemon
+  without a warm WebSocket; the iOS app gets a `content-available` pre-wake and
+  a longer, fail-fast answer deadline.
+- **Responsive status** (#576): `evaluating` / `approved` / `starting` states,
+  the blocked-on-you state surfaces distinctly, and a faster status bar.
+- **Cross-client question dismissal** (#585): answering on one device (or an
+  auto-resolve, or `/clear`) dismisses the card on every client and clears the
+  lock-screen push; duplicate device tokens are de-duplicated.
+
+### Fixed
+- **Held escalations now reach the phone** (#573): a held binary escalation was
+  registered/pushed only on a PTY render that a held hook prevents, so it could
+  sit unanswerable until the hold timeout — now pushed immediately.
+- **Recurring "Transcript for session not found"** (#577): a durable
+  transcript-index, client-side eviction of dead cached sessions, and a longer
+  first-transcript fallback window.
+- **Multi-host reconnect storm** (#586): `WebSocketClient` reset its reconnect
+  backoff on transport-open (before auth), so any open-but-fail connection
+  looped at ~1s forever and never escalated; the reset now happens only on a
+  fully-established connection.
+
+### Note
+- The `content-available` pre-wake and the dismissal/collapse-id pushes require a
+  Cloudflare **signaling worker redeploy** to take effect; without it they
+  degrade gracefully to 0.6.11 push behavior.
+- Native iOS Live Activities / Notification Service Extension are tracked
+  separately (#575) and are not part of this release.
+
 ## [0.6.11] - 2026-06-11
 
 A persistent remi status bar on the terminal's last row, visible even while

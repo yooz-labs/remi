@@ -139,16 +139,18 @@ export interface StatusBarDeps {
   /** Logger for render-failure notes. Required so a draw failure is never
    *  silently swallowed by an accidental no-op default. */
   readonly log: (msg: string) => void;
-  /** Refresh cadence in ms. Default 1000 (the `evaluating Ns` counter ticks 1Hz). */
+  /** Refresh cadence in ms. Default 250 so the `evaluating Ns` counter and AA
+   *  state changes feel smooth (#576). The repaint reads in-memory status only —
+   *  no disk I/O — so a faster cadence costs just one small fd write per tick. */
   readonly intervalMs?: number;
 }
 
 /**
  * Owns the reserved-row redraw loop. `start()` paints immediately and then on a
- * 1Hz timer; the unconditional periodic repaint keeps the bar asserted even if
- * Claude's output scrolled it (inline mode) since the last tick. `stop()` clears
- * the row and halts the loop. All draws are no-ops unless `isEnabled()` and a
- * live fd and enough rows.
+ * ~250ms timer (#576); the unconditional periodic repaint keeps the bar asserted
+ * even if Claude's output scrolled it (inline mode) since the last tick and keeps
+ * the `evaluating Ns` counter smooth. `stop()` clears the row and halts the loop.
+ * All draws are no-ops unless `isEnabled()` and a live fd and enough rows.
  */
 export class StatusBar {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -175,7 +177,7 @@ export class StatusBar {
     this.writeToFd = deps.writeToFd ?? ((fd, data) => fs.writeSync(fd, data));
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log;
-    this.intervalMs = deps.intervalMs ?? 1000;
+    this.intervalMs = deps.intervalMs ?? 250;
   }
 
   /** Begin the redraw loop (idempotent). Paints once immediately. */

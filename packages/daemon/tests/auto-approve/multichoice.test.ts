@@ -5,9 +5,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildMultiChoicePrompt,
+  isDesignQuestion,
   isMultiChoicePermission,
   parseMultiChoiceDecision,
 } from '../../src/auto-approve/multichoice.ts';
+import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../../src/auto-approve/types.ts';
 
 describe('isMultiChoicePermission', () => {
   test('returns false for null/undefined/empty (default 3-set substitutes)', () => {
@@ -286,5 +288,102 @@ describe('parseMultiChoiceDecision', () => {
     );
     expect(r.decision).toBe('pick');
     if (r.decision === 'pick') expect(r.index).toBe(2);
+  });
+});
+
+describe('isDesignQuestion (#572)', () => {
+  const DEFAULTS = new Set(DEFAULT_ALWAYS_ESCALATE_TOOLS);
+
+  test('AskUserQuestion always escalates by tool name, even with binary suggestions', () => {
+    expect(
+      isDesignQuestion(
+        'AskUserQuestion',
+        { questions: [{ question: 'Which?' }] },
+        undefined,
+        DEFAULTS,
+      ),
+    ).toBe(true);
+    // Tool name wins even when the suggestions look binary.
+    expect(isDesignQuestion('AskUserQuestion', {}, ['Yes', 'No'], DEFAULTS)).toBe(true);
+  });
+
+  test('ExitPlanMode always escalates by tool name', () => {
+    expect(isDesignQuestion('ExitPlanMode', { plan: 'do the thing' }, undefined, DEFAULTS)).toBe(
+      true,
+    );
+  });
+
+  test('Bash is never a design question, even when the command ends in "?"', () => {
+    // The free-text heuristic must NOT inspect the Bash command string.
+    expect(isDesignQuestion('Bash', { command: 'echo are we sure?' }, undefined, DEFAULTS)).toBe(
+      false,
+    );
+  });
+
+  test('Edit with the standard Yes/Always/No suggestions is not a design question', () => {
+    expect(
+      isDesignQuestion(
+        'Edit',
+        { file_path: '/x', old_string: 'a', new_string: 'b' },
+        ['Yes', 'Always', 'No'],
+        DEFAULTS,
+      ),
+    ).toBe(false);
+  });
+
+  test('free-text heuristic: a custom tool posing a question with no binary suggestions escalates', () => {
+    expect(
+      isDesignQuestion(
+        'mcp__ask',
+        { question: 'Which database should we use?' },
+        undefined,
+        DEFAULTS,
+      ),
+    ).toBe(true);
+    expect(isDesignQuestion('mcp__ask', { questions: ['a', 'b'] }, undefined, DEFAULTS)).toBe(true);
+  });
+
+  test('free-text heuristic: a question with binary suggestions has a yes/no mapping, does NOT escalate', () => {
+    expect(
+      isDesignQuestion('mcp__confirm', { question: 'Proceed?' }, ['Yes', 'No'], DEFAULTS),
+    ).toBe(false);
+  });
+
+  test('free-text heuristic: a question with non-binary suggestions escalates', () => {
+    expect(
+      isDesignQuestion('mcp__pick', { question: 'Which?' }, ['Alpha', 'Beta', 'Gamma'], DEFAULTS),
+    ).toBe(true);
+  });
+
+  test('a tool with no question field and not on the allowlist is not a design question', () => {
+    expect(isDesignQuestion('mcp__do', { path: '/x' }, undefined, DEFAULTS)).toBe(false);
+  });
+
+  test('whitespace-only question field does not trigger the heuristic', () => {
+    expect(isDesignQuestion('mcp__ask', { question: '   ' }, undefined, DEFAULTS)).toBe(false);
+  });
+
+  test('config-extensible: a user-listed tool escalates by name', () => {
+    expect(isDesignQuestion('mcp__myAsk', {}, undefined, new Set(['mcp__myAsk']))).toBe(true);
+  });
+
+  test('empty allowlist: the free-text heuristic still backs up AskUserQuestion-shaped input', () => {
+    expect(
+      isDesignQuestion('AskUserQuestion', { questions: [{ question: 'x' }] }, undefined, new Set()),
+    ).toBe(true);
+    // ...but a tool with neither a listed name nor a question field does not escalate.
+    expect(isDesignQuestion('Bash', { command: 'ls' }, undefined, new Set())).toBe(false);
+  });
+
+  test('a "questions" array of non-question elements does not trigger the heuristic', () => {
+    // Only strings or {question: string} objects count; bare numbers/null/{}
+    // must not over-escalate a custom tool with an unrelated `questions` field.
+    expect(isDesignQuestion('mcp__x', { questions: [42] }, undefined, DEFAULTS)).toBe(false);
+    expect(isDesignQuestion('mcp__x', { questions: [null] }, undefined, DEFAULTS)).toBe(false);
+    expect(isDesignQuestion('mcp__x', { questions: [{}] }, undefined, DEFAULTS)).toBe(false);
+    // ...but the real AskUserQuestion-style {question: string} element does.
+    expect(
+      isDesignQuestion('mcp__x', { questions: [{ question: 'Pick?' }] }, undefined, DEFAULTS),
+    ).toBe(true);
   });
 });

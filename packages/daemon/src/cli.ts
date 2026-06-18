@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.11'; // REMI_COMPILED_VERSION
+      return '0.6.12-dev.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.11'; // REMI_COMPILED_VERSION
+    return '0.6.12-dev.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -95,8 +95,10 @@ loadDotenvFile();
 import {
   createDaemonUpdateAvailable,
   createHelloAck,
+  createQuestionResolved,
   createReplayBatch,
   createSessionListResponse,
+  createSessionUpdate,
   generateId,
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
@@ -131,6 +133,7 @@ import {
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
+import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { createPtySessionForSession } from './cli/session-phases/pty-session-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
@@ -141,6 +144,7 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
+import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
@@ -151,6 +155,7 @@ import {
   SessionRegistryFile,
   SessionStore,
   type StoredSession,
+  TranscriptIndex,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
@@ -795,6 +800,18 @@ let autoApproveService: AutoApproveService | null = null;
 // the StatusWriter (see the gate cue wiring in setupHookBridge); it replaced the
 // shared title-bar TerminalIndicator, which raced under concurrent evals.
 
+/**
+ * Seconds to pass HookConfigManager as the PermissionRequest hold budget (#573):
+ * the configured `hold_timeout` when auto-approve is actually enabled (so the
+ * registered hook timeout outlasts a long human-paced hold), else 0 (the
+ * baseline 600s ceiling, since a non-AA daemon never holds — it passes through
+ * near-instantly). Keeps the hook timeout from being needlessly inflated when
+ * holding can't happen.
+ */
+function permissionHookHoldTimeoutSec(): number {
+  return autoApproveService ? remiConfig.auto_approve.hold_timeout : 0;
+}
+
 // ---------------------------------------------------------------------------
 // SIGTSTP / Ctrl+Z handling.
 //
@@ -836,6 +853,16 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // interval (it lives inside the binder); close() reaches all three. Empty when
 // transcript_binder_enabled is off (no binder is ever constructed).
 const binderClosers: Map<UUID, () => void> = new Map();
+// Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
+// by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
+// (multi-session daemons). Populated in createNewSession after setupHookBridge;
+// removed on session close. Empty when no hookServer is configured.
+const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
+// Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
+// question-resolved path can fire a quiet lock-screen dismissal through the same
+// device-token fan-out that pushed the card. Populated in createNewSession;
+// removed on session close.
+const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
 const sessionStore = new SessionStore();
 // Tracks the subagent chats the primary session spawns, so the client can
 // switch the displayed view to a subagent (epic #499 phase 3). Shared by the
@@ -844,7 +871,12 @@ const subagentViews = new SubagentViewRegistry();
 // Single binding accessor for the whole daemon (#460 phase 2): the one typed,
 // disk-backed surface for remiUUID<->claudeSessionId. Every binding read/write +
 // both resume resolvers route through it. No cache — see session-binding-store.ts.
-const bindingStore = new SessionBindingStore(sessionStore);
+// Durable, long-TTL remiUUID -> {claudeSessionId, projectPath} index (#577). Not
+// subject to sessions.json's 100-entry cap or 7-day purge, so a transcript_load
+// for an older session still resolves after the liveness store has dropped it.
+// The binding store mirrors every preAssign/update write into it.
+const transcriptIndex = new TranscriptIndex();
+const bindingStore = new SessionBindingStore(sessionStore, transcriptIndex);
 
 const orphanTimeoutMs =
   cliOrphanTimeout !== undefined
@@ -866,6 +898,11 @@ const sessionRegistry = new SessionRegistry(
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
       binderClosers.get(sessionId)?.();
       binderClosers.delete(sessionId);
+      // Drop the per-session gate handle (#573); any held hook was already
+      // released by the gate's closeBinder/cancelStale on teardown.
+      sessionGateHandles.delete(sessionId);
+      // Drop the per-session APNS dispatcher (#585, P7).
+      sessionNotifiers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
       if (watcher) {
         watcher.stop();
@@ -1053,7 +1090,7 @@ async function createNewSession(
   passThrough = false,
   reservedRows = 0,
 ): Promise<PTYSession> {
-  const { messageApi, sendAndRecord } = createMessageApiForSession(
+  const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
     {
       sessionRegistry,
       transcriptWatchers,
@@ -1081,6 +1118,9 @@ async function createNewSession(
     },
     sessionId,
   );
+  // Register this session's APNS dispatcher so the question-resolved path can
+  // dismiss a pushed card through the same device-token fan-out (#585, P7).
+  sessionNotifiers.set(sessionId, notifications);
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
@@ -1150,6 +1190,18 @@ async function createNewSession(
         transcriptDiscovery,
         subagentViews,
         statusWriter,
+        // #573: classify holdable escalations + the hold / slow-eval-push budgets
+        // (seconds; the gate converts to ms and treats <=0 as disabled).
+        alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
+        // Guard on AA being enabled (mirrors permissionHookHoldTimeoutSec): with
+        // no auto-approve service the gate must NOT hold a binary escalation —
+        // that would block Claude until the hook timeout instead of rendering the
+        // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
+        holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
+        pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
+        // #585: a held question the gate resolves without a user answer dismisses
+        // its pushed card on every client.
+        broadcastQuestionResolved: onQuestionResolved,
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
@@ -1157,6 +1209,9 @@ async function createNewSession(
     // its start() inside setupHookBridge); record its teardown so cleanup()
     // reaches the rotation dir-poll interval the shared maps below cannot.
     if (binderEnabled) binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
+    // Register the per-session gate handle (#573) so the WebSocket answer path
+    // can resolve a held permission / cancel the eval for this exact session.
+    sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
   }
 
   const ptySession = createPtySessionForSession(
@@ -1180,6 +1235,17 @@ async function createNewSession(
     messageApi,
     locallyOwned,
   );
+
+  // #576: give clients a defined pill state from the first hello_ack. Without
+  // this, no status reaches the client until the first hook fires (Claude can
+  // take tens of seconds to its first PreToolUse), so the session shows no
+  // signal. Recorded via sendAndRecord so a client that connects later replays
+  // it. Wrapped so a send hiccup can never abort session creation.
+  try {
+    sendAndRecord(createSessionUpdate(sessionId, 'starting'));
+  } catch (err) {
+    logError(`[Session ${sessionId}] Failed to emit starting status:`, err);
+  }
 
   // If the spawn or any post-spawn wiring throws, mark the pre-saved
   // store entry as exited so sibling daemons reading the store don't
@@ -1247,6 +1313,37 @@ const registry = new AdapterRegistry({
   },
 });
 
+/**
+ * Cross-client question dismissal (#585, P7). Fired when a pending question stops
+ * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
+ * reason 'answered'), or (b) resolved by the auto-approve gate without a user
+ * answer (Part-B late verdict / hold timeout / cancelStale, reason
+ * 'auto_approved'/'auto_denied'/'cancelled'). It does TWO throw-safe things:
+ *   1. Broadcast `question_resolved` to every connected client so each dismisses
+ *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
+ *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
+ *      (apns-collapse-id = questionId, content-available) so a suspended device's
+ *      lock-screen card is cleared.
+ * Each step is independently guarded so a failure in one never blocks the other,
+ * and neither can propagate into the answer handler or the gate decision.
+ */
+const onQuestionResolved = (
+  sessionId: UUID,
+  questionId: UUID,
+  reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled',
+): void => {
+  try {
+    registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
+  } catch (err) {
+    logError(`[QuestionResolved] broadcast failed for ${questionId}: ${errorToString(err)}`);
+  }
+  try {
+    sessionNotifiers.get(sessionId)?.dismiss(sessionId, questionId);
+  } catch (err) {
+    logError(`[QuestionResolved] APNS dismissal failed for ${questionId}: ${errorToString(err)}`);
+  }
+};
+
 import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
@@ -1264,6 +1361,18 @@ const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
+  // #573: route a held-permission answer / release-to-passthrough / eval-cancel
+  // to the RIGHT session's gate (the map is populated per session in
+  // createNewSession).
+  resolveHeldPermission: (sessionId, questionId, decision) =>
+    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision) ?? false,
+  releaseHeldAsPassthrough: (sessionId, questionId) =>
+    sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
+  cancelAutoApprove: (sessionId, reason) => sessionGateHandles.get(sessionId)?.cancelStale(reason),
+  // #585: a locally answered question dismisses its card + lock-screen push on
+  // every other client.
+  onQuestionResolved: (sessionId, questionId) =>
+    onQuestionResolved(sessionId, questionId, 'answered'),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
@@ -1290,6 +1399,7 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
   transcriptWatchers,
   bindingStore,
+  transcriptIndex,
   currentOwnedSession,
   subagentViews,
   send: sendToConnection,
@@ -1343,6 +1453,11 @@ const sharedEvents = {
   ...transcriptHandlers,
   ...createSessionHandlers_,
   ...resumeSessionHandlers,
+  // Expose the shared answer core under the adapter's relay event name (#575,
+  // P4a). The HTTP /answer endpoint routes through the SAME logic as the
+  // WebSocket onAnswer, just reporting a structured outcome instead of an
+  // over-the-connection error frame.
+  onAnswerRelay: inputHandlers.relayAnswer,
 };
 
 // ---------------------------------------------------------------------------
@@ -1672,7 +1787,11 @@ if (cliDaemonMode) {
 
   if (hookServer) {
     try {
-      hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+      hookConfigManager = new HookConfigManager(
+        workingDirectory,
+        hookServer.url,
+        permissionHookHoldTimeoutSec(),
+      );
       await hookConfigManager.install();
     } catch (err) {
       const msg = errorToString(err);
@@ -1865,7 +1984,11 @@ if (cliDaemonMode) {
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
     // Configure Claude Code hooks to POST to our server
-    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+    hookConfigManager = new HookConfigManager(
+      workingDirectory,
+      hookServer.url,
+      permissionHookHoldTimeoutSec(),
+    );
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {

@@ -16,7 +16,7 @@
 import type { Question, QuestionOption, UUID } from '@remi/shared';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
-import { log } from '../cli/logger.ts';
+import { log, logError } from '../cli/logger.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
@@ -40,6 +40,58 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
   if (options.length === 3) return 'REMI_YNA';
   if (options.length === 4) return 'REMI_MULTI';
   return undefined;
+}
+
+/** Cap for the APNS title; iOS truncates visually but a hard cap keeps the
+ *  payload bounded for long Bash commands. */
+const TITLE_MAX = 120;
+/** Cap for the APNS body (ask + option list). */
+const BODY_MAX = 200;
+
+/**
+ * Normalize text for the notification surface (#574, issue 3). Collapses every
+ * run of whitespace (including the zero-width gaps that the PTY's column-
+ * aligned permission box leaves after ANSI stripping, which produced the
+ * "Doyouwanttoproceed?" garble) into a single ASCII space, then trims. A bare
+ * run-together token with no separators (the worst PTY case) is left as-is by
+ * this pass — but the dispatcher prefers the clean hook text for the body, so
+ * the raw PTY string never reaches the user (see `buildPushText`).
+ */
+function normalizeNotificationText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The compact option list shown in the body, e.g. "1. Yes  2. Yes, always
+ * 3. No". Uses the real option LABELS (#574, issue 4) so the user sees what
+ * they are actually choosing. The prefix is the option's actual `value`, not
+ * its positional index, so it stays accurate for non-indexed values like the
+ * StopFailure y/n set ("y. Yes  n. No"). Empty when there are no options
+ * (free-text prompt) so the body is just the ask.
+ */
+function formatOptionList(options: readonly QuestionOption[]): string {
+  if (options.length === 0) return '';
+  return options.map((o) => `${o.value}. ${o.label || o.value}`).join('  ');
+}
+
+/**
+ * Build the APNS title + body from the question (#574, issues 3+4).
+ *   - title: session context + the clean hook ask (tool + command), never the
+ *     raw PTY screen text.
+ *   - body: the ask repeated as the leading line plus the real option labels,
+ *     so the lock screen shows the choices even where the static action-button
+ *     titles cannot (REMI_MULTI). Whitespace is normalized so a column-aligned
+ *     PTY prompt can never collapse into a run-together string.
+ */
+export function buildPushText(
+  sessionName: string,
+  question: Question,
+): { title: string; body: string } {
+  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
+  const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
+  const optionList = formatOptionList(question.options);
+  const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);
+  return { title, body };
 }
 
 /** Signature of the APNS-relay push call; injectable so the push branch is
@@ -108,12 +160,18 @@ export class NotificationDispatcher {
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     const pushCategory = selectPushCategory(question.options);
-    const pushOptions = question.options.map((o) => o.value);
+    // Send the human-readable LABELS for DISPLAY (#574, issue 4); answer
+    // routing in input-events resolves an incoming label OR value back to the
+    // option, then submits the option's index when a PTY submit is required, so
+    // sending labels here does not break delivery. Fall back to the value when a
+    // label is empty so the button still carries something answerable.
+    const pushOptions = question.options.map((o) => o.label || o.value);
+    const { title, body } = buildPushText(sessionName, question);
 
     for (const dt of deviceTokens.values()) {
       this.pushFn(cfg.signalingUrl, dt.token, {
-        title: `${sessionName} needs input`,
-        body: question.text.slice(0, 100),
+        title,
+        body,
         ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
         sessionId: pushSessionId,
         questionId: question.id,
@@ -122,6 +180,40 @@ export class NotificationDispatcher {
       })
         .then(() => log(`Push notification sent for session ${pushSessionId}`))
         .catch((err) => log(`Push notification failed: ${err}`));
+    }
+  }
+
+  /**
+   * Fire a QUIET APNS dismissal for a resolved question (#585, P7). Sends a
+   * `content-available` push (no alert, no sound) keyed by `apns-collapse-id` =
+   * questionId so a suspended device replaces/clears the earlier lock-screen card
+   * for that exact question. Fans out to every registered device — unlike
+   * `maybePush`, it deliberately does NOT skip when a client is attached: the
+   * card may still sit on another device's lock screen, and the collapse-id makes
+   * a no-op dismissal harmless. No dedup gate (a repeat dismissal is idempotent at
+   * the device). No-op when no tokens are registered.
+   *
+   * `questionSessionId` is the primary id the client knows (from hello_ack), kept
+   * symmetric with `maybePush` so the dismissal carries the same routing id.
+   */
+  dismiss(questionSessionId: UUID, questionId: UUID): void {
+    const { deviceTokens, pushConfig } = this.deps;
+    if (deviceTokens.size === 0) return;
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    for (const dt of deviceTokens.values()) {
+      this.pushFn(cfg.signalingUrl, dt.token, {
+        // No title/body: a dismissal is a silent content-available push, and the
+        // relay skips the title/body requirement for it (#585, P7).
+        ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+        sessionId: pushSessionId,
+        questionId,
+        dismiss: true,
+      })
+        .then(() => log(`Push dismissal sent for question ${questionId}`))
+        .catch((err) =>
+          logError(`Push dismissal failed (signaling worker redeploy needed?): ${err}`),
+        );
     }
   }
 }

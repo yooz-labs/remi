@@ -8,10 +8,12 @@ const DEFAULT_SIGNALING_URL = 'https://remi-signaling.yooz.workers.dev';
 
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {
-  /** Title shown in the notification banner */
-  title: string;
-  /** Body text shown in the notification banner */
-  body: string;
+  /** Title shown in the notification banner. Optional only for a `dismiss`
+   *  push (#585, P7), which is silent (content-available) and has no text. */
+  title?: string;
+  /** Body text shown in the notification banner. Optional only for a `dismiss`
+   *  push (#585, P7). */
+  body?: string;
   /** Bearer token for signaling server auth (REMI_PUSH_SECRET) */
   pushSecret?: string;
   /** Remi session UUID included in APNS custom data for tap-to-navigate */
@@ -22,6 +24,14 @@ export interface PushTriggerOptions {
   category?: string;
   /** Answer values for action buttons: opt_0, opt_1, ... */
   options?: string[];
+  /**
+   * Dismissal trigger (#585, P7). When true the signaling server sends a QUIET
+   * `content-available` push (no alert) carrying the same `apns-collapse-id` =
+   * questionId, so the device replaces/clears the lock-screen card for an
+   * already-resolved question instead of buzzing again. The relay skips the
+   * title/body requirement for a dismiss, so the dispatcher omits them entirely.
+   */
+  dismiss?: boolean;
 }
 
 /**
@@ -47,8 +57,9 @@ export async function sendPushTrigger(
   }
   const payload: Record<string, unknown> = {
     token: deviceToken,
-    title: opts.title,
-    body: opts.body,
+    // Omitted for a dismiss push (#585, P7): silent, no user-visible text.
+    ...(opts.title !== undefined ? { title: opts.title } : {}),
+    ...(opts.body !== undefined ? { body: opts.body } : {}),
   };
   if (opts.sessionId) {
     payload['sessionId'] = opts.sessionId;
@@ -61,6 +72,9 @@ export async function sendPushTrigger(
   }
   if (opts.options && opts.options.length > 0) {
     payload['options'] = opts.options;
+  }
+  if (opts.dismiss) {
+    payload['dismiss'] = true;
   }
   const response = await fetch(url, {
     method: 'POST',

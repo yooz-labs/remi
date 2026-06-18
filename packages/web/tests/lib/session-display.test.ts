@@ -86,8 +86,31 @@ describe('sessionPillState', () => {
     expect(sessionPillState({ connectionStatus: 'connected', status: 'executing' })).toBe('working');
   });
 
-  test('connected + idle (or waiting) is idle', () => {
+  test('connected + idle is idle', () => {
     expect(sessionPillState({ connectionStatus: 'connected', status: 'idle' })).toBe('idle');
-    expect(sessionPillState({ connectionStatus: 'connected', status: 'waiting' })).toBe('idle');
+  });
+
+  test('connected + waiting is asking (no longer collapses to idle) (#576)', () => {
+    // A blocked agent (PreToolUse / PermissionRequest -> 'waiting') must surface
+    // as "Needs you", even before a discrete question record arrives.
+    expect(sessionPillState({ connectionStatus: 'connected', status: 'waiting' })).toBe('asking');
+  });
+
+  test('connected + evaluating/approved is working (#576)', () => {
+    expect(sessionPillState({ connectionStatus: 'connected', status: 'evaluating' })).toBe('working');
+    expect(sessionPillState({ connectionStatus: 'connected', status: 'approved' })).toBe('working');
+  });
+
+  test('connected + starting is connecting (session spinning up) (#576)', () => {
+    expect(sessionPillState({ connectionStatus: 'connected', status: 'starting' })).toBe('connecting');
+  });
+
+  test('a pending question still wins over a busy/waiting agent status', () => {
+    expect(
+      sessionPillState({ connectionStatus: 'connected', status: 'evaluating', questionPending: true }),
+    ).toBe('asking');
+    expect(
+      sessionPillState({ connectionStatus: 'connected', status: 'waiting', questionPending: true }),
+    ).toBe('asking');
   });
 });
