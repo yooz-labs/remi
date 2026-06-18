@@ -763,6 +763,15 @@ export function setupHookBridge(
         // handlePermissionRequest -> onStatusChange('waiting'), which broadcasts
         // the 'waiting' session_update. Re-emitting would double-emit.
       },
+      // #573: a binary escalation that HOLDS its hook blocks Claude's response,
+      // so Claude never renders the native prompt and the tracker's PTY-render
+      // push trigger (onPTYPromptVisible) never fires. Without this, the held
+      // question is stashed via recordPendingHook but never registered in
+      // sessionRegistry nor pushed -> the user cannot answer it and the hold sits
+      // until hold_timeout. The gate calls this ONLY in the held branch with the
+      // held Question.id, so the tracker pushes that exact question immediately
+      // (-> addQuestion + maybePush) under the id the hold is keyed by.
+      onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
       onHandled: () => {
         deps.statusWriter?.autoApproveEnd('approved', Date.now());
         // #576: the permission was silently allowed; tell clients so the pill

@@ -80,6 +80,15 @@ export interface AutoApproveGateDeps {
   /** Called when the verdict is escalate (the user must answer), so the tracker
    *  releases the buffered PTY prompt. #484. */
   onEscalate?: () => void;
+  /** Called when a BINARY escalation HOLDS its hook open (Model B, #573):
+   *  Claude blocks on the hook response, so it never renders the native prompt
+   *  and the tracker's PTY-render push trigger never fires. The gate calls this
+   *  with the held `Question.id` so the tracker pushes that question IMMEDIATELY
+   *  (-> sessionRegistry.addQuestion + APNS), making it answerable. Called ONLY
+   *  in the held branch — passthrough / multi-choice escalations still render the
+   *  PTY and push via `onPTYPromptVisible`, so calling it for them would
+   *  double-push. Absent => no immediate held push (tests / no-AA callers). #573 */
+  onHeldEscalate?: (questionId: UUID) => void;
   /** Called when the permission was auto-approved/denied silently (inject
    *  succeeded; the user never sees it). Drives the terminal "done" cue. #513. */
   onHandled?: () => void;
@@ -239,6 +248,15 @@ export class AutoApproveGate {
     const qid = this.escalateToUser(input);
     const holdMs = this.deps.holdMs ?? 0;
     if (!qid || holdMs <= 0) return { decision: Promise.resolve('passthrough'), questionId: qid };
+    // A held binary escalation BLOCKS Claude's hook response, so Claude never
+    // renders the native prompt and the tracker's PTY-render push trigger never
+    // fires. Push the held question NOW so it is registered in sessionRegistry
+    // (answerable) and pushed to the phone, keyed by the SAME id the hold uses
+    // (#573). safeCue: cosmetic-shielded like the other lifecycle callbacks — a
+    // push failure here must not break the decision path. ONLY here (a real
+    // hold), never on the passthrough/multi-choice branches above (which push
+    // via onPTYPromptVisible and would double-push).
+    this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
         // Fail open: the user did not answer within the hold window, so let
@@ -525,10 +543,12 @@ export class AutoApproveGate {
     // will block on AND the question id (or passthrough if the push failed /
     // holding is off).
     log(`[AutoApprove ${this.sessionTag}] Slow eval (>${pushHoldMs}ms); pushing + holding early`);
+    // createHold escalates AND (when a hold is registered) pushes the held
+    // question via onHeldEscalate (#573), so the user can step in immediately.
     const { decision: heldDecision, questionId } = this.createHold(input);
-    // We have already pushed. The reconciliation NEVER pushes again — a late
-    // escalate just leaves the existing hold in place (guarded by the
-    // pendingHolds membership check inside reconcileLateVerdict).
+    // The reconciliation NEVER pushes again — a late escalate just leaves the
+    // existing hold in place (guarded by the pendingHolds membership check
+    // inside reconcileLateVerdict), and pushHeldHook is itself idempotent.
     void this.reconcileLateVerdict(safeEval, questionId);
     return heldDecision;
   }
@@ -601,6 +621,23 @@ export class AutoApproveGate {
     if (!fn) return;
     try {
       fn();
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
+    }
+  }
+
+  /**
+   * `safeCue` for a single-argument lifecycle callback (e.g. `onHeldEscalate`,
+   * #573). Same contract: a throw is logged and absorbed so a held-push failure
+   * cannot propagate into the decision/hold path. NOTE the held push IS
+   * load-bearing for answerability, but absorbing a throw here only means the
+   * push is lost — the hold still fails open on its own timeout, which is
+   * strictly safer than letting the throw escape into the hook dispatch loop.
+   */
+  private safeCueWithArg<T>(label: string, fn: ((arg: T) => void) | undefined, arg: T): void {
+    if (!fn) return;
+    try {
+      fn(arg);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
     }
