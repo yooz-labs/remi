@@ -119,6 +119,8 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     queue_timeout: 240,
     disable_thinking: false,
     always_escalate_tools: [],
+    hold_timeout: 0,
+    push_hold_timeout: 0,
   };
 }
 

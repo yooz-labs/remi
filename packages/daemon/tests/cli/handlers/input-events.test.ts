@@ -331,6 +331,209 @@ describe('createInputHandlers', () => {
     });
   });
 
+  describe('onAnswer held-permission resolution (Model B, #573)', () => {
+    function addYesNoQuestion(sessionId: UUID): void {
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: git push',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'Yes, always', isRecommended: false, isYes: true, isNo: false },
+          { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+    }
+
+    test('Yes answer maps to allow, resolves the held hook, and SKIPS the PTY submit', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoQuestion(sessionId);
+
+      const held: Array<{ sessionId: UUID; questionId: UUID; decision: 'allow' | 'deny' }> = [];
+      const cancels: Array<{ sessionId: UUID; reason: string }> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (s, q, d) => {
+          held.push({ sessionId: s, questionId: q, decision: d });
+          return true; // a hold existed and was resolved
+        },
+        cancelAutoApprove: (s, reason) => cancels.push({ sessionId: s, reason }),
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1'); // option 1 = Yes
+
+      expect(held).toEqual([{ sessionId, questionId: QID, decision: 'allow' }]);
+      expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
+      expect(cancels).toEqual([{ sessionId, reason: 'user-answered' }]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('No answer maps to deny and resolves the held hook', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoQuestion(sessionId);
+
+      const held: Array<'allow' | 'deny'> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d) => {
+          held.push(d);
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '3'); // option 3 = No
+
+      expect(held).toEqual(['deny']);
+      expect(ptyCapture.submits).toEqual([]);
+    });
+
+    test('"Yes, always" releases the held hook to passthrough and submits the digit (FIX 1)', async () => {
+      // "always" cannot be expressed by the binary hook response, so it must NOT
+      // resolve the hold as a one-time allow; instead the hook is released to
+      // passthrough and the digit is submitted into the native prompt.
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoQuestion(sessionId);
+
+      const resolveDecisions: Array<'allow' | 'deny'> = [];
+      const released: UUID[] = [];
+      const cancels: Array<{ sessionId: UUID; reason: string }> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        // A held hook exists, but resolveHeldPermission must NOT be consulted for
+        // "always" (decision === null), so it would return true if wrongly called.
+        resolveHeldPermission: (_s, _q, d) => {
+          resolveDecisions.push(d);
+          return true;
+        },
+        releaseHeldAsPassthrough: (_s, q) => {
+          released.push(q);
+          return true; // a hold existed and was popped to passthrough
+        },
+        cancelAutoApprove: (s, reason) => cancels.push({ sessionId: s, reason }),
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '2'); // option 2 = Yes, always
+
+      expect(resolveDecisions).toEqual([]); // never resolved as a one-time allow
+      expect(released).toEqual([QID]); // hook released to passthrough
+      expect(ptyCapture.submits).toEqual(['2']); // digit submitted into the native prompt
+      expect(cancels).toEqual([{ sessionId, reason: 'user-answered' }]); // hold was released
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a non-held answer does NOT cancel the eval and still submits to the PTY (FIX 3)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoQuestion(sessionId);
+
+      const cancels: Array<{ sessionId: UUID; reason: string }> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => false, // no hold for this question
+        releaseHeldAsPassthrough: () => false, // no hold to release either
+        cancelAutoApprove: (s, reason) => cancels.push({ sessionId: s, reason }),
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(ptyCapture.submits).toEqual(['1']); // falls back to the PTY path
+      // FIX 3: no hold was resolved/released, so an unrelated eval must NOT be
+      // cancelled by this answer.
+      expect(cancels).toEqual([]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a free-text answer (no yes/no option match) takes the PTY path', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'name?',
+        options: [],
+        allowsFreeText: true,
+        isAnswered: false,
+      });
+
+      let resolveHeldCalled = false;
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => {
+          resolveHeldCalled = true;
+          return true;
+        },
+        releaseHeldAsPassthrough: () => false, // no hold for a free-text prompt
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Alice');
+
+      // No yes/no option matched -> decision is null -> resolveHeld not consulted.
+      expect(resolveHeldCalled).toBe(false);
+      expect(ptyCapture.submits).toEqual(['Alice']);
+    });
+
+    test('without the held-permission deps wired, onAnswer behaves exactly as before', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addYesNoQuestion(sessionId);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(ptyCapture.submits).toEqual(['1']); // PTY path, no held resolution
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+  });
+
   describe('onBulletExpandRequest', () => {
     test('sends NOT_FOUND when session is missing', () => {
       const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });

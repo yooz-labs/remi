@@ -180,7 +180,13 @@ export class HookEventBridge {
     this.events.onSessionInfo(input.session_id, input.transcript_path);
   }
 
-  handlePermissionRequest(input: PermissionRequestHookInput): void {
+  /**
+   * Build + emit the escalation Question for a PermissionRequest and return its
+   * id (#573). The id lets the auto-approve gate HOLD the binary hook keyed by
+   * this question, so the user's answer resolves the hook via the response
+   * (Model B) instead of a PTY inject. Always returns an id today.
+   */
+  handlePermissionRequest(input: PermissionRequestHookInput): UUID {
     // Phase 4 (#419): the subagentContext drop previously sat here.
     // After phase 3 wired in the QuestionPresenceTracker, push semantics
     // are presence-gated regardless of subagent context — a subagent
@@ -224,8 +230,9 @@ export class HookEventBridge {
       options = [...DEFAULT_PERMISSION_OPTIONS];
     }
 
+    const questionId = generateId();
     this.events.onQuestion({
-      id: generateId(),
+      id: questionId,
       text: promptText,
       options,
       allowsFreeText: false,
@@ -233,6 +240,7 @@ export class HookEventBridge {
       agentId: input.agent_id,
     });
     this.events.onStatusChange('waiting');
+    return questionId;
   }
 
   handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {

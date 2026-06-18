@@ -346,6 +346,8 @@ describe('auto_approve config', () => {
       queue_timeout: 240,
       disable_thinking: false,
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
+      hold_timeout: 1800,
+      push_hold_timeout: 60,
     });
   });
 
@@ -523,6 +525,68 @@ Escalate anything touching secrets.
       const config = loadConfig(TEST_CONFIG);
       expect(config.auto_approve.approve_groups).toEqual(['read-only', 'bogus']);
       expect(warnings.some((w) => w.includes('unknown permission group "bogus"'))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test('loads hold_timeout / push_hold_timeout from TOML (#573)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = 900\npush_hold_timeout = 45\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.hold_timeout).toBe(900);
+    expect(config.auto_approve.push_hold_timeout).toBe(45);
+  });
+
+  test('rejects a negative hold_timeout (#573)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = -1\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/hold_timeout/);
+  });
+
+  test('rejects a negative push_hold_timeout (#573)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\npush_hold_timeout = -5\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/push_hold_timeout/);
+  });
+
+  test('REMI_AUTO_APPROVE_HOLD_TIMEOUT / PUSH_HOLD_TIMEOUT env overrides (#573)', () => {
+    process.env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'] = '1200';
+    process.env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'] = '90';
+    const config = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(config.auto_approve.hold_timeout).toBe(1200);
+    expect(config.auto_approve.push_hold_timeout).toBe(90);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'];
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'];
+  });
+
+  test('warns (does not throw) when push_hold_timeout > 0 but hold_timeout = 0 (FIX 4 / #573)', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg?: unknown) => warnings.push(String(msg));
+    try {
+      fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = 0\npush_hold_timeout = 60\n');
+      const config = loadConfig(TEST_CONFIG); // must NOT throw
+      expect(config.auto_approve.hold_timeout).toBe(0);
+      expect(config.auto_approve.push_hold_timeout).toBe(60);
+      expect(
+        warnings.some((w) => w.includes('push_hold_timeout') && w.includes('hold_timeout = 0')),
+      ).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test('does NOT warn when both hold_timeout and push_hold_timeout are set (FIX 4 / #573)', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg?: unknown) => warnings.push(String(msg));
+    try {
+      fs.writeFileSync(
+        TEST_CONFIG,
+        '[auto_approve]\nhold_timeout = 1800\npush_hold_timeout = 60\n',
+      );
+      loadConfig(TEST_CONFIG);
+      expect(warnings.some((w) => w.includes('push_hold_timeout'))).toBe(false);
     } finally {
       console.warn = original;
     }

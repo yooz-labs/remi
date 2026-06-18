@@ -186,4 +186,30 @@ export interface AutoApproveConfig {
    * non-binary suggestions. See `DEFAULT_ALWAYS_ESCALATE_TOOLS`.
    */
   readonly always_escalate_tools: readonly string[];
+  /**
+   * Seconds the daemon HOLDS a BINARY main-context PermissionRequest hook open
+   * after escalating to the user, instead of returning passthrough immediately
+   * (Model B, #573). Claude blocks on the held hook (no native prompt rendered)
+   * until the user answers from any channel — the answer resolves the hook to
+   * allow/deny with no PTY render and no warm-connection race. On expiry the
+   * hold fails open to passthrough (Claude renders its native prompt), so the
+   * terminal is never permanently stuck. A human answers here and may be busy,
+   * so the default is large + human-paced (1800s). 0 disables holding entirely
+   * (escalate -> passthrough, the pre-#573 behavior). Only binary main-context
+   * escalations hold; multi-choice / design escalations always passthrough (the
+   * hook response cannot express a pick). The registered PermissionRequest hook
+   * timeout (hook-config-manager.ts) is kept >= this so Claude does not give up
+   * on the hook before the hold does.
+   */
+  readonly hold_timeout: number;
+  /**
+   * Seconds before a SLOW eval triggers an early push + hold (Part B, #573). If
+   * a binary main-context eval has not produced a verdict within this window,
+   * the daemon pushes the question and holds the hook so the user can step in
+   * while the model keeps thinking; a late approve/deny then resolves the held
+   * hook (no double-push). 0 disables Part B entirely — behavior reverts to the
+   * plain hold-on-escalate path (A+C only). Default 60. Kept well below
+   * `hold_timeout` so the early-push window opens before the hold itself expires.
+   */
+  readonly push_hold_timeout: number;
 }

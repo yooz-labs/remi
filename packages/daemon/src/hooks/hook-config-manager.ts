@@ -47,10 +47,6 @@ interface HookMatcher {
 const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
 const DEFAULT_HOOK_TIMEOUT = 5;
 
-function hookTimeoutFor(event: string): number {
-  return event === 'PermissionRequest' ? PERMISSION_REQUEST_HOOK_TIMEOUT : DEFAULT_HOOK_TIMEOUT;
-}
-
 interface ClaudeSettings {
   hooks?: Record<string, HookMatcher[]>;
   [key: string]: unknown;
@@ -60,10 +56,34 @@ export class HookConfigManager {
   private readonly settingsPath: string;
   private readonly hookUrl: string;
   private hasWritten = false;
+  /**
+   * Seconds the daemon may HOLD a PermissionRequest hook open before answering
+   * (Model B, #573). The registered PermissionRequest hook timeout must be >=
+   * this, or Claude Code gives up on the hook and renders its native prompt
+   * BEFORE the hold's own fail-open fires — so the registered timeout is
+   * `max(PERMISSION_REQUEST_HOOK_TIMEOUT, holdTimeoutSec)`. 0 / omitted keeps the
+   * baseline ceiling (the pre-#573 behavior).
+   */
+  private readonly permissionHoldTimeoutSec: number;
 
-  constructor(projectDir: string, hookServerUrl: string) {
+  constructor(projectDir: string, hookServerUrl: string, permissionHoldTimeoutSec = 0) {
     this.settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
     this.hookUrl = hookServerUrl;
+    this.permissionHoldTimeoutSec =
+      Number.isFinite(permissionHoldTimeoutSec) && permissionHoldTimeoutSec > 0
+        ? permissionHoldTimeoutSec
+        : 0;
+  }
+
+  /**
+   * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
+   * gets the long budget (baseline 600s ceiling, raised to the configured hold
+   * timeout when larger so a long human-paced hold is not cut short, #573); all
+   * other hooks keep the short fail-fast timeout (#203).
+   */
+  private hookTimeoutFor(event: string): number {
+    if (event !== 'PermissionRequest') return DEFAULT_HOOK_TIMEOUT;
+    return Math.max(PERMISSION_REQUEST_HOOK_TIMEOUT, this.permissionHoldTimeoutSec);
   }
 
   /**
@@ -117,7 +137,7 @@ export class HookConfigManager {
       }
 
       const matchers = settings.hooks[event];
-      const desiredTimeout = hookTimeoutFor(event);
+      const desiredTimeout = this.hookTimeoutFor(event);
       // Reconcile any existing remi hook for this event to the desired timeout
       // (so an upgrade — e.g. the #537 PermissionRequest bump — takes effect for
       // an already-registered hook), and add it when missing.
@@ -193,7 +213,8 @@ export class HookConfigManager {
       // a reconcile on the next install() (#537).
       return matchers?.some((m) =>
         m.hooks.some(
-          (h) => h.type === 'http' && h.url === this.hookUrl && h.timeout === hookTimeoutFor(event),
+          (h) =>
+            h.type === 'http' && h.url === this.hookUrl && h.timeout === this.hookTimeoutFor(event),
         ),
       );
     });
