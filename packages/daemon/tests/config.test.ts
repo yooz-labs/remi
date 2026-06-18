@@ -343,6 +343,7 @@ describe('auto_approve config', () => {
       escalate_timeout: 0,
       queue_timeout: 240,
       disable_thinking: false,
+      always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
     });
   });
 

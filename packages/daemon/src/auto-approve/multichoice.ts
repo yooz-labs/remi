@@ -84,6 +84,56 @@ export function isMultiChoicePermission(
   return !stringLabels.every(isBinaryShapedLabel);
 }
 
+/**
+ * Keys under which a tool carries a user-facing question in its `tool_input`.
+ * Deliberately narrow — only structured question fields, never a Bash command
+ * string — so a `Bash` command ending in "?" is not mistaken for a question.
+ */
+const QUESTION_INPUT_FIELDS: readonly string[] = ['question', 'questions'];
+
+function hasQuestionField(toolInput: Record<string, unknown> | null | undefined): boolean {
+  if (!toolInput) return false;
+  for (const key of QUESTION_INPUT_FIELDS) {
+    const v = toolInput[key];
+    if (typeof v === 'string' && v.trim().length > 0) return true;
+    if (Array.isArray(v) && v.length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * True when a permission must ALWAYS go to the human — a design / plan-mode /
+ * long-form question the binary approve/deny path cannot answer and the LLM
+ * must never auto-decide (#572). Two layers:
+ *
+ * 1. Tool-name allowlist (`alwaysEscalateTools`, default
+ *    `DEFAULT_ALWAYS_ESCALATE_TOOLS` in types.ts plus any user-configured
+ *    names): definitionally user-intent tools. Immune to tool_input shape drift.
+ * 2. Free-text heuristic: a tool that structurally carries a question field
+ *    (see `QUESTION_INPUT_FIELDS`) whose suggestions are not all yes/no-shaped
+ *    is a long-form question with no binary mapping. Catches MCP / custom tools
+ *    that mimic AskUserQuestion without being on the allowlist.
+ *
+ * Evaluated BEFORE any LLM call so the outcome is structural (not a model
+ * guess), costs zero latency, takes no eval-queue slot, and never triggers the
+ * escalate_model second opinion.
+ */
+export function isDesignQuestion(
+  toolName: string,
+  toolInput: Record<string, unknown> | null | undefined,
+  permissionSuggestions: readonly unknown[] | null | undefined,
+  alwaysEscalateTools: ReadonlySet<string>,
+): boolean {
+  if (alwaysEscalateTools.has(toolName)) return true;
+  if (!hasQuestionField(toolInput)) return false;
+  const stringLabels = Array.isArray(permissionSuggestions)
+    ? permissionSuggestions.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    : [];
+  // A question with no binary-shaped suggestions has no approve/deny mapping —
+  // the user must select or type a long-form answer.
+  return stringLabels.length === 0 || !stringLabels.every(isBinaryShapedLabel);
+}
+
 const MULTI_CHOICE_SYSTEM_PROMPT = `You are a permission evaluator for Claude Code, an AI coding assistant running inside Remi (a remote monitoring tool).
 
 Claude Code is asking the user to PICK ONE option from a numbered list. Your job is to choose the most appropriate option, OR escalate to the user when you cannot decide confidently.

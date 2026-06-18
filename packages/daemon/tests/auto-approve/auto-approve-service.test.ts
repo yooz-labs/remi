@@ -53,6 +53,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     escalate_timeout: 0,
     queue_timeout: 240,
     disable_thinking: false,
+    always_escalate_tools: [],
     ...overrides,
   };
 }
@@ -1294,5 +1295,67 @@ describe('AutoApproveService - multichoice regression guards', () => {
     } finally {
       server.stop();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Design / plan-mode / long-form always-escalate (#572) - deterministic.
+// These never call the LLM, so they run without Ollama. base_url points at a
+// closed port: any regression that reached the LLM would yield durationMs > 0.
+// ---------------------------------------------------------------------------
+describe('design/plan-mode always-escalate (#572)', () => {
+  const offline = { base_url: 'http://127.0.0.1:1/v1', provider: 'http://127.0.0.1:1/v1' };
+
+  test('AskUserQuestion escalates structurally, with no LLM call (0ms)', async () => {
+    const svc = new AutoApproveService(
+      makeConfig({ ...offline, always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'] }),
+      logFn,
+    );
+    const r = await svc.evaluate('AskUserQuestion', { questions: [{ question: 'Which DB?' }] });
+    expect(r.decision).toBe('escalate');
+    expect(r.durationMs).toBe(0);
+    if (r.decision !== 'cancelled') expect(r.reasoning).toContain('always-escalate');
+  });
+
+  test('ExitPlanMode escalates structurally even in multichoice=evaluate mode', async () => {
+    const svc = new AutoApproveService(
+      makeConfig({
+        ...offline,
+        multichoice: 'evaluate',
+        always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
+      }),
+      logFn,
+    );
+    const r = await svc.evaluate('ExitPlanMode', { plan: 'ship it' });
+    expect(r.decision).toBe('escalate');
+    expect(r.durationMs).toBe(0);
+  });
+
+  test('free-text heuristic escalates a question-posing tool not on the allowlist', async () => {
+    const svc = new AutoApproveService(
+      makeConfig({ ...offline, always_escalate_tools: [] }),
+      logFn,
+    );
+    const r = await svc.evaluate('mcp__ask', { question: 'Which approach?' }, undefined, [
+      'Alpha',
+      'Beta',
+      'Gamma',
+    ]);
+    expect(r.decision).toBe('escalate');
+    expect(r.durationMs).toBe(0);
+  });
+
+  test('deny list is still checked first (explicit user rule wins over the classifier)', async () => {
+    const svc = new AutoApproveService(
+      makeConfig({
+        ...offline,
+        deny: ['AskUserQuestion'],
+        always_escalate_tools: ['AskUserQuestion'],
+      }),
+      logFn,
+    );
+    const r = await svc.evaluate('AskUserQuestion', { questions: [{ question: 'x' }] });
+    expect(r.decision).toBe('deny');
+    expect(r.durationMs).toBe(0);
   });
 });

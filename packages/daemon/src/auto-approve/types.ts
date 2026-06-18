@@ -59,6 +59,15 @@ export type AutoApproveResult = AutoApproveDecisionResult | AutoApproveCancelled
 /** How auto-approve treats multi-choice permission prompts (#399). */
 export type MultiChoiceMode = 'skip' | 'evaluate';
 
+/**
+ * Tools whose invocation is, by definition, a request for user intent the
+ * auto-approve LLM must never answer (#572): `AskUserQuestion` (Claude
+ * explicitly solicited the user) and `ExitPlanMode` (plan-mode accept /
+ * keep-planning is a direction decision). Default for
+ * `AutoApproveConfig.always_escalate_tools`.
+ */
+export const DEFAULT_ALWAYS_ESCALATE_TOOLS: readonly string[] = ['AskUserQuestion', 'ExitPlanMode'];
+
 /** Configuration for the auto-approve feature */
 export interface AutoApproveConfig {
   readonly enabled: boolean;
@@ -164,4 +173,15 @@ export interface AutoApproveConfig {
    * has no knob to disable reasoning).
    */
   readonly disable_thinking: boolean;
+  /**
+   * Tool names that ALWAYS escalate to the user and are NEVER auto-decided by
+   * the LLM (#572) — design / plan-mode / long-form questions whose answers are
+   * not yes/no. Matched by tool name BEFORE any LLM call, so it costs zero
+   * latency, takes no eval-queue slot, and never triggers the escalate_model
+   * second opinion. Default: ["AskUserQuestion", "ExitPlanMode"]. Extend with
+   * custom MCP tools that solicit user intent. A free-text heuristic also
+   * escalates any tool that structurally carries a question field with
+   * non-binary suggestions. See `DEFAULT_ALWAYS_ESCALATE_TOOLS`.
+   */
+  readonly always_escalate_tools: readonly string[];
 }
