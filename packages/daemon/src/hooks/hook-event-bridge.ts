@@ -35,6 +35,7 @@ import type {
   SubagentStopHookInput,
 } from './hook-types.ts';
 import { SubagentContextTracker } from './subagent-context-tracker.ts';
+import { extractToolQuestion } from './tool-question.ts';
 
 export interface HookBridgeEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
@@ -69,6 +70,26 @@ const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
     isNo: true,
   },
 ];
+
+/**
+ * Build options from a PermissionRequest's `permission_suggestions`. The union
+ * carries string labels (pickable) and structured objects (rule-suggestion
+ * metadata the iOS card cannot render); only >= 2 string labels yield real
+ * options, otherwise the default Yes / Yes, always / No 3-set substitutes.
+ * Exported so the mapping is unit-testable independent of the bridge.
+ */
+export function optionsFromSuggestions(suggestions: unknown): QuestionOption[] {
+  const stringSuggestions = Array.isArray(suggestions)
+    ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
+    : [];
+  if (stringSuggestions.length < 2) return [...DEFAULT_PERMISSION_OPTIONS];
+  return stringSuggestions.map((suggestion, idx) => {
+    const lower = suggestion.toLowerCase();
+    const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
+    const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
+    return { label: suggestion, value: String(idx + 1), isRecommended: idx === 0, isYes, isNo };
+  });
+}
 
 export class HookEventBridge {
   private readonly sessionId: UUID;
@@ -197,40 +218,31 @@ export class HookEventBridge {
     // one that does is genuinely answerable. The tracker handles both
     // cases; this method now only builds the question payload.
     const toolName = input.tool_name || 'unknown tool';
-    const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
-    // The action carries the command/path/pattern context (#497).
-    const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
-    // A subagent prompt names the agent so the user knows WHO is asking, e.g.
-    // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
-    const promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
 
+    // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
+    // question + option labels in tool_input; surface those instead of the
+    // generic "Allow <tool>" + Yes / Yes, always / No (#597). The options are
+    // picks (1-based value, never isYes/isNo) so a user answer releases the held
+    // hook and submits the matching digit to Claude's native numbered prompt.
+    const toolQuestion = extractToolQuestion(toolName, input.tool_input);
+
+    let promptText: string;
     let options: QuestionOption[];
-
-    // permission_suggestions is a union of string labels and structured
-    // object entries (e.g. {type:"addDirectories",...}, {type:"setMode",...}).
-    // The iOS question card renders text labels only, so filter to strings.
-    const suggestions = input.permission_suggestions;
-    const stringSuggestions = Array.isArray(suggestions)
-      ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
-      : [];
-
-    if (stringSuggestions.length >= 2) {
-      options = stringSuggestions.map((suggestion, idx) => {
-        const lower = suggestion.toLowerCase();
-        const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
-        const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
-        return {
-          label: suggestion,
-          value: String(idx + 1),
-          isRecommended: idx === 0,
-          isYes,
-          isNo,
-        };
-      });
+    if (toolQuestion) {
+      // Already phrased as a question, so no "Allow" prefix. A subagent prompt
+      // still names the agent so the user knows WHO is asking.
+      promptText = input.agent_type
+        ? `${input.agent_type} · ${toolQuestion.text}`
+        : toolQuestion.text;
+      options = toolQuestion.options;
     } else {
-      // Either no suggestions (Bash) or only structured object entries
-      // that the iOS card cannot render. Fall back to the default 3-set.
-      options = [...DEFAULT_PERMISSION_OPTIONS];
+      const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
+      // The action carries the command/path/pattern context (#497).
+      const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
+      // A subagent prompt names the agent, e.g.
+      // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
+      promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
+      options = optionsFromSuggestions(input.permission_suggestions);
     }
 
     const questionId = generateId();

@@ -186,6 +186,10 @@ export {
   createAuthorizedKeysFile,
 } from './identity.ts';
 
+// Native lock-screen relay bridge (#591 P2)
+export type { NativeIdentityRecord } from './native-bridge.ts';
+export { deriveNativeIdentity } from './native-bridge.ts';
+
 // Error helpers
 export { errorToString } from './error-utils.ts';
 
