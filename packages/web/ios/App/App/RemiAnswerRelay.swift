@@ -19,9 +19,12 @@ import Capacitor
 ///  - install runs AFTER the push plugin's load() (called from a deferred hook).
 ///
 /// Inputs are bridged from JS via Capacitor Preferences (UserDefaults
-/// `CapacitorStorage.*`): the Ed25519 seed/pubkey/fingerprint and the per-session
-/// route {code, signalingUrl}. Crypto compat is proven in
-/// packages/shared/tests/ed25519-native-seed-compat.test.ts.
+/// `CapacitorStorage.*`): the Ed25519 seed/pubkey/fingerprint and a per-session
+/// route {wsUrl} — the daemon URL the session is connected on, which the web app
+/// pins on hello_ack (the same URL its cold-start push-answer routing uses). The
+/// answer POSTs to that daemon's direct `/answer` endpoint (the same one
+/// `relayAnswerDirect` uses in-app), signed with the bridged seed. Crypto compat
+/// is proven in packages/shared/tests/native-bridge.test.ts.
 final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     static let shared = RemiAnswerRelay()
 
@@ -80,17 +83,17 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             return
         }
 
-        // Route to the daemon's room: primary from the push payload (the daemon
-        // stamps its relay `code` + `signalingUrl`), with a JS-bridged per-session
-        // route as a fallback.
-        let fallback = RemiNativeStore.route(forSession: sessionId)
-        let code = (userInfo["code"] as? String) ?? fallback?.code
-        let signalingUrl = (userInfo["signalingUrl"] as? String) ?? fallback?.signalingUrl
-        guard let code = code, !code.isEmpty, let signalingUrl = signalingUrl, !signalingUrl.isEmpty else {
-            NSLog("[remi] relay: no room code/signalingUrl in push or stored route; cannot relay")
+        // Route to the daemon: the web app pins the per-session daemon ws URL
+        // (CapacitorStorage.remi-native-routes) on hello_ack. POST the answer to
+        // that daemon's direct `/answer` endpoint, signed — the same path
+        // `relayAnswerDirect` uses in-app. Reachable from the lock screen when the
+        // daemon URL is a Tailscale/public host; a LAN-only daemon is not, the
+        // same limit the in-app reconnect has.
+        guard let route = RemiNativeStore.route(forSession: sessionId), !route.wsUrl.isEmpty else {
+            NSLog("[remi] relay: no stored daemon URL for session \(sessionId); cannot relay")
             return
         }
-        let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? fallback?.claudeSessionId
+        let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? route.claudeSessionId
 
         let message = "\(sessionId)|\(questionId)|\(answerValue)"
         guard let auth = RemiNativeStore.sign(message: message) else {
@@ -98,18 +101,26 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             return
         }
 
-        post(signalingUrl: signalingUrl, code: code, sessionId: sessionId, questionId: questionId,
+        post(wsUrl: route.wsUrl, sessionId: sessionId, questionId: questionId,
              answer: answerValue, claudeSessionId: claudeSessionId, auth: auth)
     }
 
-    private func post(signalingUrl: String, code: String, sessionId: String, questionId: String,
+    private func post(wsUrl: String, sessionId: String, questionId: String,
                       answer: String, claudeSessionId: String?, auth: RemiNativeStore.Auth) {
-        // Normalize a ws(s):// base to http(s):// for the POST.
-        let base = signalingUrl
+        // Normalize the daemon ws(s):// URL to http(s):// and target the root
+        // `/answer` endpoint (mirrors push-answer-relay.ts `answerUrl`).
+        let base = wsUrl
             .replacingOccurrences(of: "wss://", with: "https://")
             .replacingOccurrences(of: "ws://", with: "http://")
-        guard let url = URL(string: "\(base)/answer/\(code)") else {
-            NSLog("[remi] relay: bad URL \(base)/answer/\(code)")
+        guard var comps = URLComponents(string: base) else {
+            NSLog("[remi] relay: bad daemon URL \(base)")
+            return
+        }
+        comps.path = "/answer"
+        comps.query = nil
+        comps.fragment = nil
+        guard let url = comps.url else {
+            NSLog("[remi] relay: cannot build /answer URL from \(base)")
             return
         }
 
@@ -162,7 +173,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
 /// (UserDefaults `CapacitorStorage.<key>`) and signs with CryptoKit.
 enum RemiNativeStore {
     struct Auth { let signature: String; let publicKey: String; let fingerprint: String }
-    struct Route { let code: String; let signalingUrl: String; let claudeSessionId: String? }
+    struct Route { let wsUrl: String; let claudeSessionId: String? }
 
     private static let identityKey = "CapacitorStorage.remi-native-identity"
     private static let routesKey = "CapacitorStorage.remi-native-routes"
@@ -184,10 +195,10 @@ enum RemiNativeStore {
         return Auth(signature: sig.base64EncodedString(), publicKey: pub, fingerprint: fp)
     }
 
-    /// Look up the relay route (room code + signaling base URL) for a session.
+    /// Look up the daemon ws URL pinned for a session (written by the web app).
     static func route(forSession sessionId: String) -> Route? {
         guard let map = jsonObject(routesKey) as? [String: [String: String]],
-              let r = map[sessionId], let code = r["code"], let url = r["signalingUrl"] else { return nil }
-        return Route(code: code, signalingUrl: url, claudeSessionId: r["claudeSessionId"])
+              let r = map[sessionId], let wsUrl = r["wsUrl"] else { return nil }
+        return Route(wsUrl: wsUrl, claudeSessionId: r["claudeSessionId"])
     }
 }
