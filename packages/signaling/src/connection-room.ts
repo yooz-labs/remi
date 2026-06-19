@@ -55,9 +55,15 @@ export class ConnectionRoom {
    * Handle HTTP requests (WebSocket upgrade).
    */
   async fetch(request: Request): Promise<Response> {
-    // Only accept WebSocket upgrade
+    // Non-upgrade requests: the phone -> daemon answer relay (#591). A POST
+    // forwards an answer for a held permission into the host (daemon) WebSocket
+    // when the phone has no live WebSocket of its own (lock-screen /
+    // backgrounded). Everything else must be a WebSocket upgrade.
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader !== 'websocket') {
+      if (request.method === 'POST') {
+        return this.handleAnswerRelay(request);
+      }
       return new Response('Expected WebSocket', { status: 426 });
     }
 
@@ -83,6 +89,67 @@ export class ConnectionRoom {
 
     // webSocket property is Cloudflare-specific ResponseInit extension
     return new Response(null, { status: 101, webSocket: clientWs } as ResponseInit);
+  }
+
+  /**
+   * Forward a phone -> daemon answer (#591) into the host (daemon) WebSocket.
+   *
+   * The phone POSTs `{sessionId, questionId, answer, claudeSessionId?, auth?}` to
+   * the Worker's `/answer/{code}` route when it has no live WebSocket (a
+   * lock-screen / backgrounded answer). We wrap it as a `relay` message carrying
+   * an `answer` protocol message and send it to the host, exactly as the phone's
+   * own relay WebSocket would. The daemon verifies the `auth` signature before
+   * acting (the relay path has no authenticated WS peer here), so this route only
+   * needs the room code — the room's existing join secret.
+   */
+  private async handleAnswerRelay(request: Request): Promise<Response> {
+    const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
+    await this.restoreState();
+
+    let body: {
+      sessionId?: string;
+      questionId?: string;
+      answer?: string;
+      claudeSessionId?: string;
+      auth?: unknown;
+    };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return new Response(JSON.stringify({ result: 'invalid-json' }), {
+        status: 400,
+        headers: cors,
+      });
+    }
+
+    const { sessionId, questionId, answer, claudeSessionId, auth } = body;
+    if (!sessionId || !questionId || !answer) {
+      return new Response(JSON.stringify({ result: 'missing-fields' }), {
+        status: 400,
+        headers: cors,
+      });
+    }
+
+    const hostWs = this.findByRole('host');
+    if (!hostWs) {
+      return new Response(JSON.stringify({ result: 'no-peer' }), { status: 503, headers: cors });
+    }
+
+    // Wrap as the daemon's relay envelope (payload is a JSON-encoded protocol
+    // message, matching what the phone's relay WebSocket sends for an answer).
+    const inner = JSON.stringify({
+      type: 'answer',
+      sessionId,
+      questionId,
+      answer,
+      ...(claudeSessionId ? { claudeSessionId } : {}),
+      ...(auth ? { auth } : {}),
+    });
+    const ok = this.send(hostWs, { type: 'relay', payload: inner });
+    return new Response(JSON.stringify({ result: ok ? 'delivered' : 'send-failed' }), {
+      status: ok ? 200 : 502,
+      headers: cors,
+    });
   }
 
   /**

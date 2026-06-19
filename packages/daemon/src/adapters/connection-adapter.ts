@@ -83,8 +83,9 @@ export interface AdapterEvents {
 
   /**
    * Connection-independent answer relay (#575, P4a). Used by the HTTP /answer
-   * endpoint; returns a structured outcome so the route can JSON-encode it.
-   * Only the WebSocket adapter exposes a relay endpoint today.
+   * endpoint (WebSocket adapter) and, for a lock-screen / backgrounded phone, by
+   * the relay adapter's self-authenticating answer path (#591). Returns a
+   * structured outcome so the caller can act on / encode it.
    */
   onAnswerRelay?: (
     sessionId: UUID,
