@@ -106,6 +106,17 @@ export class ConnectionRoom {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
     await this.restoreState();
 
+    // A stale code whose cleanup alarm has not yet fired must not route an answer.
+    // Distinct 410 (vs the no-peer 503) tells the caller the code is dead, so it
+    // does not waste a WebSocket-reconnect fallback on a room that will never
+    // accept it.
+    if (this.code && Date.now() > this.expiresAt) {
+      return new Response(JSON.stringify({ result: 'room-expired' }), {
+        status: 410,
+        headers: cors,
+      });
+    }
+
     let body: {
       sessionId?: string;
       questionId?: string;

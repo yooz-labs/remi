@@ -125,6 +125,30 @@ describe('ConnectionRoom.handleAnswerRelay (#591)', () => {
     );
     expect(res.status).toBe(426);
   });
+
+  test('returns room-expired (410) when the restored code has expired', async () => {
+    const host = makeWs('host');
+    // restoreState() loads code + a PAST expiresAt (epoch 1 << now) from storage.
+    const expiredState = {
+      storage: {
+        get: async () =>
+          new Map<string, unknown>([
+            ['code', 'WXYZ-2345'],
+            ['expiresAt', 1],
+          ]),
+        put: async () => {},
+        deleteAll: async () => {},
+        setAlarm: () => {},
+      },
+      getWebSockets: () => [host],
+      acceptWebSocket: () => {},
+    };
+    const room = new ConnectionRoom(expiredState, ENV);
+    const res = await room.fetch(answerRequest('WXYZ-2345', VALID));
+    expect(res.status).toBe(410);
+    expect(((await res.json()) as { result: string }).result).toBe('room-expired');
+    expect(host.sent).toHaveLength(0);
+  });
 });
 
 describe('worker /answer/{code} route (#591)', () => {

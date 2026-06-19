@@ -164,9 +164,15 @@ export class RelayAdapter implements ConnectionAdapter {
         // #591: a connection-independent relayed answer (lock-screen / backgrounded
         // phone) is SELF-AUTHENTICATING — it carries an Ed25519 `auth` block and is
         // dispatched via the relayAnswer path, so it needs NO connected /
-        // handshake-authenticated WS peer (there is none). Verify + route it before
-        // the peer gates below.
-        if (message.type === 'answer' && message.auth && typeof message.auth === 'object') {
+        // handshake-authenticated WS peer (there is none). Gate on the ABSENCE of a
+        // connected peer so a normal connected peer's answer always uses the
+        // standard onAnswer routing even if a future client signs WS answers.
+        if (
+          !this.clientConnectionId &&
+          message.type === 'answer' &&
+          message.auth &&
+          typeof message.auth === 'object'
+        ) {
           this.handleRelayedAnswer(message).catch((err) =>
             console.warn('Relayed answer error:', err instanceof Error ? err.message : err),
           );
@@ -287,15 +293,22 @@ export class RelayAdapter implements ConnectionAdapter {
       }
     }
 
+    // Fail loud if the connection-independent relay handler is not wired (a
+    // partial events object) — otherwise a lock-screen answer would vanish with
+    // no trace and the permission would stay held forever.
+    if (!this.events.onAnswerRelay) {
+      console.warn('Relayed answer dropped: onAnswerRelay not wired on the relay adapter');
+      return;
+    }
     const claudeId =
       typeof msg['claudeSessionId'] === 'string' ? (msg['claudeSessionId'] as UUID) : undefined;
-    const outcome = await this.events.onAnswerRelay?.(
+    const outcome = await this.events.onAnswerRelay(
       sessionId as UUID,
       questionId as UUID,
       answer,
       claudeId,
     );
-    if (outcome && outcome !== 'delivered') {
+    if (outcome !== 'delivered') {
       console.warn(`Relayed answer not delivered: ${outcome}`);
     }
   }

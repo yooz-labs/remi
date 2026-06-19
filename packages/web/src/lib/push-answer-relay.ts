@@ -245,7 +245,8 @@ export async function relayAnswerViaSignaling(input: SignalingRelayInput): Promi
     try {
       built = await buildAuth(message);
     } catch (err) {
-      return { kind: 'unreachable', reason: `sign failed: ${(err as Error).message ?? err}` };
+      const detail = err instanceof Error ? err.message || err.name : String(err);
+      return { kind: 'unreachable', reason: `sign failed: ${detail}` };
     }
     if (built === null) {
       return { kind: 'needs-passphrase' };
@@ -281,10 +282,16 @@ export async function relayAnswerViaSignaling(input: SignalingRelayInput): Promi
     if (res.ok && parsed.result === 'delivered') {
       return { kind: 'delivered' };
     }
-    // 503 = the daemon is not connected to the room (no host peer). The caller
-    // may still fall back to a WebSocket reconnect, so report as unreachable.
-    if (res.status === 503) {
-      return { kind: 'unreachable', reason: parsed.result ?? 'no-peer' };
+    // 503 no-peer (daemon not connected to the room) or 502 send-failed (the
+    // daemon's room WS dropped at the moment of the relay) may still resolve via a
+    // WebSocket reconnect, so report as unreachable (caller MAY fall back).
+    if (res.status === 503 || res.status === 502) {
+      return { kind: 'unreachable', reason: parsed.result ?? `http ${res.status}` };
+    }
+    // 410 room-expired: the connection code is stale; a reconnect won't help, so
+    // surface as a definitive refusal like a stale answer.
+    if (res.status === 410) {
+      return { kind: 'rejected', result: parsed.result ?? 'room-expired' };
     }
     return { kind: 'rejected', result: parsed.result ?? `http ${res.status}` };
   } catch (err) {

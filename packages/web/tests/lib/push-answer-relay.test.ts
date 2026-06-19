@@ -352,4 +352,50 @@ describe('relayAnswerViaSignaling (#591)', () => {
     });
     expect(result.kind).toBe('unreachable');
   });
+
+  test('502 send-failed maps to unreachable (caller may fall back to WS)', async () => {
+    const server = startServer(
+      () =>
+        new Response(JSON.stringify({ result: 'send-failed' }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: false,
+      });
+      expect(result.kind).toBe('unreachable');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('410 room-expired maps to rejected (stale code, do not retry)', async () => {
+    const server = startServer(
+      () =>
+        new Response(JSON.stringify({ result: 'room-expired' }), {
+          status: 410,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: false,
+      });
+      expect(result.kind).toBe('rejected');
+    } finally {
+      server.stop();
+    }
+  });
 });
