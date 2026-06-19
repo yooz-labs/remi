@@ -156,4 +156,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             backgroundTask = .invalid
         }
     }
+
+    // #591 P2: wrap Capacitor's push notification handler so a lock-screen answer
+    // relays natively (silent, no app open). Deferred to here so it runs AFTER the
+    // push plugin's load() installed the original handler; install() is idempotent.
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        if let bridgeVC = window?.rootViewController as? CAPBridgeViewController {
+            RemiAnswerRelay.shared.install(bridge: bridgeVC.bridge)
+        }
+    }
 }

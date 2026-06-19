@@ -13,6 +13,7 @@ import { probeAuthInfo } from '@/lib/auth-probe';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
+import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { setSoundEnabled } from '@/lib/notifications';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
@@ -90,6 +91,10 @@ function rememberSessionDaemon(sessionId: string, url: string): void {
  */
 function forgetEvictedSessions(evictedIds: readonly string[]): void {
   if (evictedIds.length === 0) return;
+  // Mirror eviction into native storage (#591 P2) so a stale daemon URL can't
+  // misdirect a lock-screen answer for a session that no longer exists.
+  // Fire-and-forget; no-op off-native, never throws.
+  for (const id of evictedIds) void clearNativeRoute(id);
   const evicted = new Set(evictedIds);
   try {
     const stored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);
@@ -348,7 +353,17 @@ function App() {
         // right daemon when multiple are paired. Look up the connection's URL
         // synchronously from the latest snapshot.
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
-        if (conn?.url) rememberSessionDaemon(message.sessionId, conn.url);
+        if (conn?.url) {
+          rememberSessionDaemon(message.sessionId, conn.url);
+          // Mirror the daemon URL + signer to native storage (#591 P2) so a
+          // lock-screen answer can sign + POST to the daemon's /answer endpoint
+          // without opening the app. No-ops off-native; never throws.
+          void setNativeRoute(message.sessionId, {
+            wsUrl: conn.url,
+            ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
+          });
+          void syncNativeIdentity();
+        }
 
         // Reconnect-mid-rotation only: if the chat the user is CURRENTLY
         // viewing belongs to this connection and the daemon came back with a
@@ -1154,6 +1169,14 @@ function App() {
   useEffect(() => {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
+
+  // Bridge the current signer to native storage once on launch (#591 P2) so the
+  // lock-screen answer handler can sign even before a fresh connection — covers
+  // a cold start from a push and identity changes made in Settings. No-op
+  // off-native; re-pinned per-connection at hello_ack.
+  useEffect(() => {
+    void syncNativeIdentity();
+  }, []);
 
   useEffect(() => {
     messagesRef.current = messages;
