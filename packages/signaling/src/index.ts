@@ -60,6 +60,8 @@ interface PushRequestBody {
 const rateLimiter = new RateLimiter(10, 60_000);
 /** Per-IP rate limiter for push: 5 pushes per 60 seconds */
 const pushRateLimiter = new RateLimiter(5, 60_000);
+/** Per-IP rate limiter for the answer relay: 10 answers per 60 seconds */
+const answerRateLimiter = new RateLimiter(10, 60_000);
 
 /** Main worker */
 export default {
@@ -113,6 +115,37 @@ export default {
 
       // Forward the WebSocket upgrade request (URL contains the code for the DO to extract)
       return room.fetch(request);
+    }
+
+    // Answer relay (#591): phone -> daemon answer for a held permission, used
+    // when the phone has no live WebSocket (lock-screen / backgrounded). Forwards
+    // the answer into the daemon's room WebSocket. Code-gated like joining the
+    // room; the daemon verifies the Ed25519 `auth` signature before acting.
+    const answerMatch = url.pathname.match(/^\/answer\/([A-Z0-9-]+)$/i);
+    if (answerMatch && request.method === 'POST') {
+      const corsHeaders = {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json',
+      };
+      const answerCode = normalizeCode(answerMatch[1] ?? '');
+      if (!answerCode) {
+        return new Response(
+          JSON.stringify({ error: 'INVALID_CODE', message: 'Invalid connection code format' }),
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      const answerIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      if (!answerRateLimiter.check(answerIp)) {
+        return new Response(
+          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many answer requests' }),
+          { status: 429, headers: { ...corsHeaders, 'Retry-After': '60' } },
+        );
+      }
+      // Route to the same code-named room the daemon registered; the DO forwards
+      // the POST body to the host WebSocket (see ConnectionRoom.handleAnswerRelay).
+      const answerRoomId = env.CONNECTIONS.idFromName(answerCode);
+      const answerRoom = env.CONNECTIONS.get(answerRoomId);
+      return answerRoom.fetch(request);
     }
 
     // Push notification trigger endpoint (authenticated, rate-limited)
