@@ -517,6 +517,19 @@ export class TranscriptBinder {
     this.adoptLockFromStore();
     if (!this.currentBoundId) return !this.hasSiblingInDir();
     if (event.session_id === this.currentBoundId) return true;
+    // #593: a SUBAGENT of our session (agent_id present) can carry a session_id
+    // that differs from our lock — parallel/team subagents, or an empty
+    // 00000000 id — while still sharing OUR main transcript. Admit it when its
+    // transcript_path is the one we are bound to: a file-free check, so it is
+    // robust to a transcript whose head marker is not yet readable (a binding
+    // still settling), which the marker read below is NOT. Without this, such a
+    // subagent's PermissionRequest is dropped to passthrough and never reaches
+    // the auto-approve gate (no eval, no "evaluating" status). A sibling daemon's
+    // subagent carries the SIBLING's transcript path, so it stays foreign here
+    // and cross-session isolation (#451) is preserved.
+    if (this.isSubagentEvent(event) && this.boundTranscriptMatches(event.transcript_path)) {
+      return true;
+    }
     // Stale-lock recovery (#518): the lock disagrees, but the incoming event's
     // transcript carries OUR port marker, so it is provably ours. Admit it; the
     // next binding event's onHookEvent re-adopts the lock. No state mutation —
@@ -525,6 +538,22 @@ export class TranscriptBinder {
     // stays genuinely foreign (a real sibling), where the 8KB head read is
     // bounded and acceptable.
     return this.incomingReclaimsViaMarker(event);
+  }
+
+  /**
+   * #593: file-free ownership — true when `transcriptPath` is the transcript this
+   * binder is bound to (our main transcript, tracked as `lastTranscriptPath`).
+   * Unlike the marker head-read it needs no file content, so it survives the
+   * window where a transcript exists in the hook event but its content/marker is
+   * not yet readable (the give-session failure mode).
+   */
+  private boundTranscriptMatches(transcriptPath: string | undefined): boolean {
+    if (!transcriptPath || !this.lastTranscriptPath) return false;
+    try {
+      return path.resolve(transcriptPath) === path.resolve(this.lastTranscriptPath);
+    } catch {
+      return false;
+    }
   }
 
   /**
