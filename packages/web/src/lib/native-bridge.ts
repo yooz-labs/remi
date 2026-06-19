@@ -3,9 +3,10 @@
  *
  * The iOS native handler (`RemiAnswerRelay.swift`) answers a held permission from
  * the lock screen WITHOUT opening the app: it signs the answer with the Ed25519
- * seed and POSTs it to the signaling Worker's `/answer/{code}` reverse relay. The
- * native code runs in a background launch and cannot read the WebView's
- * localStorage, so this module mirrors the minimum it needs into UserDefaults via
+ * seed and POSTs it to the daemon's direct `/answer` endpoint (the same path
+ * `relayAnswerDirect` uses in-app). The native code runs in a background launch
+ * and cannot read the WebView's localStorage, so this module mirrors the minimum
+ * it needs into UserDefaults via
  * `@capacitor/preferences` (which stores under `CapacitorStorage.<key>` — exactly
  * the keys `RemiNativeStore` reads natively):
  *
@@ -28,6 +29,9 @@ import { isNative } from './platform';
 
 const IDENTITY_KEY = 'remi-native-identity';
 const ROUTES_KEY = 'remi-native-routes';
+/** Backstop cap on stored routes so a long-lived install can't grow unbounded
+ *  if a teardown clear is ever missed. Routes are also dropped on eviction. */
+const MAX_ROUTES = 32;
 
 /** Per-session routing the native handler uses to reach the daemon. */
 export interface NativeRoute {
@@ -60,9 +64,9 @@ export async function syncNativeIdentity(): Promise<void> {
 }
 
 /**
- * Record (or update) the relay route for a session so a lock-screen answer can
- * reach the daemon's signaling room. Call when a signaling-backed connection is
- * established for `sessionId`. No-op off-native; never throws.
+ * Record (or update) the daemon URL for a session so a lock-screen answer can
+ * reach the daemon's `/answer` endpoint directly. Call at `hello_ack` for any
+ * connection (direct or relay). No-op off-native; never throws.
  */
 export async function setNativeRoute(sessionId: string, route: NativeRoute): Promise<void> {
   if (!isNative()) return;
@@ -72,6 +76,14 @@ export async function setNativeRoute(sessionId: string, route: NativeRoute): Pro
       wsUrl: route.wsUrl,
       ...(route.claudeSessionId ? { claudeSessionId: route.claudeSessionId } : {}),
     };
+    // Backstop eviction (oldest first, never the entry we just wrote) so a
+    // missed teardown can't grow the map without bound.
+    const keys = Object.keys(routes);
+    if (keys.length > MAX_ROUTES) {
+      for (const k of keys.slice(0, keys.length - MAX_ROUTES)) {
+        if (k !== sessionId) delete routes[k];
+      }
+    }
     await Preferences.set({ key: ROUTES_KEY, value: JSON.stringify(routes) });
   } catch (err) {
     console.warn('[remi] setNativeRoute failed:', err);
@@ -99,7 +111,9 @@ async function readRoutes(): Promise<Record<string, NativeRoute>> {
     const parsed = JSON.parse(value) as unknown;
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, NativeRoute>) : {};
   } catch {
-    // Corrupt blob: start fresh rather than wedging every future write.
+    // Corrupt blob: start fresh rather than wedging every future write. Log it,
+    // else "lock-screen answer stopped working after a crash" debugs blind.
+    console.warn('[remi] native routes blob is corrupt; resetting');
     return {};
   }
 }

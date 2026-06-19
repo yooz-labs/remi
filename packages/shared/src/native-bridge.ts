@@ -49,8 +49,16 @@ const ED25519_SEED_LEN = 32;
 export function deriveNativeIdentity(identity: RemiIdentity): NativeIdentityRecord | null {
   if (isEncrypted(identity)) return null;
   // Unencrypted: `encryptedPrivateKey` is the raw PKCS8 base64. `fromBase64`
-  // returns an ArrayBuffer, so slice past the 16-byte prefix and check byteLength.
-  const pkcs8 = fromBase64(identity.encryptedPrivateKey);
+  // throws on a malformed (non-base64) value; treat that as not-bridgeable too,
+  // so the function honors its documented "null on malformed PKCS8" contract
+  // instead of leaking a throw to a fire-and-forget caller.
+  let pkcs8: ArrayBuffer;
+  try {
+    pkcs8 = fromBase64(identity.encryptedPrivateKey);
+  } catch {
+    return null;
+  }
+  // Slice past the 16-byte prefix; `fromBase64` returns an ArrayBuffer, so check byteLength.
   const seed = pkcs8.slice(PKCS8_PREFIX_LEN);
   if (seed.byteLength !== ED25519_SEED_LEN) return null;
   return {

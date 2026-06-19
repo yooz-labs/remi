@@ -68,6 +68,13 @@ describe('#591 P2 — deriveNativeIdentity', () => {
     expect(deriveNativeIdentity(encrypted)).toBeNull();
   });
 
+  test('a malformed (non-base64) unencrypted key returns null, never throws', async () => {
+    const identity = await createIdentity();
+    // iterations === 0 keeps it "unencrypted", but the PKCS8 blob is garbage.
+    const malformed = { ...identity, encryptedPrivateKey: '%%% not base64 %%%' };
+    expect(deriveNativeIdentity(malformed)).toBeNull();
+  });
+
   test('the public key round-trips to the same raw bytes the daemon expects', async () => {
     const identity = await createIdentity();
     const record = deriveNativeIdentity(identity);

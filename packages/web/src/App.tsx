@@ -13,7 +13,7 @@ import { probeAuthInfo } from '@/lib/auth-probe';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
-import { setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
+import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { setSoundEnabled } from '@/lib/notifications';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
@@ -91,6 +91,10 @@ function rememberSessionDaemon(sessionId: string, url: string): void {
  */
 function forgetEvictedSessions(evictedIds: readonly string[]): void {
   if (evictedIds.length === 0) return;
+  // Mirror eviction into native storage (#591 P2) so a stale daemon URL can't
+  // misdirect a lock-screen answer for a session that no longer exists.
+  // Fire-and-forget; no-op off-native, never throws.
+  for (const id of evictedIds) void clearNativeRoute(id);
   const evicted = new Set(evictedIds);
   try {
     const stored = localStorage.getItem(LOCALSTORAGE_SESSION_DAEMONS_KEY);

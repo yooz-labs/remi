@@ -7,10 +7,10 @@ import Capacitor
 /// #591 P2 — native silent lock-screen answer relay (Duo-style).
 ///
 /// Wraps Capacitor's push `NotificationHandlerProtocol` (the handler the router
-/// invokes on a notification action) so a lock-screen Yes/No/Always tap is
-/// relayed to the daemon via the signaling Worker `/answer/{code}` WITHOUT opening
-/// the app. The captured Capacitor handler is still invoked, so the JS path keeps
-/// working when the app is alive (foreground).
+/// invokes on a notification action) so a lock-screen Yes/No/Always tap is signed
+/// and POSTed to the daemon's direct `/answer` endpoint WITHOUT opening the app.
+/// The captured Capacitor handler is still invoked, so the JS path keeps working
+/// when the app is alive (foreground).
 ///
 /// Gotchas handled (from Capacitor/NotificationRouter.swift):
 ///  - `pushNotificationHandler` is WEAK -> `shared` retains this instance.
@@ -125,14 +125,16 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         }
 
         // didReceive is synchronous + the router completes immediately, so extend
-        // execution ourselves for the async POST (~30s budget).
+        // execution ourselves for the async POST (~30s budget). The expiry handler
+        // and the URLSession completion can fire on different queues, so serialize
+        // the end-task with a lock to avoid a double endBackgroundTask race.
+        let lock = NSLock()
         var bgTask: UIBackgroundTaskIdentifier = .invalid
-        bgTask = UIApplication.shared.beginBackgroundTask(withName: "RemiAnswerRelay") {
-            if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid }
-        }
         let endTask = {
+            lock.lock(); defer { lock.unlock() }
             if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid }
         }
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "RemiAnswerRelay") { endTask() }
 
         var body: [String: Any] = [
             "sessionId": sessionId,
@@ -196,9 +198,17 @@ enum RemiNativeStore {
     }
 
     /// Look up the daemon ws URL pinned for a session (written by the web app).
+    /// Distinguishes "never set up" (silent nil) from a corrupt blob (logged) so
+    /// the two failure modes aren't indistinguishable in the device log.
     static func route(forSession sessionId: String) -> Route? {
-        guard let map = jsonObject(routesKey) as? [String: [String: String]],
-              let r = map[sessionId], let wsUrl = r["wsUrl"] else { return nil }
+        guard let raw = UserDefaults.standard.string(forKey: routesKey) else { return nil }
+        guard let data = raw.data(using: .utf8),
+              let map = (try? JSONSerialization.jsonObject(with: data)) as? [String: [String: String]]
+        else {
+            NSLog("[remi] RemiNativeStore: routes blob is corrupt or unreadable")
+            return nil
+        }
+        guard let r = map[sessionId], let wsUrl = r["wsUrl"] else { return nil }
         return Route(wsUrl: wsUrl, claudeSessionId: r["claudeSessionId"])
     }
 }
