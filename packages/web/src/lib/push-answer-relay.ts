@@ -190,3 +190,107 @@ export async function relayAnswerDirect(input: RelayInput): Promise<RelayResult>
     clearTimeout(timeoutId);
   }
 }
+
+/**
+ * Convert the signaling base URL + room code to its `https://host/answer/{code}`
+ * form (#591). Accepts `ws(s)://` or `http(s)://`. Throws on an unsupported scheme.
+ */
+export function signalingAnswerUrl(signalingUrl: string, code: string): string {
+  const u = new URL(signalingUrl);
+  let scheme: string;
+  if (u.protocol === 'wss:') scheme = 'https:';
+  else if (u.protocol === 'ws:') scheme = 'http:';
+  else if (u.protocol === 'https:' || u.protocol === 'http:') scheme = u.protocol;
+  else throw new Error(`Unsupported scheme: ${u.protocol}`);
+  return `${scheme}//${u.host}/answer/${encodeURIComponent(code)}`;
+}
+
+interface SignalingRelayInput {
+  /** Signaling base URL (`wss://…workers.dev` or `https://…`). */
+  readonly signalingUrl: string;
+  /** Connection code naming the daemon's room. */
+  readonly code: string;
+  readonly sessionId: string;
+  readonly questionId: string;
+  readonly answer: string;
+  readonly claudeSessionId?: string | undefined;
+  /** When true, sign the request (the daemon verifies it on the relay path). */
+  readonly authRequired: boolean;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Deliver an answer via the signaling Worker's reverse relay (#591) — the path
+ * for a remote phone whose daemon is not directly reachable (WebRTC-relay case),
+ * where `relayAnswerDirect` returns `unreachable`. The Worker forwards the signed
+ * answer into the daemon's room WebSocket; the daemon verifies the signature, so
+ * we sign whenever an identity is available.
+ *
+ * Returns the same `RelayResult` shape as `relayAnswerDirect`. A 503 (`no-peer`,
+ * the daemon is not connected to the room) is reported as `unreachable` so the
+ * caller can still fall back to a WebSocket reconnect.
+ */
+export async function relayAnswerViaSignaling(input: SignalingRelayInput): Promise<RelayResult> {
+  let httpUrl: string;
+  try {
+    httpUrl = signalingAnswerUrl(input.signalingUrl, input.code);
+  } catch {
+    return { kind: 'unreachable', reason: 'bad signaling url' };
+  }
+
+  const message = `${input.sessionId}|${input.questionId}|${input.answer}`;
+  let auth: { signature: string; clientPublicKey: string; clientFingerprint: string } | undefined;
+  if (input.authRequired) {
+    let built: Awaited<ReturnType<typeof buildAuth>>;
+    try {
+      built = await buildAuth(message);
+    } catch (err) {
+      return { kind: 'unreachable', reason: `sign failed: ${(err as Error).message ?? err}` };
+    }
+    if (built === null) {
+      return { kind: 'needs-passphrase' };
+    }
+    auth = built;
+  }
+
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(httpUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: input.sessionId,
+        questionId: input.questionId,
+        answer: input.answer,
+        ...(input.claudeSessionId ? { claudeSessionId: input.claudeSessionId } : {}),
+        ...(auth ? { auth } : {}),
+      }),
+      signal: controller.signal,
+    });
+
+    let parsed: { result?: string } = {};
+    try {
+      parsed = (await res.json()) as { result?: string };
+    } catch {
+      // Non-JSON body; fall through to status-based handling.
+    }
+
+    if (res.ok && parsed.result === 'delivered') {
+      return { kind: 'delivered' };
+    }
+    // 503 = the daemon is not connected to the room (no host peer). The caller
+    // may still fall back to a WebSocket reconnect, so report as unreachable.
+    if (res.status === 503) {
+      return { kind: 'unreachable', reason: parsed.result ?? 'no-peer' };
+    }
+    return { kind: 'rejected', result: parsed.result ?? `http ${res.status}` };
+  } catch (err) {
+    const reason = (err as { name?: string })?.name === 'AbortError' ? 'timeout' : 'network error';
+    return { kind: 'unreachable', reason };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
