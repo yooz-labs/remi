@@ -49,9 +49,11 @@ function pickOption(label: string, index: number): QuestionOption {
 /**
  * ExitPlanMode's choices are NOT in tool_input (only the `plan` markdown is) —
  * they are Claude Code's built-in plan-approval options. Kept in the SAME order
- * Claude renders so a pick's submitted digit lands on the intended choice. If
- * Claude changes this set, the labels (display) drift but the positional digit
- * still maps; update here when that happens.
+ * Claude renders, because a pick's submitted digit lands on whatever Claude has
+ * at that position once the held hook releases — a wrong order is a silent
+ * wrong-pick. This order matches the maintainer's live observation 2026-06-19
+ * ("1 = auto mode, 2 = manual mode"). Reverify on each Claude Code release and
+ * update if it drifts — tracked in #598.
  */
 const EXIT_PLAN_MODE_OPTIONS: readonly string[] = [
   'Yes, and auto-accept edits',
@@ -88,11 +90,17 @@ export function extractToolQuestion(
     };
   }
 
-  // AskUserQuestion (and shape-compatible tools): `tool_input.questions[]`, each
-  // with a `question` string + `options` (strings or `{label}`). Remi answers one
-  // prompt at a time, so surface the FIRST question; a multi-question call still
-  // shows the first correctly and the rest fall to Claude's native prompt on
-  // release. A `header` (short topic) prefixes the question when present.
+  // AskUserQuestion AND shape-compatible tools (intentional, not name-gated): any
+  // tool whose tool_input carries `questions: [{ question, options }]`. This
+  // mirrors the auto-approve `isDesignQuestion` detector (multichoice.ts), which
+  // routes the SAME shape to always-escalate — so an MCP/custom tool that mimics
+  // AskUserQuestion gets its real options surfaced here too, consistently. The
+  // shape guards below are tight (record with a `question` string + a non-empty
+  // `options` array), so a tool with an unrelated `questions` field returns null
+  // and falls through to permission_suggestions. Remi answers one prompt at a
+  // time, so surface the FIRST question; a multi-question call still shows the
+  // first and the rest fall to Claude's native prompt on release. A `header`
+  // (short topic) prefixes the question when present.
   if (!isRecord(toolInput)) return null;
   const questions = toolInput['questions'];
   if (!Array.isArray(questions) || questions.length === 0) return null;

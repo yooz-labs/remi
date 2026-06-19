@@ -73,6 +73,27 @@ describe('extractToolQuestion', () => {
       extractToolQuestion('AskUserQuestion', { questions: [{ options: ['a', 'b'] }] }),
     ).toBeNull();
   });
+
+  it('surfaces a shape-compatible tool (mirrors isDesignQuestion), not an unrelated questions field', () => {
+    // Intentional + name-agnostic: an MCP/custom tool mimicking the
+    // AskUserQuestion shape gets its real options surfaced.
+    const q = extractToolQuestion('mcp__custom__ask', {
+      questions: [{ question: 'Proceed?', options: ['A', 'B'] }],
+    });
+    expect(q?.options.map((o) => o.label)).toEqual(['A', 'B']);
+    // A `questions` field that is not the question shape -> null (falls through).
+    expect(extractToolQuestion('SomeTool', { questions: [1, 2, 3] })).toBeNull();
+    expect(extractToolQuestion('SomeTool', { questions: ['just', 'strings'] })).toBeNull();
+  });
+
+  it('surfaces a single-option AskUserQuestion as one pick (does not mask it with Yes/No)', () => {
+    const q = extractToolQuestion('AskUserQuestion', {
+      questions: [{ question: 'Confirm the one thing?', options: ['Confirm'] }],
+    });
+    // Showing the real single choice beats a fabricated Yes/No fallback.
+    expect(q?.options.map((o) => o.label)).toEqual(['Confirm']);
+    expect(q?.options[0]?.value).toBe('1');
+  });
 });
 
 describe('optionsFromSuggestions', () => {
