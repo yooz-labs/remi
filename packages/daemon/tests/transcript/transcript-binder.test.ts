@@ -1130,5 +1130,36 @@ describe('TranscriptBinder', () => {
       });
       expect(admitted).toBe(true);
     });
+
+    test('admits a subagent in the store-adopt window: lock set, lastTranscriptPath still null', () => {
+      // The reviewer's gap: adoptLockFromStore can promote currentBoundId WITHOUT
+      // a SessionStart (mid-session attach / daemon restart), so lastTranscriptPath
+      // stays null and the exact-path check cannot fire. The basename signal must
+      // still admit a subagent sharing the main transcript named <boundId>.jsonl.
+      registerSession();
+      const binder = makeBinder();
+      (binder as unknown as { currentBoundId: string | null }).currentBoundId = 'main-claude';
+      const admitted = binder.admits({
+        session_id: 'subagent-store-adopt',
+        agent_id: 'agent-dddd',
+        transcript_path: path.join(tmpDir, 'main-claude.jsonl'),
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('store-adopt window stays isolated: a sibling subagent (foreign-named transcript) is not admitted', () => {
+      registerSession();
+      const binder = makeBinder();
+      (binder as unknown as { currentBoundId: string | null }).currentBoundId = 'main-claude';
+      const admitted = binder.admits({
+        session_id: 'sibling-sub',
+        agent_id: 'agent-eeee',
+        // named after the SIBLING's id, not ours; the file has no marker either
+        transcript_path: path.join(tmpDir, 'sibling-claude.jsonl'),
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
   });
 });

@@ -541,16 +541,30 @@ export class TranscriptBinder {
   }
 
   /**
-   * #593: file-free ownership — true when `transcriptPath` is the transcript this
-   * binder is bound to (our main transcript, tracked as `lastTranscriptPath`).
-   * Unlike the marker head-read it needs no file content, so it survives the
-   * window where a transcript exists in the hook event but its content/marker is
-   * not yet readable (the give-session failure mode).
+   * #593: file-free ownership of `transcriptPath` (our main transcript), used to
+   * admit a subagent that shares it. Two signals, neither reads file content, so
+   * both survive the window where a transcript exists in the hook event but its
+   * head marker is not yet readable (the give failure mode):
+   *   (a) exact equality with the transcript we are actively watching
+   *       (`lastTranscriptPath`); and
+   *   (b) the file is named `<claudeSessionId>.jsonl`, so its basename equals our
+   *       bound id (`currentBoundId`). (b) is REQUIRED for the case the lock was
+   *       adopted from the binding store WITHOUT a SessionStart (mid-session
+   *       attach / daemon restart), where `lastTranscriptPath` is still null.
+   * A sibling daemon's subagent is named after the SIBLING's id / lives at the
+   * sibling's path, so neither signal matches and isolation (#451) holds.
    */
   private boundTranscriptMatches(transcriptPath: string | undefined): boolean {
-    if (!transcriptPath || !this.lastTranscriptPath) return false;
+    if (!transcriptPath) return false;
     try {
-      return path.resolve(transcriptPath) === path.resolve(this.lastTranscriptPath);
+      const resolved = path.resolve(transcriptPath);
+      if (this.lastTranscriptPath && resolved === path.resolve(this.lastTranscriptPath)) {
+        return true;
+      }
+      if (this.currentBoundId && path.basename(resolved, '.jsonl') === this.currentBoundId) {
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }
