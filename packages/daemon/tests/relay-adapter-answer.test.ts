@@ -25,7 +25,7 @@ interface Relayed {
   sessionId: UUID;
   questionId: UUID;
   answer: string;
-  claudeSessionId?: UUID;
+  claudeSessionId?: UUID | undefined;
 }
 
 function makeTmpDir(): string {
