@@ -47,6 +47,31 @@ foreground and we never clobber the global delegate.
      fires when the app is alive.
    - Actions WITHOUT `.foreground` (background handling).
 
+### Verified Capacitor seam + native foot-guns (read before coding)
+
+`Capacitor/NotificationRouter.swift` is the `UNUserNotificationCenterDelegate`.
+The push plugin sets `bridge.notificationRouter.pushNotificationHandler` (a
+`NotificationHandlerProtocol` with `willPresent` + `didReceive(response:)`) in its
+`load()`. Wrap THAT property: capture the existing handler, install a wrapper that
+does the native relay then forwards to the captured handler. Three gotchas the
+router source makes explicit:
+
+1. **`pushNotificationHandler` is `weak`.** A wrapper must be retained by us (a
+   static/singleton) or it deallocates to nil and notifications stop routing. Also
+   keep a strong ref to Capacitor's original handler inside the wrapper to forward.
+2. **`didReceive(response:)` is synchronous** and the router calls
+   `completionHandler()` immediately after it returns. So an async URLSession POST
+   started in `didReceive` is NOT covered by the router's completion — it must run
+   under its own `application.beginBackgroundTask` (~30s) and `endBackgroundTask`
+   on completion, independent of the router.
+3. **Install timing**: the wrap must run AFTER the push plugin's `load()` (which
+   sets the original handler). Plugin load order isn't guaranteed, so do the wrap
+   from a deferred hook (e.g. AppDelegate `applicationDidBecomeActive`, guarded to
+   run once) rather than a custom plugin's `load()`.
+4. Only a PUSH-trigger response routes to `pushNotificationHandler` (the router
+   checks `UNPushNotificationTrigger`), which matches our APNS escalation pushes.
+5. Actions stay WITHOUT `.foreground` (background handling, no app open).
+
 ### On-device validation (one cycle, after the build)
 
 - Lock screen, app killed, cellular: tap Yes/No -> Claude proceeds; card clears.
