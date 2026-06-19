@@ -1200,7 +1200,21 @@ export function setupHookBridge(
     if (driveBinder) driveBinder.onHookEvent(input);
     else initFromHookEvent(input);
     shadowDecide('PermissionRequest', input);
-    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) return 'passthrough';
+    if (!(driveBinder ? driveBinder.admits(input) : filterBySession(input))) {
+      // #593: a PermissionRequest we don't own returns passthrough so the owning
+      // daemon decides. Until now that drop was SILENT — which hid the bug where a
+      // SUBAGENT permission is rejected here (e.g. it carries a different/empty
+      // session_id, or arrives during a startup/binding window) and so never
+      // reaches the auto-approve gate: the user sees the native prompt with no AA
+      // and no "evaluating" status. Log it so the drop is diagnosable; a `subagent`
+      // tag on these lines is the smell for #593.
+      log(
+        `[Hooks] PermissionRequest NOT admitted -> passthrough (no AA eval): tool=${input.tool_name} ` +
+          `incoming=${input.session_id?.slice(0, 8) ?? '-'} ` +
+          `agent=${isSubagentEvent(input) ? (input.agent_id?.slice(0, 8) ?? 'subagent') : 'main'}`,
+      );
+      return 'passthrough';
+    }
     return autoApproveGate.resolvePermission(input);
   });
   hookServer.on('Stop', (input) => {

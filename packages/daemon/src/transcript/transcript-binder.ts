@@ -517,6 +517,19 @@ export class TranscriptBinder {
     this.adoptLockFromStore();
     if (!this.currentBoundId) return !this.hasSiblingInDir();
     if (event.session_id === this.currentBoundId) return true;
+    // #593: a SUBAGENT of our session (agent_id present) can carry a session_id
+    // that differs from our lock — parallel/team subagents, or an empty
+    // 00000000 id — while still sharing OUR main transcript. Admit it when its
+    // transcript_path is the one we are bound to: a file-free check, so it is
+    // robust to a transcript whose head marker is not yet readable (a binding
+    // still settling), which the marker read below is NOT. Without this, such a
+    // subagent's PermissionRequest is dropped to passthrough and never reaches
+    // the auto-approve gate (no eval, no "evaluating" status). A sibling daemon's
+    // subagent carries the SIBLING's transcript path, so it stays foreign here
+    // and cross-session isolation (#451) is preserved.
+    if (this.isSubagentEvent(event) && this.boundTranscriptMatches(event.transcript_path)) {
+      return true;
+    }
     // Stale-lock recovery (#518): the lock disagrees, but the incoming event's
     // transcript carries OUR port marker, so it is provably ours. Admit it; the
     // next binding event's onHookEvent re-adopts the lock. No state mutation —
@@ -525,6 +538,36 @@ export class TranscriptBinder {
     // stays genuinely foreign (a real sibling), where the 8KB head read is
     // bounded and acceptable.
     return this.incomingReclaimsViaMarker(event);
+  }
+
+  /**
+   * #593: file-free ownership of `transcriptPath` (our main transcript), used to
+   * admit a subagent that shares it. Two signals, neither reads file content, so
+   * both survive the window where a transcript exists in the hook event but its
+   * head marker is not yet readable (the give failure mode):
+   *   (a) exact equality with the transcript we are actively watching
+   *       (`lastTranscriptPath`); and
+   *   (b) the file is named `<claudeSessionId>.jsonl`, so its basename equals our
+   *       bound id (`currentBoundId`). (b) is REQUIRED for the case the lock was
+   *       adopted from the binding store WITHOUT a SessionStart (mid-session
+   *       attach / daemon restart), where `lastTranscriptPath` is still null.
+   * A sibling daemon's subagent is named after the SIBLING's id / lives at the
+   * sibling's path, so neither signal matches and isolation (#451) holds.
+   */
+  private boundTranscriptMatches(transcriptPath: string | undefined): boolean {
+    if (!transcriptPath) return false;
+    try {
+      const resolved = path.resolve(transcriptPath);
+      if (this.lastTranscriptPath && resolved === path.resolve(this.lastTranscriptPath)) {
+        return true;
+      }
+      if (this.currentBoundId && path.basename(resolved, '.jsonl') === this.currentBoundId) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   /**

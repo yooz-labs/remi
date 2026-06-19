@@ -1052,4 +1052,114 @@ describe('TranscriptBinder', () => {
       expect(transcriptFallbackTimers.has(SID)).toBe(false);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // #593: a subagent PermissionRequest that shares our bound transcript must be
+  // admitted even when its session_id differs from our lock (parallel/team
+  // subagents, empty 00000000 id) and even when the transcript marker is not yet
+  // readable — otherwise it is dropped to passthrough and never auto-approved.
+  // Covered here without a costly interactive repro: drive `admits` directly.
+  // -------------------------------------------------------------------------
+  describe('#593 subagent admits — connection-independent ownership', () => {
+    function bindMain(mainPath: string): TranscriptBinder {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'main-claude',
+        transcript_path: mainPath,
+        hook_event_name: 'SessionStart',
+      });
+      return binder;
+    }
+
+    test('admits a subagent with a DIFFERENT session_id that shares our bound transcript', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const admitted = binder.admits({
+        session_id: 'subagent-parallel-1',
+        agent_id: 'agent-aaaa',
+        transcript_path: mainPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('admits a subagent with an empty/zero session_id sharing our bound transcript', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const admitted = binder.admits({
+        session_id: '00000000-0000-0000-0000-000000000000',
+        agent_id: 'agent-bbbb',
+        transcript_path: mainPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test("does NOT admit a sibling daemon's subagent (foreign transcript, different port marker)", () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const siblingPath = writeMarkedTranscript('sibling.jsonl', 9999);
+      const admitted = binder.admits({
+        session_id: 'sibling-subagent',
+        agent_id: 'agent-cccc',
+        transcript_path: siblingPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('the path shortcut is GATED on agent_id: a foreign NON-subagent event with our (unmarked) path is not admitted', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const admitted = binder.admits({
+        session_id: 'foreign-main',
+        transcript_path: mainPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('still admits the main agent (matching session_id), unchanged', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const admitted = binder.admits({
+        session_id: 'main-claude',
+        transcript_path: mainPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('admits a subagent in the store-adopt window: lock set, lastTranscriptPath still null', () => {
+      // The reviewer's gap: adoptLockFromStore can promote currentBoundId WITHOUT
+      // a SessionStart (mid-session attach / daemon restart), so lastTranscriptPath
+      // stays null and the exact-path check cannot fire. The basename signal must
+      // still admit a subagent sharing the main transcript named <boundId>.jsonl.
+      registerSession();
+      const binder = makeBinder();
+      (binder as unknown as { currentBoundId: string | null }).currentBoundId = 'main-claude';
+      const admitted = binder.admits({
+        session_id: 'subagent-store-adopt',
+        agent_id: 'agent-dddd',
+        transcript_path: path.join(tmpDir, 'main-claude.jsonl'),
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('store-adopt window stays isolated: a sibling subagent (foreign-named transcript) is not admitted', () => {
+      registerSession();
+      const binder = makeBinder();
+      (binder as unknown as { currentBoundId: string | null }).currentBoundId = 'main-claude';
+      const admitted = binder.admits({
+        session_id: 'sibling-sub',
+        agent_id: 'agent-eeee',
+        // named after the SIBLING's id, not ours; the file has no marker either
+        transcript_path: path.join(tmpDir, 'sibling-claude.jsonl'),
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+  });
 });

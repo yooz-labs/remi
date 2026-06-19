@@ -154,15 +154,33 @@ export class RelayAdapter implements ConnectionAdapter {
     });
 
     this.client.on('relay', (payload: string) => {
-      if (!this.clientConnectionId) {
-        console.warn('Received relay message before client connection established');
-        return;
-      }
-
       try {
         const message = JSON.parse(payload);
         if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
           console.warn('Relay payload missing required "type" field');
+          return;
+        }
+
+        // #591: a connection-independent relayed answer (lock-screen / backgrounded
+        // phone) is SELF-AUTHENTICATING — it carries an Ed25519 `auth` block and is
+        // dispatched via the relayAnswer path, so it needs NO connected /
+        // handshake-authenticated WS peer (there is none). Gate on the ABSENCE of a
+        // connected peer so a normal connected peer's answer always uses the
+        // standard onAnswer routing even if a future client signs WS answers.
+        if (
+          !this.clientConnectionId &&
+          message.type === 'answer' &&
+          message.auth &&
+          typeof message.auth === 'object'
+        ) {
+          this.handleRelayedAnswer(message).catch((err) =>
+            console.warn('Relayed answer error:', err instanceof Error ? err.message : err),
+          );
+          return;
+        }
+
+        if (!this.clientConnectionId) {
+          console.warn('Received relay message before client connection established');
           return;
         }
 
@@ -227,6 +245,71 @@ export class RelayAdapter implements ConnectionAdapter {
     } else {
       console.warn(`Relay auth failed: ${result.error}`);
       this.resetClient();
+    }
+  }
+
+  /**
+   * #591: handle a connection-independent relayed answer (a lock-screen /
+   * backgrounded phone) forwarded by the signaling Worker's `/answer/{code}`
+   * route. Unlike a peer's relay message there is no connected /
+   * handshake-authenticated WS peer, so the answer carries its own Ed25519 `auth`
+   * block which we verify here before dispatching via the relayAnswer path (the
+   * same one the HTTP /answer endpoint uses). When the adapter runs without an
+   * authenticator (rotating-code no-auth mode) the room code is the only gate,
+   * consistent with the relay's WS path.
+   */
+  private async handleRelayedAnswer(msg: Record<string, unknown>): Promise<void> {
+    const sessionId = typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '';
+    const questionId = typeof msg['questionId'] === 'string' ? msg['questionId'] : '';
+    const answer = typeof msg['answer'] === 'string' ? msg['answer'] : '';
+    if (!sessionId || !questionId || !answer) {
+      console.warn('Relayed answer dropped: missing sessionId, questionId, or answer');
+      return;
+    }
+
+    if (this.config.authenticator) {
+      const auth = msg['auth'] as Record<string, unknown>;
+      const signature = typeof auth['signature'] === 'string' ? auth['signature'] : '';
+      const clientPublicKey =
+        typeof auth['clientPublicKey'] === 'string' ? auth['clientPublicKey'] : '';
+      const clientFingerprint =
+        typeof auth['clientFingerprint'] === 'string' ? auth['clientFingerprint'] : '';
+      if (!signature || !clientPublicKey || !clientFingerprint) {
+        console.warn('Relayed answer rejected: missing auth signature');
+        return;
+      }
+      // Canonical message must match the phone's signing input and the daemon's
+      // HTTP /answer verification (push-answer-relay.ts / websocket-server.ts).
+      const message = `${sessionId}|${questionId}|${answer}`;
+      const ok = await this.config.authenticator.verifyDetachedRequest(
+        message,
+        signature,
+        clientPublicKey,
+        clientFingerprint,
+      );
+      if (!ok) {
+        console.warn('Relayed answer rejected: signature verification failed');
+        return;
+      }
+    }
+
+    // Fail loud if the connection-independent relay handler is not wired (a
+    // partial events object) — otherwise a lock-screen answer would vanish with
+    // no trace and the permission would stay held forever.
+    if (!this.events.onAnswerRelay) {
+      console.warn('Relayed answer dropped: onAnswerRelay not wired on the relay adapter');
+      return;
+    }
+    const claudeId =
+      typeof msg['claudeSessionId'] === 'string' ? (msg['claudeSessionId'] as UUID) : undefined;
+    const outcome = await this.events.onAnswerRelay(
+      sessionId as UUID,
+      questionId as UUID,
+      answer,
+      claudeId,
+    );
+    if (outcome !== 'delivered') {
+      console.warn(`Relayed answer not delivered: ${outcome}`);
     }
   }
 

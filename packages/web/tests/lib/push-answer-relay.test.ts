@@ -9,7 +9,12 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createIdentity, serializeIdentity } from '@remi/shared';
-import { answerUrl, relayAnswerDirect } from '../../src/lib/push-answer-relay';
+import {
+  answerUrl,
+  relayAnswerDirect,
+  relayAnswerViaSignaling,
+  signalingAnswerUrl,
+} from '../../src/lib/push-answer-relay';
 
 // Minimal in-memory localStorage so identity-client can read/write a real
 // identity. This is the runtime environment, not a stub of any logic under test.
@@ -217,6 +222,178 @@ describe('relayAnswerDirect (#575 P4a)', () => {
       expect(body?.auth?.clientFingerprint).toBe(unencrypted.fingerprint);
       expect(typeof body?.auth?.signature).toBe('string');
       expect((body?.auth?.signature ?? '').length).toBeGreaterThan(0);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+describe('signalingAnswerUrl (#591)', () => {
+  test('converts wss:// to https:// and targets /answer/{code}', () => {
+    expect(signalingAnswerUrl('wss://remi-signaling.example/', 'WXYZ-2345')).toBe(
+      'https://remi-signaling.example/answer/WXYZ-2345',
+    );
+  });
+
+  test('keeps https:// as-is', () => {
+    expect(signalingAnswerUrl('https://sig.example', 'WXYZ-2345')).toBe(
+      'https://sig.example/answer/WXYZ-2345',
+    );
+  });
+
+  test('throws on unsupported scheme', () => {
+    expect(() => signalingAnswerUrl('ftp://sig.example', 'WXYZ-2345')).toThrow();
+  });
+});
+
+describe('relayAnswerViaSignaling (#591)', () => {
+  beforeEach(() => {
+    store.clear();
+  });
+  afterEach(() => {
+    store.clear();
+  });
+
+  function startServer(handler: (req: Request) => Response | Promise<Response>) {
+    return Bun.serve({ port: 0, fetch: handler });
+  }
+
+  test('no-auth: POSTs to /answer/{code} and returns delivered', async () => {
+    let path = '';
+    let received: { sessionId: string; questionId: string; answer: string } | null = null;
+    const server = startServer(async (req) => {
+      const u = new URL(req.url);
+      path = u.pathname;
+      if (req.method === 'POST') {
+        received = (await req.json()) as typeof received;
+        return new Response(JSON.stringify({ result: 'delivered' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('nope', { status: 404 });
+    });
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: false,
+      });
+      expect(result).toEqual({ kind: 'delivered' });
+      expect(path).toBe('/answer/WXYZ-2345');
+      expect(received).toEqual({ sessionId: 's1', questionId: 'q1', answer: 'Yes' });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('503 no-peer maps to unreachable (caller may fall back to WS)', async () => {
+    const server = startServer(
+      () =>
+        new Response(JSON.stringify({ result: 'no-peer' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: false,
+      });
+      expect(result.kind).toBe('unreachable');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('auth required + unencrypted identity: signs and the Worker receives the auth block', async () => {
+    const unencrypted = await createIdentity();
+    store.setItem('remi-identity', serializeIdentity(unencrypted));
+    let body: {
+      auth?: { signature?: string; clientPublicKey?: string; clientFingerprint?: string };
+    } | null = null;
+    const server = startServer(async (req) => {
+      body = (await req.json()) as typeof body;
+      return new Response(JSON.stringify({ result: 'delivered' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: true,
+      });
+      expect(result).toEqual({ kind: 'delivered' });
+      expect(body?.auth?.clientPublicKey).toBe(unencrypted.publicKey);
+      expect(typeof body?.auth?.signature).toBe('string');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('bad signaling url => unreachable', async () => {
+    const result = await relayAnswerViaSignaling({
+      signalingUrl: 'ftp://bad',
+      code: 'WXYZ-2345',
+      sessionId: 's1',
+      questionId: 'q1',
+      answer: 'Yes',
+      authRequired: false,
+    });
+    expect(result.kind).toBe('unreachable');
+  });
+
+  test('502 send-failed maps to unreachable (caller may fall back to WS)', async () => {
+    const server = startServer(
+      () =>
+        new Response(JSON.stringify({ result: 'send-failed' }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: false,
+      });
+      expect(result.kind).toBe('unreachable');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('410 room-expired maps to rejected (stale code, do not retry)', async () => {
+    const server = startServer(
+      () =>
+        new Response(JSON.stringify({ result: 'room-expired' }), {
+          status: 410,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    try {
+      const result = await relayAnswerViaSignaling({
+        signalingUrl: `http://127.0.0.1:${server.port}`,
+        code: 'WXYZ-2345',
+        sessionId: 's1',
+        questionId: 'q1',
+        answer: 'Yes',
+        authRequired: false,
+      });
+      expect(result.kind).toBe('rejected');
     } finally {
       server.stop();
     }
