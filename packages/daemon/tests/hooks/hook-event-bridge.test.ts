@@ -291,6 +291,54 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.text).toBe('code-reviewer · Bash: git push origin main');
   });
 
+  it('surfaces the real AskUserQuestion question + options, not "Allow AskUserQuestion" (#597)', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          {
+            question: 'Which approach do you prefer?',
+            header: 'Approach',
+            options: [
+              { label: 'Refactor first', description: 'a' },
+              { label: 'Ship then refactor', description: 'b' },
+            ],
+          },
+        ],
+      },
+    } as PermissionRequestHookInput);
+
+    expect(questions[0]?.text).toBe('Approach: Which approach do you prefer?');
+    expect(questions[0]?.options.map((o) => o.label)).toEqual([
+      'Refactor first',
+      'Ship then refactor',
+    ]);
+    // Picks, so the answer path releases the hook + submits the digit.
+    expect(questions[0]?.options.every((o) => !o.isYes && !o.isNo)).toBe(true);
+  });
+
+  it('surfaces ExitPlanMode plan-approval choices (#597)', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'ExitPlanMode',
+      tool_input: { plan: '# Plan\n- do the thing' },
+    } as PermissionRequestHookInput);
+
+    expect(questions[0]?.options.map((o) => o.label)).toEqual([
+      'Yes, and auto-accept edits',
+      'Yes, and manually approve edits',
+      'No, keep planning',
+    ]);
+    expect(questions[0]?.text).toContain('Plan ready');
+  });
+
   it('maps PostToolUseFailure to executing status with error context', () => {
     const { bridge, statuses } = createBridge();
 
