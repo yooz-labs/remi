@@ -4,6 +4,34 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-06-19
+
+Backend for native lock-screen permission answering, and a fix for subagent
+permissions silently bypassing auto-approve.
+
+### Added
+- **Phone -> daemon answer relay (backend)** (#591, part of #575): the signaling
+  Worker gains a `POST /answer/{code}` reverse route that forwards a permission
+  answer into the daemon's room WebSocket, and the daemon accepts a
+  self-authenticating (Ed25519-verified) relayed answer that needs no live
+  WebSocket peer. This is the groundwork for answering a held permission from the
+  iOS lock screen; the native handler that calls it lands separately (#591 P2).
+
+### Fixed
+- **Subagent permissions now reach auto-approve** (#593): a parallel/team
+  subagent's PermissionRequest (which can carry a different or empty session_id)
+  was dropped before the auto-approve gate when the transcript marker was not yet
+  readable, so it was never evaluated and never showed an "evaluating" status.
+  The binder now admits a subagent that owns the bound transcript via two
+  file-free checks (exact path match, or the transcript being named after the
+  bound session id), robust to a still-settling binding; sibling daemons'
+  subagents stay isolated. A previously-silent "not admitted" drop is now logged.
+
+### Note
+- The lock-screen answer relay needs a Cloudflare signaling worker redeploy to
+  expose the new `/answer/{code}` route; without it nothing breaks (the route's
+  only caller is the not-yet-shipped native iOS handler, #591 P2).
+
 ## [0.6.12] - 2026-06-18
 
 The biggest auto-approve UX change: escalated permissions are now held on the
