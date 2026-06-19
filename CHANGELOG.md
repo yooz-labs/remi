@@ -4,6 +4,31 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-06-19
+
+The iOS client side of native lock-screen permission answering, and correct
+question text + options for plan/design escalations.
+
+### Added
+- **Native lock-screen answer** (#591 P2): the iOS app answers a held permission
+  from the lock screen WITHOUT opening — a notification action is signed
+  (Ed25519) and POSTed straight to the daemon's `/answer` endpoint, then
+  forwarded to the in-app handler so the foreground path still works. Builds on
+  the #591 P1 relay backend (0.6.13). The signer + per-session daemon URL are
+  bridged to native storage via `@capacitor/preferences`; only an unencrypted
+  identity is bridgeable, and a stale route is dropped on session eviction.
+
+### Fixed
+- **AskUserQuestion / ExitPlanMode escalations show the real question + options**
+  (#597): these were surfaced as the generic "Allow <tool>" + Yes / Yes, always /
+  No on both the in-app card and the lock-screen notification, because the
+  question builder read only `permission_suggestions`. The daemon now extracts
+  the real question text + option labels from the tool's `tool_input`
+  (AskUserQuestion `questions[0]`; ExitPlanMode's standard plan-approval set) and
+  emits them as picks, so answering selects the intended choice. Whitespace is
+  collapsed so a multi-line question no longer renders as a run-together string.
+  ExitPlanMode option order is reverified per Claude Code release (#598).
+
 ## [0.6.13] - 2026-06-19
 
 Backend for native lock-screen permission answering, and a fix for subagent
