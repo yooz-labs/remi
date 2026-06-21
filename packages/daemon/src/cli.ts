@@ -1130,7 +1130,7 @@ async function createNewSession(
   // screen presence: hooks record (no push), PTY confirms (push). Status
   // transitions out of 'waiting' drop pending records so auto-approve
   // silent paths never push.
-  const tracker = new QuestionPresenceTracker((q) => messageApi.handleQuestion(q));
+  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts));
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },

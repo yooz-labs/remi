@@ -37,13 +37,23 @@
 import { MAIN_AGENT_ID } from '@remi/shared';
 import type { AgentStatus, Question } from '@remi/shared';
 
+export interface PushOptions {
+  /**
+   * This is a HELD escalation (Model B, #573). Its card is LOAD-BEARING — it
+   * registers the question that makes the held hook answerable — not a cosmetic
+   * PTY/hook echo. So it must BYPASS the content-dedup and deliver to the lock
+   * screen even when a client is attached (it may be backgrounded). #603 Phase 3.
+   */
+  held?: boolean;
+}
+
 /**
  * Callable sink: the tracker's only output. Called when a push to iOS
  * should fire. Implementations forward to `MessageAPI.handleQuestion`,
  * which applies the content-identity QuestionDedup before the network
- * layer.
+ * layer — unless `opts.held` marks the load-bearing held-hook card.
  */
-export type PushQuestion = (question: Question) => void;
+export type PushQuestion = (question: Question, opts?: PushOptions) => void;
 
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
 function agentKey(question: Question): string {
@@ -180,7 +190,9 @@ export class QuestionPresenceTracker {
     this.pending.delete(recordKey);
     this.pushedHeldIds.add(questionId);
     try {
-      this.push(question);
+      // held: bypass the cosmetic dedup + deliver regardless of an attached
+      // client — the held card is load-bearing for answerability (#603 Phase 3).
+      this.push(question, { held: true });
     } catch (err) {
       console.error(
         `[QuestionPresenceTracker] pushHeldHook push sink threw: ${err instanceof Error ? err.message : String(err)}`,

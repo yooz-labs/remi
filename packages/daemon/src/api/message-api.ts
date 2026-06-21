@@ -26,8 +26,9 @@ export interface MessageAPIEvents {
   /** Message finalized (no more edits expected) */
   onMessageFinalized: (messageId: UUID) => void;
 
-  /** Question detected (pass-through from OutputProcessor) */
-  onQuestion: (question: Question) => void;
+  /** Question detected (pass-through from OutputProcessor). `opts.held` marks a
+   *  load-bearing held-hook card that bypassed dedup (#603 Phase 3). */
+  onQuestion: (question: Question, opts?: { held?: boolean }) => void;
 
   /** Status changed (pass-through from OutputProcessor) */
   onStatusChange: (status: AgentStatus, context?: string) => void;
@@ -213,7 +214,15 @@ export class MessageAPI {
    * Emit a question, deduping against recent emissions. See QuestionDedup
    * for upgrade rules.
    */
-  handleQuestion(question: Question): void {
+  handleQuestion(question: Question, opts?: { held?: boolean }): void {
+    // A HELD escalation (Model B, #573) bypasses the content-dedup: its card is
+    // load-bearing — it registers the question that makes the held hook
+    // answerable — not a PTY/hook echo. Deduping it away would leave the hook
+    // held with no answerable question until it fails open (#603 Phase 3, R7).
+    if (opts?.held) {
+      this.events.onQuestion?.(question, opts);
+      return;
+    }
     if (!this.questionDedup.shouldEmit(question)) return;
     this.events.onQuestion?.(question);
   }

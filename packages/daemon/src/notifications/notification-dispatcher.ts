@@ -225,30 +225,44 @@ export class NotificationDispatcher {
    * delivery (the regular PTY-prompt path) can ignore the returned promise; the
    * recording still happens.
    */
-  maybePush(questionSessionId: UUID, question: Question): Promise<DeliveryOutcome> {
-    const outcome = this.computeDelivery(questionSessionId, question);
+  maybePush(
+    questionSessionId: UUID,
+    question: Question,
+    opts: { held?: boolean } = {},
+  ): Promise<DeliveryOutcome> {
+    const outcome = this.computeDelivery(questionSessionId, question, opts.held ?? false);
     this.recordDelivery(question.id, outcome);
     return outcome;
   }
 
   /** Resolve the delivery outcome for one question (fanning out the per-token
-   *  pushes when a push is actually warranted). See `DeliveryOutcome`. */
-  private computeDelivery(questionSessionId: UUID, question: Question): Promise<DeliveryOutcome> {
+   *  pushes when a push is actually warranted). See `DeliveryOutcome`. A HELD
+   *  escalation (#603 Phase 3) skips the attached-client short-circuit and the
+   *  dedup gate — its lock-screen card is load-bearing. */
+  private computeDelivery(
+    questionSessionId: UUID,
+    question: Question,
+    held: boolean,
+  ): Promise<DeliveryOutcome> {
     const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
 
     const sessionForPush = sessionRegistry.getSession(questionSessionId);
     const hasActiveClient =
       sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
-    // A client is attached: it sees the question in-app over the WebSocket. No
-    // push (as before), but the user IS reachable -> in_app.
-    if (hasActiveClient) return Promise.resolve('in_app');
-    // No client AND no device tokens: there is no channel to notify anyone.
+    // A non-held question with a client attached: it is seen in-app over the
+    // WebSocket; no push (as before), and the user IS reachable -> in_app. A HELD
+    // escalation does NOT short-circuit here — it also pushes to the lock screen
+    // because the attached client may be backgrounded (#603 Phase 3), like
+    // dismiss(). Its outcome still reports in_app (reachable) below.
+    if (!held && hasActiveClient) return Promise.resolve('in_app');
+    // No device tokens: nobody can be pushed. If a client is attached the user
+    // is still reachable in-app (held case); otherwise there is no channel.
     if (deviceTokens.size === 0) {
-      log(`Push skipped: no device tokens for session ${questionSessionId}`);
-      return Promise.resolve('no_channel');
+      if (!hasActiveClient) log(`Push skipped: no device tokens for session ${questionSessionId}`);
+      return Promise.resolve(hasActiveClient ? 'in_app' : 'no_channel');
     }
 
-    if (!this.pushDedup.shouldPush(question)) {
+    if (!held && !this.pushDedup.shouldPush(question)) {
       log(`Push suppressed by dedup for session ${questionSessionId}`);
       // An identical push already went out; the earlier one is the delivery.
       return Promise.resolve('deduped');
@@ -279,7 +293,14 @@ export class NotificationDispatcher {
     const perToken = [...deviceTokens.values()].map((dt) =>
       this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, pushSessionId),
     );
-    // Delivered if ANY registered device accepted the push.
+    // Delivered if ANY registered device accepted the push. For a HELD
+    // escalation we gate on THIS push result — not on socket-attachment —
+    // because the attached client may be backgrounded (that is WHY we push). A
+    // failed push therefore fails the hold open fast rather than stalling on an
+    // unreliable `in_app`; the in-app answer path still works, routing via the
+    // PTY to the native prompt after fail-open. (The no-token branch above falls
+    // back to the socket signal since there is no push channel at all; Phase 7's
+    // presence signal hardens that remaining `in_app` trust.)
     return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
   }
 

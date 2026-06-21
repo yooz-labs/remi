@@ -248,8 +248,16 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     const active = sessionRegistry.getQuestion(session.sessionId, questionId);
     if (active === null) {
       const pendingIds = [...session.currentQuestions.keys()];
+      // #603 Phase 3: the question is gone from the registry (evicted under the
+      // pending-question cap, or already removed), but its PermissionRequest hook
+      // may STILL be held (Model B). Pop that hold to passthrough so Claude
+      // renders its native prompt and unblocks NOW, rather than stalling to
+      // hold_timeout. The answer itself is stale (we no longer hold the options
+      // to map it), so it is still refused — but the terminal can take over.
+      const freedHeld = releaseHeldAsPassthrough?.(session.sessionId, questionId) ?? false;
+      if (freedHeld) cancelAutoApprove?.(session.sessionId, 'user-answered-stale');
       log(
-        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]`,
+        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]${freedHeld ? ' (freed an orphaned held hook -> passthrough)' : ''}`,
       );
       if (!viaRelay) {
         send(
