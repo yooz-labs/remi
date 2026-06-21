@@ -69,9 +69,23 @@ describe('resolvePushAnswerTarget (#278)', () => {
     ).toEqual({ kind: 'pending', connectionId: 'c2', url: 'ws://daemon-a/ws' });
   });
 
-  test('cold start: no session in memory — fall back to first localStorage URL', () => {
+  test('cold start: a single paired daemon — fall back to it (unambiguous)', () => {
     // App was suspended; lock-screen tap brought it back; sessions list is
-    // empty until reconnect. localStorage holds the URLs we were attached to.
+    // empty until reconnect. With exactly one stored URL there is no ambiguity.
+    expect(
+      resolvePushAnswerTarget({
+        sessionId: 's-unknown',
+        sessions: [],
+        connections: [],
+        storedUrls: ['ws://daemon-a/ws'],
+      }),
+    ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
+  });
+
+  test('cold start: MULTIPLE daemons, no per-session URL — unreachable, NOT a wrong-daemon guess (#603 P4 R8)', () => {
+    // We do not know which paired daemon owns this session, so guessing
+    // storedUrls[0] would silently answer the WRONG daemon. Report unreachable
+    // instead; the caller surfaces "open the app" / uses the reverse-relay.
     expect(
       resolvePushAnswerTarget({
         sessionId: 's-unknown',
@@ -79,7 +93,7 @@ describe('resolvePushAnswerTarget (#278)', () => {
         connections: [],
         storedUrls: ['ws://daemon-a/ws', 'ws://daemon-b/ws'],
       }),
-    ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
+    ).toEqual({ kind: 'unreachable' });
   });
 
   test('cold start: localStorage url already mid-connect — reuse the in-flight attempt', () => {
@@ -156,9 +170,9 @@ describe('resolvePushAnswerTarget (#278)', () => {
       ).toEqual({ kind: 'pending', connectionId: 'c-boot', url: 'ws://daemon-b/ws' });
     });
 
-    test('sessionUrlMap missing the requested sessionId — falls back to storedUrls[0]', () => {
-      // s-other was never paired; the map has nothing useful so the legacy
-      // cold-start fallback applies.
+    test('sessionUrlMap missing the requested sessionId, single daemon — falls back to it', () => {
+      // s-other was never mapped; with exactly one stored URL the fallback is
+      // unambiguous so the legacy cold-start fallback still applies.
       expect(
         resolvePushAnswerTarget({
           sessionId: 's-other',
@@ -168,6 +182,20 @@ describe('resolvePushAnswerTarget (#278)', () => {
           sessionUrlMap: { s2: 'ws://daemon-b/ws' },
         }),
       ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
+    });
+
+    test('sessionUrlMap missing the requested sessionId, MULTIPLE daemons — unreachable (#603 P4 R8)', () => {
+      // The map has no entry for s-other and several daemons are paired, so any
+      // pick would be a guess. Report unreachable rather than misroute.
+      expect(
+        resolvePushAnswerTarget({
+          sessionId: 's-other',
+          sessions: [],
+          connections: [],
+          storedUrls: ['ws://daemon-a/ws', 'ws://daemon-b/ws'],
+          sessionUrlMap: { s2: 'ws://daemon-b/ws' },
+        }),
+      ).toEqual({ kind: 'unreachable' });
     });
 
     test('sessionUrlMap entry not in storedUrls — still reconnects (daemon de-paired but session known)', () => {
