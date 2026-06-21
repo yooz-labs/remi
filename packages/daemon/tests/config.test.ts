@@ -293,6 +293,11 @@ describe('formatConfig', () => {
     expect(output).toContain('escalate_model = ""');
     // always_escalate_tools visible (#572).
     expect(output).toContain('always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]');
+    // delivery_confirm_timeout / hold_unconfirmed_timeout visible (#603 Phase 1)
+    // — guards against the #517-class regression of omitting a field from `config
+    // show`.
+    expect(output).toContain('delivery_confirm_timeout = 6');
+    expect(output).toContain('hold_unconfirmed_timeout = 0');
   });
 
   test('default model is a fast 4b; escalate_model empty (#522)', () => {
@@ -348,6 +353,8 @@ describe('auto_approve config', () => {
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
       hold_timeout: 1800,
       push_hold_timeout: 60,
+      delivery_confirm_timeout: 6,
+      hold_unconfirmed_timeout: 0,
     });
   });
 
@@ -545,6 +552,31 @@ Escalate anything touching secrets.
   test('rejects a negative push_hold_timeout (#573)', () => {
     fs.writeFileSync(TEST_CONFIG, '[auto_approve]\npush_hold_timeout = -5\n');
     expect(() => loadConfig(TEST_CONFIG)).toThrow(/push_hold_timeout/);
+  });
+
+  test('rejects a negative delivery_confirm_timeout (#603)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndelivery_confirm_timeout = -1\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/delivery_confirm_timeout/);
+  });
+
+  test('rejects a non-numeric delivery_confirm_timeout (#603)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndelivery_confirm_timeout = "fast"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/delivery_confirm_timeout/);
+  });
+
+  test('rejects a negative hold_unconfirmed_timeout (#603)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_unconfirmed_timeout = -1\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/hold_unconfirmed_timeout/);
+  });
+
+  test('loads delivery_confirm_timeout / hold_unconfirmed_timeout from TOML (#603)', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      '[auto_approve]\ndelivery_confirm_timeout = 8\nhold_unconfirmed_timeout = 180\n',
+    );
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.delivery_confirm_timeout).toBe(8);
+    expect(config.auto_approve.hold_unconfirmed_timeout).toBe(180);
   });
 
   test('REMI_AUTO_APPROVE_HOLD_TIMEOUT / PUSH_HOLD_TIMEOUT env overrides (#573)', () => {

@@ -1130,7 +1130,7 @@ async function createNewSession(
   // screen presence: hooks record (no push), PTY confirms (push). Status
   // transitions out of 'waiting' drop pending records so auto-approve
   // silent paths never push.
-  const tracker = new QuestionPresenceTracker((q) => messageApi.handleQuestion(q));
+  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts));
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1199,6 +1199,16 @@ async function createNewSession(
         // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
         holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
         pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
+        // #603 Phase 1: gate a held hook on confirmed notification delivery. Same
+        // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
+        // gate can hold. The dispatcher records the per-question delivery outcome.
+        awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
+        deliveryConfirmSec: autoApproveService
+          ? remiConfig.auto_approve.delivery_confirm_timeout
+          : 0,
+        holdUnconfirmedSec: autoApproveService
+          ? remiConfig.auto_approve.hold_unconfirmed_timeout
+          : 0,
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
