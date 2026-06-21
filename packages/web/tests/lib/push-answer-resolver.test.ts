@@ -82,6 +82,19 @@ describe('resolvePushAnswerTarget (#278)', () => {
     ).toEqual({ kind: 'reconnect', url: 'ws://daemon-a/ws' });
   });
 
+  test('cold start: single stored URL is an empty string — unreachable, not a bogus reconnect', () => {
+    // storedUrls is JSON.parse'd from localStorage without sanitization, so a
+    // corrupted/empty entry is real; the `!cold` guard must catch it.
+    expect(
+      resolvePushAnswerTarget({
+        sessionId: 's-unknown',
+        sessions: [],
+        connections: [],
+        storedUrls: [''],
+      }),
+    ).toEqual({ kind: 'unreachable' });
+  });
+
   test('cold start: MULTIPLE daemons, no per-session URL — unreachable, NOT a wrong-daemon guess (#603 P4 R8)', () => {
     // We do not know which paired daemon owns this session, so guessing
     // storedUrls[0] would silently answer the WRONG daemon. Report unreachable
