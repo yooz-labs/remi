@@ -333,8 +333,9 @@ export class AutoApproveGate {
 
   /**
    * Race a held escalation's notification delivery against `deliveryConfirmMs`
-   * (epic #603 Phase 1). If delivery is confirmed (in_app / pushed / deduped) in
-   * time, the hold keeps blocking to `holdMs` as before. If it is NOT confirmed
+   * (epic #603 Phase 1). If delivery is confirmed (`isDelivered`: in_app / pushed
+   * — `deduped` does NOT count, and never occurs for held pushes after Phase 3)
+   * in time, the hold keeps blocking to `holdMs` as before. If it is NOT confirmed
    * — a dead token, no registered token, or the probe times out — the hold no
    * longer stalls Claude for the full window: `onDeliveryUnconfirmed` fails it
    * open fast (or re-arms a short secondary hold). Disabled (legacy hold) when
