@@ -449,6 +449,87 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
   });
 });
 
+describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  let pushed: string[];
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+
+  function register(active: boolean): void {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    if (active) registry.attachConnection(SID, 'c0000000-0000-0000-0000-000000000000' as UUID);
+  }
+
+  const capturePush: PushFn = async (_url, token) => {
+    pushed.push(token);
+  };
+  function make(): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: capturePush,
+      },
+      SID,
+    );
+  }
+  const addToken = (t: string): void => {
+    deviceTokens.set(t, { token: t, platform: 'ios', registeredAt: 1, connectionId: SID });
+  };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    pushed = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('a held escalation pushes to the lock screen EVEN when a client is attached', async () => {
+    register(true); // client attached
+    addToken('a');
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true });
+    // Pushed despite the attached client (it may be backgrounded), and still
+    // reported reachable in-app.
+    expect(pushed).toEqual(['a']);
+    expect(outcome).toBe('in_app');
+  });
+
+  test('a non-held push with a client attached still does NOT push (unchanged)', async () => {
+    register(true);
+    addToken('a');
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(pushed).toEqual([]);
+    expect(outcome).toBe('in_app');
+  });
+
+  test('a held escalation bypasses dedup: a second identical held push still fires', async () => {
+    register(false);
+    addToken('a');
+    const d = make();
+    await d.maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true });
+    await d.maybePush(SID, question('q2', [yesOpt, noOpt]), { held: true }); // same shape
+    expect(pushed).toEqual(['a', 'a']); // both fired — not deduped
+  });
+
+  test('a held escalation with no client and no token is no_channel (no false confirm)', async () => {
+    register(false);
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true });
+    expect(pushed).toEqual([]);
+    expect(outcome).toBe('no_channel');
+  });
+});
+
 describe('isRetriablePushError / isDelivered (#603 Phase 1)', () => {
   test('permanent APNS token rejections are NOT retriable (even wrapped as 502)', () => {
     expect(

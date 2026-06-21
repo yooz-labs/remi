@@ -118,7 +118,7 @@ export function createMessageApiForSession(
     onMessageFinalized: (msgId) => {
       log(`Message ${msgId} finalized`);
     },
-    onQuestion: (question: Question) => {
+    onQuestion: (question: Question, opts?: { held?: boolean }) => {
       log(`Question detected: ${question.text.substring(0, 50)}...`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
@@ -133,10 +133,12 @@ export function createMessageApiForSession(
       sendAndRecord(msg);
       sessionRegistry.addQuestion(questionSessionId, question);
 
-      // Push only when no client is attached; attached clients see it in-app.
-      // maybePush records the delivery outcome (epic #603 Phase 1) for the gate
-      // to probe; the regular question path does not await it.
-      void notifications.maybePush(questionSessionId, question);
+      // Push: a non-held question only pushes when no client is attached (the
+      // client sees it in-app). A HELD escalation (#603 Phase 3) always also
+      // pushes to the lock screen — the attached client may be backgrounded.
+      // maybePush records the delivery outcome (#603 Phase 1) for the gate to
+      // probe; the regular question path does not await it.
+      void notifications.maybePush(questionSessionId, question, { held: opts?.held === true });
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);
