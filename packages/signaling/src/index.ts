@@ -261,7 +261,9 @@ export default {
       const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
       // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
       // override — the daemon does not send it today (payload is Record<string, string>).
-      const sandbox = env.APNS_SANDBOX === 'true' || body.sandbox === true;
+      // `.trim()`: a secret set via `echo "true" | wrangler secret put` carries a
+      // trailing newline, so an exact `=== 'true'` silently fails — match leniently.
+      const sandbox = env.APNS_SANDBOX?.trim() === 'true' || body.sandbox === true;
       // Build custom data for notification payload (sibling to aps).
       // Include sessionId, questionId, and per-option answer values (opt_0, opt_1, ...).
       const data: Record<string, string> = {};

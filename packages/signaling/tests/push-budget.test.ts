@@ -191,3 +191,81 @@ describe('/push budget (#603 Phase 2)', () => {
     expect(json.tokenInvalid).toBe(false);
   });
 });
+
+describe('/push APNS_SANDBOX env routing', () => {
+  let baseEnv: {
+    CONNECTIONS: unknown;
+    MAX_CONNECTIONS_PER_ROOM: string;
+    CONNECTION_TIMEOUT_MS: string;
+    APNS_KEY_ID: string;
+    APNS_TEAM_ID: string;
+    APNS_PRIVATE_KEY: string;
+    APNS_BUNDLE_ID: string;
+  };
+  let realFetch: typeof globalThis.fetch;
+  let lastAppleUrl: string;
+  let ip = 100;
+
+  beforeEach(async () => {
+    baseEnv = {
+      CONNECTIONS: {},
+      MAX_CONNECTIONS_PER_ROOM: '10',
+      CONNECTION_TIMEOUT_MS: '60000',
+      APNS_KEY_ID: 'TESTKEY123',
+      APNS_TEAM_ID: 'TESTTEAM45',
+      APNS_PRIVATE_KEY: await generateTestP8(),
+      APNS_BUNDLE_ID: 'live.yooz.remi',
+    };
+    lastAppleUrl = '';
+    realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('push.apple.com')) {
+        lastAppleUrl = url;
+        return new Response('', { status: 200 });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  async function pushWithSandbox(sandboxValue: string | undefined): Promise<void> {
+    ip += 1;
+    const env = {
+      ...baseEnv,
+      ...(sandboxValue !== undefined ? { APNS_SANDBOX: sandboxValue } : {}),
+    };
+    const req = new Request('https://signaling.example/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `203.0.114.${ip}` },
+      body: JSON.stringify({ token: 'device-abc', title: 'T', body: 'B' }),
+    });
+    await worker.fetch(req, env as never);
+  }
+
+  test('APNS_SANDBOX="true" routes to the sandbox host', async () => {
+    await pushWithSandbox('true');
+    expect(lastAppleUrl).toContain('api.sandbox.push.apple.com');
+  });
+
+  test('a trailing newline (echo "true") still routes to sandbox (regression)', async () => {
+    // `echo "true" | wrangler secret put` stores "true\n"; the `.trim()` makes
+    // the exact-match check forgiving so the sandbox gate is not silently off.
+    await pushWithSandbox('true\n');
+    expect(lastAppleUrl).toContain('api.sandbox.push.apple.com');
+  });
+
+  test('surrounding whitespace still routes to sandbox', async () => {
+    await pushWithSandbox('  true  ');
+    expect(lastAppleUrl).toContain('api.sandbox.push.apple.com');
+  });
+
+  test('unset APNS_SANDBOX routes to the production host', async () => {
+    await pushWithSandbox(undefined);
+    expect(lastAppleUrl).toContain('api.push.apple.com');
+    expect(lastAppleUrl).not.toContain('sandbox');
+  });
+});
