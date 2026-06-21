@@ -232,14 +232,24 @@ export default {
       // them); dismiss pushes draw from a separate budget so they cannot starve
       // alerts. Malformed/auth-failed requests above never reach here, so they
       // do not consume budget.
-      const authed = Boolean(env.PUSH_SECRET);
+      // `authed` must mean "this request proved possession of the secret", not
+      // merely "a secret is configured" — re-check the bearer so a future
+      // refactor of the auth block above cannot silently grant the trusted
+      // budget to an unauthenticated caller.
+      const authed =
+        Boolean(env.PUSH_SECRET) &&
+        request.headers.get('Authorization') === `Bearer ${env.PUSH_SECRET}`;
       const pushClientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
       const rlKey = authed ? authBucketKey(env.PUSH_SECRET as string) : `ip:${pushClientIp}`;
-      const limiter = isDismiss
-        ? dismissRateLimiter
-        : authed
-          ? pushAuthRateLimiter
-          : pushIpRateLimiter;
+      // Unauthenticated callers (only when no PUSH_SECRET is configured) always
+      // use the tight per-IP fallback — INCLUDING dismisses, which must not get
+      // the raised budget. Authenticated alert vs dismiss draw from separate
+      // raised budgets so a dismiss flood cannot starve alerts.
+      const limiter = !authed
+        ? pushIpRateLimiter
+        : isDismiss
+          ? dismissRateLimiter
+          : pushAuthRateLimiter;
       if (!limiter.check(rlKey)) {
         return new Response(
           JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many push requests' }),

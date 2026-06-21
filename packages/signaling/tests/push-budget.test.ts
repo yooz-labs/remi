@@ -148,6 +148,25 @@ describe('/push budget (#603 Phase 2)', () => {
     expect(dRes.status).toBe(200);
   });
 
+  test('unauthenticated dismiss uses the tight per-IP fallback, not the raised budget', async () => {
+    const env = { ...baseEnv } as TestEnv; // no PUSH_SECRET
+    ipCounter += 1;
+    const ip = `198.51.100.${200 + ipCounter}`;
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const req = new Request('https://signaling.example/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+        body: JSON.stringify({ token: 'device-abc', questionId: 'q-1', dismiss: true }),
+      });
+      const res = await worker.fetch(req, env as never);
+      statuses.push(res.status);
+    }
+    // The tight 5/60s fallback applies to unauthenticated dismisses too.
+    expect(statuses.slice(0, 5)).toEqual([200, 200, 200, 200, 200]);
+    expect(statuses[5]).toBe(429);
+  });
+
   test('a permanent token rejection is surfaced as tokenInvalid:true (502)', async () => {
     const secret = freshSecret();
     const env = { ...baseEnv, PUSH_SECRET: secret } as TestEnv;
