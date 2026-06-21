@@ -293,12 +293,15 @@ export class NotificationDispatcher {
     const perToken = [...deviceTokens.values()].map((dt) =>
       this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, pushSessionId),
     );
-    const pushed = Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
-    // A HELD escalation with an attached client is reachable in-app regardless
-    // of the APNS result, so report `in_app` (delivered) — but the push still
-    // fired above to cover a backgrounded client (#603 Phase 3). Otherwise the
-    // outcome IS the push result: delivered if ANY device accepted it.
-    return held && hasActiveClient ? pushed.then((): DeliveryOutcome => 'in_app') : pushed;
+    // Delivered if ANY registered device accepted the push. For a HELD
+    // escalation we gate on THIS push result — not on socket-attachment —
+    // because the attached client may be backgrounded (that is WHY we push). A
+    // failed push therefore fails the hold open fast rather than stalling on an
+    // unreliable `in_app`; the in-app answer path still works, routing via the
+    // PTY to the native prompt after fail-open. (The no-token branch above falls
+    // back to the socket signal since there is no push channel at all; Phase 7's
+    // presence signal hardens that remaining `in_app` trust.)
+    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
   }
 
   /**

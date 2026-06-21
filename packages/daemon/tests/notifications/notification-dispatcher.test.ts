@@ -499,10 +499,31 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
     register(true); // client attached
     addToken('a');
     const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true });
-    // Pushed despite the attached client (it may be backgrounded), and still
-    // reported reachable in-app.
+    // Pushed despite the attached client (it may be backgrounded), and the
+    // outcome gates on the PUSH result, not the socket -> 'pushed'.
     expect(pushed).toEqual(['a']);
-    expect(outcome).toBe('in_app');
+    expect(outcome).toBe('pushed');
+  });
+
+  test('a held escalation with an attached client whose push FAILS reports failed (no false in_app)', async () => {
+    register(true); // client attached, but...
+    addToken('a');
+    const failPush: PushFn = async () => {
+      throw new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}');
+    };
+    const d = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: failPush,
+      },
+      SID,
+    );
+    // The attached client may be backgrounded, so a dead token must NOT mask as
+    // in_app — it reports failed so the held hook fails open fast (#603 Phase 3).
+    expect(await d.maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true })).toBe('failed');
   });
 
   test('a non-held push with a client attached still does NOT push (unchanged)', async () => {
