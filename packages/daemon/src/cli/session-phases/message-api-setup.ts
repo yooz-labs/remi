@@ -134,7 +134,9 @@ export function createMessageApiForSession(
       sessionRegistry.addQuestion(questionSessionId, question);
 
       // Push only when no client is attached; attached clients see it in-app.
-      notifications.maybePush(questionSessionId, question);
+      // maybePush records the delivery outcome (epic #603 Phase 1) for the gate
+      // to probe; the regular question path does not await it.
+      void notifications.maybePush(questionSessionId, question);
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);

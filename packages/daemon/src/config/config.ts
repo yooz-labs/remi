@@ -194,6 +194,15 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Push + hold early if a binary main-context eval is still running after
     // this many seconds (Part B, #573). 0 disables Part B (A+C only).
     push_hold_timeout: 60,
+    // Wait this long for a held escalation's notification to be confirmed
+    // delivered before treating the hold as undeliverable (epic #603 Phase 1).
+    // On no confirmation, fail open fast instead of blocking for hold_timeout.
+    // 0 disables delivery gating (legacy: always hold to hold_timeout).
+    delivery_confirm_timeout: 6,
+    // Keep holding an undeliverable escalation for this short secondary window
+    // instead of failing open immediately (epic #603 Phase 1, D2). 0 = fail
+    // open fast (the hybrid default); > 0 = hold-always-no-phone mode.
+    hold_unconfirmed_timeout: 0,
   },
   features: {
     transcript_binder_shadow: false,
@@ -363,6 +372,26 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   ) {
     throw new Error(
       `Invalid auto_approve.push_hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable slow-eval push), got ${typeof cfg.push_hold_timeout === 'string' ? `string "${cfg.push_hold_timeout}"` : typeof cfg.push_hold_timeout}. Example: push_hold_timeout = 60`,
+    );
+  }
+
+  if (
+    typeof cfg.delivery_confirm_timeout !== 'number' ||
+    !Number.isFinite(cfg.delivery_confirm_timeout) ||
+    cfg.delivery_confirm_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.delivery_confirm_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable delivery gating), got ${typeof cfg.delivery_confirm_timeout === 'string' ? `string "${cfg.delivery_confirm_timeout}"` : typeof cfg.delivery_confirm_timeout}. Example: delivery_confirm_timeout = 6`,
+    );
+  }
+
+  if (
+    typeof cfg.hold_unconfirmed_timeout !== 'number' ||
+    !Number.isFinite(cfg.hold_unconfirmed_timeout) ||
+    cfg.hold_unconfirmed_timeout < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.hold_unconfirmed_timeout in ${configPath}: must be a non-negative number (seconds; 0 = fail open fast when delivery unconfirmed), got ${typeof cfg.hold_unconfirmed_timeout === 'string' ? `string "${cfg.hold_unconfirmed_timeout}"` : typeof cfg.hold_unconfirmed_timeout}. Example: hold_unconfirmed_timeout = 180`,
     );
   }
 
@@ -839,6 +868,8 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
   lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);
   lines.push(`  push_hold_timeout = ${config.auto_approve.push_hold_timeout}`);
+  lines.push(`  delivery_confirm_timeout = ${config.auto_approve.delivery_confirm_timeout}`);
+  lines.push(`  hold_unconfirmed_timeout = ${config.auto_approve.hold_unconfirmed_timeout}`);
   lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
   lines.push(
     `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,

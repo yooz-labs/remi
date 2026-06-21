@@ -9,6 +9,7 @@ import {
 import type { AutoApproveResult } from '../../src/auto-approve/types.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
+import type { DeliveryOutcome } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 
@@ -1107,5 +1108,251 @@ describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
     g.cancelStale('SessionEnd');
     expect(await pending).toBe('passthrough');
     expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delivery gating (#603 Phase 1, R1/R2): a held hook is only worth blocking
+// Claude for if the user can actually be notified. The gate races the held
+// escalation's notification delivery against delivery_confirm_timeout; an
+// undeliverable hold fails open FAST instead of stalling for hold_timeout.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let escalations: PermissionRequestHookInput[];
+  let lastQuestionId: UUID | undefined;
+
+  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
+    return { evaluate: async () => result, cancel: () => true };
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      ...over,
+    };
+  }
+
+  /** A holding gate whose held escalation's delivery outcome and gating timeouts
+   *  the test controls. `delivery` is what `awaitDelivery` resolves to (or
+   *  undefined for "no delivery signal recorded"). `evalNeverSettles` + a
+   *  `pushHoldMs` exercise the Part-B early-push path combined with the gate. */
+  function deliveryGate(opts: {
+    delivery: Promise<DeliveryOutcome> | undefined;
+    deliveryConfirmMs?: number;
+    holdUnconfirmedMs?: number;
+    holdMs?: number;
+    pushHoldMs?: number;
+    evalNeverSettles?: boolean;
+    onResolved?: (questionId: UUID, reason: 'auto_approved' | 'auto_denied' | 'cancelled') => void;
+  }): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const service: AutoApproveEvaluator = opts.evalNeverSettles
+      ? { evaluate: () => new Promise<AutoApproveResult>(() => {}), cancel: () => true }
+      : evaluator(escalate);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          lastQuestionId = generateId() as UUID;
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        pushHoldMs: opts.pushHoldMs ?? 0,
+        awaitDelivery: () => opts.delivery,
+        deliveryConfirmMs: opts.deliveryConfirmMs ?? 0,
+        holdUnconfirmedMs: opts.holdUnconfirmedMs ?? 0,
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+        alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
+      },
+      SID,
+    );
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    escalations = [];
+    lastQuestionId = undefined;
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('undelivered (failed push) fails the hold open fast, not after hold_timeout', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 200,
+      holdMs: 60_000,
+    });
+    // If the hold blocked for holdMs (60s) this await would hang the test; it
+    // resolves promptly to passthrough because delivery was never confirmed.
+    expect(await gate.resolvePermission(pr())).toBe('passthrough');
+    // The hold is gone (failed open): a late answer reports "no hold".
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
+  });
+
+  test('no_channel (no client, no token) fails the hold open fast', async () => {
+    const gate = deliveryGate({ delivery: Promise.resolve('no_channel'), deliveryConfirmMs: 200 });
+    expect(await gate.resolvePermission(pr())).toBe('passthrough');
+  });
+
+  test('a delivery probe that never resolves fails open after delivery_confirm_timeout', async () => {
+    const gate = deliveryGate({
+      delivery: new Promise<DeliveryOutcome>(() => {}),
+      deliveryConfirmMs: 40,
+      holdMs: 60_000,
+    });
+    expect(await gate.resolvePermission(pr())).toBe('passthrough');
+  });
+
+  test('confirmed delivery (pushed) keeps holding; the user answer resolves it', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('pushed'),
+      deliveryConfirmMs: 30,
+      holdMs: 60_000,
+    });
+    const pending = gate.resolvePermission(pr());
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 60)); // past delivery_confirm_timeout
+    expect(settled).toBe(false); // still held — delivery was confirmed
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
+  test('confirmed delivery (in_app) keeps holding', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('in_app'),
+      deliveryConfirmMs: 30,
+      holdMs: 60_000,
+    });
+    const pending = gate.resolvePermission(pr());
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(settled).toBe(false);
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  test('gating disabled (delivery_confirm_timeout = 0) keeps the legacy hold even if delivery failed', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 0,
+      holdMs: 60_000,
+    });
+    const pending = gate.resolvePermission(pr());
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(settled).toBe(false);
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    expect(await pending).toBe('allow');
+  });
+
+  test('no recorded delivery signal (awaitDelivery undefined) keeps the legacy hold', async () => {
+    const gate = deliveryGate({ delivery: undefined, deliveryConfirmMs: 50, holdMs: 60_000 });
+    const pending = gate.resolvePermission(pr());
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 70));
+    expect(settled).toBe(false);
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  test('hold_unconfirmed mode: an undelivered hold waits the short window, then fails open', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 20,
+      holdUnconfirmedMs: 150,
+      holdMs: 60_000,
+    });
+    const pending = gate.resolvePermission(pr());
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    // It does NOT fail open immediately on the unconfirmed signal — it re-arms a
+    // short 150ms hold.
+    await new Promise((r) => setTimeout(r, 60));
+    expect(settled).toBe(false);
+    // ...which then fails open (well before the 60s holdMs).
+    expect(await pending).toBe('passthrough');
+  });
+
+  test('hold_unconfirmed mode: the user can still answer during the short window', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 20,
+      holdUnconfirmedMs: 500,
+      holdMs: 60_000,
+    });
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 50)); // inside the short secondary window
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
+  test('a delivery outcome that resolves AFTER the hold already failed open does not double-resolve', async () => {
+    const resolved: Array<'auto_approved' | 'auto_denied' | 'cancelled'> = [];
+    const gate = deliveryGate({
+      // Resolves 'failed' well after the (short) holdMs timer has already fired.
+      delivery: new Promise<DeliveryOutcome>((r) => {
+        const t = setTimeout(() => r('failed'), 80);
+        t.unref?.();
+      }),
+      deliveryConfirmMs: 500, // longer than holdMs -> the holdMs timeout wins the fail-open
+      holdMs: 30,
+      onResolved: (_q, reason) => resolved.push(reason),
+    });
+    expect(await gate.resolvePermission(pr())).toBe('passthrough'); // failed open via holdMs timeout
+    // Let the slow delivery probe resolve, now that the hold is already gone.
+    await new Promise((r) => setTimeout(r, 120));
+    // Exactly ONE resolution broadcast (the timeout fail-open); the late probe
+    // sees pendingHolds no longer has the id and no-ops (no spurious 2nd dismiss).
+    expect(resolved).toEqual(['cancelled']);
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
+  });
+
+  test('Part B early push + delivery gating: a slow eval whose push is undelivered fails open fast', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 20,
+      pushHoldMs: 15, // Part B pushes + holds early at ~15ms
+      evalNeverSettles: true, // the eval never returns a verdict
+      holdMs: 60_000,
+    });
+    // Part B holds early; delivery is 'failed', so the gate fails the hold open
+    // fast (~deliveryConfirmMs) instead of waiting the 60s holdMs for a verdict
+    // that never comes.
+    expect(await gate.resolvePermission(pr())).toBe('passthrough');
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
   });
 });

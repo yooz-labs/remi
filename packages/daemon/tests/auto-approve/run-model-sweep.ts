@@ -336,6 +336,8 @@ function makeConfig(model: string): AutoApproveConfig {
     always_escalate_tools: [],
     hold_timeout: 0,
     push_hold_timeout: 0,
+    delivery_confirm_timeout: 0,
+    hold_unconfirmed_timeout: 0,
   };
 }
 
