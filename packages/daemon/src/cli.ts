@@ -144,6 +144,7 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
+import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
@@ -981,10 +982,14 @@ const spawningPorts = new Set<number>();
 // WebSocket disconnect — push notifications are the suspended-app path, so
 // dropping on disconnect breaks the only case they exist for. Cleanup happens
 // at process exit only. Issue #286.
-const deviceTokens = new Map<
-  string,
-  { token: string; platform: string; registeredAt: number; connectionId: UUID }
->();
+// Persistent, shared device-token registry (epic #603 Phase 6, R4): every local
+// daemon loads the same `~/.remi/device-tokens.json` so a fresh worktree daemon
+// can push immediately, and a dead token pruned on APNS rejection stays pruned.
+// `deviceTokens` is the store's live in-memory map (stable reference), so all the
+// existing Map consumers are unchanged.
+const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
+deviceTokenStore.load();
+const deviceTokens = deviceTokenStore.map;
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1095,6 +1100,9 @@ async function createNewSession(
       sessionRegistry,
       transcriptWatchers,
       deviceTokens,
+      // #603 Phase 6: prune a permanently-invalid token (BadDeviceToken) so the
+      // daemon stops retrying it; the store removes + persists it.
+      pruneToken: (token) => deviceTokenStore.prune(token, 'apns-invalid'),
       pushConfig: () => ({
         signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
         ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1361,7 +1369,9 @@ const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean
 };
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
-  deviceTokens,
+  // #603 Phase 6: registration goes through the store (rotation prune + persist).
+  registerDeviceToken: (token, platform, connectionId) =>
+    deviceTokenStore.register(token, platform, connectionId),
   sessionStore,
   sessionRegistry,
   send: sendToConnection,

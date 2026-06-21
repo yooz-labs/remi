@@ -168,9 +168,31 @@ export function isRetriablePushError(err: unknown): boolean {
   return status === 429 || (status >= 500 && status < 600);
 }
 
+/**
+ * Whether a push error means the DEVICE TOKEN itself is permanently invalid
+ * (epic #603 Phase 6) — so the daemon should PRUNE it, not just stop retrying.
+ * Matches the Worker's structured `tokenInvalid` flag (#603 Phase 2) and the raw
+ * APNS reasons. Distinct from `isRetriablePushError`: a 401/auth error or an
+ * exhausted transient failure is non-retriable but does NOT invalidate the token.
+ */
+export function isTokenInvalidError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err);
+  return (
+    /"tokenInvalid"\s*:\s*true/.test(msg) ||
+    /BadDeviceToken|DeviceTokenNotForTopic|\bUnregistered\b/i.test(msg)
+  );
+}
+
 export interface NotificationDispatcherDeps {
   sessionRegistry: SessionRegistry;
   deviceTokens: Map<string, DeviceTokenEntry>;
+  /**
+   * Prune a permanently-invalid device token (epic #603 Phase 6). Called when a
+   * push fails with `isTokenInvalidError` (BadDeviceToken / Unregistered), so the
+   * daemon stops retrying a dead token on every future escalation. Wired to
+   * `DeviceTokenStore.prune` (removes + persists). Absent => no pruning (the
+   * token stays in the map; tests / old callers). */
+  pruneToken?: (token: string) => void;
   /**
    * Current push config; read on every dispatch so the caller can swap the
    * source without re-wiring. Must be synchronous and non-throwing.
@@ -334,6 +356,13 @@ export class NotificationDispatcher {
         // error, or exhausted retries). This is the root cause behind a held
         // hook's fail-open, so it must be visible at error level, not buried.
         logError(`Push notification failed for session ${pushSessionId}: ${err}`);
+        // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
+        // unregistered / wrong-app) is pruned so it is never retried again. A
+        // network error or exhausted-transient failure is NOT a token problem,
+        // so the token survives.
+        if (isTokenInvalidError(err)) {
+          this.deps.pruneToken?.(token);
+        }
         return false;
       }
     }
