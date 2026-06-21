@@ -8,6 +8,7 @@ import {
   buildPushText,
   isDelivered,
   isRetriablePushError,
+  isTokenInvalidError,
   selectPushCategory,
 } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
@@ -596,5 +597,88 @@ describe('isRetriablePushError / isDelivered (#603 Phase 1)', () => {
     expect(isDelivered('deduped')).toBe(false);
     expect(isDelivered('no_channel')).toBe(false);
     expect(isDelivered('failed')).toBe(false);
+  });
+});
+
+describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  let pruned: string[];
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+
+  function register(): void {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+  }
+  function make(pushFn: PushFn): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn,
+        pruneToken: (t) => pruned.push(t),
+      },
+      SID,
+    );
+  }
+  const addToken = (t: string): void => {
+    deviceTokens.set(t, { token: t, platform: 'ios', registeredAt: 1, connectionId: SID });
+  };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    pruned = [];
+    configureLogger({ writeLog: () => {} });
+  });
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('a BadDeviceToken push prunes the dead token', async () => {
+    register();
+    addToken('dead');
+    const fail: PushFn = async () => {
+      throw new Error(
+        'Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken","tokenInvalid":true}',
+      );
+    };
+    await make(fail).maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(pruned).toEqual(['dead']);
+  });
+
+  // (A transient 429/5xx classifies as not-token-invalid -> no prune; covered
+  // instantly by the 401 case below + the isTokenInvalidError unit tests, so the
+  // slow real-backoff 429 path is not re-tested here.)
+  test('a 401 (non-token) failure does NOT prune the token', async () => {
+    register();
+    addToken('t');
+    const fail: PushFn = async () => {
+      throw new Error('Push trigger failed: 401 unauthorized');
+    };
+    await make(fail).maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(pruned).toEqual([]);
+  });
+});
+
+describe('isTokenInvalidError (#603 Phase 6)', () => {
+  test('matches the structured tokenInvalid flag and the APNS token reasons', () => {
+    expect(isTokenInvalidError(new Error('502 {"error":"x","tokenInvalid":true}'))).toBe(true);
+    expect(isTokenInvalidError(new Error('APNS 400: BadDeviceToken'))).toBe(true);
+    expect(isTokenInvalidError(new Error('410 {"reason":"Unregistered"}'))).toBe(true);
+    expect(isTokenInvalidError(new Error('DeviceTokenNotForTopic'))).toBe(true);
+  });
+
+  test('does NOT match transient / auth / network errors', () => {
+    expect(isTokenInvalidError(new Error('Push trigger failed: 429 rate limited'))).toBe(false);
+    expect(isTokenInvalidError(new Error('Push trigger failed: 401 unauthorized'))).toBe(false);
+    expect(isTokenInvalidError(new Error('Push trigger failed: 503 unavailable'))).toBe(false);
+    expect(isTokenInvalidError(new TypeError('Failed to fetch'))).toBe(false);
   });
 });

@@ -37,6 +37,9 @@ export interface MessageApiSetupDeps {
   sessionRegistry: SessionRegistry;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   deviceTokens: Map<string, DeviceTokenEntry>;
+  /** Prune a permanently-invalid device token (epic #603 Phase 6). Forwarded to
+   *  the dispatcher so a BadDeviceToken push removes the dead token. */
+  pruneToken?: (token: string) => void;
   /**
    * Called on every question emission so the caller can swap config sources
    * without re-wiring the factory. MUST be synchronous and non-throwing: it
@@ -76,6 +79,7 @@ export function createMessageApiForSession(
     sessionRegistry,
     transcriptWatchers,
     deviceTokens,
+    pruneToken,
     pushConfig,
     updateRemiStatus,
     maxBulletLength,
@@ -96,7 +100,13 @@ export function createMessageApiForSession(
   // active-client gate, the per-prompt PushDedup baseline (#409), and the
   // device-token fan-out; the MessageAPI callback just hands it the question.
   const notifications = new NotificationDispatcher(
-    { sessionRegistry, deviceTokens, pushConfig, getPrimarySessionId },
+    {
+      sessionRegistry,
+      deviceTokens,
+      pushConfig,
+      getPrimarySessionId,
+      ...(pruneToken ? { pruneToken } : {}),
+    },
     sessionId,
   );
 
