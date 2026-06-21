@@ -348,6 +348,8 @@ describe('auto_approve config', () => {
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
       hold_timeout: 1800,
       push_hold_timeout: 60,
+      delivery_confirm_timeout: 6,
+      hold_unconfirmed_timeout: 0,
     });
   });
 

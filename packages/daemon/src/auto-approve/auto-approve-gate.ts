@@ -30,6 +30,7 @@ import type { UUID } from '@remi/shared';
 import type { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
+import { type DeliveryOutcome, isDelivered } from '../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { AutoApproveResult } from './types.ts';
@@ -126,6 +127,23 @@ export interface AutoApproveGateDeps {
    *  late verdict then resolves the held hook. <=0 (or absent) disables Part B
    *  entirely — the eval/timer race never arms, so behavior reverts to A+C. */
   pushHoldMs?: number;
+  /**
+   * Probe a held escalation's notification delivery outcome (epic #603 Phase 1,
+   * R1/R2). Returns the promise `NotificationDispatcher.maybePush` recorded for
+   * `questionId`, or undefined when no push was attempted. The gate races it
+   * against `deliveryConfirmMs`: a hold whose notification is never confirmed
+   * delivered no longer blocks Claude for the full `holdMs` — it fails open fast
+   * (or holds a short secondary window, `holdUnconfirmedMs`). Absent => delivery
+   * gating disabled (legacy: hold to holdMs regardless of delivery). */
+  awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
+  /** Milliseconds to wait for a held escalation's delivery to be confirmed
+   *  before treating it as undeliverable (epic #603 Phase 1). <=0 (or absent)
+   *  disables delivery gating. From `auto_approve.delivery_confirm_timeout`. */
+  deliveryConfirmMs?: number;
+  /** Milliseconds to keep holding an UNDELIVERED escalation instead of failing
+   *  open immediately (epic #603 Phase 1, D2 — hold-always-no-phone). <=0 (or
+   *  absent) => fail open fast. From `auto_approve.hold_unconfirmed_timeout`. */
+  holdUnconfirmedMs?: number;
 }
 
 /** A held PermissionRequest hook awaiting a user answer (#573). The `resolve`
@@ -282,25 +300,104 @@ export class AutoApproveGate {
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
-        // Fail open: the user did not answer within the hold window, so let
-        // Claude render its native prompt (the local terminal can take over).
-        this.pendingHolds.delete(qid);
-        log(
-          `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} timed out -> passthrough`,
-        );
-        // The pushed card is now stale (Claude will render its own prompt); tell
-        // every client to dismiss it BEFORE failing open (#585, P7), and drop the
-        // registry entry so no ghost card replays. Throw-safe.
-        this.notifyResolved(qid, 'cancelled');
-        this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
-        resolve('passthrough');
+        this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} timed out -> passthrough`);
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;
       // unref so a held hook never blocks daemon shutdown.
       timer.unref?.();
       this.pendingHolds.set(qid, { resolve, timer });
     });
+    // Phase 1 (#603, R1/R2): gate the hold on CONFIRMED delivery. A held hook is
+    // only worth blocking Claude for if the user can actually be notified; if
+    // the notification is not confirmed delivered within delivery_confirm_timeout
+    // (e.g. a dead device token), fail open fast instead of stalling for holdMs.
+    this.armDeliveryGate(qid);
     return { decision, questionId: qid };
+  }
+
+  /**
+   * Fail a held hook OPEN to passthrough (#573 hold-timeout / #603 undeliverable):
+   * dismiss the now-stale pushed card on every client, drop the registry entry,
+   * and resolve the hook so Claude renders its native prompt and the local
+   * terminal can take over. No-op when the hold is already gone (answered, Part-B
+   * verdict, cancelled) so it never double-resolves.
+   */
+  private failOpenHeld(qid: UUID, logMessage: string): void {
+    if (!this.pendingHolds.has(qid)) return;
+    log(`[AutoApprove ${this.sessionTag}] ${logMessage}`);
+    // Dismiss the stale card everywhere BEFORE resolving (#585, P7); releaseHeld
+    // then clears the timer, drops the registry entry, and resolves passthrough.
+    this.notifyResolved(qid, 'cancelled');
+    this.releaseHeld(qid, 'passthrough');
+  }
+
+  /**
+   * Race a held escalation's notification delivery against `deliveryConfirmMs`
+   * (epic #603 Phase 1). If delivery is confirmed (in_app / pushed / deduped) in
+   * time, the hold keeps blocking to `holdMs` as before. If it is NOT confirmed
+   * — a dead token, no registered token, or the probe times out — the hold no
+   * longer stalls Claude for the full window: `onDeliveryUnconfirmed` fails it
+   * open fast (or re-arms a short secondary hold). Disabled (legacy hold) when
+   * `deliveryConfirmMs <= 0` or no delivery signal was recorded for `qid`.
+   */
+  private armDeliveryGate(qid: UUID): void {
+    const confirmMs = this.deps.deliveryConfirmMs ?? 0;
+    const probe = this.deps.awaitDelivery?.(qid);
+    if (confirmMs <= 0 || !probe) return;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      const t = setTimeout(() => resolve('timeout'), confirmMs);
+      t.unref?.();
+    });
+    Promise.race([probe, timeout])
+      .then((result) => {
+        // The hold may already be resolved (user answered, Part-B verdict, or a
+        // cancel) — then there is nothing to gate.
+        if (!this.pendingHolds.has(qid)) return;
+        if (result !== 'timeout' && isDelivered(result)) return; // confirmed: keep holding
+        this.onDeliveryUnconfirmed(qid, result);
+      })
+      .catch((err) => {
+        logError(
+          `[AutoApprove ${this.sessionTag}] delivery probe threw (treating as unconfirmed):`,
+          err,
+        );
+        if (this.pendingHolds.has(qid)) this.onDeliveryUnconfirmed(qid, 'failed');
+      });
+  }
+
+  /**
+   * A held escalation's notification was NOT confirmed delivered (epic #603
+   * Phase 1). Default (hybrid): fail open NOW so the local terminal can answer,
+   * instead of blocking Claude for the full `holdMs` on a notification nobody
+   * received. When `holdUnconfirmedMs > 0` (D2 hold-always-no-phone): re-arm the
+   * hold to a SHORT secondary window so a transient failure can recover before
+   * fail-open. Either path is LOUD (logError) so an undelivered notification is
+   * never a silent stall.
+   */
+  private onDeliveryUnconfirmed(qid: UUID, reason: DeliveryOutcome | 'timeout'): void {
+    if (!this.pendingHolds.has(qid)) return;
+    const holdUnconfirmedMs = this.deps.holdUnconfirmedMs ?? 0;
+    if (holdUnconfirmedMs > 0) {
+      const hold = this.pendingHolds.get(qid);
+      if (!hold) return;
+      clearTimeout(hold.timer);
+      const timer = setTimeout(() => {
+        this.failOpenHeld(
+          qid,
+          `Held hook ${qid.slice(0, 8)} still undelivered (${reason}); short hold expired -> passthrough`,
+        );
+      }, holdUnconfirmedMs);
+      timer.unref?.();
+      this.pendingHolds.set(qid, { resolve: hold.resolve, timer });
+      logError(
+        `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} notification UNCONFIRMED (${reason}); holding ${Math.round(holdUnconfirmedMs / 1000)}s (hold_unconfirmed_timeout) with retry before fail-open`,
+      );
+      return;
+    }
+    logError(
+      `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} notification UNDELIVERED (${reason}); failing open to passthrough so the terminal can answer (no notification reached your devices)`,
+    );
+    this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} undelivered -> passthrough`);
   }
 
   /**

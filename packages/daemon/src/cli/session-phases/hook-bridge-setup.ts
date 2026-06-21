@@ -55,6 +55,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
 import { classifySessionEvent } from '../../hooks/session-lock-classifier.ts';
+import type { DeliveryOutcome } from '../../notifications/notification-dispatcher.ts';
 import { claudeChildLooksAlive } from '../../session/index.ts';
 import type {
   SessionBindingStore,
@@ -140,6 +141,25 @@ export interface HookBridgeDeps {
    * Part B disabled (the eval/timer race never arms).
    */
   pushHoldTimeoutSec?: number;
+  /**
+   * Probe a held escalation's notification delivery outcome (epic #603 Phase 1).
+   * Wired from this session's `NotificationDispatcher.awaitDelivery`. Lets the
+   * gate fail a hold open fast when no notification reached the user instead of
+   * blocking for the full hold_timeout. Absent => delivery gating disabled.
+   */
+  awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
+  /**
+   * Seconds to wait for a held escalation's delivery to be confirmed before
+   * treating it as undeliverable (epic #603 Phase 1). From
+   * `config.auto_approve.delivery_confirm_timeout`. 0 / absent => no gating.
+   */
+  deliveryConfirmSec?: number;
+  /**
+   * Seconds to keep holding an UNDELIVERED escalation instead of failing open
+   * immediately (epic #603 Phase 1, D2 hold-always-no-phone). From
+   * `config.auto_approve.hold_unconfirmed_timeout`. 0 / absent => fail open fast.
+   */
+  holdUnconfirmedSec?: number;
   /**
    * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
    * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
@@ -838,6 +858,11 @@ export function setupHookBridge(
       alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
       holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
       pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
+      // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
+      // dead push channel fails open fast instead of stalling for holdMs.
+      ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),
+      deliveryConfirmMs: (deps.deliveryConfirmSec ?? 0) * 1000,
+      holdUnconfirmedMs: (deps.holdUnconfirmedSec ?? 0) * 1000,
     },
     sessionId,
   );

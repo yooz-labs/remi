@@ -98,6 +98,61 @@ export function buildPushText(
  *  observable in tests without mocking a network module. */
 export type PushFn = typeof sendPushTrigger;
 
+/**
+ * The outcome of attempting to deliver a question's notification (epic #603
+ * Phase 1). The gate consumes this via `awaitDelivery` to decide whether a held
+ * hook should keep blocking Claude or fail open fast:
+ *   - `in_app`     a client is attached, so the question shows in-app (the only
+ *                  case where `maybePush` deliberately does NOT push — but the
+ *                  user IS reachable).
+ *   - `pushed`     at least one APNS push returned 2xx.
+ *   - `deduped`    the push was suppressed because an identical one already went
+ *                  out (the earlier push is the delivery).
+ *   - `no_channel` no client attached AND no device tokens — nobody can be told.
+ *   - `failed`     tokens exist but every push failed (e.g. BadDeviceToken).
+ */
+export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
+
+/** Whether a delivery outcome means the user can actually be notified (epic
+ *  #603 Phase 1). `in_app` / `pushed` / `deduped` reach the user; `no_channel` /
+ *  `failed` do not, so a hold gated on delivery fails open. */
+export function isDelivered(outcome: DeliveryOutcome): boolean {
+  return outcome === 'in_app' || outcome === 'pushed' || outcome === 'deduped';
+}
+
+/** Transient push failures retried with backoff (epic #603 Phase 1). */
+const MAX_PUSH_RETRIES = 2;
+/** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so the
+ *  per-token result settles well within the gate's delivery_confirm_timeout. */
+const PUSH_RETRY_BASE_MS = 400;
+/** How long a recorded delivery outcome stays probeable before cleanup. The
+ *  gate probes within ~ms of the push; this is a generous upper bound so the
+ *  map never grows unbounded across a long-lived session. */
+const DELIVERY_OUTCOME_TTL_MS = 60_000;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+
+/**
+ * Whether a failed push is worth retrying (epic #603 Phase 1). The signaling
+ * Worker wraps a permanent APNS token rejection (BadDeviceToken / Unregistered /
+ * DeviceTokenNotForTopic) as an HTTP 502, so a naive "retry all 5xx" would spin
+ * on a dead token. Treat those reasons as permanent (no retry -> fail open
+ * fast); retry only a genuine rate-limit (429) or a transient 5xx with no
+ * permanent reason.
+ */
+export function isRetriablePushError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err);
+  if (/BadDeviceToken|Unregistered|DeviceTokenNotForTopic/i.test(msg)) return false;
+  const m = msg.match(/failed: (\d{3})/);
+  if (!m) return false;
+  const status = Number(m[1]);
+  return status === 429 || (status >= 500 && status < 600);
+}
+
 export interface NotificationDispatcherDeps {
   sessionRegistry: SessionRegistry;
   deviceTokens: Map<string, DeviceTokenEntry>;
@@ -122,6 +177,13 @@ export class NotificationDispatcher {
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
 
+  /**
+   * Delivery outcome per question id (epic #603 Phase 1), recorded by every
+   * `maybePush` so the gate can `awaitDelivery` to decide a held hook's fate.
+   * Entries self-evict after `DELIVERY_OUTCOME_TTL_MS` so the map stays bounded.
+   */
+  private readonly deliveryOutcomes = new Map<UUID, Promise<DeliveryOutcome>>();
+
   constructor(
     private readonly deps: NotificationDispatcherDeps,
     private readonly sessionId: UUID,
@@ -141,18 +203,40 @@ export class NotificationDispatcher {
    * Push `question` to all registered devices, unless a client is actively
    * attached (they see it in-app) or the dedup gate suppresses it.
    * `questionSessionId` is the primary id the client knows (from hello_ack).
+   *
+   * Returns the resolved DELIVERY OUTCOME (epic #603 Phase 1) and records it
+   * keyed by `question.id` so a held hook can `awaitDelivery` to decide whether
+   * to keep blocking Claude or fail open fast. Callers that do not care about
+   * delivery (the regular PTY-prompt path) can ignore the returned promise; the
+   * recording still happens.
    */
-  maybePush(questionSessionId: UUID, question: Question): void {
+  maybePush(questionSessionId: UUID, question: Question): Promise<DeliveryOutcome> {
+    const outcome = this.computeDelivery(questionSessionId, question);
+    this.recordDelivery(question.id, outcome);
+    return outcome;
+  }
+
+  /** Resolve the delivery outcome for one question (fanning out the per-token
+   *  pushes when a push is actually warranted). See `DeliveryOutcome`. */
+  private computeDelivery(questionSessionId: UUID, question: Question): Promise<DeliveryOutcome> {
     const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
 
     const sessionForPush = sessionRegistry.getSession(questionSessionId);
     const hasActiveClient =
       sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
-    if (deviceTokens.size === 0 || hasActiveClient) return;
+    // A client is attached: it sees the question in-app over the WebSocket. No
+    // push (as before), but the user IS reachable -> in_app.
+    if (hasActiveClient) return Promise.resolve('in_app');
+    // No client AND no device tokens: there is no channel to notify anyone.
+    if (deviceTokens.size === 0) {
+      log(`Push skipped: no device tokens for session ${questionSessionId}`);
+      return Promise.resolve('no_channel');
+    }
 
     if (!this.pushDedup.shouldPush(question)) {
       log(`Push suppressed by dedup for session ${questionSessionId}`);
-      return;
+      // An identical push already went out; the earlier one is the delivery.
+      return Promise.resolve('deduped');
     }
 
     const session = sessionRegistry.getSession(this.sessionId);
@@ -167,20 +251,74 @@ export class NotificationDispatcher {
     // label is empty so the button still carries something answerable.
     const pushOptions = question.options.map((o) => o.label || o.value);
     const { title, body } = buildPushText(sessionName, question);
+    const opts = {
+      title,
+      body,
+      ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+      sessionId: pushSessionId,
+      questionId: question.id,
+      ...(pushCategory !== undefined ? { category: pushCategory } : {}),
+      ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
+    };
 
-    for (const dt of deviceTokens.values()) {
-      this.pushFn(cfg.signalingUrl, dt.token, {
-        title,
-        body,
-        ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
-        sessionId: pushSessionId,
-        questionId: question.id,
-        ...(pushCategory !== undefined ? { category: pushCategory } : {}),
-        ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
-      })
-        .then(() => log(`Push notification sent for session ${pushSessionId}`))
-        .catch((err) => log(`Push notification failed: ${err}`));
+    const perToken = [...deviceTokens.values()].map((dt) =>
+      this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, pushSessionId),
+    );
+    // Delivered if ANY registered device accepted the push.
+    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+  }
+
+  /**
+   * Push to one device token, retrying a TRANSIENT failure (429 / transient
+   * 5xx) with short backoff (epic #603 Phase 1). A permanent token rejection
+   * (BadDeviceToken etc., which the Worker wraps as 502) is NOT retried — it
+   * fails fast so the gate can fail the hold open. Resolves true on a 2xx.
+   */
+  private async pushOnceWithRetry(
+    signalingUrl: string,
+    token: string,
+    opts: Parameters<PushFn>[2],
+    pushSessionId: UUID,
+  ): Promise<boolean> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.pushFn(signalingUrl, token, opts);
+        log(`Push notification sent for session ${pushSessionId}`);
+        return true;
+      } catch (err) {
+        if (isRetriablePushError(err) && attempt < MAX_PUSH_RETRIES) {
+          const delay = PUSH_RETRY_BASE_MS * 2 ** attempt;
+          log(
+            `Push transient failure (retry ${attempt + 1}/${MAX_PUSH_RETRIES} in ${delay}ms): ${err}`,
+          );
+          await sleep(delay);
+          continue;
+        }
+        log(`Push notification failed: ${err}`);
+        return false;
+      }
     }
+  }
+
+  /** Record (and schedule cleanup of) a question's delivery outcome so the gate
+   *  can `awaitDelivery` it (epic #603 Phase 1). */
+  private recordDelivery(questionId: UUID, outcome: Promise<DeliveryOutcome>): void {
+    this.deliveryOutcomes.set(questionId, outcome);
+    outcome.finally(() => {
+      const t = setTimeout(() => this.deliveryOutcomes.delete(questionId), DELIVERY_OUTCOME_TTL_MS);
+      t.unref?.();
+    });
+  }
+
+  /**
+   * The delivery outcome recorded for `questionId` by `maybePush` (epic #603
+   * Phase 1). The gate races this against `delivery_confirm_timeout` to decide a
+   * held hook's fate. `undefined` when no push was attempted for the id (e.g. the
+   * held push found no pending hook record) — the gate then keeps its legacy
+   * behavior (hold to hold_timeout) rather than failing open on a missing signal.
+   */
+  awaitDelivery(questionId: UUID): Promise<DeliveryOutcome> | undefined {
+    return this.deliveryOutcomes.get(questionId);
   }
 
   /**
