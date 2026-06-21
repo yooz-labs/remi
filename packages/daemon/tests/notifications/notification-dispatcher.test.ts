@@ -653,16 +653,9 @@ describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
     expect(pruned).toEqual(['dead']);
   });
 
-  test('a transient (429) failure does NOT prune the token', async () => {
-    register();
-    addToken('flaky');
-    const fail: PushFn = async () => {
-      throw new Error('Push trigger failed: 429 rate limited');
-    };
-    await make(fail).maybePush(SID, question('q1', [yesOpt, noOpt]));
-    expect(pruned).toEqual([]);
-  });
-
+  // (A transient 429/5xx classifies as not-token-invalid -> no prune; covered
+  // instantly by the 401 case below + the isTokenInvalidError unit tests, so the
+  // slow real-backoff 429 path is not re-tested here.)
   test('a 401 (non-token) failure does NOT prune the token', async () => {
     register();
     addToken('t');
