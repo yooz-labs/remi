@@ -114,10 +114,14 @@ export type PushFn = typeof sendPushTrigger;
 export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
 
 /** Whether a delivery outcome means the user can actually be notified (epic
- *  #603 Phase 1). `in_app` / `pushed` / `deduped` reach the user; `no_channel` /
- *  `failed` do not, so a hold gated on delivery fails open. */
+ *  #603 Phase 1). `in_app` / `pushed` reach the user. `deduped` is deliberately
+ *  NOT treated as confirmed: PushDedup suppresses a second identical push
+ *  WITHOUT tracking whether the push it deduped against actually succeeded, so a
+ *  held hook must not keep blocking on it — fail open (always safe) instead.
+ *  (Phase 3 makes held escalations bypass dedup, so a held push is never deduped
+ *  in the first place.) `no_channel` / `failed` obviously do not reach anyone. */
 export function isDelivered(outcome: DeliveryOutcome): boolean {
-  return outcome === 'in_app' || outcome === 'pushed' || outcome === 'deduped';
+  return outcome === 'in_app' || outcome === 'pushed';
 }
 
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
@@ -146,7 +150,18 @@ const sleep = (ms: number): Promise<void> =>
  */
 export function isRetriablePushError(err: unknown): boolean {
   const msg = String(err instanceof Error ? err.message : err);
-  if (/BadDeviceToken|Unregistered|DeviceTokenNotForTopic/i.test(msg)) return false;
+  // Permanent APNS token rejections (the Worker wraps these as HTTP 502): never
+  // retry. `Unregistered` is word-boundaried so a generic 5xx body that happens
+  // to contain the word is not misclassified as a permanent token failure.
+  if (/BadDeviceToken|DeviceTokenNotForTopic|\bUnregistered\b/i.test(msg)) return false;
+  // Network-level failures (no HTTP response received at all) are transient —
+  // a Worker cold-start, a brief flap, DNS hiccup — so retry them.
+  if (
+    err instanceof TypeError ||
+    /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|Failed to fetch/i.test(msg)
+  ) {
+    return true;
+  }
   const m = msg.match(/failed: (\d{3})/);
   if (!m) return false;
   const status = Number(m[1]);
@@ -294,7 +309,10 @@ export class NotificationDispatcher {
           await sleep(delay);
           continue;
         }
-        log(`Push notification failed: ${err}`);
+        // Loud: a real push attempt failed (permanent token rejection, network
+        // error, or exhausted retries). This is the root cause behind a held
+        // hook's fail-open, so it must be visible at error level, not buried.
+        logError(`Push notification failed for session ${pushSessionId}: ${err}`);
         return false;
       }
     }
@@ -304,10 +322,12 @@ export class NotificationDispatcher {
    *  can `awaitDelivery` it (epic #603 Phase 1). */
   private recordDelivery(questionId: UUID, outcome: Promise<DeliveryOutcome>): void {
     this.deliveryOutcomes.set(questionId, outcome);
-    outcome.finally(() => {
-      const t = setTimeout(() => this.deliveryOutcomes.delete(questionId), DELIVERY_OUTCOME_TTL_MS);
-      t.unref?.();
-    });
+    // Evict after a fixed TTL regardless of whether `outcome` ever settles: a
+    // push whose fetch hangs (unreachable Worker, no AbortSignal yet) must not
+    // leak a map entry until the OS TCP timeout. The gate probes within ms of
+    // recording, so a 60s TTL is a generous upper bound.
+    const t = setTimeout(() => this.deliveryOutcomes.delete(questionId), DELIVERY_OUTCOME_TTL_MS);
+    t.unref?.();
   }
 
   /**

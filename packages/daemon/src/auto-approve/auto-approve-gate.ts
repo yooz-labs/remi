@@ -342,8 +342,18 @@ export class AutoApproveGate {
    */
   private armDeliveryGate(qid: UUID): void {
     const confirmMs = this.deps.deliveryConfirmMs ?? 0;
+    if (confirmMs <= 0) return; // delivery gating disabled (legacy hold to holdMs)
     const probe = this.deps.awaitDelivery?.(qid);
-    if (confirmMs <= 0 || !probe) return;
+    if (!probe) {
+      // Gating is ON but no delivery signal was recorded for this question —
+      // either awaitDelivery is unwired, or onHeldEscalate threw before maybePush
+      // ran (its throw is swallowed as a cosmetic cue). Fall back to the legacy
+      // hold, but log it: a silently-skipped gate could still stall to holdMs.
+      log(
+        `[AutoApprove ${this.sessionTag}] No delivery signal for ${qid.slice(0, 8)}; delivery gate skipped (holding to hold_timeout)`,
+      );
+      return;
+    }
     const timeout = new Promise<'timeout'>((resolve) => {
       const t = setTimeout(() => resolve('timeout'), confirmMs);
       t.unref?.();

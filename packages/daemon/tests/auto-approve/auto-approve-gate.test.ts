@@ -1142,21 +1142,28 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
 
   /** A holding gate whose held escalation's delivery outcome and gating timeouts
    *  the test controls. `delivery` is what `awaitDelivery` resolves to (or
-   *  undefined for "no delivery signal recorded"). */
+   *  undefined for "no delivery signal recorded"). `evalNeverSettles` + a
+   *  `pushHoldMs` exercise the Part-B early-push path combined with the gate. */
   function deliveryGate(opts: {
     delivery: Promise<DeliveryOutcome> | undefined;
     deliveryConfirmMs?: number;
     holdUnconfirmedMs?: number;
     holdMs?: number;
+    pushHoldMs?: number;
+    evalNeverSettles?: boolean;
+    onResolved?: (questionId: UUID, reason: 'auto_approved' | 'auto_denied' | 'cancelled') => void;
   }): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
       handleMessage: () => {},
       handleQuestion: () => {},
       handleStatusChange: () => {},
     } as never);
+    const service: AutoApproveEvaluator = opts.evalNeverSettles
+      ? { evaluate: () => new Promise<AutoApproveResult>(() => {}), cancel: () => true }
+      : evaluator(escalate);
     return new AutoApproveGate(
       {
-        service: evaluator(escalate),
+        service,
         sessionRegistry: registry,
         tracker: new QuestionPresenceTracker(() => {}),
         isInSubagentContext: () => false,
@@ -1166,9 +1173,11 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
           return lastQuestionId;
         },
         holdMs: opts.holdMs ?? 60_000,
+        pushHoldMs: opts.pushHoldMs ?? 0,
         awaitDelivery: () => opts.delivery,
         deliveryConfirmMs: opts.deliveryConfirmMs ?? 0,
         holdUnconfirmedMs: opts.holdUnconfirmedMs ?? 0,
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
         alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
       },
       SID,
@@ -1309,5 +1318,41 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
     await new Promise((r) => setTimeout(r, 50)); // inside the short secondary window
     expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
     expect(await pending).toBe('allow');
+  });
+
+  test('a delivery outcome that resolves AFTER the hold already failed open does not double-resolve', async () => {
+    const resolved: Array<'auto_approved' | 'auto_denied' | 'cancelled'> = [];
+    const gate = deliveryGate({
+      // Resolves 'failed' well after the (short) holdMs timer has already fired.
+      delivery: new Promise<DeliveryOutcome>((r) => {
+        const t = setTimeout(() => r('failed'), 80);
+        t.unref?.();
+      }),
+      deliveryConfirmMs: 500, // longer than holdMs -> the holdMs timeout wins the fail-open
+      holdMs: 30,
+      onResolved: (_q, reason) => resolved.push(reason),
+    });
+    expect(await gate.resolvePermission(pr())).toBe('passthrough'); // failed open via holdMs timeout
+    // Let the slow delivery probe resolve, now that the hold is already gone.
+    await new Promise((r) => setTimeout(r, 120));
+    // Exactly ONE resolution broadcast (the timeout fail-open); the late probe
+    // sees pendingHolds no longer has the id and no-ops (no spurious 2nd dismiss).
+    expect(resolved).toEqual(['cancelled']);
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
+  });
+
+  test('Part B early push + delivery gating: a slow eval whose push is undelivered fails open fast', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 20,
+      pushHoldMs: 15, // Part B pushes + holds early at ~15ms
+      evalNeverSettles: true, // the eval never returns a verdict
+      holdMs: 60_000,
+    });
+    // Part B holds early; delivery is 'failed', so the gate fails the hold open
+    // fast (~deliveryConfirmMs) instead of waiting the 60s holdMs for a verdict
+    // that never comes.
+    expect(await gate.resolvePermission(pr())).toBe('passthrough');
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
   });
 });
