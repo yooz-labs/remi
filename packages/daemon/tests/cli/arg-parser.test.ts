@@ -125,6 +125,18 @@ describe('parseArgs', () => {
       expect(r.subcommandArg).toBe('abc');
       expect(r.host).toBe('myhost');
     });
+
+    test('remi unstick (no port) parses with no positional arg', () => {
+      const r = parseArgs(['unstick']);
+      expect(r.subcommand).toBe('unstick');
+      expect(r.subcommandArg).toBeUndefined();
+    });
+
+    test('remi unstick <port> captures the port as the positional arg', () => {
+      const r = parseArgs(['unstick', '18767']);
+      expect(r.subcommand).toBe('unstick');
+      expect(r.subcommandArg).toBe('18767');
+    });
   });
 
   // -------------------------------------------------------------------------

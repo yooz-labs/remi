@@ -37,6 +37,9 @@ export interface MessageApiSetupDeps {
   sessionRegistry: SessionRegistry;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   deviceTokens: Map<string, DeviceTokenEntry>;
+  /** Prune a permanently-invalid device token (epic #603 Phase 6). Forwarded to
+   *  the dispatcher so a BadDeviceToken push removes the dead token. */
+  pruneToken?: (token: string) => void;
   /**
    * Called on every question emission so the caller can swap config sources
    * without re-wiring the factory. MUST be synchronous and non-throwing: it
@@ -76,6 +79,7 @@ export function createMessageApiForSession(
     sessionRegistry,
     transcriptWatchers,
     deviceTokens,
+    pruneToken,
     pushConfig,
     updateRemiStatus,
     maxBulletLength,
@@ -96,7 +100,13 @@ export function createMessageApiForSession(
   // active-client gate, the per-prompt PushDedup baseline (#409), and the
   // device-token fan-out; the MessageAPI callback just hands it the question.
   const notifications = new NotificationDispatcher(
-    { sessionRegistry, deviceTokens, pushConfig, getPrimarySessionId },
+    {
+      sessionRegistry,
+      deviceTokens,
+      pushConfig,
+      getPrimarySessionId,
+      ...(pruneToken ? { pruneToken } : {}),
+    },
     sessionId,
   );
 
@@ -118,7 +128,7 @@ export function createMessageApiForSession(
     onMessageFinalized: (msgId) => {
       log(`Message ${msgId} finalized`);
     },
-    onQuestion: (question: Question) => {
+    onQuestion: (question: Question, opts?: { held?: boolean }) => {
       log(`Question detected: ${question.text.substring(0, 50)}...`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
@@ -133,8 +143,12 @@ export function createMessageApiForSession(
       sendAndRecord(msg);
       sessionRegistry.addQuestion(questionSessionId, question);
 
-      // Push only when no client is attached; attached clients see it in-app.
-      notifications.maybePush(questionSessionId, question);
+      // Push: a non-held question only pushes when no client is attached (the
+      // client sees it in-app). A HELD escalation (#603 Phase 3) always also
+      // pushes to the lock screen — the attached client may be backgrounded.
+      // maybePush records the delivery outcome (#603 Phase 1) for the gate to
+      // probe; the regular question path does not await it.
+      void notifications.maybePush(questionSessionId, question, { held: opts?.held === true });
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);

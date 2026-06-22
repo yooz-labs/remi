@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.14'; // REMI_COMPILED_VERSION
+      return '0.6.15-dev.9'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.14'; // REMI_COMPILED_VERSION
+    return '0.6.15-dev.9'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -111,6 +111,7 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
+import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
@@ -144,6 +145,7 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { HookConfigManager, HookServer } from './hooks/index.ts';
+import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
@@ -233,6 +235,13 @@ if (parsedArgs.subcommand === 'config') {
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
+}
+
+// Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).
+if (parsedArgs.subcommand === 'unstick') {
+  const parsedPort = parsedArgs.subcommandArg ? Number(parsedArgs.subcommandArg) : Number.NaN;
+  const targetPort = Number.isInteger(parsedPort) ? parsedPort : undefined;
+  process.exit(runUnstickCommand(targetPort));
 }
 
 // Destructure into existing variable names for zero downstream changes
@@ -858,6 +867,33 @@ const binderClosers: Map<UUID, () => void> = new Map();
 // (multi-session daemons). Populated in createNewSession after setupHookBridge;
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
+/**
+ * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
+ * get me out" lever when Ollama + a question are stuck and the phone has no device
+ * visibility. Each gate releases its held hooks to passthrough (native prompt),
+ * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
+ * zero sessions.
+ */
+function forceReleaseAllSessions(): void {
+  let holds = 0;
+  let cancelled = 0;
+  let drained = 0;
+  // Per-session try/catch: a throw in one gate's release must not abort the loop
+  // and leave the remaining sessions stuck (the whole point is "get me out").
+  for (const [sessionId, handle] of sessionGateHandles.entries()) {
+    try {
+      const r = handle.forceRelease('force-release (remi unstick)');
+      holds += r.holds;
+      cancelled += r.cancelled ? 1 : 0;
+      drained += r.drained;
+    } catch (err) {
+      logError(`[unstick] Failed to force-release session ${sessionId.slice(0, 8)}:`, err);
+    }
+  }
+  log(
+    `[unstick] Force-released ${sessionGateHandles.size} session(s): ${holds} hold(s) -> passthrough, ${cancelled} eval(s) cancelled, ${drained} queued drained`,
+  );
+}
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
 // device-token fan-out that pushed the card. Populated in createNewSession;
@@ -981,10 +1017,14 @@ const spawningPorts = new Set<number>();
 // WebSocket disconnect — push notifications are the suspended-app path, so
 // dropping on disconnect breaks the only case they exist for. Cleanup happens
 // at process exit only. Issue #286.
-const deviceTokens = new Map<
-  string,
-  { token: string; platform: string; registeredAt: number; connectionId: UUID }
->();
+// Persistent, shared device-token registry (epic #603 Phase 6, R4): every local
+// daemon loads the same `~/.remi/device-tokens.json` so a fresh worktree daemon
+// can push immediately, and a dead token pruned on APNS rejection stays pruned.
+// `deviceTokens` is the store's live in-memory map (stable reference), so all the
+// existing Map consumers are unchanged.
+const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
+deviceTokenStore.load();
+const deviceTokens = deviceTokenStore.map;
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1095,6 +1135,9 @@ async function createNewSession(
       sessionRegistry,
       transcriptWatchers,
       deviceTokens,
+      // #603 Phase 6: prune a permanently-invalid token (BadDeviceToken) so the
+      // daemon stops retrying it; the store removes + persists it.
+      pruneToken: (token) => deviceTokenStore.prune(token, 'apns-invalid'),
       pushConfig: () => ({
         signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
         ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1130,7 +1173,7 @@ async function createNewSession(
   // screen presence: hooks record (no push), PTY confirms (push). Status
   // transitions out of 'waiting' drop pending records so auto-approve
   // silent paths never push.
-  const tracker = new QuestionPresenceTracker((q) => messageApi.handleQuestion(q));
+  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts));
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1199,6 +1242,16 @@ async function createNewSession(
         // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
         holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
         pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
+        // #603 Phase 1: gate a held hook on confirmed notification delivery. Same
+        // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
+        // gate can hold. The dispatcher records the per-question delivery outcome.
+        awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
+        deliveryConfirmSec: autoApproveService
+          ? remiConfig.auto_approve.delivery_confirm_timeout
+          : 0,
+        holdUnconfirmedSec: autoApproveService
+          ? remiConfig.auto_approve.hold_unconfirmed_timeout
+          : 0,
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
@@ -1351,7 +1404,9 @@ const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean
 };
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
-  deviceTokens,
+  // #603 Phase 6: registration goes through the store (rotation prune + persist).
+  registerDeviceToken: (token, platform, connectionId) =>
+    deviceTokenStore.register(token, platform, connectionId),
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
@@ -1368,7 +1423,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
     sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision) ?? false,
   releaseHeldAsPassthrough: (sessionId, questionId) =>
     sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
-  cancelAutoApprove: (sessionId, reason) => sessionGateHandles.get(sessionId)?.cancelStale(reason),
+  // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,
+  // without failing the session's other holds open (which cancelStale would do).
+  // (cancelStale itself is wired for Stop/SessionEnd teardown in hook-bridge-setup.)
+  cancelAutoApproveForQuestion: (sessionId, questionId, reason) =>
+    sessionGateHandles.get(sessionId)?.cancelEvalForQuestion(questionId, reason),
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
@@ -1879,6 +1938,7 @@ if (cliDaemonMode) {
       console.error(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
+  process.on('SIGUSR2', forceReleaseAllSessions);
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
   // Block ALL output paths to the terminal. In Bun compiled binaries,
@@ -2278,6 +2338,8 @@ if (cliDaemonMode) {
       logError(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
+  // SIGUSR2: force-release signal (triggered by `remi unstick`)
+  process.on('SIGUSR2', forceReleaseAllSessions);
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
   process.on('SIGINT', () => {

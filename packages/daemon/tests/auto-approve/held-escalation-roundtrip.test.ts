@@ -200,7 +200,7 @@ describe('Held escalation round-trip — register + push + shared answer (#573)'
       }) as never,
       resolveHeldPermission: (_s, q, d) => gate.resolveHeld(q, d),
       releaseHeldAsPassthrough: (_s, q) => gate.releaseHeldAsPassthrough(q),
-      cancelAutoApprove: (_s, reason) => gate.cancelStale(reason),
+      cancelAutoApproveForQuestion: (_s, q, reason) => gate.cancelEvalForQuestion(q, reason),
     });
   }
 

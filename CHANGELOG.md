@@ -4,6 +4,51 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-06-22
+
+Notification-delivery robustness (epic #603): escalations reliably reach the
+lock screen, a manual answer frees the GPU, dead device tokens self-heal, and
+push works across mixed APNS environments.
+
+### Added
+- **`remi unstick [port]`** (#617): a force-release escape hatch for when an
+  auto-approve eval and a held question get wedged. Each daemon releases its held
+  permission hooks to the native terminal prompt, aborts the in-flight Ollama
+  eval, and drains the eval queue. With no port every running daemon is unstuck;
+  with a port, only the daemon on that port.
+- **Persistent device-token registry + dead-token pruning** (#615): device
+  tokens persist in `~/.remi/device-tokens.json` (atomic, multi-daemon safe), and
+  a token APNS permanently rejects (`BadDeviceToken` / `Unregistered`) is pruned
+  instead of being retried forever.
+- **Per-identity push budget + dismiss isolation** on the signaling Worker
+  (#605), replacing the shared per-IP limit that silently dropped pushes for
+  multiple daemons behind one NAT.
+
+### Changed
+- **A manual answer now frees the Ollama GPU** (#617): each eval is tracked by id
+  so an answer cancels exactly that question's eval (running, or dropped while
+  still queued under contention) and never another permission's. Every answer
+  path (held, passthrough, relay, stale) cancels its own eval, and answering one
+  question no longer fails the session's other holds open.
+- **Held escalations are delivery-gated** (#604): a hold whose notification is
+  not confirmed delivered fails open fast to the terminal instead of blocking
+  Claude for the full hold window. New config `delivery_confirm_timeout` and
+  `hold_unconfirmed_timeout`.
+- **Held escalations always reach the lock screen** (#606): they bypass the
+  cosmetic dedups and push even when a client is attached-but-backgrounded, and
+  the hold fails open fast if the push fails.
+
+### Fixed
+- **Push works across mixed sandbox + production APNS tokens** (#618): the
+  signaling Worker tries the preferred environment first and retries the other on
+  a `BadDeviceToken` mismatch, so a device whose token environment differs from
+  the global flag still receives pushes — and dismissals, so a resolved
+  question's lock-screen card clears instead of lingering.
+- **APNS sandbox gate tolerates a whitespace-padded secret** (#613).
+- **Cold-start answers never route to the wrong daemon** (#612): with multiple
+  daemons and no per-session URL, the answer resolver returns unreachable instead
+  of guessing.
+
 ## [0.6.14] - 2026-06-19
 
 The iOS client side of native lock-screen permission answering, and correct

@@ -3,10 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
-import {
-  type DeviceTokenEntry,
-  createTrivialHandlers,
-} from '../../../src/cli/handlers/trivial-events.ts';
+import { createTrivialHandlers } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
@@ -49,11 +46,14 @@ describe('createTrivialHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('onRegisterDeviceToken stores the token in the shared map', () => {
-    const deviceTokens = new Map<string, DeviceTokenEntry>();
+  test('onRegisterDeviceToken forwards token/platform/connection to the store (#603 P6)', () => {
+    // The map + rotation prune + persistence now live in DeviceTokenStore (see
+    // device-token-store.test.ts); the handler just forwards.
+    const calls: Array<{ token: string; platform: string; connectionId: UUID }> = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
-      deviceTokens,
+      registerDeviceToken: (token, platform, connectionId) =>
+        calls.push({ token, platform, connectionId }),
       sessionStore,
       sessionRegistry,
       send,
@@ -62,66 +62,14 @@ describe('createTrivialHandlers', () => {
 
     handlers.onRegisterDeviceToken(CID, 'ios-device-token-abc', 'ios');
 
-    expect(deviceTokens.size).toBe(1);
-    const entry = deviceTokens.get('ios-device-token-abc');
-    expect(entry).toBeDefined();
-    expect(entry?.platform).toBe('ios');
-    expect(entry?.connectionId).toBe(CID);
-    expect(typeof entry?.registeredAt).toBe('number');
-  });
-
-  test('onRegisterDeviceToken: registering the same token twice yields ONE entry (#585 P7)', () => {
-    const deviceTokens = new Map<string, DeviceTokenEntry>();
-    const { send } = makeSend();
-    const handlers = createTrivialHandlers({ deviceTokens, sessionStore, sessionRegistry, send });
-    configureLogger({ writeLog: () => {} });
-
-    handlers.onRegisterDeviceToken(CID, 'same-token', 'ios');
-    handlers.onRegisterDeviceToken(CID, 'same-token', 'ios');
-
-    expect(deviceTokens.size).toBe(1);
-    expect(deviceTokens.has('same-token')).toBe(true);
-  });
-
-  test('onRegisterDeviceToken: a rotated token from the same connection prunes the old one (#585 P7)', () => {
-    // APNS token rotation: the same physical device (same client connection)
-    // re-registers a NEW token while the old one is still live -> a push would
-    // otherwise fan out to BOTH (the 2x duplicate). The old token from this
-    // connection is pruned, leaving only the new one.
-    const deviceTokens = new Map<string, DeviceTokenEntry>();
-    const { send } = makeSend();
-    const handlers = createTrivialHandlers({ deviceTokens, sessionStore, sessionRegistry, send });
-    configureLogger({ writeLog: () => {} });
-
-    handlers.onRegisterDeviceToken(CID, 'old-token', 'ios');
-    handlers.onRegisterDeviceToken(CID, 'new-token', 'ios');
-
-    expect(deviceTokens.size).toBe(1);
-    expect(deviceTokens.has('new-token')).toBe(true);
-    expect(deviceTokens.has('old-token')).toBe(false);
-  });
-
-  test('onRegisterDeviceToken: a different connection keeps its own token (no cross-device prune)', () => {
-    const OTHER = 'conn1111-1111-1111-1111-111111111111' as UUID;
-    const deviceTokens = new Map<string, DeviceTokenEntry>();
-    const { send } = makeSend();
-    const handlers = createTrivialHandlers({ deviceTokens, sessionStore, sessionRegistry, send });
-    configureLogger({ writeLog: () => {} });
-
-    handlers.onRegisterDeviceToken(CID, 'token-a', 'ios');
-    handlers.onRegisterDeviceToken(OTHER, 'token-b', 'ios');
-
-    // Two genuinely distinct devices on different connections must both survive.
-    expect(deviceTokens.size).toBe(2);
-    expect(deviceTokens.has('token-a')).toBe(true);
-    expect(deviceTokens.has('token-b')).toBe(true);
+    expect(calls).toEqual([{ token: 'ios-device-token-abc', platform: 'ios', connectionId: CID }]);
   });
 
   test('onTerminalResize logs and returns when no session is attached', () => {
     const logs: string[] = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
-      deviceTokens: new Map(),
+      registerDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -138,7 +86,7 @@ describe('createTrivialHandlers', () => {
     const logs: string[] = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
-      deviceTokens: new Map(),
+      registerDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -153,7 +101,7 @@ describe('createTrivialHandlers', () => {
   test('onSessionHistoryRequest sends session_history_response with real SessionStore', () => {
     const { send, captured } = makeSend();
     const handlers = createTrivialHandlers({
-      deviceTokens: new Map(),
+      registerDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -170,7 +118,7 @@ describe('createTrivialHandlers', () => {
   test('onSessionHistoryRequest clamps limit to a minimum of 1', () => {
     const { send, captured } = makeSend();
     const handlers = createTrivialHandlers({
-      deviceTokens: new Map(),
+      registerDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,

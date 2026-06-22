@@ -108,6 +108,8 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     always_escalate_tools: [],
     hold_timeout: 0,
     push_hold_timeout: 0,
+    delivery_confirm_timeout: 0,
+    hold_unconfirmed_timeout: 0,
     ...overrides,
   };
 }
@@ -184,6 +186,61 @@ describe('AutoApproveService - eval serialization (#551)', () => {
 
     gate.releaseNext();
     expect((await p3).decision).toBe('approve');
+  });
+
+  test('drainQueue() escalates queued waiters without hitting the GPU (#617 force-release)', async () => {
+    const svc = new AutoApproveService(makeConfig(), noLog);
+    const r1 = gate.awaitNextRequest();
+    const p1 = svc.evaluate('Bash', { command: 'c1' }); // holds the slot
+    const p2 = svc.evaluate('Bash', { command: 'c2' }); // queued
+    const p3 = svc.evaluate('Bash', { command: 'c3' }); // queued
+
+    await r1;
+    expect(gate.requestCount()).toBe(1); // only c1 reached the LLM
+
+    // Force-release drains the two queued waiters: each takes the not-acquired
+    // path and escalates to the user instead of seizing the freed GPU.
+    expect(svc.drainQueue()).toBe(2);
+    const d2 = await p2;
+    const d3 = await p3;
+    expect(d2.decision).toBe('escalate');
+    expect(d3.decision).toBe('escalate');
+    // The reasoning names force-release, not a phantom "queue wait exceeded".
+    expect(d2.reasoning).toContain('force-released');
+    expect(d2.reasoning).not.toContain('queue wait exceeded');
+    expect(gate.requestCount()).toBe(1); // drained evals never reached the LLM
+
+    // c1 is still in flight; cancel it (as force-release also does) to finish.
+    expect(svc.cancel('force-release')).toBe(true);
+    expect((await p1).decision).toBe('cancelled');
+    gate.releaseAll(); // clean up c1's orphaned server holder
+  });
+
+  test('drainQueue() returns 0 when nothing is queued', () => {
+    const svc = new AutoApproveService(makeConfig(), noLog);
+    expect(svc.drainQueue()).toBe(0);
+  });
+
+  test('cancel(reason, evalId) drops a QUEUED eval (answered before it reached the GPU) (#617)', async () => {
+    const svc = new AutoApproveService(makeConfig(), noLog);
+    const r1 = gate.awaitNextRequest();
+    // eval id 1 acquires the slot and runs; id 2 queues behind it.
+    const p1 = svc.evaluate('Bash', { command: 'c1' }, undefined, undefined, undefined, 1);
+    const p2 = svc.evaluate('Bash', { command: 'c2' }, undefined, undefined, undefined, 2);
+
+    await r1;
+    expect(gate.requestCount()).toBe(1); // only c1 reached the LLM
+
+    // The user answers the question whose eval (id 2) is still QUEUED. cancel
+    // targets the running eval first (id 1 != 2, untouched), then drops the
+    // queued waiter — so c2 escalates and never burns a pointless GPU call.
+    expect(svc.cancel('user-answered', 2)).toBe(true);
+    const d2 = await p2;
+    expect(d2.decision).toBe('escalate');
+    expect(gate.requestCount()).toBe(1); // c2 never reached the LLM
+
+    gate.releaseNext(); // c1 finishes cleanly, untouched by the cancel
+    expect((await p1).decision).toBe('approve');
   });
 
   test('cancel() during a queued burst aborts the in-flight eval and drains the rest', async () => {

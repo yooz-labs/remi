@@ -97,9 +97,16 @@ export function resolvePushAnswerTarget(input: {
     }
   }
 
-  // 3. Cold start: prefer the URL we last saw this sessionId on. Falling back
-  // to storedUrls[0] for multi-daemon users would route to the wrong daemon.
-  const cold = sessionUrlMap?.[sessionId] ?? storedUrls[0];
+  // 3. Cold start: prefer the URL we last saw this sessionId on. With NO
+  // per-session URL, only fall back to a stored URL when it is UNAMBIGUOUS
+  // (exactly one daemon paired). For a multi-daemon user, guessing storedUrls[0]
+  // silently delivers the answer to the WRONG daemon (#603 Phase 4, R8) — report
+  // unreachable instead so the caller surfaces "open the app" / uses the
+  // connection-independent reverse-relay (which carries the daemon's room code).
+  let cold = sessionUrlMap?.[sessionId];
+  if (cold === undefined && storedUrls.length === 1) {
+    cold = storedUrls[0];
+  }
   if (!cold) return { kind: 'unreachable' };
 
   const inflight = connections.find(

@@ -212,4 +212,30 @@ export interface AutoApproveConfig {
    * `hold_timeout` so the early-push window opens before the hold itself expires.
    */
   readonly push_hold_timeout: number;
+  /**
+   * Seconds to wait for a held escalation's notification to be CONFIRMED
+   * delivered before deciding the hold is undeliverable (epic #603 Phase 1,
+   * R1/R2). A binary escalation holds the PermissionRequest hook (Model B) only
+   * makes sense if the user can actually be notified; delivery is "confirmed"
+   * when a client is attached (in-app), an APNS push returns 2xx, or an
+   * identical push was already sent (deduped). If NONE confirm within this
+   * window — e.g. a dead device token (BadDeviceToken) or no registered token on
+   * this daemon — the hold no longer blocks Claude for the full `hold_timeout`;
+   * it fails open fast to passthrough (native prompt) unless
+   * `hold_unconfirmed_timeout` is set. 0 disables delivery gating (legacy: hold
+   * to `hold_timeout` regardless of delivery). Default 6.
+   */
+  readonly delivery_confirm_timeout: number;
+  /**
+   * Seconds to keep holding a binary escalation whose notification delivery was
+   * NOT confirmed within `delivery_confirm_timeout` (epic #603 Phase 1, D2 —
+   * the "hold-always-no-phone" two-tier escape). 0 (default) = fail open
+   * immediately when delivery is unconfirmed (the hybrid default: let the local
+   * terminal answer). > 0 = instead hold to this SHORT secondary timeout (e.g.
+   * 180) so a transient delivery failure can recover via retries before the hook
+   * fails open — for users who run headless and want the hook to wait for their
+   * phone even when no client is currently reachable. Always far below
+   * `hold_timeout` so an undeliverable hold can never stall for the full window.
+   */
+  readonly hold_unconfirmed_timeout: number;
 }

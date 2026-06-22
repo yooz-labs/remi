@@ -55,6 +55,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type { HookServer } from '../../hooks/index.ts';
 import { classifySessionEvent } from '../../hooks/session-lock-classifier.ts';
+import type { DeliveryOutcome } from '../../notifications/notification-dispatcher.ts';
 import { claudeChildLooksAlive } from '../../session/index.ts';
 import type {
   SessionBindingStore,
@@ -141,6 +142,25 @@ export interface HookBridgeDeps {
    */
   pushHoldTimeoutSec?: number;
   /**
+   * Probe a held escalation's notification delivery outcome (epic #603 Phase 1).
+   * Wired from this session's `NotificationDispatcher.awaitDelivery`. Lets the
+   * gate fail a hold open fast when no notification reached the user instead of
+   * blocking for the full hold_timeout. Absent => delivery gating disabled.
+   */
+  awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
+  /**
+   * Seconds to wait for a held escalation's delivery to be confirmed before
+   * treating it as undeliverable (epic #603 Phase 1). From
+   * `config.auto_approve.delivery_confirm_timeout`. 0 / absent => no gating.
+   */
+  deliveryConfirmSec?: number;
+  /**
+   * Seconds to keep holding an UNDELIVERED escalation instead of failing open
+   * immediately (epic #603 Phase 1, D2 hold-always-no-phone). From
+   * `config.auto_approve.hold_unconfirmed_timeout`. 0 / absent => fail open fast.
+   */
+  holdUnconfirmedSec?: number;
+  /**
    * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
    * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
    * or cancelStale): the daemon broadcasts `question_resolved` to every client and
@@ -193,6 +213,12 @@ export interface SessionGateHandle {
   /** Cancel any in-flight eval AND release pending holds for this session (the
    *  user answered / advanced). Forwards to the gate's `cancelStale`. */
   cancelStale: (reason: string) => void;
+  /** Cancel ONLY the eval for the question the user just answered, freeing the
+   *  GPU without touching other holds (#617). Forwards to `cancelEvalForQuestion`. */
+  cancelEvalForQuestion: (questionId: UUID, reason: string) => void;
+  /** Force-release escape (#617 `remi unstick`): release all holds to passthrough,
+   *  abort the in-flight eval, drain the queue. Forwards to `forceRelease`. */
+  forceRelease: (reason: string) => { holds: number; cancelled: boolean; drained: number };
 }
 
 export interface HookBridgeHandle {
@@ -838,6 +864,11 @@ export function setupHookBridge(
       alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
       holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
       pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
+      // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
+      // dead push channel fails open fast instead of stalling for holdMs.
+      ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),
+      deliveryConfirmMs: (deps.deliveryConfirmSec ?? 0) * 1000,
+      holdUnconfirmedMs: (deps.holdUnconfirmedSec ?? 0) * 1000,
     },
     sessionId,
   );
@@ -1342,6 +1373,9 @@ export function setupHookBridge(
       releaseHeldAsPassthrough: (questionId) =>
         autoApproveGate.releaseHeldAsPassthrough(questionId),
       cancelStale: (reason) => autoApproveGate.cancelStale(reason),
+      cancelEvalForQuestion: (questionId, reason) =>
+        autoApproveGate.cancelEvalForQuestion(questionId, reason),
+      forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
   };
 }

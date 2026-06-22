@@ -281,6 +281,28 @@ describe('MessageAPI', () => {
       expect(survivor.id).toBe('q-1');
     });
 
+    test('a held question bypasses dedup and forwards the held flag (#603 Phase 3)', () => {
+      const q1 = {
+        id: 'q-1',
+        text: 'Allow Bash: ls',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+          { label: 'Yes, always', value: '2', isRecommended: false, isYes: true, isNo: false },
+          { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      } as const;
+      const q2 = { ...q1, id: 'q-2' };
+
+      api.handleQuestion(q1); // emits
+      // Identical content -> would normally be deduped, but held is load-bearing.
+      api.handleQuestion(q2, { held: true });
+
+      expect(events.onQuestion).toHaveBeenCalledTimes(2);
+      expect(events.onQuestion.mock.calls[1]?.[1]).toEqual({ held: true });
+    });
+
     test('emits upgrade when later question has more options', () => {
       const hookQ = {
         id: 'q-hook',

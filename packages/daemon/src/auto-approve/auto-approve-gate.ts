@@ -30,6 +30,7 @@ import type { UUID } from '@remi/shared';
 import type { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
+import { type DeliveryOutcome, isDelivered } from '../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { AutoApproveResult } from './types.ts';
@@ -53,10 +54,16 @@ export interface AutoApproveEvaluator {
     tag?: string,
     permissionSuggestions?: readonly unknown[],
     modelOverride?: string,
+    evalId?: number,
   ): Promise<AutoApproveResult>;
-  /** Abort any in-flight `evaluate`. Returns true if an abort was issued, false
-   *  if nothing was in flight (idempotent). */
-  cancel(reason: string): boolean;
+  /** Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
+   *  eval currently running (#617 per-eval scoping); without it, aborts whatever
+   *  is in flight. Returns true if an abort was issued, false otherwise (idempotent). */
+  cancel(reason: string, evalId?: number): boolean;
+  /** Drain queued evals so they escalate gracefully instead of seizing the freed
+   *  GPU (#617 force-release). Returns the number drained. Optional: a minimal
+   *  evaluator under test may omit it. */
+  drainQueue?(): number;
 }
 
 export interface AutoApproveGateDeps {
@@ -126,6 +133,23 @@ export interface AutoApproveGateDeps {
    *  late verdict then resolves the held hook. <=0 (or absent) disables Part B
    *  entirely — the eval/timer race never arms, so behavior reverts to A+C. */
   pushHoldMs?: number;
+  /**
+   * Probe a held escalation's notification delivery outcome (epic #603 Phase 1,
+   * R1/R2). Returns the promise `NotificationDispatcher.maybePush` recorded for
+   * `questionId`, or undefined when no push was attempted. The gate races it
+   * against `deliveryConfirmMs`: a hold whose notification is never confirmed
+   * delivered no longer blocks Claude for the full `holdMs` — it fails open fast
+   * (or holds a short secondary window, `holdUnconfirmedMs`). Absent => delivery
+   * gating disabled (legacy: hold to holdMs regardless of delivery). */
+  awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
+  /** Milliseconds to wait for a held escalation's delivery to be confirmed
+   *  before treating it as undeliverable (epic #603 Phase 1). <=0 (or absent)
+   *  disables delivery gating. From `auto_approve.delivery_confirm_timeout`. */
+  deliveryConfirmMs?: number;
+  /** Milliseconds to keep holding an UNDELIVERED escalation instead of failing
+   *  open immediately (epic #603 Phase 1, D2 — hold-always-no-phone). <=0 (or
+   *  absent) => fail open fast. From `auto_approve.hold_unconfirmed_timeout`. */
+  holdUnconfirmedMs?: number;
 }
 
 /** A held PermissionRequest hook awaiting a user answer (#573). The `resolve`
@@ -148,6 +172,22 @@ export class AutoApproveGate {
    * path clears the timer and deletes the entry, so it never leaks.
    */
   private readonly pendingHolds = new Map<UUID, PendingHold>();
+
+  /** Monotonic id stamped on each primary eval (#617), so a held question can be
+   *  tied to the exact eval running for it and a manual answer cancels only that
+   *  one. */
+  private evalSeq = 0;
+
+  /**
+   * Maps a held question's id to the id of the eval still running for it (#617),
+   * populated only by Part B (the early push + hold fires WHILE the eval keeps
+   * running — the one case where the user can answer mid-eval). A manual answer
+   * looks the question up here to cancel exactly its eval and free the GPU.
+   * Entries are removed when the eval settles (reconcileLateVerdict) or on
+   * force-release; a stale entry is harmless (cancel no-ops if that eval is no
+   * longer the running one).
+   */
+  private readonly evalIdByQuestion = new Map<UUID, number>();
 
   constructor(
     private readonly deps: AutoApproveGateDeps,
@@ -177,6 +217,49 @@ export class AutoApproveGate {
     if (this.deps.service.cancel(reason)) {
       log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
     }
+  }
+
+  /**
+   * Cancel the in-flight eval (if any) for a question the user just answered, so
+   * the GPU is freed immediately (#617, the user's critical "answer == GPU freed"
+   * contract). Scoped by the per-question eval id, so it aborts ONLY that
+   * question's eval and never another permission's that happens to be running.
+   * Unlike `cancelStale` it does NOT release other holds — answering one question
+   * must never fail the others open. No-op when no eval is tracked (it already
+   * settled, or the question was not held mid-eval), so it is safe to call on
+   * every answer unconditionally.
+   */
+  cancelEvalForQuestion(questionId: UUID, reason: string): void {
+    const evalId = this.evalIdByQuestion.get(questionId);
+    if (evalId === undefined) return;
+    this.evalIdByQuestion.delete(questionId);
+    if (this.deps.service?.cancel(reason, evalId)) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Answer freed the eval for ${questionId.slice(0, 8)} (${reason})`,
+      );
+    }
+  }
+
+  /**
+   * Force-release escape (#617, `remi unstick`): the "just get me out" lever when
+   * Ollama and a question are stuck and the phone has no device visibility.
+   * Releases EVERY held hook to passthrough (the native terminal prompt), aborts
+   * the in-flight eval, and drains queued evals so they escalate gracefully
+   * instead of seizing the freed GPU. Safe with no service configured (only
+   * releases holds). Returns a summary for the caller to log.
+   */
+  forceRelease(reason: string): { holds: number; cancelled: boolean; drained: number } {
+    const holds = this.pendingHolds.size;
+    this.releaseAllHolds('passthrough', reason);
+    this.evalIdByQuestion.clear();
+    const service = this.deps.service;
+    if (service === null) return { holds, cancelled: false, drained: 0 };
+    const cancelled = service.cancel(reason);
+    const drained = service.drainQueue?.() ?? 0;
+    log(
+      `[AutoApprove ${this.sessionTag}] Force-release (${reason}): released ${holds} hold(s), ${cancelled ? 'cancelled the eval' : 'no eval in flight'}, drained ${drained} queued`,
+    );
+    return { holds, cancelled, drained };
   }
 
   /**
@@ -282,25 +365,115 @@ export class AutoApproveGate {
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
-        // Fail open: the user did not answer within the hold window, so let
-        // Claude render its native prompt (the local terminal can take over).
-        this.pendingHolds.delete(qid);
-        log(
-          `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} timed out -> passthrough`,
-        );
-        // The pushed card is now stale (Claude will render its own prompt); tell
-        // every client to dismiss it BEFORE failing open (#585, P7), and drop the
-        // registry entry so no ghost card replays. Throw-safe.
-        this.notifyResolved(qid, 'cancelled');
-        this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
-        resolve('passthrough');
+        this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} timed out -> passthrough`);
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;
       // unref so a held hook never blocks daemon shutdown.
       timer.unref?.();
       this.pendingHolds.set(qid, { resolve, timer });
     });
+    // Phase 1 (#603, R1/R2): gate the hold on CONFIRMED delivery. A held hook is
+    // only worth blocking Claude for if the user can actually be notified; if
+    // the notification is not confirmed delivered within delivery_confirm_timeout
+    // (e.g. a dead device token), fail open fast instead of stalling for holdMs.
+    this.armDeliveryGate(qid);
     return { decision, questionId: qid };
+  }
+
+  /**
+   * Fail a held hook OPEN to passthrough (#573 hold-timeout / #603 undeliverable):
+   * dismiss the now-stale pushed card on every client, drop the registry entry,
+   * and resolve the hook so Claude renders its native prompt and the local
+   * terminal can take over. No-op when the hold is already gone (answered, Part-B
+   * verdict, cancelled) so it never double-resolves.
+   */
+  private failOpenHeld(qid: UUID, logMessage: string): void {
+    if (!this.pendingHolds.has(qid)) return;
+    log(`[AutoApprove ${this.sessionTag}] ${logMessage}`);
+    // Dismiss the stale card everywhere BEFORE resolving (#585, P7); releaseHeld
+    // then clears the timer, drops the registry entry, and resolves passthrough.
+    this.notifyResolved(qid, 'cancelled');
+    this.releaseHeld(qid, 'passthrough');
+  }
+
+  /**
+   * Race a held escalation's notification delivery against `deliveryConfirmMs`
+   * (epic #603 Phase 1). If delivery is confirmed (`isDelivered`: in_app / pushed
+   * — `deduped` does NOT count, and never occurs for held pushes after Phase 3)
+   * in time, the hold keeps blocking to `holdMs` as before. If it is NOT confirmed
+   * — a dead token, no registered token, or the probe times out — the hold no
+   * longer stalls Claude for the full window: `onDeliveryUnconfirmed` fails it
+   * open fast (or re-arms a short secondary hold). Disabled (legacy hold) when
+   * `deliveryConfirmMs <= 0` or no delivery signal was recorded for `qid`.
+   */
+  private armDeliveryGate(qid: UUID): void {
+    const confirmMs = this.deps.deliveryConfirmMs ?? 0;
+    if (confirmMs <= 0) return; // delivery gating disabled (legacy hold to holdMs)
+    const probe = this.deps.awaitDelivery?.(qid);
+    if (!probe) {
+      // Gating is ON but no delivery signal was recorded for this question —
+      // either awaitDelivery is unwired, or onHeldEscalate threw before maybePush
+      // ran (its throw is swallowed as a cosmetic cue). Fall back to the legacy
+      // hold, but log it: a silently-skipped gate could still stall to holdMs.
+      log(
+        `[AutoApprove ${this.sessionTag}] No delivery signal for ${qid.slice(0, 8)}; delivery gate skipped (holding to hold_timeout)`,
+      );
+      return;
+    }
+    const timeout = new Promise<'timeout'>((resolve) => {
+      const t = setTimeout(() => resolve('timeout'), confirmMs);
+      t.unref?.();
+    });
+    Promise.race([probe, timeout])
+      .then((result) => {
+        // The hold may already be resolved (user answered, Part-B verdict, or a
+        // cancel) — then there is nothing to gate.
+        if (!this.pendingHolds.has(qid)) return;
+        if (result !== 'timeout' && isDelivered(result)) return; // confirmed: keep holding
+        this.onDeliveryUnconfirmed(qid, result);
+      })
+      .catch((err) => {
+        logError(
+          `[AutoApprove ${this.sessionTag}] delivery probe threw (treating as unconfirmed):`,
+          err,
+        );
+        if (this.pendingHolds.has(qid)) this.onDeliveryUnconfirmed(qid, 'failed');
+      });
+  }
+
+  /**
+   * A held escalation's notification was NOT confirmed delivered (epic #603
+   * Phase 1). Default (hybrid): fail open NOW so the local terminal can answer,
+   * instead of blocking Claude for the full `holdMs` on a notification nobody
+   * received. When `holdUnconfirmedMs > 0` (D2 hold-always-no-phone): re-arm the
+   * hold to a SHORT secondary window so a transient failure can recover before
+   * fail-open. Either path is LOUD (logError) so an undelivered notification is
+   * never a silent stall.
+   */
+  private onDeliveryUnconfirmed(qid: UUID, reason: DeliveryOutcome | 'timeout'): void {
+    if (!this.pendingHolds.has(qid)) return;
+    const holdUnconfirmedMs = this.deps.holdUnconfirmedMs ?? 0;
+    if (holdUnconfirmedMs > 0) {
+      const hold = this.pendingHolds.get(qid);
+      if (!hold) return;
+      clearTimeout(hold.timer);
+      const timer = setTimeout(() => {
+        this.failOpenHeld(
+          qid,
+          `Held hook ${qid.slice(0, 8)} still undelivered (${reason}); short hold expired -> passthrough`,
+        );
+      }, holdUnconfirmedMs);
+      timer.unref?.();
+      this.pendingHolds.set(qid, { resolve: hold.resolve, timer });
+      logError(
+        `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} notification UNCONFIRMED (${reason}); holding ${Math.round(holdUnconfirmedMs / 1000)}s (hold_unconfirmed_timeout) with retry before fail-open`,
+      );
+      return;
+    }
+    logError(
+      `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} notification UNDELIVERED (${reason}); failing open to passthrough so the terminal can answer (no notification reached your devices)`,
+    );
+    this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} undelivered -> passthrough`);
   }
 
   /**
@@ -378,11 +551,16 @@ export class AutoApproveGate {
     // Raw suggestions: the service does its own strict-string filtering; we
     // forward the raw shape so the multi-choice classifier can route a
     // non-string entry through escalate instead of crashing.
+    // Stamp a unique id so a held question (Part B) can be tied to THIS eval and
+    // a manual answer cancels exactly it (#617).
+    const evalId = ++this.evalSeq;
     const evalPromise = service.evaluate(
       input.tool_name,
       input.tool_input,
       this.sessionTag,
       input.permission_suggestions as readonly unknown[] | undefined,
+      undefined,
+      evalId,
     );
 
     // Part B (#573, ISOLATED behind push_hold_timeout): if the eval is still
@@ -392,7 +570,7 @@ export class AutoApproveGate {
     // When push_hold_timeout <= 0 this never arms and the eval is awaited as
     // usual (Parts A + C only). A non-null result means the early hold fired and
     // the returned decision is what the hook server is blocked on.
-    const earlyHold = await this.maybePushOnSlowEval(input, evalPromise);
+    const earlyHold = await this.maybePushOnSlowEval(input, evalPromise, evalId);
     if (earlyHold !== null) return earlyHold;
 
     let result: AutoApproveResult;
@@ -533,6 +711,7 @@ export class AutoApproveGate {
   private async maybePushOnSlowEval(
     input: PermissionRequestHookInput,
     evalPromise: Promise<AutoApproveResult>,
+    evalId: number,
   ): Promise<PermissionDecision | null> {
     const pushHoldMs = this.deps.pushHoldMs ?? 0;
     // Disabled, or this escalation could not be answered via the hook response
@@ -574,6 +753,10 @@ export class AutoApproveGate {
     // createHold escalates AND (when a hold is registered) pushes the held
     // question via onHeldEscalate (#573), so the user can step in immediately.
     const { decision: heldDecision, questionId } = this.createHold(input);
+    // Tie the held question to THIS still-running eval so a manual answer cancels
+    // exactly it and frees the GPU (#617). This is the only place an eval is live
+    // while its question is answerable.
+    if (questionId) this.evalIdByQuestion.set(questionId, evalId);
     // The reconciliation NEVER pushes again — a late escalate just leaves the
     // existing hold in place (guarded by the pendingHolds membership check
     // inside reconcileLateVerdict), and pushHeldHook is itself idempotent.
@@ -595,6 +778,8 @@ export class AutoApproveGate {
     qid: UUID | undefined,
   ): Promise<void> {
     const outcome = await safeEval;
+    // The eval has settled; its question can no longer be cancelled (#617).
+    if (qid) this.evalIdByQuestion.delete(qid);
     if (!qid || !this.pendingHolds.has(qid)) return; // already resolved/timed out
     if (!outcome.ok) {
       // Eval threw: the user is already looking at the pushed question; leave the

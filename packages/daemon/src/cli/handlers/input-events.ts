@@ -43,14 +43,12 @@ export interface InputHandlerDeps {
    */
   releaseHeldAsPassthrough?: (sessionId: UUID, questionId: UUID) => boolean;
   /**
-   * Cancel the in-flight auto-approve eval (and release holds) for `sessionId`
-   * when the user answers a HELD permission from any channel (#573, issue 2): a
-   * stale eval would otherwise keep running and could inject a phantom decision.
-   * Fired ONLY when a hold was actually resolved/released, so answering an
-   * unrelated passthrough question does not abort a different binary permission's
-   * in-flight eval. Session-keyed.
+   * Cancel ONLY the eval for the question the user just answered (#617), freeing
+   * the GPU without touching the session's other holds. Per-eval scoping makes it
+   * safe to fire on every answer (a no-op when no eval is in flight for the
+   * question, and it never aborts a different permission's eval). Session-keyed.
    */
-  cancelAutoApprove?: (sessionId: UUID, reason: string) => void;
+  cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
   /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
@@ -186,7 +184,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     send,
     resolveHeldPermission,
     releaseHeldAsPassthrough,
-    cancelAutoApprove,
+    cancelAutoApproveForQuestion,
     onQuestionResolved,
   } = deps;
 
@@ -248,8 +246,20 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     const active = sessionRegistry.getQuestion(session.sessionId, questionId);
     if (active === null) {
       const pendingIds = [...session.currentQuestions.keys()];
+      // #603 Phase 3: the question is gone from the registry (evicted under the
+      // pending-question cap, or already removed), but its PermissionRequest hook
+      // may STILL be held (Model B). Pop that hold to passthrough so Claude
+      // renders its native prompt and unblocks NOW, rather than stalling to
+      // hold_timeout. The answer itself is stale (we no longer hold the options
+      // to map it), so it is still refused — but the terminal can take over.
+      const freedHeld = releaseHeldAsPassthrough?.(session.sessionId, questionId) ?? false;
+      // Free the GPU for this specific orphaned question (#617), scoped so a stale
+      // tap never fails the session's OTHER holds open (cancelStale's releaseAllHolds
+      // belongs to teardown/force-release only).
+      if (freedHeld)
+        cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-stale');
       log(
-        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]`,
+        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]${freedHeld ? ' (freed an orphaned held hook -> passthrough)' : ''}`,
       );
       if (!viaRelay) {
         send(
@@ -311,12 +321,14 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         );
       }
 
-      // Cancel the in-flight eval ONLY when a held permission was actually
-      // resolved/released (#573, issue 2): a stale verdict for THIS permission
-      // must not inject a phantom decision. Answering an unrelated passthrough
-      // question must NOT abort a different binary permission's eval, so this is
-      // gated on hadHold rather than firing on every answer.
-      if (hadHold) cancelAutoApprove?.(session.sessionId, 'user-answered');
+      // Free the GPU on EVERY answer (#617): cancel the eval for THIS question
+      // unconditionally. Per-eval scoping (the eval id captured when the question
+      // was held) makes this safe where the old `hadHold`-gated cancelStale was
+      // not — it aborts only this question's eval, never another permission's,
+      // and is a no-op when no eval is in flight for it. It deliberately does NOT
+      // release the session's other holds (cancelStale's releaseAllHolds), which
+      // belongs to teardown/force-release, not a single answer.
+      cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered');
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
       // In `finally` so a throwing submit cannot leave a zombie question.

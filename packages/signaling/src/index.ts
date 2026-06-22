@@ -58,10 +58,38 @@ interface PushRequestBody {
 
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
 const rateLimiter = new RateLimiter(10, 60_000);
-/** Per-IP rate limiter for push: 5 pushes per 60 seconds */
-const pushRateLimiter = new RateLimiter(5, 60_000);
+/**
+ * Push budget (epic #603 Phase 2, R3). The old single per-IP limiter (5/60s)
+ * was shared across every daemon behind one NAT and across alert + dismiss
+ * pushes, each fanned out per device token — so a power user running several
+ * worktree daemons hit 429 and silently dropped notifications. Now:
+ *   - AUTHENTICATED callers (they hold PUSH_SECRET, so they are trusted) are
+ *     keyed by identity, not IP, with a ceiling well above
+ *     (device tokens x concurrent sessions). Sharing a NAT no longer throttles.
+ *   - UNAUTHENTICATED callers (only possible when no PUSH_SECRET is configured)
+ *     keep the original tight per-IP fallback to limit abuse.
+ *   - DISMISS pushes get their own budget so quiet resolutions never starve
+ *     alert pushes.
+ */
+const PUSH_AUTH_LIMIT = 60;
+const pushAuthRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
+const pushIpRateLimiter = new RateLimiter(5, 60_000);
+const dismissRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
 /** Per-IP rate limiter for the answer relay: 10 answers per 60 seconds */
 const answerRateLimiter = new RateLimiter(10, 60_000);
+
+/**
+ * A stable, non-secret rate-limit bucket key for an authenticated push identity
+ * (epic #603 Phase 2). Hashes the shared secret (djb2) so the key never stores
+ * the secret itself, and distinct secrets (multi-tenant) get distinct buckets.
+ */
+function authBucketKey(secret: string): string {
+  let h = 5381;
+  for (let i = 0; i < secret.length; i++) {
+    h = ((h << 5) + h + secret.charCodeAt(i)) | 0;
+  }
+  return `auth:${(h >>> 0).toString(36)}`;
+}
 
 /** Main worker */
 export default {
@@ -166,15 +194,6 @@ export default {
         }
       }
 
-      // Rate limit per IP
-      const pushClientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-      if (!pushRateLimiter.check(pushClientIp)) {
-        return new Response(
-          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many push requests' }),
-          { status: 429, headers: corsHeaders },
-        );
-      }
-
       if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY) {
         return new Response(
           JSON.stringify({ error: 'APNS_NOT_CONFIGURED', message: 'APNS credentials not set' }),
@@ -208,11 +227,46 @@ export default {
         );
       }
 
+      // Rate limit (epic #603 Phase 2, R3). Authenticated callers are keyed by
+      // identity with a generous ceiling (a shared NAT IP no longer throttles
+      // them); dismiss pushes draw from a separate budget so they cannot starve
+      // alerts. Malformed/auth-failed requests above never reach here, so they
+      // do not consume budget.
+      // `authed` must mean "this request proved possession of the secret", not
+      // merely "a secret is configured" — re-check the bearer so a future
+      // refactor of the auth block above cannot silently grant the trusted
+      // budget to an unauthenticated caller.
+      const authed =
+        Boolean(env.PUSH_SECRET) &&
+        request.headers.get('Authorization') === `Bearer ${env.PUSH_SECRET}`;
+      const pushClientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      const rlKey = authed ? authBucketKey(env.PUSH_SECRET as string) : `ip:${pushClientIp}`;
+      // Unauthenticated callers (only when no PUSH_SECRET is configured) always
+      // use the tight per-IP fallback — INCLUDING dismisses, which must not get
+      // the raised budget. Authenticated alert vs dismiss draw from separate
+      // raised budgets so a dismiss flood cannot starve alerts.
+      const limiter = !authed
+        ? pushIpRateLimiter
+        : isDismiss
+          ? dismissRateLimiter
+          : pushAuthRateLimiter;
+      if (!limiter.check(rlKey)) {
+        return new Response(
+          JSON.stringify({ error: 'RATE_LIMITED', message: 'Too many push requests' }),
+          { status: 429, headers: corsHeaders },
+        );
+      }
+
       // bundleId is always server-controlled (never from client)
       const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
-      // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
-      // override — the daemon does not send it today (payload is Record<string, string>).
-      const sandbox = env.APNS_SANDBOX === 'true' || body.sandbox === true;
+      // sandbox: the PREFERRED APNS environment to try first (#618 dual-env makes
+      // `sendApnsPush` fall back to the other environment on a BadDeviceToken, so
+      // this flag only saves a round-trip for the common case — it is no longer a
+      // hard gate). body.sandbox is reserved for future per-request override — the
+      // daemon does not send it today (payload is Record<string, string>).
+      // `.trim()`: a secret set via `echo "true" | wrangler secret put` carries a
+      // trailing newline, so an exact `=== 'true'` silently fails — match leniently.
+      const sandbox = env.APNS_SANDBOX?.trim() === 'true' || body.sandbox === true;
       // Build custom data for notification payload (sibling to aps).
       // Include sessionId, questionId, and per-option answer values (opt_0, opt_1, ...).
       const data: Record<string, string> = {};
@@ -264,7 +318,16 @@ export default {
         });
       }
 
-      return new Response(JSON.stringify({ success: false, error: result.error }), {
+      // Surface a PERMANENT token rejection as a structured flag (epic #603
+      // Phase 2 -> consumed by Phase 6 token pruning). APNS reports these as a
+      // 4xx that the Worker wraps in `result.error`; the daemon prunes the dead
+      // token instead of retrying it forever. The reason text is kept in `error`
+      // so the daemon's transient-vs-permanent classifier (#603 Phase 1) still
+      // works off the message.
+      const tokenInvalid = /BadDeviceToken|Unregistered|DeviceTokenNotForTopic/i.test(
+        result.error ?? '',
+      );
+      return new Response(JSON.stringify({ success: false, error: result.error, tokenInvalid }), {
         status: 502,
         headers: corsHeaders,
       });
