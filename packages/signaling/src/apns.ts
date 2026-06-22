@@ -119,24 +119,72 @@ export function buildApnsRequest(payload: ApnsPayload, jwt: string): ApnsRequest
 }
 
 /**
+ * Plan the APNS host attempts for a push (#618, dual-env fallback).
+ *
+ * A device token is only valid for the APNS environment it was issued in
+ * (sandbox for development builds, production otherwise). The daemons in
+ * practice hold MIXED-environment tokens, so a single global host choice
+ * `BadDeviceToken`-rejects every token from the other environment. We try the
+ * preferred environment first (chosen by the `APNS_SANDBOX` flag), then fall
+ * back to the opposite one. Returns the `sandbox` flag per attempt, preferred
+ * first.
+ *
+ * Pure so the fallback policy is asserted without touching the network.
+ */
+export function planApnsAttempts(primarySandbox: boolean): boolean[] {
+  return [primarySandbox, !primarySandbox];
+}
+
+/**
+ * Whether an APNS error is an environment mismatch that warrants retrying the
+ * other host (#618). Only `BadDeviceToken` means "valid token, wrong
+ * environment (or malformed)"; everything else is env-independent or transient
+ * (429 throttle, 410 `Unregistered`, 403 `InvalidProviderToken`) and must NOT
+ * trigger a redundant cross-environment retry. Pure + total.
+ */
+export function isEnvMismatchError(error: string | undefined): boolean {
+  return /BadDeviceToken/i.test(error ?? '');
+}
+
+/**
  * Send a push notification via APNS HTTP/2 API.
  * Uses JWT bearer token authentication.
+ *
+ * Dual-env (#618): the push is attempted against the preferred environment
+ * first and, only on a `BadDeviceToken` environment mismatch, retried against
+ * the other one with the SAME JWT. A correctly-matched token costs exactly one
+ * round-trip; a mismatched token costs one extra. The returned `error` is the
+ * LAST attempt's error, so the daemon's permanent-vs-transient classifier (and
+ * Phase 6 token pruning) sees `BadDeviceToken` only when the token is dead in
+ * BOTH environments.
  */
 export async function sendApnsPush(
   payload: ApnsPayload,
   config: ApnsConfig,
 ): Promise<{ success: boolean; error?: string }> {
   const jwt = await createApnsJwt(config);
-  const { url, headers, body } = buildApnsRequest(payload, jwt);
+  const attempts = planApnsAttempts(payload.sandbox === true);
 
-  const response = await fetch(url, { method: 'POST', headers, body });
+  let lastError = '';
+  for (const sandbox of attempts) {
+    const { url, headers, body } = buildApnsRequest({ ...payload, sandbox }, jwt);
+    const response = await fetch(url, { method: 'POST', headers, body });
 
-  if (response.ok) {
-    return { success: true };
+    if (response.ok) {
+      return { success: true };
+    }
+
+    const errorBody = await response.text().catch(() => '');
+    lastError = `APNS ${response.status}: ${errorBody}`;
+
+    // Only an environment mismatch is worth retrying the other host; any other
+    // failure (throttle, unregistered, bad provider token) repeats identically.
+    if (!isEnvMismatchError(lastError)) {
+      break;
+    }
   }
 
-  const errorBody = await response.text().catch(() => '');
-  return { success: false, error: `APNS ${response.status}: ${errorBody}` };
+  return { success: false, error: lastError };
 }
 
 /** Cache APNS JWTs per keyId: Apple rate-limits token updates to once per 20 min. */

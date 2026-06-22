@@ -259,8 +259,11 @@ export default {
 
       // bundleId is always server-controlled (never from client)
       const bundleId = env.APNS_BUNDLE_ID || 'live.yooz.remi';
-      // sandbox: env var is the global gate. body.sandbox is reserved for future per-request
-      // override — the daemon does not send it today (payload is Record<string, string>).
+      // sandbox: the PREFERRED APNS environment to try first (#618 dual-env makes
+      // `sendApnsPush` fall back to the other environment on a BadDeviceToken, so
+      // this flag only saves a round-trip for the common case — it is no longer a
+      // hard gate). body.sandbox is reserved for future per-request override — the
+      // daemon does not send it today (payload is Record<string, string>).
       // `.trim()`: a secret set via `echo "true" | wrangler secret put` carries a
       // trailing newline, so an exact `=== 'true'` silently fails — match leniently.
       const sandbox = env.APNS_SANDBOX?.trim() === 'true' || body.sandbox === true;
