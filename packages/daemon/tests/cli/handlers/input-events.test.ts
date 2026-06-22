@@ -394,7 +394,7 @@ describe('createInputHandlers', () => {
       addYesNoQuestion(sessionId);
 
       const held: Array<{ sessionId: UUID; questionId: UUID; decision: 'allow' | 'deny' }> = [];
-      const cancels: Array<{ sessionId: UUID; reason: string }> = [];
+      const cancels: Array<{ sessionId: UUID; questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
@@ -403,14 +403,16 @@ describe('createInputHandlers', () => {
           held.push({ sessionId: s, questionId: q, decision: d });
           return true; // a hold existed and was resolved
         },
-        cancelAutoApprove: (s, reason) => cancels.push({ sessionId: s, reason }),
+        cancelAutoApproveForQuestion: (s, q, reason) =>
+          cancels.push({ sessionId: s, questionId: q, reason }),
       });
 
       await handlers.onAnswer(CID, sessionId, QID, '1'); // option 1 = Yes
 
       expect(held).toEqual([{ sessionId, questionId: QID, decision: 'allow' }]);
       expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
-      expect(cancels).toEqual([{ sessionId, reason: 'user-answered' }]);
+      // #617: the answer cancels exactly this question's eval (frees the GPU).
+      expect(cancels).toEqual([{ sessionId, questionId: QID, reason: 'user-answered' }]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
@@ -458,7 +460,7 @@ describe('createInputHandlers', () => {
 
       const resolveDecisions: Array<'allow' | 'deny'> = [];
       const released: UUID[] = [];
-      const cancels: Array<{ sessionId: UUID; reason: string }> = [];
+      const cancels: Array<{ sessionId: UUID; questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
@@ -473,7 +475,8 @@ describe('createInputHandlers', () => {
           released.push(q);
           return true; // a hold existed and was popped to passthrough
         },
-        cancelAutoApprove: (s, reason) => cancels.push({ sessionId: s, reason }),
+        cancelAutoApproveForQuestion: (s, q, reason) =>
+          cancels.push({ sessionId: s, questionId: q, reason }),
       });
 
       await handlers.onAnswer(CID, sessionId, QID, '2'); // option 2 = Yes, always
@@ -481,11 +484,12 @@ describe('createInputHandlers', () => {
       expect(resolveDecisions).toEqual([]); // never resolved as a one-time allow
       expect(released).toEqual([QID]); // hook released to passthrough
       expect(ptyCapture.submits).toEqual(['2']); // digit submitted into the native prompt
-      expect(cancels).toEqual([{ sessionId, reason: 'user-answered' }]); // hold was released
+      // #617: still cancels this question's eval (frees the GPU).
+      expect(cancels).toEqual([{ sessionId, questionId: QID, reason: 'user-answered' }]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
-    test('a non-held answer does NOT cancel the eval and still submits to the PTY (FIX 3)', async () => {
+    test('a non-held answer still scoped-cancels its own question and submits to the PTY (#617)', async () => {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(
@@ -496,22 +500,25 @@ describe('createInputHandlers', () => {
       );
       addYesNoQuestion(sessionId);
 
-      const cancels: Array<{ sessionId: UUID; reason: string }> = [];
+      const cancels: Array<{ sessionId: UUID; questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
         send,
         resolveHeldPermission: () => false, // no hold for this question
         releaseHeldAsPassthrough: () => false, // no hold to release either
-        cancelAutoApprove: (s, reason) => cancels.push({ sessionId: s, reason }),
+        cancelAutoApproveForQuestion: (s, q, reason) =>
+          cancels.push({ sessionId: s, questionId: q, reason }),
       });
 
       await handlers.onAnswer(CID, sessionId, QID, '1');
 
       expect(ptyCapture.submits).toEqual(['1']); // falls back to the PTY path
-      // FIX 3: no hold was resolved/released, so an unrelated eval must NOT be
-      // cancelled by this answer.
-      expect(cancels).toEqual([]);
+      // #617: every answer fires the per-question cancel. It is now SAFE because
+      // the gate scopes it by eval id (cancelEvalForQuestion is a no-op when no
+      // eval is tracked for this question) — the wrong-victim protection moved
+      // from this gate-on-hadHold into the gate's per-eval scoping (tested there).
+      expect(cancels).toEqual([{ sessionId, questionId: QID, reason: 'user-answered' }]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
@@ -1068,7 +1075,7 @@ describe('createInputHandlers', () => {
       });
 
       const held: Array<{ decision: 'allow' | 'deny' }> = [];
-      const cancels: string[] = [];
+      const cancels: Array<{ questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
@@ -1077,7 +1084,7 @@ describe('createInputHandlers', () => {
           held.push({ decision: d });
           return true;
         },
-        cancelAutoApprove: (_s, reason) => cancels.push(reason),
+        cancelAutoApproveForQuestion: (_s, q, reason) => cancels.push({ questionId: q, reason }),
       });
 
       const outcome = await handlers.relayAnswer(sessionId, QID, '1');
@@ -1085,7 +1092,8 @@ describe('createInputHandlers', () => {
       expect(outcome).toBe('delivered');
       expect(held).toEqual([{ decision: 'allow' }]); // resolved via the held hook
       expect(ptyCapture.submits).toEqual([]); // held => no PTY submit
-      expect(cancels).toEqual(['user-answered']);
+      // #617: the relay answer also frees the GPU, scoped to this question.
+      expect(cancels).toEqual([{ questionId: QID, reason: 'user-answered' }]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 

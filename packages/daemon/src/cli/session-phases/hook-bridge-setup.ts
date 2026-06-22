@@ -213,6 +213,12 @@ export interface SessionGateHandle {
   /** Cancel any in-flight eval AND release pending holds for this session (the
    *  user answered / advanced). Forwards to the gate's `cancelStale`. */
   cancelStale: (reason: string) => void;
+  /** Cancel ONLY the eval for the question the user just answered, freeing the
+   *  GPU without touching other holds (#617). Forwards to `cancelEvalForQuestion`. */
+  cancelEvalForQuestion: (questionId: UUID, reason: string) => void;
+  /** Force-release escape (#617 `remi unstick`): release all holds to passthrough,
+   *  abort the in-flight eval, drain the queue. Forwards to `forceRelease`. */
+  forceRelease: (reason: string) => { holds: number; cancelled: boolean; drained: number };
 }
 
 export interface HookBridgeHandle {
@@ -1367,6 +1373,9 @@ export function setupHookBridge(
       releaseHeldAsPassthrough: (questionId) =>
         autoApproveGate.releaseHeldAsPassthrough(questionId),
       cancelStale: (reason) => autoApproveGate.cancelStale(reason),
+      cancelEvalForQuestion: (questionId, reason) =>
+        autoApproveGate.cancelEvalForQuestion(questionId, reason),
+      forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
   };
 }

@@ -225,6 +225,34 @@ describe('AutoApproveService.cancel()', () => {
   // (a second request queues instead of escalating). That behavior, including
   // the cancel-drains-the-queue interaction, is covered in serialize.test.ts.
 
+  test('per-eval scoping: cancel(reason, evalId) aborts ONLY the matching running eval (#617)', async () => {
+    const svc = new AutoApproveService(makeConfig(60), noLog);
+    // Eval stamped with id 7 is the one running on the single GPU slot.
+    const evalPromise = svc.evaluate('Bash', { command: 'ls' }, undefined, undefined, undefined, 7);
+    await hanging.awaitNextRequest();
+
+    // A cancel targeting a DIFFERENT eval id must not abort the running one
+    // (the wrong-victim case the old hadHold gate guarded against).
+    expect(svc.cancel('answer-for-other', 99)).toBe(false);
+
+    // Targeting the running eval's id aborts it and frees the GPU.
+    expect(svc.cancel('user-answered', 7)).toBe(true);
+    const result = await evalPromise;
+    expect(result.decision).toBe('cancelled');
+    expect(result.reasoning).toContain('user-answered');
+  });
+
+  test('per-eval scoping: a no-id cancel still aborts whatever runs (teardown/force-release) (#617)', async () => {
+    const svc = new AutoApproveService(makeConfig(60), noLog);
+    const evalPromise = svc.evaluate('Bash', { command: 'ls' }, undefined, undefined, undefined, 3);
+    await hanging.awaitNextRequest();
+    // cancelStale / forceRelease pass no evalId: abort the current eval regardless.
+    expect(svc.cancel('SessionEnd')).toBe(true);
+    const result = await evalPromise;
+    expect(result.decision).toBe('cancelled');
+    expect(result.reasoning).toContain('SessionEnd');
+  });
+
   test('hard-kill timer does not abort a subsequent successful eval', async () => {
     // Regression: prior implementation never cleared the race timer when
     // chatCompletion won, so a successful eval at t<<timeoutMs left a

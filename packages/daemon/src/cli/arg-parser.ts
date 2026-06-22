@@ -22,6 +22,7 @@ const SUBCOMMAND_LIST = [
   'detach',
   'recent',
   'reload',
+  'unstick',
   'start',
   'stop',
   'status',
@@ -39,6 +40,7 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
   'authorize',
   'kill',
   'detach',
+  'unstick',
 ]);
 
 export function isSubcommand(s: string): s is Subcommand {
