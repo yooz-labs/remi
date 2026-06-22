@@ -109,12 +109,21 @@ describe('dual-env fallback policy (#618)', () => {
     expect(planApnsAttempts(true)).toEqual([true, false]);
   });
 
-  test('the two planned attempts target opposite APNS hosts', () => {
+  test('production-preferred plan hits prod first, then sandbox', () => {
     const [first, second] = planApnsAttempts(false).map(
       (sandbox) => buildApnsRequest({ ...BASE, sandbox }, 'jwt').url,
     );
     expect(first).toContain('api.push.apple.com');
     expect(second).toContain('api.sandbox.push.apple.com');
+    expect(first).not.toBe(second);
+  });
+
+  test('sandbox-preferred plan hits sandbox first, then prod (the historically misconfigured path)', () => {
+    const [first, second] = planApnsAttempts(true).map(
+      (sandbox) => buildApnsRequest({ ...BASE, sandbox }, 'jwt').url,
+    );
+    expect(first).toContain('api.sandbox.push.apple.com');
+    expect(second).toContain('api.push.apple.com');
     expect(first).not.toBe(second);
   });
 
@@ -132,6 +141,9 @@ describe('dual-env fallback policy (#618)', () => {
     expect(isEnvMismatchError('APNS 403: {"reason":"InvalidProviderToken"}')).toBe(false);
     // Topic mismatch is a bundle problem, not an environment one.
     expect(isEnvMismatchError('APNS 400: {"reason":"DeviceTokenNotForTopic"}')).toBe(false);
+    // A stray BadDeviceToken substring outside the reason field (e.g. a proxy
+    // error page) must not provoke a spurious cross-environment retry.
+    expect(isEnvMismatchError('502 Bad Gateway: BadDeviceToken handler unavailable')).toBe(false);
   });
 
   test('isEnvMismatchError is total (no error / empty string -> false)', () => {

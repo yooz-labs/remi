@@ -141,9 +141,13 @@ export function planApnsAttempts(primarySandbox: boolean): boolean[] {
  * environment (or malformed)"; everything else is env-independent or transient
  * (429 throttle, 410 `Unregistered`, 403 `InvalidProviderToken`) and must NOT
  * trigger a redundant cross-environment retry. Pure + total.
+ *
+ * Matched against the structured APNS `reason` field rather than the raw string
+ * so a stray `BadDeviceToken` substring (e.g. inside a CDN/proxy error page that
+ * is not a clean APNS rejection) cannot provoke a spurious second round-trip.
  */
 export function isEnvMismatchError(error: string | undefined): boolean {
-  return /BadDeviceToken/i.test(error ?? '');
+  return /"reason"\s*:\s*"BadDeviceToken"/i.test(error ?? '');
 }
 
 /**
@@ -165,7 +169,7 @@ export async function sendApnsPush(
   const jwt = await createApnsJwt(config);
   const attempts = planApnsAttempts(payload.sandbox === true);
 
-  let lastError = '';
+  let lastError: string | undefined;
   for (const sandbox of attempts) {
     const { url, headers, body } = buildApnsRequest({ ...payload, sandbox }, jwt);
     const response = await fetch(url, { method: 'POST', headers, body });
@@ -184,7 +188,11 @@ export async function sendApnsPush(
     }
   }
 
-  return { success: false, error: lastError };
+  // `attempts` is always non-empty, so `lastError` is set on any failure; the
+  // fallback only guards a future change to `planApnsAttempts`. A non-empty
+  // message keeps the downstream tokenInvalid classifier from mistaking an empty
+  // error for a (non-permanent) blank and is surfaced rather than swallowed.
+  return { success: false, error: lastError ?? 'APNS: no delivery attempt was made' };
 }
 
 /** Cache APNS JWTs per keyId: Apple rate-limits token updates to once per 20 min. */
