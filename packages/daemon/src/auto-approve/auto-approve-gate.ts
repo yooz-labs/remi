@@ -54,10 +54,16 @@ export interface AutoApproveEvaluator {
     tag?: string,
     permissionSuggestions?: readonly unknown[],
     modelOverride?: string,
+    evalId?: number,
   ): Promise<AutoApproveResult>;
-  /** Abort any in-flight `evaluate`. Returns true if an abort was issued, false
-   *  if nothing was in flight (idempotent). */
-  cancel(reason: string): boolean;
+  /** Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
+   *  eval currently running (#617 per-eval scoping); without it, aborts whatever
+   *  is in flight. Returns true if an abort was issued, false otherwise (idempotent). */
+  cancel(reason: string, evalId?: number): boolean;
+  /** Drain queued evals so they escalate gracefully instead of seizing the freed
+   *  GPU (#617 force-release). Returns the number drained. Optional: a minimal
+   *  evaluator under test may omit it. */
+  drainQueue?(): number;
 }
 
 export interface AutoApproveGateDeps {
@@ -167,6 +173,22 @@ export class AutoApproveGate {
    */
   private readonly pendingHolds = new Map<UUID, PendingHold>();
 
+  /** Monotonic id stamped on each primary eval (#617), so a held question can be
+   *  tied to the exact eval running for it and a manual answer cancels only that
+   *  one. */
+  private evalSeq = 0;
+
+  /**
+   * Maps a held question's id to the id of the eval still running for it (#617),
+   * populated only by Part B (the early push + hold fires WHILE the eval keeps
+   * running — the one case where the user can answer mid-eval). A manual answer
+   * looks the question up here to cancel exactly its eval and free the GPU.
+   * Entries are removed when the eval settles (reconcileLateVerdict) or on
+   * force-release; a stale entry is harmless (cancel no-ops if that eval is no
+   * longer the running one).
+   */
+  private readonly evalIdByQuestion = new Map<UUID, number>();
+
   constructor(
     private readonly deps: AutoApproveGateDeps,
     private readonly sessionId: UUID,
@@ -195,6 +217,49 @@ export class AutoApproveGate {
     if (this.deps.service.cancel(reason)) {
       log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
     }
+  }
+
+  /**
+   * Cancel the in-flight eval (if any) for a question the user just answered, so
+   * the GPU is freed immediately (#617, the user's critical "answer == GPU freed"
+   * contract). Scoped by the per-question eval id, so it aborts ONLY that
+   * question's eval and never another permission's that happens to be running.
+   * Unlike `cancelStale` it does NOT release other holds — answering one question
+   * must never fail the others open. No-op when no eval is tracked (it already
+   * settled, or the question was not held mid-eval), so it is safe to call on
+   * every answer unconditionally.
+   */
+  cancelEvalForQuestion(questionId: UUID, reason: string): void {
+    const evalId = this.evalIdByQuestion.get(questionId);
+    if (evalId === undefined) return;
+    this.evalIdByQuestion.delete(questionId);
+    if (this.deps.service?.cancel(reason, evalId)) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Answer freed the eval for ${questionId.slice(0, 8)} (${reason})`,
+      );
+    }
+  }
+
+  /**
+   * Force-release escape (#617, `remi unstick`): the "just get me out" lever when
+   * Ollama and a question are stuck and the phone has no device visibility.
+   * Releases EVERY held hook to passthrough (the native terminal prompt), aborts
+   * the in-flight eval, and drains queued evals so they escalate gracefully
+   * instead of seizing the freed GPU. Safe with no service configured (only
+   * releases holds). Returns a summary for the caller to log.
+   */
+  forceRelease(reason: string): { holds: number; cancelled: boolean; drained: number } {
+    const holds = this.pendingHolds.size;
+    this.releaseAllHolds('passthrough', reason);
+    this.evalIdByQuestion.clear();
+    const service = this.deps.service;
+    if (service === null) return { holds, cancelled: false, drained: 0 };
+    const cancelled = service.cancel(reason);
+    const drained = service.drainQueue?.() ?? 0;
+    log(
+      `[AutoApprove ${this.sessionTag}] Force-release (${reason}): released ${holds} hold(s), ${cancelled ? 'cancelled the eval' : 'no eval in flight'}, drained ${drained} queued`,
+    );
+    return { holds, cancelled, drained };
   }
 
   /**
@@ -486,11 +551,16 @@ export class AutoApproveGate {
     // Raw suggestions: the service does its own strict-string filtering; we
     // forward the raw shape so the multi-choice classifier can route a
     // non-string entry through escalate instead of crashing.
+    // Stamp a unique id so a held question (Part B) can be tied to THIS eval and
+    // a manual answer cancels exactly it (#617).
+    const evalId = ++this.evalSeq;
     const evalPromise = service.evaluate(
       input.tool_name,
       input.tool_input,
       this.sessionTag,
       input.permission_suggestions as readonly unknown[] | undefined,
+      undefined,
+      evalId,
     );
 
     // Part B (#573, ISOLATED behind push_hold_timeout): if the eval is still
@@ -500,7 +570,7 @@ export class AutoApproveGate {
     // When push_hold_timeout <= 0 this never arms and the eval is awaited as
     // usual (Parts A + C only). A non-null result means the early hold fired and
     // the returned decision is what the hook server is blocked on.
-    const earlyHold = await this.maybePushOnSlowEval(input, evalPromise);
+    const earlyHold = await this.maybePushOnSlowEval(input, evalPromise, evalId);
     if (earlyHold !== null) return earlyHold;
 
     let result: AutoApproveResult;
@@ -641,6 +711,7 @@ export class AutoApproveGate {
   private async maybePushOnSlowEval(
     input: PermissionRequestHookInput,
     evalPromise: Promise<AutoApproveResult>,
+    evalId: number,
   ): Promise<PermissionDecision | null> {
     const pushHoldMs = this.deps.pushHoldMs ?? 0;
     // Disabled, or this escalation could not be answered via the hook response
@@ -682,6 +753,10 @@ export class AutoApproveGate {
     // createHold escalates AND (when a hold is registered) pushes the held
     // question via onHeldEscalate (#573), so the user can step in immediately.
     const { decision: heldDecision, questionId } = this.createHold(input);
+    // Tie the held question to THIS still-running eval so a manual answer cancels
+    // exactly it and frees the GPU (#617). This is the only place an eval is live
+    // while its question is answerable.
+    if (questionId) this.evalIdByQuestion.set(questionId, evalId);
     // The reconciliation NEVER pushes again — a late escalate just leaves the
     // existing hold in place (guarded by the pendingHolds membership check
     // inside reconcileLateVerdict), and pushHeldHook is itself idempotent.
@@ -703,6 +778,8 @@ export class AutoApproveGate {
     qid: UUID | undefined,
   ): Promise<void> {
     const outcome = await safeEval;
+    // The eval has settled; its question can no longer be cancelled (#617).
+    if (qid) this.evalIdByQuestion.delete(qid);
     if (!qid || !this.pendingHolds.has(qid)) return; // already resolved/timed out
     if (!outcome.ok) {
       // Eval threw: the user is already looking at the pushed question; leave the

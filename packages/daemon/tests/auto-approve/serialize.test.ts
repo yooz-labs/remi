@@ -188,6 +188,36 @@ describe('AutoApproveService - eval serialization (#551)', () => {
     expect((await p3).decision).toBe('approve');
   });
 
+  test('drainQueue() escalates queued waiters without hitting the GPU (#617 force-release)', async () => {
+    const svc = new AutoApproveService(makeConfig(), noLog);
+    const r1 = gate.awaitNextRequest();
+    const p1 = svc.evaluate('Bash', { command: 'c1' }); // holds the slot
+    const p2 = svc.evaluate('Bash', { command: 'c2' }); // queued
+    const p3 = svc.evaluate('Bash', { command: 'c3' }); // queued
+
+    await r1;
+    expect(gate.requestCount()).toBe(1); // only c1 reached the LLM
+
+    // Force-release drains the two queued waiters: each takes the not-acquired
+    // path and escalates to the user instead of seizing the freed GPU.
+    expect(svc.drainQueue()).toBe(2);
+    const d2 = await p2;
+    const d3 = await p3;
+    expect(d2.decision).toBe('escalate');
+    expect(d3.decision).toBe('escalate');
+    expect(gate.requestCount()).toBe(1); // drained evals never reached the LLM
+
+    // c1 is still in flight; cancel it (as force-release also does) to finish.
+    expect(svc.cancel('force-release')).toBe(true);
+    expect((await p1).decision).toBe('cancelled');
+    gate.releaseAll(); // clean up c1's orphaned server holder
+  });
+
+  test('drainQueue() returns 0 when nothing is queued', () => {
+    const svc = new AutoApproveService(makeConfig(), noLog);
+    expect(svc.drainQueue()).toBe(0);
+  });
+
   test('cancel() during a queued burst aborts the in-flight eval and drains the rest', async () => {
     const svc = new AutoApproveService(makeConfig(), noLog);
     const r1 = gate.awaitNextRequest();

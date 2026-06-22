@@ -107,11 +107,17 @@ export class AutoApproveService {
    *  deny/allow/group checks run BEFORE acquiring a slot, so they are never
    *  queued. */
   private evalActive = false;
-  private readonly evalQueue: Array<{ grant: () => void }> = [];
+  private readonly evalQueue: Array<{ grant: () => void; deny: () => void }> = [];
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
    *  aborts via this. Held alongside the active slot so they share the same
    *  lifecycle window. */
   private currentAbortController: AbortController | null = null;
+  /** Caller-supplied id of the eval currently holding the slot (#617). Lets
+   *  `cancel(reason, evalId)` abort ONLY the targeted eval instead of whatever
+   *  happens to be running — so a manual answer for question X frees X's eval and
+   *  never a different permission's (the wrong-victim risk that forced the old
+   *  answer-cancel to be gated). null when the running eval supplied no id. */
+  private currentEvalId: number | null = null;
   /** Set by cancel() so the catch block can distinguish a user-driven abort
    *  (Claude advanced past the prompt) from a timeout abort. */
   private cancelReason: string | null = null;
@@ -164,6 +170,12 @@ export class AutoApproveService {
           if (timer !== null) clearTimeout(timer);
           resolve(true);
         },
+        // Force-release (#617): resolve the waiter as NOT acquired so the eval
+        // takes the graceful escalate path instead of grabbing the freed GPU.
+        deny: () => {
+          if (timer !== null) clearTimeout(timer);
+          resolve(false);
+        },
       };
       this.evalQueue.push(waiter);
       if (deadlineMs > 0) {
@@ -189,6 +201,21 @@ export class AutoApproveService {
     } else {
       this.evalActive = false;
     }
+  }
+
+  /**
+   * Drain every queued waiter, resolving each as NOT acquired so its eval takes
+   * the graceful escalate path instead of running on the GPU (#617 force-release).
+   * Does NOT touch the eval currently holding the slot — `cancel()` aborts that.
+   * Returns the number of waiters drained.
+   */
+  drainQueue(): number {
+    let drained = 0;
+    for (let next = this.evalQueue.shift(); next; next = this.evalQueue.shift()) {
+      next.deny();
+      drained++;
+    }
+    return drained;
   }
 
   /**
@@ -229,6 +256,7 @@ export class AutoApproveService {
     tag?: string,
     permissionSuggestions?: readonly unknown[],
     modelOverride?: string,
+    evalId?: number,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // modelOverride (#522: the escalate_model second opinion) replaces the base
@@ -339,6 +367,7 @@ export class AutoApproveService {
       }
 
       this.currentAbortController = new AbortController();
+      this.currentEvalId = evalId ?? null;
       const externalSignal = this.currentAbortController.signal;
       // The heavy escalate_model gets its dedicated (longer) budget when set, so
       // a cold model-load does not abort the fast model's shorter timeout.
@@ -438,6 +467,7 @@ export class AutoApproveService {
       } finally {
         if (raceTimer !== null) clearTimeout(raceTimer);
         this.currentAbortController = null;
+        this.currentEvalId = null;
         this.releaseSlot();
       }
     } catch (err) {
@@ -477,16 +507,23 @@ export class AutoApproveService {
   }
 
   /**
-   * Abort any in-flight LLM evaluation. Called by the hook bridge when
-   * Claude advances past the prompt (PreToolUse / PostToolUse / Stop /
-   * SessionEnd) so a slow LLM call cannot return a stale decision after
-   * the user already answered in the local terminal.
+   * Abort an in-flight LLM evaluation. Called by the hook bridge when Claude
+   * advances past the prompt (PreToolUse / PostToolUse / Stop / SessionEnd) so a
+   * slow LLM call cannot return a stale decision after the user already answered
+   * in the local terminal, and by a manual answer to free the GPU (#617).
+   *
+   * When `evalId` is given, the abort fires ONLY if that id matches the eval
+   * currently holding the slot — so a manual answer for question X cancels X's
+   * eval and never a different permission's that happens to be running now. With
+   * no `evalId` it aborts whatever is in flight (session teardown / force-release).
    *
    * Returns true if a call was actually cancelled, false if there was no
-   * in-flight eval (idempotent, safe to call always).
+   * in-flight eval or the running eval did not match `evalId` (idempotent, safe
+   * to call always).
    */
-  cancel(reason: string): boolean {
+  cancel(reason: string, evalId?: number): boolean {
     if (this.currentAbortController === null) return false;
+    if (evalId !== undefined && this.currentEvalId !== evalId) return false;
     this.cancelReason = reason;
     this.currentAbortController.abort();
     return true;

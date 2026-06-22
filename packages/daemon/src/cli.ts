@@ -111,6 +111,7 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
+import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
@@ -234,6 +235,13 @@ if (parsedArgs.subcommand === 'config') {
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
+}
+
+// Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).
+if (parsedArgs.subcommand === 'unstick') {
+  const parsedPort = parsedArgs.subcommandArg ? Number(parsedArgs.subcommandArg) : Number.NaN;
+  const targetPort = Number.isInteger(parsedPort) ? parsedPort : undefined;
+  process.exit(runUnstickCommand(targetPort));
 }
 
 // Destructure into existing variable names for zero downstream changes
@@ -859,6 +867,27 @@ const binderClosers: Map<UUID, () => void> = new Map();
 // (multi-session daemons). Populated in createNewSession after setupHookBridge;
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
+/**
+ * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
+ * get me out" lever when Ollama + a question are stuck and the phone has no device
+ * visibility. Each gate releases its held hooks to passthrough (native prompt),
+ * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
+ * zero sessions.
+ */
+function forceReleaseAllSessions(): void {
+  let holds = 0;
+  let cancelled = 0;
+  let drained = 0;
+  for (const handle of sessionGateHandles.values()) {
+    const r = handle.forceRelease('force-release (remi unstick)');
+    holds += r.holds;
+    cancelled += r.cancelled ? 1 : 0;
+    drained += r.drained;
+  }
+  log(
+    `[unstick] Force-released ${sessionGateHandles.size} session(s): ${holds} hold(s) -> passthrough, ${cancelled} eval(s) cancelled, ${drained} queued drained`,
+  );
+}
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
 // device-token fan-out that pushed the card. Populated in createNewSession;
@@ -1388,7 +1417,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
     sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision) ?? false,
   releaseHeldAsPassthrough: (sessionId, questionId) =>
     sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
-  cancelAutoApprove: (sessionId, reason) => sessionGateHandles.get(sessionId)?.cancelStale(reason),
+  // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,
+  // without failing the session's other holds open (which cancelStale would do).
+  // (cancelStale itself is wired for Stop/SessionEnd teardown in hook-bridge-setup.)
+  cancelAutoApproveForQuestion: (sessionId, questionId, reason) =>
+    sessionGateHandles.get(sessionId)?.cancelEvalForQuestion(questionId, reason),
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
@@ -1899,6 +1932,7 @@ if (cliDaemonMode) {
       console.error(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
+  process.on('SIGUSR2', forceReleaseAllSessions);
 } else {
   // Wrapper mode: spawn Claude immediately, pass through terminal I/O
   // Block ALL output paths to the terminal. In Bun compiled binaries,
@@ -2298,6 +2332,8 @@ if (cliDaemonMode) {
       logError(`[reload] Failed to load config: ${errorToString(err)}`);
     }
   });
+  // SIGUSR2: force-release signal (triggered by `remi unstick`)
+  process.on('SIGUSR2', forceReleaseAllSessions);
 
   // Forward SIGINT/SIGTERM to PTY instead of exiting
   process.on('SIGINT', () => {

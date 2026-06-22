@@ -139,6 +139,17 @@ const commandHelp: Record<Subcommand, string[]> = {
     dim('  Currently all settings require a daemon restart to take effect.'),
     dim('  Future versions will support hot-reloading select settings.'),
   ],
+  unstick: [
+    'Force-release stuck auto-approve evals / held permissions.',
+    '',
+    bold('Usage:'),
+    entry('remi unstick', 'Unstick every running daemon'),
+    entry('remi unstick <port>', 'Unstick only the daemon on <port>'),
+    '',
+    dim('  The "just get me out" lever when Ollama and a question are wedged.'),
+    dim('  Releases held permissions to the native terminal prompt, cancels the'),
+    dim('  in-flight eval (freeing the GPU), and drains the eval queue.'),
+  ],
   start: [
     'Start the Remi daemon in the background.',
     '',
