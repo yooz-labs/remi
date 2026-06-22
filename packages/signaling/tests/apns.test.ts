@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { buildApnsRequest } from '../src/apns.ts';
+import { buildApnsRequest, isEnvMismatchError, planApnsAttempts } from '../src/apns.ts';
 
 const BASE = {
   token: 'device-token-abc',
@@ -98,6 +98,57 @@ describe('buildApnsRequest (#575 P4a)', () => {
     expect(req.headers['apns-topic']).toBe('live.yooz.remi');
     expect(req.headers['apns-push-type']).toBe('alert');
     expect(req.headers['apns-priority']).toBe('10');
+  });
+});
+
+describe('dual-env fallback policy (#618)', () => {
+  test('planApnsAttempts tries the preferred environment first, then the other', () => {
+    // Production preferred (APNS_SANDBOX unset) -> prod then sandbox.
+    expect(planApnsAttempts(false)).toEqual([false, true]);
+    // Sandbox preferred (APNS_SANDBOX=true) -> sandbox then prod.
+    expect(planApnsAttempts(true)).toEqual([true, false]);
+  });
+
+  test('production-preferred plan hits prod first, then sandbox', () => {
+    const [first, second] = planApnsAttempts(false).map(
+      (sandbox) => buildApnsRequest({ ...BASE, sandbox }, 'jwt').url,
+    );
+    expect(first).toContain('api.push.apple.com');
+    expect(second).toContain('api.sandbox.push.apple.com');
+    expect(first).not.toBe(second);
+  });
+
+  test('sandbox-preferred plan hits sandbox first, then prod (the historically misconfigured path)', () => {
+    const [first, second] = planApnsAttempts(true).map(
+      (sandbox) => buildApnsRequest({ ...BASE, sandbox }, 'jwt').url,
+    );
+    expect(first).toContain('api.sandbox.push.apple.com');
+    expect(second).toContain('api.push.apple.com');
+    expect(first).not.toBe(second);
+  });
+
+  test('isEnvMismatchError matches only BadDeviceToken (the wrong-environment signal)', () => {
+    expect(isEnvMismatchError('APNS 400: {"reason":"BadDeviceToken"}')).toBe(true);
+    expect(isEnvMismatchError('APNS 400: {"reason":"baddevicetoken"}')).toBe(true);
+  });
+
+  test('isEnvMismatchError does NOT retry on env-independent or transient errors', () => {
+    // Token genuinely gone for its environment — retrying the other host is pointless.
+    expect(isEnvMismatchError('APNS 410: {"reason":"Unregistered"}')).toBe(false);
+    // Throttle — same host would re-throttle; not an environment problem.
+    expect(isEnvMismatchError('APNS 429: {"reason":"TooManyRequests"}')).toBe(false);
+    // Auth/provider error — affects both hosts equally.
+    expect(isEnvMismatchError('APNS 403: {"reason":"InvalidProviderToken"}')).toBe(false);
+    // Topic mismatch is a bundle problem, not an environment one.
+    expect(isEnvMismatchError('APNS 400: {"reason":"DeviceTokenNotForTopic"}')).toBe(false);
+    // A stray BadDeviceToken substring outside the reason field (e.g. a proxy
+    // error page) must not provoke a spurious cross-environment retry.
+    expect(isEnvMismatchError('502 Bad Gateway: BadDeviceToken handler unavailable')).toBe(false);
+  });
+
+  test('isEnvMismatchError is total (no error / empty string -> false)', () => {
+    expect(isEnvMismatchError(undefined)).toBe(false);
+    expect(isEnvMismatchError('')).toBe(false);
   });
 });
 
