@@ -107,7 +107,16 @@ export class AutoApproveService {
    *  deny/allow/group checks run BEFORE acquiring a slot, so they are never
    *  queued. */
   private evalActive = false;
-  private readonly evalQueue: Array<{ grant: () => void; deny: () => void }> = [];
+  private readonly evalQueue: Array<{
+    /** Id of the queued eval (#617), so cancel(reason, evalId) can drop a waiter
+     *  whose question was answered before it ever reached the GPU. */
+    evalId: number | undefined;
+    /** Take the slot (becomes the running eval). */
+    grant: () => void;
+    /** Resolve as NOT acquired -> the eval escalates gracefully (force-release /
+     *  answered-while-queued) instead of seizing the slot. */
+    deny: () => void;
+  }> = [];
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
    *  aborts via this. Held alongside the active slot so they share the same
    *  lifecycle window. */
@@ -152,39 +161,40 @@ export class AutoApproveService {
 
   /**
    * Acquire the single eval slot, serializing concurrent LLM evaluations (one
-   * GPU). Resolves true when the slot is held; resolves false if the wait
+   * GPU). Resolves `'acquired'` when the slot is held; `'timeout'` if the wait
    * exceeded `deadlineMs` (the caller then escalates gracefully rather than
-   * risking the ~600s hook budget). When the slot is free it is taken
-   * immediately; otherwise the caller is queued FIFO and granted by
-   * `releaseSlot`.
+   * risking the ~600s hook budget); `'drained'` if force-release (#617) dropped
+   * the waiter. When the slot is free it is taken immediately; otherwise the
+   * caller is queued FIFO and granted by `releaseSlot`. `evalId` tags the waiter
+   * so a per-question cancel can drop it while still queued.
    */
-  private acquireSlot(deadlineMs: number): Promise<boolean> {
+  private acquireSlot(deadlineMs: number, evalId?: number): Promise<SlotOutcome> {
     if (!this.evalActive) {
       this.evalActive = true;
-      return Promise.resolve(true);
+      return Promise.resolve('acquired');
     }
-    return new Promise<boolean>((resolve) => {
+    return new Promise<SlotOutcome>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
+      // One-shot settle: grant / deny / timeout can race (e.g. drainQueue vs the
+      // deadline timer); the first wins and the rest are inert.
+      let settled = false;
+      const settle = (outcome: SlotOutcome): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        resolve(outcome);
+      };
       const waiter = {
-        grant: () => {
-          if (timer !== null) clearTimeout(timer);
-          resolve(true);
-        },
-        // Force-release (#617): resolve the waiter as NOT acquired so the eval
-        // takes the graceful escalate path instead of grabbing the freed GPU.
-        deny: () => {
-          if (timer !== null) clearTimeout(timer);
-          resolve(false);
-        },
+        evalId,
+        grant: () => settle('acquired'),
+        deny: () => settle('drained'),
       };
       this.evalQueue.push(waiter);
       if (deadlineMs > 0) {
         timer = setTimeout(() => {
           const i = this.evalQueue.indexOf(waiter);
-          if (i !== -1) {
-            this.evalQueue.splice(i, 1);
-            resolve(false);
-          }
+          if (i !== -1) this.evalQueue.splice(i, 1);
+          settle('timeout');
         }, deadlineMs);
       }
     });
@@ -207,7 +217,9 @@ export class AutoApproveService {
    * Drain every queued waiter, resolving each as NOT acquired so its eval takes
    * the graceful escalate path instead of running on the GPU (#617 force-release).
    * Does NOT touch the eval currently holding the slot — `cancel()` aborts that.
-   * Returns the number of waiters drained.
+   * Returns the number of waiters drained. Called synchronously right after
+   * `cancel()` in `forceRelease`, so the aborted eval's `releaseSlot` (a later
+   * microtask) cannot hand the slot to a waiter before they are all drained.
    */
   drainQueue(): number {
     let drained = 0;
@@ -358,10 +370,13 @@ export class AutoApproveService {
       // A second request QUEUES instead of escalating-on-busy; only a request
       // that waits past queue_timeout escalates gracefully so a deep burst
       // (parallel subagents) never risks the ~600s hook budget.
-      const acquired = await this.acquireSlot(this.queueTimeoutMs);
-      if (!acquired) {
+      const slot = await this.acquireSlot(this.queueTimeoutMs, evalId);
+      if (slot !== 'acquired') {
         const durationMs = Date.now() - start;
-        const reasoning = `eval queue wait exceeded ${this.queueTimeoutMs}ms; escalating to user`;
+        const reasoning =
+          slot === 'drained'
+            ? 'force-released (remi unstick) before slot acquisition; escalating to user'
+            : `eval queue wait exceeded ${this.queueTimeoutMs}ms; escalating to user`;
         this.logFn(`${prefix} ${toolName}: escalate (${durationMs}ms) - ${reasoning}`);
         return { decision: 'escalate', reasoning, durationMs, model };
       }
@@ -514,18 +529,39 @@ export class AutoApproveService {
    *
    * When `evalId` is given, the abort fires ONLY if that id matches the eval
    * currently holding the slot — so a manual answer for question X cancels X's
-   * eval and never a different permission's that happens to be running now. With
-   * no `evalId` it aborts whatever is in flight (session teardown / force-release).
+   * eval and never a different permission's that happens to be running now. If
+   * that eval is still QUEUED (answered under contention before it reached the
+   * GPU), the queued waiter is dropped instead (it escalates gracefully) so the
+   * answer never triggers a now-pointless LLM call. With no `evalId` it aborts
+   * whatever is in flight (session teardown / force-release).
    *
-   * Returns true if a call was actually cancelled, false if there was no
-   * in-flight eval or the running eval did not match `evalId` (idempotent, safe
-   * to call always).
+   * Returns true if a call was actually cancelled (running aborted or queued
+   * dropped), false otherwise (idempotent, safe to call always).
    */
   cancel(reason: string, evalId?: number): boolean {
-    if (this.currentAbortController === null) return false;
-    if (evalId !== undefined && this.currentEvalId !== evalId) return false;
-    this.cancelReason = reason;
-    this.currentAbortController.abort();
-    return true;
+    // The running eval: abort when untargeted, or when the target matches.
+    if (
+      this.currentAbortController !== null &&
+      (evalId === undefined || this.currentEvalId === evalId)
+    ) {
+      this.cancelReason = reason;
+      this.currentAbortController.abort();
+      return true;
+    }
+    // A targeted eval still waiting for the slot: drop it so it escalates
+    // instead of running after its question was already answered (#617).
+    if (evalId !== undefined) {
+      const i = this.evalQueue.findIndex((w) => w.evalId === evalId);
+      if (i !== -1) {
+        const waiter = this.evalQueue.splice(i, 1)[0];
+        waiter?.deny();
+        return true;
+      }
+    }
+    return false;
   }
 }
+
+/** Outcome of an `acquireSlot` request (#617): the eval ran, timed out waiting,
+ *  or was dropped by force-release / a per-question cancel. */
+type SlotOutcome = 'acquired' | 'timeout' | 'drained';

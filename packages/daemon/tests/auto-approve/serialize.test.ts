@@ -205,6 +205,9 @@ describe('AutoApproveService - eval serialization (#551)', () => {
     const d3 = await p3;
     expect(d2.decision).toBe('escalate');
     expect(d3.decision).toBe('escalate');
+    // The reasoning names force-release, not a phantom "queue wait exceeded".
+    expect(d2.reasoning).toContain('force-released');
+    expect(d2.reasoning).not.toContain('queue wait exceeded');
     expect(gate.requestCount()).toBe(1); // drained evals never reached the LLM
 
     // c1 is still in flight; cancel it (as force-release also does) to finish.
@@ -216,6 +219,28 @@ describe('AutoApproveService - eval serialization (#551)', () => {
   test('drainQueue() returns 0 when nothing is queued', () => {
     const svc = new AutoApproveService(makeConfig(), noLog);
     expect(svc.drainQueue()).toBe(0);
+  });
+
+  test('cancel(reason, evalId) drops a QUEUED eval (answered before it reached the GPU) (#617)', async () => {
+    const svc = new AutoApproveService(makeConfig(), noLog);
+    const r1 = gate.awaitNextRequest();
+    // eval id 1 acquires the slot and runs; id 2 queues behind it.
+    const p1 = svc.evaluate('Bash', { command: 'c1' }, undefined, undefined, undefined, 1);
+    const p2 = svc.evaluate('Bash', { command: 'c2' }, undefined, undefined, undefined, 2);
+
+    await r1;
+    expect(gate.requestCount()).toBe(1); // only c1 reached the LLM
+
+    // The user answers the question whose eval (id 2) is still QUEUED. cancel
+    // targets the running eval first (id 1 != 2, untouched), then drops the
+    // queued waiter — so c2 escalates and never burns a pointless GPU call.
+    expect(svc.cancel('user-answered', 2)).toBe(true);
+    const d2 = await p2;
+    expect(d2.decision).toBe('escalate');
+    expect(gate.requestCount()).toBe(1); // c2 never reached the LLM
+
+    gate.releaseNext(); // c1 finishes cleanly, untouched by the cancel
+    expect((await p1).decision).toBe('approve');
   });
 
   test('cancel() during a queued burst aborts the in-flight eval and drains the rest', async () => {

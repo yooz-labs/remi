@@ -878,11 +878,17 @@ function forceReleaseAllSessions(): void {
   let holds = 0;
   let cancelled = 0;
   let drained = 0;
-  for (const handle of sessionGateHandles.values()) {
-    const r = handle.forceRelease('force-release (remi unstick)');
-    holds += r.holds;
-    cancelled += r.cancelled ? 1 : 0;
-    drained += r.drained;
+  // Per-session try/catch: a throw in one gate's release must not abort the loop
+  // and leave the remaining sessions stuck (the whole point is "get me out").
+  for (const [sessionId, handle] of sessionGateHandles.entries()) {
+    try {
+      const r = handle.forceRelease('force-release (remi unstick)');
+      holds += r.holds;
+      cancelled += r.cancelled ? 1 : 0;
+      drained += r.drained;
+    } catch (err) {
+      logError(`[unstick] Failed to force-release session ${sessionId.slice(0, 8)}:`, err);
+    }
   }
   log(
     `[unstick] Force-released ${sessionGateHandles.size} session(s): ${holds} hold(s) -> passthrough, ${cancelled} eval(s) cancelled, ${drained} queued drained`,
