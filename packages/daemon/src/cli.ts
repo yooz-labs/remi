@@ -1183,6 +1183,15 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
+        // #625 single gate: when a hook server is active the auto-approve gate is
+        // the SOLE authority for permission questions and pushes escalations itself
+        // (binary via onHeldEscalate, passthrough via escalatePassthrough). The PTY
+        // parser echoes EVERY on-screen prompt — including ones the gate already
+        // auto-approved — so routing it here is the phantom-notification source
+        // (>1,100 confirmed pushes fired right after a 0 ms approve). Suppress it for
+        // hooked sessions; keep it as the only signal when no hook server is
+        // configured (the genuine fallback for un-hooked / Agent-Teams prompts).
+        if (hookServer) return;
         tracker.onPTYPromptVisible(question);
       },
       onStatusChange: (status, context) => {

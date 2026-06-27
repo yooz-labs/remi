@@ -489,8 +489,29 @@ export class AutoApproveGate {
     if (this.isBinaryEscalation(input)) {
       return this.escalateAndHold(input);
     }
-    this.escalateToUser(input);
-    return Promise.resolve('passthrough');
+    return Promise.resolve(this.escalatePassthrough(input));
+  }
+
+  /**
+   * Escalate a NON-holdable (passthrough) permission to the user AND push it from
+   * the gate (#625). A binary escalation pushes via `createHold` -> `onHeldEscalate`;
+   * a passthrough one (multi-choice / design / AskUserQuestion) historically relied
+   * on the PTY render to trigger its push (`onPTYPromptVisible`). That coupling is the
+   * phantom-notification source: the PTY echoes EVERY on-screen prompt, including ones
+   * the gate already auto-approved. The gate is now the single push trigger, so a
+   * passthrough escalation must push here too — otherwise, with PTY question-emission
+   * gated off for hooked sessions (#625), the escalation would never reach the phone.
+   *
+   * Reuses the held-push primitive (`onHeldEscalate` -> `tracker.pushHeldHook`): it
+   * registers the stashed question in `sessionRegistry` (answerable) and delivers it to
+   * the lock screen idempotently. No hold is registered — Claude renders its native
+   * prompt and waits there — so there is no delivery gate / hold timeout; the user
+   * answers the pushed card (digit injected via the PTY) or the terminal directly.
+   */
+  private escalatePassthrough(input: PermissionRequestHookInput): PermissionDecision {
+    const qid = this.escalateToUser(input);
+    if (qid) this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+    return 'passthrough';
   }
 
   /**
@@ -609,17 +630,15 @@ export class AutoApproveGate {
       // must escalate, not silently fall through to the subagent-deny below.
       if (result.pickIndex === undefined) {
         logError(`[AutoApprove ${this.sessionTag}] pick result missing pickIndex; escalating`);
-        this.escalateToUser(input);
-        return 'passthrough';
+        return this.escalatePassthrough(input);
       }
       if (
         await this.inject(input, String(result.pickIndex), `multichoice-pick-${result.pickIndex}`)
       ) {
         this.markHandled();
-      } else {
-        this.escalateToUser(input);
+        return 'passthrough';
       }
-      return 'passthrough';
+      return this.escalatePassthrough(input);
     }
     // escalate: a subagent prompt the user cannot answer is default-denied via
     // the response (no hang, no PTY).

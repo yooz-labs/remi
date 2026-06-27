@@ -681,7 +681,18 @@ export function setupHookBridge(
       tracker.onStatusChange(status);
     },
     onQuestion: (question) => {
-      tracker.recordPendingHook(question);
+      // #625 single gate: a PERMISSION question is coordinated by the auto-approve
+      // gate — it is stashed here and the gate drives its push on escalate (binary
+      // via onHeldEscalate, passthrough via escalatePassthrough). A STANDALONE hook
+      // question that no gate pushes (e.g. a Stop-failure "Retry?", which carries no
+      // permission source) must be emitted directly to the client + lock screen,
+      // because the PTY-render push that used to deliver it is suppressed for hooked
+      // sessions. recordPendingHook only stashes; it never emits on its own.
+      if (question.source === 'permission_request' || question.source === 'notification') {
+        tracker.recordPendingHook(question);
+      } else {
+        messageApi.handleQuestion(question);
+      }
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
       // DRIVE: the binder's onHookEvent (fired from the SessionStart listener)
