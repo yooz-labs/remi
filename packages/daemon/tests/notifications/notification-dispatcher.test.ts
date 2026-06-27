@@ -263,6 +263,42 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['category']).toBe('REMI_YNA');
   });
 
+  // #626: an AskUserQuestion must NOT get a count-based category (REMI_YN/YNA
+  // would mislabel arbitrary picks as Yes/No); the lock screen opens the app.
+  test('multi-question (AskUserQuestion) pushes with NO category', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    const mq: Question = {
+      id: 'q1' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      // Three options would normally select REMI_YNA — proving the kind guard wins.
+      options: [
+        { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
+        { value: '3', label: 'Other', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        {
+          header: 'Collab PI',
+          text: 'Who is the PI?',
+          multiSelect: false,
+          options: [],
+        },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+      ],
+    };
+    make().maybePush(SID, mq);
+
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]?.opts['category']).toBeUndefined();
+    expect(pushed[0]?.opts['title']).toContain('2 questions');
+    expect(pushed[0]?.opts['body']).toBe('1. Collab PI\n2. Software focus');
+  });
+
   test('body shows the ask + real labels and is never the collapsed PTY garble (#574 issue 3)', () => {
     register(false);
     deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
