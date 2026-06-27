@@ -476,8 +476,12 @@ export class AutoApproveService {
                 reasoning: parsed.reasoning,
                 durationMs,
                 model: response.model,
-                // #628: carry the model's lock-screen summary (escalate only).
-                ...(parsed.summary ? { summary: parsed.summary } : {}),
+                // #628: carry the model's lock-screen summary ON ESCALATE ONLY,
+                // enforced here (not just by the gate) so approve/deny results never
+                // expose a stray summary a model may have tacked on.
+                ...(parsed.decision === 'escalate' && parsed.summary
+                  ? { summary: parsed.summary }
+                  : {}),
               };
             })();
 

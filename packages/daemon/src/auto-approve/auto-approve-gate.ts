@@ -800,6 +800,11 @@ export class AutoApproveGate {
     log(`[AutoApprove ${this.sessionTag}] Slow eval (>${pushHoldMs}ms); pushing + holding early`);
     // createHold escalates AND (when a hold is registered) pushes the held
     // question via onHeldEscalate (#573), so the user can step in immediately.
+    // NOTE (#628): no `summary` is passed here — this early push happens BEFORE the
+    // verdict exists, so a Part B slow-eval escalation shows the raw tool text on
+    // the lock screen. reconcileLateVerdict leaves the already-pushed card as-is on
+    // a late escalate, so the summary is not back-filled. Re-pushing a collapsed
+    // card with the late summary is a separate follow-up (kept on #628).
     const { decision: heldDecision, questionId } = this.createHold(input);
     // Tie the held question to THIS still-running eval so a manual answer cancels
     // exactly it and frees the GPU (#617). This is the only place an eval is live

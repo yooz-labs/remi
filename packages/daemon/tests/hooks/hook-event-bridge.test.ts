@@ -243,6 +243,38 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.submitLabel).toBeUndefined();
   });
 
+  // #628: the gate passes the LLM's lock-screen summary; the bridge must set it on
+  // the emitted Question (the push prefers it over the raw "Allow Bash: …").
+  it('sets Question.summary from the summary argument', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest(
+      {
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push --force origin main' },
+      } as PermissionRequestHookInput,
+      'Force-push to main?',
+    );
+
+    expect(questions.length).toBe(1);
+    expect(questions[0]?.summary).toBe('Force-push to main?');
+  });
+
+  it('leaves Question.summary undefined when no summary is passed', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    } as PermissionRequestHookInput);
+
+    expect(questions[0]?.summary).toBeUndefined();
+  });
+
   // Inputs that yield fewer than 2 usable string labels: must fall back to
   // the default 3-option set so the iOS card always renders something the
   // user can act on. Object entries (e.g. {type:"addDirectories",...}) are

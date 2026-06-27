@@ -682,6 +682,11 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     );
     expect(escalations).toHaveLength(1);
     expect(heldPushes).toEqual([lastQuestionId as UUID]);
+    // #628: the passthrough (AskUserQuestion) escalate path propagates no summary
+    // here. In production AUQ never even produces one — the service's design
+    // short-circuit returns escalate with no `summary` field (0ms, no LLM) — so AUQ
+    // (which carries authored content, #626) is never given a generic summary.
+    expect(escalateSummaries).toEqual([undefined]);
   });
 
   test('#625 multi-choice escalate pushes from the gate (onHeldEscalate)', async () => {
