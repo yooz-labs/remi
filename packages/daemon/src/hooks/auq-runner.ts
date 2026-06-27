@@ -40,6 +40,11 @@ export interface AuqRunDeps {
   sleep(ms: number): Promise<void>;
   /** Monotonic ms clock (injected so tests control the timeout). */
   nowMs(): number;
+  /** Aborts the run mid-flight (e.g. the user pressed Cancel). When aborted the
+   *  runner stops IMMEDIATELY and escalates — it never sends another keystroke, so
+   *  a cancel's Esc can't be followed by stray queued keys landing on Claude's
+   *  next state. */
+  signal?: AbortSignal;
   log?(msg: string): void;
 }
 
@@ -93,6 +98,11 @@ export async function runAuqAnswer(
   // check for closure after each key and stop early.
   try {
     for (const k of keys) {
+      // Abort BEFORE writing so a cancel never injects another key after its Esc.
+      if (deps.signal?.aborted) {
+        deps.log?.('[auq-runner] aborted (cancel) while sending keys');
+        return 'escalated';
+      }
       await deps.write(k);
       await deps.sleep(keyDelayMs);
       if (isAuqClosed(deps.readRecentOutput())) return 'closed';
@@ -112,6 +122,10 @@ export async function runAuqAnswer(
   // the target, then submit. Poll until closed, the review appears, or timeout.
   let submitted = false;
   while (!timedOut()) {
+    if (deps.signal?.aborted) {
+      deps.log?.('[auq-runner] aborted (cancel) while awaiting review/closure');
+      return 'escalated';
+    }
     const out = deps.readRecentOutput();
     if (isAuqClosed(out)) return submitted ? 'submitted' : 'closed';
     if (!submitted && isReviewScreen(out)) {

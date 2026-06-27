@@ -123,6 +123,54 @@ describe('runAuqAnswer', () => {
     expect(state.keys).toHaveLength(0);
   });
 
+  it('abort mid-run (cancel): stops before the next key, escalates, never Escs', async () => {
+    const controller = new AbortController();
+    const keys: string[] = [];
+    const deps: AuqRunDeps = {
+      write: (d: string) => {
+        keys.push(d);
+        controller.abort(); // cancel fires right after the first keystroke
+      },
+      readRecentOutput: () => '',
+      resetOutput: () => {},
+      sleep: async () => {},
+      nowMs: () => 0,
+      signal: controller.signal,
+      log: () => {},
+    };
+    // plan for single-select index 2 is [DOWN, DOWN, ENTER]; abort after key 1.
+    const outcome = await runAuqAnswer(
+      { questions: [single(3)], targets: [[2]], expectedLabels: [['x']] },
+      deps,
+    );
+    expect(outcome).toBe('escalated');
+    expect(keys).toEqual([AUQ_KEYS.DOWN]); // stopped before the 2nd key
+    expect(keys).not.toContain(AUQ_KEYS.ESC);
+  });
+
+  it('already-aborted signal: sends no keys at all, escalates', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const keys: string[] = [];
+    const deps: AuqRunDeps = {
+      write: (d: string) => {
+        keys.push(d);
+      },
+      readRecentOutput: () => '',
+      resetOutput: () => {},
+      sleep: async () => {},
+      nowMs: () => 0,
+      signal: controller.signal,
+      log: () => {},
+    };
+    const outcome = await runAuqAnswer(
+      { questions: [single(3)], targets: [[0]], expectedLabels: [['x']] },
+      deps,
+    );
+    expect(outcome).toBe('escalated');
+    expect(keys).toHaveLength(0);
+  });
+
   it('write failure: escalates (never throws)', async () => {
     const deps: AuqRunDeps = {
       write: () => {
