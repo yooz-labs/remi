@@ -230,6 +230,14 @@ export interface QuestionMessage {
   readonly claudeSessionId?: UUID | undefined;
 }
 
+/** One sub-question's chosen option indices in a structured AskUserQuestion
+ *  answer (#627). `optionIndices` are 0-based into that sub-question's options
+ *  (one entry for single-select, 1+ for multi-select). */
+export interface AnswerSelection {
+  readonly questionIndex: number;
+  readonly optionIndices: readonly number[];
+}
+
 /** Answer to a question */
 export interface AnswerMessage {
   readonly type: 'answer';
@@ -244,6 +252,20 @@ export interface AnswerMessage {
    * Omitted by pre-#429 clients.
    */
   readonly claudeSessionId?: UUID | undefined;
+  /**
+   * Structured AskUserQuestion answer (#627): per-sub-question selected option
+   * indices. Present INSTEAD of a meaningful `answer` for a multi-question prompt
+   * (`answer` is then ''). The daemon drives the interactive TUI from these and
+   * verifies the review screen before submitting.
+   */
+  readonly selections?: readonly AnswerSelection[] | undefined;
+  /**
+   * Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI,
+   * cancelling the AskUserQuestion so Claude unblocks. The universal unstick —
+   * honored regardless of whether the prompt could be auto-answered. `answer` is
+   * '' when this is set.
+   */
+  readonly cancel?: boolean | undefined;
 }
 
 /**
@@ -1031,6 +1053,45 @@ export function createAnswer(
     sessionId,
     questionId,
     answer,
+    ...(claudeSessionId !== undefined && { claudeSessionId }),
+  };
+}
+
+/** Structured AskUserQuestion answer (#627): the daemon drives the TUI from the
+ *  per-sub-question selections and verifies the review before submitting. */
+export function createAuqAnswer(
+  sessionId: UUID,
+  questionId: UUID,
+  selections: readonly AnswerSelection[],
+  claudeSessionId?: UUID,
+): AnswerMessage {
+  return {
+    type: 'answer',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionId,
+    answer: '',
+    selections,
+    ...(claudeSessionId !== undefined && { claudeSessionId }),
+  };
+}
+
+/** Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI. The
+ *  universal unstick when a prompt can't be auto-answered or the user changes mind. */
+export function createCancelQuestion(
+  sessionId: UUID,
+  questionId: UUID,
+  claudeSessionId?: UUID,
+): AnswerMessage {
+  return {
+    type: 'answer',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionId,
+    answer: '',
+    cancel: true,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
   };
 }
