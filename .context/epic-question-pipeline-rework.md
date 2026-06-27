@@ -170,7 +170,7 @@ descriptions, so it needs no model.
 - Phase 2: real AUQ payload → protocol multi_question with all headers, descriptions,
   multiSelect preserved; web + iOS render verified (Chrome MCP + device).
 - Phase 3: closed-loop driver answers a real multi-question AUQ end-to-end against a
-  live Claude session; mismatch path surfaces raw prompt instead of mis-picking.
+  live Claude session; mismatch path surfaces raw prompt instead of a wrong pick.
 - Phase 4: escalate verdict carries a sensible summary; latency unchanged for LLM
   escalations (same call).
 
