@@ -15,7 +15,7 @@ import { useCallback, useState } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
-import { QuestionCard } from './QuestionCard';
+import { type AuqSelection, QuestionCard } from './QuestionCard';
 
 /** View mode for the chat interface */
 export type ViewMode = 'compact' | 'chat';
@@ -35,6 +35,12 @@ interface ChatViewProps {
    *  hijacks input when a question is pending (#401). Non-optional so the
    *  decoupling can't be accidentally dropped back onto onSend. */
   readonly onAnswer: (question: UIQuestion, answer: string) => void;
+  /** #627: submit a structured AskUserQuestion answer (per-sub-question selections);
+   *  the daemon drives the interactive TUI. */
+  readonly onAuqAnswer?: (question: UIQuestion, selections: AuqSelection[]) => void;
+  /** #627: cancel/escape a pending question (the daemon sends Esc). The never-stuck
+   *  floor, surfaced on every card. */
+  readonly onCancelQuestion?: (question: UIQuestion) => void;
   /** Long-press on a message bubble fires this with the message; consumer
    *  records it as the active reply context for the session (#401). */
   readonly onReply?: (message: UIMessage) => void;
@@ -64,6 +70,8 @@ export function ChatView({
   error,
   onSend,
   onAnswer,
+  onAuqAnswer,
+  onCancelQuestion,
   onReply,
   replyContext,
   onClearReply,
@@ -139,7 +147,13 @@ export function ChatView({
       {chatCards.length > 0 && (
         <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface)] pb-1">
           {chatCards.map((q) => (
-            <QuestionCard key={q.id} question={q} onAnswer={(answer) => onAnswer(q, answer)} />
+            <QuestionCard
+              key={q.id}
+              question={q}
+              onAnswer={(answer) => onAnswer(q, answer)}
+              {...(onAuqAnswer ? { onAuqAnswer: (sel: AuqSelection[]) => onAuqAnswer(q, sel) } : {})}
+              {...(onCancelQuestion ? { onCancel: () => onCancelQuestion(q) } : {})}
+            />
           ))}
         </div>
       )}

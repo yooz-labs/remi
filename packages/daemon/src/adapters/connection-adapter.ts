@@ -5,7 +5,14 @@
  * without coupling to a specific transport.
  */
 
-import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type {
+  AgentStatus,
+  AnswerExtras,
+  Message,
+  ProtocolMessage,
+  Question,
+  UUID,
+} from '@remi/shared';
 
 /**
  * Adapter-specific metadata, discriminated by `kind`.
@@ -72,13 +79,15 @@ export interface AdapterEvents {
     claudeSessionId?: UUID,
   ) => void;
 
-  /** Answer to question received */
+  /** Answer to question received. `extra` carries structured AskUserQuestion
+   *  selections / cancel (#627); omitted for a plain single answer. */
   onAnswer: (
     connectionId: UUID,
     sessionId: UUID,
     questionId: UUID,
     answer: string,
     claudeSessionId?: UUID,
+    extra?: AnswerExtras,
   ) => void;
 
   /**

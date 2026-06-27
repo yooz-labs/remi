@@ -7,6 +7,8 @@ import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
+import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -183,6 +185,191 @@ describe('createInputHandlers', () => {
 
       expect(ptyCapture.submits).toEqual(['yes']);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    // #627: cancel/escape sends Esc to the PTY and clears the question — the
+    // universal unstick, regardless of whether the prompt was understood.
+    test('cancel sends Esc to the PTY and clears the question', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Which design?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { cancel: true });
+
+      expect(ptyCapture.writes).toEqual([AUQ_KEYS.ESC]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    // #627: selections for a question that carries no structured `questions[]`
+    // escalates (the user falls back to Cancel / terminal) WITHOUT removing it.
+    test('selections on a non-structured question escalate, keeping the question', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash?',
+        options: [{ value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+        selections: [{ questionIndex: 0, optionIndices: [0] }],
+      });
+
+      expect(sendCalls.some((c) => c.message.type === 'error')).toBe(true);
+      // The question stays so the user can still Cancel or answer in the terminal.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(1);
+    });
+
+    // #627: a structured single-select AUQ is driven via keystrokes; feeding the
+    // closure marker into the output buffer (as a real Claude would) closes it.
+    test('structured AskUserQuestion: drives keystrokes and closes on the marker', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      // PTY whose ENTER write makes "Claude" accept the answer (closure marker).
+      const pty = {
+        id: generateId(),
+        write: (content: string) => {
+          ptyCapture.writes.push(content);
+          if (content === AUQ_KEYS.ENTER) {
+            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Green");
+          }
+        },
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession;
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Color: What is your favorite color?',
+        options: [
+          { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+          { value: '3', label: 'Blue', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        kind: 'multi_question',
+        questions: [
+          {
+            header: 'Color',
+            text: 'What is your favorite color?',
+            multiSelect: false,
+            options: [
+              { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+              { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+              { value: '3', label: 'Blue', isRecommended: false, isYes: false, isNo: false },
+            ],
+          },
+        ],
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      // Pick Green (index 1): expect DOWN then ENTER, then closure -> question gone.
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+        selections: [{ questionIndex: 0, optionIndices: [1] }],
+      });
+
+      expect(ptyCapture.writes).toEqual([AUQ_KEYS.DOWN, AUQ_KEYS.ENTER]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    // #627: a TWO-question AUQ exercises the byIndex label assembly + the review
+    // verification + submit, end-to-end through handleAnswer.
+    test('structured two-question AUQ: drives, verifies the review, submits, closes', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      const REVIEW =
+        'Review your answers● Q1? → Green● Q2? → Apple, CherryReady to submit your answers?❯ 1. Submit answers 2. Cancel';
+      const CLOSED = "⏺ User answered Claude's questions:  ⎿ ·…";
+      let writes = 0;
+      // After the 7 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,TAB) the review
+      // appears; the runner verifies it then sends ENTER, which closes the tool.
+      const pty = {
+        id: generateId(),
+        write: (content: string) => {
+          ptyCapture.writes.push(content);
+          writes += 1;
+          if (writes === 7) appendPtyOutput(sessionId, REVIEW);
+          else if (writes >= 8 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
+        },
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession;
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
+      const opt = (value: string, label: string) => ({
+        value,
+        label,
+        isRecommended: false,
+        isYes: false,
+        isNo: false,
+      });
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Q1: Q1?',
+        options: [opt('1', 'Red'), opt('2', 'Green'), opt('3', 'Blue')],
+        allowsFreeText: false,
+        isAnswered: false,
+        kind: 'multi_question',
+        questions: [
+          {
+            header: 'Q1',
+            text: 'Q1?',
+            multiSelect: false,
+            options: [opt('1', 'Red'), opt('2', 'Green'), opt('3', 'Blue')],
+          },
+          {
+            header: 'Q2',
+            text: 'Q2?',
+            multiSelect: true,
+            options: [opt('1', 'Apple'), opt('2', 'Banana'), opt('3', 'Cherry')],
+          },
+        ],
+      });
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      // Q1 -> Green (index 1); Q2 -> Apple + Cherry (indices 0, 2).
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+        selections: [
+          { questionIndex: 0, optionIndices: [1] },
+          { questionIndex: 1, optionIndices: [0, 2] },
+        ],
+      });
+
+      // Planned keys then the verified submit ENTER.
+      expect(ptyCapture.writes).toEqual([
+        AUQ_KEYS.DOWN,
+        AUQ_KEYS.ENTER, // Q1 -> Green
+        AUQ_KEYS.SPACE, // toggle Apple
+        AUQ_KEYS.DOWN,
+        AUQ_KEYS.DOWN,
+        AUQ_KEYS.SPACE, // toggle Cherry
+        AUQ_KEYS.TAB, // leave Q2
+        AUQ_KEYS.ENTER, // submit (after review verified)
+      ]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      clearPtyOutput(sessionId);
     });
 
     test('a throwing submitInput still consumes the question (no zombie) and propagates the error', async () => {

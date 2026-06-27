@@ -187,11 +187,16 @@ export interface UIQuestion {
   readonly agentId?: string;
   /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions. */
   readonly kind?: 'permission' | 'multi_question';
-  /** #626: the full sub-question set (AskUserQuestion). The first is interactive;
-   *  the rest are previewed until batched submit lands (#627). */
+  /** #626: the full sub-question set (AskUserQuestion), rendered as an interactive
+   *  form in #627. */
   readonly questions?: readonly UIQuestionStep[];
   /** #626: submit-button label for the multi-question form. */
   readonly submitLabel?: string;
+  /** #627: the answer was submitted and the daemon is driving the TUI ("auto-
+   *  answering…"). Set on submit, cleared when the question resolves or fails. */
+  readonly submitting?: boolean;
+  /** #627: the daemon could not auto-answer; the card invites Cancel / terminal. */
+  readonly autoAnswerFailed?: boolean;
 }
 
 /** App settings */
