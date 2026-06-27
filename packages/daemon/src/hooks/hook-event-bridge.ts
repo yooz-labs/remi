@@ -178,6 +178,14 @@ export class HookEventBridge {
       // Intentionally unhandled notification types:
       // - 'auth_success': informational only, no status change needed
       // - 'elicitation_dialog': not yet supported by Remi
+      // #624 review: log (not silent) so an unsupported prompt — e.g. an MCP
+      // elicitation dialog Claude is blocking on — leaves a trace instead of
+      // looking identical to an idle session. Tracked as a follow-up.
+      if (input.notification_type === 'elicitation_dialog') {
+        console.debug(
+          '[Bridge] elicitation_dialog notification received but not yet supported; ignoring',
+        );
+      }
     }
   }
 

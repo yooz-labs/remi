@@ -1190,8 +1190,18 @@ async function createNewSession(
         // auto-approved — so routing it here is the phantom-notification source
         // (>1,100 confirmed pushes fired right after a 0 ms approve). Suppress it for
         // hooked sessions; keep it as the only signal when no hook server is
-        // configured (the genuine fallback for un-hooked / Agent-Teams prompts).
-        if (hookServer) return;
+        // configured (the genuine fallback).
+        if (hookServer) {
+          // #624 review: a prompt with NO PermissionRequest hook (Claude's native
+          // Agent-Teams permissions, MCP elicitation dialogs) reaches only the PTY,
+          // so suppression here means it is not pushed. Log it (not silent) so a
+          // stuck no-hook prompt leaves a trace; routing these through without
+          // reintroducing the phantom flood is a tracked follow-up.
+          log(
+            `[Question] PTY question suppressed (hook server active; gate owns escalations): "${question.text.slice(0, 60)}"`,
+          );
+          return;
+        }
         tracker.onPTYPromptVisible(question);
       },
       onStatusChange: (status, context) => {
