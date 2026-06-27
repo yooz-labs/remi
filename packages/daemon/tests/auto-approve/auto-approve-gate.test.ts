@@ -42,6 +42,14 @@ const escalate: AutoApproveResult = {
   durationMs: 0,
   model: 'm',
 };
+// #628: an escalate verdict carrying the model's lock-screen summary.
+const escalateWithSummary: AutoApproveResult = {
+  decision: 'escalate',
+  reasoning: 't',
+  durationMs: 0,
+  model: 'm',
+  summary: 'Force-push to main?',
+};
 const cancelled: AutoApproveResult = { decision: 'cancelled', reasoning: 't', durationMs: 0 };
 const pick = (pickIndex: number): AutoApproveResult => ({
   decision: 'pick',
@@ -524,6 +532,8 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
   // recorded here so a test can assert push <=> escalate and that approve/deny push
   // nothing. The held-push primitive is onHeldEscalate -> tracker.pushHeldHook.
   let heldPushes: UUID[];
+  // #628: the `summary` arg passed to each escalate() call (undefined when none).
+  let escalateSummaries: (string | undefined)[];
 
   function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
     return { evaluate: async () => result, cancel: () => true };
@@ -557,8 +567,9 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
         sessionRegistry: registry,
         tracker,
         isInSubagentContext: () => opts.subagent ?? false,
-        escalate: (i) => {
+        escalate: (i, summary) => {
           escalations.push(i);
+          escalateSummaries.push(summary); // #628
           if (opts.escalateUndefined) {
             lastQuestionId = undefined;
             return undefined;
@@ -596,6 +607,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     escalations = [];
     lastQuestionId = undefined;
     heldPushes = [];
+    escalateSummaries = [];
     configureLogger({ writeLog: () => {} });
   });
 
@@ -670,6 +682,11 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     );
     expect(escalations).toHaveLength(1);
     expect(heldPushes).toEqual([lastQuestionId as UUID]);
+    // #628: the passthrough (AskUserQuestion) escalate path propagates no summary
+    // here. In production AUQ never even produces one — the service's design
+    // short-circuit returns escalate with no `summary` field (0ms, no LLM) — so AUQ
+    // (which carries authored content, #626) is never given a generic summary.
+    expect(escalateSummaries).toEqual([undefined]);
   });
 
   test('#625 multi-choice escalate pushes from the gate (onHeldEscalate)', async () => {
@@ -685,6 +702,25 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     const pending = gate.resolvePermission(pr());
     await new Promise((r) => setTimeout(r, 20));
     expect(heldPushes).toEqual([lastQuestionId as UUID]);
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  // #628: the escalate verdict's lock-screen summary is threaded to escalate().
+  test('#628 threads the verdict summary to the escalation', async () => {
+    const gate = holdGate(evaluator(escalateWithSummary));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(escalateSummaries).toEqual(['Force-push to main?']);
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  test('#628 escalate without a summary passes undefined (no synthesis)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(escalateSummaries).toEqual([undefined]);
     gate.resolveHeld(lastQuestionId as UUID, 'allow');
     await pending;
   });

@@ -833,7 +833,7 @@ export function setupHookBridge(
       // created Question.id flows back to the gate; a binary escalation holds
       // the hook keyed by it (#573). The bridge still does the onQuestion +
       // status side effects exactly as before.
-      escalate: (i) => hookBridge.handlePermissionRequest(i),
+      escalate: (i, summary) => hookBridge.handlePermissionRequest(i, summary),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native

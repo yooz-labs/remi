@@ -113,6 +113,22 @@ describe('buildPushText (#574 issues 3+4)', () => {
     expect(body).toBe('Retry?\ny. Yes  n. No');
   });
 
+  // #628: prefer the auto-approve LLM's lock-screen summary over raw tool text.
+  test('prefers the summary over the raw tool text when present', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'Allow Bash: git push --force origin main',
+      options: defaultThreeSet,
+      allowsFreeText: false,
+      isAnswered: false,
+      summary: 'Force-push to main?',
+    };
+    const { title, body } = buildPushText('proj', q);
+    expect(title).toBe('proj: Force-push to main?');
+    expect(body.startsWith('Force-push to main?')).toBe(true);
+    expect(body).toContain('1. Yes  2. Yes, always  3. No');
+  });
+
   // #626: a multi-question AskUserQuestion summarizes its SCOPE on the lock screen.
   test('multi-question summarizes the topics instead of one option list', () => {
     const q: Question = {
