@@ -626,6 +626,23 @@ function App() {
           isYes: o.isYes || undefined,
           isNo: o.isNo || undefined,
           isRecommended: o.isRecommended || undefined,
+          description: o.description || undefined,
+        }));
+
+        // #626: carry the full AskUserQuestion structure (headers, per-option
+        // descriptions, multiSelect) so the card can render it properly.
+        const uiQuestions: UIQuestion['questions'] = q.questions?.map((step) => ({
+          ...(step.header ? { header: step.header } : {}),
+          text: step.text,
+          multiSelect: step.multiSelect,
+          options: step.options.map((o) => ({
+            label: o.label,
+            value: o.value,
+            isYes: o.isYes || undefined,
+            isNo: o.isNo || undefined,
+            isRecommended: o.isRecommended || undefined,
+            description: o.description || undefined,
+          })),
         }));
 
         // sessionId is mandatory on the wire now (#437); never fall back to
@@ -646,6 +663,9 @@ function App() {
           structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
           timestamp: new Date().toISOString(),
           agentId: questionAgentId,
+          ...(q.kind ? { kind: q.kind } : {}),
+          ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
+          ...(q.submitLabel ? { submitLabel: q.submitLabel } : {}),
         };
         const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {

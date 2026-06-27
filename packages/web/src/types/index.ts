@@ -159,6 +159,16 @@ export interface UIQuestionOption {
   readonly isYes?: boolean;
   readonly isNo?: boolean;
   readonly isRecommended?: boolean;
+  /** Authored per-option explanation (AskUserQuestion `description`, #626). */
+  readonly description?: string;
+}
+
+/** One sub-question of a multi-question (AskUserQuestion) prompt (#626). */
+export interface UIQuestionStep {
+  readonly header?: string;
+  readonly text: string;
+  readonly multiSelect: boolean;
+  readonly options: readonly UIQuestionOption[];
 }
 
 /** Question from the agent requiring user response */
@@ -175,6 +185,13 @@ export interface UIQuestion {
   /** The Claude agent this prompt belongs to ('main' default). Keys the
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
+  /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions. */
+  readonly kind?: 'permission' | 'multi_question';
+  /** #626: the full sub-question set (AskUserQuestion). The first is interactive;
+   *  the rest are previewed until batched submit lands (#627). */
+  readonly questions?: readonly UIQuestionStep[];
+  /** #626: submit-button label for the multi-question form. */
+  readonly submitLabel?: string;
 }
 
 /** App settings */

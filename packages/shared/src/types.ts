@@ -186,6 +186,43 @@ export interface Question {
    * ignored on the wire; consumed only by the daemon's notification path.
    */
   readonly source?: QuestionSource | undefined;
+
+  /**
+   * Shape discriminator (#626). `'permission'` (the default when omitted) is a
+   * single prompt described by `text` + `options`. `'multi_question'` is a
+   * structured `AskUserQuestion` tool call: the full set of sub-questions is in
+   * `questions`, while `text`/`options` mirror `questions[0]` for back-compat
+   * (lock-screen summary + the first-question answer path).
+   */
+  readonly kind?: 'permission' | 'multi_question' | undefined;
+
+  /**
+   * The sub-questions for `kind === 'multi_question'` (#626): each carries its
+   * own `header`, `text`, `multiSelect`, and `options` (with authored
+   * `description`s). Authored by Claude in `AskUserQuestion.tool_input`; the
+   * daemon surfaces them verbatim instead of collapsing to the first question.
+   */
+  readonly questions?: readonly QuestionStep[] | undefined;
+
+  /** Submit-button label for a multi-question form (#626); defaults to "Submit". */
+  readonly submitLabel?: string | undefined;
+}
+
+/**
+ * One sub-question of a `kind === 'multi_question'` {@link Question} (#626),
+ * mirroring an `AskUserQuestion` entry: a short topic `header`, the `text`, a
+ * `multiSelect` flag (pick one vs many), and `options` each with an authored
+ * `description`.
+ */
+export interface QuestionStep {
+  /** Short topic chip shown above the question (AskUserQuestion `header`). */
+  readonly header?: string | undefined;
+  /** The sub-question text. */
+  readonly text: string;
+  /** True when the user may select MORE THAN ONE option. */
+  readonly multiSelect: boolean;
+  /** Options for this sub-question. */
+  readonly options: readonly QuestionOption[];
 }
 
 /**
@@ -217,6 +254,14 @@ export interface QuestionOption {
 
   /** Is this a "no" type answer */
   readonly isNo: boolean;
+
+  /**
+   * Authored per-option explanation (#626). Present for `AskUserQuestion`
+   * options, whose `tool_input` carries a `description` for each choice; this is
+   * the text that lets the user understand a choice without seeing the terminal.
+   * Absent for plain permission options (Yes / Yes, always / No).
+   */
+  readonly description?: string | undefined;
 }
 
 /**

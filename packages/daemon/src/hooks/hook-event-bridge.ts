@@ -256,6 +256,16 @@ export class HookEventBridge {
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
+      // #626: surface the full AskUserQuestion structure (all sub-questions with
+      // headers, descriptions, multiSelect) so the client can render it properly.
+      // text/options above still mirror questions[0] for back-compat.
+      ...(toolQuestion?.kind === 'multi_question' && toolQuestion.questions
+        ? {
+            kind: 'multi_question' as const,
+            questions: toolQuestion.questions,
+            ...(toolQuestion.submitLabel ? { submitLabel: toolQuestion.submitLabel } : {}),
+          }
+        : {}),
     });
     this.events.onStatusChange('waiting');
     return questionId;
