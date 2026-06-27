@@ -28,6 +28,7 @@ import {
 } from '@remi/shared';
 import type {
   Acknowledgment,
+  AnswerExtras,
   AnswerMessage,
   AuthResponseMessage,
   BulletExpandRequestMessage,
@@ -62,8 +63,15 @@ export interface ConnectionEvents {
   /** User input received */
   onUserInput: (sessionId: UUID, content: string, raw?: boolean, claudeSessionId?: UUID) => void;
 
-  /** Answer to question received */
-  onAnswer: (sessionId: UUID, questionId: UUID, answer: string, claudeSessionId?: UUID) => void;
+  /** Answer to question received. `extra` carries the structured AskUserQuestion
+   *  selections / cancel flag (#627); omitted for a plain single answer. */
+  onAnswer: (
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    claudeSessionId?: UUID,
+    extra?: AnswerExtras,
+  ) => void;
 
   /** Bullet expand request received */
   onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
@@ -422,12 +430,18 @@ export class Connection {
     // Acknowledge receipt
     this.sendAck(message.id, 'delivered');
 
-    // Notify
+    // Notify. Forward the structured AskUserQuestion parts (#627) when present so
+    // the daemon can drive the TUI (selections) or escape it (cancel).
+    const extra: AnswerExtras | undefined =
+      message.selections !== undefined || message.cancel !== undefined
+        ? { selections: message.selections, cancel: message.cancel }
+        : undefined;
     this.events.onAnswer?.(
       message.sessionId,
       message.questionId,
       message.answer,
       message.claudeSessionId,
+      extra,
     );
   }
 

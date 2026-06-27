@@ -57,6 +57,7 @@ export type {
   QuestionMessage,
   AnswerMessage,
   AnswerSelection,
+  AnswerExtras,
   SessionUpdateMessage,
   PingMessage,
   PongMessage,

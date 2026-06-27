@@ -10,9 +10,12 @@
  */
 
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
-import type { QuestionOption, UUID } from '@remi/shared';
+import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
+import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
+import { runAuqAnswer } from '../../hooks/auq-runner.ts';
+import { readPtyOutput, resetPtyOutput } from '../../pty/output-buffer.ts';
+import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
@@ -126,7 +129,14 @@ function guardBinding(
  *   - `stale-binding` — the Claude session this answer targeted has rotated.
  *   - `stale`         — the question is no longer active (already answered/auto-approved).
  */
-export type AnswerOutcome = 'delivered' | 'session-not-found' | 'stale-binding' | 'stale';
+export type AnswerOutcome =
+  | 'delivered'
+  | 'session-not-found'
+  | 'stale-binding'
+  | 'stale'
+  /** #627: a structured AskUserQuestion answer could not be auto-driven safely;
+   *  the prompt is left up so the user can Cancel (Esc) or answer in the terminal. */
+  | 'escalated';
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
@@ -189,6 +199,91 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   } = deps;
 
   /**
+   * Answer a structured AskUserQuestion (#627) by driving its interactive TUI.
+   * The prompt is already on screen (Phase 1 escalates AUQ as passthrough), so the
+   * runner sends keystrokes from the per-sub-question `selections`, verifies the
+   * review screen against the chosen option LABELS, and only then submits. On
+   * success the question is consumed + dismissed everywhere. On escalate (mismatch
+   * / timeout / unexpected variant) the prompt is LEFT UP — never a wrong submit,
+   * never an auto-Esc — so the user can Cancel (Esc) or answer in the terminal.
+   */
+  async function handleAuqAnswer(
+    connectionId: UUID,
+    session: ManagedSession,
+    questionId: UUID,
+    active: Question,
+    selections: readonly AnswerSelection[],
+    viaRelay: boolean,
+  ): Promise<AnswerOutcome> {
+    const steps = active.questions;
+    if (!steps || steps.length === 0) {
+      log(`[AUQ] selections for a non-structured question ${questionId.slice(0, 8)}; escalating`);
+      if (!viaRelay) {
+        send(
+          connectionId,
+          createError('AUQ_NOT_STRUCTURED', 'This question is not a structured AskUserQuestion', {
+            sessionId: session.sessionId,
+            questionId,
+          }),
+        );
+      }
+      return 'escalated';
+    }
+
+    const byIndex = new Map(selections.map((s) => [s.questionIndex, s.optionIndices]));
+    const questions = steps.map((s) => ({
+      multiSelect: s.multiSelect,
+      optionCount: s.options.length,
+    }));
+    const targets: number[][] = [];
+    const expectedLabels: string[][] = [];
+    for (let k = 0; k < steps.length; k++) {
+      const picks = byIndex.get(k) ?? [];
+      targets.push([...picks]);
+      const opts = steps[k]?.options ?? [];
+      expectedLabels.push(picks.map((i) => opts[i]?.label ?? '').filter((l) => l.length > 0));
+    }
+
+    const outcome = await runAuqAnswer(
+      { questions, targets, expectedLabels },
+      {
+        write: (d) => session.pty.write(d),
+        readRecentOutput: () => readPtyOutput(session.sessionId),
+        resetOutput: () => resetPtyOutput(session.sessionId),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        nowMs: () => Date.now(),
+        log: (m) => log(m),
+      },
+    );
+
+    if (outcome === 'closed' || outcome === 'submitted') {
+      cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-auq');
+      sessionRegistry.removeQuestion(session.sessionId, questionId);
+      try {
+        onQuestionResolved?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[AUQ] question_resolved broadcast failed: ${errorToString(err)}`);
+      }
+      log(`[AUQ] answered question ${questionId.slice(0, 8)} (${outcome})`);
+      return 'delivered';
+    }
+
+    // Escalated: leave the question up (the user can Cancel or use the terminal).
+    log(`[AUQ] could not auto-answer ${questionId.slice(0, 8)}; left for manual (Cancel/terminal)`);
+    if (!viaRelay) {
+      send(
+        connectionId,
+        createError(
+          'AUQ_AUTOANSWER_FAILED',
+          'Could not auto-answer the question; cancel it or answer in the terminal',
+          { sessionId: session.sessionId, questionId },
+        ),
+      );
+    }
+    return 'escalated';
+  }
+
+  /**
    * Shared answer-routing core for both the WebSocket `onAnswer` event and the
    * HTTP `/answer` relay (#575, P4a). Resolves a held permission hook (Model B),
    * releases to passthrough + submits a PTY digit for picks / "always", or
@@ -203,9 +298,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     answer: string,
     claudeSessionId: UUID | undefined,
     viaRelay = false,
+    extra?: AnswerExtras,
   ): Promise<AnswerOutcome> {
     log(
-      `Answer ${viaRelay ? '(relay) ' : ''}from ${connectionId} for session ${sessionId}: ${answer}`,
+      `Answer ${viaRelay ? '(relay) ' : ''}from ${connectionId} for session ${sessionId}: ${extra?.cancel ? '[cancel]' : extra?.selections ? `[selections×${extra.selections.length}]` : answer}`,
     );
 
     // Prefer lookup by sessionId (from push-action answers) so reconnected clients
@@ -234,6 +330,29 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       )
     ) {
       return 'stale-binding';
+    }
+
+    // #627 cancel/escape — the universal unstick. Send Esc to the PTY so the
+    // active interactive prompt (an AskUserQuestion, a design-graphics variant we
+    // don't auto-answer, anything) cancels and Claude unblocks. Done regardless of
+    // whether we still hold the question, so a stuck remote user always has a way
+    // out. Also pop any held hook to passthrough and clear the card everywhere.
+    if (extra?.cancel) {
+      try {
+        await session.pty.write(AUQ_KEYS.ESC);
+        log(`[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`);
+      } catch (err) {
+        logError(`[Answer] cancel: Esc write failed: ${errorToString(err)}`);
+      }
+      releaseHeldAsPassthrough?.(session.sessionId, questionId);
+      cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-cancelled');
+      sessionRegistry.removeQuestion(session.sessionId, questionId);
+      try {
+        onQuestionResolved?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] cancel: question_resolved broadcast failed: ${errorToString(err)}`);
+      }
+      return 'delivered';
     }
 
     // Drop stale answers. APNS tokens persist across disconnect (#286), so a
@@ -272,6 +391,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         );
       }
       return 'stale';
+    }
+
+    // #627 structured AskUserQuestion answer: drive the interactive TUI from the
+    // per-sub-question selections (the existing single-digit path can't express a
+    // tabbed multi-question form). The runner verifies the review before submitting
+    // and escalates (leaving the prompt for Cancel / terminal) on any mismatch.
+    if (extra?.selections && extra.selections.length > 0) {
+      return await handleAuqAnswer(
+        connectionId,
+        session,
+        questionId,
+        active,
+        extra.selections,
+        viaRelay,
+      );
     }
 
     // Model B (#573): if the auto-approve gate is HOLDING this permission's
@@ -391,8 +525,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       questionId: UUID,
       answer: string,
       claudeSessionId?: UUID,
+      extra?: AnswerExtras,
     ): Promise<void> => {
-      await handleAnswer(connectionId, sessionId, questionId, answer, claudeSessionId);
+      await handleAnswer(
+        connectionId,
+        sessionId,
+        questionId,
+        answer,
+        claudeSessionId,
+        false,
+        extra,
+      );
     },
 
     /**
@@ -408,10 +551,20 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       questionId: UUID,
       answer: string,
       claudeSessionId?: UUID,
-    ): Promise<AnswerOutcome> => {
+    ): Promise<Exclude<AnswerOutcome, 'escalated'>> => {
       // The relay has no connection; use the sessionId as the synthetic id so
       // logging stays meaningful and the registry's sessionId-first lookup wins.
-      return handleAnswer(sessionId as UUID, sessionId, questionId, answer, claudeSessionId, true);
+      const outcome = await handleAnswer(
+        sessionId as UUID,
+        sessionId,
+        questionId,
+        answer,
+        claudeSessionId,
+        true,
+      );
+      // The relay path never carries AskUserQuestion selections, so 'escalated' is
+      // unreachable; coerce defensively so the HTTP outcome stays in the legacy set.
+      return outcome === 'escalated' ? 'stale' : outcome;
     },
 
     onBulletExpandRequest: (

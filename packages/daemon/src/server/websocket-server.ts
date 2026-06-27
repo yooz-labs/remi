@@ -6,7 +6,7 @@
  */
 
 import { generateId } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { AnswerExtras, ProtocolMessage, UUID } from '@remi/shared';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
 
@@ -51,13 +51,15 @@ export interface ServerEvents {
     claudeSessionId?: UUID,
   ) => void;
 
-  /** Answer from client */
+  /** Answer from client. `extra` carries structured AskUserQuestion selections /
+   *  cancel (#627); omitted for a plain single answer. */
   onAnswer: (
     connectionId: UUID,
     sessionId: UUID,
     questionId: UUID,
     answer: string,
     claudeSessionId?: UUID,
+    extra?: AnswerExtras,
   ) => void;
 
   /**
@@ -505,13 +507,14 @@ export class WebSocketServer {
         this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw, claudeSessionId);
       },
 
-      onAnswer: (sessionId, questionId, answer, claudeSessionId) => {
+      onAnswer: (sessionId, questionId, answer, claudeSessionId, extra) => {
         this.events.onAnswer?.(
           ws.data.connectionId,
           sessionId,
           questionId,
           answer,
           claudeSessionId,
+          extra,
         );
       },
 

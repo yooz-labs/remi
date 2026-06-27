@@ -238,6 +238,14 @@ export interface AnswerSelection {
   readonly optionIndices: readonly number[];
 }
 
+/** The non-string parts of an {@link AnswerMessage} (#627), threaded through the
+ *  answer event chain so the daemon can drive a structured AskUserQuestion answer
+ *  (`selections`) or cancel/escape the prompt (`cancel`). */
+export interface AnswerExtras {
+  readonly selections?: readonly AnswerSelection[] | undefined;
+  readonly cancel?: boolean | undefined;
+}
+
 /** Answer to a question */
 export interface AnswerMessage {
   readonly type: 'answer';
