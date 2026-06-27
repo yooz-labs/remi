@@ -13,11 +13,19 @@
  * Claude renders in its native numbered prompt once the held hook is released.
  */
 
-import type { QuestionOption } from '@remi/shared';
+import type { QuestionOption, QuestionStep } from '@remi/shared';
 
 export interface ToolQuestion {
   readonly text: string;
   readonly options: QuestionOption[];
+  /** #626: 'multi_question' for an AskUserQuestion-shaped tool (structured
+   *  sub-questions in `questions`). Absent for a plain single prompt. */
+  readonly kind?: 'multi_question';
+  /** #626: the full sub-question set (header / text / multiSelect / options with
+   *  descriptions). `text`/`options` above mirror `questions[0]` for back-compat. */
+  readonly questions?: QuestionStep[];
+  /** #626: submit-button label for the multi-question form. */
+  readonly submitLabel?: string;
 }
 
 /**
@@ -36,13 +44,15 @@ function cleanText(s: string): string {
  * Index 0 is marked recommended only to match the existing option convention
  * (display-only; it does not change which digit is submitted).
  */
-function pickOption(label: string, index: number): QuestionOption {
+function pickOption(label: string, index: number, description?: string): QuestionOption {
+  const desc = description ? cleanText(description) : '';
   return {
     label: cleanText(label),
     value: String(index + 1),
     isRecommended: index === 0,
     isYes: false,
     isNo: false,
+    ...(desc.length > 0 ? { description: desc } : {}),
   };
 }
 
@@ -65,13 +75,39 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-/** One option label from an AskUserQuestion option entry (a string, or `{label}`). */
-function optionLabel(entry: unknown): string | null {
-  if (typeof entry === 'string' && entry.trim().length > 0) return entry;
+/** One option from an AskUserQuestion option entry: a plain string label, or
+ *  `{ label, description? }`. Returns null for an unusable entry (#626). */
+function optionEntry(entry: unknown): { label: string; description?: string } | null {
+  if (typeof entry === 'string' && entry.trim().length > 0) return { label: entry };
   if (isRecord(entry) && typeof entry['label'] === 'string' && entry['label'].trim().length > 0) {
-    return entry['label'];
+    const rawDesc = entry['description'];
+    const description =
+      typeof rawDesc === 'string' && rawDesc.trim().length > 0 ? rawDesc : undefined;
+    return description ? { label: entry['label'], description } : { label: entry['label'] };
   }
   return null;
+}
+
+/** Build one {@link QuestionStep} from a raw AskUserQuestion entry (#626), or
+ *  null when it lacks a usable question text + options. Pure + total. */
+function buildStep(raw: unknown): QuestionStep | null {
+  if (!isRecord(raw)) return null;
+  const text = typeof raw['question'] === 'string' ? cleanText(raw['question']) : '';
+  const rawOptions = raw['options'];
+  if (text.length === 0 || !Array.isArray(rawOptions)) return null;
+  const entries = rawOptions
+    .map(optionEntry)
+    .filter((e): e is { label: string; description?: string } => e !== null);
+  if (entries.length === 0) return null;
+  const rawHeader = raw['header'];
+  const header =
+    typeof rawHeader === 'string' && rawHeader.trim().length > 0 ? cleanText(rawHeader) : undefined;
+  return {
+    ...(header ? { header } : {}),
+    text,
+    multiSelect: raw['multiSelect'] === true,
+    options: entries.map((e, i) => pickOption(e.label, i, e.description)),
+  };
 }
 
 /**
@@ -95,25 +131,25 @@ export function extractToolQuestion(
   // mirrors the auto-approve `isDesignQuestion` detector (multichoice.ts), which
   // routes the SAME shape to always-escalate — so an MCP/custom tool that mimics
   // AskUserQuestion gets its real options surfaced here too, consistently. The
-  // shape guards below are tight (record with a `question` string + a non-empty
-  // `options` array), so a tool with an unrelated `questions` field returns null
-  // and falls through to permission_suggestions. Remi answers one prompt at a
-  // time, so surface the FIRST question; a multi-question call still shows the
-  // first and the rest fall to Claude's native prompt on release. A `header`
-  // (short topic) prefixes the question when present.
+  // shape guards (record with a `question` string + a non-empty `options` array)
+  // are tight, so a tool with an unrelated `questions` field returns null and
+  // falls through to permission_suggestions.
+  //
+  // #626: surface the FULL set of sub-questions (header / text / multiSelect /
+  // options with descriptions) as `questions`, not just the first. `text`/
+  // `options` mirror questions[0] for back-compat: the lock-screen summary and
+  // the first-question answer path (digit submit) still read the flat fields.
   if (!isRecord(toolInput)) return null;
-  const questions = toolInput['questions'];
-  if (!Array.isArray(questions) || questions.length === 0) return null;
-  const first = questions[0];
-  if (!isRecord(first)) return null;
-  const qText = typeof first['question'] === 'string' ? cleanText(first['question']) : '';
-  const rawOptions = first['options'];
-  if (qText.length === 0 || !Array.isArray(rawOptions)) return null;
-  const labels = rawOptions.map(optionLabel).filter((l): l is string => l !== null);
-  if (labels.length === 0) return null;
-  const header = typeof first['header'] === 'string' ? cleanText(first['header']) : '';
+  const rawQuestions = toolInput['questions'];
+  if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return null;
+  const steps = rawQuestions.map(buildStep).filter((s): s is QuestionStep => s !== null);
+  const first = steps[0];
+  if (!first) return null;
   return {
-    text: header ? `${header}: ${qText}` : qText,
-    options: labels.map((label, i) => pickOption(label, i)),
+    text: first.header ? `${first.header}: ${first.text}` : first.text,
+    options: [...first.options],
+    kind: 'multi_question',
+    questions: steps,
+    submitLabel: 'Submit',
   };
 }

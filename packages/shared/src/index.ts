@@ -24,6 +24,7 @@ export type {
   Question,
   QuestionOption,
   QuestionSource,
+  QuestionStep,
   Session,
   ConnectionInfo,
   Result,

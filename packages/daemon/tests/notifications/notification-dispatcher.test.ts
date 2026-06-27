@@ -112,6 +112,54 @@ describe('buildPushText (#574 issues 3+4)', () => {
     const { body } = buildPushText('agent', question('q', ynOpts, 'Retry?'));
     expect(body).toBe('Retry?\ny. Yes  n. No');
   });
+
+  // #626: a multi-question AskUserQuestion summarizes its SCOPE on the lock screen.
+  test('multi-question summarizes the topics instead of one option list', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        { header: 'Collab PI', text: 'Who is the PI?', multiSelect: false, options: [] },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+        { header: 'Scaffold', text: 'Scaffold now?', multiSelect: false, options: [] },
+      ],
+    };
+    const { title, body } = buildPushText('proj', q);
+    expect(title).toBe('proj: 3 questions');
+    expect(body).toBe('1. Collab PI\n2. Software focus\n3. Scaffold');
+  });
+
+  test('single-question AskUserQuestion still uses the normal option-list body', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'DB: Which database?',
+      options: [
+        { value: '1', label: 'Postgres', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'SQLite', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        {
+          header: 'DB',
+          text: 'Which database?',
+          multiSelect: false,
+          options: [
+            { value: '1', label: 'Postgres', isRecommended: true, isYes: false, isNo: false },
+            { value: '2', label: 'SQLite', isRecommended: false, isYes: false, isNo: false },
+          ],
+        },
+      ],
+    };
+    const { title, body } = buildPushText('proj', q);
+    expect(title).toBe('proj: DB: Which database?');
+    expect(body).toBe('DB: Which database?\n1. Postgres  2. SQLite');
+  });
 });
 
 describe('NotificationDispatcher.maybePush', () => {

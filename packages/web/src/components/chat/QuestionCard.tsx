@@ -42,6 +42,8 @@ interface RenderOption {
   readonly label: string;
   readonly hint?: string;
   readonly kind: OptionKind;
+  /** Authored per-option explanation (AskUserQuestion `description`, #626). */
+  readonly description?: string;
 }
 
 /** Hint text shown to the right of permission-style options. */
@@ -67,6 +69,7 @@ function buildOptions(question: UIQuestion): RenderOption[] {
       label: o.label,
       hint: optionHint(o),
       kind: optionKind(o),
+      ...(o.description ? { description: o.description } : {}),
     }));
   }
   if (question.type === 'yes_no') {
@@ -86,14 +89,18 @@ function buildOptions(question: UIQuestion): RenderOption[] {
   return [];
 }
 
-/** A single option row. */
+/** A single option row. With an authored description (#626) the label sits on
+ *  top and the explanation wraps below it; otherwise it stays a single line. */
 function OptionRow({ option, onAnswer }: { readonly option: RenderOption; readonly onAnswer: (v: string) => void }) {
-  const { kind } = option;
+  const { kind, description } = option;
   return (
     <button
       type="button"
       onClick={() => onAnswer(option.key)}
-      className="flex min-h-[44px] items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-transform active:scale-[0.99]"
+      className={clsx(
+        'flex min-h-[44px] gap-2.5 rounded-[10px] px-3 py-2.5 text-left transition-transform active:scale-[0.99]',
+        description ? 'items-start' : 'items-center',
+      )}
       style={{
         background:
           kind === 'primary'
@@ -106,7 +113,10 @@ function OptionRow({ option, onAnswer }: { readonly option: RenderOption; readon
       }}
     >
       <span
-        className="inline-flex size-[22px] shrink-0 items-center justify-center rounded-md font-mono text-[11px] font-bold"
+        className={clsx(
+          'inline-flex size-[22px] shrink-0 items-center justify-center rounded-md font-mono text-[11px] font-bold',
+          description && 'mt-0.5',
+        )}
         style={{
           background:
             kind === 'primary'
@@ -119,10 +129,17 @@ function OptionRow({ option, onAnswer }: { readonly option: RenderOption; readon
       >
         {option.badge}
       </span>
-      <span className="text-sm font-semibold">{option.label}</span>
-      {option.hint && (
-        <span className="ml-auto text-[11px] opacity-70">{option.hint}</span>
-      )}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex items-center gap-2">
+          <span className="text-sm font-semibold">{option.label}</span>
+          {option.hint && <span className="ml-auto text-[11px] opacity-70">{option.hint}</span>}
+        </span>
+        {description && (
+          <span className="break-anywhere mt-0.5 text-[12px] leading-snug opacity-75">
+            {description}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
@@ -173,7 +190,15 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
   const isAnswered = question.answeredWith != null;
   const options = buildOptions(question);
   const isPermission = options.some((o) => o.kind === 'primary' || o.kind === 'danger');
-  const headerLabel = isPermission ? 'Permission request' : 'Question';
+  // #626: structured AskUserQuestion. The first sub-question is rendered as the
+  // interactive prompt; the rest are previewed until batched submit lands (#627).
+  const steps = question.kind === 'multi_question' ? question.questions : undefined;
+  const firstStep = steps?.[0];
+  const topic = firstStep?.header;
+  const promptText = firstStep?.text ?? question.prompt;
+  const isMultiSelect = firstStep?.multiSelect ?? false;
+  const extraSteps = steps && steps.length > 1 ? steps.slice(1) : [];
+  const headerLabel = topic ?? (steps ? 'Question' : isPermission ? 'Permission request' : 'Question');
 
   if (isAnswered) {
     return (
@@ -233,8 +258,11 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
       {/* Prompt */}
       <div className="px-4 pb-1.5 pt-3.5">
         <p className="break-anywhere text-[15px] font-medium leading-snug text-[var(--color-text)]">
-          {question.prompt}
+          {promptText}
         </p>
+        {isMultiSelect && (
+          <p className="mt-1 text-[12px] text-[var(--color-text-secondary)]">Select all that apply</p>
+        )}
       </div>
 
       {/* Options / free text */}
@@ -245,6 +273,30 @@ export function QuestionCard({ question, onAnswer, className }: QuestionCardProp
           <FreeTextRow onAnswer={onAnswer} />
         )}
       </div>
+
+      {/* #626: preview the remaining sub-questions so the user sees the full scope.
+          They become individually answerable with batched submit in #627. */}
+      {extraSteps.length > 0 && (
+        <div
+          className="mx-3 mb-3 rounded-[10px] px-3 py-2.5"
+          style={{ background: 'var(--color-surface-elevated)' }}
+        >
+          <p className="text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--color-text-secondary)]">
+            {extraSteps.length} more question{extraSteps.length > 1 ? 's' : ''} follow
+          </p>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {extraSteps.map((s, i) => (
+              <li
+                key={`${s.header ?? ''}-${s.text.slice(0, 24)}-${i}`}
+                className="break-anywhere text-[13px] leading-snug text-[var(--color-text)]"
+              >
+                <span className="font-semibold">{s.header ? `${s.header}: ` : ''}</span>
+                {s.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

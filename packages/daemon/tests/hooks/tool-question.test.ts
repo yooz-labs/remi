@@ -94,6 +94,70 @@ describe('extractToolQuestion', () => {
     expect(q?.options.map((o) => o.label)).toEqual(['Confirm']);
     expect(q?.options[0]?.value).toBe('1');
   });
+
+  // #626: the full structured multi-question is surfaced, not just questions[0].
+  it('surfaces ALL sub-questions with headers, descriptions, and multiSelect', () => {
+    const q = extractToolQuestion('AskUserQuestion', {
+      questions: [
+        {
+          question: 'Who is the collaborating PI?',
+          header: 'Collab PI',
+          multiSelect: false,
+          options: [
+            { label: 'Scott', description: 'EEGLAB founder' },
+            { label: 'Arnaud', description: 'EEGLAB lead' },
+          ],
+        },
+        {
+          question: 'Which tools to center on?',
+          header: 'Software focus',
+          multiSelect: true,
+          options: [
+            { label: 'EEGLAB', description: 'plugins + BIDS' },
+            { label: 'NEMAR', description: 'pipelines' },
+          ],
+        },
+      ],
+    });
+    expect(q).not.toBeNull();
+    if (!q) return;
+    expect(q.kind).toBe('multi_question');
+    expect(q.submitLabel).toBe('Submit');
+    expect(q.questions).toHaveLength(2);
+    // Back-compat flat fields mirror questions[0] (header-prefixed text + its options).
+    expect(q.text).toBe('Collab PI: Who is the collaborating PI?');
+    expect(q.options.map((o) => o.label)).toEqual(['Scott', 'Arnaud']);
+    // Step 0: header (NOT prefixed into step text), descriptions, single-select.
+    const s0 = q.questions?.[0];
+    expect(s0?.header).toBe('Collab PI');
+    expect(s0?.text).toBe('Who is the collaborating PI?');
+    expect(s0?.multiSelect).toBe(false);
+    expect(s0?.options.map((o) => o.description)).toEqual(['EEGLAB founder', 'EEGLAB lead']);
+    // Step 1: multiSelect carried; per-step 1-based values.
+    const s1 = q.questions?.[1];
+    expect(s1?.header).toBe('Software focus');
+    expect(s1?.multiSelect).toBe(true);
+    expect(s1?.options.map((o) => o.value)).toEqual(['1', '2']);
+  });
+
+  it('omits description when the AskUserQuestion option has none', () => {
+    const q = extractToolQuestion('AskUserQuestion', {
+      questions: [{ question: 'Pick', options: ['A', { label: 'B' }] }],
+    });
+    expect(q?.options.every((o) => o.description === undefined)).toBe(true);
+  });
+
+  it('drops malformed sub-questions but keeps the well-formed ones', () => {
+    const q = extractToolQuestion('AskUserQuestion', {
+      questions: [
+        { question: 'Good one', options: ['A', 'B'] },
+        { question: 'No options', options: [] },
+        { options: ['orphan'] },
+      ],
+    });
+    expect(q?.questions).toHaveLength(1);
+    expect(q?.questions?.[0]?.text).toBe('Good one');
+  });
 });
 
 describe('optionsFromSuggestions', () => {
