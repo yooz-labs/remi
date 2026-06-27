@@ -520,6 +520,10 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
   let submits: string[];
   let escalations: PermissionRequestHookInput[];
   let lastQuestionId: UUID | undefined;
+  // #625: every gate-driven push (binary createHold AND passthrough escalate) is
+  // recorded here so a test can assert push <=> escalate and that approve/deny push
+  // nothing. The held-push primitive is onHeldEscalate -> tracker.pushHeldHook.
+  let heldPushes: UUID[];
 
   function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
     return { evaluate: async () => result, cancel: () => true };
@@ -530,9 +534,18 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
    *  `lastQuestionId` so tests can resolve the hold. */
   function holdGate(
     service: AutoApproveEvaluator | null,
-    opts: { holdMs?: number; subagent?: boolean; alwaysEscalateTools?: ReadonlySet<string> } = {},
+    opts: {
+      holdMs?: number;
+      subagent?: boolean;
+      alwaysEscalateTools?: ReadonlySet<string>;
+      /** PTY.submitInput throws — exercises inject() failure -> escalatePassthrough. */
+      ptyThrows?: boolean;
+      /** escalate() returns undefined (push creation failed) — exercises the
+       *  escalatePassthrough `qid === undefined` skip-push branch (#625). */
+      escalateUndefined?: boolean;
+    } = {},
   ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY(submits), {
+    registry.registerSession(SID, '/d', fakePTY(submits, { throws: opts.ptyThrows ?? false }), {
       handleMessage: () => {},
       handleQuestion: () => {},
       handleStatusChange: () => {},
@@ -546,8 +559,15 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
         isInSubagentContext: () => opts.subagent ?? false,
         escalate: (i) => {
           escalations.push(i);
+          if (opts.escalateUndefined) {
+            lastQuestionId = undefined;
+            return undefined;
+          }
           lastQuestionId = generateId();
           return lastQuestionId;
+        },
+        onHeldEscalate: (qid) => {
+          heldPushes.push(qid);
         },
         holdMs: opts.holdMs ?? 60_000,
         alwaysEscalateTools:
@@ -575,6 +595,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     submits = [];
     escalations = [];
     lastQuestionId = undefined;
+    heldPushes = [];
     configureLogger({ writeLog: () => {} });
   });
 
@@ -637,6 +658,87 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     );
     expect(d).toBe('passthrough');
     expect(escalations).toHaveLength(1);
+  });
+
+  // #625 single gate: the gate is the SOLE push trigger. A passthrough escalation
+  // (design / AskUserQuestion / multi-choice) must push from the gate too — it can no
+  // longer rely on the PTY render, which is suppressed for hooked sessions.
+  test('#625 design (AskUserQuestion) escalate pushes from the gate (onHeldEscalate)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    await gate.resolvePermission(
+      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
+    );
+    expect(escalations).toHaveLength(1);
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
+  });
+
+  test('#625 multi-choice escalate pushes from the gate (onHeldEscalate)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    await gate.resolvePermission(
+      pr({ permission_suggestions: ['Alpha', 'Beta', 'Gamma', 'Delta'] }),
+    );
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
+  });
+
+  test('#625 binary escalate also pushes from the gate (createHold path)', async () => {
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
+    gate.resolveHeld(lastQuestionId as UUID, 'allow');
+    await pending;
+  });
+
+  test('#625 approve pushes NOTHING (no phantom)', async () => {
+    const gate = holdGate(evaluator(approve));
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('allow');
+    expect(heldPushes).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
+  });
+
+  test('#625 deny pushes NOTHING (no phantom)', async () => {
+    const gate = holdGate(evaluator(deny));
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('deny');
+    expect(heldPushes).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
+  });
+
+  test('#625 malformed pick (no pickIndex) escalates AND pushes from the gate', async () => {
+    const malformedPick = {
+      decision: 'pick',
+      reasoning: 't',
+      durationMs: 0,
+      model: 'm',
+    } as unknown as AutoApproveResult;
+    const gate = holdGate(evaluator(malformedPick));
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
+  });
+
+  test('#625 pick inject failure (PTY throws) escalates AND pushes from the gate', async () => {
+    const gate = holdGate(evaluator(pick(2)), { ptyThrows: true });
+    const d = await gate.resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(submits).toEqual(['2']); // inject was attempted before it threw
+    expect(escalations).toHaveLength(1);
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
+  });
+
+  test('#625 passthrough escalate with no question id skips the push (no throw)', async () => {
+    // escalate() returns undefined (push creation failed): escalatePassthrough must
+    // not call onHeldEscalate(undefined), and must not throw — Claude still
+    // passes through to its native terminal prompt.
+    const gate = holdGate(evaluator(escalate), { escalateUndefined: true });
+    const d = await gate.resolvePermission(
+      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
+    );
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+    expect(heldPushes).toHaveLength(0);
   });
 
   test('hold timeout -> passthrough and the pending map is cleaned', async () => {

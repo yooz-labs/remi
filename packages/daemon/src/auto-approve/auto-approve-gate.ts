@@ -87,14 +87,19 @@ export interface AutoApproveGateDeps {
   /** Called when the verdict is escalate (the user must answer), so the tracker
    *  releases the buffered PTY prompt. #484. */
   onEscalate?: () => void;
-  /** Called when a BINARY escalation HOLDS its hook open (Model B, #573):
-   *  Claude blocks on the hook response, so it never renders the native prompt
-   *  and the tracker's PTY-render push trigger never fires. The gate calls this
-   *  with the held `Question.id` so the tracker pushes that question IMMEDIATELY
-   *  (-> sessionRegistry.addQuestion + APNS), making it answerable. Called ONLY
-   *  in the held branch — passthrough / multi-choice escalations still render the
-   *  PTY and push via `onPTYPromptVisible`, so calling it for them would
-   *  double-push. Absent => no immediate held push (tests / no-AA callers). #573 */
+  /** The gate's push trigger: called with a `Question.id` so the tracker pushes
+   *  that question IMMEDIATELY (-> sessionRegistry.addQuestion + APNS), making it
+   *  answerable. Called for BOTH escalation shapes (#625):
+   *    - a BINARY escalation that HOLDS its hook (Model B, #573) — Claude blocks on
+   *      the response and never renders the native prompt (via `createHold`);
+   *    - a PASSTHROUGH escalation (multi-choice / design / AskUserQuestion) via
+   *      `escalatePassthrough`.
+   *  Since #625, PTY question-emission is suppressed for hooked sessions, so this
+   *  callback is the SOLE push trigger in both cases — do NOT remove it from the
+   *  passthrough path believing `onPTYPromptVisible` covers it (it does not; that
+   *  would silently drop every passthrough notification). Idempotent per id
+   *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
+   *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
   /** Called when the permission was auto-approved/denied silently (inject
    *  succeeded; the user never sees it). Drives the terminal "done" cue. #513. */
@@ -489,8 +494,39 @@ export class AutoApproveGate {
     if (this.isBinaryEscalation(input)) {
       return this.escalateAndHold(input);
     }
-    this.escalateToUser(input);
-    return Promise.resolve('passthrough');
+    return Promise.resolve(this.escalatePassthrough(input));
+  }
+
+  /**
+   * Escalate a NON-holdable (passthrough) permission to the user AND push it from
+   * the gate (#625). A binary escalation pushes via `createHold` -> `onHeldEscalate`;
+   * a passthrough one (multi-choice / design / AskUserQuestion) historically relied
+   * on the PTY render to trigger its push (`onPTYPromptVisible`). That coupling is the
+   * phantom-notification source: the PTY echoes EVERY on-screen prompt, including ones
+   * the gate already auto-approved. The gate is now the single push trigger, so a
+   * passthrough escalation must push here too — otherwise, with PTY question-emission
+   * gated off for hooked sessions (#625), the escalation would never reach the phone.
+   *
+   * Reuses the held-push primitive (`onHeldEscalate` -> `tracker.pushHeldHook`): it
+   * registers the stashed question in `sessionRegistry` (answerable) and delivers it to
+   * the lock screen idempotently. No hold is registered — Claude renders its native
+   * prompt and waits there — so there is no delivery gate / hold timeout; the user
+   * answers the pushed card (digit injected via the PTY) or the terminal directly.
+   */
+  private escalatePassthrough(input: PermissionRequestHookInput): PermissionDecision {
+    const qid = this.escalateToUser(input);
+    if (qid) {
+      this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+    } else {
+      // escalateToUser returned no id (escalate() threw — already logged there).
+      // Unlike a binary hold there is no timer fallback here, so make the lost
+      // push explicit: Claude still renders + waits at its native terminal prompt
+      // (the user can answer locally), but no phone notification was sent.
+      logError(
+        `[AutoApprove ${this.sessionTag}] passthrough escalation produced no question id; no push sent (terminal prompt still answerable locally)`,
+      );
+    }
+    return 'passthrough';
   }
 
   /**
@@ -609,17 +645,15 @@ export class AutoApproveGate {
       // must escalate, not silently fall through to the subagent-deny below.
       if (result.pickIndex === undefined) {
         logError(`[AutoApprove ${this.sessionTag}] pick result missing pickIndex; escalating`);
-        this.escalateToUser(input);
-        return 'passthrough';
+        return this.escalatePassthrough(input);
       }
       if (
         await this.inject(input, String(result.pickIndex), `multichoice-pick-${result.pickIndex}`)
       ) {
         this.markHandled();
-      } else {
-        this.escalateToUser(input);
+        return 'passthrough';
       }
-      return 'passthrough';
+      return this.escalatePassthrough(input);
     }
     // escalate: a subagent prompt the user cannot answer is default-denied via
     // the response (no hang, no PTY).

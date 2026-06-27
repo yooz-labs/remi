@@ -346,6 +346,17 @@ describe('setupHookBridge', () => {
       expect(messageApiLog.questionCalls).toBe(0);
     });
 
+    test('#625 StopFailure emits DIRECTLY even with a real (non-passthrough) tracker', () => {
+      // With a real QuestionPresenceTracker, recordPendingHook only STASHES (it does
+      // not push without a PTY-visible signal). A source-less Stop-failure question has
+      // no gate to push it, so the bridge must emit it directly to messageApi — proven
+      // here by questionCalls incrementing despite the real tracker never pushing.
+      build({ realTracker: true });
+      lock('claude-A');
+      hookServer.fire('StopFailure', { session_id: 'claude-A', error_type: 'timeout' });
+      expect(messageApiLog.questionCalls).toBeGreaterThanOrEqual(1);
+    });
+
     test('PostToolUseFailure sets executing status (main); a subagent failure is dropped', () => {
       build();
       lock('claude-A');

@@ -681,7 +681,26 @@ export function setupHookBridge(
       tracker.onStatusChange(status);
     },
     onQuestion: (question) => {
-      tracker.recordPendingHook(question);
+      // #625 single gate: a PERMISSION question is coordinated by the auto-approve
+      // gate — it is stashed here and the gate drives its push on escalate (binary
+      // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
+      // only stashes; it never emits on its own.
+      //   - 'permission_request' (rich: tool + command + options) is the one the gate
+      //     escalates and pushes by id.
+      //   - 'notification' is Claude's redundant generic "needs your permission"
+      //     prompt; it is INTENTIONALLY stashed-and-suppressed (NOT routed to the
+      //     direct-emit path), because direct-emitting it would push for EVERY
+      //     permission — including auto-approved ones — which is exactly the phantom
+      //     #625 removes. It is bounded (one per agent) and cleared on status-leaves-
+      //     waiting. (Assumes Claude pairs it with a PermissionRequest, true today.)
+      // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
+      // source-less) is emitted directly to the client + lock screen, since the
+      // PTY-render push that used to deliver it is suppressed for hooked sessions.
+      if (question.source === 'permission_request' || question.source === 'notification') {
+        tracker.recordPendingHook(question);
+      } else {
+        messageApi.handleQuestion(question);
+      }
     },
     onSessionInfo: (hookClaudeSessionId: string, transcriptPath: string) => {
       // DRIVE: the binder's onHookEvent (fired from the SessionStart listener)
