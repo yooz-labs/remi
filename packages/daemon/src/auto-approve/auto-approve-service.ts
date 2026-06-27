@@ -55,7 +55,14 @@ export function normalisePermissionSuggestion(entry: unknown): string | null {
  * Tries JSON first. If JSON fails, escalates (no guessing from substring matches).
  * Exported for unit testing.
  */
-export function parseDecision(raw: string): { decision: BinaryDecision; reasoning: string } {
+export function parseDecision(raw: string): {
+  decision: BinaryDecision;
+  reasoning: string;
+  /** #628: a one-sentence, lock-screen-friendly question the model produces on
+   *  escalate (e.g. "Force-push to main?"). Absent for approve/deny or when the
+   *  model omits it. */
+  summary?: string;
+} {
   // extractJsonObject tolerates a markdown code fence or a short preamble around
   // the JSON (deterministic, string-aware — never a free-text keyword guess).
   // Many reasoning-tuned local models, notably qwen3.6:35b-mlx, fence every
@@ -64,8 +71,15 @@ export function parseDecision(raw: string): { decision: BinaryDecision; reasonin
   if (parsed !== null) {
     const decisionStr = String(parsed['decision'] ?? '').toLowerCase();
     const reasoning = String(parsed['reasoning'] ?? '');
+    const summaryRaw = parsed['summary'];
+    const summary =
+      typeof summaryRaw === 'string' && summaryRaw.trim().length > 0
+        ? summaryRaw.trim()
+        : undefined;
     if (VALID_DECISIONS.has(decisionStr as BinaryDecision)) {
-      return { decision: decisionStr as BinaryDecision, reasoning };
+      return summary
+        ? { decision: decisionStr as BinaryDecision, reasoning, summary }
+        : { decision: decisionStr as BinaryDecision, reasoning };
     }
   }
 
@@ -462,6 +476,8 @@ export class AutoApproveService {
                 reasoning: parsed.reasoning,
                 durationMs,
                 model: response.model,
+                // #628: carry the model's lock-screen summary (escalate only).
+                ...(parsed.summary ? { summary: parsed.summary } : {}),
               };
             })();
 

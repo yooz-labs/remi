@@ -206,6 +206,16 @@ export interface Question {
 
   /** Submit-button label for a multi-question form (#626); defaults to "Submit". */
   readonly submitLabel?: string | undefined;
+
+  /**
+   * A one-sentence, lock-screen-friendly restatement of what the user is approving
+   * (#628), e.g. "Force-push to main?" instead of "Allow Bash: git push --force …".
+   * Produced by the deciding auto-approve LLM on an escalate verdict (or a cheap
+   * engine call for a rule-escalate). The notification prefers this over the raw
+   * tool text; absent for AskUserQuestion (which carries authored content) and for
+   * escalations with no model summary.
+   */
+  readonly summary?: string | undefined;
 }
 
 /**

@@ -80,7 +80,7 @@ export interface AutoApproveGateDeps {
    *  fall open to passthrough rather than hold a hook nobody can answer. The
    *  gate wraps every call in a try/catch, so an implementation that throws is
    *  logged and absorbed (treated as `undefined`) rather than propagated. */
-  escalate: (input: PermissionRequestHookInput) => UUID | undefined;
+  escalate: (input: PermissionRequestHookInput, summary?: string) => UUID | undefined;
   /** Called right before the LLM eval starts, so the tracker can BUFFER the PTY
    *  prompt until the verdict (don't push an auto-approved permission). #484. */
   onEvalStart?: () => void;
@@ -340,8 +340,11 @@ export class AutoApproveGate {
    *     'passthrough' (so the terminal is never permanently stuck).
    * The returned promise is what the hook server is blocked on.
    */
-  private escalateAndHold(input: PermissionRequestHookInput): Promise<PermissionDecision> {
-    return this.createHold(input).decision;
+  private escalateAndHold(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): Promise<PermissionDecision> {
+    return this.createHold(input, summary).decision;
   }
 
   /**
@@ -352,11 +355,14 @@ export class AutoApproveGate {
    * holding is disabled — in which case `decision` is an immediate 'passthrough'
    * (today's behavior) and no hold is registered.
    */
-  private createHold(input: PermissionRequestHookInput): {
+  private createHold(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): {
     decision: Promise<PermissionDecision>;
     questionId: UUID | undefined;
   } {
-    const qid = this.escalateToUser(input);
+    const qid = this.escalateToUser(input, summary);
     const holdMs = this.deps.holdMs ?? 0;
     if (!qid || holdMs <= 0) return { decision: Promise.resolve('passthrough'), questionId: qid };
     // A held binary escalation BLOCKS Claude's hook response, so Claude never
@@ -490,11 +496,14 @@ export class AutoApproveGate {
    * delivered by the legacy PTY path / a later phase). Always main context — the
    * subagent escalate paths default-deny and never reach here.
    */
-  private escalateMain(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+  private escalateMain(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): Promise<PermissionDecision> {
     if (this.isBinaryEscalation(input)) {
-      return this.escalateAndHold(input);
+      return this.escalateAndHold(input, summary);
     }
-    return Promise.resolve(this.escalatePassthrough(input));
+    return Promise.resolve(this.escalatePassthrough(input, summary));
   }
 
   /**
@@ -513,8 +522,11 @@ export class AutoApproveGate {
    * prompt and waits there — so there is no delivery gate / hold timeout; the user
    * answers the pushed card (digit injected via the PTY) or the terminal directly.
    */
-  private escalatePassthrough(input: PermissionRequestHookInput): PermissionDecision {
-    const qid = this.escalateToUser(input);
+  private escalatePassthrough(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): PermissionDecision {
+    const qid = this.escalateToUser(input, summary);
     if (qid) {
       this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     } else {
@@ -714,7 +726,9 @@ export class AutoApproveGate {
       }
       // second opinion still unsure (escalate/pick) -> ask the user.
     }
-    return this.escalateMain(input);
+    // #628: result is the primary escalate verdict here (approve/deny/pick/cancelled
+    // returned earlier), so carry its lock-screen summary onto the escalation.
+    return this.escalateMain(input, result.decision === 'escalate' ? result.summary : undefined);
   }
 
   // -------------------------------------------------------------------------
@@ -981,13 +995,14 @@ export class AutoApproveGate {
    * `undefined` when no question was created (the escalate threw / push failed),
    * in which case `escalateAndHold` falls open to passthrough.
    */
-  private escalateToUser(input: PermissionRequestHookInput): UUID | undefined {
+  private escalateToUser(input: PermissionRequestHookInput, summary?: string): UUID | undefined {
     let questionId: UUID | undefined;
     try {
       // escalate() stashes the hook record (onPermissionRequest -> recordPendingHook)
       // FIRST, then onEscalate releases the buffered PTY prompt so the pair+push
-      // finds that record. Order matters; do not reorder. #484.
-      questionId = this.deps.escalate(input);
+      // finds that record. Order matters; do not reorder. #484. `summary` (#628) is
+      // the model's lock-screen one-liner, carried onto the Question for the push.
+      questionId = this.deps.escalate(input, summary);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalateToUser threw:`, err);
     } finally {

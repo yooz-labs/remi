@@ -89,7 +89,7 @@ describe('planAnswerKeys (matches the captured canonical sequences)', () => {
 
 describe('review parsing + verification (against real captures)', () => {
   it('parses the review screen rendered in the two-question capture', () => {
-    const out = fixtureOutput('two-questions-single-and-multi.log');
+    const out = fixtureOutput('two-questions-single-and-multi.txt');
     expect(isReviewScreen(out)).toBe(true);
     expect(isAuqClosed(out)).toBe(true); // the capture ran through to submission
     const parsed = parseReviewAnswers(out);
@@ -121,7 +121,7 @@ describe('review parsing + verification (against real captures)', () => {
   });
 
   it('isReviewScreen / isAuqClosed are false for a plain option frame', () => {
-    const out = fixtureOutput('one-question-single-select.log');
+    const out = fixtureOutput('one-question-single-select.txt');
     // The single-select capture DID close (submitted on pick).
     expect(isAuqClosed(out)).toBe(true);
     // A bare options-only string is neither closed nor a review.
