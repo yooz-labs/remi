@@ -66,6 +66,37 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     send,
   } = deps;
 
+  // In-flight graceful stops (#641). A Stop types `/exit` and returns; the
+  // success ack + SESSION_ENDED notice are deferred to `resolveStopOnClose`
+  // (driven by the registry's onSessionClosed) so "success" means the session
+  // actually ended — not merely "stop initiated" — and the third-party notice
+  // arrives after PTY output has stopped. Keyed by sessionId.
+  interface PendingStop {
+    readonly connectionId: UUID;
+    readonly requestId: UUID;
+    /** Active client to notify with SESSION_ENDED, if it isn't the requester. */
+    readonly notifyConnectionId: UUID | null;
+    readonly fallbackTimer: ReturnType<typeof setTimeout>;
+  }
+  const pendingStops = new Map<UUID, PendingStop>();
+
+  /**
+   * Resolve a deferred Stop once the session has actually closed. Call from the
+   * registry's onSessionClosed for every close reason; a no-op when the session
+   * ended on its own (no pending Stop). Cancels the force-fallback, notifies a
+   * third-party client, and acks the requester.
+   */
+  function resolveStopOnClose(sessionId: UUID): void {
+    const pending = pendingStops.get(sessionId);
+    if (!pending) return;
+    pendingStops.delete(sessionId);
+    clearTimeout(pending.fallbackTimer);
+    if (pending.notifyConnectionId) {
+      send(pending.notifyConnectionId, createError('SESSION_ENDED', 'Session ended by request'));
+    }
+    send(pending.connectionId, createKillSessionResponse(true, pending.requestId));
+  }
+
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
       // Decorate daemon-sourced sessions with their pre-assigned Claude
@@ -135,13 +166,14 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         return;
       }
 
+      // Idempotent: a Stop already in flight just re-acks on close.
+      if (pendingStops.has(sessionId)) {
+        log(`Stop already in flight for ${session.name}; ignoring duplicate request`);
+        return;
+      }
+
       const sessionName = session.name;
       log(`Stopping session: ${sessionName} (${sessionId})`);
-
-      // Notify attached client that the session is ending.
-      if (session.activeConnectionId && session.activeConnectionId !== connectionId) {
-        send(session.activeConnectionId, createError('SESSION_ENDED', 'Session ended by request'));
-      }
 
       // Graceful stop (#641): type `/exit` on our own PTY so Claude quits cleanly
       // (flushing its transcript + emitting the resume hint) and the PTY-exit path
@@ -154,16 +186,23 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         );
         sessionRegistry.closeSession(sessionId, 'forced');
       });
-      const forceFallback = setTimeout(() => {
+      const fallbackTimer = setTimeout(() => {
         if (sessionRegistry.getSession(sessionId)) {
           log(`Session ${sessionName} did not exit on /exit within ${EXIT_FALLBACK_MS}ms; forcing`);
           sessionRegistry.closeSession(sessionId, 'forced');
         }
       }, EXIT_FALLBACK_MS);
       // Don't let the fallback timer keep the event loop (or process) alive.
-      forceFallback.unref?.();
+      fallbackTimer.unref?.();
 
-      send(connectionId, createKillSessionResponse(true, requestId));
+      // Defer the ack + the third-party SESSION_ENDED notice until the session
+      // actually closes (resolveStopOnClose), so success means done and the
+      // notice arrives after PTY output stops.
+      const notifyConnectionId =
+        session.activeConnectionId && session.activeConnectionId !== connectionId
+          ? session.activeConnectionId
+          : null;
+      pendingStops.set(sessionId, { connectionId, requestId, notifyConnectionId, fallbackTimer });
       log(`Session stop initiated: ${sessionName}`);
     },
 
@@ -206,5 +245,8 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
       );
     },
+
+    /** Resolve a deferred Stop on session close; wired to onSessionClosed in cli.ts. */
+    resolveStopOnClose,
   };
 }

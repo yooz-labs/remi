@@ -189,7 +189,7 @@ describe('createSessionHandlers', () => {
       expect(msg.success).toBe(false);
     });
 
-    test('types /exit (graceful) and acks success when called by the active client', () => {
+    test('types /exit (graceful) and defers the success ack until the session closes', () => {
       const submitted: string[] = [];
       const pty = {
         id: generateId(),
@@ -203,26 +203,38 @@ describe('createSessionHandlers', () => {
       sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI());
       sessionRegistry.attachConnection(sessionId, CID);
 
-      makeHandlers().onKillSessionRequest(CID, sessionId, REQ);
+      const handlers = makeHandlers();
+      handlers.onKillSessionRequest(CID, sessionId, REQ);
 
-      // Only an ack to the caller: no SESSION_ENDED error since the requester IS the active client.
+      // Graceful stop (#641): Claude is asked to /exit (which frees the daemon via
+      // the PTY-exit path), not SIGKILLed; the session stays alive and NO ack is
+      // sent until it actually closes — "success" must mean done, not initiated.
+      expect(submitted).toEqual(['/exit']);
+      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+      expect(sendCalls).toHaveLength(0);
+
+      // On close, the requester is acked success (no third-party notice: the
+      // requester IS the active client).
+      handlers.resolveStopOnClose(sessionId);
       expect(sendCalls).toHaveLength(1);
       const ack = sendCalls[0]?.message as { type: string; success: boolean };
       expect(ack.type).toBe('kill_session_response');
       expect(ack.success).toBe(true);
-      // Graceful stop (#641): Claude is asked to /exit (which frees the daemon via
-      // the PTY-exit path), not SIGKILLed; the session stays until Claude exits.
-      expect(submitted).toEqual(['/exit']);
-      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+      expect(sendCalls[0]?.connectionId).toBe(CID);
     });
 
-    test('notifies a third-party attached client with SESSION_ENDED before killing', () => {
+    test('on close, notifies a third-party active client with SESSION_ENDED then acks the requester', () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
       sessionRegistry.attachConnection(sessionId, OTHER_CID);
 
-      makeHandlers().onKillSessionRequest(CID, sessionId, REQ);
+      const handlers = makeHandlers();
+      handlers.onKillSessionRequest(CID, sessionId, REQ);
+      // Deferred: nothing is sent until the session actually closes (so the
+      // SESSION_ENDED notice arrives after PTY output has stopped).
+      expect(sendCalls).toHaveLength(0);
 
+      handlers.resolveStopOnClose(sessionId);
       expect(sendCalls).toHaveLength(2);
       const notice = sendCalls[0]?.message as { type: string; code?: string };
       expect(notice.type).toBe('error');
@@ -231,6 +243,15 @@ describe('createSessionHandlers', () => {
       const ack = sendCalls[1]?.message as { type: string; success: boolean };
       expect(ack.type).toBe('kill_session_response');
       expect(ack.success).toBe(true);
+      expect(sendCalls[1]?.connectionId).toBe(CID);
+    });
+
+    test('resolveStopOnClose is a no-op for a session with no pending stop', () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+
+      makeHandlers().resolveStopOnClose(sessionId);
+      expect(sendCalls).toHaveLength(0);
     });
   });
 

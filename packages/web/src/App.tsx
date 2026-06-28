@@ -954,7 +954,7 @@ function App() {
             sessionId: killedSessionId,
             connectionId: '' as ConnectionId,
             sender: 'system',
-            content: `Failed to stop session: ${message.error || 'unknown error'}`,
+            content: `Failed to exit session: ${message.error || 'unknown error'}`,
             timestamp: new Date().toISOString(),
             state: 'delivered',
             isEditing: false,
@@ -2138,7 +2138,7 @@ function App() {
       const req = createKillSessionRequest(sessionId);
       const sent = cmSendMessage(connectionId, req);
       if (!sent) {
-        pushSessionSystemMessage(sessionId, 'Cannot stop session: not connected to daemon.');
+        pushSessionSystemMessage(sessionId, 'Cannot exit session: not connected to daemon.');
         return;
       }
       // Guard against a daemon that never replies (crash / WS drop): surface a
@@ -2159,7 +2159,10 @@ function App() {
     if (!activeSessionId) return;
     const connId = getActiveConnectionId();
     if (!connId) {
-      pushSessionSystemMessage(activeSessionId, 'Cannot stop session: session is no longer available.');
+      pushSessionSystemMessage(
+        activeSessionId,
+        'Cannot exit session: session is no longer available.',
+      );
       return;
     }
     handleKillSession(activeSessionId, connId);
