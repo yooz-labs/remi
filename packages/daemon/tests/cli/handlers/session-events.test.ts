@@ -46,11 +46,19 @@ describe('createSessionHandlers', () => {
   let send: (connectionId: UUID, message: ProtocolMessage) => boolean;
   let untrackCalls: UUID[];
   let connectionRemovedCount: number;
+  // Mirrors the forward-ref wiring in cli.ts: the registry's onSessionClosed
+  // drives the handlers' resolveStopOnClose. Set in makeHandlers (handlers do
+  // not exist yet at registry-construction time).
+  let registryOnClose: ((sessionId: UUID) => void) | null;
   const PORT = 8765;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-session-events-'));
-    sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
+    registryOnClose = null;
+    sessionRegistry = new SessionRegistry(
+      { orphanTimeoutMs: 1000 },
+      { onSessionClosed: (sessionId) => registryOnClose?.(sessionId) },
+    );
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     bindingStore = new SessionBindingStore(sessionStore);
     liveSessionsRegistry = new SessionRegistryFile(tmpDir);
@@ -73,8 +81,8 @@ describe('createSessionHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers() {
-    return createSessionHandlers({
+  function makeHandlers(opts: { exitFallbackMs?: number } = {}) {
+    const handlers = createSessionHandlers({
       sessionRegistry,
       bindingStore,
       transcriptDiscovery,
@@ -87,7 +95,10 @@ describe('createSessionHandlers', () => {
         connectionRemovedCount += 1;
       },
       send,
+      ...(opts.exitFallbackMs !== undefined && { exitFallbackMs: opts.exitFallbackMs }),
     });
+    registryOnClose = (sessionId) => handlers.resolveStopOnClose(sessionId);
+    return handlers;
   }
 
   describe('onSessionListRequest', () => {
@@ -252,6 +263,65 @@ describe('createSessionHandlers', () => {
 
       makeHandlers().resolveStopOnClose(sessionId);
       expect(sendCalls).toHaveLength(0);
+    });
+
+    test('a duplicate stop joins the in-flight one; both requesters are acked on close', () => {
+      const submitted: string[] = [];
+      const pty = {
+        id: generateId(),
+        write: () => {},
+        submitInput: async (text: string) => {
+          submitted.push(text);
+        },
+        close: async () => {},
+      } as unknown as PTYSession;
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI());
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = makeHandlers();
+      const REQ2 = 'req20000-0000-0000-0000-000000000000' as UUID;
+      handlers.onKillSessionRequest(CID, sessionId, REQ);
+      handlers.onKillSessionRequest(OTHER_CID, sessionId, REQ2);
+
+      // Only ONE /exit is typed (the duplicate joins, it does not re-stop).
+      expect(submitted).toEqual(['/exit']);
+      expect(sendCalls).toHaveLength(0);
+
+      // On close both requesters get a success ack against their own requestId.
+      handlers.resolveStopOnClose(sessionId);
+      const acks = sendCalls.map((c) => ({
+        connectionId: c.connectionId,
+        ...(c.message as unknown as { success: boolean; requestId: UUID }),
+      }));
+      expect(acks).toContainEqual(
+        expect.objectContaining({ connectionId: CID, success: true, requestId: REQ }),
+      );
+      expect(acks).toContainEqual(
+        expect.objectContaining({ connectionId: OTHER_CID, success: true, requestId: REQ2 }),
+      );
+    });
+
+    test('forces close when /exit is not honored within the fallback window', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = makeHandlers({ exitFallbackMs: 5 });
+      handlers.onKillSessionRequest(CID, sessionId, REQ);
+      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+      expect(sendCalls).toHaveLength(0);
+
+      // PTY never exits (fake submitInput is a no-op); the fallback timer fires,
+      // forces the close, and the registry's onSessionClosed (wired to
+      // resolveStopOnClose in makeHandlers) acks the requester success.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(sessionRegistry.getSession(sessionId)).toBeUndefined();
+      expect(sendCalls).toHaveLength(1);
+      const ack = sendCalls[0]?.message as { type: string; success: boolean };
+      expect(ack.type).toBe('kill_session_response');
+      expect(ack.success).toBe(true);
+      expect(sendCalls[0]?.connectionId).toBe(CID);
     });
   });
 
