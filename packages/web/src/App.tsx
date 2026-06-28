@@ -2132,7 +2132,7 @@ function App() {
   const handleKillSession = useCallback(
     (sessionId: UUID, connectionId: ConnectionId, label?: string) => {
       const ok = window.confirm(
-        `Stop ${label ? `"${label}"` : 'this session'}? This ends the Claude process and cannot be undone.`,
+        `Exit ${label ? `"${label}"` : 'this session'}? Claude runs /exit and the session closes. You can resume it later from Recent.`,
       );
       if (!ok) return;
       const req = createKillSessionRequest(sessionId);
@@ -2147,7 +2147,7 @@ function App() {
         pendingKillsRef.current.delete(req.id);
         pushSessionSystemMessage(
           sessionId,
-          'Stop session timed out; the daemon may be unreachable.',
+          'Exit session timed out; the daemon may be unreachable.',
         );
       }, 12_000);
       pendingKillsRef.current.set(req.id, { sessionId, timeoutId });

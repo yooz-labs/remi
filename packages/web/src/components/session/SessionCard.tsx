@@ -12,7 +12,7 @@ import { sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { ConnectionId, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { GitBranch, Link2Off, RotateCcw, Square } from 'lucide-react';
+import { GitBranch, Link2Off, Power, RotateCcw } from 'lucide-react';
 
 interface SessionCardProps {
   readonly session: UISession;
@@ -147,10 +147,10 @@ export function SessionCard({
               onKill(session.id, session.connectionId, project);
             }}
             className="rounded-full p-1 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-elevated)] hover:text-[var(--color-error)]"
-            aria-label="Stop session"
-            title="Stop session"
+            aria-label="Exit session"
+            title="Exit session"
           >
-            <Square className="size-3.5" />
+            <Power className="size-3.5" />
           </button>
         )}
       </div>

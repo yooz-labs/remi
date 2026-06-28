@@ -17,7 +17,7 @@ import {
   Layers,
   LogOut,
   MoreVertical,
-  Square,
+  Power,
   Trash2,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -223,8 +223,8 @@ export function ChatHeader({
               )}
               {onEndSession && (
                 <MenuItem
-                  icon={<Square className="size-4" />}
-                  label="Stop session"
+                  icon={<Power className="size-4" />}
+                  label="Exit session"
                   tone="error"
                   onClick={() => {
                     onEndSession();
