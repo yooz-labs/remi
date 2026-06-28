@@ -109,15 +109,82 @@ describe('review parsing + verification (against real captures)', () => {
     ]);
   });
 
-  it('reviewMatchesTarget is order-insensitive for multi labels, exact on questions', () => {
+  it('reviewMatchesTarget matches labels in render order, exact on questions', () => {
     const parsed = [
       { question: 'Favorite color?', labels: ['Green'] },
       { question: 'Which fruits?', labels: ['Apple', 'Cherry'] },
     ];
-    expect(reviewMatchesTarget(parsed, [['Green'], ['Cherry', 'Apple']])).toBe(true);
+    // Order-sensitive: the daemon toggles + the TUI renders in ascending option
+    // index, so the expected order always equals the rendered order. A reorder
+    // escalates (fail-safe) rather than risking a wrong submit.
+    expect(reviewMatchesTarget(parsed, [['Green'], ['Apple', 'Cherry']])).toBe(true);
+    expect(reviewMatchesTarget(parsed, [['Green'], ['Cherry', 'Apple']])).toBe(false); // reordered
     expect(reviewMatchesTarget(parsed, [['Green'], ['Apple']])).toBe(false); // wrong count
     expect(reviewMatchesTarget(parsed, [['Blue'], ['Apple', 'Cherry']])).toBe(false); // wrong label
     expect(reviewMatchesTarget(parsed, [['Green']])).toBe(false); // wrong arity
+  });
+
+  it('returns false when an expected label set is empty (cannot verify)', () => {
+    const parsed = [{ question: 'Pick one', labels: ['Green'] }];
+    expect(reviewMatchesTarget(parsed, [[]])).toBe(false);
+  });
+
+  it('does not conflate options that differ only by internal spaces (no wrong-submit)', () => {
+    // "foo bar" must NOT verify as "foobar": internal spaces stay significant.
+    const parsed = [{ question: 'Pick', labels: ['foobar'] }];
+    expect(reviewMatchesTarget(parsed, [['foo bar']])).toBe(false);
+    expect(reviewMatchesTarget(parsed, [['foobar']])).toBe(true);
+  });
+
+  it('verifies a single-select option whose LABEL contains a comma (#654 regression)', () => {
+    // The real failure: a single-select option labelled "Sidecar first, channels.tsv
+    // fallback". parseReviewAnswers splits the review line on commas, shattering the
+    // one label into two; the matcher must still recognise the correct answer.
+    const frame =
+      'Review your answers● #854 scope → Epic via epic-dev● #854 data source → Sidecar first, channels.tsv fallback● #855 → Implement nowReady to submit your answers?❯ 1. Submit answers 2. Cancel';
+    const parsed = parseReviewAnswers(frame);
+    expect(parsed[1]?.labels).toEqual(['Sidecar first', 'channels.tsv fallback']); // over-split
+    expect(
+      reviewMatchesTarget(parsed, [
+        ['Epic via epic-dev'],
+        ['Sidecar first, channels.tsv fallback'], // ONE label, with its comma
+        ['Implement now'],
+      ]),
+    ).toBe(true);
+    // A fragment of the comma-label alone must NOT verify (no false positive).
+    expect(
+      reviewMatchesTarget(parsed, [['Epic via epic-dev'], ['Sidecar first'], ['Implement now']]),
+    ).toBe(false);
+  });
+
+  it('verifies multi-select labels containing commas, in render order (#654)', () => {
+    // Render order = ascending option index, so expected uses that order.
+    const frame =
+      'Review your answers● Pick → Sidecar first, channels.tsv fallback, Other optionReady to submit your answers?❯ 1. Submit answers';
+    const parsed = parseReviewAnswers(frame);
+    expect(
+      reviewMatchesTarget(parsed, [['Sidecar first, channels.tsv fallback', 'Other option']]),
+    ).toBe(true);
+    // A wrong selection (fragments, not the whole comma-label) still fails.
+    expect(reviewMatchesTarget(parsed, [['Sidecar first', 'Other option']])).toBe(false);
+  });
+
+  it('verifies two comma-containing labels selected in one question (#654)', () => {
+    const frame =
+      'Review your answers● Choose → A first, then B, C also, or DReady to submit your answers?❯ 1. Submit answers';
+    const parsed = parseReviewAnswers(frame);
+    expect(parsed[0]?.labels.length).toBe(4); // both labels over-split
+    expect(reviewMatchesTarget(parsed, [['A first, then B', 'C also, or D']])).toBe(true);
+    expect(reviewMatchesTarget(parsed, [['A first, then B']])).toBe(false); // only one of two
+  });
+
+  it('matches a label that is a suffix of another, in render order (#654)', () => {
+    const frame =
+      'Review your answers● Pick → sidecar, carReady to submit your answers?❯ 1. Submit answers';
+    const parsed = parseReviewAnswers(frame);
+    expect(parsed[0]?.labels).toEqual(['sidecar', 'car']);
+    expect(reviewMatchesTarget(parsed, [['sidecar', 'car']])).toBe(true);
+    expect(reviewMatchesTarget(parsed, [['car']])).toBe(false); // only one of two
   });
 
   it('isReviewScreen / isAuqClosed are false for a plain option frame', () => {

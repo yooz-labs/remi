@@ -154,25 +154,56 @@ export function parseReviewAnswers(frameText: string): ReviewAnswer[] {
   return out;
 }
 
-/** Case-insensitive, order-insensitive label-set equality for one answer. */
-function sameLabels(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const norm = (xs: readonly string[]) => [...xs].map((x) => x.toLowerCase().trim()).sort();
-  const na = norm(a);
-  const nb = norm(b);
-  return na.every((x, i) => x === nb[i]);
+/**
+ * Lowercase, collapse whitespace to single spaces, and canonicalize comma spacing
+ * ("a , b" / "a,b" -> "a,b"). Keeps internal spaces (so "foo bar" stays distinct
+ * from "foobar") while absorbing terminal line-wrap / run-together artifacts.
+ */
+function normalizeLabel(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ',')
+    .trim();
+}
+
+/**
+ * Whether one review answer shows exactly the expected option label(s) — ROBUST TO
+ * LABELS THAT CONTAIN COMMAS (#654), without ever accepting a different option.
+ *
+ * `parseReviewAnswers` splits the rendered label region on commas to separate
+ * multiple selected labels, but a comma is ambiguous: an option label can itself
+ * contain one (e.g. "Sidecar first, channels.tsv fallback"), which the splitter
+ * shatters into phantom parts. Rather than compare comma-split sets (which then
+ * miscounts), we re-join BOTH the parsed parts and the expected labels with a
+ * single canonical comma and compare the normalized strings exactly. The label is
+ * restored, and a different option — even one whose whitespace-stripped text would
+ * overlap — does not match, so the runner never submits a wrong answer.
+ *
+ * Order-sensitive by design: the daemon toggles options in ascending index order
+ * and the TUI renders them the same way, so the expected order always equals the
+ * rendered order; a genuine reorder escalates (fail-safe) rather than submitting
+ * the wrong answer.
+ */
+function reviewLabelsMatch(parsedParts: readonly string[], expected: readonly string[]): boolean {
+  if (expected.length === 0) return false;
+  const want = expected.map(normalizeLabel);
+  if (want.some((l) => l.length === 0)) return false;
+  const region = parsedParts.map(normalizeLabel).filter((l) => l.length > 0);
+  return region.join(',') === want.join(',');
 }
 
 /**
  * Verify the parsed review matches the expected per-question label sets (the labels
- * of the chosen options). Order of questions must match; labels within a question
- * are compared as a set. Any length/label mismatch -> false -> the runner escalates
- * instead of submitting. `expectedLabels[k]` is the label(s) chosen for question k.
+ * of the chosen options). Order of QUESTIONS must match; labels within a question
+ * are matched exactly after normalization (see `reviewLabelsMatch`). Any
+ * length/label mismatch -> false -> the runner escalates instead of submitting.
+ * `expectedLabels[k]` is the label(s) chosen for question k.
  */
 export function reviewMatchesTarget(
   parsed: readonly ReviewAnswer[],
   expectedLabels: readonly (readonly string[])[],
 ): boolean {
   if (parsed.length !== expectedLabels.length) return false;
-  return parsed.every((ans, k) => sameLabels(ans.labels, expectedLabels[k] ?? []));
+  return parsed.every((ans, k) => reviewLabelsMatch(ans.labels, expectedLabels[k] ?? []));
 }
