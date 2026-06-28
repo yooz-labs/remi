@@ -80,7 +80,8 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
   // starting a second one: every waiter is acked success on close, so neither
   // client sees a misleading "timed out" or "failed" message.
   interface PendingStop {
-    readonly waiters: Array<{ connectionId: UUID; requestId: UUID }>;
+    // Mutable: a duplicate stop appends itself via waiters.push (see below).
+    waiters: Array<{ connectionId: UUID; requestId: UUID }>;
     /** Active client to notify with SESSION_ENDED, if it isn't a requester. */
     readonly notifyConnectionId: UUID | null;
     readonly fallbackTimer: ReturnType<typeof setTimeout>;

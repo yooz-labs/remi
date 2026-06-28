@@ -46,11 +46,19 @@ describe('createSessionHandlers', () => {
   let send: (connectionId: UUID, message: ProtocolMessage) => boolean;
   let untrackCalls: UUID[];
   let connectionRemovedCount: number;
+  // Mirrors the forward-ref wiring in cli.ts: the registry's onSessionClosed
+  // drives the handlers' resolveStopOnClose. Set in makeHandlers (handlers do
+  // not exist yet at registry-construction time).
+  let registryOnClose: ((sessionId: UUID) => void) | null;
   const PORT = 8765;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-session-events-'));
-    sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
+    registryOnClose = null;
+    sessionRegistry = new SessionRegistry(
+      { orphanTimeoutMs: 1000 },
+      { onSessionClosed: (sessionId) => registryOnClose?.(sessionId) },
+    );
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     bindingStore = new SessionBindingStore(sessionStore);
     liveSessionsRegistry = new SessionRegistryFile(tmpDir);
@@ -74,7 +82,7 @@ describe('createSessionHandlers', () => {
   });
 
   function makeHandlers(opts: { exitFallbackMs?: number } = {}) {
-    return createSessionHandlers({
+    const handlers = createSessionHandlers({
       sessionRegistry,
       bindingStore,
       transcriptDiscovery,
@@ -89,6 +97,8 @@ describe('createSessionHandlers', () => {
       send,
       ...(opts.exitFallbackMs !== undefined && { exitFallbackMs: opts.exitFallbackMs }),
     });
+    registryOnClose = (sessionId) => handlers.resolveStopOnClose(sessionId);
+    return handlers;
   }
 
   describe('onSessionListRequest', () => {
@@ -300,10 +310,18 @@ describe('createSessionHandlers', () => {
       const handlers = makeHandlers({ exitFallbackMs: 5 });
       handlers.onKillSessionRequest(CID, sessionId, REQ);
       expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+      expect(sendCalls).toHaveLength(0);
 
-      // PTY never exits (fake submitInput is a no-op); the fallback timer fires.
+      // PTY never exits (fake submitInput is a no-op); the fallback timer fires,
+      // forces the close, and the registry's onSessionClosed (wired to
+      // resolveStopOnClose in makeHandlers) acks the requester success.
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(sessionRegistry.getSession(sessionId)).toBeUndefined();
+      expect(sendCalls).toHaveLength(1);
+      const ack = sendCalls[0]?.message as { type: string; success: boolean };
+      expect(ack.type).toBe('kill_session_response');
+      expect(ack.success).toBe(true);
+      expect(sendCalls[0]?.connectionId).toBe(CID);
     });
   });
 
