@@ -6,7 +6,7 @@
 
 import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
-import { ConnectModal, SessionList } from '@/components/session';
+import { ConnectModal, NewSessionModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { probeAuthInfo } from '@/lib/auth-probe';
@@ -43,7 +43,7 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
   createDetachSession,
@@ -201,6 +201,9 @@ function App() {
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
+  // New-session sheet (#638): recent project directories from the daemon.
+  const [showNewSessionModal, setShowNewSessionModal] = useState(false);
+  const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -905,7 +908,8 @@ function App() {
       }
 
       case 'session_history_response': {
-        // Session history response received; not yet integrated into the UI
+        // Recent project directories for the new-session sheet (#638).
+        setRecentDirectories(message.directories);
         break;
       }
 
@@ -1250,6 +1254,7 @@ function App() {
     requestTranscriptLoad,
     requestResumeSession,
     requestNewSession,
+    requestSessionHistory,
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,
@@ -2031,6 +2036,24 @@ function App() {
     [connections, requestNewSession],
   );
 
+  // Open the new-session sheet and refresh recent directories (#638). The "+"
+  // button routes here instead of a raw path prompt.
+  const handleOpenNewSession = useCallback(() => {
+    const conn = connections.find((c) => c.status === 'connected');
+    if (!conn) return;
+    requestSessionHistory(conn.connectionId);
+    setShowNewSessionModal(true);
+  }, [connections, requestSessionHistory]);
+
+  // RecentProjects passes '' for the home/cwd default; map that to undefined so
+  // the daemon uses its own default working directory.
+  const handleStartSessionInDir = useCallback(
+    (directory: string) => {
+      handleNewSession(directory.trim() || undefined);
+    },
+    [handleNewSession],
+  );
+
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
@@ -2106,7 +2129,7 @@ function App() {
       onDisconnect={handleDisconnect}
       onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
-      onNewSession={handleNewSession}
+      onOpenNewSession={handleOpenNewSession}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -2171,6 +2194,13 @@ function App() {
         hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
+      />
+
+      <NewSessionModal
+        open={showNewSessionModal}
+        onClose={() => setShowNewSessionModal(false)}
+        directories={recentDirectories}
+        onStartSession={handleStartSessionInDir}
       />
     </>
   );

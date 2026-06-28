@@ -40,7 +40,8 @@ interface SessionListProps {
   /** Retry a connection that became 'unreachable' (re-runs port discovery). */
   readonly onReconnect?: (connectionId: ConnectionId) => void;
   readonly onDisconnectAll: () => void;
-  readonly onNewSession?: (directory?: string) => void;
+  /** Open the new-session sheet (recent paths + custom path) (#638). */
+  readonly onOpenNewSession?: () => void;
   readonly onSettings?: () => void;
   readonly className?: string;
 }
@@ -67,7 +68,7 @@ export function SessionList({
   onDisconnect,
   onReconnect,
   onDisconnectAll,
-  onNewSession,
+  onOpenNewSession,
   onSettings,
   className,
 }: SessionListProps) {
@@ -172,12 +173,8 @@ export function SessionList({
             <button
               type="button"
               onClick={() => {
-                if (hasConnections && onNewSession) {
-                  // Directory selection is preserved here; the richer
-                  // new-session sheet (command + options) is tracked in #447
-                  // and needs daemon-side support.
-                  const dir = window.prompt('Project directory (leave empty for home):');
-                  if (dir !== null) onNewSession(dir || undefined);
+                if (hasConnections && onOpenNewSession) {
+                  onOpenNewSession();
                 } else {
                   onConnect();
                 }
