@@ -99,6 +99,24 @@ bind = "localhost"
     expect(config.daemon.port_range).toBe(20); // default preserved
   });
 
+  test('persist_sessions defaults to true and parses an override (#637)', () => {
+    // Default preserved when omitted
+    const defaults = loadConfig(path.join(TEST_DIR, 'nonexistent.toml'));
+    expect(defaults.daemon.persist_sessions).toBe(true);
+
+    // Explicit override is parsed
+    fs.writeFileSync(
+      TEST_CONFIG,
+      `
+[daemon]
+persist_sessions = false
+`,
+    );
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.daemon.persist_sessions).toBe(false);
+    expect(config.daemon.orphan_timeout).toBe(DEFAULT_CONFIG.daemon.orphan_timeout); // default preserved
+  });
+
   test('handles auth enabled as string or boolean', () => {
     fs.writeFileSync(
       TEST_CONFIG,

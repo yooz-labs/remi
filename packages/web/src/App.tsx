@@ -6,7 +6,7 @@
 
 import { ChatView } from '@/components/chat';
 import { AppLayout } from '@/components/layout';
-import { ConnectModal, SessionList } from '@/components/session';
+import { ConnectModal, NewSessionModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { probeAuthInfo } from '@/lib/auth-probe';
@@ -43,10 +43,11 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
   createDetachSession,
+  createKillSessionRequest,
   createRegisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
@@ -201,6 +202,10 @@ function App() {
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
   const [showConnectModal, setShowConnectModal] = useState(false);
+  // New-session sheet (#638): recent project directories from the daemon.
+  const [showNewSessionModal, setShowNewSessionModal] = useState(false);
+  const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -228,6 +233,15 @@ function App() {
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
+  // Fallback timer so the new-session sheet leaves its loading state even if the
+  // daemon never answers session_history_request (#638 review).
+  const historyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // In-flight kill_session_request, keyed by requestId, so kill_session_response
+  // (and a no-reply timeout) resolve against the session that was actually
+  // stopped — not whatever session happens to be open in the chat (#637 review).
+  const pendingKillsRef = useRef<
+    Map<UUID, { sessionId: UUID; timeoutId: ReturnType<typeof setTimeout> }>
+  >(new Map());
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -905,7 +919,48 @@ function App() {
       }
 
       case 'session_history_response': {
-        // Session history response received; not yet integrated into the UI
+        // Recent project directories for the new-session sheet (#638).
+        if (historyTimeoutRef.current) {
+          clearTimeout(historyTimeoutRef.current);
+          historyTimeoutRef.current = null;
+        }
+        setHistoryLoading(false);
+        setRecentDirectories(message.directories);
+        break;
+      }
+
+      case 'kill_session_response': {
+        // Resolve against the session we actually asked to stop (not the open
+        // chat) and cancel its no-reply timeout.
+        const pending = pendingKillsRef.current.get(message.requestId);
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pendingKillsRef.current.delete(message.requestId);
+        }
+        const killedSessionId = pending?.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
+        if (message.success) {
+          // Session torn down; refresh the list so the dead session drops off.
+          const reqList = requestSessionListRef.current;
+          if (reqList) {
+            const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+            for (const conn of conns) {
+              reqList(conn.connectionId, conns.length === 1);
+            }
+          }
+        } else {
+          console.error(`Session kill failed: ${message.error}`);
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: killedSessionId,
+            connectionId: '' as ConnectionId,
+            sender: 'system',
+            content: `Failed to exit session: ${message.error || 'unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        }
         break;
       }
 
@@ -1250,6 +1305,7 @@ function App() {
     requestTranscriptLoad,
     requestResumeSession,
     requestNewSession,
+    requestSessionHistory,
     needsPassphrase,
     passphraseConnectionId,
     passphraseServerFingerprint,
@@ -2021,15 +2077,96 @@ function App() {
     [sessions, requestResumeSession, resumingSession],
   );
 
-  // Create new session on the first connected daemon
-  const handleNewSession = useCallback(
-    (directory?: string) => {
+  // Open the new-session sheet and (re)load recent directories (#638). The "+"
+  // button routes here instead of a raw path prompt. Clears stale directories
+  // and shows a loading state so an empty list isn't confused with "still
+  // loading"; a fallback timer ends the loading state if no response arrives.
+  const handleOpenNewSession = useCallback(() => {
+    const conn = connections.find((c) => c.status === 'connected');
+    if (!conn) return;
+    setRecentDirectories([]);
+    if (historyTimeoutRef.current) clearTimeout(historyTimeoutRef.current);
+    const sent = requestSessionHistory(conn.connectionId);
+    if (sent) {
+      setHistoryLoading(true);
+      historyTimeoutRef.current = setTimeout(() => {
+        historyTimeoutRef.current = null;
+        setHistoryLoading(false);
+      }, 5000);
+    } else {
+      setHistoryLoading(false);
+    }
+    setShowNewSessionModal(true);
+  }, [connections, requestSessionHistory]);
+
+  // Start a session in the chosen directory. RecentProjects passes '' for the
+  // home/cwd default; map that to undefined so the daemon uses its own default.
+  // Close the sheet only when the request was actually sent.
+  const handleStartSessionInDir = useCallback(
+    (directory: string) => {
       const conn = connections.find((c) => c.status === 'connected');
       if (!conn) return;
-      requestNewSession(conn.connectionId, directory);
+      const sent = requestNewSession(conn.connectionId, directory.trim() || undefined);
+      if (sent) setShowNewSessionModal(false);
     },
     [connections, requestNewSession],
   );
+
+  // Surface a system message in a specific session's thread.
+  const pushSessionSystemMessage = useCallback((sessionId: UUID, content: string) => {
+    const msg: UIMessage = {
+      id: generateId(),
+      sessionId,
+      connectionId: '' as ConnectionId,
+      sender: 'system',
+      content,
+      timestamp: new Date().toISOString(),
+      state: 'delivered',
+      isEditing: false,
+    };
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
+  // Stop (kill) a session: tears down the Claude process + its daemon (#637).
+  // Persistent sessions never time out, so this is the explicit way to end one.
+  const handleKillSession = useCallback(
+    (sessionId: UUID, connectionId: ConnectionId, label?: string) => {
+      const ok = window.confirm(
+        `Exit ${label ? `"${label}"` : 'this session'}? Claude runs /exit and the session closes. You can resume it later from Recent.`,
+      );
+      if (!ok) return;
+      const req = createKillSessionRequest(sessionId);
+      const sent = cmSendMessage(connectionId, req);
+      if (!sent) {
+        pushSessionSystemMessage(sessionId, 'Cannot exit session: not connected to daemon.');
+        return;
+      }
+      // Guard against a daemon that never replies (crash / WS drop): surface a
+      // timeout scoped to this session if no kill_session_response lands.
+      const timeoutId = setTimeout(() => {
+        pendingKillsRef.current.delete(req.id);
+        pushSessionSystemMessage(
+          sessionId,
+          'Exit session timed out; the daemon may be unreachable.',
+        );
+      }, 12_000);
+      pendingKillsRef.current.set(req.id, { sessionId, timeoutId });
+    },
+    [cmSendMessage, pushSessionSystemMessage],
+  );
+
+  const handleEndSession = useCallback(() => {
+    if (!activeSessionId) return;
+    const connId = getActiveConnectionId();
+    if (!connId) {
+      pushSessionSystemMessage(
+        activeSessionId,
+        'Cannot exit session: session is no longer available.',
+      );
+      return;
+    }
+    handleKillSession(activeSessionId, connId);
+  }, [activeSessionId, getActiveConnectionId, handleKillSession, pushSessionSystemMessage]);
 
   // Menu actions
   const handleCopyConversation = useCallback(() => {
@@ -2106,7 +2243,8 @@ function App() {
       onDisconnect={handleDisconnect}
       onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
-      onNewSession={handleNewSession}
+      onOpenNewSession={handleOpenNewSession}
+      onKillSession={handleKillSession}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -2141,6 +2279,7 @@ function App() {
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
       onDetach={handleDetach}
+      onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
     />
   ) : (
@@ -2171,6 +2310,14 @@ function App() {
         hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}
+      />
+
+      <NewSessionModal
+        open={showNewSessionModal}
+        loading={historyLoading}
+        onClose={() => setShowNewSessionModal(false)}
+        directories={recentDirectories}
+        onStartSession={handleStartSessionInDir}
       />
     </>
   );

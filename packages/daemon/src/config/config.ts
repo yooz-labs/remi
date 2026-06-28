@@ -23,6 +23,13 @@ export interface DaemonConfig {
   readonly port_range: number;
   readonly bind: string;
   readonly orphan_timeout: number;
+  /**
+   * Keep sessions alive after the last client disconnects (tmux-style), so a
+   * session created remotely survives until Claude exits or it is explicitly
+   * stopped. When true (default), the orphan timeout never reaps a session;
+   * set false to restore the old `orphan_timeout`-based reaping.
+   */
+  readonly persist_sessions: boolean;
 }
 
 /** Network settings */
@@ -113,6 +120,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     port_range: DAEMON_PORT_RANGE,
     bind: '0.0.0.0',
     orphan_timeout: 300,
+    persist_sessions: true,
   },
   network: {
     mdns: true,
@@ -689,7 +697,8 @@ export function generateDefaultConfig(): string {
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
 port_range = ${DEFAULT_CONFIG.daemon.port_range}
 bind = "${DEFAULT_CONFIG.daemon.bind}"
-orphan_timeout = ${DEFAULT_CONFIG.daemon.orphan_timeout}  # seconds
+orphan_timeout = ${DEFAULT_CONFIG.daemon.orphan_timeout}  # seconds (ignored when persist_sessions = true)
+persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions alive after disconnect (tmux-style)
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
@@ -819,6 +828,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  port_range = ${config.daemon.port_range}`);
   lines.push(`  bind = "${config.daemon.bind}"`);
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
+  lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);

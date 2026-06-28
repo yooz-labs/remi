@@ -59,6 +59,8 @@ interface ChatViewProps {
   readonly onExportText?: () => void;
   readonly onBulletExpand?: (bulletId: number) => void;
   readonly onDetach?: () => void;
+  /** Stop (kill) the active session (#637). */
+  readonly onEndSession?: () => void;
   readonly showTimestamps?: boolean;
   readonly className?: string;
 }
@@ -86,6 +88,7 @@ export function ChatView({
   onExportText,
   onBulletExpand,
   onDetach,
+  onEndSession,
   showTimestamps = true,
   className,
 }: ChatViewProps) {
@@ -139,6 +142,7 @@ export function ChatView({
         onClearMessages={onClearMessages}
         onExportText={onExportText}
         onDetach={onDetach}
+        onEndSession={onEndSession}
       />
 
       {/* Pinned question stack -- the headline interaction. One card per

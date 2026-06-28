@@ -40,7 +40,10 @@ interface SessionListProps {
   /** Retry a connection that became 'unreachable' (re-runs port discovery). */
   readonly onReconnect?: (connectionId: ConnectionId) => void;
   readonly onDisconnectAll: () => void;
-  readonly onNewSession?: (directory?: string) => void;
+  /** Open the new-session sheet (recent paths + custom path) (#638). */
+  readonly onOpenNewSession?: () => void;
+  /** Stop (kill) a session from the list (#637). */
+  readonly onKillSession?: (sessionId: UUID, connectionId: ConnectionId, label?: string) => void;
   readonly onSettings?: () => void;
   readonly className?: string;
 }
@@ -67,7 +70,8 @@ export function SessionList({
   onDisconnect,
   onReconnect,
   onDisconnectAll,
-  onNewSession,
+  onOpenNewSession,
+  onKillSession,
   onSettings,
   className,
 }: SessionListProps) {
@@ -172,19 +176,18 @@ export function SessionList({
             <button
               type="button"
               onClick={() => {
-                if (hasConnections && onNewSession) {
-                  // Directory selection is preserved here; the richer
-                  // new-session sheet (command + options) is tracked in #447
-                  // and needs daemon-side support.
-                  const dir = window.prompt('Project directory (leave empty for home):');
-                  if (dir !== null) onNewSession(dir || undefined);
+                // Only route to the new-session sheet when a daemon is actually
+                // connected; otherwise open the connect flow so the tap is never
+                // a silent no-op (#638 review).
+                if (anyConnected && onOpenNewSession) {
+                  onOpenNewSession();
                 } else {
                   onConnect();
                 }
               }}
               className="inline-flex size-[38px] items-center justify-center rounded-xl bg-[var(--color-primary)] text-[var(--color-accent-ink)] transition-transform active:scale-95"
               style={{ boxShadow: '0 4px 18px -6px var(--color-primary)' }}
-              aria-label={hasConnections ? 'New session' : 'Connect'}
+              aria-label={anyConnected ? 'New session' : 'Connect'}
             >
               <Plus className="size-5" />
             </button>
@@ -331,6 +334,7 @@ export function SessionList({
                 onClick={() => onSelectSession(session.id)}
                 onResume={onResumeSession}
                 onDisconnect={onDisconnect}
+                onKill={onKillSession}
                 isResuming={resumingSessionId === session.id}
                 last={i === filteredActive.length - 1 && recentSessions.length === 0}
               />

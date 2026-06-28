@@ -61,8 +61,12 @@ export interface SessionRegistryEvents {
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
   onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
-  /** Connection detached from session. For non-locally-owned sessions,
-   * this means the session is now orphaned; locally-owned sessions remain active. */
+  /** Connection detached from the session. Fires for ALL detach reasons, not
+   * only genuine orphans: a plain non-locally-owned, non-persistent session
+   * becomes orphaned (orphan timeout armed), while locally-owned, persistent,
+   * and explicitly-detached sessions stay alive with no timeout. Inspect the
+   * session flags (locallyOwned / persistent / explicitlyDetached) to tell
+   * which case fired. */
   onSessionOrphaned?: (sessionId: UUID) => void;
   /** Session was resumed (connection reattached) */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
@@ -115,6 +119,12 @@ export interface ManagedSession {
   /** Whether the last detach was an explicit user request (tmux-style).
    * Explicitly detached sessions skip the orphan timeout entirely. */
   explicitlyDetached: boolean;
+
+  /** Whether this session persists after the last client disconnects
+   * (tmux-style). Persistent sessions skip the orphan timeout entirely and
+   * stay re-attachable until Claude exits or they are explicitly stopped.
+   * Driven by `daemon.persist_sessions` (default true). */
+  readonly persistent: boolean;
 }
 
 /**
@@ -156,6 +166,7 @@ export class SessionRegistry {
     pty: PTYSession,
     messageApi: MessageAPI,
     locallyOwned = false,
+    persistent = false,
   ): void {
     if (this.session !== null) {
       throw new Error('Session already registered. Only one session per daemon is allowed.');
@@ -181,6 +192,7 @@ export class SessionRegistry {
       currentQuestions: new Map(),
       locallyOwned,
       explicitlyDetached: false,
+      persistent,
     };
 
     // Flush pre-registration buffer (messages from readExisting transcript entries)
@@ -370,10 +382,16 @@ export class SessionRegistry {
     // Track explicit detach state for discovery status
     this.session.explicitlyDetached = explicit;
 
-    // Start orphan timeout (skip for locally-owned sessions, explicit detaches,
-    // and when orphanTimeoutMs === 0).
-    // Explicitly detached sessions stay alive indefinitely like locally-owned ones.
-    if (!this.session.locallyOwned && !explicit && this.orphanTimeoutMs > 0) {
+    // Start orphan timeout (skip for locally-owned sessions, persistent
+    // (tmux-style) sessions, explicit detaches, and when orphanTimeoutMs === 0).
+    // Persistent and explicitly-detached sessions stay alive indefinitely like
+    // locally-owned ones — they only end on Claude exit or an explicit stop.
+    if (
+      !this.session.locallyOwned &&
+      !this.session.persistent &&
+      !explicit &&
+      this.orphanTimeoutMs > 0
+    ) {
       this.session.orphanTimeoutId = setTimeout(() => {
         this.closeSession(sessionId, 'timeout');
       }, this.orphanTimeoutMs);
@@ -585,7 +603,7 @@ export class SessionRegistry {
   ): 'active' | 'idle' | 'orphaned' | 'detached' {
     if (session.activeConnectionId === null) {
       if (session.locallyOwned) return 'active';
-      if (session.explicitlyDetached) return 'detached';
+      if (session.explicitlyDetached || session.persistent) return 'detached';
       return 'orphaned';
     }
     if (session.currentStatus === 'idle') {
@@ -628,7 +646,9 @@ export class SessionRegistry {
     if (
       this.session !== null &&
       this.session.activeConnectionId === null &&
-      !this.session.locallyOwned
+      !this.session.locallyOwned &&
+      // Persistent (tmux-style) sessions are intentionally kept alive, not orphaned.
+      !this.session.persistent
     ) {
       return 1;
     }

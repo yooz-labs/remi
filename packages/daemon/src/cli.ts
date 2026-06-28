@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.16'; // REMI_COMPILED_VERSION
+      return '0.6.17-dev.6'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.16'; // REMI_COMPILED_VERSION
+    return '0.6.17-dev.6'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -918,6 +918,10 @@ const orphanTimeoutMs =
   cliOrphanTimeout !== undefined
     ? cliOrphanTimeout * 1000
     : remiConfig.daemon.orphan_timeout * 1000;
+// Forward reference to the session handlers' deferred-Stop resolver (#641). The
+// registry below is constructed before `sessionHandlers` exists, so onSessionClosed
+// reaches the resolver through this holder, assigned once the handlers are wired.
+let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
@@ -929,6 +933,9 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason) => {
       log(`Session closed: ${sessionId} (reason: ${reason})`);
+      // Resolve any deferred Stop (#641): ack the requester + notify a
+      // third-party client now that the session has actually ended.
+      resolveStopOnClose?.(sessionId);
       // Tear down the drive-mode binder (rotation dir-poll + fallback timer) at
       // session close, not just at process cleanup — else the poll interval leaks
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
@@ -951,8 +958,12 @@ const sessionRegistry = new SessionRegistry(
         log(`Session detached: ${sessionId} (locally owned, no timeout)`);
       } else if (session?.explicitlyDetached) {
         log(`Session explicitly detached: ${sessionId} (no timeout, re-attachable)`);
+      } else if (session?.persistent) {
+        log(`Session detached: ${sessionId} (persistent, no timeout, re-attachable)`);
       } else {
-        log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+        log(
+          `Session orphaned: ${sessionId} (will timeout in ${Math.round(orphanTimeoutMs / 1000)}s)`,
+        );
       }
     },
     onSessionResumed: (sessionId, connectionId) => {
@@ -1300,12 +1311,18 @@ async function createNewSession(
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
+  // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
+  // default so a session created from the app survives until Claude exits or it
+  // is explicitly stopped (#637). Wrapper-mode sessions are locallyOwned and
+  // already never time out, so the flag only applies to daemon-mode sessions.
+  const persistent = !passThrough && remiConfig.daemon.persist_sessions;
   sessionRegistry.registerSession(
     sessionId,
     workingDirectory,
     ptySession,
     messageApi,
     locallyOwned,
+    persistent,
   );
 
   // #576: give clients a defined pill state from the first hello_ack. Without
@@ -1464,6 +1481,9 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   send: sendToConnection,
 });
+// Wire the deferred-Stop resolver now that the handlers exist (#641); the
+// registry's onSessionClosed reaches it through this holder.
+resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 
 // The single authoritative "current owned session" accessor (#499), shared by
 // the transcript-request redirect and the hello_ack binding so they never diverge.

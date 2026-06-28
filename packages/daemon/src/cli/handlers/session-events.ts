@@ -1,7 +1,8 @@
 /**
  * sharedEvents handlers for whole-session lifecycle requests:
  *   onSessionListRequest, enumerate daemon + external sessions
- *   onKillSessionRequest, tear down a session (and notify any active client)
+ *   onKillSessionRequest, gracefully end a session (type Claude /exit, with a
+ *     force-close fallback) and notify any active client
  *   onDetachSession, release a session's active connection without killing it
  *
  * These three are grouped because they all operate on session records via
@@ -43,7 +44,15 @@ export interface SessionHandlerDeps {
   /** Decrement the statusWriter connection count (third-party detach only). */
   onConnectionRemoved: () => void;
   send: SendToConnection;
+  /** Force-close delay after a graceful /exit; injectable for tests. */
+  exitFallbackMs?: number;
 }
+
+/**
+ * How long to wait for a graceful `/exit` to land before force-closing the
+ * session. Covers a Claude that ignores /exit because it is stuck mid-task.
+ */
+const EXIT_FALLBACK_MS = 8000;
 
 export type SessionHandlers = ReturnType<typeof createSessionHandlers>;
 
@@ -57,7 +66,46 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     untrackConnection,
     onConnectionRemoved,
     send,
+    exitFallbackMs = EXIT_FALLBACK_MS,
   } = deps;
+
+  // In-flight graceful stops (#641). A Stop types `/exit` and returns; the
+  // success ack + SESSION_ENDED notice are deferred to `resolveStopOnClose`
+  // (driven by the registry's onSessionClosed) so "success" means the session
+  // actually ended — not merely "stop initiated" — and the third-party notice
+  // arrives after PTY output has stopped. Keyed by sessionId.
+  //
+  // `waiters` is a list because a duplicate Stop (a second client confirming
+  // Exit before the first /exit lands) joins the in-flight stop rather than
+  // starting a second one: every waiter is acked success on close, so neither
+  // client sees a misleading "timed out" or "failed" message.
+  interface PendingStop {
+    // Mutable: a duplicate stop appends itself via waiters.push (see below).
+    waiters: Array<{ connectionId: UUID; requestId: UUID }>;
+    /** Active client to notify with SESSION_ENDED, if it isn't a requester. */
+    readonly notifyConnectionId: UUID | null;
+    readonly fallbackTimer: ReturnType<typeof setTimeout>;
+  }
+  const pendingStops = new Map<UUID, PendingStop>();
+
+  /**
+   * Resolve a deferred Stop once the session has actually closed. Call from the
+   * registry's onSessionClosed for every close reason; a no-op when the session
+   * ended on its own (no pending Stop). Cancels the force-fallback, notifies a
+   * third-party client, and acks every waiting requester.
+   */
+  function resolveStopOnClose(sessionId: UUID): void {
+    const pending = pendingStops.get(sessionId);
+    if (!pending) return;
+    pendingStops.delete(sessionId);
+    clearTimeout(pending.fallbackTimer);
+    if (pending.notifyConnectionId) {
+      send(pending.notifyConnectionId, createError('SESSION_ENDED', 'Session ended by request'));
+    }
+    for (const waiter of pending.waiters) {
+      send(waiter.connectionId, createKillSessionResponse(true, waiter.requestId));
+    }
+  }
 
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
@@ -117,7 +165,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     },
 
     onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID): void => {
-      log(`Kill session request from ${connectionId} for session ${sessionId}`);
+      log(`Stop session request from ${connectionId} for session ${sessionId}`);
 
       const session = sessionRegistry.getSession(sessionId);
       if (!session) {
@@ -128,26 +176,54 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         return;
       }
 
+      // Idempotent: a Stop already in flight just adds this requester as a
+      // waiter so it too is acked success on close (no second /exit, no
+      // misleading timeout on the duplicate).
+      const inFlight = pendingStops.get(sessionId);
+      if (inFlight) {
+        log(`Stop already in flight for ${session.name}; joining duplicate request`);
+        inFlight.waiters.push({ connectionId, requestId });
+        return;
+      }
+
       const sessionName = session.name;
-      log(`Killing session: ${sessionName} (${sessionId})`);
+      log(`Stopping session: ${sessionName} (${sessionId})`);
 
-      // Notify attached client before destroying the session.
-      if (session.activeConnectionId && session.activeConnectionId !== connectionId) {
-        send(
-          session.activeConnectionId,
-          createError('SESSION_ENDED', 'Session killed by remote request'),
+      // Graceful stop (#641): type `/exit` on our own PTY so Claude quits cleanly
+      // (flushing its transcript + emitting the resume hint) and the PTY-exit path
+      // tears the session down and frees the daemon. Writing to our own PTY avoids
+      // the write-lock requirement a client-side input would have. A force-close
+      // fallback covers a Claude that ignores /exit (e.g. stuck mid-task).
+      session.pty.submitInput('/exit').catch((err) => {
+        logError(
+          `[Stop] /exit write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
         );
-      }
+        sessionRegistry.closeSession(sessionId, 'forced');
+      });
+      const fallbackTimer = setTimeout(() => {
+        if (sessionRegistry.getSession(sessionId)) {
+          log(`Session ${sessionName} did not exit on /exit within ${exitFallbackMs}ms; forcing`);
+          sessionRegistry.closeSession(sessionId, 'forced');
+        }
+      }, exitFallbackMs);
+      // Don't let the fallback timer keep the event loop (or process) alive.
+      fallbackTimer.unref?.();
 
-      const hadActiveClient =
-        session.activeConnectionId !== null && session.activeConnectionId !== connectionId;
-      sessionRegistry.closeSession(sessionId, 'forced');
-      send(connectionId, createKillSessionResponse(true, requestId));
-      if (hadActiveClient) {
-        log(`Session killed: ${sessionName} (disconnected attached client)`);
-      } else {
-        log(`Session killed: ${sessionName}`);
-      }
+      // Defer the ack + the third-party SESSION_ENDED notice until the session
+      // actually closes (resolveStopOnClose), so success means done. On the
+      // normal /exit path the PTY has already drained before the notice fires;
+      // on the rare force-fallback the close races a still-resolving pty.close(),
+      // so a third-party client may see a few trailing bytes after SESSION_ENDED.
+      const notifyConnectionId =
+        session.activeConnectionId && session.activeConnectionId !== connectionId
+          ? session.activeConnectionId
+          : null;
+      pendingStops.set(sessionId, {
+        waiters: [{ connectionId, requestId }],
+        notifyConnectionId,
+        fallbackTimer,
+      });
+      log(`Session stop initiated: ${sessionName}`);
     },
 
     onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID): void => {
@@ -189,5 +265,8 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
       );
     },
+
+    /** Resolve a deferred Stop on session close; wired to onSessionClosed in cli.ts. */
+    resolveStopOnClose,
   };
 }

@@ -17,6 +17,7 @@ import {
   Layers,
   LogOut,
   MoreVertical,
+  Power,
   Trash2,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -38,6 +39,8 @@ interface ChatHeaderProps {
   readonly onClearMessages?: () => void;
   readonly onExportText?: () => void;
   readonly onDetach?: () => void;
+  /** Stop (kill) the session entirely (#637). */
+  readonly onEndSession?: () => void;
   readonly className?: string;
 }
 
@@ -51,13 +54,15 @@ export function ChatHeader({
   onClearMessages,
   onExportText,
   onDetach,
+  onEndSession,
   className,
 }: ChatHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const { host, project, branch } = splitSessionName(session);
   const state = sessionPillState(session);
-  const hasMenuActions = onCopyConversation || onClearMessages || onExportText || onDetach;
+  const hasMenuActions =
+    onCopyConversation || onClearMessages || onExportText || onDetach || onEndSession;
 
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
@@ -215,6 +220,17 @@ export function ChatHeader({
                     }}
                   />
                 </>
+              )}
+              {onEndSession && (
+                <MenuItem
+                  icon={<Power className="size-4" />}
+                  label="Exit session"
+                  tone="error"
+                  onClick={() => {
+                    onEndSession();
+                    closeMenu();
+                  }}
+                />
               )}
               {onClearMessages && (
                 <>
