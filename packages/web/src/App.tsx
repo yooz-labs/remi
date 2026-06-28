@@ -47,6 +47,7 @@ import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts'
 import {
   createAnswer,
   createDetachSession,
+  createKillSessionRequest,
   createRegisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
@@ -235,6 +236,12 @@ function App() {
   // Fallback timer so the new-session sheet leaves its loading state even if the
   // daemon never answers session_history_request (#638 review).
   const historyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // In-flight kill_session_request, keyed by requestId, so kill_session_response
+  // (and a no-reply timeout) resolve against the session that was actually
+  // stopped — not whatever session happens to be open in the chat (#637 review).
+  const pendingKillsRef = useRef<
+    Map<UUID, { sessionId: UUID; timeoutId: ReturnType<typeof setTimeout> }>
+  >(new Map());
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -919,6 +926,41 @@ function App() {
         }
         setHistoryLoading(false);
         setRecentDirectories(message.directories);
+        break;
+      }
+
+      case 'kill_session_response': {
+        // Resolve against the session we actually asked to stop (not the open
+        // chat) and cancel its no-reply timeout.
+        const pending = pendingKillsRef.current.get(message.requestId);
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pendingKillsRef.current.delete(message.requestId);
+        }
+        const killedSessionId = pending?.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
+        if (message.success) {
+          // Session torn down; refresh the list so the dead session drops off.
+          const reqList = requestSessionListRef.current;
+          if (reqList) {
+            const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+            for (const conn of conns) {
+              reqList(conn.connectionId, conns.length === 1);
+            }
+          }
+        } else {
+          console.error(`Session kill failed: ${message.error}`);
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: killedSessionId,
+            connectionId: '' as ConnectionId,
+            sender: 'system',
+            content: `Failed to stop session: ${message.error || 'unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        }
         break;
       }
 
@@ -2070,6 +2112,59 @@ function App() {
     [connections, requestNewSession],
   );
 
+  // Surface a system message in a specific session's thread.
+  const pushSessionSystemMessage = useCallback((sessionId: UUID, content: string) => {
+    const msg: UIMessage = {
+      id: generateId(),
+      sessionId,
+      connectionId: '' as ConnectionId,
+      sender: 'system',
+      content,
+      timestamp: new Date().toISOString(),
+      state: 'delivered',
+      isEditing: false,
+    };
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
+  // Stop (kill) a session: tears down the Claude process + its daemon (#637).
+  // Persistent sessions never time out, so this is the explicit way to end one.
+  const handleKillSession = useCallback(
+    (sessionId: UUID, connectionId: ConnectionId, label?: string) => {
+      const ok = window.confirm(
+        `Stop ${label ? `"${label}"` : 'this session'}? This ends the Claude process and cannot be undone.`,
+      );
+      if (!ok) return;
+      const req = createKillSessionRequest(sessionId);
+      const sent = cmSendMessage(connectionId, req);
+      if (!sent) {
+        pushSessionSystemMessage(sessionId, 'Cannot stop session: not connected to daemon.');
+        return;
+      }
+      // Guard against a daemon that never replies (crash / WS drop): surface a
+      // timeout scoped to this session if no kill_session_response lands.
+      const timeoutId = setTimeout(() => {
+        pendingKillsRef.current.delete(req.id);
+        pushSessionSystemMessage(
+          sessionId,
+          'Stop session timed out; the daemon may be unreachable.',
+        );
+      }, 12_000);
+      pendingKillsRef.current.set(req.id, { sessionId, timeoutId });
+    },
+    [cmSendMessage, pushSessionSystemMessage],
+  );
+
+  const handleEndSession = useCallback(() => {
+    if (!activeSessionId) return;
+    const connId = getActiveConnectionId();
+    if (!connId) {
+      pushSessionSystemMessage(activeSessionId, 'Cannot stop session: session is no longer available.');
+      return;
+    }
+    handleKillSession(activeSessionId, connId);
+  }, [activeSessionId, getActiveConnectionId, handleKillSession, pushSessionSystemMessage]);
+
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
@@ -2146,6 +2241,7 @@ function App() {
       onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
       onOpenNewSession={handleOpenNewSession}
+      onKillSession={handleKillSession}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -2180,6 +2276,7 @@ function App() {
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
       onDetach={handleDetach}
+      onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
     />
   ) : (

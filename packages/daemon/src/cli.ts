@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.16-dev.2'; // REMI_COMPILED_VERSION
+      return '0.6.17-dev.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.16-dev.2'; // REMI_COMPILED_VERSION
+    return '0.6.17-dev.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -951,8 +951,12 @@ const sessionRegistry = new SessionRegistry(
         log(`Session detached: ${sessionId} (locally owned, no timeout)`);
       } else if (session?.explicitlyDetached) {
         log(`Session explicitly detached: ${sessionId} (no timeout, re-attachable)`);
+      } else if (session?.persistent) {
+        log(`Session detached: ${sessionId} (persistent, no timeout, re-attachable)`);
       } else {
-        log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+        log(
+          `Session orphaned: ${sessionId} (will timeout in ${Math.round(orphanTimeoutMs / 1000)}s)`,
+        );
       }
     },
     onSessionResumed: (sessionId, connectionId) => {
@@ -1300,12 +1304,17 @@ async function createNewSession(
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
+  // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
+  // default so a session created from the app survives until Claude exits or it
+  // is explicitly stopped (#637). Wrapper-mode sessions already never time out.
+  const persistent = remiConfig.daemon.persist_sessions;
   sessionRegistry.registerSession(
     sessionId,
     workingDirectory,
     ptySession,
     messageApi,
     locallyOwned,
+    persistent,
   );
 
   // #576: give clients a defined pill state from the first hello_ack. Without

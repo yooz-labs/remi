@@ -42,6 +42,8 @@ interface SessionListProps {
   readonly onDisconnectAll: () => void;
   /** Open the new-session sheet (recent paths + custom path) (#638). */
   readonly onOpenNewSession?: () => void;
+  /** Stop (kill) a session from the list (#637). */
+  readonly onKillSession?: (sessionId: UUID, connectionId: ConnectionId, label?: string) => void;
   readonly onSettings?: () => void;
   readonly className?: string;
 }
@@ -69,6 +71,7 @@ export function SessionList({
   onReconnect,
   onDisconnectAll,
   onOpenNewSession,
+  onKillSession,
   onSettings,
   className,
 }: SessionListProps) {
@@ -331,6 +334,7 @@ export function SessionList({
                 onClick={() => onSelectSession(session.id)}
                 onResume={onResumeSession}
                 onDisconnect={onDisconnect}
+                onKill={onKillSession}
                 isResuming={resumingSessionId === session.id}
                 last={i === filteredActive.length - 1 && recentSessions.length === 0}
               />
