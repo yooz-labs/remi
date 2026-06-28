@@ -323,7 +323,7 @@ function MultiQuestionForm({
               step={step}
               index={oi}
               selected={selected.get(qi)?.has(oi) ?? false}
-              disabled={submitting}
+              disabled={submitting || failed}
               onToggle={() => toggle(qi, oi, step.multiSelect)}
             />
           ))}
@@ -339,22 +339,35 @@ function MultiQuestionForm({
         </p>
       )}
 
+      {/* #654: once auto-answer has failed, re-submitting the structured form
+          re-drives an already-navigated TUI and only corrupts it further, so the
+          Submit button is withdrawn — Cancel (Esc) or the terminal are the safe
+          ways forward. Before failure, Submit + Cancel render as usual. */}
       <div className="flex items-center gap-2 pt-0.5">
-        <button
-          type="button"
-          onClick={submit}
-          disabled={!allAnswered || submitting}
-          className="flex min-h-[44px] flex-1 items-center justify-center rounded-[10px] text-sm font-semibold transition-transform active:scale-[0.99] disabled:opacity-50"
-          style={{ background: 'var(--color-primary)', color: 'var(--color-accent-ink)' }}
-        >
-          {submitting ? 'Answering…' : (question.submitLabel ?? 'Submit')}
-        </button>
+        {!failed && (
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!allAnswered || submitting}
+            className="flex min-h-[44px] flex-1 items-center justify-center rounded-[10px] text-sm font-semibold transition-transform active:scale-[0.99] disabled:opacity-50"
+            style={{ background: 'var(--color-primary)', color: 'var(--color-accent-ink)' }}
+          >
+            {submitting ? 'Answering…' : (question.submitLabel ?? 'Submit')}
+          </button>
+        )}
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="flex min-h-[44px] items-center justify-center rounded-[10px] px-4 text-sm font-semibold transition-transform active:scale-[0.99]"
-            style={{ background: 'transparent', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}
+            className={clsx(
+              'flex min-h-[44px] items-center justify-center rounded-[10px] px-4 text-sm font-semibold transition-transform active:scale-[0.99]',
+              failed && 'flex-1',
+            )}
+            style={
+              failed
+                ? { background: 'var(--color-primary)', color: 'var(--color-accent-ink)' }
+                : { background: 'transparent', color: 'var(--color-text)', border: '1px solid var(--color-border)' }
+            }
           >
             Cancel
           </button>

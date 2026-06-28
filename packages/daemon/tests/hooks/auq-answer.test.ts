@@ -120,6 +120,34 @@ describe('review parsing + verification (against real captures)', () => {
     expect(reviewMatchesTarget(parsed, [['Green']])).toBe(false); // wrong arity
   });
 
+  it('verifies a single-select option whose LABEL contains a comma (#654 regression)', () => {
+    // The real failure: a single-select option labelled "Sidecar first, channels.tsv
+    // fallback". parseReviewAnswers splits the review line on commas, shattering the
+    // one label into two; the matcher must still recognise the correct answer.
+    const frame =
+      'Review your answers● #854 scope → Epic via epic-dev● #854 data source → Sidecar first, channels.tsv fallback● #855 → Implement nowReady to submit your answers?❯ 1. Submit answers 2. Cancel';
+    const parsed = parseReviewAnswers(frame);
+    expect(parsed[1]?.labels).toEqual(['Sidecar first', 'channels.tsv fallback']); // over-split
+    expect(
+      reviewMatchesTarget(parsed, [
+        ['Epic via epic-dev'],
+        ['Sidecar first, channels.tsv fallback'], // ONE label, with its comma
+        ['Implement now'],
+      ]),
+    ).toBe(true);
+  });
+
+  it('verifies a multi-select where one chosen label contains a comma (#654)', () => {
+    const frame =
+      'Review your answers● Pick → Sidecar first, channels.tsv fallback, Other optionReady to submit your answers?❯ 1. Submit answers';
+    const parsed = parseReviewAnswers(frame);
+    expect(
+      reviewMatchesTarget(parsed, [['Other option', 'Sidecar first, channels.tsv fallback']]),
+    ).toBe(true);
+    // A genuinely wrong selection still fails (no false positive from the looser match).
+    expect(reviewMatchesTarget(parsed, [['Sidecar first', 'Other option']])).toBe(false);
+  });
+
   it('isReviewScreen / isAuqClosed are false for a plain option frame', () => {
     const out = fixtureOutput('one-question-single-select.txt');
     // The single-select capture DID close (submitted on pick).

@@ -146,7 +146,7 @@ export async function runAuqAnswer(
       // The review is up but does not match (open-loop nav drifted, or an
       // unexpected variant). Do NOT submit and do NOT Esc — hand back to the user.
       deps.log?.(
-        `[auq-runner] review did not match target (escalating, no submit): parsed=${JSON.stringify(parsed)}`,
+        `[auq-runner] review did not match target (escalating, no submit): parsed=${JSON.stringify(parsed)} expected=${JSON.stringify(input.expectedLabels)}`,
       );
       return 'escalated';
     }
