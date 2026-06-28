@@ -27,10 +27,11 @@ properly on a remote session.
   LLM also returns a one-line, plain-language question ("Force-push to main?")
   shown on the push instead of the raw "Allow Bash: <command>" — folded into the
   existing decision call, no added latency.
-- **Persistent escape in the chat** (#627 review): a Stop/Esc control in the input
-  row, a long-press on the send button, and the busy "Stop" all send a bare `Esc`
-  to the session — interrupting Claude's running work or escaping an on-screen
-  prompt at any time, not only from a question card.
+- **Escape from the chat input** (#627 review): long-pressing the send button opens
+  a Stop dialog that sends a bare `Esc` to the session — interrupting Claude's
+  running work or dismissing an on-screen prompt at any time, not only from a
+  question card. One control (the send button), confirmation-gated so it can never
+  fire accidentally, and reachable even while the input is empty.
 
 ### Changed
 - **One gate, escalate-only** (#625): a question reaches your phone if and only if
@@ -41,8 +42,8 @@ properly on a remote session.
 
 ### Fixed
 - Phantom permission notifications for actions the LLM/rules had already approved.
-- AskUserQuestion prompts whose options/context were lost or mis-answered on the
-  phone (the old single-digit answer path could not express the new tabbed form).
+- AskUserQuestion prompts whose options/context were lost or answered incorrectly
+  on the phone (the old single-digit path could not express the new tabbed form).
 
 Notification-delivery robustness (epic #603): escalations reliably reach the
 lock screen, a manual answer frees the GPU, dead device tokens self-heal, and
