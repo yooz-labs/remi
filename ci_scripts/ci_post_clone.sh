@@ -10,6 +10,10 @@
 # YOOZ_XCODE_CLOUD_PLATFORM set; run directly it defaults to ios.
 set -eu
 
+# Keep in lockstep with .github/workflows/ci.yml (BUN_VERSION): 1.3.12's
+# `bun build --compile` ships silent-exit binaries, so the whole pipeline pins.
+BUN_VERSION="1.3.11"
+
 PLATFORM="${YOOZ_XCODE_CLOUD_PLATFORM:-ios}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -17,11 +21,21 @@ WEB_DIR="$REPO_ROOT/packages/web"
 
 echo "[ci] Remi post-clone (platform=$PLATFORM, repo=$REPO_ROOT)"
 
-# Xcode Cloud images do not ship bun.
+# Xcode Cloud images do not ship bun. Download to a file first: in POSIX sh,
+# `curl | bash` masks a curl failure behind bash's exit status, so a network
+# error would slip past `set -e` and surface later as a confusing "bun: not
+# found". Pin the version to match the rest of the pipeline.
 if ! command -v bun >/dev/null 2>&1; then
-  echo "[ci] installing bun"
+  echo "[ci] installing bun v$BUN_VERSION"
   export BUN_INSTALL="$HOME/.bun"
-  curl -fsSL https://bun.sh/install | bash
+  INSTALLER=$(mktemp /tmp/bun-install.XXXXXX.sh)
+  if ! curl -fsSL https://bun.sh/install -o "$INSTALLER"; then
+    echo "[ci] ERROR: failed to download the bun installer" >&2
+    rm -f "$INSTALLER"
+    exit 1
+  fi
+  bash "$INSTALLER" "bun-v$BUN_VERSION"
+  rm -f "$INSTALLER"
   export PATH="$BUN_INSTALL/bin:$PATH"
 fi
 
@@ -32,6 +46,14 @@ bun install --frozen-lockfile
 echo "[ci] building web app"
 cd "$WEB_DIR"
 bun run build
+
+# Verify the build output BEFORE syncing it into the native project, so a build
+# that exits 0 but produced no dist/ fails here instead of silently shipping an
+# empty app.
+if [ ! -f "$WEB_DIR/dist/index.html" ]; then
+  echo "[ci] ERROR: $WEB_DIR/dist/index.html missing after build" >&2
+  exit 1
+fi
 
 case "$PLATFORM" in
   ios)
@@ -48,8 +70,4 @@ case "$PLATFORM" in
     ;;
 esac
 
-if [ ! -f "$WEB_DIR/dist/index.html" ]; then
-  echo "[ci] ERROR: $WEB_DIR/dist/index.html missing after build" >&2
-  exit 1
-fi
 echo "[ci] post-clone complete"

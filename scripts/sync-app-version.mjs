@@ -55,10 +55,24 @@ const after = before
   .replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${marketing};`)
   .replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${build};`);
 
-if (!/MARKETING_VERSION = /.test(before) || !/CURRENT_PROJECT_VERSION = /.test(before)) {
-  console.error('sync-app-version: MARKETING_VERSION/CURRENT_PROJECT_VERSION not found in pbxproj');
+// Verify the target values actually landed, not just that the keys exist: if the
+// pbxproj format ever drifts the replace could match nothing while a key-presence
+// check still passes, silently shipping the wrong version. Idempotent (an
+// already-stamped file still contains the targets).
+if (
+  !after.includes(`MARKETING_VERSION = ${marketing};`) ||
+  !after.includes(`CURRENT_PROJECT_VERSION = ${build};`)
+) {
+  console.error(
+    `sync-app-version: could not stamp ${marketing}/${build} into the pbxproj ` +
+      '(MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format)',
+  );
   process.exit(1);
 }
 
-if (after !== before) writeFileSync(PBXPROJ_PATH, after);
-console.log(`sync-app-version: iOS app set to ${marketing} (build ${build})`);
+if (after !== before) {
+  writeFileSync(PBXPROJ_PATH, after);
+  console.log(`sync-app-version: stamped iOS app -> ${marketing} (build ${build})`);
+} else {
+  console.log(`sync-app-version: iOS app already at ${marketing} (build ${build}), no change`);
+}
