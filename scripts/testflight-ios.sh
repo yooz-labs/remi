@@ -28,7 +28,12 @@ TEAM_ID="9DQ459HAZB"
 OUT_DIR="${REMI_ARCHIVE_DIR:-$REPO_ROOT/build/ios}"
 
 DO_UPLOAD=false
-[ "${1:-}" = "--upload" ] && DO_UPLOAD=true
+for arg in "$@"; do
+  case "$arg" in
+    --upload) DO_UPLOAD=true ;;
+    *) echo "ERROR: unknown argument: $arg (usage: testflight-ios.sh [--upload])" >&2; exit 1 ;;
+  esac
+done
 
 command -v bun >/dev/null 2>&1 || { echo "ERROR: bun not found" >&2; exit 1; }
 command -v xcodebuild >/dev/null 2>&1 || { echo "ERROR: xcodebuild not found (install Xcode)" >&2; exit 1; }
@@ -67,7 +72,13 @@ ARCHIVE_CMD=(xcodebuild clean archive
   CODE_SIGN_STYLE=Automatic
   DEVELOPMENT_TEAM="$TEAM_ID")
 if command -v xcpretty >/dev/null 2>&1; then
+  # Isolate xcodebuild's exit from xcpretty's: a flaky xcpretty must not abort a
+  # good archive, and a failed xcodebuild must still abort.
+  set +e
   "${ARCHIVE_CMD[@]}" | xcpretty
+  XCODE_EXIT=${PIPESTATUS[0]}
+  set -e
+  [ "$XCODE_EXIT" -eq 0 ] || { echo "ERROR: xcodebuild archive failed (exit $XCODE_EXIT)" >&2; exit "$XCODE_EXIT"; }
 else
   "${ARCHIVE_CMD[@]}"
 fi
@@ -75,6 +86,7 @@ fi
 
 echo "[4/5] Exporting App Store .ipa"
 EXPORT_OPTIONS=$(mktemp /tmp/remi-ExportOptions.XXXXXX.plist)
+trap 'rm -f "$EXPORT_OPTIONS"' EXIT
 cat > "$EXPORT_OPTIONS" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -96,10 +108,17 @@ xcodebuild -exportArchive \
   -exportOptionsPlist "$EXPORT_OPTIONS" \
   -exportPath "$EXPORT_PATH" \
   -allowProvisioningUpdates
-rm -f "$EXPORT_OPTIONS"
 
-IPA=$(ls "$EXPORT_PATH"/*.ipa 2>/dev/null | head -1 || true)
-[ -n "$IPA" ] && [ -f "$IPA" ] || { echo "ERROR: no .ipa produced in $EXPORT_PATH" >&2; exit 1; }
+IPA_COUNT=$(find "$EXPORT_PATH" -maxdepth 1 -name '*.ipa' | wc -l | tr -d ' ')
+if [ "$IPA_COUNT" -eq 0 ]; then
+  echo "ERROR: no .ipa produced in $EXPORT_PATH" >&2
+  exit 1
+elif [ "$IPA_COUNT" -gt 1 ]; then
+  echo "ERROR: multiple .ipa files in $EXPORT_PATH — refusing to guess which to upload:" >&2
+  find "$EXPORT_PATH" -maxdepth 1 -name '*.ipa' >&2
+  exit 1
+fi
+IPA=$(find "$EXPORT_PATH" -maxdepth 1 -name '*.ipa')
 echo "Exported: $IPA"
 
 echo "[5/5] Upload"

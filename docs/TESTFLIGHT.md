@@ -66,19 +66,21 @@ fetch/create the App Store provisioning profile. The simplest way to get the cer
 the first time is to sign in to your Apple ID in Xcode → Settings → Accounts and
 let it manage certificates, then run the script.
 
-## Production APNS (do once, at first archive)
+## Production APNS (already wired)
 
-The committed `packages/web/ios/App/App/App.entitlements` keeps
-`aps-environment = development` so local **sandbox** push testing keeps working.
-A TestFlight build needs **production** APNS. Split it by configuration rather
-than flipping the shared file:
+Push is split by build configuration so local testing and TestFlight each get the
+right APNS environment:
 
-- add `App/AppRelease.entitlements` with `aps-environment = production`, and
-- set `CODE_SIGN_ENTITLEMENTS` per config in the Xcode project
-  (Debug → `App/App.entitlements`, Release → `App/AppRelease.entitlements`).
+- **Debug** → `App/App.entitlements` (`aps-environment = development`) — local
+  sandbox push testing keeps working.
+- **Release** → `App/AppRelease.entitlements` (`aps-environment = production`) —
+  what the archive/TestFlight build uses.
 
-Coordinate the production APNS key with the signaling Worker (notification epic
-#603 covers the sandbox/prod token split).
+The only prerequisite is registering the **Push Notifications** capability on the
+App ID `live.yooz.remi` so the distribution provisioning profile carries the
+production push entitlement (else the archive's codesign step fails). Coordinate
+the production APNS key with the signaling Worker (notification epic #603 covers
+the sandbox/prod token split).
 
 ## One-time App Store Connect setup
 
@@ -89,7 +91,7 @@ Coordinate the production APNS key with the signaling Worker (notification epic
 ## Preflight checklist
 
 - [ ] `config/app-release.json` build number bumped + committed.
-- [ ] Release entitlement uses production APNS (above).
+- [ ] Push Notifications capability registered on the App ID (production entitlement is already wired in the Release config).
 - [ ] App icons present (`packages/web/ios/App/App/Assets.xcassets/AppIcon.appiconset`).
 - [ ] Distribution cert in keychain; `ASC_KEY_ID` / `ASC_ISSUER_ID` exported for `--upload`.
 - [ ] Device family as intended (currently iPhone-only, `TARGETED_DEVICE_FAMILY = 1`).

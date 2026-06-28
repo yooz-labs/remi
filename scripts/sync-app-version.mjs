@@ -41,24 +41,34 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const config = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
 
+// Validate everything that can abort BEFORE mutating config on disk, so a bad
+// input never leaves config/app-release.json corrupted or burns a build number.
+const marketing = String(args.marketing ?? config.marketingVersion);
+if (!/^\d+\.\d+\.\d+$/.test(marketing)) {
+  console.error(`sync-app-version: invalid marketingVersion "${marketing}" (want X.Y.Z)`);
+  process.exit(1);
+}
+
 // --bump-build increments the source-of-truth build number and persists it, so
 // every TestFlight upload gets a fresh CFBundleVersion (App Store Connect rejects
-// duplicates). Done before stamping so the new value flows into the pbxproj.
+// duplicates). Guard the existing value so Number(undefined)+1 = NaN can't write
+// `"buildNumber": null` to the config.
 if (args.bumpBuild) {
-  config.buildNumber = Number(config.buildNumber) + 1;
+  const current = Number(config.buildNumber);
+  if (!Number.isInteger(current) || current < 0) {
+    console.error(
+      `sync-app-version: config buildNumber is not a non-negative integer: ${JSON.stringify(config.buildNumber)}`,
+    );
+    process.exit(1);
+  }
+  config.buildNumber = current + 1;
   writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
   console.log(
     `sync-app-version: bumped buildNumber -> ${config.buildNumber} in config/app-release.json`,
   );
 }
 
-const marketing = String(args.marketing ?? config.marketingVersion);
 const build = String(args.build ?? config.buildNumber);
-
-if (!/^\d+\.\d+\.\d+$/.test(marketing)) {
-  console.error(`sync-app-version: invalid marketingVersion "${marketing}" (want X.Y.Z)`);
-  process.exit(1);
-}
 if (!/^\d+$/.test(build)) {
   console.error(`sync-app-version: invalid build number "${build}" (want an integer)`);
   process.exit(1);
