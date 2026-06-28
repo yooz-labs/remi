@@ -86,18 +86,23 @@ export function shouldKeepExisting(
   incoming: UIQuestion,
   options: ShouldKeepExistingOptions = {},
 ): boolean {
-  // Replay-after-answer: a `replay_batch` re-feed of the original
-  // question carries the same id. Keep the answered state intact so
-  // the user is not re-prompted for a question they already resolved.
-  if (existing.answeredWith && existing.id === incoming.id) {
+  // A resolved card is either answered locally (`answeredWith`) or flipped to a
+  // short-lived "resolved elsewhere" trace (`resolvedReason`, #652). Both are
+  // terminal states and must be handled symmetrically below.
+  const existingResolved = existing.answeredWith != null || existing.resolvedReason != null;
+
+  // Replay-after-resolve: a `replay_batch` re-feed of the original question
+  // carries the same id. Keep the resolved state intact so the user is not
+  // re-prompted for a question they already resolved.
+  if (existingResolved && existing.id === incoming.id) {
     logSuppression('replay-of-answered', existing, incoming);
     return true;
   }
 
-  // Different question id with an answered existing: a genuinely new
-  // prompt is arriving (the answer ack will demote `answeredWith`
-  // shortly). Let the new one through.
-  if (existing.answeredWith) return false;
+  // Different id with a resolved existing: a genuinely new prompt is arriving
+  // (the trace fades / the answer ack clears shortly). Let the new one through
+  // rather than let a stale trace suppress a live question.
+  if (existingResolved) return false;
 
   const freshnessMs = options.freshnessMs ?? QUESTION_FRESHNESS_MS;
   const clock = options.now ?? Date.now;

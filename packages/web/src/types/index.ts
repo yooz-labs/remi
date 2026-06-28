@@ -4,6 +4,7 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
+import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
 /** Source that produced a UI message */
@@ -11,11 +12,13 @@ export type MessageSource = 'optimistic' | 'pty' | 'transcript';
 
 /**
  * How a question resolved on a channel OTHER than this client's own answer
- * (#652). Mirrors `QuestionResolvedMessage['reason']`; drives the brief
- * "resolved elsewhere" trace the card shows before it fades, so a lock-screen
- * or terminal answer leaves visible confirmation instead of vanishing.
+ * (#652). Derived from the wire type so the two can never drift; drives the
+ * brief "resolved elsewhere" trace the card shows before it fades, so a
+ * lock-screen or terminal answer leaves visible confirmation instead of
+ * vanishing. A new wire reason makes `resolveTraceLabel`'s switch non-exhaustive
+ * (a compile error), forcing it to be handled here too.
  */
-export type UIQuestionResolvedReason = 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
 
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';

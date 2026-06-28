@@ -25,8 +25,10 @@ export const RESOLVED_TRACE_LINGER_MS = 1500;
  */
 export const STATUS_CLEAR_FRESHNESS_MS = 2000;
 
-interface ClockOptions {
+/** Options for the freshness-gated status clear; mirrors `ShouldKeepExistingOptions`. */
+export interface StatusClearOptions {
   readonly now?: () => number;
+  readonly freshnessMs?: number;
 }
 
 /** Composite map key: a session's prompt, scoped to its agent (main default). */
@@ -154,7 +156,7 @@ export function clearMainQuestionOnStatus(
   questions: Map<string, UIQuestion>,
   sessionId: string,
   status: AgentStatus,
-  options: ClockOptions & { readonly freshnessMs?: number } = {},
+  options: StatusClearOptions = {},
 ): Map<string, UIQuestion> {
   if (!statusClearsMainQuestion(status)) return questions;
   const key = questionKey(sessionId);
@@ -163,37 +165,60 @@ export function clearMainQuestionOnStatus(
   const freshnessMs = options.freshnessMs ?? STATUS_CLEAR_FRESHNESS_MS;
   const clock = options.now ?? Date.now;
   const ageMs = clock() - Date.parse(existing.timestamp);
-  // Finite, non-negative, and within the window => protect the fresh card.
-  if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < freshnessMs) return questions;
+  // Only clear when we can PROVE the card is old enough. An unknown age
+  // (malformed timestamp => NaN) or a future-dated card (daemon clock ahead of
+  // the client => negative age) is treated as fresh and protected: the precise
+  // `question_resolved` broadcast is the guaranteed cleaner, so erring toward
+  // keeping an actionable card is the safe failure direction here.
+  if (!Number.isFinite(ageMs) || ageMs < freshnessMs) return questions;
   const next = new Map(questions);
   next.delete(key);
   return next;
 }
 
+/** Result of applying a `question_resolved` broadcast to the card collection. */
+export interface QuestionResolution {
+  readonly questions: Map<string, UIQuestion>;
+  /** True => the caller flipped a card to a trace and must fade-remove it later. */
+  readonly fade: boolean;
+}
+
 /**
- * Flip the card matching (sessionId, questionId) to a "resolved elsewhere"
- * trace (#652) so a lock-screen / terminal / other-client answer leaves visible
- * confirmation before it fades, instead of vanishing instantly.
+ * Apply a `question_resolved` broadcast to the card matching (sessionId,
+ * questionId), located by `id` because the message carries no agentId (#652).
+ * The card always ends up resolved; HOW depends on who acted:
  *
- * No-op (same reference) when the card is absent, was already answered LOCALLY
- * (`answeredWith` / `submitting` own their own lifecycle), or is already marked
- * resolved (idempotent for a duplicate broadcast). Located by `id` within the
- * session because `question_resolved` carries no agentId.
+ * - Answered LOCALLY (`answeredWith`) or already traced (duplicate broadcast):
+ *   left untouched — those own their own removal timer. `fade: false`.
+ * - SUBMITTING (#627 AUQ / cancel): the "Answering…" card has no self-removal
+ *   timer and relies on this broadcast to clear; the user acted in-app, so it is
+ *   removed outright rather than shown an "elsewhere" trace. `fade: false`.
+ * - Otherwise PENDING (the user did NOT act here — lock screen / terminal /
+ *   auto): flipped to a brief trace the caller fades after the linger window.
+ *   `fade: true`.
+ * - Absent: no-op (same reference). `fade: false`.
  */
-export function markQuestionResolved(
+export function resolveQuestionCard(
   questions: Map<string, UIQuestion>,
   sessionId: string,
   questionId: string,
   reason: UIQuestionResolvedReason,
-): Map<string, UIQuestion> {
+): QuestionResolution {
   for (const [key, q] of questions) {
     if (q.sessionId !== sessionId || q.id !== questionId) continue;
-    if (q.answeredWith != null || q.submitting || q.resolvedReason != null) return questions;
+    if (q.answeredWith != null || q.resolvedReason != null) {
+      return { questions, fade: false };
+    }
+    if (q.submitting) {
+      const next = new Map(questions);
+      next.delete(key);
+      return { questions: next, fade: false };
+    }
     const next = new Map(questions);
     next.set(key, { ...q, resolvedReason: reason });
-    return next;
+    return { questions: next, fade: true };
   }
-  return questions;
+  return { questions, fade: false };
 }
 
 /** Whether a card is still awaiting the user (drives the session's pending badge). */

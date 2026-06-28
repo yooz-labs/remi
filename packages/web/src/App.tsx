@@ -23,10 +23,10 @@ import {
   clearSessionQuestions,
   getSessionQuestions,
   isQuestionPending,
-  markQuestionResolved,
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
+  resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
 import { shouldKeepExisting } from '@/lib/question-merge';
@@ -721,27 +721,26 @@ function App() {
         // (not the pre-mutation ref) keeps two concurrent resolutions from
         // leaving the badge stuck `questionPending: true`. The ref is the latest
         // committed map (kept in sync by the effect below).
-        const tracedQuestions = markQuestionResolved(
+        const { questions: nextQuestions, fade } = resolveQuestionCard(
           questionsRef.current,
           resolvedSessionId,
           resolvedQuestionId,
           message.reason,
         );
-        const flippedToTrace = tracedQuestions !== questionsRef.current;
-        const stillPending = getSessionQuestions(tracedQuestions, resolvedSessionId).some(
+        const stillPending = getSessionQuestions(nextQuestions, resolvedSessionId).some(
           isQuestionPending,
         );
-        questionsRef.current = tracedQuestions;
-        setQuestions(tracedQuestions);
+        questionsRef.current = nextQuestions;
+        setQuestions(nextQuestions);
         setSessions((prev) =>
           prev.map((s) => (s.id === resolvedSessionId ? { ...s, questionPending: stillPending } : s)),
         );
         // Clear the matching delivered lock-screen / in-app notification (native).
         dismissDeliveredNotification(resolvedQuestionId);
         // Fade the trace card we just flipped; remove by id so a newer prompt
-        // that took the same slot meanwhile is never wiped. When the card was
-        // already answered/absent (no flip), its own lifecycle owns removal.
-        if (flippedToTrace) {
+        // that took the same slot meanwhile is never wiped. A submitting card was
+        // already removed above, and an answered/absent card owns its own removal.
+        if (fade) {
           setTimeout(() => {
             setQuestions((prev) =>
               removeQuestionById(prev, resolvedSessionId, resolvedQuestionId),
