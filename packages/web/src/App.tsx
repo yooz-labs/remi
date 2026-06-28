@@ -229,6 +229,12 @@ function App() {
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
+  // In-flight kill_session_request, keyed by requestId, so kill_session_response
+  // (and a no-reply timeout) resolve against the session that was actually
+  // stopped — not whatever session happens to be open in the chat (#637 review).
+  const pendingKillsRef = useRef<
+    Map<UUID, { sessionId: UUID; timeoutId: ReturnType<typeof setTimeout> }>
+  >(new Map());
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -911,6 +917,14 @@ function App() {
       }
 
       case 'kill_session_response': {
+        // Resolve against the session we actually asked to stop (not the open
+        // chat) and cancel its no-reply timeout.
+        const pending = pendingKillsRef.current.get(message.requestId);
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pendingKillsRef.current.delete(message.requestId);
+        }
+        const killedSessionId = pending?.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
         if (message.success) {
           // Session torn down; refresh the list so the dead session drops off.
           const reqList = requestSessionListRef.current;
@@ -924,7 +938,7 @@ function App() {
           console.error(`Session kill failed: ${message.error}`);
           const errorMsg: UIMessage = {
             id: generateId(),
-            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            sessionId: killedSessionId,
             connectionId: '' as ConnectionId,
             sender: 'system',
             content: `Failed to stop session: ${message.error || 'unknown error'}`,
@@ -2059,6 +2073,21 @@ function App() {
     [connections, requestNewSession],
   );
 
+  // Surface a system message in a specific session's thread.
+  const pushSessionSystemMessage = useCallback((sessionId: UUID, content: string) => {
+    const msg: UIMessage = {
+      id: generateId(),
+      sessionId,
+      connectionId: '' as ConnectionId,
+      sender: 'system',
+      content,
+      timestamp: new Date().toISOString(),
+      state: 'delivered',
+      isEditing: false,
+    };
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
   // Stop (kill) a session: tears down the Claude process + its daemon (#637).
   // Persistent sessions never time out, so this is the explicit way to end one.
   const handleKillSession = useCallback(
@@ -2067,30 +2096,35 @@ function App() {
         `Stop ${label ? `"${label}"` : 'this session'}? This ends the Claude process and cannot be undone.`,
       );
       if (!ok) return;
-      const sent = cmSendMessage(connectionId, createKillSessionRequest(sessionId));
+      const req = createKillSessionRequest(sessionId);
+      const sent = cmSendMessage(connectionId, req);
       if (!sent) {
-        const errorMsg: UIMessage = {
-          id: generateId(),
-          sessionId,
-          connectionId: '' as ConnectionId,
-          sender: 'system',
-          content: 'Cannot stop session: not connected to daemon.',
-          timestamp: new Date().toISOString(),
-          state: 'delivered',
-          isEditing: false,
-        };
-        setMessages((prev) => [...prev, errorMsg]);
+        pushSessionSystemMessage(sessionId, 'Cannot stop session: not connected to daemon.');
+        return;
       }
+      // Guard against a daemon that never replies (crash / WS drop): surface a
+      // timeout scoped to this session if no kill_session_response lands.
+      const timeoutId = setTimeout(() => {
+        pendingKillsRef.current.delete(req.id);
+        pushSessionSystemMessage(
+          sessionId,
+          'Stop session timed out; the daemon may be unreachable.',
+        );
+      }, 12_000);
+      pendingKillsRef.current.set(req.id, { sessionId, timeoutId });
     },
-    [cmSendMessage],
+    [cmSendMessage, pushSessionSystemMessage],
   );
 
   const handleEndSession = useCallback(() => {
     if (!activeSessionId) return;
     const connId = getActiveConnectionId();
-    if (!connId) return;
+    if (!connId) {
+      pushSessionSystemMessage(activeSessionId, 'Cannot stop session: session is no longer available.');
+      return;
+    }
     handleKillSession(activeSessionId, connId);
-  }, [activeSessionId, getActiveConnectionId, handleKillSession]);
+  }, [activeSessionId, getActiveConnectionId, handleKillSession, pushSessionSystemMessage]);
 
   // Menu actions
   const handleCopyConversation = useCallback(() => {
@@ -2203,7 +2237,7 @@ function App() {
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
       onDetach={handleDetach}
-      onEndSession={handleEndSession}
+      onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
     />
   ) : (

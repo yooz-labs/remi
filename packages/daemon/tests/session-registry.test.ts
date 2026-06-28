@@ -741,6 +741,42 @@ describe('SessionRegistry', () => {
       expect(pty.close).toHaveBeenCalled();
       expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
     });
+
+    test('persistent session is closed when the Claude process exits (pty_exit)', () => {
+      // Persistence must NOT keep a session alive after Claude itself exits;
+      // pty_exit is the primary lifecycle-ending event for a persistent session.
+      const sessionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+        true,
+      );
+
+      registry.handlePTYExit(sessionId);
+
+      expect(registry.getSession(sessionId)).toBeUndefined();
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit');
+    });
+
+    test('persistent + explicit detach stays detached with no timeout', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), false, true);
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId, true);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(registry.getSession(sessionId)).toBeDefined();
+      expect(pty.close).not.toHaveBeenCalled();
+      const sessions = registry.listSessions();
+      expect(sessions[0]?.status).toBe('detached');
+    });
   });
 
   describe('shutdown()', () => {

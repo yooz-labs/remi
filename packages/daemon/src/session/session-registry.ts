@@ -61,8 +61,12 @@ export interface SessionRegistryEvents {
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
   onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
-  /** Connection detached from session. For non-locally-owned sessions,
-   * this means the session is now orphaned; locally-owned sessions remain active. */
+  /** Connection detached from the session. Fires for ALL detach reasons, not
+   * only genuine orphans: a plain non-locally-owned, non-persistent session
+   * becomes orphaned (orphan timeout armed), while locally-owned, persistent,
+   * and explicitly-detached sessions stay alive with no timeout. Inspect the
+   * session flags (locallyOwned / persistent / explicitlyDetached) to tell
+   * which case fired. */
   onSessionOrphaned?: (sessionId: UUID) => void;
   /** Session was resumed (connection reattached) */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
