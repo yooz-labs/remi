@@ -269,7 +269,7 @@ export function InputArea({
     <div
       ref={containerRef}
       className={clsx(
-        'border-t border-[var(--color-border)] bg-[var(--color-surface)]',
+        'relative border-t border-[var(--color-border)] bg-[var(--color-surface)]',
         'safe-area-bottom',
         className,
       )}
@@ -381,45 +381,50 @@ export function InputArea({
 
       {/* Stop dialog (#624 review): the single confirmation surface for the
           escape, reached by long-pressing the send button. Confirming sends a
-          bare Esc to interrupt Claude's running work or dismiss a prompt. */}
+          bare Esc to interrupt Claude's running work or dismiss a prompt. The
+          card is anchored to the input area (absolute, bottom-full) so it rides
+          up with the send button when the keyboard pushes the input up; only the
+          dim backdrop is fixed to the viewport. */}
       {stopDialogOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 pb-28"
-          onClick={() => setStopDialogOpen(false)}
-          role="presentation"
-        >
+        <>
           <div
-            className="w-full max-w-sm rounded-2xl bg-[var(--color-surface-elevated)] p-4 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Stop the current action"
-          >
-            <p className="mb-1 text-base font-semibold text-[var(--color-text)]">
-              Stop the current action?
-            </p>
-            <p className="mb-4 text-sm text-[var(--color-text-secondary)]">
-              Sends Esc to interrupt Claude's running work or dismiss an on-screen prompt.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setStopDialogOpen(false)}
-                className="flex-1 rounded-full bg-[var(--color-surface-light)] py-2.5 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface)] active:scale-95"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={confirmStop}
-                className="flex flex-1 items-center justify-center gap-2 rounded-full bg-[var(--color-error)] py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 active:scale-95"
-              >
-                <StopCircle className="size-4" />
-                Stop
-              </button>
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={() => setStopDialogOpen(false)}
+            role="presentation"
+          />
+          <div className="absolute inset-x-0 bottom-full z-50 flex justify-center px-4 pb-2">
+            <div
+              className="w-full max-w-sm rounded-2xl bg-[var(--color-surface-elevated)] p-4 shadow-xl"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Stop the current action"
+            >
+              <p className="mb-1 text-base font-semibold text-[var(--color-text)]">
+                Stop the current action?
+              </p>
+              <p className="mb-4 text-sm text-[var(--color-text-secondary)]">
+                Sends Esc to interrupt Claude's running work or dismiss an on-screen prompt.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setStopDialogOpen(false)}
+                  className="flex-1 rounded-full bg-[var(--color-surface-light)] py-2.5 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface)] active:scale-95"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmStop}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-full bg-[var(--color-error)] py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 active:scale-95"
+                >
+                  <StopCircle className="size-4" />
+                  Stop
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
