@@ -4,13 +4,22 @@
 
 import { describe, expect, test } from 'bun:test';
 import { shouldKeepExisting } from '../../src/lib/question-merge';
-import type { UIQuestion, UIQuestionOption, UUID } from '../../src/types';
+import type {
+  UIQuestion,
+  UIQuestionOption,
+  UIQuestionResolvedReason,
+  UUID,
+} from '../../src/types';
 
 let nextId = 0;
 function uiq(
   prompt: string,
   options: ReadonlyArray<{ label: string; isYes?: boolean; isNo?: boolean }>,
-  extra: { timestamp?: string; answeredWith?: string } = {},
+  extra: {
+    timestamp?: string;
+    answeredWith?: string;
+    resolvedReason?: UIQuestionResolvedReason;
+  } = {},
 ): UIQuestion {
   const structured: UIQuestionOption[] = options.map((o, i) => ({
     label: o.label,
@@ -29,6 +38,7 @@ function uiq(
     options: structured.length > 0 ? structured.map((o) => o.label) : undefined,
     timestamp: ts,
     ...(extra.answeredWith !== undefined ? { answeredWith: extra.answeredWith } : {}),
+    ...(extra.resolvedReason !== undefined ? { resolvedReason: extra.resolvedReason } : {}),
   };
 }
 
@@ -228,5 +238,21 @@ describe('shouldKeepExisting', () => {
       { label: ' no ' },
     ]);
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
+  });
+
+  describe('resolved-elsewhere trace (#652)', () => {
+    test('a resolvedReason trace never blocks a genuinely new prompt (different id)', () => {
+      // A richer (4-option) trace would normally out-rank an incoming default
+      // 3-set; once resolved it must step aside so the live prompt shows.
+      const existing = uiq('Which approach?', fourSentenceOptions, { resolvedReason: 'answered' });
+      const incoming = uiq('Claude needs your permission to use Bash', yesYesalwaysNo);
+      expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
+    });
+
+    test('a same-id replay keeps the resolved trace (no re-prompt)', () => {
+      const existing = uiq('Allow Bash: ls', yesYesalwaysNo, { resolvedReason: 'cancelled' });
+      const incoming = { ...existing };
+      expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
+    });
   });
 });

@@ -18,11 +18,15 @@ import { setSoundEnabled } from '@/lib/notifications';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
+  RESOLVED_TRACE_LINGER_MS,
+  clearMainQuestionOnStatus,
   clearSessionQuestions,
   getSessionQuestions,
+  isQuestionPending,
   questionKey,
   removeQuestionById,
-  statusClearsMainQuestion,
+  removeQuestionByKeyIfId,
+  resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
 import { shouldKeepExisting } from '@/lib/question-merge';
@@ -522,16 +526,10 @@ function App() {
         // change it), so clear just the main-agent slot; a concurrent subagent
         // prompt must survive. The transient auto-approve broadcasts
         // ('evaluating'/'approved', #576) must NOT clear a pending card; see
-        // statusClearsMainQuestion for the rationale.
-        if (statusClearsMainQuestion(sessionData.status)) {
-          setQuestions((prev) => {
-            const key = questionKey(sessionData.id);
-            if (!prev.has(key)) return prev;
-            const next = new Map(prev);
-            next.delete(key);
-            return next;
-          });
-        }
+        // statusClearsMainQuestion for the rationale. A freshness gate (#652)
+        // additionally protects a just-arrived card from a status update racing
+        // it in the same burst (the cause of the "flash and vanish" flicker).
+        setQuestions((prev) => clearMainQuestionOnStatus(prev, sessionData.id, sessionData.status));
         break;
       }
 
@@ -709,34 +707,46 @@ function App() {
 
       case 'question_resolved': {
         // Cross-client dismissal (#585, P7): the question resolved on some
-        // channel (answered elsewhere, auto-approved/denied, or cancelled), so
-        // drop its card and clear any lock-screen notification for it here.
-        // Idempotent — if we never held it (or already dropped it), this is a
-        // no-op. The message carries no agentId, so locate the card by question
-        // id within the session.
+        // channel (answered elsewhere, auto-approved/denied, or cancelled). The
+        // message carries no agentId, so locate the card by question id within
+        // the session. Rather than vanish instantly (#652 — left a lock-screen
+        // answer with no in-app confirmation), flip a still-pending card to a
+        // brief "resolved elsewhere" trace, then fade it after the linger window.
+        // resolveQuestionCard decides per card: pending => trace+fade, submitting
+        // (#627) => removed here, answered-locally => left to its own timer.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
-        // Compute the post-removal map from the CURRENT committed ref, then drive
-        // both setters from that one value (#585, P7 FIX 3). Reading the updated
-        // map (not the pre-removal ref) is what prevents two concurrent
-        // resolutions from leaving the badge stuck `questionPending: true`. The
-        // ref is the latest committed map (kept in sync by the effect below), so
-        // the second resolution sees the first's removal.
-        const updatedQuestions = removeQuestionById(
+        // Compute the next map from the CURRENT committed ref, then drive both
+        // setters from that one value (#585, P7 FIX 3): reading the updated map
+        // (not the pre-mutation ref) keeps two concurrent resolutions from
+        // leaving the badge stuck `questionPending: true`. The ref is the latest
+        // committed map (kept in sync by the effect below).
+        const { questions: nextQuestions, fade } = resolveQuestionCard(
           questionsRef.current,
           resolvedSessionId,
           resolvedQuestionId,
+          message.reason,
         );
-        const stillPending = getSessionQuestions(updatedQuestions, resolvedSessionId).some(
-          (q) => q.answeredWith === undefined,
+        const stillPending = getSessionQuestions(nextQuestions, resolvedSessionId).some(
+          isQuestionPending,
         );
-        questionsRef.current = updatedQuestions;
-        setQuestions(updatedQuestions);
+        questionsRef.current = nextQuestions;
+        setQuestions(nextQuestions);
         setSessions((prev) =>
           prev.map((s) => (s.id === resolvedSessionId ? { ...s, questionPending: stillPending } : s)),
         );
         // Clear the matching delivered lock-screen / in-app notification (native).
         dismissDeliveredNotification(resolvedQuestionId);
+        // Fade the trace card we just flipped; remove by id so a newer prompt
+        // that took the same slot meanwhile is never wiped. A submitting card was
+        // already removed above, and an answered/absent card owns its own removal.
+        if (fade) {
+          setTimeout(() => {
+            setQuestions((prev) =>
+              removeQuestionById(prev, resolvedSessionId, resolvedQuestionId),
+            );
+          }, RESOLVED_TRACE_LINGER_MS);
+        }
         break;
       }
 
@@ -1747,6 +1757,7 @@ function App() {
         return;
       }
       const key = questionKey(sid, question.agentId);
+      const answeredId = question.id;
       // Mark this question answered (card shows collapsed state briefly), then
       // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {
@@ -1756,19 +1767,18 @@ function App() {
         next.set(key, { ...existing, answeredWith: content });
         return next;
       });
+      // Remove by (key, id), not key alone: a newer prompt may have taken this
+      // session/agent slot before the timer fires (back-to-back escalations);
+      // deleting it would make the new card "flash and vanish" (#652).
       setTimeout(() => {
-        setQuestions((prev) => {
-          if (!prev.has(key)) return prev;
-          const next = new Map(prev);
-          next.delete(key);
-          return next;
-        });
-      }, 1500);
+        setQuestions((prev) => removeQuestionByKeyIfId(prev, key, answeredId));
+      }, RESOLVED_TRACE_LINGER_MS);
       // Keep the session flagged while OTHER prompts remain unanswered. Read
       // the ref (latest committed map) rather than the closure so the badge
-      // can't get stuck after the dep snapshot goes stale.
+      // can't get stuck after the dep snapshot goes stale. The ref still holds
+      // the pre-answer card for this id, so exclude it explicitly.
       const stillPending = getSessionQuestions(questionsRef.current, sid).some(
-        (q) => q.id !== question.id && q.answeredWith === undefined,
+        (q) => q.id !== question.id && isQuestionPending(q),
       );
       setSessions((prev) =>
         prev.map((s) => (s.id === sid ? { ...s, questionPending: stillPending } : s)),

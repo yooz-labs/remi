@@ -11,7 +11,12 @@
  */
 
 import { formatRelativeTime } from '@/lib/format-time';
-import type { UIQuestion, UIQuestionOption, UIQuestionStep } from '@/types';
+import type {
+  UIQuestion,
+  UIQuestionOption,
+  UIQuestionResolvedReason,
+  UIQuestionStep,
+} from '@/types';
 import { clsx } from 'clsx';
 import { Check, Send, X } from 'lucide-react';
 import { type KeyboardEvent, useCallback, useMemo, useState } from 'react';
@@ -34,6 +39,20 @@ interface QuestionCardProps {
 }
 
 /** Resolve the display label for an answered value. */
+/** Human label for a prompt resolved on another channel (#652). */
+function resolveTraceLabel(reason: UIQuestionResolvedReason): string {
+  switch (reason) {
+    case 'answered':
+      return 'Answered on another device';
+    case 'auto_approved':
+      return 'Auto-approved';
+    case 'auto_denied':
+      return 'Auto-denied';
+    case 'cancelled':
+      return 'Cancelled';
+  }
+}
+
 function resolveAnswerLabel(question: UIQuestion, answer: string): string {
   if (question.structuredOptions) {
     const match = question.structuredOptions.find((o) => o.value === answer);
@@ -377,7 +396,13 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
       ? 'Permission request'
       : 'Question';
 
-  if (isAnswered) {
+  const resolvedReason = question.resolvedReason;
+  if (isAnswered || resolvedReason != null) {
+    // Positive resolutions (answered locally, answered elsewhere, auto-approved)
+    // read as a green confirmation; auto-denied / cancelled use a neutral bar so
+    // the trace doesn't masquerade as an approval (#652).
+    const positive =
+      isAnswered || resolvedReason === 'answered' || resolvedReason === 'auto_approved';
     return (
       <div
         className={clsx(
@@ -385,19 +410,37 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
           'animate-[fade-in_200ms_ease-out]',
           className,
         )}
-        style={{
-          background: 'var(--color-success-soft)',
-          borderColor: 'var(--color-success-line)',
-          color: 'var(--color-text-secondary)',
-        }}
+        style={
+          positive
+            ? {
+                background: 'var(--color-success-soft)',
+                borderColor: 'var(--color-success-line)',
+                color: 'var(--color-text-secondary)',
+              }
+            : {
+                background: 'var(--color-surface-light)',
+                borderColor: 'var(--color-border)',
+                color: 'var(--color-text-secondary)',
+              }
+        }
       >
-        <Check className="size-4 shrink-0 text-[var(--color-success)]" />
-        <span>
-          Answered:{' '}
-          <span className="font-medium text-[var(--color-text)]">
-            {resolveAnswerLabel(question, question.answeredWith ?? '')}
+        {positive ? (
+          <Check className="size-4 shrink-0 text-[var(--color-success)]" />
+        ) : (
+          <X className="size-4 shrink-0 text-[var(--color-text-muted)]" />
+        )}
+        {isAnswered ? (
+          <span>
+            Answered:{' '}
+            <span className="font-medium text-[var(--color-text)]">
+              {resolveAnswerLabel(question, question.answeredWith ?? '')}
+            </span>
           </span>
-        </span>
+        ) : (
+          <span className="font-medium text-[var(--color-text)]">
+            {resolvedReason ? resolveTraceLabel(resolvedReason) : ''}
+          </span>
+        )}
       </div>
     );
   }

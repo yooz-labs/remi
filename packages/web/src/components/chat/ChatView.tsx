@@ -111,7 +111,12 @@ export function ChatView({
   // quick-response chips now -- the pinned card owns answering).
   const questionList = questions ?? [];
   const primaryQuestion = questionList[0] ?? null;
-  const chatCards = questionList.filter((q) => q.answeredWith != null || isConnected);
+  // An answered or resolved-elsewhere card (#652) stays briefly regardless of
+  // connection so the user sees confirmation; a still-pending card needs a live
+  // connection to be actionable.
+  const chatCards = questionList.filter(
+    (q) => q.answeredWith != null || q.resolvedReason != null || isConnected,
+  );
 
   // iOS edge-swipe back (#411): rightward swipe from the left edge pops
   // the chat back to the session list. Mirrors the native iOS gesture.

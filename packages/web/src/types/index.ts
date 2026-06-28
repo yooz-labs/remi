@@ -4,10 +4,21 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
+import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
 /** Source that produced a UI message */
 export type MessageSource = 'optimistic' | 'pty' | 'transcript';
+
+/**
+ * How a question resolved on a channel OTHER than this client's own answer
+ * (#652). Derived from the wire type so the two can never drift; drives the
+ * brief "resolved elsewhere" trace the card shows before it fades, so a
+ * lock-screen or terminal answer leaves visible confirmation instead of
+ * vanishing. A new wire reason makes `resolveTraceLabel`'s switch non-exhaustive
+ * (a compile error), forcing it to be handled here too.
+ */
+export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
 
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';
@@ -182,6 +193,11 @@ export interface UIQuestion {
   readonly timestamp: Timestamp;
   /** The answer that was selected (set after answering) */
   readonly answeredWith?: string;
+  /** #652: the prompt resolved on another channel (lock screen / terminal /
+   *  another client). Set by the `question_resolved` handler when the card was
+   *  NOT answered locally, so the card shows a brief trace then fades instead of
+   *  vanishing with no confirmation. Mutually exclusive with `answeredWith`. */
+  readonly resolvedReason?: UIQuestionResolvedReason;
   /** The Claude agent this prompt belongs to ('main' default). Keys the
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
