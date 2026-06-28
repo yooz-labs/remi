@@ -114,8 +114,8 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onUserInput?.(connectionId, sessionId, content, raw, claudeSessionId);
       },
 
-      onAnswer: (connectionId, sessionId, questionId, answer, claudeSessionId) => {
-        this.events.onAnswer?.(connectionId, sessionId, questionId, answer, claudeSessionId);
+      onAnswer: (connectionId, sessionId, questionId, answer, claudeSessionId, extra) => {
+        this.events.onAnswer?.(connectionId, sessionId, questionId, answer, claudeSessionId, extra);
       },
 
       onAnswerRelay: async (sessionId, questionId, answer, claudeSessionId) =>

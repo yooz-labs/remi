@@ -112,6 +112,70 @@ describe('buildPushText (#574 issues 3+4)', () => {
     const { body } = buildPushText('agent', question('q', ynOpts, 'Retry?'));
     expect(body).toBe('Retry?\ny. Yes  n. No');
   });
+
+  // #628: prefer the auto-approve LLM's lock-screen summary over raw tool text.
+  test('prefers the summary over the raw tool text when present', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'Allow Bash: git push --force origin main',
+      options: defaultThreeSet,
+      allowsFreeText: false,
+      isAnswered: false,
+      summary: 'Force-push to main?',
+    };
+    const { title, body } = buildPushText('proj', q);
+    expect(title).toBe('proj: Force-push to main?');
+    expect(body.startsWith('Force-push to main?')).toBe(true);
+    expect(body).toContain('1. Yes  2. Yes, always  3. No');
+  });
+
+  // #626: a multi-question AskUserQuestion summarizes its SCOPE on the lock screen.
+  test('multi-question summarizes the topics instead of one option list', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        { header: 'Collab PI', text: 'Who is the PI?', multiSelect: false, options: [] },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+        { header: 'Scaffold', text: 'Scaffold now?', multiSelect: false, options: [] },
+      ],
+    };
+    const { title, body } = buildPushText('proj', q);
+    expect(title).toBe('proj: 3 questions');
+    expect(body).toBe('1. Collab PI\n2. Software focus\n3. Scaffold');
+  });
+
+  test('single-question AskUserQuestion still uses the normal option-list body', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'DB: Which database?',
+      options: [
+        { value: '1', label: 'Postgres', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'SQLite', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        {
+          header: 'DB',
+          text: 'Which database?',
+          multiSelect: false,
+          options: [
+            { value: '1', label: 'Postgres', isRecommended: true, isYes: false, isNo: false },
+            { value: '2', label: 'SQLite', isRecommended: false, isYes: false, isNo: false },
+          ],
+        },
+      ],
+    };
+    const { title, body } = buildPushText('proj', q);
+    expect(title).toBe('proj: DB: Which database?');
+    expect(body).toBe('DB: Which database?\n1. Postgres  2. SQLite');
+  });
 });
 
 describe('NotificationDispatcher.maybePush', () => {
@@ -213,6 +277,42 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed).toHaveLength(1);
     expect(pushed[0]?.opts['options']).toEqual(['Yes', 'Yes, always', 'No']);
     expect(pushed[0]?.opts['category']).toBe('REMI_YNA');
+  });
+
+  // #626: an AskUserQuestion must NOT get a count-based category (REMI_YN/YNA
+  // would mislabel arbitrary picks as Yes/No); the lock screen opens the app.
+  test('multi-question (AskUserQuestion) pushes with NO category', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    const mq: Question = {
+      id: 'q1' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      // Three options would normally select REMI_YNA — proving the kind guard wins.
+      options: [
+        { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
+        { value: '3', label: 'Other', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        {
+          header: 'Collab PI',
+          text: 'Who is the PI?',
+          multiSelect: false,
+          options: [],
+        },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+      ],
+    };
+    make().maybePush(SID, mq);
+
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]?.opts['category']).toBeUndefined();
+    expect(pushed[0]?.opts['title']).toContain('2 questions');
+    expect(pushed[0]?.opts['body']).toBe('1. Collab PI\n2. Software focus');
   });
 
   test('body shows the ask + real labels and is never the collapsed PTY garble (#574 issue 3)', () => {

@@ -1183,6 +1183,25 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
+        // #625 single gate: when a hook server is active the auto-approve gate is
+        // the SOLE authority for permission questions and pushes escalations itself
+        // (binary via onHeldEscalate, passthrough via escalatePassthrough). The PTY
+        // parser echoes EVERY on-screen prompt — including ones the gate already
+        // auto-approved — so routing it here is the phantom-notification source
+        // (>1,100 confirmed pushes fired right after a 0 ms approve). Suppress it for
+        // hooked sessions; keep it as the only signal when no hook server is
+        // configured (the genuine fallback).
+        if (hookServer) {
+          // #624 review: a prompt with NO PermissionRequest hook (Claude's native
+          // Agent-Teams permissions, MCP elicitation dialogs) reaches only the PTY,
+          // so suppression here means it is not pushed. Log it (not silent) so a
+          // stuck no-hook prompt leaves a trace; routing these through without
+          // reintroducing the phantom flood is a tracked follow-up.
+          log(
+            `[Question] PTY question suppressed (hook server active; gate owns escalations): "${question.text.slice(0, 60)}"`,
+          );
+          return;
+        }
         tracker.onPTYPromptVisible(question);
       },
       onStatusChange: (status, context) => {

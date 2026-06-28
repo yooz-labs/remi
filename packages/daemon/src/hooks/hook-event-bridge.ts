@@ -178,6 +178,14 @@ export class HookEventBridge {
       // Intentionally unhandled notification types:
       // - 'auth_success': informational only, no status change needed
       // - 'elicitation_dialog': not yet supported by Remi
+      // #624 review: log (not silent) so an unsupported prompt — e.g. an MCP
+      // elicitation dialog Claude is blocking on — leaves a trace instead of
+      // looking identical to an idle session. Tracked as a follow-up.
+      if (input.notification_type === 'elicitation_dialog') {
+        console.debug(
+          '[Bridge] elicitation_dialog notification received but not yet supported; ignoring',
+        );
+      }
     }
   }
 
@@ -210,7 +218,7 @@ export class HookEventBridge {
    * this question, so the user's answer resolves the hook via the response
    * (Model B) instead of a PTY inject. Always returns an id today.
    */
-  handlePermissionRequest(input: PermissionRequestHookInput): UUID {
+  handlePermissionRequest(input: PermissionRequestHookInput, summary?: string): UUID {
     // Phase 4 (#419): the subagentContext drop previously sat here.
     // After phase 3 wired in the QuestionPresenceTracker, push semantics
     // are presence-gated regardless of subagent context — a subagent
@@ -256,6 +264,20 @@ export class HookEventBridge {
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
+      // #626: surface the full AskUserQuestion structure (all sub-questions with
+      // headers, descriptions, multiSelect) so the client can render it properly.
+      // text/options above still mirror questions[0] for back-compat.
+      ...(toolQuestion?.kind === 'multi_question' && toolQuestion.questions
+        ? {
+            kind: 'multi_question' as const,
+            questions: toolQuestion.questions,
+            ...(toolQuestion.submitLabel ? { submitLabel: toolQuestion.submitLabel } : {}),
+          }
+        : {}),
+      // #628: the auto-approve LLM's lock-screen one-liner for a generic escalation
+      // (e.g. "Force-push to main?"). AskUserQuestion carries authored content, so a
+      // summary is only threaded for non-AUQ permission escalations.
+      ...(summary ? { summary } : {}),
     });
     this.events.onStatusChange('waiting');
     return questionId;

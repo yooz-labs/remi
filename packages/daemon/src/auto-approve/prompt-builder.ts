@@ -67,7 +67,12 @@ DENY FLOOR (always applies, even over USER GUIDANCE — catastrophic / irreversi
 Respond with JSON ONLY. No markdown, no explanation outside JSON:
 {"decision": "approve", "reasoning": "brief explanation"}
 {"decision": "deny", "reasoning": "brief explanation"}
-{"decision": "escalate", "reasoning": "brief explanation"}`;
+{"decision": "escalate", "reasoning": "brief explanation", "summary": "short lock-screen question"}
+
+For "escalate" ONLY, ALSO include "summary": a single, plain-language question the user
+can answer at a glance on a phone lock screen — what they are actually approving, not how.
+Keep it under ~60 characters, no file paths, no long commands, end with "?".
+Examples: "Force-push to main?", "Delete the migrations table?", "Post results to the API?".`;
 
 /**
  * Build the chat messages for the auto-approve evaluation.

@@ -5,4 +5,8 @@
 # spacing (e.g. "Output ONLY a..." becomes "OutputONLYa..."), which the spell
 # checker mis-tokenizes (e.g. "ONL"). They are data, not prose.
 [files]
-extend-exclude = ["packages/daemon/tests/parser/fixtures/"]
+extend-exclude = [
+  "packages/daemon/tests/parser/fixtures/",
+  # Captured AskUserQuestion TUI sessions (#627) — raw terminal bytes, not prose.
+  "packages/daemon/tests/fixtures/auq/",
+]

@@ -269,6 +269,15 @@ export class QuestionPresenceTracker {
             text: hookRecord.text || ptyQuestion.text,
             options: [...hookRecord.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
+            // #626/#628: the PTY base carries none of the structured fields, so a
+            // merge must preserve the hook record's AskUserQuestion structure +
+            // lock-screen summary — else a merged card loses questions[]/summary.
+            // (Dormant while PTY emission is gated off for hooked sessions (#625),
+            // but correct for the no-hook fallback + any future re-enable.)
+            ...(hookRecord.kind ? { kind: hookRecord.kind } : {}),
+            ...(hookRecord.questions ? { questions: hookRecord.questions } : {}),
+            ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
+            ...(hookRecord.summary ? { summary: hookRecord.summary } : {}),
           }
         : ptyQuestion;
 

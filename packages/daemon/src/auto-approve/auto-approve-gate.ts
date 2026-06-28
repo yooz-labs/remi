@@ -80,21 +80,26 @@ export interface AutoApproveGateDeps {
    *  fall open to passthrough rather than hold a hook nobody can answer. The
    *  gate wraps every call in a try/catch, so an implementation that throws is
    *  logged and absorbed (treated as `undefined`) rather than propagated. */
-  escalate: (input: PermissionRequestHookInput) => UUID | undefined;
+  escalate: (input: PermissionRequestHookInput, summary?: string) => UUID | undefined;
   /** Called right before the LLM eval starts, so the tracker can BUFFER the PTY
    *  prompt until the verdict (don't push an auto-approved permission). #484. */
   onEvalStart?: () => void;
   /** Called when the verdict is escalate (the user must answer), so the tracker
    *  releases the buffered PTY prompt. #484. */
   onEscalate?: () => void;
-  /** Called when a BINARY escalation HOLDS its hook open (Model B, #573):
-   *  Claude blocks on the hook response, so it never renders the native prompt
-   *  and the tracker's PTY-render push trigger never fires. The gate calls this
-   *  with the held `Question.id` so the tracker pushes that question IMMEDIATELY
-   *  (-> sessionRegistry.addQuestion + APNS), making it answerable. Called ONLY
-   *  in the held branch — passthrough / multi-choice escalations still render the
-   *  PTY and push via `onPTYPromptVisible`, so calling it for them would
-   *  double-push. Absent => no immediate held push (tests / no-AA callers). #573 */
+  /** The gate's push trigger: called with a `Question.id` so the tracker pushes
+   *  that question IMMEDIATELY (-> sessionRegistry.addQuestion + APNS), making it
+   *  answerable. Called for BOTH escalation shapes (#625):
+   *    - a BINARY escalation that HOLDS its hook (Model B, #573) — Claude blocks on
+   *      the response and never renders the native prompt (via `createHold`);
+   *    - a PASSTHROUGH escalation (multi-choice / design / AskUserQuestion) via
+   *      `escalatePassthrough`.
+   *  Since #625, PTY question-emission is suppressed for hooked sessions, so this
+   *  callback is the SOLE push trigger in both cases — do NOT remove it from the
+   *  passthrough path believing `onPTYPromptVisible` covers it (it does not; that
+   *  would silently drop every passthrough notification). Idempotent per id
+   *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
+   *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
   /** Called when the permission was auto-approved/denied silently (inject
    *  succeeded; the user never sees it). Drives the terminal "done" cue. #513. */
@@ -335,8 +340,11 @@ export class AutoApproveGate {
    *     'passthrough' (so the terminal is never permanently stuck).
    * The returned promise is what the hook server is blocked on.
    */
-  private escalateAndHold(input: PermissionRequestHookInput): Promise<PermissionDecision> {
-    return this.createHold(input).decision;
+  private escalateAndHold(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): Promise<PermissionDecision> {
+    return this.createHold(input, summary).decision;
   }
 
   /**
@@ -347,11 +355,14 @@ export class AutoApproveGate {
    * holding is disabled — in which case `decision` is an immediate 'passthrough'
    * (today's behavior) and no hold is registered.
    */
-  private createHold(input: PermissionRequestHookInput): {
+  private createHold(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): {
     decision: Promise<PermissionDecision>;
     questionId: UUID | undefined;
   } {
-    const qid = this.escalateToUser(input);
+    const qid = this.escalateToUser(input, summary);
     const holdMs = this.deps.holdMs ?? 0;
     if (!qid || holdMs <= 0) return { decision: Promise.resolve('passthrough'), questionId: qid };
     // A held binary escalation BLOCKS Claude's hook response, so Claude never
@@ -485,12 +496,49 @@ export class AutoApproveGate {
    * delivered by the legacy PTY path / a later phase). Always main context — the
    * subagent escalate paths default-deny and never reach here.
    */
-  private escalateMain(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+  private escalateMain(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): Promise<PermissionDecision> {
     if (this.isBinaryEscalation(input)) {
-      return this.escalateAndHold(input);
+      return this.escalateAndHold(input, summary);
     }
-    this.escalateToUser(input);
-    return Promise.resolve('passthrough');
+    return Promise.resolve(this.escalatePassthrough(input, summary));
+  }
+
+  /**
+   * Escalate a NON-holdable (passthrough) permission to the user AND push it from
+   * the gate (#625). A binary escalation pushes via `createHold` -> `onHeldEscalate`;
+   * a passthrough one (multi-choice / design / AskUserQuestion) historically relied
+   * on the PTY render to trigger its push (`onPTYPromptVisible`). That coupling is the
+   * phantom-notification source: the PTY echoes EVERY on-screen prompt, including ones
+   * the gate already auto-approved. The gate is now the single push trigger, so a
+   * passthrough escalation must push here too — otherwise, with PTY question-emission
+   * gated off for hooked sessions (#625), the escalation would never reach the phone.
+   *
+   * Reuses the held-push primitive (`onHeldEscalate` -> `tracker.pushHeldHook`): it
+   * registers the stashed question in `sessionRegistry` (answerable) and delivers it to
+   * the lock screen idempotently. No hold is registered — Claude renders its native
+   * prompt and waits there — so there is no delivery gate / hold timeout; the user
+   * answers the pushed card (digit injected via the PTY) or the terminal directly.
+   */
+  private escalatePassthrough(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): PermissionDecision {
+    const qid = this.escalateToUser(input, summary);
+    if (qid) {
+      this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+    } else {
+      // escalateToUser returned no id (escalate() threw — already logged there).
+      // Unlike a binary hold there is no timer fallback here, so make the lost
+      // push explicit: Claude still renders + waits at its native terminal prompt
+      // (the user can answer locally), but no phone notification was sent.
+      logError(
+        `[AutoApprove ${this.sessionTag}] passthrough escalation produced no question id; no push sent (terminal prompt still answerable locally)`,
+      );
+    }
+    return 'passthrough';
   }
 
   /**
@@ -609,17 +657,15 @@ export class AutoApproveGate {
       // must escalate, not silently fall through to the subagent-deny below.
       if (result.pickIndex === undefined) {
         logError(`[AutoApprove ${this.sessionTag}] pick result missing pickIndex; escalating`);
-        this.escalateToUser(input);
-        return 'passthrough';
+        return this.escalatePassthrough(input);
       }
       if (
         await this.inject(input, String(result.pickIndex), `multichoice-pick-${result.pickIndex}`)
       ) {
         this.markHandled();
-      } else {
-        this.escalateToUser(input);
+        return 'passthrough';
       }
-      return 'passthrough';
+      return this.escalatePassthrough(input);
     }
     // escalate: a subagent prompt the user cannot answer is default-denied via
     // the response (no hang, no PTY).
@@ -680,7 +726,9 @@ export class AutoApproveGate {
       }
       // second opinion still unsure (escalate/pick) -> ask the user.
     }
-    return this.escalateMain(input);
+    // #628: result is the primary escalate verdict here (approve/deny/pick/cancelled
+    // returned earlier), so carry its lock-screen summary onto the escalation.
+    return this.escalateMain(input, result.decision === 'escalate' ? result.summary : undefined);
   }
 
   // -------------------------------------------------------------------------
@@ -752,6 +800,11 @@ export class AutoApproveGate {
     log(`[AutoApprove ${this.sessionTag}] Slow eval (>${pushHoldMs}ms); pushing + holding early`);
     // createHold escalates AND (when a hold is registered) pushes the held
     // question via onHeldEscalate (#573), so the user can step in immediately.
+    // NOTE (#628): no `summary` is passed here — this early push happens BEFORE the
+    // verdict exists, so a Part B slow-eval escalation shows the raw tool text on
+    // the lock screen. reconcileLateVerdict leaves the already-pushed card as-is on
+    // a late escalate, so the summary is not back-filled. Re-pushing a collapsed
+    // card with the late summary is a separate follow-up (kept on #628).
     const { decision: heldDecision, questionId } = this.createHold(input);
     // Tie the held question to THIS still-running eval so a manual answer cancels
     // exactly it and frees the GPU (#617). This is the only place an eval is live
@@ -947,13 +1000,14 @@ export class AutoApproveGate {
    * `undefined` when no question was created (the escalate threw / push failed),
    * in which case `escalateAndHold` falls open to passthrough.
    */
-  private escalateToUser(input: PermissionRequestHookInput): UUID | undefined {
+  private escalateToUser(input: PermissionRequestHookInput, summary?: string): UUID | undefined {
     let questionId: UUID | undefined;
     try {
       // escalate() stashes the hook record (onPermissionRequest -> recordPendingHook)
       // FIRST, then onEscalate releases the buffered PTY prompt so the pair+push
-      // finds that record. Order matters; do not reorder. #484.
-      questionId = this.deps.escalate(input);
+      // finds that record. Order matters; do not reorder. #484. `summary` (#628) is
+      // the model's lock-screen one-liner, carried onto the Question for the push.
+      questionId = this.deps.escalate(input, summary);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalateToUser threw:`, err);
     } finally {
