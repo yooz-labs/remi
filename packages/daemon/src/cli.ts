@@ -1313,8 +1313,9 @@ async function createNewSession(
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
   // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
   // default so a session created from the app survives until Claude exits or it
-  // is explicitly stopped (#637). Wrapper-mode sessions already never time out.
-  const persistent = remiConfig.daemon.persist_sessions;
+  // is explicitly stopped (#637). Wrapper-mode sessions are locallyOwned and
+  // already never time out, so the flag only applies to daemon-mode sessions.
+  const persistent = !passThrough && remiConfig.daemon.persist_sessions;
   sessionRegistry.registerSession(
     sessionId,
     workingDirectory,

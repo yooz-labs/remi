@@ -73,7 +73,7 @@ describe('createSessionHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers() {
+  function makeHandlers(opts: { exitFallbackMs?: number } = {}) {
     return createSessionHandlers({
       sessionRegistry,
       bindingStore,
@@ -87,6 +87,7 @@ describe('createSessionHandlers', () => {
         connectionRemovedCount += 1;
       },
       send,
+      ...(opts.exitFallbackMs !== undefined && { exitFallbackMs: opts.exitFallbackMs }),
     });
   }
 
@@ -252,6 +253,57 @@ describe('createSessionHandlers', () => {
 
       makeHandlers().resolveStopOnClose(sessionId);
       expect(sendCalls).toHaveLength(0);
+    });
+
+    test('a duplicate stop joins the in-flight one; both requesters are acked on close', () => {
+      const submitted: string[] = [];
+      const pty = {
+        id: generateId(),
+        write: () => {},
+        submitInput: async (text: string) => {
+          submitted.push(text);
+        },
+        close: async () => {},
+      } as unknown as PTYSession;
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI());
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = makeHandlers();
+      const REQ2 = 'req20000-0000-0000-0000-000000000000' as UUID;
+      handlers.onKillSessionRequest(CID, sessionId, REQ);
+      handlers.onKillSessionRequest(OTHER_CID, sessionId, REQ2);
+
+      // Only ONE /exit is typed (the duplicate joins, it does not re-stop).
+      expect(submitted).toEqual(['/exit']);
+      expect(sendCalls).toHaveLength(0);
+
+      // On close both requesters get a success ack against their own requestId.
+      handlers.resolveStopOnClose(sessionId);
+      const acks = sendCalls.map((c) => ({
+        connectionId: c.connectionId,
+        ...(c.message as unknown as { success: boolean; requestId: UUID }),
+      }));
+      expect(acks).toContainEqual(
+        expect.objectContaining({ connectionId: CID, success: true, requestId: REQ }),
+      );
+      expect(acks).toContainEqual(
+        expect.objectContaining({ connectionId: OTHER_CID, success: true, requestId: REQ2 }),
+      );
+    });
+
+    test('forces close when /exit is not honored within the fallback window', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = makeHandlers({ exitFallbackMs: 5 });
+      handlers.onKillSessionRequest(CID, sessionId, REQ);
+      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
+
+      // PTY never exits (fake submitInput is a no-op); the fallback timer fires.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(sessionRegistry.getSession(sessionId)).toBeUndefined();
     });
   });
 
