@@ -182,7 +182,8 @@ function normalizeLabel(s: string): string {
  *
  * Order-sensitive by design: the daemon toggles options in ascending index order
  * and the TUI renders them the same way, so the expected order always equals the
- * rendered order; a genuine reorder escalates (fail-safe) rather than mis-submits.
+ * rendered order; a genuine reorder escalates (fail-safe) rather than submitting
+ * the wrong answer.
  */
 function reviewLabelsMatch(parsedParts: readonly string[], expected: readonly string[]): boolean {
   if (expected.length === 0) return false;
