@@ -4,6 +4,36 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.6.17] - 2026-06-28
+
+Remote sessions now outlive the connection: disconnecting no longer kills the
+session you created, ending one is a clean `/exit` that frees its daemon, and
+starting one picks from your recent paths instead of a blind text prompt.
+
+### Added
+- **Persistent remote sessions** (#637): a session created from the app survives
+  client disconnect instead of being killed by the orphan timeout. A new
+  `daemon.persist_sessions` config (default on) detaches the session on
+  disconnect and leaves it re-attachable; `pty_exit` and forced closes still
+  apply. This is the whole point of a remote session — start it from your phone,
+  walk away, reconnect later.
+- **Recent-paths new-session sheet** (#638): the "+" button opens a bottom sheet
+  of your recent project directories to start a session in, replacing the bare
+  `window.prompt` path entry. Pick a recent path or type a new one; surfaces the
+  same recent-directory data the CLI already exposes, so you always know the
+  exact path you are starting in.
+- **Exit session control** (#641): a per-session control (session row + chat
+  menu) that ends a session by typing a graceful `/exit` on its PTY so Claude
+  quits cleanly — flushing its transcript and printing its resume hint — with an
+  8s force-close fallback if Claude ignores it. The daemon frees its port when
+  its session ends, so no session-less daemon is left behind. Labeled "Exit
+  session", distinct from the input-area Esc "Stop".
+
+### Fixed
+- A remotely-created session dying the instant its client disconnected — the main
+  reason remote sessions felt disposable.
+- A session-less "phantom" daemon lingering on its port after a session ended.
+
 ## [0.6.16] - 2026-06-27
 
 Question-pipeline rework (epic #624): the auto-approve gate is the single
