@@ -645,6 +645,140 @@ describe('SessionRegistry', () => {
     });
   });
 
+  describe('persistent sessions (#637)', () => {
+    // 6th registerSession arg is `persistent` (tmux-style keep-alive).
+    test('persistent session skips orphan timeout on detach', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), false, true);
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      // Wait well past the orphan timeout (100ms + buffer)
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Session should still exist (not killed by timeout)
+      expect(registry.getSession(sessionId)).toBeDefined();
+      expect(pty.close).not.toHaveBeenCalled();
+      expect(events.onSessionOrphaned).toHaveBeenCalledWith(sessionId);
+      expect(events.onSessionClosed).not.toHaveBeenCalled();
+    });
+
+    test('persistent session reports "detached" status without connection', () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+        true,
+      );
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.status).toBe('detached');
+      expect(sessions[0]?.canAttach).toBe(true);
+    });
+
+    test('persistent session is re-attachable after disconnect', () => {
+      const sessionId = generateId();
+      const conn1 = generateId();
+
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+        true,
+      );
+      registry.attachConnection(sessionId, conn1);
+      registry.detachConnection(conn1);
+
+      expect(registry.canResume(sessionId)).toBe(true);
+      const result = registry.attachConnection(sessionId, generateId());
+      expect(result.success).toBe(true);
+      expect(result.isResume).toBe(true);
+    });
+
+    test('orphanedCount excludes persistent sessions', () => {
+      const sessionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+        true,
+      );
+
+      expect(registry.orphanedCount).toBe(0);
+
+      const connectionId = generateId();
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+      expect(registry.orphanedCount).toBe(0);
+    });
+
+    test('non-persistent session still times out (default behavior preserved)', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), false, false);
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(pty.close).toHaveBeenCalled();
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'timeout');
+    });
+
+    test('persistent session is closed when the Claude process exits (pty_exit)', () => {
+      // Persistence must NOT keep a session alive after Claude itself exits;
+      // pty_exit is the primary lifecycle-ending event for a persistent session.
+      const sessionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        false,
+        true,
+      );
+
+      registry.handlePTYExit(sessionId);
+
+      expect(registry.getSession(sessionId)).toBeUndefined();
+      expect(events.onSessionClosed).toHaveBeenCalledWith(sessionId, 'pty_exit');
+    });
+
+    test('persistent + explicit detach stays detached with no timeout', async () => {
+      const sessionId = generateId();
+      const connectionId = generateId();
+      const pty = createMockPTY();
+
+      registry.registerSession(sessionId, '/test/dir', pty, createMockMessageAPI(), false, true);
+      registry.attachConnection(sessionId, connectionId);
+      registry.detachConnection(connectionId, true);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(registry.getSession(sessionId)).toBeDefined();
+      expect(pty.close).not.toHaveBeenCalled();
+      const sessions = registry.listSessions();
+      expect(sessions[0]?.status).toBe('detached');
+    });
+  });
+
   describe('shutdown()', () => {
     test('closes the session', async () => {
       const pty = createMockPTY();

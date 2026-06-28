@@ -10,8 +10,9 @@ import { StatusPill } from '@/components/StatusPill';
 import { formatRelativeTime } from '@/lib/format-time';
 import { sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { ConnectionId, UISession } from '@/types';
+import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
-import { GitBranch, Link2Off, RotateCcw } from 'lucide-react';
+import { GitBranch, Link2Off, RotateCcw, Square } from 'lucide-react';
 
 interface SessionCardProps {
   readonly session: UISession;
@@ -19,6 +20,10 @@ interface SessionCardProps {
   readonly onClick: () => void;
   readonly onResume?: ((sessionId: string) => void) | undefined;
   readonly onDisconnect?: ((connectionId: ConnectionId) => void) | undefined;
+  /** Stop (kill) the session's Claude process + daemon (#637). */
+  readonly onKill?:
+    | ((sessionId: UUID, connectionId: ConnectionId, label?: string) => void)
+    | undefined;
   readonly isResuming?: boolean;
   /** When true, the bottom hairline divider is omitted (last row in a group). */
   readonly last?: boolean;
@@ -30,10 +35,14 @@ export function SessionCard({
   onClick,
   onResume,
   onDisconnect,
+  onKill,
   isResuming,
   last = false,
 }: SessionCardProps) {
   const { host, project, branch } = splitSessionName(session);
+  // Daemon-owned sessions have a live Claude process that can be stopped;
+  // transcript-only rows do not.
+  const canKill = onKill && session.source === 'daemon';
   const state = sessionPillState(session);
   const isAsking = state === 'asking';
   const isConnected = session.connectionStatus === 'connected';
@@ -128,6 +137,20 @@ export function SessionCard({
             aria-label="Resume"
           >
             <RotateCcw className={clsx('size-3.5', isResuming && 'animate-spin')} />
+          </button>
+        )}
+        {canKill && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onKill(session.id, session.connectionId, project);
+            }}
+            className="rounded-full p-1 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-elevated)] hover:text-[var(--color-error)]"
+            aria-label="Stop session"
+            title="Stop session"
+          >
+            <Square className="size-3.5" />
           </button>
         )}
       </div>
