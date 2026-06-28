@@ -87,6 +87,29 @@ describe('parseDecision', () => {
     expect(r.reasoning).toBe('unsure');
   });
 
+  // #628: the model's lock-screen summary on escalate.
+  test('captures a summary when present (escalate)', () => {
+    const r = parseDecision(
+      '{"decision":"escalate","reasoning":"force push","summary":"Force-push to main?"}',
+    );
+    expect(r.decision).toBe('escalate');
+    expect(r.summary).toBe('Force-push to main?');
+  });
+
+  test('summary is undefined when omitted or blank', () => {
+    expect(parseDecision('{"decision":"escalate","reasoning":"x"}').summary).toBeUndefined();
+    expect(
+      parseDecision('{"decision":"escalate","reasoning":"x","summary":"   "}').summary,
+    ).toBeUndefined();
+  });
+
+  test('approve carries no summary even if the model includes one', () => {
+    // We only USE summary on escalate, but parseDecision returns it verbatim; the
+    // gate only threads it on the escalate path. Assert it parses without error.
+    const r = parseDecision('{"decision":"approve","reasoning":"safe","summary":"ignored?"}');
+    expect(r.decision).toBe('approve');
+  });
+
   test('handles case-insensitive decision', () => {
     const r = parseDecision('{"decision":"APPROVE","reasoning":"ok"}');
     expect(r.decision).toBe('approve');

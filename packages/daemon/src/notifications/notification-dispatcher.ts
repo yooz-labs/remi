@@ -87,7 +87,22 @@ export function buildPushText(
   sessionName: string,
   question: Question,
 ): { title: string; body: string } {
-  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
+  // #626: a multi-question AskUserQuestion can't fit a per-question option list on
+  // the lock screen, so summarize the SCOPE — "<N> questions" + a numbered list of
+  // each sub-question's topic (header, or its text) — and route the user to the
+  // in-app form. A single-question AUQ falls through to the normal option-list body.
+  if (question.kind === 'multi_question' && question.questions && question.questions.length > 1) {
+    const steps = question.questions;
+    const title = `${sessionName}: ${steps.length} questions`.slice(0, TITLE_MAX);
+    const body = steps
+      .map((s, i) => `${i + 1}. ${normalizeNotificationText(s.header || s.text)}`)
+      .join('\n')
+      .slice(0, BODY_MAX);
+    return { title, body };
+  }
+  // #628: prefer the auto-approve LLM's lock-screen one-liner ("Force-push to
+  // main?") over the raw "Allow Bash: <command>" when present.
+  const ask = normalizeNotificationText(question.summary || question.text) || 'Allow this action?';
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
   const optionList = formatOptionList(question.options);
   const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);
@@ -294,7 +309,14 @@ export class NotificationDispatcher {
     const sessionName = session?.name || 'Agent';
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    const pushCategory = selectPushCategory(question.options);
+    // #626: an AskUserQuestion (kind === 'multi_question') never uses the
+    // count-based permission categories — REMI_YN/YNA carry hardcoded
+    // "Yes / Yes, always / No" button titles that would MISLABEL arbitrary picks
+    // (e.g. "PostgreSQL / MySQL / MongoDB"). With no category the lock screen
+    // shows the summary and opens the app, where the structured card renders the
+    // real options + descriptions. (One-tap AUQ answering arrives in #627.)
+    const pushCategory =
+      question.kind === 'multi_question' ? undefined : selectPushCategory(question.options);
     // Send the human-readable LABELS for DISPLAY (#574, issue 4); answer
     // routing in input-events resolves an incoming label OR value back to the
     // option, then submits the option's index when a PTY submit is required, so

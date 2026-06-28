@@ -187,6 +187,94 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.isNo).toBe(true);
   });
 
+  // #626: the bridge must THREAD the structured AskUserQuestion fields onto the
+  // emitted Question (extractToolQuestion proves the shape; this proves wiring).
+  it('threads the structured AskUserQuestion fields onto the emitted Question', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          {
+            question: 'Who is the PI?',
+            header: 'Collab PI',
+            multiSelect: false,
+            options: [{ label: 'Scott', description: 'EEGLAB founder' }],
+          },
+          {
+            question: 'Which tools?',
+            header: 'Software focus',
+            multiSelect: true,
+            options: [{ label: 'EEGLAB', description: 'plugins' }],
+          },
+        ],
+      },
+    } as PermissionRequestHookInput);
+
+    expect(questions.length).toBe(1);
+    const q = questions[0];
+    expect(q?.kind).toBe('multi_question');
+    expect(q?.submitLabel).toBe('Submit');
+    expect(q?.questions).toHaveLength(2);
+    expect(q?.questions?.[0]?.header).toBe('Collab PI');
+    expect(q?.questions?.[0]?.options[0]?.description).toBe('EEGLAB founder');
+    expect(q?.questions?.[1]?.multiSelect).toBe(true);
+    // Back-compat flat fields still mirror questions[0].
+    expect(q?.text).toBe('Collab PI: Who is the PI?');
+    expect(q?.options[0]?.label).toBe('Scott');
+  });
+
+  it('does NOT set kind/questions on a plain (non-AskUserQuestion) permission', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+    } as PermissionRequestHookInput);
+
+    expect(questions.length).toBe(1);
+    expect(questions[0]?.kind).toBeUndefined();
+    expect(questions[0]?.questions).toBeUndefined();
+    expect(questions[0]?.submitLabel).toBeUndefined();
+  });
+
+  // #628: the gate passes the LLM's lock-screen summary; the bridge must set it on
+  // the emitted Question (the push prefers it over the raw "Allow Bash: …").
+  it('sets Question.summary from the summary argument', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest(
+      {
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push --force origin main' },
+      } as PermissionRequestHookInput,
+      'Force-push to main?',
+    );
+
+    expect(questions.length).toBe(1);
+    expect(questions[0]?.summary).toBe('Force-push to main?');
+  });
+
+  it('leaves Question.summary undefined when no summary is passed', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    } as PermissionRequestHookInput);
+
+    expect(questions[0]?.summary).toBeUndefined();
+  });
+
   // Inputs that yield fewer than 2 usable string labels: must fall back to
   // the default 3-option set so the iOS card always renders something the
   // user can act on. Object entries (e.g. {type:"addDirectories",...}) are

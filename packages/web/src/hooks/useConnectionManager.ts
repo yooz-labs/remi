@@ -22,10 +22,12 @@ import { collectPendingChallengeConnections } from './connection-manager-helpers
 import { splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
+  createAuqAnswer,
   createBulletExpandRequest,
+  createCancelQuestion,
   createCreateSessionRequest,
   createHello,
   createPing,
@@ -99,12 +101,29 @@ export interface UseConnectionManagerReturn {
     content: string,
     claudeSessionId?: UUID,
   ) => boolean;
+  /** Send a bare Esc keystroke to the session (interrupt / escape any prompt). */
+  sendEscape: (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID) => boolean;
   /** Send answer to a question via the correct connection */
   sendAnswer: (
     connectionId: ConnectionId,
     sessionId: UUID,
     questionId: UUID,
     answer: string,
+    claudeSessionId?: UUID,
+  ) => boolean;
+  /** #627: send a structured AskUserQuestion answer (per-sub-question selections). */
+  sendAuqAnswer: (
+    connectionId: ConnectionId,
+    sessionId: UUID,
+    questionId: UUID,
+    selections: readonly AnswerSelection[],
+    claudeSessionId?: UUID,
+  ) => boolean;
+  /** #627: cancel/escape the active prompt (sends Esc to the TUI). */
+  sendCancelQuestion: (
+    connectionId: ConnectionId,
+    sessionId: UUID,
+    questionId: UUID,
     claudeSessionId?: UUID,
   ) => boolean;
   /** Send a raw protocol message to a specific connection */
@@ -642,6 +661,19 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
+  // Send a bare Esc keystroke (raw, no Enter) to the session's PTY — the
+  // persistent escape: interrupts Claude's running work AND cancels/escapes an
+  // on-screen prompt, available any time (not tied to a question card).
+  const sendEscape = useCallback(
+    (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID): boolean => {
+      return sendToConnection(
+        connectionId,
+        createUserInput(sessionId, '\x1b', true, claudeSessionId),
+      );
+    },
+    [sendToConnection],
+  );
+
   const sendAnswer = useCallback(
     (
       connectionId: ConnectionId,
@@ -653,6 +685,41 @@ export function useConnectionManager(
       return sendToConnection(
         connectionId,
         createAnswer(sessionId, questionId, answer, claudeSessionId),
+      );
+    },
+    [sendToConnection],
+  );
+
+  // #627: a structured AskUserQuestion answer (per-sub-question selections); the
+  // daemon drives the interactive TUI and verifies the review before submitting.
+  const sendAuqAnswer = useCallback(
+    (
+      connectionId: ConnectionId,
+      sessionId: UUID,
+      questionId: UUID,
+      selections: readonly AnswerSelection[],
+      claudeSessionId?: UUID,
+    ): boolean => {
+      return sendToConnection(
+        connectionId,
+        createAuqAnswer(sessionId, questionId, selections, claudeSessionId),
+      );
+    },
+    [sendToConnection],
+  );
+
+  // #627: cancel/escape the active prompt — the daemon sends Esc to the TUI. The
+  // universal unstick, available even when a prompt can't be auto-answered.
+  const sendCancelQuestion = useCallback(
+    (
+      connectionId: ConnectionId,
+      sessionId: UUID,
+      questionId: UUID,
+      claudeSessionId?: UUID,
+    ): boolean => {
+      return sendToConnection(
+        connectionId,
+        createCancelQuestion(sessionId, questionId, claudeSessionId),
       );
     },
     [sendToConnection],
@@ -798,7 +865,10 @@ export function useConnectionManager(
     reconnect,
     disconnectAll,
     sendInput,
+    sendEscape,
     sendAnswer,
+    sendAuqAnswer,
+    sendCancelQuestion,
     sendMessage,
     requestBulletExpand,
     requestSessionList,

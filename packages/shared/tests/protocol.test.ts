@@ -7,8 +7,10 @@ import {
   MessageIdTracker,
   createAck,
   createAgentOutput,
+  createAuqAnswer,
   createBulletExpandRequest,
   createBulletExpandResponse,
+  createCancelQuestion,
   createDetachSession,
   createDetachSessionAck,
   createEdit,
@@ -309,6 +311,56 @@ describe('deserialize()', () => {
     expect(parsed.message.content).toBe(message.content);
     expect(parsed.message.tool).toBe(message.tool);
     expect(parsed.message.isEditing).toBe(message.isEditing);
+  });
+});
+
+describe('createAuqAnswer() / createCancelQuestion() (#627)', () => {
+  test('createAuqAnswer carries selections, empty answer, no cancel', () => {
+    const sessionId = generateId();
+    const questionId = generateId();
+    const selections = [
+      { questionIndex: 0, optionIndices: [1] },
+      { questionIndex: 1, optionIndices: [0, 2] },
+    ];
+    const msg = createAuqAnswer(sessionId, questionId, selections);
+    expect(msg.type).toBe('answer');
+    expect(msg.sessionId).toBe(sessionId);
+    expect(msg.questionId).toBe(questionId);
+    expect(msg.answer).toBe('');
+    expect(msg.selections).toEqual(selections);
+    expect(msg.cancel).toBeUndefined();
+  });
+
+  test('createAuqAnswer includes claudeSessionId when provided + round-trips', () => {
+    const sessionId = generateId();
+    const questionId = generateId();
+    const claude = generateId();
+    const msg = createAuqAnswer(
+      sessionId,
+      questionId,
+      [{ questionIndex: 0, optionIndices: [0] }],
+      claude,
+    );
+    expect(msg.claudeSessionId).toBe(claude);
+    const parsed = deserialize(serialize(msg));
+    expect(parsed?.type).toBe('answer');
+    if (parsed?.type === 'answer') {
+      expect(parsed.selections).toEqual([{ questionIndex: 0, optionIndices: [0] }]);
+    }
+  });
+
+  test('createCancelQuestion sets cancel:true, empty answer, no selections', () => {
+    const sessionId = generateId();
+    const questionId = generateId();
+    const msg = createCancelQuestion(sessionId, questionId);
+    expect(msg.type).toBe('answer');
+    expect(msg.answer).toBe('');
+    expect(msg.cancel).toBe(true);
+    expect(msg.selections).toBeUndefined();
+    // Survives the wire.
+    const parsed = deserialize(serialize(msg));
+    expect(parsed?.type).toBe('answer');
+    if (parsed?.type === 'answer') expect(parsed.cancel).toBe(true);
   });
 });
 

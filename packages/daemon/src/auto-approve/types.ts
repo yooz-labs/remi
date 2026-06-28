@@ -32,6 +32,11 @@ export type AutoApproveDecisionResult =
       readonly reasoning: string;
       readonly durationMs: number;
       readonly model: string;
+      /** #628: a one-sentence, lock-screen-friendly question the model produces on
+       *  an `escalate` verdict (e.g. "Force-push to main?"). Used for the push
+       *  title/body instead of the raw "Allow Bash: <command>". Absent for
+       *  approve/deny, pattern-matched verdicts, or when the model omits it. */
+      readonly summary?: string | undefined;
     }
   | {
       readonly decision: 'pick';

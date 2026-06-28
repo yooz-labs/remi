@@ -102,6 +102,12 @@ export function InputArea({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
+  // Long-press on the send button opens the Stop dialog (#624 review): hold to
+  // confirm sending Esc to the session. `longPressedRef` suppresses the click
+  // that follows the release so the long-press doesn't also send the message.
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressedRef = useRef(false);
+  const [stopDialogOpen, setStopDialogOpen] = useState(false);
 
   // Re-hydrate when the active session (and therefore draftKey) changes.
   useEffect(() => {
@@ -193,6 +199,11 @@ export function InputArea({
 
   // Handle send (for button click)
   const handleSend = () => {
+    // Suppress the click that follows a long-press (which fired the escape).
+    if (longPressedRef.current) {
+      longPressedRef.current = false;
+      return;
+    }
     const trimmed = value.trim();
     if (!trimmed || disabled) {
       return;
@@ -207,6 +218,39 @@ export function InputArea({
       textareaRef.current.style.height = 'auto';
     }
   };
+
+  // #624 review: the escape — send Esc to the session (interrupt running work /
+  // cancel an on-screen prompt). Confirmed via the Stop dialog so it can never
+  // fire accidentally.
+  const confirmStop = useCallback(() => {
+    setStopDialogOpen(false);
+    if (!onCancel) return;
+    hapticImpact('medium');
+    onCancel();
+  }, [onCancel]);
+
+  // Long-press the send button (the one button) opens the Stop dialog. Works
+  // whether or not there is text, so it's available exactly when Claude is busy
+  // and the input is empty.
+  const startLongPress = useCallback(() => {
+    longPressedRef.current = false;
+    if (!onCancel || disabled) return;
+    longPressTimer.current = setTimeout(() => {
+      longPressedRef.current = true;
+      hapticImpact('medium');
+      setStopDialogOpen(true);
+    }, 450);
+  }, [onCancel, disabled]);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  // Clear any pending long-press timer on unmount.
+  useEffect(() => () => cancelLongPress(), [cancelLongPress]);
 
   // Quick-response chips for an active question. Route through onAnswer so
   // a tap on Yes/No/option-N is a real `sendAnswer`, not the literal value
@@ -225,7 +269,7 @@ export function InputArea({
     <div
       ref={containerRef}
       className={clsx(
-        'border-t border-[var(--color-border)] bg-[var(--color-surface)]',
+        'relative border-t border-[var(--color-border)] bg-[var(--color-surface)]',
         'safe-area-bottom',
         className,
       )}
@@ -259,20 +303,6 @@ export function InputArea({
                   </>
                 )}
           </div>
-        </div>
-      )}
-
-      {/* Cancel button when agent is busy */}
-      {isAgentBusy && onCancel && (
-        <div className="flex justify-center border-b border-[var(--color-border)] py-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="flex items-center gap-2 rounded-full bg-[var(--color-error)]/10 px-4 py-1.5 text-sm text-[var(--color-error)] transition-colors hover:bg-[var(--color-error)]/20"
-          >
-            <StopCircle className="size-4" />
-            Stop
-          </button>
         </div>
       )}
 
@@ -324,22 +354,78 @@ export function InputArea({
           />
         </div>
 
-        {/* Send button */}
+        {/* The one button: tap sends, long-press opens the Stop dialog (#624
+            review). Not HTML-`disabled` when the text is empty — only when the
+            whole input is disabled — so the long-press escape stays reachable
+            while Claude is busy and the field is empty. The empty-state tap is a
+            no-op (handled in handleSend); the greyed style signals it. */}
         <button
           onClick={handleSend}
-          disabled={disabled || !value.trim()}
+          onPointerDown={startLongPress}
+          onPointerUp={cancelLongPress}
+          onPointerLeave={cancelLongPress}
+          onPointerCancel={cancelLongPress}
+          disabled={disabled}
           className={clsx(
-            'flex size-10 shrink-0 items-center justify-center rounded-full transition-all',
+            'flex size-10 shrink-0 select-none items-center justify-center rounded-full transition-all',
             value.trim()
               ? 'bg-[var(--color-primary)] text-[var(--color-accent-ink)] hover:bg-[var(--color-primary-dark)] active:scale-95'
               : 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)]',
             disabled && 'cursor-not-allowed opacity-50',
           )}
-          aria-label="Send message"
+          aria-label={onCancel ? 'Send message (long-press to stop)' : 'Send message'}
         >
           <Send className="size-5" />
         </button>
       </div>
+
+      {/* Stop dialog (#624 review): the single confirmation surface for the
+          escape, reached by long-pressing the send button. Confirming sends a
+          bare Esc to interrupt Claude's running work or dismiss a prompt. The
+          card is anchored to the input area (absolute, bottom-full) so it rides
+          up with the send button when the keyboard pushes the input up; only the
+          dim backdrop is fixed to the viewport. */}
+      {stopDialogOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={() => setStopDialogOpen(false)}
+            role="presentation"
+          />
+          <div className="absolute inset-x-0 bottom-full z-50 flex justify-center px-4 pb-2">
+            <div
+              className="w-full max-w-sm rounded-2xl bg-[var(--color-surface-elevated)] p-4 shadow-xl"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Stop the current action"
+            >
+              <p className="mb-1 text-base font-semibold text-[var(--color-text)]">
+                Stop the current action?
+              </p>
+              <p className="mb-4 text-sm text-[var(--color-text-secondary)]">
+                Sends Esc to interrupt Claude's running work or dismiss an on-screen prompt.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setStopDialogOpen(false)}
+                  className="flex-1 rounded-full bg-[var(--color-surface-light)] py-2.5 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface)] active:scale-95"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmStop}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-full bg-[var(--color-error)] py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 active:scale-95"
+                >
+                  <StopCircle className="size-4" />
+                  Stop
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

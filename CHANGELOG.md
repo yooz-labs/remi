@@ -4,7 +4,46 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
-## [0.6.15] - 2026-06-22
+## [0.6.16] - 2026-06-27
+
+Question-pipeline rework (epic #624): the auto-approve gate is the single
+authority for what reaches your phone — killing phantom permission
+notifications — and the new `AskUserQuestion` format is shown and answered
+properly on a remote session.
+
+### Added
+- **Structured AskUserQuestion display** (#626): the full set of sub-questions —
+  topic headers, per-option descriptions, and multi-select — flows from the hook
+  to the client and renders as a real form, instead of collapsing to the first
+  question with bare labels. The lock-screen push summarizes the question scope.
+- **Multi-question answer + submit** (#627): a remote answer drives Claude's
+  interactive AskUserQuestion terminal UI (built from live captures), verifying
+  the review screen before submitting so it never submits the wrong answer. A
+  **Cancel / Esc control on every question card** is the universal unstick — it
+  escapes any prompt the app can't drive, so you are never stuck on a blocked
+  Claude. Built-in env-gated PTY capture (`REMI_PTY_CAPTURE`) to re-verify the
+  keystroke model when Claude Code's renderer changes.
+- **Natural lock-screen summaries** (#628): on a generic escalation the deciding
+  LLM also returns a one-line, plain-language question ("Force-push to main?")
+  shown on the push instead of the raw "Allow Bash: <command>" — folded into the
+  existing decision call, no added latency.
+- **Escape from the chat input** (#627 review): long-pressing the send button opens
+  a Stop dialog that sends a bare `Esc` to the session — interrupting Claude's
+  running work or dismissing an on-screen prompt at any time, not only from a
+  question card. One control (the send button), confirmation-gated so it can never
+  fire accidentally, and reachable even while the input is empty.
+
+### Changed
+- **One gate, escalate-only** (#625): a question reaches your phone if and only if
+  the auto-approve verdict is `escalate`. Approvals and denials are silent. The
+  PTY screen-scraper no longer emits questions for hooked sessions — it was
+  echoing prompts the gate had already auto-approved, the source of the phantom
+  notifications (live logs showed 1,100+ pushes fired right after a 0 ms approve).
+
+### Fixed
+- Phantom permission notifications for actions the LLM/rules had already approved.
+- AskUserQuestion prompts whose options/context were lost or answered incorrectly
+  on the phone (the old single-digit path could not express the new tabbed form).
 
 Notification-delivery robustness (epic #603): escalations reliably reach the
 lock screen, a manual answer frees the GPU, dead device tokens self-heal, and

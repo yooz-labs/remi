@@ -626,6 +626,23 @@ function App() {
           isYes: o.isYes || undefined,
           isNo: o.isNo || undefined,
           isRecommended: o.isRecommended || undefined,
+          description: o.description || undefined,
+        }));
+
+        // #626: carry the full AskUserQuestion structure (headers, per-option
+        // descriptions, multiSelect) so the card can render it properly.
+        const uiQuestions: UIQuestion['questions'] = q.questions?.map((step) => ({
+          ...(step.header ? { header: step.header } : {}),
+          text: step.text,
+          multiSelect: step.multiSelect,
+          options: step.options.map((o) => ({
+            label: o.label,
+            value: o.value,
+            isYes: o.isYes || undefined,
+            isNo: o.isNo || undefined,
+            isRecommended: o.isRecommended || undefined,
+            description: o.description || undefined,
+          })),
         }));
 
         // sessionId is mandatory on the wire now (#437); never fall back to
@@ -646,6 +663,9 @@ function App() {
           structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
           timestamp: new Date().toISOString(),
           agentId: questionAgentId,
+          ...(q.kind ? { kind: q.kind } : {}),
+          ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
+          ...(q.submitLabel ? { submitLabel: q.submitLabel } : {}),
         };
         const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {
@@ -1027,6 +1047,28 @@ function App() {
         // packages/daemon/src/cli/handlers/input-events.ts:guardBinding;
         // update both ends together if the field names change.
         const errorCode = (message as { code?: string }).code;
+        // #627: the daemon could not auto-answer a structured AskUserQuestion
+        // (review mismatch / timeout / unexpected variant). Flip the card to the
+        // "needs you" state so the user can Cancel or answer in the terminal —
+        // the prompt is intentionally left up (never a wrong auto-submit).
+        if (errorCode === 'AUQ_AUTOANSWER_FAILED') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const failedQid = asNonEmptyString(details?.['questionId']);
+          if (failedQid) {
+            setQuestions((prev) => {
+              let changed = false;
+              const next = new Map(prev);
+              for (const [k, q] of prev) {
+                if (q.id === failedQid) {
+                  next.set(k, { ...q, submitting: false, autoAnswerFailed: true });
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
+            });
+          }
+          break;
+        }
         // NOT_FOUND with a current-session redirect (#499): the requested
         // session is stale (the daemon restarted or rotated past it). Follow the
         // daemon to its current session and load it, instead of dead-ending on a
@@ -1198,7 +1240,10 @@ function App() {
     reconnect: reconnectConnection,
     disconnectAll,
     sendInput,
+    sendEscape,
     sendAnswer,
+    sendAuqAnswer,
+    sendCancelQuestion,
     sendMessage: cmSendMessage,
     requestBulletExpand,
     requestSessionList,
@@ -1687,6 +1732,66 @@ function App() {
     [getActiveConnectionId, sendAnswer],
   );
 
+  // #627: submit a structured AskUserQuestion answer. The daemon drives the TUI
+  // and verifies before submitting, so the card flips to "Answering…" and clears
+  // on question_resolved (or flips to failed on AUQ_AUTOANSWER_FAILED) — it is NOT
+  // removed optimistically here.
+  const handleAuqAnswer = useCallback(
+    (question: UIQuestion, selections: { questionIndex: number; optionIndices: number[] }[]) => {
+      const sid = question.sessionId;
+      const connId =
+        sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
+      if (!connId) return;
+      const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
+      const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
+      if (!sent) return;
+      const key = questionKey(sid, question.agentId);
+      setQuestions((prev) => {
+        const existing = prev.get(key);
+        if (!existing) return prev;
+        const next = new Map(prev);
+        next.set(key, { ...existing, submitting: true, autoAnswerFailed: false });
+        return next;
+      });
+    },
+    [getActiveConnectionId, sendAuqAnswer],
+  );
+
+  // #627: cancel/escape a pending question — the universal unstick. The daemon
+  // sends Esc to the prompt; the card clears on the resulting question_resolved.
+  const handleCancelQuestion = useCallback(
+    (question: UIQuestion) => {
+      const sid = question.sessionId;
+      const connId =
+        sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
+      if (!connId) return;
+      const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
+      sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      const key = questionKey(sid, question.agentId);
+      setQuestions((prev) => {
+        const existing = prev.get(key);
+        if (!existing) return prev;
+        const next = new Map(prev);
+        next.set(key, { ...existing, submitting: true });
+        return next;
+      });
+    },
+    [getActiveConnectionId, sendCancelQuestion],
+  );
+
+  // Persistent escape: send a bare Esc to the ACTIVE session at any time — it
+  // interrupts Claude's running work and escapes/cancels an on-screen prompt,
+  // even before a question card exists. Surfaced as a button in the input row and
+  // a long-press on the send button.
+  const handleEscape = useCallback(() => {
+    if (!activeSessionId) return;
+    const connId =
+      sessions.find((s) => s.id === activeSessionId)?.connectionId ?? getActiveConnectionId();
+    if (!connId) return;
+    const binding = sessions.find((s) => s.id === activeSessionId)?.claudeSessionId;
+    sendEscape(connId, activeSessionId, binding as UUID | undefined);
+  }, [activeSessionId, getActiveConnectionId, sendEscape, sessions]);
+
   // Send a regular user input message, optionally with a reply context.
   // Always routes through sendInput regardless of pending question state
   // (#401 bug fix). The QuestionCard owns the answer flow via handleAnswer.
@@ -2023,6 +2128,9 @@ function App() {
       error={error}
       onSend={handleSend}
       onAnswer={handleAnswer}
+      onAuqAnswer={handleAuqAnswer}
+      onCancelQuestion={handleCancelQuestion}
+      onCancel={handleEscape}
       onReply={handleReply}
       replyContext={sessionReplyContext}
       onClearReply={handleClearReply}

@@ -7,6 +7,7 @@
 
 import { generateId, now } from '@remi/shared';
 import type { AgentStatus, Timestamp, UUID } from '@remi/shared';
+import { ptyCapture } from './pty-capture.ts';
 
 /** Terminal dimensions */
 export interface TerminalSize {
@@ -178,12 +179,17 @@ export class PTYSession {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
+    this.termWrite(data);
+  }
 
-    if (typeof data === 'string') {
-      this.process.terminal.write(data);
-    } else {
-      this.process.terminal.write(data);
-    }
+  /**
+   * The single sink for every byte sent to the child's terminal. Routes the
+   * input through the optional capture (#627) so a keystroke recording sees the
+   * exact bytes, then writes them. Callers must have already checked `running`.
+   */
+  private termWrite(data: string | Uint8Array): void {
+    ptyCapture.in(data);
+    this.process?.terminal?.write(data);
   }
 
   /**
@@ -197,13 +203,13 @@ export class PTYSession {
     }
 
     // Write the text first
-    this.process.terminal.write(text);
+    this.termWrite(text);
 
     // Small delay to let Claude Code process the text
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     // Send CR (Enter key) separately
-    this.process.terminal.write('\r');
+    this.termWrite('\r');
   }
 
   /**
@@ -226,7 +232,7 @@ export class PTYSession {
     combined.set(textBytes, 0);
     combined.set(crByte, textBytes.length);
 
-    this.process.terminal.write(combined);
+    this.termWrite(combined);
   }
 
   /**
@@ -245,7 +251,7 @@ export class PTYSession {
     combined.set(textBytes, 0);
     combined.set(lfByte, textBytes.length);
 
-    this.process.terminal.write(combined);
+    this.termWrite(combined);
   }
 
   /**
@@ -264,7 +270,7 @@ export class PTYSession {
     combined.set(textBytes, 0);
     combined.set(crlfBytes, textBytes.length);
 
-    this.process.terminal.write(combined);
+    this.termWrite(combined);
   }
 
   /**
@@ -328,6 +334,9 @@ export class PTYSession {
 
   /** Handle data from terminal */
   private handleData(data: Uint8Array): void {
+    // #627: record the rendered frame for the optional keystroke-capture diagnostic
+    // (no-op unless REMI_PTY_CAPTURE is set), before any decode/processing.
+    ptyCapture.out(data);
     // Emit raw bytes first for direct terminal pass-through (no decode/encode).
     // Isolate so a throw here does not prevent text processing from running.
     try {

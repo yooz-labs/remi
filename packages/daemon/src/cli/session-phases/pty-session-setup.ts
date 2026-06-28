@@ -24,6 +24,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
+import { appendPtyOutput, clearPtyOutput } from '../../pty/output-buffer.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import { childRows } from '../status-bar.ts';
@@ -172,6 +173,9 @@ export function createPtySessionForSession(
         }
       },
       onData: (output: string) => {
+        // #627: feed the rolling buffer the AskUserQuestion runner reads to detect
+        // the review screen + closure marker while driving the interactive TUI.
+        appendPtyOutput(sessionId, output);
         try {
           outputProcessor.process(output);
         } catch (err) {
@@ -185,6 +189,7 @@ export function createPtySessionForSession(
           logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
         }
         log(`PTY ${ptySession.id} exited with code ${code}`);
+        clearPtyOutput(sessionId); // #627: drop the rolling output buffer
         sessionRegistry.handlePTYExit(sessionId);
         sessionStore.markExited(sessionId, code);
         // The daemon process can outlive its Claude child (daemon mode). Record
