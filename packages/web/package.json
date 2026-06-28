@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "cap:init": "cap init Remi com.yooz.remi --web-dir dist",
+    "cap:init": "cap init Remi live.yooz.remi --web-dir dist",
     "cap:add:ios": "cap add ios",
     "cap:add:android": "cap add android",
     "cap:sync": "cap sync",
