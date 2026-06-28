@@ -173,7 +173,10 @@ export function SessionList({
             <button
               type="button"
               onClick={() => {
-                if (hasConnections && onOpenNewSession) {
+                // Only route to the new-session sheet when a daemon is actually
+                // connected; otherwise open the connect flow so the tap is never
+                // a silent no-op (#638 review).
+                if (anyConnected && onOpenNewSession) {
                   onOpenNewSession();
                 } else {
                   onConnect();
@@ -181,7 +184,7 @@ export function SessionList({
               }}
               className="inline-flex size-[38px] items-center justify-center rounded-xl bg-[var(--color-primary)] text-[var(--color-accent-ink)] transition-transform active:scale-95"
               style={{ boxShadow: '0 4px 18px -6px var(--color-primary)' }}
-              aria-label={hasConnections ? 'New session' : 'Connect'}
+              aria-label={anyConnected ? 'New session' : 'Connect'}
             >
               <Plus className="size-5" />
             </button>

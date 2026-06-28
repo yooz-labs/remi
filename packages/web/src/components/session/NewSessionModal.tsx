@@ -13,24 +13,23 @@ import { RecentProjects } from './RecentProjects';
 
 interface NewSessionModalProps {
   readonly open: boolean;
+  /** Recent directories are still being fetched from the daemon. */
+  readonly loading?: boolean;
   readonly onClose: () => void;
   readonly directories: readonly RecentDirectory[];
-  /** Start a session in the given directory (empty string = home/cwd). */
+  /** Start a session in the given directory (empty string = home/cwd). The
+   *  parent closes the sheet once the request is actually sent. */
   readonly onStartSession: (directory: string) => void;
 }
 
 export function NewSessionModal({
   open,
+  loading = false,
   onClose,
   directories,
   onStartSession,
 }: NewSessionModalProps) {
   if (!open) return null;
-
-  const handleStart = (directory: string) => {
-    onStartSession(directory);
-    onClose();
-  };
 
   return (
     <div
@@ -62,13 +61,19 @@ export function NewSessionModal({
           Pick a recent project or enter a path to start Claude Code there.
         </p>
 
-        {directories.length === 0 && (
+        {loading ? (
           <p className="px-5 pt-2 text-[13px] text-[var(--color-text-muted)]">
-            No recent projects yet. Enter a directory path below to start your first session.
+            Loading recent projects…
           </p>
+        ) : (
+          directories.length === 0 && (
+            <p className="px-5 pt-2 text-[13px] text-[var(--color-text-muted)]">
+              No recent projects yet. Enter a directory path below to start your first session.
+            </p>
+          )
         )}
 
-        <RecentProjects directories={directories} onStartSession={handleStart} />
+        <RecentProjects directories={directories} onStartSession={onStartSession} />
       </div>
     </div>
   );

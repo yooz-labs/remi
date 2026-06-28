@@ -204,6 +204,7 @@ function App() {
   // New-session sheet (#638): recent project directories from the daemon.
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -231,6 +232,9 @@ function App() {
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
+  // Fallback timer so the new-session sheet leaves its loading state even if the
+  // daemon never answers session_history_request (#638 review).
+  const historyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -909,6 +913,11 @@ function App() {
 
       case 'session_history_response': {
         // Recent project directories for the new-session sheet (#638).
+        if (historyTimeoutRef.current) {
+          clearTimeout(historyTimeoutRef.current);
+          historyTimeoutRef.current = null;
+        }
+        setHistoryLoading(false);
         setRecentDirectories(message.directories);
         break;
       }
@@ -2026,32 +2035,39 @@ function App() {
     [sessions, requestResumeSession, resumingSession],
   );
 
-  // Create new session on the first connected daemon
-  const handleNewSession = useCallback(
-    (directory?: string) => {
-      const conn = connections.find((c) => c.status === 'connected');
-      if (!conn) return;
-      requestNewSession(conn.connectionId, directory);
-    },
-    [connections, requestNewSession],
-  );
-
-  // Open the new-session sheet and refresh recent directories (#638). The "+"
-  // button routes here instead of a raw path prompt.
+  // Open the new-session sheet and (re)load recent directories (#638). The "+"
+  // button routes here instead of a raw path prompt. Clears stale directories
+  // and shows a loading state so an empty list isn't confused with "still
+  // loading"; a fallback timer ends the loading state if no response arrives.
   const handleOpenNewSession = useCallback(() => {
     const conn = connections.find((c) => c.status === 'connected');
     if (!conn) return;
-    requestSessionHistory(conn.connectionId);
+    setRecentDirectories([]);
+    if (historyTimeoutRef.current) clearTimeout(historyTimeoutRef.current);
+    const sent = requestSessionHistory(conn.connectionId);
+    if (sent) {
+      setHistoryLoading(true);
+      historyTimeoutRef.current = setTimeout(() => {
+        historyTimeoutRef.current = null;
+        setHistoryLoading(false);
+      }, 5000);
+    } else {
+      setHistoryLoading(false);
+    }
     setShowNewSessionModal(true);
   }, [connections, requestSessionHistory]);
 
-  // RecentProjects passes '' for the home/cwd default; map that to undefined so
-  // the daemon uses its own default working directory.
+  // Start a session in the chosen directory. RecentProjects passes '' for the
+  // home/cwd default; map that to undefined so the daemon uses its own default.
+  // Close the sheet only when the request was actually sent.
   const handleStartSessionInDir = useCallback(
     (directory: string) => {
-      handleNewSession(directory.trim() || undefined);
+      const conn = connections.find((c) => c.status === 'connected');
+      if (!conn) return;
+      const sent = requestNewSession(conn.connectionId, directory.trim() || undefined);
+      if (sent) setShowNewSessionModal(false);
     },
-    [handleNewSession],
+    [connections, requestNewSession],
   );
 
   // Menu actions
@@ -2198,6 +2214,7 @@ function App() {
 
       <NewSessionModal
         open={showNewSessionModal}
+        loading={historyLoading}
         onClose={() => setShowNewSessionModal(false)}
         directories={recentDirectories}
         onStartSession={handleStartSessionInDir}
