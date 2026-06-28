@@ -5,14 +5,22 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  STATUS_CLEAR_FRESHNESS_MS,
+  clearMainQuestionOnStatus,
   clearSessionQuestions,
   getSessionQuestions,
   hasSessionQuestion,
+  isQuestionPending,
+  markQuestionResolved,
   questionKey,
   removeQuestionById,
+  removeQuestionByKeyIfId,
   statusClearsMainQuestion,
 } from '../../src/lib/question-collection';
 import type { UIQuestion } from '../../src/types';
+
+const BASE_TS = '2026-05-29T00:00:00.000Z';
+const BASE_MS = Date.parse(BASE_TS);
 
 function q(sessionId: string, agentId: string | undefined, id: string): UIQuestion {
   return {
@@ -20,9 +28,13 @@ function q(sessionId: string, agentId: string | undefined, id: string): UIQuesti
     sessionId: sessionId as UIQuestion['sessionId'],
     type: 'yes_no',
     prompt: `${id}?`,
-    timestamp: '2026-05-29T00:00:00.000Z',
+    timestamp: BASE_TS,
     agentId,
   };
+}
+
+function qWith(base: UIQuestion, overrides: Partial<UIQuestion>): UIQuestion {
+  return { ...base, ...overrides };
 }
 
 function build(...items: UIQuestion[]): Map<string, UIQuestion> {
@@ -117,5 +129,122 @@ describe('statusClearsMainQuestion (#576)', () => {
     expect(statusClearsMainQuestion('executing')).toBe(true);
     expect(statusClearsMainQuestion('idle')).toBe(true);
     expect(statusClearsMainQuestion('starting')).toBe(true);
+  });
+});
+
+describe('removeQuestionByKeyIfId (#652)', () => {
+  test('removes the entry when the slot still holds the same id', () => {
+    const map = build(q('s1', undefined, 'a'));
+    const next = removeQuestionByKeyIfId(map, questionKey('s1'), 'a');
+    expect(getSessionQuestions(next, 's1')).toEqual([]);
+  });
+
+  test('NO-OP when the slot was reused by a newer prompt (the core fix)', () => {
+    // The post-answer timer captured key s1#main for id 'a', but id 'b' took the
+    // slot before it fired; deleting by key alone would wipe the new card.
+    const map = build(q('s1', undefined, 'b'));
+    expect(removeQuestionByKeyIfId(map, questionKey('s1'), 'a')).toBe(map);
+    expect(getSessionQuestions(map, 's1').map((x) => x.id)).toEqual(['b']);
+  });
+
+  test('NO-OP (same reference) when the key is absent', () => {
+    const map = build(q('s1', undefined, 'a'));
+    expect(removeQuestionByKeyIfId(map, questionKey('s2'), 'a')).toBe(map);
+  });
+});
+
+describe('clearMainQuestionOnStatus (#652)', () => {
+  test('non-clearing status is a no-op (same reference)', () => {
+    const map = build(q('s1', undefined, 'a'));
+    expect(clearMainQuestionOnStatus(map, 's1', 'waiting', { now: () => BASE_MS })).toBe(map);
+  });
+
+  test('protects a FRESH card from a status update racing it in the same burst', () => {
+    const map = build(q('s1', undefined, 'a'));
+    const next = clearMainQuestionOnStatus(map, 's1', 'executing', {
+      now: () => BASE_MS + 500, // 500ms old, inside the 2s window
+    });
+    expect(next).toBe(map);
+    expect(getSessionQuestions(next, 's1').map((x) => x.id)).toEqual(['a']);
+  });
+
+  test('clears a STALE main card the agent has moved past', () => {
+    const map = build(q('s1', undefined, 'a'));
+    const next = clearMainQuestionOnStatus(map, 's1', 'executing', {
+      now: () => BASE_MS + STATUS_CLEAR_FRESHNESS_MS + 1,
+    });
+    expect(getSessionQuestions(next, 's1')).toEqual([]);
+  });
+
+  test('clears only the MAIN slot; a concurrent subagent prompt survives', () => {
+    const map = build(q('s1', undefined, 'a'), q('s1', 'sub-7', 'b'));
+    const next = clearMainQuestionOnStatus(map, 's1', 'idle', {
+      now: () => BASE_MS + STATUS_CLEAR_FRESHNESS_MS + 1,
+    });
+    expect(getSessionQuestions(next, 's1').map((x) => x.id)).toEqual(['b']);
+  });
+
+  test('no main card present is a no-op (same reference)', () => {
+    const map = build(q('s1', 'sub-7', 'b'));
+    expect(
+      clearMainQuestionOnStatus(map, 's1', 'idle', { now: () => BASE_MS + 10_000 }),
+    ).toBe(map);
+  });
+
+  test('a malformed timestamp fails open to clearing (never pins the UI)', () => {
+    const map = build(qWith(q('s1', undefined, 'a'), { timestamp: 'not-a-date' as never }));
+    const next = clearMainQuestionOnStatus(map, 's1', 'executing', { now: () => BASE_MS });
+    expect(getSessionQuestions(next, 's1')).toEqual([]);
+  });
+});
+
+describe('markQuestionResolved (#652)', () => {
+  test('flips a still-pending card to a resolved-elsewhere trace, keeping it on screen', () => {
+    const map = build(q('s1', undefined, 'a'));
+    const next = markQuestionResolved(map, 's1', 'a', 'answered');
+    const card = next.get(questionKey('s1'));
+    expect(card?.resolvedReason).toBe('answered');
+    expect(getSessionQuestions(next, 's1').map((x) => x.id)).toEqual(['a']);
+  });
+
+  test('NO-OP when the card was already answered locally (owns its own trace/timer)', () => {
+    const map = build(qWith(q('s1', undefined, 'a'), { answeredWith: '1' }));
+    expect(markQuestionResolved(map, 's1', 'a', 'answered')).toBe(map);
+  });
+
+  test('NO-OP while the card is submitting (#627 auto-answer in flight)', () => {
+    const map = build(qWith(q('s1', undefined, 'a'), { submitting: true }));
+    expect(markQuestionResolved(map, 's1', 'a', 'auto_approved')).toBe(map);
+  });
+
+  test('NO-OP on a duplicate broadcast (already marked resolved)', () => {
+    const map = build(qWith(q('s1', undefined, 'a'), { resolvedReason: 'cancelled' }));
+    expect(markQuestionResolved(map, 's1', 'a', 'answered')).toBe(map);
+  });
+
+  test('NO-OP (same reference) when the card is absent', () => {
+    const map = build(q('s1', undefined, 'a'));
+    expect(markQuestionResolved(map, 's1', 'nope', 'answered')).toBe(map);
+  });
+
+  test('locates by id within the session; a same-id card in another session is untouched', () => {
+    const map = build(q('s1', undefined, 'dup'), q('s2', undefined, 'dup'));
+    const next = markQuestionResolved(map, 's1', 'dup', 'auto_denied');
+    expect(next.get(questionKey('s1'))?.resolvedReason).toBe('auto_denied');
+    expect(next.get(questionKey('s2'))?.resolvedReason).toBeUndefined();
+  });
+});
+
+describe('isQuestionPending (#652)', () => {
+  test('true for a fresh unanswered card', () => {
+    expect(isQuestionPending(q('s1', undefined, 'a'))).toBe(true);
+  });
+  test('false once answered locally', () => {
+    expect(isQuestionPending(qWith(q('s1', undefined, 'a'), { answeredWith: '1' }))).toBe(false);
+  });
+  test('false once resolved elsewhere', () => {
+    expect(isQuestionPending(qWith(q('s1', undefined, 'a'), { resolvedReason: 'answered' }))).toBe(
+      false,
+    );
   });
 });

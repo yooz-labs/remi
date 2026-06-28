@@ -9,6 +9,14 @@ import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 /** Source that produced a UI message */
 export type MessageSource = 'optimistic' | 'pty' | 'transcript';
 
+/**
+ * How a question resolved on a channel OTHER than this client's own answer
+ * (#652). Mirrors `QuestionResolvedMessage['reason']`; drives the brief
+ * "resolved elsewhere" trace the card shows before it fades, so a lock-screen
+ * or terminal answer leaves visible confirmation instead of vanishing.
+ */
+export type UIQuestionResolvedReason = 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';
 
@@ -182,6 +190,11 @@ export interface UIQuestion {
   readonly timestamp: Timestamp;
   /** The answer that was selected (set after answering) */
   readonly answeredWith?: string;
+  /** #652: the prompt resolved on another channel (lock screen / terminal /
+   *  another client). Set by the `question_resolved` handler when the card was
+   *  NOT answered locally, so the card shows a brief trace then fades instead of
+   *  vanishing with no confirmation. Mutually exclusive with `answeredWith`. */
+  readonly resolvedReason?: UIQuestionResolvedReason;
   /** The Claude agent this prompt belongs to ('main' default). Keys the
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;

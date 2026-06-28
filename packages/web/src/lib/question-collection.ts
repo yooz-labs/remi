@@ -8,7 +8,26 @@
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
-import type { AgentStatus, UIQuestion } from '@/types';
+import type { AgentStatus, UIQuestion, UIQuestionResolvedReason } from '@/types';
+
+/**
+ * How long an answered/resolved card lingers (collapsed) before it is removed
+ * (#652). Long enough to read the confirmation, short enough not to clutter.
+ */
+export const RESOLVED_TRACE_LINGER_MS = 1500;
+
+/**
+ * A just-arrived main-agent card younger than this is protected from a
+ * `session_update` status-clear (#652). The status fallback exists to drop a
+ * card the agent has moved past, but a status update arriving in the same burst
+ * as a fresh prompt must NOT wipe it before the user can act; the precise
+ * `question_resolved` path (or a later status) clears it once it ages out.
+ */
+export const STATUS_CLEAR_FRESHNESS_MS = 2000;
+
+interface ClockOptions {
+  readonly now?: () => number;
+}
 
 /** Composite map key: a session's prompt, scoped to its agent (main default). */
 export function questionKey(sessionId: string, agentId?: string | undefined): string {
@@ -97,4 +116,87 @@ export function removeQuestionById(
  */
 export function statusClearsMainQuestion(status: AgentStatus): boolean {
   return status !== 'waiting' && status !== 'evaluating' && status !== 'approved';
+}
+
+/**
+ * Remove the entry at `key` ONLY if it still holds question `id` (#652).
+ *
+ * The post-answer cleanup timer captures the slot key when the user answers,
+ * but a newer prompt can take that same `sessionId#agentId` slot before the
+ * timer fires (back-to-back auto-approve escalations). Deleting by key alone
+ * then wipes the NEW card; the daemon re-emits and it "reappears". Verifying the
+ * id makes the timer a no-op once the slot has been reused. Returns the SAME
+ * reference when nothing was removed so React skips the re-render.
+ */
+export function removeQuestionByKeyIfId(
+  questions: Map<string, UIQuestion>,
+  key: string,
+  id: string,
+): Map<string, UIQuestion> {
+  const existing = questions.get(key);
+  if (!existing || existing.id !== id) return questions;
+  const next = new Map(questions);
+  next.delete(key);
+  return next;
+}
+
+/**
+ * Apply a `session_update` status to the MAIN-agent card, clearing it only when
+ * the status resolves the prompt AND the card is not freshly arrived (#652).
+ *
+ * Composes `statusClearsMainQuestion` (status semantics) with a freshness gate
+ * so a status update racing a just-shown prompt cannot wipe it. A card with a
+ * malformed timestamp fails open to clearing, matching the rest of the UI's
+ * "never pin on bad data" stance. Returns the SAME reference when nothing
+ * changed.
+ */
+export function clearMainQuestionOnStatus(
+  questions: Map<string, UIQuestion>,
+  sessionId: string,
+  status: AgentStatus,
+  options: ClockOptions & { readonly freshnessMs?: number } = {},
+): Map<string, UIQuestion> {
+  if (!statusClearsMainQuestion(status)) return questions;
+  const key = questionKey(sessionId);
+  const existing = questions.get(key);
+  if (!existing) return questions;
+  const freshnessMs = options.freshnessMs ?? STATUS_CLEAR_FRESHNESS_MS;
+  const clock = options.now ?? Date.now;
+  const ageMs = clock() - Date.parse(existing.timestamp);
+  // Finite, non-negative, and within the window => protect the fresh card.
+  if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < freshnessMs) return questions;
+  const next = new Map(questions);
+  next.delete(key);
+  return next;
+}
+
+/**
+ * Flip the card matching (sessionId, questionId) to a "resolved elsewhere"
+ * trace (#652) so a lock-screen / terminal / other-client answer leaves visible
+ * confirmation before it fades, instead of vanishing instantly.
+ *
+ * No-op (same reference) when the card is absent, was already answered LOCALLY
+ * (`answeredWith` / `submitting` own their own lifecycle), or is already marked
+ * resolved (idempotent for a duplicate broadcast). Located by `id` within the
+ * session because `question_resolved` carries no agentId.
+ */
+export function markQuestionResolved(
+  questions: Map<string, UIQuestion>,
+  sessionId: string,
+  questionId: string,
+  reason: UIQuestionResolvedReason,
+): Map<string, UIQuestion> {
+  for (const [key, q] of questions) {
+    if (q.sessionId !== sessionId || q.id !== questionId) continue;
+    if (q.answeredWith != null || q.submitting || q.resolvedReason != null) return questions;
+    const next = new Map(questions);
+    next.set(key, { ...q, resolvedReason: reason });
+    return next;
+  }
+  return questions;
+}
+
+/** Whether a card is still awaiting the user (drives the session's pending badge). */
+export function isQuestionPending(q: UIQuestion): boolean {
+  return q.answeredWith == null && q.resolvedReason == null;
 }
