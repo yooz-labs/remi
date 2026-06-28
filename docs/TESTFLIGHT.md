@@ -84,9 +84,18 @@ the sandbox/prod token split).
 
 ## One-time App Store Connect setup
 
-- Register App ID `live.yooz.remi` with the **Push Notifications** capability.
-- Create the App Store Connect app record (iOS).
+- The App ID `live.yooz.remi` is auto-registered on the first archive (automatic
+  signing + the API key). Enable the **Push Notifications** capability on it so
+  the production-APNS entitlement is allowed.
+- **Create the App Store Connect app record (iOS)** in the web UI — My Apps → +
+  → New App, bundle id `live.yooz.remi`. This is **required before the first
+  upload** and the App Store Connect API cannot do it; until it exists `altool`
+  fails with `Cannot determine the Apple ID from Bundle ID 'live.yooz.remi'`.
 - TestFlight: add internal/external test groups; complete export-compliance.
+
+The script passes the ASC API key to `xcodebuild` itself
+(`-authenticationKey*`), so the archive/export create the App ID and the App
+Store distribution profile headlessly — no signed-in Xcode account needed.
 
 ## Preflight checklist
 

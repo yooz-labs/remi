@@ -21,11 +21,42 @@
 set -eo pipefail
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# Load local upload creds (ASC_KEY_ID / ASC_ISSUER_ID) from a gitignored .env so
+# `--upload` works without exporting them each time. See .env.example.
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  . "$REPO_ROOT/.env"
+  set +a
+fi
+
 WEB_DIR="$REPO_ROOT/packages/web"
-WORKSPACE="$WEB_DIR/ios/App/App.xcworkspace"
+IOS_APP_DIR="$WEB_DIR/ios/App"
 SCHEME="App"
+# Capacitor with SPM has no .xcworkspace (just App.xcodeproj); CocoaPods setups do.
+if [ -d "$IOS_APP_DIR/App.xcworkspace" ]; then
+  XCODE_CONTAINER=(-workspace "$IOS_APP_DIR/App.xcworkspace")
+else
+  XCODE_CONTAINER=(-project "$IOS_APP_DIR/App.xcodeproj")
+fi
 TEAM_ID="9DQ459HAZB"
 OUT_DIR="${REMI_ARCHIVE_DIR:-$REPO_ROOT/build/ios}"
+
+# When the ASC API key is available, hand it to xcodebuild so automatic signing
+# can register the App ID and create the App Store distribution profile headlessly
+# (without it, -exportArchive fails "No Accounts / No profiles found"). Same key
+# altool uses for the upload.
+AUTH_ARGS=()
+if [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ]; then
+  AUTH_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+  if [ -f "$AUTH_KEY_PATH" ]; then
+    AUTH_ARGS=(
+      -authenticationKeyPath "$AUTH_KEY_PATH"
+      -authenticationKeyID "$ASC_KEY_ID"
+      -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+    )
+  fi
+fi
 
 DO_UPLOAD=false
 for arg in "$@"; do
@@ -62,12 +93,13 @@ mkdir -p "$OUT_DIR"
 
 echo "[3/5] Archiving (Release, generic/platform=iOS)"
 ARCHIVE_CMD=(xcodebuild clean archive
-  -workspace "$WORKSPACE"
+  "${XCODE_CONTAINER[@]}"
   -scheme "$SCHEME"
   -configuration Release
   -destination "generic/platform=iOS"
   -archivePath "$ARCHIVE_PATH"
   -allowProvisioningUpdates
+  "${AUTH_ARGS[@]}"
   -skipPackagePluginValidation
   CODE_SIGN_STYLE=Automatic
   DEVELOPMENT_TEAM="$TEAM_ID")
@@ -107,7 +139,8 @@ xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS" \
   -exportPath "$EXPORT_PATH" \
-  -allowProvisioningUpdates
+  -allowProvisioningUpdates \
+  "${AUTH_ARGS[@]}"
 
 IPA_COUNT=$(find "$EXPORT_PATH" -maxdepth 1 -name '*.ipa' | wc -l | tr -d ' ')
 if [ "$IPA_COUNT" -eq 0 ]; then
