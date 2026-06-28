@@ -64,8 +64,7 @@ if (
   !after.includes(`CURRENT_PROJECT_VERSION = ${build};`)
 ) {
   console.error(
-    `sync-app-version: could not stamp ${marketing}/${build} into the pbxproj ` +
-      '(MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format)',
+    `sync-app-version: could not stamp ${marketing}/${build} into the pbxproj (MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format)`,
   );
   process.exit(1);
 }
