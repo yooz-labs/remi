@@ -47,6 +47,7 @@ import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
   createDetachSession,
+  createKillSessionRequest,
   createRegisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
@@ -906,6 +907,33 @@ function App() {
 
       case 'session_history_response': {
         // Session history response received; not yet integrated into the UI
+        break;
+      }
+
+      case 'kill_session_response': {
+        if (message.success) {
+          // Session torn down; refresh the list so the dead session drops off.
+          const reqList = requestSessionListRef.current;
+          if (reqList) {
+            const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+            for (const conn of conns) {
+              reqList(conn.connectionId, conns.length === 1);
+            }
+          }
+        } else {
+          console.error(`Session kill failed: ${message.error}`);
+          const errorMsg: UIMessage = {
+            id: generateId(),
+            sessionId: activeSessionIdRef.current ?? ('' as UUID),
+            connectionId: '' as ConnectionId,
+            sender: 'system',
+            content: `Failed to stop session: ${message.error || 'unknown error'}`,
+            timestamp: new Date().toISOString(),
+            state: 'delivered',
+            isEditing: false,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        }
         break;
       }
 
@@ -2031,6 +2059,39 @@ function App() {
     [connections, requestNewSession],
   );
 
+  // Stop (kill) a session: tears down the Claude process + its daemon (#637).
+  // Persistent sessions never time out, so this is the explicit way to end one.
+  const handleKillSession = useCallback(
+    (sessionId: UUID, connectionId: ConnectionId, label?: string) => {
+      const ok = window.confirm(
+        `Stop ${label ? `"${label}"` : 'this session'}? This ends the Claude process and cannot be undone.`,
+      );
+      if (!ok) return;
+      const sent = cmSendMessage(connectionId, createKillSessionRequest(sessionId));
+      if (!sent) {
+        const errorMsg: UIMessage = {
+          id: generateId(),
+          sessionId,
+          connectionId: '' as ConnectionId,
+          sender: 'system',
+          content: 'Cannot stop session: not connected to daemon.',
+          timestamp: new Date().toISOString(),
+          state: 'delivered',
+          isEditing: false,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      }
+    },
+    [cmSendMessage],
+  );
+
+  const handleEndSession = useCallback(() => {
+    if (!activeSessionId) return;
+    const connId = getActiveConnectionId();
+    if (!connId) return;
+    handleKillSession(activeSessionId, connId);
+  }, [activeSessionId, getActiveConnectionId, handleKillSession]);
+
   // Menu actions
   const handleCopyConversation = useCallback(() => {
     const text = sessionMessages.map((m) => `[${m.sender}] ${m.content}`).join('\n\n');
@@ -2107,6 +2168,7 @@ function App() {
       onReconnect={reconnectConnection}
       onDisconnectAll={handleDisconnectAll}
       onNewSession={handleNewSession}
+      onKillSession={handleKillSession}
       onSettings={() => setShowSettings(true)}
     />
   );
@@ -2141,6 +2203,7 @@ function App() {
       onExportText={handleExportText}
       onBulletExpand={handleBulletExpand}
       onDetach={handleDetach}
+      onEndSession={handleEndSession}
       showTimestamps={settings.showTimestamps}
     />
   ) : (
