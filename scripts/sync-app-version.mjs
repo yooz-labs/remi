@@ -7,8 +7,9 @@
  * only the pbxproj build settings need writing (both Debug + Release configs).
  *
  * Usage:
- *   bun scripts/sync-app-version.mjs                  # from config
- *   bun scripts/sync-app-version.mjs --build 42       # override build number (Xcode Cloud CI_BUILD_NUMBER)
+ *   bun scripts/sync-app-version.mjs                  # stamp pbxproj from config
+ *   bun scripts/sync-app-version.mjs --bump-build     # buildNumber++ in config, then stamp
+ *   bun scripts/sync-app-version.mjs --build 42       # one-off build-number override
  *   bun scripts/sync-app-version.mjs --marketing 0.2.0
  */
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -32,12 +33,25 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--build') out.build = argv[++i];
     else if (argv[i] === '--marketing') out.marketing = argv[++i];
+    else if (argv[i] === '--bump-build') out.bumpBuild = true;
   }
   return out;
 }
 
 const args = parseArgs(process.argv.slice(2));
 const config = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+
+// --bump-build increments the source-of-truth build number and persists it, so
+// every TestFlight upload gets a fresh CFBundleVersion (App Store Connect rejects
+// duplicates). Done before stamping so the new value flows into the pbxproj.
+if (args.bumpBuild) {
+  config.buildNumber = Number(config.buildNumber) + 1;
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
+  console.log(
+    `sync-app-version: bumped buildNumber -> ${config.buildNumber} in config/app-release.json`,
+  );
+}
+
 const marketing = String(args.marketing ?? config.marketingVersion);
 const build = String(args.build ?? config.buildNumber);
 

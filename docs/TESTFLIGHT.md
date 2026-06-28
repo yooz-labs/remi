@@ -1,72 +1,100 @@
-# Shipping Remi to TestFlight
+# Shipping Remi to TestFlight (local upload)
 
-How the Remi app gets to TestFlight via **Xcode Cloud**, mirroring the
-`yooz-notes` pipeline. iOS is live first; macOS is a later phase (see #658).
+Remi ships to TestFlight from a **local archive + upload**, the same path as
+`yooz-whisper` — no Xcode Cloud. You build and upload from your Mac with a single
+script. Apple team `9DQ459HAZB`, bundle id `live.yooz.remi`.
 
-There is no fastlane. Apple team `9DQ459HAZB`, bundle id `live.yooz.remi`.
+## The one command
 
-## The monorepo nuance
+```bash
+# build + archive + export the .ipa (no upload)
+bun run testflight:ios
+# or: ./scripts/testflight-ios.sh
 
-Unlike `yooz-notes` (Capacitor app at the repo root), Remi is a bun monorepo and
-the Capacitor app lives in `packages/web`. Xcode Cloud clones the repo root, so
-the CI scripts `cd` into `packages/web` before building. The iOS Xcode workspace
-is `packages/web/ios/App/App.xcworkspace` (scheme `App`).
+# build + upload to TestFlight
+ASC_KEY_ID=XXXX ASC_ISSUER_ID=uuid ./scripts/testflight-ios.sh --upload
+```
 
-## Pieces in this repo
+`scripts/testflight-ios.sh` does, in order:
 
-| File | Role |
-|---|---|
-| `ci_scripts/ci_post_clone.sh` | Repo-root logic: install bun, `bun install` (workspace), `bun run build` in `packages/web`, then `cap sync ios`. Verifies `dist/index.html`. |
-| `packages/web/ios/App/ci_scripts/ci_post_clone.sh` | Thin wrapper co-located with the workspace; sets `YOOZ_XCODE_CLOUD_PLATFORM=ios` and delegates to the root script. |
-| `packages/web/ios/App/ci_scripts/ci_pre_xcodebuild.sh` | Stamps the version before archiving: marketing from `config/app-release.json`, build number from Xcode Cloud's `CI_BUILD_NUMBER`. |
-| `config/app-release.json` | The app's **own** version line (`marketingVersion`, `buildNumber`), decoupled from the daemon/npm version. |
-| `scripts/sync-app-version.mjs` | Writes `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` into the iOS pbxproj (Info.plist already reads the build vars). `bun run app:version`. |
+1. Stamp the app version into the Xcode project (`scripts/sync-app-version.mjs`).
+2. `bun run build` (in `packages/web`) + `bunx cap sync ios`.
+3. `xcodebuild archive` the workspace `packages/web/ios/App/App.xcworkspace`
+   (scheme `App`, Release, `generic/platform=iOS`, automatic signing).
+4. `xcodebuild -exportArchive` with App Store options → a `.ipa`.
+5. With `--upload`: `xcrun altool --upload-app -t ios` using an App Store Connect
+   API key.
+
+Output lands in `build/ios/` (gitignored; override with `REMI_ARCHIVE_DIR`).
 
 ## Versioning
 
-- **Marketing version** ("what users see") lives in `config/app-release.json`. Bump it there; run `bun run app:version` to write it into the Xcode project, commit the result.
-- **Build number** is Xcode Cloud's monotonic `CI_BUILD_NUMBER`, applied by `ci_pre_xcodebuild.sh` at build time, so every TestFlight upload increments without a committed bump. Local archives fall back to `buildNumber` in the config.
-- The app version is intentionally **separate** from the daemon/npm version (`scripts/bump-version.sh`, root `package.json`): a `0.1.x` app and a `0.6.x` daemon should not fight.
+The app has its **own** version line in `config/app-release.json`
+(`marketingVersion`, `buildNumber`), decoupled from the daemon/npm version. The
+Info.plist already reads `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)`, so
+only the pbxproj is stamped.
 
-## Release flow
+- Marketing version: edit `marketingVersion` in `config/app-release.json`.
+- Build number: **bump before every upload** (App Store Connect rejects a
+  duplicate build for the same marketing version):
+  ```bash
+  bun run app:version --bump-build   # buildNumber++ in config + stamp; commit it
+  ```
+  Or for a one-off unique build without touching config:
+  ```bash
+  REMI_BUILD_NUMBER=$(date +%y%m%d%H%M) ./scripts/testflight-ios.sh --upload
+  ```
+- `bun run app:version` stamps the pbxproj from config without bumping.
 
-1. Set the marketing version in `config/app-release.json` if it changed; `bun run app:version`; commit.
-2. Merge to / push the `testflight` branch (the Xcode Cloud trigger). **Never** push straight to `main`/`develop`; cut the TF build from a dedicated branch.
-3. Xcode Cloud runs `ci_post_clone.sh` (web build + `cap sync`), `ci_pre_xcodebuild.sh` (version stamp), archives the `App` scheme, and uploads to TestFlight.
+## App Store Connect API key (for `--upload`)
 
-## Manual setup (Apple-account holder, one-time)
+1. App Store Connect → Users and Access → Integrations → App Store Connect API →
+   create a key (Admin or App Manager). Download the `.p8` **once**.
+2. Place it at `~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8`
+   (`altool` auto-discovers it there).
+3. Export the identifiers when uploading:
+   ```bash
+   export ASC_KEY_ID=<KEYID>          # the key's Key ID
+   export ASC_ISSUER_ID=<issuer-uuid> # the team's Issuer ID (top of the keys page)
+   ```
 
-These need App Store Connect / Developer portal access and are **not** in the repo:
+## Signing
 
-1. **App ID** `live.yooz.remi` registered with the **Push Notifications** capability.
-2. **App Store Connect app record** (iOS platform; macOS added in Phase 2).
-3. **Xcode Cloud workflow**:
-   - Primary repository: the repo **root**.
-   - Xcode project/workspace: `packages/web/ios/App/App.xcworkspace`, scheme `App`.
-   - Start condition: branch changes on `testflight`.
-   - Archive action → TestFlight (internal, then external) groups.
-4. **APNS** production key configured (coordinate with the signaling Worker; see notification epic #603 for the sandbox/prod token split).
-5. **Export compliance** declaration for the build.
+Automatic signing with team `9DQ459HAZB`. You need an **Apple Distribution**
+certificate in your login keychain; `-allowProvisioningUpdates` lets `xcodebuild`
+fetch/create the App Store provisioning profile. The simplest way to get the cert
+the first time is to sign in to your Apple ID in Xcode → Settings → Accounts and
+let it manage certificates, then run the script.
 
-## Production APNS entitlement (do when wiring signing)
+## Production APNS (do once, at first archive)
 
 The committed `packages/web/ios/App/App/App.entitlements` keeps
-`aps-environment = development` so current on-device **sandbox** testing keeps
-working. A TestFlight build must use **production** APNS. When configuring Xcode
-Cloud signing, split it by configuration instead of flipping the shared file:
+`aps-environment = development` so local **sandbox** push testing keeps working.
+A TestFlight build needs **production** APNS. Split it by configuration rather
+than flipping the shared file:
 
-- add a `AppRelease.entitlements` with `aps-environment = production`, and
-- set `CODE_SIGN_ENTITLEMENTS` per build config in the Xcode project (Debug →
-  `App/App.entitlements`, Release → `App/AppRelease.entitlements`).
+- add `App/AppRelease.entitlements` with `aps-environment = production`, and
+- set `CODE_SIGN_ENTITLEMENTS` per config in the Xcode project
+  (Debug → `App/App.entitlements`, Release → `App/AppRelease.entitlements`).
 
-This is deliberately left as a signing-time step (it can't be validated without a
-real signed archive) rather than flipping the shared entitlement now and breaking
-local sandbox push testing.
+Coordinate the production APNS key with the signaling Worker (notification epic
+#603 covers the sandbox/prod token split).
 
-## Preflight checklist (before a `testflight` push)
+## One-time App Store Connect setup
 
-- [ ] `cd packages/web && bun run build` succeeds; `dist/index.html` present.
-- [ ] `bun run app:version` run and committed if the marketing version changed.
-- [ ] iOS Release entitlement uses production APNS (per above).
+- Register App ID `live.yooz.remi` with the **Push Notifications** capability.
+- Create the App Store Connect app record (iOS).
+- TestFlight: add internal/external test groups; complete export-compliance.
+
+## Preflight checklist
+
+- [ ] `config/app-release.json` build number bumped + committed.
+- [ ] Release entitlement uses production APNS (above).
 - [ ] App icons present (`packages/web/ios/App/App/Assets.xcassets/AppIcon.appiconset`).
-- [ ] Decide device family if it changed (currently iPhone-only, `TARGETED_DEVICE_FAMILY = 1`).
+- [ ] Distribution cert in keychain; `ASC_KEY_ID` / `ASC_ISSUER_ID` exported for `--upload`.
+- [ ] Device family as intended (currently iPhone-only, `TARGETED_DEVICE_FAMILY = 1`).
+
+## macOS
+
+Deferred (Phase 2, #658). When we add it, decide between a yooz-notes-style
+WKWebView client shell and folding the client into the menu-bar hub app (#648).
