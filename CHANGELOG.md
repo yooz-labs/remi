@@ -4,7 +4,7 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
-## [0.6.16] - 2026-06-28
+## [0.6.16] - 2026-06-27
 
 Question-pipeline rework (epic #624): the auto-approve gate is the single
 authority for what reaches your phone — killing phantom permission
