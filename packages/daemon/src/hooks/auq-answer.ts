@@ -154,43 +154,48 @@ export function parseReviewAnswers(frameText: string): ReviewAnswer[] {
   return out;
 }
 
-/** Lowercase + strip ALL whitespace, so wrapped/run-together renders compare equal. */
-function squash(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, '');
+/**
+ * Lowercase, collapse whitespace to single spaces, and canonicalize comma spacing
+ * ("a , b" / "a,b" -> "a,b"). Keeps internal spaces (so "foo bar" stays distinct
+ * from "foobar") while absorbing terminal line-wrap / run-together artifacts.
+ */
+function normalizeLabel(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ',')
+    .trim();
 }
 
 /**
- * Whether one review answer shows exactly the expected option label(s), matched
- * order-insensitively and ROBUST TO LABELS THAT CONTAIN COMMAS (#654).
+ * Whether one review answer shows exactly the expected option label(s) — ROBUST TO
+ * LABELS THAT CONTAIN COMMAS (#654), without ever accepting a different option.
  *
  * `parseReviewAnswers` splits the rendered label region on commas to separate
  * multiple selected labels, but a comma is ambiguous: an option label can itself
  * contain one (e.g. "Sidecar first, channels.tsv fallback"), which the splitter
- * shatters into phantom labels. A naive set-equality then rejects a correct
- * answer. Instead we reconstruct the region from the (possibly over-split) parts
- * and remove each WHOLE expected label from it (longest first, so a label that is
- * a substring of another can't shadow it); whatever remains must be only commas.
+ * shatters into phantom parts. Rather than compare comma-split sets (which then
+ * miscounts), we re-join BOTH the parsed parts and the expected labels with a
+ * single canonical comma and compare the normalized strings exactly. The label is
+ * restored, and a different option — even one whose whitespace-stripped text would
+ * overlap — does not match, so the runner never submits a wrong answer.
+ *
+ * Order-sensitive by design: the daemon toggles options in ascending index order
+ * and the TUI renders them the same way, so the expected order always equals the
+ * rendered order; a genuine reorder escalates (fail-safe) rather than mis-submits.
  */
 function reviewLabelsMatch(parsedParts: readonly string[], expected: readonly string[]): boolean {
   if (expected.length === 0) return false;
-  // Rejoin with a comma (whitespace is squashed away anyway), restoring any
-  // label-internal comma the parser split on.
-  let region = squash(parsedParts.join(','));
-  const wanted = [...expected].map(squash).sort((a, b) => b.length - a.length);
-  for (const label of wanted) {
-    if (label.length === 0) return false;
-    const idx = region.indexOf(label);
-    if (idx < 0) return false;
-    region = region.slice(0, idx) + region.slice(idx + label.length);
-  }
-  // Only the separators the join/render introduced may remain.
-  return /^,*$/.test(region);
+  const want = expected.map(normalizeLabel);
+  if (want.some((l) => l.length === 0)) return false;
+  const region = parsedParts.map(normalizeLabel).filter((l) => l.length > 0);
+  return region.join(',') === want.join(',');
 }
 
 /**
  * Verify the parsed review matches the expected per-question label sets (the labels
  * of the chosen options). Order of QUESTIONS must match; labels within a question
- * are matched order-insensitively and tolerantly (see `reviewLabelsMatch`). Any
+ * are matched exactly after normalization (see `reviewLabelsMatch`). Any
  * length/label mismatch -> false -> the runner escalates instead of submitting.
  * `expectedLabels[k]` is the label(s) chosen for question k.
  */

@@ -130,7 +130,14 @@ export async function runAuqAnswer(
     if (isAuqClosed(out)) return submitted ? 'submitted' : 'closed';
     if (!submitted && isReviewScreen(out)) {
       const parsed = parseReviewAnswers(out);
-      if (parsed.length > 0 && reviewMatchesTarget(parsed, input.expectedLabels)) {
+      if (parsed.length === 0) {
+        // Review screen is up but nothing parsed — a render/format change or a
+        // half-rendered frame, NOT a label mismatch. Keep polling until closure
+        // or timeout rather than escalating on a transient frame.
+        await deps.sleep(pollMs);
+        continue;
+      }
+      if (reviewMatchesTarget(parsed, input.expectedLabels)) {
         try {
           await deps.write(AUQ_KEYS.ENTER); // "Submit answers"
         } catch (err) {
