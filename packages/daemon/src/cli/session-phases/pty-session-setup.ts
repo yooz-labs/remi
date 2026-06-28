@@ -50,11 +50,18 @@ export interface PtySessionSetupDeps {
   /** Forward outgoing messages to the connection layer (raw PTY bytes). */
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
   /**
-   * Process-level cleanup invoked on PTY exit when passThrough is set.
-   * `createNewSession` in cli.ts passes the main-flow cleanup function; this
-   * is the only way an in-terminal session exits the wrapper process.
+   * Process-level cleanup invoked on PTY exit. `createNewSession` in cli.ts
+   * passes the main-flow cleanup function (uninstall hooks, stop mDNS, etc.).
    */
   cleanup: () => Promise<void>;
+  /**
+   * Terminate the daemon process after cleanup once the session's Claude has
+   * exited (#641). One daemon = one session, so a daemon with no session has
+   * nothing to host and would otherwise linger as a phantom host. Injected so
+   * tests can drive a real PTY exit without killing the test runner; defaults
+   * to `process.exit`.
+   */
+  exitProcess?: (code: number) => void;
 }
 
 export interface PtySessionSetupArgs {
@@ -110,6 +117,7 @@ export function createPtySessionForSession(
     wsPort,
     sendMessage,
     cleanup,
+    exitProcess = (code: number) => process.exit(code),
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
 
@@ -201,14 +209,18 @@ export function createPtySessionForSession(
           logError(`[live-sessions] markClaudeChildExited failed: ${errorToString(err)}`);
         }
 
-        if (passThrough) {
-          cleanup()
-            .then(() => process.exit(code ?? 0))
-            .catch((err) => {
-              logError(`[PTY] Cleanup failed: ${errorToString(err)}`);
-              process.exit(1);
-            });
-        }
+        // One daemon = one session. When the session's Claude exits — via /exit,
+        // a Stop request, or on its own — the daemon has nothing left to host, so
+        // it shuts down and frees its port instead of lingering as a phantom host
+        // (#641). The session stays resumable from its transcript + stored Claude
+        // session hash (markExited above keeps the entry). Wrapper mode
+        // (passThrough) exits with Claude's code; a standalone daemon exits 0.
+        cleanup()
+          .then(() => exitProcess(passThrough ? (code ?? 0) : 0))
+          .catch((err) => {
+            logError(`[PTY] Cleanup failed: ${errorToString(err)}`);
+            exitProcess(1);
+          });
       },
       onError: (error: Error) => {
         logError(`PTY ${ptySession.id} error:`, error);

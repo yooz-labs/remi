@@ -918,6 +918,10 @@ const orphanTimeoutMs =
   cliOrphanTimeout !== undefined
     ? cliOrphanTimeout * 1000
     : remiConfig.daemon.orphan_timeout * 1000;
+// Forward reference to the session handlers' deferred-Stop resolver (#641). The
+// registry below is constructed before `sessionHandlers` exists, so onSessionClosed
+// reaches the resolver through this holder, assigned once the handlers are wired.
+let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
@@ -929,6 +933,9 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason) => {
       log(`Session closed: ${sessionId} (reason: ${reason})`);
+      // Resolve any deferred Stop (#641): ack the requester + notify a
+      // third-party client now that the session has actually ended.
+      resolveStopOnClose?.(sessionId);
       // Tear down the drive-mode binder (rotation dir-poll + fallback timer) at
       // session close, not just at process cleanup — else the poll interval leaks
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
@@ -1473,6 +1480,9 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   send: sendToConnection,
 });
+// Wire the deferred-Stop resolver now that the handlers exist (#641); the
+// registry's onSessionClosed reaches it through this holder.
+resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 
 // The single authoritative "current owned session" accessor (#499), shared by
 // the transcript-request redirect and the hello_ack binding so they never diverge.
