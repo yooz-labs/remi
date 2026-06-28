@@ -168,6 +168,9 @@ describe('createPtySessionForSession', () => {
       claudeChildPid: process.pid,
     });
 
+    // Capture the daemon-shutdown call instead of actually exiting the test
+    // runner (#641): a daemon-mode session that exits must terminate the daemon.
+    const exitCalls: number[] = [];
     const pty = createPtySessionForSession(
       {
         sessionRegistry,
@@ -177,6 +180,7 @@ describe('createPtySessionForSession', () => {
         wsPort: 9999,
         sendMessage: (sid, message) => sendCalls.push({ sessionId: sid, message }),
         cleanup: async () => {},
+        exitProcess: (code) => exitCalls.push(code),
       },
       { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: false },
     );
@@ -196,10 +200,12 @@ describe('createPtySessionForSession', () => {
       const deadline = Date.now() + 4000;
       while (Date.now() < deadline) {
         const entry = liveSessionsRegistry.findBySessionId(SID);
-        if (entry?.claudeChildExited === true) break;
+        if (entry?.claudeChildExited === true && exitCalls.length > 0) break;
         await new Promise((r) => setTimeout(r, 25));
       }
       expect(liveSessionsRegistry.findBySessionId(SID)?.claudeChildExited).toBe(true);
+      // #641: a daemon-mode session ending must shut the daemon down (exit 0).
+      expect(exitCalls).toEqual([0]);
     } finally {
       // Restore PATH (originalPath is effectively always defined in practice).
       process.env['PATH'] = originalPath ?? '';

@@ -189,9 +189,18 @@ describe('createSessionHandlers', () => {
       expect(msg.success).toBe(false);
     });
 
-    test('closes the session and acks success when called by the active client', () => {
+    test('types /exit (graceful) and acks success when called by the active client', () => {
+      const submitted: string[] = [];
+      const pty = {
+        id: generateId(),
+        write: () => {},
+        submitInput: async (text: string) => {
+          submitted.push(text);
+        },
+        close: async () => {},
+      } as unknown as PTYSession;
       const sessionId = sessionRegistry.createSessionId();
-      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI());
       sessionRegistry.attachConnection(sessionId, CID);
 
       makeHandlers().onKillSessionRequest(CID, sessionId, REQ);
@@ -201,7 +210,10 @@ describe('createSessionHandlers', () => {
       const ack = sendCalls[0]?.message as { type: string; success: boolean };
       expect(ack.type).toBe('kill_session_response');
       expect(ack.success).toBe(true);
-      expect(sessionRegistry.getSession(sessionId)).toBeUndefined();
+      // Graceful stop (#641): Claude is asked to /exit (which frees the daemon via
+      // the PTY-exit path), not SIGKILLed; the session stays until Claude exits.
+      expect(submitted).toEqual(['/exit']);
+      expect(sessionRegistry.getSession(sessionId)).toBeDefined();
     });
 
     test('notifies a third-party attached client with SESSION_ENDED before killing', () => {

@@ -1,7 +1,8 @@
 /**
  * sharedEvents handlers for whole-session lifecycle requests:
  *   onSessionListRequest, enumerate daemon + external sessions
- *   onKillSessionRequest, tear down a session (and notify any active client)
+ *   onKillSessionRequest, gracefully end a session (type Claude /exit, with a
+ *     force-close fallback) and notify any active client
  *   onDetachSession, release a session's active connection without killing it
  *
  * These three are grouped because they all operate on session records via
@@ -44,6 +45,12 @@ export interface SessionHandlerDeps {
   onConnectionRemoved: () => void;
   send: SendToConnection;
 }
+
+/**
+ * How long to wait for a graceful `/exit` to land before force-closing the
+ * session. Covers a Claude that ignores /exit because it is stuck mid-task.
+ */
+const EXIT_FALLBACK_MS = 8000;
 
 export type SessionHandlers = ReturnType<typeof createSessionHandlers>;
 
@@ -117,7 +124,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     },
 
     onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID): void => {
-      log(`Kill session request from ${connectionId} for session ${sessionId}`);
+      log(`Stop session request from ${connectionId} for session ${sessionId}`);
 
       const session = sessionRegistry.getSession(sessionId);
       if (!session) {
@@ -129,25 +136,35 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       }
 
       const sessionName = session.name;
-      log(`Killing session: ${sessionName} (${sessionId})`);
+      log(`Stopping session: ${sessionName} (${sessionId})`);
 
-      // Notify attached client before destroying the session.
+      // Notify attached client that the session is ending.
       if (session.activeConnectionId && session.activeConnectionId !== connectionId) {
-        send(
-          session.activeConnectionId,
-          createError('SESSION_ENDED', 'Session killed by remote request'),
-        );
+        send(session.activeConnectionId, createError('SESSION_ENDED', 'Session ended by request'));
       }
 
-      const hadActiveClient =
-        session.activeConnectionId !== null && session.activeConnectionId !== connectionId;
-      sessionRegistry.closeSession(sessionId, 'forced');
+      // Graceful stop (#641): type `/exit` on our own PTY so Claude quits cleanly
+      // (flushing its transcript + emitting the resume hint) and the PTY-exit path
+      // tears the session down and frees the daemon. Writing to our own PTY avoids
+      // the write-lock requirement a client-side input would have. A force-close
+      // fallback covers a Claude that ignores /exit (e.g. stuck mid-task).
+      session.pty.submitInput('/exit').catch((err) => {
+        logError(
+          `[Stop] /exit write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+        );
+        sessionRegistry.closeSession(sessionId, 'forced');
+      });
+      const forceFallback = setTimeout(() => {
+        if (sessionRegistry.getSession(sessionId)) {
+          log(`Session ${sessionName} did not exit on /exit within ${EXIT_FALLBACK_MS}ms; forcing`);
+          sessionRegistry.closeSession(sessionId, 'forced');
+        }
+      }, EXIT_FALLBACK_MS);
+      // Don't let the fallback timer keep the event loop (or process) alive.
+      forceFallback.unref?.();
+
       send(connectionId, createKillSessionResponse(true, requestId));
-      if (hadActiveClient) {
-        log(`Session killed: ${sessionName} (disconnected attached client)`);
-      } else {
-        log(`Session killed: ${sessionName}`);
-      }
+      log(`Session stop initiated: ${sessionName}`);
     },
 
     onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID): void => {
