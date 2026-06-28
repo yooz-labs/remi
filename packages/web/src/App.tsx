@@ -1240,6 +1240,7 @@ function App() {
     reconnect: reconnectConnection,
     disconnectAll,
     sendInput,
+    sendEscape,
     sendAnswer,
     sendAuqAnswer,
     sendCancelQuestion,
@@ -1778,6 +1779,19 @@ function App() {
     [getActiveConnectionId, sendCancelQuestion],
   );
 
+  // Persistent escape: send a bare Esc to the ACTIVE session at any time — it
+  // interrupts Claude's running work and escapes/cancels an on-screen prompt,
+  // even before a question card exists. Surfaced as a button in the input row and
+  // a long-press on the send button.
+  const handleEscape = useCallback(() => {
+    if (!activeSessionId) return;
+    const connId =
+      sessions.find((s) => s.id === activeSessionId)?.connectionId ?? getActiveConnectionId();
+    if (!connId) return;
+    const binding = sessions.find((s) => s.id === activeSessionId)?.claudeSessionId;
+    sendEscape(connId, activeSessionId, binding as UUID | undefined);
+  }, [activeSessionId, getActiveConnectionId, sendEscape, sessions]);
+
   // Send a regular user input message, optionally with a reply context.
   // Always routes through sendInput regardless of pending question state
   // (#401 bug fix). The QuestionCard owns the answer flow via handleAnswer.
@@ -2116,6 +2130,7 @@ function App() {
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}
       onCancelQuestion={handleCancelQuestion}
+      onCancel={handleEscape}
       onReply={handleReply}
       replyContext={sessionReplyContext}
       onClearReply={handleClearReply}

@@ -101,6 +101,8 @@ export interface UseConnectionManagerReturn {
     content: string,
     claudeSessionId?: UUID,
   ) => boolean;
+  /** Send a bare Esc keystroke to the session (interrupt / escape any prompt). */
+  sendEscape: (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID) => boolean;
   /** Send answer to a question via the correct connection */
   sendAnswer: (
     connectionId: ConnectionId,
@@ -659,6 +661,19 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
+  // Send a bare Esc keystroke (raw, no Enter) to the session's PTY — the
+  // persistent escape: interrupts Claude's running work AND cancels/escapes an
+  // on-screen prompt, available any time (not tied to a question card).
+  const sendEscape = useCallback(
+    (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID): boolean => {
+      return sendToConnection(
+        connectionId,
+        createUserInput(sessionId, '\x1b', true, claudeSessionId),
+      );
+    },
+    [sendToConnection],
+  );
+
   const sendAnswer = useCallback(
     (
       connectionId: ConnectionId,
@@ -850,6 +865,7 @@ export function useConnectionManager(
     reconnect,
     disconnectAll,
     sendInput,
+    sendEscape,
     sendAnswer,
     sendAuqAnswer,
     sendCancelQuestion,

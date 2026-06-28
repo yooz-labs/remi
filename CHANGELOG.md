@@ -27,6 +27,10 @@ properly on a remote session.
   LLM also returns a one-line, plain-language question ("Force-push to main?")
   shown on the push instead of the raw "Allow Bash: <command>" — folded into the
   existing decision call, no added latency.
+- **Persistent escape in the chat** (#627 review): a Stop/Esc control in the input
+  row, a long-press on the send button, and the busy "Stop" all send a bare `Esc`
+  to the session — interrupting Claude's running work or escaping an on-screen
+  prompt at any time, not only from a question card.
 
 ### Changed
 - **One gate, escalate-only** (#625): a question reaches your phone if and only if

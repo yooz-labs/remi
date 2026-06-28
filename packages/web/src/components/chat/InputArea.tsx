@@ -102,6 +102,10 @@ export function InputArea({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
+  // Long-press on the send button fires the escape (#624 review): hold to send Esc
+  // to the session. `longPressedRef` suppresses the click that follows the release.
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressedRef = useRef(false);
 
   // Re-hydrate when the active session (and therefore draftKey) changes.
   useEffect(() => {
@@ -193,6 +197,11 @@ export function InputArea({
 
   // Handle send (for button click)
   const handleSend = () => {
+    // Suppress the click that follows a long-press (which fired the escape).
+    if (longPressedRef.current) {
+      longPressedRef.current = false;
+      return;
+    }
     const trimmed = value.trim();
     if (!trimmed || disabled) {
       return;
@@ -207,6 +216,35 @@ export function InputArea({
       textareaRef.current.style.height = 'auto';
     }
   };
+
+  // #624 review: the persistent escape — send Esc to the session (interrupt the
+  // running work / cancel an on-screen prompt) any time.
+  const fireEscape = useCallback(() => {
+    if (!onCancel) return;
+    hapticImpact('medium');
+    onCancel();
+  }, [onCancel]);
+
+  // Long-press the send button to fire the escape (works while the button is
+  // enabled, i.e. there is text); the persistent Esc button covers the empty case.
+  const startLongPress = useCallback(() => {
+    longPressedRef.current = false;
+    if (!onCancel) return;
+    longPressTimer.current = setTimeout(() => {
+      longPressedRef.current = true;
+      fireEscape();
+    }, 450);
+  }, [onCancel, fireEscape]);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  // Clear any pending long-press timer on unmount.
+  useEffect(() => () => cancelLongPress(), [cancelLongPress]);
 
   // Quick-response chips for an active question. Route through onAnswer so
   // a tap on Yes/No/option-N is a real `sendAnswer`, not the literal value
@@ -324,9 +362,27 @@ export function InputArea({
           />
         </div>
 
-        {/* Send button */}
+        {/* Persistent escape (#624 review): always available, sends Esc to the
+            session to interrupt the running work or cancel an on-screen prompt. */}
+        {onCancel && (
+          <button
+            type="button"
+            onClick={fireEscape}
+            title="Stop / Esc"
+            aria-label="Stop or escape (Esc)"
+            className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[var(--color-surface-light)] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-error)] active:scale-95"
+          >
+            <StopCircle className="size-5" />
+          </button>
+        )}
+
+        {/* Send button — long-press to fire the escape too. */}
         <button
           onClick={handleSend}
+          onPointerDown={startLongPress}
+          onPointerUp={cancelLongPress}
+          onPointerLeave={cancelLongPress}
+          onPointerCancel={cancelLongPress}
           disabled={disabled || !value.trim()}
           className={clsx(
             'flex size-10 shrink-0 items-center justify-center rounded-full transition-all',
@@ -335,7 +391,7 @@ export function InputArea({
               : 'bg-[var(--color-surface-light)] text-[var(--color-text-muted)]',
             disabled && 'cursor-not-allowed opacity-50',
           )}
-          aria-label="Send message"
+          aria-label="Send message (long-press to escape)"
         >
           <Send className="size-5" />
         </button>
