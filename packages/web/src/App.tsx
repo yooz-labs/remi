@@ -712,8 +712,8 @@ function App() {
         // the session. Rather than vanish instantly (#652 — left a lock-screen
         // answer with no in-app confirmation), flip a still-pending card to a
         // brief "resolved elsewhere" trace, then fade it after the linger window.
-        // A card already answered LOCALLY keeps its own answeredWith trace and
-        // removal timer (markQuestionResolved no-ops on it).
+        // resolveQuestionCard decides per card: pending => trace+fade, submitting
+        // (#627) => removed here, answered-locally => left to its own timer.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
         // Compute the next map from the CURRENT committed ref, then drive both
