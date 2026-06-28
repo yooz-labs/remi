@@ -49,8 +49,12 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
-		<string>processing</string>
 		<string>remote-notification</string>
 	</array>
+	<!-- Export compliance: Remi uses only standard, exempt encryption (TLS/HTTPS,
+	     WebRTC DTLS, Ed25519 auth) — no proprietary/non-exempt crypto. Declaring
+	     this skips the per-build export-compliance prompt in TestFlight. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
