@@ -951,8 +951,12 @@ const sessionRegistry = new SessionRegistry(
         log(`Session detached: ${sessionId} (locally owned, no timeout)`);
       } else if (session?.explicitlyDetached) {
         log(`Session explicitly detached: ${sessionId} (no timeout, re-attachable)`);
+      } else if (session?.persistent) {
+        log(`Session detached: ${sessionId} (persistent, no timeout, re-attachable)`);
       } else {
-        log(`Session orphaned: ${sessionId} (will timeout in 5 minutes)`);
+        log(
+          `Session orphaned: ${sessionId} (will timeout in ${Math.round(orphanTimeoutMs / 1000)}s)`,
+        );
       }
     },
     onSessionResumed: (sessionId, connectionId) => {
@@ -1300,12 +1304,17 @@ async function createNewSession(
   );
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
+  // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
+  // default so a session created from the app survives until Claude exits or it
+  // is explicitly stopped (#637). Wrapper-mode sessions already never time out.
+  const persistent = remiConfig.daemon.persist_sessions;
   sessionRegistry.registerSession(
     sessionId,
     workingDirectory,
     ptySession,
     messageApi,
     locallyOwned,
+    persistent,
   );
 
   // #576: give clients a defined pill state from the first hello_ack. Without
