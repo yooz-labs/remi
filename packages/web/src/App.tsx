@@ -11,6 +11,13 @@ import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
+import {
+  acknowledgeSend,
+  EMPTY_PENDING_SENDS,
+  type PendingSendMap,
+  sweepTimeouts,
+  trackSend,
+} from '@/lib/message-ack-tracker';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
@@ -237,6 +244,12 @@ function App() {
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
+  // Outstanding user_input sends awaiting their `ack`, keyed by message id
+  // (#663). Mutated by handleSend (track), the 'ack' case (acknowledge), and
+  // the sweep effect below (retry/fail on timeout). A ref, not state --
+  // updated every send/ack/tick and read by an interval, none of which
+  // should trigger a re-render on their own.
+  const pendingSendsRef = useRef<PendingSendMap>(EMPTY_PENDING_SENDS);
   // Fallback timer so the new-session sheet leaves its loading state even if the
   // daemon never answers session_history_request (#638 review).
   const historyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -343,6 +356,11 @@ function App() {
                     connectionId,
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+                    // #662/#663: refresh on EVERY hello_ack, not just the
+                    // first -- this also fires when a queued connection is
+                    // promoted (fresh hello_ack with attachState: 'attached'),
+                    // which is how the read-only banner clears.
+                    ...(message.attachState !== undefined && { attachState: message.attachState }),
                   }
                 : s,
             );
@@ -362,6 +380,7 @@ function App() {
               preview: 'Connected',
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+              ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
         });
@@ -1194,6 +1213,33 @@ function App() {
             break;
           }
         }
+        // NOT_ACTIVE_CONNECTION (#662/#663): this connection is read-only --
+        // another client holds the session's exclusive write lock -- and the
+        // input that triggered this error was never delivered to the PTY
+        // (the daemon still sent an `ack` for it separately; `ack` only means
+        // "the daemon received the frame", not "Claude saw it"). The error
+        // carries no messageId to flip a specific bubble to failed, so the
+        // fix is to refresh the persistent read-only banner (ChatView) rather
+        // than only a one-off chat bubble the user can miss or that scrolls
+        // away.
+        if (errorCode === 'NOT_ACTIVE_CONNECTION') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const queuedSessionId = asNonEmptyString(details?.['sessionId']);
+          if (queuedSessionId) {
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id === queuedSessionId && s.connectionId === connectionId
+                  ? { ...s, attachState: 'queued' }
+                  : s,
+              ),
+            );
+          }
+          console.warn(
+            '[App] NOT_ACTIVE_CONNECTION: input not delivered, session is read-only',
+            queuedSessionId,
+          );
+          break;
+        }
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const refusedSessionId = asNonEmptyString(details?.['sessionId']) as UUID | undefined;
@@ -1260,6 +1306,24 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, errorMsg]);
+        break;
+      }
+
+      // #663: only `user_input` sends are tracked in pendingSendsRef (see
+      // handleSend), so an ack for anything else (hello, answer, ...) simply
+      // finds no match and no-ops here -- expected, not an error.
+      case 'ack': {
+        const { pending, matched } = acknowledgeSend(pendingSendsRef.current, message.ack.messageId);
+        pendingSendsRef.current = pending;
+        if (matched) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === message.ack.messageId && m.sender === 'user'
+                ? { ...m, state: 'delivered' as const }
+                : m,
+            ),
+          );
+        }
         break;
       }
 
@@ -1885,9 +1949,14 @@ function App() {
 
       const reply = replyContextsRef.current.get(activeSessionId);
       const wireContent = reply ? formatReplyMessage(reply, content) : content;
+      // Same id for the UI bubble AND the wire message (#663): the daemon's
+      // `ack.messageId` echoes back whatever id we send, so this is what
+      // lets an inbound ack find its bubble. Also what a retry reuses so
+      // the daemon's MessageIdTracker dedups it.
+      const messageId = generateId();
 
       const newMessage: UIMessage = {
-        id: generateId(),
+        id: messageId,
         sessionId: activeSessionId,
         sender: 'user',
         content: wireContent,
@@ -1905,11 +1974,18 @@ function App() {
         activeSessionId,
         wireContent,
         activeBinding as UUID | undefined,
+        messageId,
       );
       if (success) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
-        );
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, state: 'sent' } : m)));
+        pendingSendsRef.current = trackSend(pendingSendsRef.current, {
+          messageId,
+          connectionId: connId,
+          sessionId: activeSessionId,
+          content: wireContent,
+          claudeSessionId: activeBinding,
+          sentAt: Date.now(),
+        });
         // Reply context is consumed on send; the next message starts clean
         // unless the user explicitly long-presses another message.
         if (reply) {
@@ -1922,7 +1998,7 @@ function App() {
         }
       } else {
         setMessages((prev) =>
-          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'delivered' as const } : m)),
+          prev.map((m) => (m.id === messageId ? { ...m, state: 'failed' as const } : m)),
         );
         const errorMsg: UIMessage = {
           id: generateId(),
@@ -1938,6 +2014,97 @@ function App() {
     },
     [activeSessionId, getActiveConnectionId, sendInput, sessions],
   );
+
+  // Tap-to-retry a 'failed' bubble (#663). Reuses the SAME message id so the
+  // daemon's MessageIdTracker dedups it if the original somehow did land.
+  // Re-enters the pending-sends tracker so the automatic retry/timeout sweep
+  // resumes watching it.
+  const handleRetryMessage = useCallback(
+    (message: UIMessage) => {
+      const sid = message.sessionId;
+      const connId =
+        sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
+      if (!connId) return;
+      const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === message.id ? { ...m, state: 'sending' as const } : m)),
+      );
+
+      const success = sendInput(
+        connId,
+        sid,
+        message.content,
+        binding as UUID | undefined,
+        message.id,
+      );
+      if (success) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === message.id ? { ...m, state: 'sent' as const } : m)),
+        );
+        pendingSendsRef.current = trackSend(pendingSendsRef.current, {
+          messageId: message.id,
+          connectionId: connId,
+          sessionId: sid,
+          content: message.content,
+          claudeSessionId: binding,
+          sentAt: Date.now(),
+        });
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === message.id ? { ...m, state: 'failed' as const } : m)),
+        );
+      }
+    },
+    [getActiveConnectionId, sendInput],
+  );
+
+  // Ack-timeout sweep (#663): messages sent via handleSend/handleRetryMessage
+  // that don't get an `ack` within ACK_TIMEOUT_MS get one automatic retry
+  // (same message id), then flip to 'failed' if that also times out. Runs
+  // more frequently than the timeout itself so the UI transition lands
+  // close to the deadline rather than up to a full tick late.
+  useEffect(() => {
+    const ACK_SWEEP_INTERVAL_MS = 1000;
+    const interval = setInterval(() => {
+      const { pending, outcomes } = sweepTimeouts(pendingSendsRef.current, Date.now());
+      if (outcomes.length === 0) return;
+      pendingSendsRef.current = pending;
+
+      for (const outcome of outcomes) {
+        if (outcome.kind === 'failed') {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === outcome.entry.messageId ? { ...m, state: 'failed' as const } : m,
+            ),
+          );
+          continue;
+        }
+
+        // 'retry': resend with the SAME id. If the transport itself refuses
+        // (e.g. disconnected by now), don't wait for a second timeout to
+        // say so -- fail immediately, the outcome is already known.
+        const { entry } = outcome;
+        const resent = sendInput(
+          entry.connectionId as ConnectionId,
+          entry.sessionId as UUID,
+          entry.content,
+          entry.claudeSessionId as UUID | undefined,
+          entry.messageId as UUID,
+        );
+        if (!resent) {
+          pendingSendsRef.current = acknowledgeSend(
+            pendingSendsRef.current,
+            entry.messageId,
+          ).pending;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === entry.messageId ? { ...m, state: 'failed' as const } : m)),
+          );
+        }
+      }
+    }, ACK_SWEEP_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [sendInput]);
 
   // Set the reply context for the current session: long-press on a
   // MessageBubble routes here. The InputArea shows a banner + clear
@@ -2280,6 +2447,7 @@ function App() {
       onCancelQuestion={handleCancelQuestion}
       onCancel={handleEscape}
       onReply={handleReply}
+      onRetryMessage={handleRetryMessage}
       replyContext={sessionReplyContext}
       onClearReply={handleClearReply}
       onBack={handleBack}
