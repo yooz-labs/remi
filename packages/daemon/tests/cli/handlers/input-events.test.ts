@@ -375,6 +375,64 @@ describe('createInputHandlers', () => {
       clearPtyOutput(sessionId);
     });
 
+    // Regression for #661: the AUQ success branch (outcome closed/submitted) must
+    // consume the question exactly once EVEN IF cancelAutoApproveForQuestion
+    // throws, mirroring the plain-answer path's try/finally below.
+    test('a throwing cancelAutoApproveForQuestion still consumes the AUQ question and propagates', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      const pty = {
+        id: generateId(),
+        write: (content: string) => {
+          if (content === AUQ_KEYS.ENTER) {
+            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Green");
+          }
+        },
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession;
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Color: What is your favorite color?',
+        options: [
+          { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        kind: 'multi_question',
+        questions: [
+          {
+            header: 'Color',
+            text: 'What is your favorite color?',
+            multiSelect: false,
+            options: [
+              { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+              { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+            ],
+          },
+        ],
+      });
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        cancelAutoApproveForQuestion: () => {
+          throw new Error('eval-cancel gone');
+        },
+      });
+      await expect(
+        handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+          selections: [{ questionIndex: 0, optionIndices: [1] }],
+        }),
+      ).rejects.toThrow('eval-cancel gone');
+
+      // No zombie question left behind despite the throw.
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      clearPtyOutput(sessionId);
+    });
+
     test('a throwing submitInput still consumes the question (no zombie) and propagates the error', async () => {
       // Defense against double-submit on retry: even if the PTY submit throws,
       // the question must be removed exactly once (finally), and the error must

@@ -273,12 +273,19 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     }
 
     if (outcome === 'closed' || outcome === 'submitted') {
-      cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-auq');
-      sessionRegistry.removeQuestion(session.sessionId, questionId);
+      // Wrapped like the plain-answer path (below): if cancelAutoApproveForQuestion
+      // throws, the question must still be consumed exactly once — removeQuestion +
+      // the resolved broadcast run in `finally` so a throw here can never leave a
+      // zombie question the phone thinks is still pending.
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
-      } catch (err) {
-        logError(`[AUQ] question_resolved broadcast failed: ${errorToString(err)}`);
+        cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-auq');
+      } finally {
+        sessionRegistry.removeQuestion(session.sessionId, questionId);
+        try {
+          onQuestionResolved?.(session.sessionId, questionId);
+        } catch (err) {
+          logError(`[AUQ] question_resolved broadcast failed: ${errorToString(err)}`);
+        }
       }
       log(`[AUQ] answered question ${questionId.slice(0, 8)} (${outcome})`);
       return 'delivered';
