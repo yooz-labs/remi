@@ -1,31 +1,25 @@
 /**
- * Drive-mode test for the TranscriptBinder — epic #453 phase 3, commit 5.
+ * Integration test for the TranscriptBinder wired through `setupHookBridge` —
+ * epic #453 phase 3, commit 5.
  *
- * The shadow differential test (transcript-binder-differential.test.ts) proves
- * the binder's DECISIONS are equivalent to the old path. THIS test proves that
- * when `binderEnabled=true` the binder actually DRIVES — applies those decisions
- * (emits session_rotated on the wire, writes the durable store binding, starts
- * the watcher) — producing the SAME observable output the OLD path produces with
- * `binderEnabled=false`.
+ * Until #470, this file replayed each stream through the OLD inline
+ * session-binding path AND the binder, asserting they were observationally
+ * identical (proving the binder was safe to drive). That parity was
+ * established and the old path was deleted in #470 — the binder is now the
+ * ONLY path — so this file replays the same streams ONCE through
+ * `setupHookBridge` and asserts the (previously old-path-derived) expected
+ * outcomes directly.
  *
- * Method: replay the same event streams through `setupHookBridge` twice over a
- * SHARED transcript base — once with the OLD path (binderEnabled=false) and once
- * with the binder DRIVING (binderEnabled=true) — and assert the two runs are
- * observationally identical:
- *   - the same session_rotated messages on the wire (in order),
- *   - the same final durable store binding,
- *   - the same final watcher path (proves the watcher started on the same file).
- *
- * Streams (mirroring the differential corpus, plus a sibling-defer case):
+ * Streams:
  *   (a) normal first-bind + a /clear rotation (A -> B),
  *   (b) A -> B -> A re-resume (idempotent emit guard),
  *   (c) sibling-defer: a live co-located sibling owns the dir and the incoming
- *       event's transcript carries the sibling's port marker -> both paths
- *       defer (no bind, no watcher, no rotation).
+ *       event's transcript carries the sibling's port marker -> defers (no
+ *       bind, no watcher, no rotation).
  *
  * NO MOCKS: real SessionStore / SessionBindingStore / SessionRegistry /
  * SessionRegistryFile / TranscriptWatcher over a tmpdir; a fake PTY (the only
- * seam, matching the characterization + differential suites).
+ * seam, matching the characterization suite in hook-bridge-setup.test.ts).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -118,7 +112,7 @@ interface RunOptions {
   skipPreAssign?: boolean;
 }
 
-/** Observable output of running a stream (for the drive-vs-old diff). */
+/** Observable output of running a stream. */
 interface RunResult {
   /** Every session_rotated message that crossed the wire, in order. */
   rotations: Array<{ newClaudeSessionId: string; oldClaudeSessionId?: string | undefined }>;
@@ -145,24 +139,17 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
   /**
    * Build one isolated bridge + its backing state, replay `steps`, and return
    * the observable outcome. Each run gets a FRESH SessionStore/Registry/watcher
-   * map under its own subdir so the old-path and drive runs cannot share state.
-   * Transcript paths resolve against the SHARED `txBase` so both runs produce
-   * identical absolute watcher paths. When `binderEnabled` is true the binder
-   * DRIVES; the returned handle's closeBinder() is called in cleanup so the
-   * binder's fallback poll + #452 rotation dir-poll never outlive the run.
+   * map under its own subdir. The returned handle's closeBinder() is called in
+   * cleanup so the binder's fallback poll + #452 rotation dir-poll never
+   * outlive the run.
    */
-  async function runStream(
-    steps: Step[],
-    binderEnabled: boolean,
-    txBase: string,
-    options: RunOptions = {},
-  ): Promise<RunResult> {
+  async function runStream(steps: Step[], options: RunOptions = {}): Promise<RunResult> {
     const { sibling, skipPreAssign } = options;
     const stateDir = fs.mkdtempSync(path.join(tmpDir, 'state-'));
     const errors: string[] = [];
     configureLogger({
       writeLog: (msg: string) => {
-        // Surface only genuine failure lines; the binder/old path log routine
+        // Surface only genuine failure lines; the binder logs routine
         // [Hooks]/[Binder] info lines that are not errors.
         if (msg.includes('failed') || msg.includes('Failed')) errors.push(msg);
       },
@@ -180,7 +167,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
     const messageApi = noopMessageAPI();
     const tracker = new QuestionPresenceTracker(() => {});
 
-    sessionRegistry.registerSession(SID, txBase, fakePTY(), messageApi);
+    sessionRegistry.registerSession(SID, tmpDir, fakePTY(), messageApi);
 
     // Mirror production cli.ts: the deterministic pre-spawn binding is written to
     // the store BEFORE the bridge sees any hook event (and BEFORE binder.start(),
@@ -190,7 +177,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
       bindingStore.preAssign({
         remiSessionId: SID,
         claudeSessionId: firstClaudeId,
-        projectPath: txBase,
+        projectPath: tmpDir,
         port: PORT,
         pid: process.pid,
         startedAt: new Date().toISOString(),
@@ -200,10 +187,9 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
     }
 
     // Optional: register a LIVE co-located sibling so hasSiblingInDir() returns
-    // true for both paths (the sibling-defer case). Written as a raw registry
-    // file (matching the #451 tests): projectPath equals our workingDirectory,
-    // wsPort differs from PORT, and a live claudeChildPid keeps it from being
-    // treated as a zombie.
+    // true (the sibling-defer case). Written as a raw registry file: projectPath
+    // equals our workingDirectory, wsPort differs from PORT, and a live
+    // claudeChildPid keeps it from being treated as a zombie.
     if (sibling) {
       fs.writeFileSync(
         path.join(liveSessionsRegistry.dirPath, 'sibling.json'),
@@ -212,7 +198,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
           pid: process.pid, // sibling DAEMON is alive
           wsPort: sibling.wsPort,
           hookPort: sibling.wsPort + 1,
-          projectPath: txBase,
+          projectPath: tmpDir,
           name: 'sibling',
           startedAt: new Date().toISOString(),
           claudeChildPid: sibling.claudeChildPid,
@@ -239,25 +225,22 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
         transcriptFallbackTimers,
         autoApproveService: null,
         currentPort: () => PORT,
-        binderEnabled,
         transcriptDiscovery,
       },
       {
         hookServer: hookServer as unknown as HookServer,
         sessionId: SID,
-        workingDirectory: txBase,
+        workingDirectory: tmpDir,
         messageApi,
         sendAndRecord,
         tracker,
       },
     );
 
-    // Resolve relative transcript paths against this run's dir so the two runs
-    // produce identical absolute paths for the diff.
     for (const step of steps) {
       const input: Record<string, unknown> = { ...step.input };
       if (typeof input['transcript_path'] === 'string') {
-        const abs = path.join(txBase, input['transcript_path'] as string);
+        const abs = path.join(tmpDir, input['transcript_path'] as string);
         // Create the (empty) transcript file so the real TranscriptWatcher's
         // waitForFile resolves immediately instead of leaving a 1s poll alive.
         if (!fs.existsSync(abs)) fs.writeFileSync(abs, '');
@@ -274,9 +257,9 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
       errors,
     };
 
-    // Cleanup: close the binder (drive mode only — no-op when off) so its
-    // fallback poll + #452 rotation dir-poll intervals are cleared, then stop any
-    // watchers + remaining fallback timers this run started.
+    // Cleanup: close the binder so its fallback poll + #452 rotation dir-poll
+    // intervals are cleared, then stop any watchers + remaining fallback timers
+    // this run started.
     handle.closeBinder();
     for (const w of transcriptWatchers.values()) {
       try {
@@ -290,32 +273,8 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
     return result;
   }
 
-  /**
-   * Replay a stream through the OLD path and the DRIVING binder and assert the
-   * two runs are observationally identical. Returns the drive result for any
-   * stream-specific assertions.
-   */
-  async function assertDriveMatchesOld(
-    name: string,
-    steps: Step[],
-    options: RunOptions = {},
-  ): Promise<RunResult> {
-    const txBase = fs.mkdtempSync(path.join(tmpDir, 'tx-'));
-    const old = await runStream(steps, /* binderEnabled */ false, txBase, options);
-    const drive = await runStream(steps, /* binderEnabled */ true, txBase, options);
-
-    expect(old.errors, `${name}: old-path errors`).toEqual([]);
-    expect(drive.errors, `${name}: drive errors`).toEqual([]);
-
-    expect(drive.rotations, `${name}: rotations on wire`).toEqual(old.rotations);
-    expect(drive.finalBoundId, `${name}: final bound id`).toBe(old.finalBoundId);
-    expect(drive.finalWatcherPath, `${name}: final watcher path`).toBe(old.finalWatcherPath);
-
-    return drive;
-  }
-
   test('(a) normal first-bind + /clear rotation A -> B', async () => {
-    const drive = await assertDriveMatchesOld('first-bind-rotation', [
+    const result = await runStream([
       { event: 'SessionStart', input: { session_id: 'claude-A', transcript_path: 'a.jsonl' } },
       {
         event: 'SessionStart',
@@ -323,17 +282,18 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
       },
     ]);
 
-    // The binder DROVE: exactly one rotation A -> B reached the wire, the store
-    // is bound to B, and the watcher started on b.jsonl.
-    expect(drive.rotations.length).toBe(1);
-    expect(drive.rotations[0]?.newClaudeSessionId).toBe('claude-B');
-    expect(drive.rotations[0]?.oldClaudeSessionId).toBe('claude-A');
-    expect(drive.finalBoundId).toBe('claude-B');
-    expect(drive.finalWatcherPath?.endsWith(`${path.sep}b.jsonl`)).toBe(true);
+    expect(result.errors).toEqual([]);
+    // Exactly one rotation A -> B reached the wire, the store is bound to B, and
+    // the watcher started on b.jsonl.
+    expect(result.rotations.length).toBe(1);
+    expect(result.rotations[0]?.newClaudeSessionId).toBe('claude-B');
+    expect(result.rotations[0]?.oldClaudeSessionId).toBe('claude-A');
+    expect(result.finalBoundId).toBe('claude-B');
+    expect(result.finalWatcherPath?.endsWith(`${path.sep}b.jsonl`)).toBe(true);
   });
 
   test('(b) A -> B -> A re-resume (idempotent emit)', async () => {
-    const drive = await assertDriveMatchesOld('a-b-a', [
+    const result = await runStream([
       { event: 'SessionStart', input: { session_id: 'claude-A', transcript_path: 'a.jsonl' } },
       {
         event: 'SessionStart',
@@ -345,20 +305,19 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
       },
     ]);
 
-    // The binder DROVE A->B then B->A and never a duplicate; final lock is A.
-    expect(drive.rotations.map((r) => r.newClaudeSessionId)).toEqual(['claude-B', 'claude-A']);
-    expect(drive.finalBoundId).toBe('claude-A');
+    expect(result.errors).toEqual([]);
+    // A->B then B->A, never a duplicate; final lock is A.
+    expect(result.rotations.map((r) => r.newClaudeSessionId)).toEqual(['claude-B', 'claude-A']);
+    expect(result.finalBoundId).toBe('claude-A');
   });
 
   test('(c) sibling-defer: live sibling owns the dir, incoming marker is not ours', async () => {
     // A live co-located sibling shares the directory. The pre-assigned binding is
     // never written by a hook here (we start at the UNBOUND state and the first
     // event's transcript carries no remi:<port> head marker proving ownership),
-    // so admits()/initFromHookEvent both defer: no bind, no watcher, no rotation.
-    // The empty transcript file the harness writes carries no marker, so
-    // ownsTranscript() is false for both paths -> both defer identically.
-    const drive = await assertDriveMatchesOld(
-      'sibling-defer',
+    // so admits() defers: no bind, no watcher, no rotation. The empty transcript
+    // file the harness writes carries no marker, so ownsTranscript() is false.
+    const result = await runStream(
       [
         // Use PreToolUse (not SessionStart) so the SessionStart pre-empt does not
         // fire; this exercises the first-adopt sibling/ownership gate directly.
@@ -375,14 +334,15 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
       {
         // Lock must stay UNBOUND so the first-adopt sibling/ownership gate (not
         // the already-bound tripwire) is what defers; the empty x.jsonl carries
-        // no remi:<port> marker so ownsTranscript() is false for both paths.
+        // no remi:<port> marker so ownsTranscript() is false.
         skipPreAssign: true,
         sibling: { wsPort: 9999, claudeChildPid: process.pid },
       },
     );
 
-    // Both paths deferred: nothing bound, nothing emitted, no watcher.
-    expect(drive.rotations.length).toBe(0);
-    expect(drive.finalWatcherPath).toBe(null);
+    expect(result.errors).toEqual([]);
+    // Deferred: nothing bound, nothing emitted, no watcher.
+    expect(result.rotations.length).toBe(0);
+    expect(result.finalWatcherPath).toBe(null);
   });
 });
