@@ -119,6 +119,16 @@ export interface HelloMessage {
   readonly lastReceivedIndex?: number | undefined;
   /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach */
   readonly mode?: 'query' | undefined;
+  /**
+   * Stable per-device identifier, persisted client-side across app restarts
+   * (#662). When a reconnecting hello carries the SAME deviceId as the
+   * connection currently holding the session's exclusive write lock, the
+   * daemon treats it as the same physical client reconnecting after a
+   * transport blip (dead socket, iOS background, NAT drop) and reclaims the
+   * lock instead of FIFO-queuing behind the stale connection. Omitted by
+   * older clients, which keep today's queuing behavior.
+   */
+  readonly deviceId?: string | undefined;
 }
 
 /** Server hello ack - confirms connection */
@@ -149,6 +159,15 @@ export interface HelloAckMessage {
   readonly replayCount?: number | undefined;
   /** Next bullet ID for continuation (if resume) */
   readonly nextBulletId?: number | undefined;
+  /**
+   * Whether this connection holds the session's exclusive write lock
+   * ('attached') or is read-only, waiting for the current holder to
+   * disconnect ('queued') (#662). Omitted for hello_acks sent outside the
+   * attach flow (e.g. query-mode clients, NO_SESSION). Older clients that
+   * don't read this field keep behaving as if every hello_ack meant
+   * 'attached', which was the pre-#662 (buggy) assumption.
+   */
+  readonly attachState?: 'attached' | 'queued' | undefined;
 }
 
 /** Agent output - message from Claude */
@@ -850,6 +869,8 @@ export interface CreateHelloOptions {
   readonly lastReceivedIndex?: number | undefined;
   /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach. */
   readonly mode?: 'query' | undefined;
+  /** Stable per-device identifier for same-device lock reclaim (#662). */
+  readonly deviceId?: string | undefined;
 }
 
 /**
@@ -863,7 +884,7 @@ export function createHello(
   clientVersion: string,
   options: CreateHelloOptions = {},
 ): HelloMessage {
-  const { directory, resumeSessionId, lastReceivedIndex, mode } = options;
+  const { directory, resumeSessionId, lastReceivedIndex, mode, deviceId } = options;
   return {
     type: 'hello',
     id: generateId(),
@@ -874,6 +895,7 @@ export function createHello(
     ...(resumeSessionId !== undefined && { resumeSessionId }),
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
     ...(mode !== undefined && { mode }),
+    ...(deviceId !== undefined && { deviceId }),
   };
 }
 
@@ -885,6 +907,7 @@ export function createHelloAck(
   sessionId: UUID,
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
   binding?: { claudeSessionId: UUID | null; transcriptPath: string | null },
+  attachState?: 'attached' | 'queued',
 ): HelloAckMessage {
   return {
     type: 'hello_ack',
@@ -901,6 +924,7 @@ export function createHelloAck(
       claudeSessionId: binding.claudeSessionId,
       transcriptPath: binding.transcriptPath,
     }),
+    ...(attachState !== undefined && { attachState }),
   };
 }
 

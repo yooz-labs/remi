@@ -6,7 +6,7 @@
 
 import type { ConnectionStatus } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
-import { deserialize, serialize } from '@remi/shared/protocol.ts';
+import { createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
 
 /** WebSocket client configuration */
 export interface WebSocketClientConfig {
@@ -272,8 +272,17 @@ export class WebSocketClient {
       const data = typeof event.data === 'string' ? event.data : '';
       const message = deserialize(data);
 
-      if (message && this.events.onMessage) {
-        this.events.onMessage(message);
+      if (message) {
+        // Reply to the server's keep-alive ping (#662 review): the daemon's
+        // pong-based liveness reaper force-closes a connection that never
+        // answers its ping, even a healthy one. Handled here at the
+        // transport layer (not a per-consumer case in a message switch) so
+        // every consumer of WebSocketClient gets correct protocol behavior
+        // for free, not just whichever ones remember to handle 'ping'.
+        if (message.type === 'ping') {
+          this.send(createPong(message.id));
+        }
+        this.events.onMessage?.(message);
       }
     } catch (error) {
       this.handleError(error instanceof Error ? error : new Error('Failed to parse message'));

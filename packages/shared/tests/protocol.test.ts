@@ -1205,11 +1205,33 @@ describe('Message factory functions', () => {
         resumeSessionId: undefined,
         lastReceivedIndex: undefined,
         mode: undefined,
+        deviceId: undefined,
       });
       expect('directory' in msg).toBe(false);
       expect('resumeSessionId' in msg).toBe(false);
       expect('lastReceivedIndex' in msg).toBe(false);
       expect('mode' in msg).toBe(false);
+      expect('deviceId' in msg).toBe(false);
+    });
+
+    test('includes deviceId when provided (#662)', () => {
+      const msg = createHello('client-1', '1.0.0', { deviceId: 'device-abc' });
+      expect(msg.deviceId).toBe('device-abc');
+    });
+
+    test('omits deviceId when not provided (#662)', () => {
+      const msg = createHello('client-1', '1.0.0');
+      expect(msg.deviceId).toBeUndefined();
+      expect('deviceId' in msg).toBe(false);
+    });
+
+    test('deviceId survives serialize/deserialize round-trip (#662)', () => {
+      const msg = createHello('client-1', '1.0.0', { deviceId: 'device-abc' });
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('hello');
+      expect((deserialized as typeof msg).deviceId).toBe('device-abc');
     });
   });
 
@@ -1231,6 +1253,31 @@ describe('Message factory functions', () => {
       expect(msg.isResume).toBeUndefined();
       expect(msg.replayCount).toBeUndefined();
       expect(msg.nextBulletId).toBeUndefined();
+    });
+  });
+
+  describe('createHelloAck() with attachState (#662)', () => {
+    test('includes attachState when provided', () => {
+      const attached = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'attached');
+      expect(attached.attachState).toBe('attached');
+
+      const queued = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'queued');
+      expect(queued.attachState).toBe('queued');
+    });
+
+    test('omits attachState when not provided', () => {
+      const msg = createHelloAck('1.0.0', 'session-1');
+      expect(msg.attachState).toBeUndefined();
+      expect('attachState' in msg).toBe(false);
+    });
+
+    test('attachState survives serialize/deserialize round-trip', () => {
+      const msg = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'queued');
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('hello_ack');
+      expect((deserialized as typeof msg).attachState).toBe('queued');
     });
   });
 });
