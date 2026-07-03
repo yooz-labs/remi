@@ -48,7 +48,7 @@ import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
-import type { HookServer } from '../../hooks/index.ts';
+import type { ForeignSessionEscalator, HookServer } from '../../hooks/index.ts';
 import type { DeliveryOutcome } from '../../notifications/notification-dispatcher.ts';
 import type {
   SessionBindingStore,
@@ -141,6 +141,17 @@ export interface HookBridgeDeps {
     questionId: UUID,
     reason: 'auto_approved' | 'auto_denied' | 'cancelled',
   ) => void;
+  /**
+   * Fail-safe fallback for a PermissionRequest that `binder.admits()` rejects
+   * (#672): decides whether a live sibling daemon owns the foreign session
+   * (stay silent) or it is genuinely unclaimed (fire a rate-limited,
+   * informational-only push — never an answerable Question, since an answer
+   * cannot be injected into a PTY we do not own). Shared across every session
+   * on this daemon so its rate-limit state is daemon-wide, not per-session.
+   * Absent => legacy debug-log-only passthrough (tests / callers that build
+   * their own bridge without daemon-wide escalation wiring).
+   */
+  foreignSessionEscalator?: ForeignSessionEscalator;
 }
 
 export interface HookBridgeArgs {
@@ -564,6 +575,11 @@ export function setupHookBridge(
           `incoming=${input.session_id?.slice(0, 8) ?? '-'} ` +
           `agent=${isSubagentEvent(input) ? (input.agent_id?.slice(0, 8) ?? 'subagent') : 'main'}`,
       );
+      // #672: fail-safe ladder for a foreign PermissionRequest — silent when a
+      // live sibling daemon owns it, an informational (non-answerable) push
+      // when it is genuinely unclaimed, error-only when ownership cannot be
+      // determined. Never affects the synchronous 'passthrough' below.
+      deps.foreignSessionEscalator?.handleUnadmitted(input, sessionId);
       return 'passthrough';
     }
     return autoApproveGate.resolvePermission(input);

@@ -7,6 +7,8 @@ export type {
 } from './hook-server.ts';
 export { HookConfigManager } from './hook-config-manager.ts';
 export { HookEventBridge } from './hook-event-bridge.ts';
+export { ForeignSessionEscalator } from './foreign-session-escalator.ts';
+export type { ForeignSessionEscalatorDeps } from './foreign-session-escalator.ts';
 export type { HookBridgeEvents } from './hook-event-bridge.ts';
 export type {
   HookInput,

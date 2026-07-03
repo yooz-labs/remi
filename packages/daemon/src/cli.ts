@@ -144,7 +144,7 @@ import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
-import { HookConfigManager, HookServer } from './hooks/index.ts';
+import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
@@ -1059,6 +1059,21 @@ const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
 
+// Daemon-wide fail-safe for a PermissionRequest no session on this daemon owns
+// (#672): shared by every session's hook bridge so its escalation rate-limit
+// is per foreign claude session id ACROSS the whole daemon, not reset per
+// session. See ForeignSessionEscalator's module doc for the ownership ladder.
+const foreignSessionEscalator = new ForeignSessionEscalator({
+  liveSessionsRegistry,
+  bindingStore,
+  deviceTokens,
+  pushConfig: () => ({
+    signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+    ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+  }),
+  currentPort: () => PORT,
+});
+
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
 let hookServer: HookServer | null = null;
@@ -1283,6 +1298,7 @@ async function createNewSession(
         transcriptDiscovery,
         subagentViews,
         statusWriter,
+        foreignSessionEscalator,
         // #573: classify holdable escalations + the hold / slow-eval-push budgets
         // (seconds; the gate converts to ms and treats <=0 as disabled).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
