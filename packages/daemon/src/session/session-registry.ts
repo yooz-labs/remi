@@ -37,6 +37,21 @@ export interface SessionRegistryConfig {
   readonly maxReplayHistory?: number;
 }
 
+/**
+ * A connection waiting for the active connection to disconnect, plus the
+ * deviceId its hello carried (#662). Carrying deviceId here (not just the
+ * bare connectionId) means a queued connection that gets FIFO-promoted still
+ * has its device identity on record afterward — so if IT later goes stale,
+ * a genuine reconnect from the same device can still reclaim the lock
+ * instead of falling back to queuing behind a connection that's gone for
+ * good. Without this, only the FIRST-ever active connection's device got
+ * reclaim protection; every promoted connection would lose it.
+ */
+interface WaitingConnection {
+  readonly connectionId: UUID;
+  readonly deviceId?: string;
+}
+
 /** Result of attempting to attach a connection to a session */
 export interface AttachResult {
   /** Whether attachment succeeded */
@@ -164,7 +179,7 @@ export class SessionRegistry {
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
   /** Connections waiting for the active connection to disconnect */
-  private readonly waitingConnections: UUID[] = [];
+  private readonly waitingConnections: WaitingConnection[] = [];
   /** Buffer for messages received before session registration (from readExisting transcript) */
   private preRegistrationBuffer: ProtocolMessage[] = [];
 
@@ -309,8 +324,10 @@ export class SessionRegistry {
       // Different (or unknown) device: provide replay history (read-only)
       // and queue for write promotion when the active connection disconnects.
       // Writes from queued connections are blocked at getSessionForConnection.
-      if (!this.waitingConnections.includes(connectionId)) {
-        this.waitingConnections.push(connectionId);
+      // deviceId travels with the queue entry (#662) so promotion still
+      // leaves this connection reclaimable if it later goes stale itself.
+      if (!this.waitingConnections.some((w) => w.connectionId === connectionId)) {
+        this.waitingConnections.push({ connectionId, ...(deviceId !== undefined && { deviceId }) });
       }
       const MAX_REPLAY_MESSAGES = 200;
       const replayMessages =
@@ -428,7 +445,7 @@ export class SessionRegistry {
   detachConnection(connectionId: UUID, explicit = false): void {
     if (this.session === null || this.session.activeConnectionId !== connectionId) {
       // Also remove from waiting list if it was queued
-      const waitIdx = this.waitingConnections.indexOf(connectionId);
+      const waitIdx = this.waitingConnections.findIndex((w) => w.connectionId === connectionId);
       if (waitIdx >= 0) {
         this.waitingConnections.splice(waitIdx, 1);
       }
@@ -444,20 +461,24 @@ export class SessionRegistry {
 
     // Try to promote the next waiting connection (loop until one succeeds or queue exhausted)
     while (this.waitingConnections.length > 0) {
-      const nextConnectionId = this.waitingConnections.shift();
-      if (!nextConnectionId) continue;
-      const result = this.attachConnection(sessionId, nextConnectionId);
+      const next = this.waitingConnections.shift();
+      if (!next) continue;
+      // Carrying deviceId through promotion (#662) means this connection
+      // stays reclaimable by the same device if it later goes stale itself,
+      // instead of only the original active connection getting that protection.
+      const result = this.attachConnection(sessionId, next.connectionId, next.deviceId);
       if (result.success) {
         try {
-          this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
+          this.events.onConnectionPromoted?.(sessionId, next.connectionId, result);
         } catch (err) {
           // Callback failed (e.g., promoted connection unreachable).
           // Log the error and detach so the loop can try the next waiter.
           const msg = errorToString(err);
           console.error(
-            `[SessionRegistry] Promotion callback failed for ${nextConnectionId}: ${msg}`,
+            `[SessionRegistry] Promotion callback failed for ${next.connectionId}: ${msg}`,
           );
           this.session.activeConnectionId = null;
+          this.session.activeDeviceId = null;
           this.session.lastDisconnectedAt = now();
           continue;
         }
@@ -491,7 +512,7 @@ export class SessionRegistry {
    * Call this when a waiting connection disconnects before being promoted.
    */
   removeWaitingConnection(connectionId: UUID): void {
-    const idx = this.waitingConnections.indexOf(connectionId);
+    const idx = this.waitingConnections.findIndex((w) => w.connectionId === connectionId);
     if (idx >= 0) {
       this.waitingConnections.splice(idx, 1);
     }

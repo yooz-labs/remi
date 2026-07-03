@@ -380,6 +380,79 @@ describe('SessionRegistry', () => {
       expect(result.attachState).toBe('queued');
       expect(registry.getSession(sessionId)?.activeConnectionId).toBe(newConn);
     });
+
+    test('a FIFO-promoted connection carries its deviceId forward as activeDeviceId', () => {
+      // Without this, only the FIRST-ever active connection's device could
+      // ever be reclaimed; a connection reached via the waiting-queue
+      // promotion path would silently lose reclaim protection.
+      const sessionId = generateId();
+      const connA = generateId();
+      const connB = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, connA); // active, no deviceId
+      registry.attachConnection(sessionId, connB, 'device-B'); // queued, WITH deviceId
+
+      // A disconnects -> B is FIFO-promoted to active.
+      registry.detachConnection(connA);
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connB);
+
+      expect(events.onConnectionPromoted).toHaveBeenCalledTimes(1);
+      const call = events.onConnectionPromoted.mock.calls[0] as
+        | [string, string, AttachResult]
+        | undefined;
+      expect(call?.[2].attachState).toBe('attached');
+    });
+
+    test('a promoted-then-stale connection is still reclaimable by the same device', () => {
+      // The exact scenario the queue-deviceId fix targets: connB starts
+      // queued (not the original active connection), gets promoted when
+      // connA disconnects, and THEN itself goes stale. A genuine reconnect
+      // from device-B must still reclaim rather than queue behind connB.
+      const sessionId = generateId();
+      const connA = generateId();
+      const connB = generateId();
+      const connBReconnect = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, connA, 'device-A');
+      registry.attachConnection(sessionId, connB, 'device-B'); // queued with deviceId
+
+      registry.detachConnection(connA); // connB promoted to active
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connB);
+
+      // connB goes stale (e.g. reaped by the pong timeout) and device-B
+      // reconnects as a brand new connection.
+      const result = registry.attachConnection(sessionId, connBReconnect, 'device-B');
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('attached');
+      expect(registry.waitingConnectionCount).toBe(0);
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connBReconnect);
+      // The promoted-then-stale connection was evicted, not queued behind.
+      expect(registry.getSessionForConnection(connB)).toBeUndefined();
+      expect(events.onConnectionReclaimed).toHaveBeenCalledWith(sessionId, connB, connBReconnect);
+    });
+
+    test('a promoted connection without a deviceId still just queues on reconnect (no false reclaim)', () => {
+      const sessionId = generateId();
+      const connA = generateId();
+      const connB = generateId();
+      const connC = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, connA); // active, no deviceId
+      registry.attachConnection(sessionId, connB); // queued, no deviceId either
+
+      registry.detachConnection(connA); // connB promoted; activeDeviceId stays null
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connB);
+
+      const result = registry.attachConnection(sessionId, connC, 'device-C');
+
+      expect(result.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connB);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
   });
 
   describe('detachConnection()', () => {
