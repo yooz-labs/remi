@@ -744,6 +744,58 @@ describe('WebSocketServer', () => {
       ws.close();
       await server.stop();
     });
+
+    test('a connection sending ordinary traffic (never an explicit pong) is never force-closed (#662 review)', async () => {
+      // Regression: the real web/mobile client sends its own client-initiated
+      // 'ping' every 30s (useConnectionManager's startPing) but, before the
+      // review fix, never replied with a protocol 'pong' to the SERVER's
+      // ping. Gating liveness on 'pong' alone force-closed every healthy
+      // client on a ~60-90s cycle. Any successfully-parsed inbound message
+      // must count as proof-of-life, not only 'pong'.
+      const pingInterval = 40;
+      let disconnected = false;
+      server = new WebSocketServer(
+        { port: testPort + 24, connection: { pingInterval } },
+        {
+          onClientDisconnect: () => {
+            disconnected = true;
+          },
+        },
+      );
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 24}/ws`);
+      let helloAcked = false;
+      let trafficTimer: ReturnType<typeof setInterval> | null = null;
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data.toString());
+        if (data.type === 'hello_ack' && !helloAcked) {
+          helloAcked = true;
+          // Ordinary protocol traffic, sent faster than the ping interval,
+          // that is NEVER a 'pong'. Mirrors the web client's own client-
+          // initiated keep-alive ping (createPing(), not a reply to the
+          // server's ping).
+          trafficTimer = setInterval(() => {
+            ws.send(serialize(createPing()));
+          }, pingInterval / 2);
+        }
+        // Deliberately does NOT reply with pong to inbound 'ping' messages.
+      };
+
+      // Wait past several ping intervals (well beyond the 2-missed-pong
+      // threshold if this traffic didn't count as liveness).
+      await new Promise((resolve) => setTimeout(resolve, pingInterval * 5));
+
+      expect(disconnected).toBe(false);
+
+      if (trafficTimer) clearInterval(trafficTimer);
+      ws.close();
+      await server.stop();
+    });
   });
 
   // Connection-independent answer relay (#575, P4a). Real HTTP requests; real

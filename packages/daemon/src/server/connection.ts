@@ -254,6 +254,16 @@ export class Connection {
       return;
     }
 
+    // Any successfully-parsed message proves the peer is alive (#662 review),
+    // not only an explicit 'pong'. The web/mobile client already sends its own
+    // keep-alive 'ping' to the server every 30s (useConnectionManager's
+    // startPing) on top of whatever protocol traffic is flowing, so gating
+    // liveness on 'pong' alone force-closed every healthy client connection
+    // on a ~60-90s cycle: it never answers the SERVER's ping with a protocol
+    // pong. Treating any inbound message as proof-of-life fixes that without
+    // depending on the client implementing pong replies correctly.
+    this.missedPongs = 0;
+
     // Check for duplicate
     if (this.messageTracker.checkAndMark(message.id)) {
       // Duplicate - still acknowledge but don't process
@@ -322,7 +332,9 @@ export class Connection {
         this.handleRegisterDeviceToken(message);
         break;
       case 'pong':
-        // Client responding to our ping - liveness confirmed (#662).
+        // Explicit protocol-level liveness reply. Redundant with the
+        // any-message reset above (kept as documentation of intent and a
+        // second line of defense if that reset is ever narrowed).
         this.missedPongs = 0;
         break;
       case 'ack':

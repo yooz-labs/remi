@@ -7,6 +7,12 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
+import type {
+  PingMessage,
+  PongMessage,
+  ProtocolMessage,
+} from '@remi/shared/protocol.ts';
+import { createPing, deserialize, serialize } from '@remi/shared/protocol.ts';
 import { DEFAULT_MAX_RECONNECT_ATTEMPTS, WebSocketClient } from '../../src/lib/websocket-client';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -254,6 +260,119 @@ describe('WebSocketClient reconnectWithUrl', () => {
       while (!recovered && Date.now() - start < 6000) await wait(25);
       expect(recovered).toBe(true);
       expect(client.url).toBe(liveUrl);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+/**
+ * Regression coverage for the PR #666 review finding: the daemon's pong-based
+ * liveness reaper (connection.ts, #662) force-closed every healthy web/mobile
+ * connection every ~60-90s because WebSocketClient never replied to the
+ * server's protocol-level 'ping' with a 'pong'. Exercises the REAL
+ * WebSocketClient against a real Bun WebSocket server (no mocks, no DOM
+ * needed — WebSocketClient only touches the global WebSocket API, which Bun
+ * implements natively, same pattern as the reconnect tests above).
+ */
+describe('WebSocketClient ping/pong liveness (#662 review)', () => {
+  test('replies with pong when the server sends a protocol ping', async () => {
+    const received: ProtocolMessage[] = [];
+    let pingSent: PingMessage | null = null;
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          const ping = createPing();
+          pingSent = ping;
+          ws.send(serialize(ping));
+        },
+        message(_ws, data) {
+          const raw = typeof data === 'string' ? data : data.toString();
+          const msg = deserialize(raw);
+          if (msg) received.push(msg);
+        },
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(
+      new WebSocketClient({ url, heartbeatInterval: 0, connectionTimeout: 2000 }),
+    );
+
+    try {
+      client.connect();
+      const start = Date.now();
+      while (!received.some((m) => m.type === 'pong') && Date.now() - start < 3000) {
+        await wait(25);
+      }
+
+      const pong = received.find((m) => m.type === 'pong') as PongMessage | undefined;
+      expect(pong).toBeDefined();
+      // The reply must ack the SPECIFIC ping (pingId), not just any pong.
+      expect(pong?.pingId).toBe(pingSent?.id);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('replies with pong repeatedly across multiple server pings', async () => {
+    // The real daemon reaper checks on every tick (#662): a client that
+    // answers once but goes quiet afterward would still get reaped, so this
+    // guards against a reply that only fires on the FIRST ping.
+    const pingIds: string[] = [];
+    const pongIdsSeen = new Set<string>();
+    let serverWs: Bun.ServerWebSocket<unknown> | null = null;
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          serverWs = ws;
+        },
+        message(_ws, data) {
+          const raw = typeof data === 'string' ? data : data.toString();
+          const msg = deserialize(raw);
+          if (msg?.type === 'pong') pongIdsSeen.add(msg.pingId);
+        },
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(
+      new WebSocketClient({ url, heartbeatInterval: 0, connectionTimeout: 2000 }),
+    );
+
+    try {
+      client.connect();
+      const openStart = Date.now();
+      while (!serverWs && Date.now() - openStart < 2000) {
+        await wait(10);
+      }
+      expect(serverWs).not.toBeNull();
+
+      for (let i = 0; i < 3; i++) {
+        const ping = createPing();
+        pingIds.push(ping.id);
+        serverWs?.send(serialize(ping));
+        await wait(50);
+      }
+
+      expect(pongIdsSeen.size).toBe(3);
+      for (const id of pingIds) {
+        expect(pongIdsSeen.has(id)).toBe(true);
+      }
     } finally {
       server.stop();
     }
