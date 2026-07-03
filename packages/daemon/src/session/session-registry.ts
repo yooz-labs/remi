@@ -37,6 +37,21 @@ export interface SessionRegistryConfig {
   readonly maxReplayHistory?: number;
 }
 
+/**
+ * A connection waiting for the active connection to disconnect, plus the
+ * deviceId its hello carried (#662). Carrying deviceId here (not just the
+ * bare connectionId) means a queued connection that gets FIFO-promoted still
+ * has its device identity on record afterward — so if IT later goes stale,
+ * a genuine reconnect from the same device can still reclaim the lock
+ * instead of falling back to queuing behind a connection that's gone for
+ * good. Without this, only the FIRST-ever active connection's device got
+ * reclaim protection; every promoted connection would lose it.
+ */
+interface WaitingConnection {
+  readonly connectionId: UUID;
+  readonly deviceId?: string;
+}
+
 /** Result of attempting to attach a connection to a session */
 export interface AttachResult {
   /** Whether attachment succeeded */
@@ -53,6 +68,13 @@ export interface AttachResult {
   readonly nextBulletId: number;
   /** Error message if attachment failed */
   readonly error?: string;
+  /**
+   * Whether the connection ended up holding the exclusive write lock
+   * ('attached') or is read-only, waiting for the current holder to
+   * disconnect ('queued') (#662). Undefined only on the failure path
+   * (session not found), where the distinction is moot.
+   */
+  readonly attachState?: 'attached' | 'queued';
 }
 
 /** Events emitted by SessionRegistry */
@@ -72,6 +94,15 @@ export interface SessionRegistryEvents {
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
   /** A waiting connection was promoted to active after the previous client disconnected */
   onConnectionPromoted?: (sessionId: UUID, connectionId: UUID, result: AttachResult) => void;
+  /**
+   * Same device reclaimed the exclusive write lock from its own stale
+   * connection (#662): `attachConnection` was called with a `deviceId` that
+   * matches the device already holding the lock, so the stale connection was
+   * evicted from the registry's bookkeeping in favor of the new one. The
+   * caller (cli.ts) must still force-close the stale connection's actual
+   * transport — the registry has no transport handle to do that itself.
+   */
+  onConnectionReclaimed?: (sessionId: UUID, staleConnectionId: UUID, newConnectionId: UUID) => void;
 }
 
 /** A managed session with all its runtime state */
@@ -95,6 +126,13 @@ export interface ManagedSession {
 
   /** Currently attached connection ID (null if no connection is attached) */
   activeConnectionId: UUID | null;
+  /**
+   * Device id the active connection's hello carried (null if unset or no
+   * active connection). Compared against an incoming hello's deviceId
+   * (#662) to distinguish "same device reconnecting after a blip" (reclaim
+   * the lock) from "a second writer" (queue behind the FIFO as before).
+   */
+  activeDeviceId: string | null;
   /** When session was last disconnected (null if connected) */
   lastDisconnectedAt: Timestamp | null;
   /** Timeout handle for orphan cleanup */
@@ -141,7 +179,7 @@ export class SessionRegistry {
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
   /** Connections waiting for the active connection to disconnect */
-  private readonly waitingConnections: UUID[] = [];
+  private readonly waitingConnections: WaitingConnection[] = [];
   /** Buffer for messages received before session registration (from readExisting transcript) */
   private preRegistrationBuffer: ProtocolMessage[] = [];
 
@@ -184,6 +222,7 @@ export class SessionRegistry {
       messageApi,
       lastActivityAt: createdAt,
       activeConnectionId: null,
+      activeDeviceId: null,
       lastDisconnectedAt: null,
       orphanTimeoutId: null,
       messageHistory: [],
@@ -255,9 +294,11 @@ export class SessionRegistry {
   }
 
   /**
-   * Attach a connection to the session.
+   * Attach a connection to the session. `deviceId`, when present and equal to
+   * the device already holding the exclusive write lock, reclaims that lock
+   * instead of queuing behind it (#662) — see `reclaimForSameDevice`.
    */
-  attachConnection(sessionId: UUID, connectionId: UUID): AttachResult {
+  attachConnection(sessionId: UUID, connectionId: UUID, deviceId?: string): AttachResult {
     if (this.session === null || this.session.sessionId !== sessionId) {
       return {
         success: false,
@@ -270,12 +311,23 @@ export class SessionRegistry {
       };
     }
 
-    // If session already has an active connection, provide replay history
-    // (read-only) and queue for write promotion when active disconnects.
-    // Writes from queued connections are blocked at getSessionForConnection.
     if (this.session.activeConnectionId !== null) {
-      if (!this.waitingConnections.includes(connectionId)) {
-        this.waitingConnections.push(connectionId);
+      const sameDeviceReconnecting =
+        deviceId !== undefined &&
+        this.session.activeDeviceId !== null &&
+        this.session.activeDeviceId === deviceId;
+
+      if (sameDeviceReconnecting) {
+        return this.reclaimForSameDevice(this.session, connectionId, deviceId);
+      }
+
+      // Different (or unknown) device: provide replay history (read-only)
+      // and queue for write promotion when the active connection disconnects.
+      // Writes from queued connections are blocked at getSessionForConnection.
+      // deviceId travels with the queue entry (#662) so promotion still
+      // leaves this connection reclaimable if it later goes stale itself.
+      if (!this.waitingConnections.some((w) => w.connectionId === connectionId)) {
+        this.waitingConnections.push({ connectionId, ...(deviceId !== undefined && { deviceId }) });
       }
       const MAX_REPLAY_MESSAGES = 200;
       const replayMessages =
@@ -289,6 +341,7 @@ export class SessionRegistry {
         currentStatus: this.session.currentStatus,
         currentQuestions: [...this.session.currentQuestions.values()],
         nextBulletId: this.session.messageApi.bulletCount + 1,
+        attachState: 'queued',
       };
     }
 
@@ -302,6 +355,7 @@ export class SessionRegistry {
 
     // Attach connection
     this.session.activeConnectionId = connectionId;
+    this.session.activeDeviceId = deviceId ?? null;
     this.session.lastDisconnectedAt = null;
     this.session.explicitlyDetached = false;
 
@@ -327,6 +381,54 @@ export class SessionRegistry {
       currentStatus: this.session.currentStatus,
       currentQuestions: [...this.session.currentQuestions.values()],
       nextBulletId: this.session.messageApi.bulletCount + 1,
+      attachState: 'attached',
+    };
+  }
+
+  /**
+   * Same physical device reconnecting while its own previous connection is
+   * still marked active (#662) — a dead-socket reconnect (missed pongs, iOS
+   * background, NAT drop) rather than a second writer. Evicts the stale
+   * connection from the registry's bookkeeping and hands the lock straight
+   * to the new one, instead of FIFO-queuing behind a connection that will
+   * likely never come back. `onConnectionReclaimed` tells the caller which
+   * connection id is now stale so it can force-close the underlying
+   * transport; the registry itself has no transport handle to do that.
+   */
+  private reclaimForSameDevice(
+    session: ManagedSession,
+    connectionId: UUID,
+    deviceId: string,
+  ): AttachResult {
+    const staleId = session.activeConnectionId;
+    if (staleId === null) {
+      // Unreachable: attachConnection only calls this when activeConnectionId
+      // is non-null. Guarded defensively rather than asserted.
+      throw new Error('reclaimForSameDevice called without an active connection');
+    }
+
+    session.activeConnectionId = connectionId;
+    session.activeDeviceId = deviceId;
+    session.lastDisconnectedAt = null;
+    session.explicitlyDetached = false;
+
+    const MAX_REPLAY_MESSAGES = 200;
+    const replayMessages =
+      session.messageHistory.length > MAX_REPLAY_MESSAGES
+        ? session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
+        : [...session.messageHistory];
+    session.lastDeliveredIndex = session.messageHistory.length - 1;
+
+    this.events.onConnectionReclaimed?.(session.sessionId, staleId, connectionId);
+
+    return {
+      success: true,
+      isResume: true,
+      replayMessages,
+      currentStatus: session.currentStatus,
+      currentQuestions: [...session.currentQuestions.values()],
+      nextBulletId: session.messageApi.bulletCount + 1,
+      attachState: 'attached',
     };
   }
 
@@ -343,7 +445,7 @@ export class SessionRegistry {
   detachConnection(connectionId: UUID, explicit = false): void {
     if (this.session === null || this.session.activeConnectionId !== connectionId) {
       // Also remove from waiting list if it was queued
-      const waitIdx = this.waitingConnections.indexOf(connectionId);
+      const waitIdx = this.waitingConnections.findIndex((w) => w.connectionId === connectionId);
       if (waitIdx >= 0) {
         this.waitingConnections.splice(waitIdx, 1);
       }
@@ -354,24 +456,29 @@ export class SessionRegistry {
 
     // Detach connection
     this.session.activeConnectionId = null;
+    this.session.activeDeviceId = null;
     this.session.lastDisconnectedAt = now();
 
     // Try to promote the next waiting connection (loop until one succeeds or queue exhausted)
     while (this.waitingConnections.length > 0) {
-      const nextConnectionId = this.waitingConnections.shift();
-      if (!nextConnectionId) continue;
-      const result = this.attachConnection(sessionId, nextConnectionId);
+      const next = this.waitingConnections.shift();
+      if (!next) continue;
+      // Carrying deviceId through promotion (#662) means this connection
+      // stays reclaimable by the same device if it later goes stale itself,
+      // instead of only the original active connection getting that protection.
+      const result = this.attachConnection(sessionId, next.connectionId, next.deviceId);
       if (result.success) {
         try {
-          this.events.onConnectionPromoted?.(sessionId, nextConnectionId, result);
+          this.events.onConnectionPromoted?.(sessionId, next.connectionId, result);
         } catch (err) {
           // Callback failed (e.g., promoted connection unreachable).
           // Log the error and detach so the loop can try the next waiter.
           const msg = errorToString(err);
           console.error(
-            `[SessionRegistry] Promotion callback failed for ${nextConnectionId}: ${msg}`,
+            `[SessionRegistry] Promotion callback failed for ${next.connectionId}: ${msg}`,
           );
           this.session.activeConnectionId = null;
+          this.session.activeDeviceId = null;
           this.session.lastDisconnectedAt = now();
           continue;
         }
@@ -405,7 +512,7 @@ export class SessionRegistry {
    * Call this when a waiting connection disconnects before being promoted.
    */
   removeWaitingConnection(connectionId: UUID): void {
-    const idx = this.waitingConnections.indexOf(connectionId);
+    const idx = this.waitingConnections.findIndex((w) => w.connectionId === connectionId);
     if (idx >= 0) {
       this.waitingConnections.splice(idx, 1);
     }

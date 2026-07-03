@@ -132,6 +132,48 @@ describe('createInputHandlers', () => {
       expect(logs.some((m) => m.includes('No session found for connection'))).toBe(true);
     });
 
+    test('sends SESSION_NOT_FOUND when the session does not exist at all (#662)', async () => {
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const missingSessionId = 'nosn0000-0000-0000-0000-000000000000' as UUID;
+
+      await handlers.onUserInput(CID, missingSessionId, 'ignored', false);
+
+      // Previously this input vanished with only a server-side log line; the
+      // sender's UI showed it as "sent" with no error. Now an error is sent
+      // back so the client can surface a failure instead of a silent drop.
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as { type: string; code?: string };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('SESSION_NOT_FOUND');
+    });
+
+    test('sends NOT_ACTIVE_CONNECTION when the session exists but this connection is queued (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY({ writes: [], submits: [] }),
+        fakeMessageAPI(new Map()),
+      );
+      const activeConn = generateId();
+      sessionRegistry.attachConnection(sessionId, activeConn);
+      // CID is a different connection queued behind the active one.
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onUserInput(CID, sessionId, 'ignored', false);
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        code?: string;
+        details?: { sessionId?: string };
+      };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
+      expect(msg.details?.sessionId).toBe(sessionId);
+    });
+
     test('swallows pty.write errors and logs them (raw path)', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });

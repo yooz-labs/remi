@@ -327,6 +327,65 @@ describe('createConnectionHandlers', () => {
       expect(trackedConnections).toEqual([{ id: CID, type: 'telegram' }]);
       expect(connectionAddedCount).toBe(1);
     });
+
+    test('helloAck reports attachState "attached" for a fresh attach (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.attachState).toBe('attached');
+    });
+
+    test('helloAck reports attachState "queued" for a second connection without a matching deviceId (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      const firstConn = generateId();
+      sessionRegistry.attachConnection(sessionId, firstConn, 'device-A');
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-B' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.attachState).toBe('queued');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
+    });
+
+    test('same deviceId reclaims the lock instead of queuing behind its own stale connection (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // First connection from this device takes the active slot.
+      const staleConn = generateId();
+      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A');
+
+      // Same device reconnects (e.g. after a dead-socket blip) as a new
+      // connection carrying the SAME deviceId.
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.attachState).toBe('attached');
+      // The lock moved to the new connection; nothing is queued.
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.waitingConnectionCount).toBe(0);
+      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
   });
 
   describe('onDisconnect', () => {

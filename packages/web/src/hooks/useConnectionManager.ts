@@ -18,7 +18,7 @@ import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
-import { collectPendingChallengeConnections } from './connection-manager-helpers';
+import { collectPendingChallengeConnections, getOrCreateDeviceId } from './connection-manager-helpers';
 import { splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
@@ -53,6 +53,15 @@ interface ManagedConnection {
   status: ConnectionStatus;
   error: Error | null;
   sessionId: UUID | null;
+  /**
+   * Whether this connection holds the session's exclusive write lock
+   * ('attached') or is read-only, queued behind another connection
+   * ('queued') (#662). `undefined` before the first hello_ack, or when the
+   * daemon didn't send the field (older daemon, or a hello_ack sent outside
+   * the attach flow). Surfaced so a follow-up (#663) can render a
+   * read-only/waiting state instead of the user believing their input sent.
+   */
+  attachState?: 'attached' | 'queued';
   helloSent: boolean;
   pendingChallenge: {
     challenge: string;
@@ -187,6 +196,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     serverFingerprint: mc.serverFingerprint,
     error: mc.error?.message ?? null,
     sessionId: mc.sessionId,
+    attachState: mc.attachState ?? null,
   };
 }
 
@@ -242,6 +252,11 @@ export function useConnectionManager(
         createHello(clientId, clientVersion, {
           directory: mc.directory,
           resumeSessionId: resumeId,
+          // Same-device lock reclaim (#662): lets the daemon recognize this
+          // hello as the same physical client reconnecting after a dead
+          // connection, instead of queuing it behind a socket that will
+          // never come back.
+          deviceId: getOrCreateDeviceId(window.localStorage),
         }),
       );
     },
@@ -406,9 +421,10 @@ export function useConnectionManager(
           return;
         }
 
-        // Track session ID from hello_ack
+        // Track session ID + attach state from hello_ack
         if (message.type === 'hello_ack') {
           mc.sessionId = message.sessionId;
+          mc.attachState = message.attachState;
           if (mc.client && !mc.client.isConnected) {
             mc.client.setConnected();
           }

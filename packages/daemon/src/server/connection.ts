@@ -137,6 +137,17 @@ const DEFAULT_AUTH_CONNECTION_TIMEOUT = 60000;
 const SERVER_VERSION = '0.1.0';
 
 /**
+ * Consecutive ping ticks allowed to pass with no pong before a connection is
+ * force-closed as dead (#662). A transport that dies without a clean close
+ * (iOS backgrounding, cellular NAT drop) never fires the WebSocket 'close'
+ * event, so without this the session's exclusive write lock
+ * (`activeConnectionId`) would stay held forever. At the default 30s ping
+ * interval this reaps an unresponsive peer after 2-3 intervals (60-90s),
+ * comfortably inside the Bun-level idleTimeout backstop in websocket-server.ts.
+ */
+const MAX_MISSED_PONGS = 2;
+
+/**
  * Represents a single WebSocket connection from a client.
  */
 export class Connection {
@@ -146,6 +157,7 @@ export class Connection {
   private directory: string | null = null;
   private resumeSessionId: UUID | null = null;
   private _mode: 'query' | undefined = undefined;
+  private deviceId: string | null = null;
 
   private readonly ws: WebSocket;
   private readonly config: Required<ConnectionConfig> & {
@@ -157,6 +169,8 @@ export class Connection {
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Ping ticks since the last pong was received (#662); reset to 0 on pong. */
+  private missedPongs = 0;
 
   constructor(
     ws: WebSocket,
@@ -219,6 +233,11 @@ export class Connection {
     return this._mode;
   }
 
+  /** Stable per-device identifier from the client's hello, if sent (#662). */
+  get connectionDeviceId(): string | null {
+    return this.deviceId;
+  }
+
   /** Check if connection is active */
   get isConnected(): boolean {
     return this.state === 'connected';
@@ -234,6 +253,16 @@ export class Connection {
       this.sendError('INVALID_MESSAGE', 'Failed to parse message');
       return;
     }
+
+    // Any successfully-parsed message proves the peer is alive (#662 review),
+    // not only an explicit 'pong'. The web/mobile client already sends its own
+    // keep-alive 'ping' to the server every 30s (useConnectionManager's
+    // startPing) on top of whatever protocol traffic is flowing, so gating
+    // liveness on 'pong' alone force-closed every healthy client connection
+    // on a ~60-90s cycle: it never answers the SERVER's ping with a protocol
+    // pong. Treating any inbound message as proof-of-life fixes that without
+    // depending on the client implementing pong replies correctly.
+    this.missedPongs = 0;
 
     // Check for duplicate
     if (this.messageTracker.checkAndMark(message.id)) {
@@ -303,7 +332,10 @@ export class Connection {
         this.handleRegisterDeviceToken(message);
         break;
       case 'pong':
-        // Client responding to our ping - no action needed
+        // Explicit protocol-level liveness reply. Redundant with the
+        // any-message reset above (kept as documentation of intent and a
+        // second line of defense if that reset is ever narrowed).
+        this.missedPongs = 0;
         break;
       case 'ack':
         // Client acknowledging our message - just track
@@ -340,12 +372,18 @@ export class Connection {
 
   /**
    * Close the connection.
+   *
+   * `cleanup()` runs BEFORE `ws.close()` so this reason is the one recorded:
+   * closing the raw socket can synchronously re-enter the framework's own
+   * 'close' handler (`handleClose()` -> `cleanup('Client disconnected')`)
+   * before this call returns, and `cleanup()`'s state guard makes that
+   * re-entrant call a no-op (#662) rather than overwriting this reason.
    */
   close(reason = 'Server closing connection'): void {
     if (this.state !== 'disconnected') {
       this.sendError('CLOSING', reason);
-      this.ws.close();
       this.cleanup(reason);
+      this.ws.close();
     }
   }
 
@@ -386,6 +424,7 @@ export class Connection {
     this.directory = message.directory ?? null;
     this.resumeSessionId = message.resumeSessionId ?? null;
     this._mode = message.mode === 'query' ? 'query' : undefined;
+    this.deviceId = message.deviceId ?? null;
     this.state = 'connected';
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
@@ -528,14 +567,32 @@ export class Connection {
   }
 
   private startPingTimer(): void {
+    this.missedPongs = 0;
     this.pingTimer = setInterval(() => {
-      if (this.ws.readyState === WebSocket.OPEN) {
-        this.send(createPing());
+      if (this.ws.readyState !== WebSocket.OPEN) {
+        return;
       }
+      if (this.missedPongs >= MAX_MISSED_PONGS) {
+        // Peer stopped answering pings: force-close so the normal disconnect
+        // path runs (registry detach + FIFO promotion of any queued
+        // connection) instead of holding the session's write lock forever (#662).
+        this.close(`Ping timeout: no pong for ${MAX_MISSED_PONGS} consecutive intervals`);
+        return;
+      }
+      this.missedPongs++;
+      this.send(createPing());
     }, this.config.pingInterval);
   }
 
   private cleanup(reason: string): void {
+    // Idempotency guard (#662): close() and handleClose() can both reach
+    // this in the same disconnect (see the comment on close()) — without
+    // this, onDisconnect would fire twice for one logical disconnect,
+    // double-decrementing connection counts and re-running detach logic.
+    if (this.state === 'disconnected') {
+      return;
+    }
+
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;

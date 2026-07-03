@@ -50,6 +50,14 @@ export interface ConnectionState {
   readonly error: string | null;
   /** The session ID from hello_ack (the directly attached session) */
   readonly sessionId: string | null;
+  /**
+   * Whether this connection holds the session's exclusive write lock
+   * ('attached') or is read-only, queued behind another connection
+   * ('queued') (#662). `null` before the first hello_ack or when the daemon
+   * didn't send the field. A follow-up (#663) renders this as a
+   * read-only/waiting state in the UI.
+   */
+  readonly attachState: 'attached' | 'queued' | null;
 }
 
 /** Agent status as displayed in the UI. Mirrors the daemon's `AgentStatus`

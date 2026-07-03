@@ -101,6 +101,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
             directory: connection.connectionDirectory,
             resumeSessionId: connection.connectionResumeSessionId,
             mode: connection.connectionMode,
+            deviceId: connection.connectionDeviceId,
           },
         };
         this.events.onConnect?.(connection.id, metadata);
@@ -245,5 +246,9 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
   hasConnection(connectionId: UUID): boolean {
     return this.server?.getConnection(connectionId) !== undefined;
+  }
+
+  closeConnection(connectionId: UUID, reason: string): boolean {
+    return this.server?.closeConnection(connectionId, reason) ?? false;
   }
 }

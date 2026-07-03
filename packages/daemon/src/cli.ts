@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.18-dev.2'; // REMI_COMPILED_VERSION
+      return '0.6.18-dev.5'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.18-dev.2'; // REMI_COMPILED_VERSION
+    return '0.6.18-dev.5'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -94,6 +94,7 @@ loadDotenvFile();
 
 import {
   createDaemonUpdateAvailable,
+  createError,
   createHelloAck,
   createQuestionResolved,
   createReplayBatch,
@@ -140,7 +141,6 @@ import { createPtySessionForSession } from './cli/session-phases/pty-session-set
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
-import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
@@ -465,18 +465,6 @@ if (
 // Instantiated early so subcommand handlers (ls, attach, kill) can use it.
 const liveSessionsRegistry = new SessionRegistryFile();
 
-// Experimental TranscriptBinder flags (#453 phase 3). Snapshotted into immutable
-// module-level consts at boot and NEVER re-read per session: a mid-process flip
-// would split sessions across the old/new code paths, which share the
-// transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
-// instant flip-back means a daemon restart (design §3.1 v4 #9).
-// transcript_binder_enabled defaults ON (#503); transcript_binder_shadow OFF.
-const binderEnabled = remiConfig.features.transcript_binder_enabled;
-// Drive mode and shadow mode are mutually exclusive: enabled wins. When the
-// binder DRIVES, running the shadow alongside it would be meaningless (and would
-// double-construct the binder), so the shadow is suppressed whenever drive is on.
-const binderShadow = remiConfig.features.transcript_binder_shadow && !binderEnabled;
-
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
   const { runLsCommand } = await import('./cli/cmd-ls.ts');
@@ -716,6 +704,23 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHo
   process.chdir(dirResult.resolved);
 }
 
+// Every read-only / remote-client subcommand (ls, recent, kill, detach, attach,
+// code, start/stop/status/logs, keys, autostart, --host remote-new) has already
+// exited above. Everything past this point boots a daemon or a local wrapper
+// session, both of which construct a TranscriptBinder via setupHookBridge.
+//
+// `transcript_binder_enabled` is a deprecated kill-switch (#470): the old
+// hook-binding path it used to select back to has been deleted, so setting it
+// false has no effect on behavior anymore — warn so an operator relying on it
+// as an escape hatch notices instead of silently getting drive mode anyway.
+// Gated here (not earlier) so read-only client invocations, which never touch
+// the binder, don't get spammed with a warning about it.
+if (!remiConfig.features.transcript_binder_enabled) {
+  logError(
+    '[Config] transcript_binder_enabled=false is deprecated and has no effect: the old hook-binding path it used to restore was deleted in #470. The TranscriptBinder always drives session binding now.',
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Config (merge: CLI flags > env vars > config file > built-in defaults)
 // ---------------------------------------------------------------------------
@@ -856,11 +861,10 @@ const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
-// Per-session drive-mode TranscriptBinder teardown hooks (#453 phase 3, commit
-// 5). The shared transcriptWatchers/transcriptFallbackTimers cleanup below stops
-// the binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
-// interval (it lives inside the binder); close() reaches all three. Empty when
-// transcript_binder_enabled is off (no binder is ever constructed).
+// Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
+// shared transcriptWatchers/transcriptFallbackTimers cleanup below stops the
+// binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
+// interval (it lives inside the binder); close() reaches all three.
 const binderClosers: Map<UUID, () => void> = new Map();
 // Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
 // by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
@@ -969,6 +973,23 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    onConnectionReclaimed: (sessionId, staleConnectionId, newConnectionId) => {
+      // Same device reconnected while its own previous connection still held
+      // the lock (#662) — likely a dead socket the pong reaper hasn't caught
+      // yet. The registry already moved the lock to newConnectionId; force-
+      // close the stale transport so it can't linger as a second listener.
+      log(
+        `Session ${sessionId} reclaimed by same device: evicting stale connection ${staleConnectionId} for ${newConnectionId}`,
+      );
+      registry.sendRaw(
+        staleConnectionId,
+        createError(
+          'SESSION_RECLAIMED',
+          'This device reconnected from a new connection; closing this one.',
+        ),
+      );
+      registry.closeConnection(staleConnectionId, 'Reclaimed by the same device reconnecting');
+    },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
       // NOTE: this resolves the hello_ack binding inline rather than via
@@ -993,6 +1014,7 @@ const sessionRegistry = new SessionRegistry(
             nextBulletId: result.nextBulletId,
           },
           { claudeSessionId: claudeId, transcriptPath: tpath },
+          result.attachState,
         ),
       );
       if (!sent) {
@@ -1258,8 +1280,6 @@ async function createNewSession(
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => PORT,
-        shadowBinder: binderShadow,
-        binderEnabled,
         transcriptDiscovery,
         subagentViews,
         statusWriter,
@@ -1288,10 +1308,10 @@ async function createNewSession(
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
-    // In drive mode the binder owns the fallback poll + #452 dir-watch (armed by
-    // its start() inside setupHookBridge); record its teardown so cleanup()
-    // reaches the rotation dir-poll interval the shared maps below cannot.
-    if (binderEnabled) binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
+    // The binder owns the fallback poll + #452 dir-watch (armed by its start()
+    // inside setupHookBridge); record its teardown so cleanup() reaches the
+    // rotation dir-poll interval the shared maps below cannot.
+    binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
     // Register the per-session gate handle (#573) so the WebSocket answer path
     // can resolve a held permission / cancel the eval for this exact session.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
@@ -1370,24 +1390,9 @@ async function createNewSession(
     logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
   }
 
-  // In drive mode the TranscriptBinder's start() (inside setupHookBridge) already
-  // armed BOTH the fallback poll and the #452 rotation dir-watch; arming it again
-  // here would double-arm the same fallback timer. Only the old path needs this.
-  if (!binderEnabled) {
-    startTranscriptFallback(
-      {
-        sessionRegistry,
-        transcriptDiscovery,
-        transcriptWatchers,
-        transcriptFallbackTimers,
-      },
-      sessionId,
-      workingDirectory,
-      binding.claudeSessionId,
-      messageApi,
-      sendAndRecord,
-    );
-  }
+  // The TranscriptBinder's start() (inside setupHookBridge) already armed BOTH
+  // the fallback poll and the #452 rotation dir-watch; calling
+  // startTranscriptFallback again here would double-arm the same fallback timer.
 
   return ptySession;
 }
@@ -1768,9 +1773,8 @@ async function cleanup(): Promise<void> {
     mdnsPublisher = null;
   }
 
-  // Drive-mode binders own a rotation dir-poll interval the shared maps below do
-  // not reach; close() tears down its watcher + fallback timer + dir-poll. No-op
-  // map when transcript_binder_enabled is off.
+  // Binders own a rotation dir-poll interval the shared maps below do not
+  // reach; close() tears down its watcher + fallback timer + dir-poll.
   for (const closeBinder of binderClosers.values()) {
     closeBinder();
   }
