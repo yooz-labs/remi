@@ -264,14 +264,24 @@ export class AutoApproveGate {
    * Every OPEN escalation this gate has created (held OR passthrough), keyed
    * by `Question.id`, by its (tool_name, tool_input) signature (#673). Entry
    * lifecycle: created in `escalateToUser` on a successful escalation; removed
-   * unconditionally by the public `resolveHeld` / `releaseHeldAsPassthrough`
-   * (the normal answer path, whether or not a hold existed), by
-   * `cancelExternallyResolved` / the duplicate-re-request check in
-   * `escalateToUser` (both route through `resolveSupersededQuestion`), and
-   * wholesale-cleared by `cancelStale` (session end — nothing here is
-   * relevant once the session is gone). A stale entry is harmless (a signature
-   * match just triggers a redundant, idempotent cleanup), so this never needs
-   * to be perfectly pruned beyond those points.
+   * by exactly TWO owners, unconditionally (regardless of whether a hold
+   * existed), so no exit path can leak an entry:
+   *   - the public `resolveHeld` (a separate, non-delegating path — it owns
+   *     its own delete);
+   *   - the private `releaseHeld`, which EVERY other resolution path funnels
+   *     through: `releaseHeldAsPassthrough` (normal answer), `failOpenHeld`
+   *     (hold-timeout / undelivered-notification fail-open),
+   *     `reconcileLateVerdict`'s cancelled branch (Part B), and
+   *     `resolveSupersededQuestion` (#673's own external-resolution / stale
+   *     -duplicate cleanup).
+   * `cancelStale` and `forceRelease` additionally wholesale-clear the whole
+   * map (session end / force-release — nothing tracked is relevant after
+   * either). A stale entry is harmless (a signature match just triggers a
+   * redundant, idempotent cleanup), but MUST NOT be able to accumulate
+   * indefinitely: an un-deleted entry from a timed-out/cancelled hold would
+   * sit for the rest of the process lifetime and could fire a spurious
+   * `notifyResolved` for a question dead for hours on a much-later,
+   * unrelated duplicate of the same command.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
@@ -399,12 +409,9 @@ export class AutoApproveGate {
    * about to answer the native prompt, not a silent auto-decision).
    */
   releaseHeldAsPassthrough(questionId: UUID): boolean {
-    // #673: also the NORMAL answer path for a NON-held (passthrough-escalated)
-    // question -- input-events.ts calls this unconditionally on every answer,
-    // hold or not, so this is the ONE place that must unconditionally clear a
-    // passthrough-only entry (releaseHeld below no-ops before reaching any
-    // cleanup when there is no hold to release).
-    this.openQuestionSignatures.delete(questionId);
+    // #673: openQuestionSignatures cleanup lives in the private releaseHeld
+    // itself (the single owner every internal caller funnels through), so
+    // there is nothing extra to do here.
     return this.releaseHeld(questionId, 'passthrough');
   }
 
@@ -961,10 +968,22 @@ export class AutoApproveGate {
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
 
-  /** Resolve a held hook with an arbitrary decision (incl. passthrough) WITHOUT
-   *  markHandled (used by Part B's cancelled reconciliation, where the verdict
-   *  was not a silent auto-decision). Returns true when a hold existed. */
+  /**
+   * Resolve a held hook with an arbitrary decision (incl. passthrough) WITHOUT
+   * markHandled (used by Part B's cancelled reconciliation, where the verdict
+   * was not a silent auto-decision). Returns true when a hold existed.
+   *
+   * #673: the SINGLE owner of `openQuestionSignatures` cleanup for every
+   * internal caller of this method -- `releaseHeldAsPassthrough`,
+   * `failOpenHeld` (hold-timeout / undelivered-notification fail-open),
+   * `reconcileLateVerdict`'s cancelled branch, and `resolveSupersededQuestion`
+   * (#673's own external-resolution cleanup) all funnel through here, so the
+   * delete must be UNCONDITIONAL (not gated on `hold` existing) or every one
+   * of those exit paths leaks an entry for the rest of the process lifetime.
+   * (`resolveHeld` is a separate, non-delegating path and owns its own delete.)
+   */
   private releaseHeld(questionId: UUID, decision: PermissionDecision): boolean {
+    this.openQuestionSignatures.delete(questionId);
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -1129,6 +1148,15 @@ export class AutoApproveGate {
       // again -- that response already went to a stale hook call. Clean it up
       // BEFORE tracking the new one (the new questionId is not registered yet,
       // so this can never find/cancel itself).
+      //
+      // Baked-in assumption: Claude Code processes a turn's tool-permission
+      // hooks SEQUENTIALLY (verified against the cc-ref reference source,
+      // conversation.rs:370's sequential for-loop), so two identical-signature
+      // MAIN-context escalations can never be genuinely concurrent/live at
+      // once -- an incoming duplicate always means the earlier one is dead. If
+      // Claude Code ever parallelizes main-context tool-permission dispatch,
+      // this invariant breaks and this check would need a stronger key (e.g.
+      // requiring tool_use_id) before it could keep firing safely.
       this.cancelExternallyResolved(observed, 'duplicate-re-request');
       this.openQuestionSignatures.set(questionId, {
         toolName: observed.toolName,
@@ -1165,6 +1193,10 @@ export class AutoApproveGate {
    *  tool_use_id match (future-proofing: not sent by Claude Code today) over
    *  the tool_name + tool_input signature fallback. */
   private findOpenQuestionMatching(observed: ObservedToolCall): UUID | undefined {
+    // Fast path: called on EVERY admitted PreToolUse/PostToolUse, so the
+    // near-universal "no open escalation at all" case must not pay for a
+    // stableToolInputKey stringify it can never use.
+    if (this.openQuestionSignatures.size === 0) return undefined;
     const observedKey = stableToolInputKey(observed.toolInput);
     for (const [qid, sig] of this.openQuestionSignatures) {
       if (sig.toolName !== observed.toolName || sig.toolInputKey !== observedKey) continue;
@@ -1222,7 +1254,9 @@ export class AutoApproveGate {
       );
     }
     // notifyResolved is already throw-safe internally; no extra wrap needed.
+    // openQuestionSignatures cleanup already happened inside releaseHeld
+    // above (the single owner, unconditional even if no hold existed) --
+    // nothing further to delete here.
     this.notifyResolved(qid, 'cancelled');
-    this.openQuestionSignatures.delete(qid);
   }
 }

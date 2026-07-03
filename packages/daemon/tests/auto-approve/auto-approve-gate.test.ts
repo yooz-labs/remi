@@ -1824,6 +1824,63 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Leak regression (PR #689 review): the private releaseHeld -- reached by
+  // failOpenHeld (hold-timeout / undelivered fail-open) and
+  // reconcileLateVerdict's cancelled branch (Part B) -- must delete the
+  // openQuestionSignatures entry UNCONDITIONALLY, not just when it happens to
+  // be called via the public wrappers. Proven behaviorally: if an entry
+  // leaked, a LATER duplicate re-request for the identical signature would
+  // find the dead entry and fire a SECOND, spurious notifyResolved('cancelled')
+  // for a question resolved (and possibly long gone) already.
+  // ---------------------------------------------------------------------------
+  describe('leak regression: hold-timeout and Part-B-cancelled must not leak entries', () => {
+    test('a timed-out hold does not leak: a later duplicate does not re-fire notifyResolved for it', async () => {
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 20, // short timeout so the hold fails open quickly
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const pendingFirst = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 40)); // let the hold time out
+      expect(await pendingFirst).toBe('passthrough');
+      expect(resolvedLog).toHaveLength(1); // failOpenHeld's own notifyResolved
+
+      // A LATER duplicate for the SAME signature must find nothing -- the
+      // timed-out entry must already be gone, not leaked.
+      const pendingSecond = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(resolvedLog).toHaveLength(1); // still just one; no spurious re-fire
+      expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+      expect(await pendingSecond).toBe('allow');
+    });
+
+    test("Part-B's cancelled late-verdict reconciliation does not leak: a later duplicate does not re-fire notifyResolved", async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10, // Part B: push + hold early, while the eval keeps running
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20)); // early push + hold fires
+
+      // The late verdict is 'cancelled' -- Claude already advanced past the
+      // prompt during the slow eval; reconcileLateVerdict fails the hold open.
+      release({ command: 'git push' }, cancelled);
+      expect(await pending).toBe('passthrough');
+      expect(resolvedLog).toHaveLength(1); // reconcileLateVerdict's own notifyResolved
+
+      const pendingSecond = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(resolvedLog).toHaveLength(1); // no spurious re-fire for the dead entry
+      expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+      expect(await pendingSecond).toBe('allow');
+    });
+  });
+
   describe('teardown clears tracking', () => {
     test('cancelStale clears openQuestionSignatures (a later signature match is a harmless no-op)', async () => {
       const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
