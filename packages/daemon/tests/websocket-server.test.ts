@@ -12,6 +12,7 @@ import {
   createHello,
   createIdentity,
   createPing,
+  createPong,
   createUserInput,
   serialize,
   sign,
@@ -599,6 +600,146 @@ describe('WebSocketServer', () => {
       ]);
 
       expect(received).toBeUndefined();
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('passes deviceId through onClientConnect (#662)', async () => {
+      const receivedPromise = new Promise<string | null>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 20 },
+          {
+            onClientConnect: (connection) => {
+              resolve(connection.connectionDeviceId);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 20}/ws`);
+
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0', { deviceId: 'device-A' })));
+      };
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 5000),
+        ),
+      ]);
+
+      expect(received).toBe('device-A');
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('connectionDeviceId is null when hello omits deviceId (#662)', async () => {
+      const receivedPromise = new Promise<string | null>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 21 },
+          {
+            onClientConnect: (connection) => {
+              resolve(connection.connectionDeviceId);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 21}/ws`);
+
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      };
+
+      const received = await Promise.race([
+        receivedPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Event not received')), 5000),
+        ),
+      ]);
+
+      expect(received).toBeNull();
+
+      ws.close();
+      await server.stop();
+    });
+  });
+
+  describe('Ping/pong liveness reaper (#662)', () => {
+    test('force-closes a connection that stops answering server pings', async () => {
+      // Short ping interval so the reaper (2 missed pongs) fires in well
+      // under the test timeout. The test client deliberately never replies
+      // to the server's app-level pings, simulating a dead socket that never
+      // fires the WebSocket 'close' event (iOS background, NAT drop).
+      const pingInterval = 40;
+      const disconnectPromise = new Promise<string>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 22, connection: { pingInterval } },
+          {
+            onClientDisconnect: (_connectionId, reason) => {
+              resolve(reason);
+            },
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 22}/ws`);
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      };
+
+      const reason = await Promise.race([
+        disconnectPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Reaper did not fire')), 5000),
+        ),
+      ]);
+
+      expect(reason).toContain('Ping timeout');
+
+      ws.close();
+      await server.stop();
+    });
+
+    test('a connection that keeps replying with pong is never force-closed', async () => {
+      const pingInterval = 40;
+      let disconnected = false;
+      server = new WebSocketServer(
+        { port: testPort + 23, connection: { pingInterval } },
+        {
+          onClientDisconnect: () => {
+            disconnected = true;
+          },
+        },
+      );
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 23}/ws`);
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data.toString());
+        if (data.type === 'ping') {
+          ws.send(serialize(createPong(data.id)));
+        }
+      };
+
+      // Wait past several ping intervals (well beyond the 2-missed-pong
+      // threshold if pongs were NOT being answered).
+      await new Promise((resolve) => setTimeout(resolve, pingInterval * 5));
+
+      expect(disconnected).toBe(false);
 
       ws.close();
       await server.stop();

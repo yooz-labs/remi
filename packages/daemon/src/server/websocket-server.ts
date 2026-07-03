@@ -123,6 +123,18 @@ const DEFAULT_HOST = 'localhost';
 const DEFAULT_PATH = '/ws';
 const DEFAULT_MAX_CONNECTIONS = 100;
 
+/**
+ * Seconds of socket-level inactivity before Bun force-closes the raw
+ * WebSocket (#662). A backstop behind the app-level pong reaper in
+ * connection.ts: if that reaper is ever bypassed (event loop stall, an
+ * unhandled exception in the ping tick), a truly wedged peer must still
+ * eventually lose the connection rather than hold the session's exclusive
+ * write lock forever. Set comfortably above the ping interval
+ * (Connection's DEFAULT_PING_INTERVAL, 30s) so the pong reaper normally
+ * fires first.
+ */
+const WS_IDLE_TIMEOUT_SECONDS = 120;
+
 /** WebSocket data attached to each connection */
 interface WSData {
   connectionId: UUID;
@@ -310,6 +322,8 @@ export class WebSocketServer {
       },
 
       websocket: {
+        idleTimeout: WS_IDLE_TIMEOUT_SECONDS,
+
         open(ws) {
           self.handleOpen(ws);
         },
@@ -374,6 +388,20 @@ export class WebSocketServer {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Force-close a specific connection (#662: same-device lock reclaim evicts
+   * the stale connection this way). Goes through `Connection.close()` so the
+   * normal error-frame + disconnect-event path runs, same as any other close.
+   */
+  closeConnection(connectionId: UUID, reason: string): boolean {
+    const connection = this.connections.get(connectionId);
+    if (!connection) {
+      return false;
+    }
+    connection.close(reason);
+    return true;
   }
 
   /**
