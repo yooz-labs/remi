@@ -130,9 +130,12 @@ function visible(s: string): string {
     .replace(/\r/g, '');
 }
 
+/** Text Claude prints once an AskUserQuestion's answer has been accepted. */
+const AUQ_ANSWERED_MARKER = "User answered Claude's questions";
+
 /** The PTY marker printed once the tool has accepted the answer (closed). */
 export function isAuqClosed(frameText: string): boolean {
-  return visible(frameText).includes("User answered Claude's questions");
+  return visible(frameText).includes(AUQ_ANSWERED_MARKER);
 }
 
 /** True when the rendered frame is the review/submit screen. */
@@ -172,12 +175,85 @@ export function parseReviewAnswers(frameText: string): ReviewAnswer[] {
   return out;
 }
 
+/** One parsed post-submit answer line: a question and its accepted label(s). */
+export interface AnsweredQuestion {
+  readonly question: string;
+  readonly labels: readonly string[];
+}
+
+/**
+ * Parse the answer summary Claude prints right after the closure marker
+ * (`isAuqClosed`): "⏺ User answered Claude's questions:  ⎿  · <question> →
+ * <label>[, <label>…]" for each sub-question, in order. DISTINCT from
+ * `parseReviewAnswers` (the pre-submit review SCREEN, bulleted "●"): this is
+ * the tool-result summary Claude echoes once the answer is accepted, bulleted
+ * with a plain middle dot "·" — the SAME glyph the UI uses elsewhere as a
+ * generic separator (status-bar segments like "(4s · ↓ 214 tokens)", footer
+ * hints), so this only scans a BOUNDED window immediately after the marker
+ * rather than the whole buffer.
+ *
+ * This exists for #661's terminal-answer detector, which (unlike the
+ * auq-runner) watches an UNBOUNDED, long-lived buffer for as long as any
+ * AskUserQuestion is pending — a bare `isAuqClosed` substring match there is a
+ * false-positive hazard: this repo's OWN source contains the literal marker
+ * string (this docstring, the interaction-model doc, the fixtures), so
+ * something as mundane as `cat`-ing one of those files over a remi session
+ * while an unrelated AUQ is pending would otherwise silently resolve it (the
+ * phone believes it's answered; Claude is still blocked). Requiring a
+ * specific per-question answer line — and the caller matching its `question`
+ * text against the ACTUAL pending question before resolving it — makes that
+ * scenario require the coincidence to also reproduce the pending question's
+ * exact text within the scan window, not merely the marker sentence.
+ *
+ * Residual risk (documented, not eliminated): a file that happens to contain
+ * BOTH the marker sentence AND, within the next ~2000 characters, a line
+ * shaped like "· <the pending question's exact text> → <anything>" would
+ * still false-positive. This is accepted as extremely unlikely in practice
+ * (it requires reproducing the exact authored question text, not just the
+ * marker), versus the auq-runner's own bare `isAuqClosed` check, which stays
+ * safe unchanged because it only runs during a BOUNDED, actively-driven
+ * window right after sending known keystrokes (see `runAuqAnswer`).
+ *
+ * Returns `[]` when the marker is absent or no answer line follows within the
+ * window — callers MUST treat that as "cannot verify" (do not resolve
+ * anything), never fall back to bare marker presence.
+ */
+export function parseAnsweredSummary(frameText: string): AnsweredQuestion[] {
+  const v = visible(frameText);
+  const idx = v.indexOf(AUQ_ANSWERED_MARKER);
+  if (idx < 0) return [];
+  // Bound the scan to a window right after the marker: the summary lines
+  // immediately follow it in the real render. Long enough for any realistic
+  // question set, far short of "the rest of a rolling ~16KB PTY buffer".
+  const window = v.slice(idx + AUQ_ANSWERED_MARKER.length, idx + AUQ_ANSWERED_MARKER.length + 2000);
+  const out: AnsweredQuestion[] = [];
+  for (const chunk of window.split('·').slice(1)) {
+    const arrow = chunk.indexOf('→');
+    if (arrow < 0) break; // the summary block has ended (or never had a line)
+    const question = chunk.slice(0, arrow).trim();
+    // The last label on the last line can run directly into Claude's "thinking"
+    // spinner with NO separating whitespace (the terminal redraws the spinner
+    // glyph mid-frame; captured example: "...Apple, Cherry✶ Sautéing…"). The
+    // spinner cycles through a small fixed glyph set that never appears in an
+    // authored option label, so cut the label region there too (mirrors
+    // `parseReviewAnswers`'s own trailer cutoff for the review screen).
+    const labelRegion = chunk.slice(arrow + 1).split(/[✶✻✢✳]|─{3,}/)[0] ?? chunk.slice(arrow + 1);
+    const labels = labelRegion
+      .split(',')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (question.length === 0 || labels.length === 0) break;
+    out.push({ question, labels });
+  }
+  return out;
+}
+
 /**
  * Lowercase, collapse whitespace to single spaces, and canonicalize comma spacing
  * ("a , b" / "a,b" -> "a,b"). Keeps internal spaces (so "foo bar" stays distinct
  * from "foobar") while absorbing terminal line-wrap / run-together artifacts.
  */
-function normalizeLabel(s: string): string {
+export function normalizeLabel(s: string): string {
   return s
     .toLowerCase()
     .replace(/\s+/g, ' ')

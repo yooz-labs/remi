@@ -12,6 +12,7 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
+import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
 import { readPtyOutput, resetPtyOutput } from '../../pty/output-buffer.ts';
@@ -254,6 +255,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     const runKey = auqRunKey(session.sessionId, questionId);
     const controller = new AbortController();
     auqRuns.set(runKey, controller);
+    // #661 review: mark this question as ACTIVELY driven before the first
+    // keystroke so pty-session-setup.ts's terminal-answer detector skips it —
+    // otherwise the detector races this same drive's own success path (both
+    // read the same rolling PTY buffer) and double-resolves the question.
+    markAuqRunActive(session.sessionId, questionId);
     let outcome: AuqRunOutcome;
     try {
       outcome = await runAuqAnswer(
@@ -270,6 +276,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       );
     } finally {
       auqRuns.delete(runKey);
+      clearAuqRunActive(session.sessionId, questionId);
     }
 
     if (outcome === 'closed' || outcome === 'submitted') {
@@ -385,8 +392,19 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           `[Answer] cancel: question ${questionId.slice(0, 8)} already gone; skipping Esc, clearing card`,
         );
       }
-      releaseHeldAsPassthrough?.(session.sessionId, questionId);
-      cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-cancelled');
+      // Guarded like the AUQ success branch (#661 review): a throw from hold
+      // release or eval cancel must never skip removeQuestion/onQuestionResolved
+      // below, or the card zombifies exactly like the bug this file just fixed.
+      try {
+        releaseHeldAsPassthrough?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] cancel: hold release failed: ${errorToString(err)}`);
+      }
+      try {
+        cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-cancelled');
+      } catch (err) {
+        logError(`[Answer] cancel: eval cancel failed: ${errorToString(err)}`);
+      }
       sessionRegistry.removeQuestion(session.sessionId, questionId);
       try {
         onQuestionResolved?.(session.sessionId, questionId);

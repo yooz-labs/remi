@@ -20,9 +20,10 @@
 
 import * as fs from 'node:fs';
 import { createRawPtyOutput, errorToString } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 
-import { isAuqClosed } from '../../hooks/auq-answer.ts';
+import { isAuqRunActive } from '../../hooks/auq-active-runs.ts';
+import { normalizeLabel, parseAnsweredSummary } from '../../hooks/auq-answer.ts';
 import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
 import { appendPtyOutput, clearPtyOutput, readPtyOutput } from '../../pty/output-buffer.ts';
@@ -81,30 +82,47 @@ export interface PtySessionSetupDeps {
   cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
 }
 
+/** Normalized sub-question texts to match a summary answer line against. */
+function questionTexts(q: Question): string[] {
+  const steps = q.questions;
+  if (steps && steps.length > 0) return steps.map((s) => normalizeLabel(s.text));
+  return [normalizeLabel(q.text)];
+}
+
 /**
  * #538/#661: an AskUserQuestion the auq-runner ESCALATED (gave up auto-driving,
  * e.g. every multi-select before this fix) can still be answered by the user
  * typing directly in the terminal — Claude accepts it and prints the same
- * closure marker `isAuqClosed` looks for. Nothing then watches for that
- * closure: the runner already returned, and the phone-side question card is
- * left registered forever (the card asks the user to "answer in the
+ * closure marker `parseAnsweredSummary` looks for. Nothing then watches for
+ * that closure: the runner already returned, and the phone-side question card
+ * is left registered forever (the card asks the user to "answer in the
  * terminal", they do, and the card never clears — compounding #538).
  *
  * Every PTY output chunk already flows through `onData` unconditionally (not
  * gated on a hook server being active), so it is the cheapest existing tap to
- * also watch for this marker against any still-pending `kind:
+ * also watch for this closure against any still-pending `kind:
  * 'multi_question'` question for the session, and fire the same
  * removeQuestion + onQuestionResolved cleanup the phone-answered path uses
  * (`input-events.ts`'s `handleAuqAnswer`) so the card clears everywhere.
  *
- * This can race the auq-runner's OWN closure poll (both read the same rolling
- * buffer via `readPtyOutput`): whichever notices the marker first removes the
- * question; the other's removeQuestion/onQuestionResolved is then a harmless
- * no-op / idempotent repeat broadcast (removeQuestion on a missing id is a
- * no-op; onQuestionResolved's client-side handling is documented idempotent).
+ * Two safeguards against firing on the wrong question (#661 review):
+ *   1. Skips any question `isAuqRunActive` — the auq-runner is CURRENTLY
+ *      driving it. Without this, the detector races the runner's own success
+ *      path on every remotely-answered multi-select (both read the same
+ *      rolling buffer; this handler runs synchronously in the same `onData`
+ *      tick the marker lands, strictly before the runner's own poll tick),
+ *      producing a duplicate `question_resolved` broadcast and a misleading
+ *      `'user-answered-auq-terminal'` cancel reason for a question the phone
+ *      actually answered (the #652/#653 duplicate-resolution bug class).
+ *   2. Uses `parseAnsweredSummary` (not a bare `isAuqClosed` substring check)
+ *      and only resolves a question whose OWN sub-question text appears in a
+ *      parsed answer line — see that function's docstring for why a bare
+ *      marker match is a false-positive hazard here (this repo's own source
+ *      contains the literal marker string).
+ *
  * Cheap to call on every chunk: it only scans `currentQuestions` (bounded,
  * `MAX_PENDING_QUESTIONS`) and short-circuits before touching the buffer text
- * unless at least one AUQ question is actually pending.
+ * unless at least one non-actively-driven AUQ question is pending.
  */
 export function detectAuqTerminalAnswers(
   sessionId: UUID,
@@ -115,12 +133,21 @@ export function detectAuqTerminalAnswers(
   const session = sessionRegistry.getSession(sessionId);
   if (!session || session.currentQuestions.size === 0) return;
   const auqQuestions = [...session.currentQuestions.values()].filter(
-    (q) => q.kind === 'multi_question',
+    (q) => q.kind === 'multi_question' && !isAuqRunActive(sessionId, q.id),
   );
   if (auqQuestions.length === 0) return;
-  if (!isAuqClosed(readPtyOutput(sessionId))) return;
+  const summary = parseAnsweredSummary(readPtyOutput(sessionId));
+  if (summary.length === 0) return;
+  const summaryTexts = new Set(summary.map((a) => normalizeLabel(a.question)));
   for (const q of auqQuestions) {
-    cancelAutoApproveForQuestion?.(sessionId, q.id, 'user-answered-auq-terminal');
+    if (!questionTexts(q).some((t) => summaryTexts.has(t))) continue;
+    // Guarded so a throwing eval-cancel can never skip removeQuestion below
+    // (the zombie-card pattern #661 fixed in input-events.ts's answer paths).
+    try {
+      cancelAutoApproveForQuestion?.(sessionId, q.id, 'user-answered-auq-terminal');
+    } catch (err) {
+      logError(`[AUQ] terminal-answer eval cancel failed: ${errorToString(err)}`);
+    }
     sessionRegistry.removeQuestion(sessionId, q.id);
     try {
       onQuestionResolved?.(sessionId, q.id);
