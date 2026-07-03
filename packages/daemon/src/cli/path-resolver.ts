@@ -18,6 +18,11 @@ export type ResolveDirectoryResult = { resolved: string } | { error: string };
  * manipulation, no filesystem access — safe to run against untrusted or
  * legacy stored values (e.g. re-normalizing a `LiveSessionEntry.projectPath`
  * read back off disk) as well as fresh CLI input.
+ *
+ * Does NOT resolve symlinks (no realpath): two paths that are equivalent only
+ * through a symlinked segment (macOS `/tmp` vs `/private/tmp`) normalize to
+ * different strings and will not compare equal. Same blind spot as the exact
+ * string equality this replaced; acceptable for sibling-daemon detection.
  */
 export function normalizeProjectPath(inputPath: string): string {
   let resolved = inputPath;
