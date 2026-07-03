@@ -13,18 +13,28 @@ import * as path from 'node:path';
 
 export type ResolveDirectoryResult = { resolved: string } | { error: string };
 
-export function resolveDirectory(inputPath: string | null | undefined): ResolveDirectoryResult {
-  if (!inputPath) {
-    return { resolved: process.cwd() };
-  }
-
+/**
+ * Expand a leading `~`/`~/` and resolve to an absolute path. Pure string
+ * manipulation, no filesystem access — safe to run against untrusted or
+ * legacy stored values (e.g. re-normalizing a `LiveSessionEntry.projectPath`
+ * read back off disk) as well as fresh CLI input.
+ */
+export function normalizeProjectPath(inputPath: string): string {
   let resolved = inputPath;
   if (resolved.startsWith('~/')) {
     resolved = path.join(os.homedir(), resolved.slice(2));
   } else if (resolved === '~') {
     resolved = os.homedir();
   }
-  resolved = path.resolve(resolved);
+  return path.resolve(resolved);
+}
+
+export function resolveDirectory(inputPath: string | null | undefined): ResolveDirectoryResult {
+  if (!inputPath) {
+    return { resolved: process.cwd() };
+  }
+
+  const resolved = normalizeProjectPath(inputPath);
   if (!fs.existsSync(resolved)) {
     return { error: `Directory not found: ${resolved}` };
   }
