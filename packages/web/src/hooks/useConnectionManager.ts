@@ -882,9 +882,12 @@ export function useConnectionManager(
           continue;
         }
         setTimeout(() => {
-          // Re-check the live map: the connection may have been replaced or
-          // torn down during the staggered delay.
-          if (connectionsMapRef.current.get(decision.connectionId) === mc) {
+          // Re-check both connection identity (it may have been replaced or
+          // torn down during the delay) and current health (isHealthy already
+          // implies the transport is open) -- a connection that self-healed
+          // during its stagger delay (e.g. its own heartbeat probe finally
+          // got a reply) should be left alone, not torn down anyway.
+          if (connectionsMapRef.current.get(decision.connectionId) === mc && !mc.client.isHealthy) {
             mc.client.forceReconnect();
           }
         }, decision.delayMs);

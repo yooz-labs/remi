@@ -68,10 +68,13 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 6;
  * decouples client-side staleness detection from the server's independent
  * keep-alive schedule -- the old bug was a passive silence watchdog whose
  * 30s window had zero margin over the server's own 30s ping cadence, so any
- * latency blip on the server's side force-closed a healthy socket. 3
- * consecutive misses gives real tolerance for transient jitter while still
- * catching a truly dead peer well inside the Bun-level idleTimeout backstop
- * (120s, websocket-server.ts).
+ * latency blip on the server's side force-closed a healthy socket.
+ *
+ * The first tick after connect only sends the first probe (there's nothing
+ * outstanding yet to check a reply against), so a fully silent peer is only
+ * confirmed dead on the 4th tick -- 4 * `heartbeatInterval` worst case
+ * (~60s at the 15s default), still comfortably inside the Bun-level
+ * idleTimeout backstop (120s, websocket-server.ts).
  */
 const MAX_MISSED_HEARTBEATS = 3;
 
