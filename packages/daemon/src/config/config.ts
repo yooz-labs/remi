@@ -86,18 +86,16 @@ export interface TelegramConfig {
 
 /**
  * TranscriptBinder feature flags (epic #453/#499). `transcript_binder_enabled`
- * defaults ON (the binder is the default driver, #503); `transcript_binder_shadow`
- * defaults OFF. Snapshotted into a const at daemon boot and treated as immutable
- * for the process lifetime — never re-read per session (a mid-process flip would
- * split sessions across the old/new code paths, which share the transcriptWatchers
- * map).
+ * defaults ON and is the only flag left: the binder is the unconditional driver
+ * of session binding (#503), and the old hook-binding path + shadow-mode compare
+ * it used to select between were deleted in #470.
  */
 export interface FeaturesConfig {
-  /** Phase 3: run the TranscriptBinder in compute-only shadow mode alongside the old
-   *  path and log decision disagreements. No side effects; observation only. */
-  readonly transcript_binder_shadow: boolean;
-  /** Phase 3: the TranscriptBinder DRIVES the session-binding/watcher/rotation; the
-   *  old initFromHookEvent/onSessionInfo path is skipped. */
+  /**
+   * Deprecated kill-switch (#470): used to restore the pre-#453 hook-binding
+   * path when false. That path no longer exists, so `false` now only logs a
+   * deprecation warning at boot; the TranscriptBinder always drives.
+   */
   readonly transcript_binder_enabled: boolean;
 }
 
@@ -213,15 +211,10 @@ export const DEFAULT_CONFIG: RemiConfig = {
     hold_unconfirmed_timeout: 0,
   },
   features: {
-    transcript_binder_shadow: false,
-    // The TranscriptBinder is now the DEFAULT session-binding driver (epic
-    // #499 / #503 step 1). It was shadow- and real-Claude-e2e-validated as
-    // equivalent to the old path, and is the single source of truth for the
-    // live session. Kept as a flag so `REMI_TRANSCRIPT_BINDER_ENABLED=false`
-    // is a kill-switch back to the old path until that path is deleted (#503
-    // step 2, after this default soaks). Setting `transcript_binder_shadow`
-    // alone no longer yields shadow-only — drive wins; for compare-only set
-    // `transcript_binder_enabled=false` too.
+    // The TranscriptBinder is the unconditional session-binding driver (epic
+    // #499 / #503) and is the single source of truth for the live session.
+    // `REMI_TRANSCRIPT_BINDER_ENABLED=false` no longer restores an alternate
+    // path (deleted in #470); it only logs a deprecation warning at boot.
     transcript_binder_enabled: true,
   },
 };
@@ -660,13 +653,10 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     }
   }
 
-  // Experimental feature flags (#453 phase 3). Default OFF; env opt-in only.
+  // Deprecated kill-switch (#470/#503): the TranscriptBinder drives session
+  // binding unconditionally now, so this flag has no effect on behavior; it is
+  // read only so an operator's existing env var doesn't silently vanish.
   const features = { ...config.features };
-  if (env['REMI_TRANSCRIPT_BINDER_SHADOW'] === 'true') {
-    (features as { transcript_binder_shadow: boolean }).transcript_binder_shadow = true;
-  } else if (env['REMI_TRANSCRIPT_BINDER_SHADOW'] === 'false') {
-    (features as { transcript_binder_shadow: boolean }).transcript_binder_shadow = false;
-  }
   if (env['REMI_TRANSCRIPT_BINDER_ENABLED'] === 'true') {
     (features as { transcript_binder_enabled: boolean }).transcript_binder_enabled = true;
   } else if (env['REMI_TRANSCRIPT_BINDER_ENABLED'] === 'false') {
@@ -885,9 +875,8 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
     `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
   );
   lines.push('');
-  lines.push('# Experimental (epic #453). Default off; flip = restart (no hot reload).');
+  lines.push('# transcript_binder_enabled is a deprecated kill-switch (#470); flip = restart.');
   lines.push('[features]');
-  lines.push(`  transcript_binder_shadow = ${config.features.transcript_binder_shadow}`);
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
 
   return lines.join('\n');

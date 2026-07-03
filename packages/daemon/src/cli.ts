@@ -140,7 +140,6 @@ import { createPtySessionForSession } from './cli/session-phases/pty-session-set
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
-import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
@@ -465,17 +464,17 @@ if (
 // Instantiated early so subcommand handlers (ls, attach, kill) can use it.
 const liveSessionsRegistry = new SessionRegistryFile();
 
-// Experimental TranscriptBinder flags (#453 phase 3). Snapshotted into immutable
-// module-level consts at boot and NEVER re-read per session: a mid-process flip
-// would split sessions across the old/new code paths, which share the
-// transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
-// instant flip-back means a daemon restart (design §3.1 v4 #9).
-// transcript_binder_enabled defaults ON (#503); transcript_binder_shadow OFF.
-const binderEnabled = remiConfig.features.transcript_binder_enabled;
-// Drive mode and shadow mode are mutually exclusive: enabled wins. When the
-// binder DRIVES, running the shadow alongside it would be meaningless (and would
-// double-construct the binder), so the shadow is suppressed whenever drive is on.
-const binderShadow = remiConfig.features.transcript_binder_shadow && !binderEnabled;
+// The TranscriptBinder drives session binding/watcher/rotation unconditionally
+// (#453 phase 3, #503). `transcript_binder_enabled` is a deprecated kill-switch
+// (#470): the old hook-binding path it used to select back to has been deleted,
+// so setting it false has no effect on behavior anymore — warn so an operator
+// relying on it as an escape hatch notices instead of silently getting drive
+// mode anyway.
+if (!remiConfig.features.transcript_binder_enabled) {
+  logError(
+    '[Config] transcript_binder_enabled=false is deprecated and has no effect: the old hook-binding path it used to restore was deleted in #470. The TranscriptBinder always drives session binding now.',
+  );
+}
 
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
@@ -856,11 +855,10 @@ const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
-// Per-session drive-mode TranscriptBinder teardown hooks (#453 phase 3, commit
-// 5). The shared transcriptWatchers/transcriptFallbackTimers cleanup below stops
-// the binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
-// interval (it lives inside the binder); close() reaches all three. Empty when
-// transcript_binder_enabled is off (no binder is ever constructed).
+// Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
+// shared transcriptWatchers/transcriptFallbackTimers cleanup below stops the
+// binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
+// interval (it lives inside the binder); close() reaches all three.
 const binderClosers: Map<UUID, () => void> = new Map();
 // Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
 // by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
@@ -1258,8 +1256,6 @@ async function createNewSession(
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => PORT,
-        shadowBinder: binderShadow,
-        binderEnabled,
         transcriptDiscovery,
         subagentViews,
         statusWriter,
@@ -1288,10 +1284,10 @@ async function createNewSession(
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
-    // In drive mode the binder owns the fallback poll + #452 dir-watch (armed by
-    // its start() inside setupHookBridge); record its teardown so cleanup()
-    // reaches the rotation dir-poll interval the shared maps below cannot.
-    if (binderEnabled) binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
+    // The binder owns the fallback poll + #452 dir-watch (armed by its start()
+    // inside setupHookBridge); record its teardown so cleanup() reaches the
+    // rotation dir-poll interval the shared maps below cannot.
+    binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
     // Register the per-session gate handle (#573) so the WebSocket answer path
     // can resolve a held permission / cancel the eval for this exact session.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
@@ -1364,24 +1360,9 @@ async function createNewSession(
     logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
   }
 
-  // In drive mode the TranscriptBinder's start() (inside setupHookBridge) already
-  // armed BOTH the fallback poll and the #452 rotation dir-watch; arming it again
-  // here would double-arm the same fallback timer. Only the old path needs this.
-  if (!binderEnabled) {
-    startTranscriptFallback(
-      {
-        sessionRegistry,
-        transcriptDiscovery,
-        transcriptWatchers,
-        transcriptFallbackTimers,
-      },
-      sessionId,
-      workingDirectory,
-      binding.claudeSessionId,
-      messageApi,
-      sendAndRecord,
-    );
-  }
+  // The TranscriptBinder's start() (inside setupHookBridge) already armed BOTH
+  // the fallback poll and the #452 rotation dir-watch; calling
+  // startTranscriptFallback again here would double-arm the same fallback timer.
 
   return ptySession;
 }
@@ -1762,9 +1743,8 @@ async function cleanup(): Promise<void> {
     mdnsPublisher = null;
   }
 
-  // Drive-mode binders own a rotation dir-poll interval the shared maps below do
-  // not reach; close() tears down its watcher + fallback timer + dir-poll. No-op
-  // map when transcript_binder_enabled is off.
+  // Binders own a rotation dir-poll interval the shared maps below do not
+  // reach; close() tears down its watcher + fallback timer + dir-poll.
   for (const closeBinder of binderClosers.values()) {
     closeBinder();
   }
