@@ -623,6 +623,77 @@ describe('TranscriptBinder', () => {
       });
       expect(d.classification).toBe('foreign');
     });
+
+    // The two tests above only exercise decide() (read-only) after
+    // onSessionEnd. Neither drives the REAL bind/rotate path (onHookEvent),
+    // so neither proves SessionEnd actually triggers a rotation end to end
+    // (#470 review gap).
+    test('SessionEnd(A) then a real hook event for a new id drives rotate(): emits + rebinds + swaps the watcher (#438)', () => {
+      registerSession();
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-A',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+      const binder = makeBinder();
+      const aPath = path.join(tmpDir, 'a.jsonl');
+      const bPath = path.join(tmpDir, 'b.jsonl');
+      binder.onHookEvent({ session_id: 'claude-A', transcript_path: aPath });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+      expect(transcriptWatchers.get(SID)?.filePath).toBe(aPath);
+
+      // Clean exit: SessionEnd for our locked id sets mainSessionEnded, WITHOUT
+      // the PTY ever exiting (ptyState.running stays true for this whole test) —
+      // unlike the "rotation ordering" suite above, which forces restart via
+      // ptyState.running = false. This is the OTHER real trigger for a restart
+      // classification, and it must drive the same rotate() path end to end.
+      binder.onSessionEnd({ session_id: 'claude-A' });
+      expect(ptyState.running).toBe(true);
+
+      // The REAL bind/rotate path — not decide() — for a genuinely new Claude
+      // session under the same PTY.
+      binder.onHookEvent({ session_id: 'claude-B', transcript_path: bPath });
+
+      expect(rotations()).toEqual([
+        { old: 'claude-A', new: 'claude-B', path: bPath, reason: 'restart' },
+      ]);
+      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      expect(transcriptWatchers.get(SID)?.filePath).toBe(bPath);
+    });
+
+    test('rotate() resets mainSessionEnded: a foreign id right after a rotation is dropped, not re-adopted as restart (#470 regression guard)', () => {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({ session_id: 'claude-A', transcript_path: path.join(tmpDir, 'a.jsonl') });
+      binder.onSessionEnd({ session_id: 'claude-A' });
+      binder.onHookEvent({ session_id: 'claude-B', transcript_path: path.join(tmpDir, 'b.jsonl') });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      const rotationsBefore = rotations().length;
+
+      // A THIRD, DISTINCT id arrives right after the rotation, PTY still
+      // running. rotate() (transcript-binder.ts) must reset mainSessionEnded
+      // to false when it rebinds to B; if it did not, the stale `true` left
+      // over from SessionEnd(A) would still be set and this event would wrongly
+      // classify 'restart', hijacking the lock instead of being dropped. A
+      // same-id replay of B would NOT catch this regression — it short-circuits
+      // to 'match' before mainSessionEnded is ever consulted — so the id here
+      // must be distinct from both A and B.
+      const d = binder.decide({
+        session_id: 'claude-C',
+        transcript_path: path.join(tmpDir, 'c.jsonl'),
+      });
+      expect(d.classification).toBe('foreign');
+
+      binder.onHookEvent({ session_id: 'claude-C', transcript_path: path.join(tmpDir, 'c.jsonl') });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B'); // unchanged
+      expect(rotations()).toHaveLength(rotationsBefore); // no new rotation
+    });
   });
 
   // -------------------------------------------------------------------------
