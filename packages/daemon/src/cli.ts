@@ -464,18 +464,6 @@ if (
 // Instantiated early so subcommand handlers (ls, attach, kill) can use it.
 const liveSessionsRegistry = new SessionRegistryFile();
 
-// The TranscriptBinder drives session binding/watcher/rotation unconditionally
-// (#453 phase 3, #503). `transcript_binder_enabled` is a deprecated kill-switch
-// (#470): the old hook-binding path it used to select back to has been deleted,
-// so setting it false has no effect on behavior anymore — warn so an operator
-// relying on it as an escape hatch notices instead of silently getting drive
-// mode anyway.
-if (!remiConfig.features.transcript_binder_enabled) {
-  logError(
-    '[Config] transcript_binder_enabled=false is deprecated and has no effect: the old hook-binding path it used to restore was deleted in #470. The TranscriptBinder always drives session binding now.',
-  );
-}
-
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
   const { runLsCommand } = await import('./cli/cmd-ls.ts');
@@ -713,6 +701,23 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHo
     process.exit(1);
   }
   process.chdir(dirResult.resolved);
+}
+
+// Every read-only / remote-client subcommand (ls, recent, kill, detach, attach,
+// code, start/stop/status/logs, keys, autostart, --host remote-new) has already
+// exited above. Everything past this point boots a daemon or a local wrapper
+// session, both of which construct a TranscriptBinder via setupHookBridge.
+//
+// `transcript_binder_enabled` is a deprecated kill-switch (#470): the old
+// hook-binding path it used to select back to has been deleted, so setting it
+// false has no effect on behavior anymore — warn so an operator relying on it
+// as an escape hatch notices instead of silently getting drive mode anyway.
+// Gated here (not earlier) so read-only client invocations, which never touch
+// the binder, don't get spammed with a warning about it.
+if (!remiConfig.features.transcript_binder_enabled) {
+  logError(
+    '[Config] transcript_binder_enabled=false is deprecated and has no effect: the old hook-binding path it used to restore was deleted in #470. The TranscriptBinder always drives session binding now.',
+  );
 }
 
 // ---------------------------------------------------------------------------
