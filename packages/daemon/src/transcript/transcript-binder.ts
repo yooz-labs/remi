@@ -41,6 +41,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import { log, logError } from '../cli/logger.ts';
+import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { startTranscriptFallback } from '../cli/transcript-fallback.ts';
 import { startTranscriptWatcher } from '../cli/transcript-watcher-setup.ts';
 import { classifySessionEvent } from '../hooks/session-lock-classifier.ts';
@@ -790,9 +791,12 @@ export class TranscriptBinder {
       );
       return true;
     }
+    // Normalize both sides: a legacy on-disk entry (or a sibling running an
+    // older binary) may still carry an unexpanded `~` (#674).
+    const ourDir = normalizeProjectPath(this.workingDirectory);
     return this.deps.liveSessionsRegistry.listLive().some(
       (e) =>
-        e.projectPath === this.workingDirectory &&
+        normalizeProjectPath(e.projectPath) === ourDir &&
         e.sessionId !== this.sessionId &&
         e.wsPort !== this.deps.currentPort() &&
         // A zombie (daemon alive, Claude dead) must not count as a sibling

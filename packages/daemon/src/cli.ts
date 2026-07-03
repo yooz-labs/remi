@@ -1866,8 +1866,14 @@ if (cliDaemonMode) {
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Create the daemon's single session (one session per daemon)
-  const workingDirectory = cliDir ? path.resolve(cliDir) : process.cwd();
+  // Create the daemon's single session (one session per daemon).
+  // NOTE: when --dir/--recent was passed, we already `process.chdir()`'d to
+  // the tilde-expanded, validated directory above (see the `resolveDirectory`
+  // calls near the top of this file). Re-resolving the raw `cliDir` string
+  // here (which may still contain a literal `~`) against that NEW cwd used to
+  // produce a malformed concatenated path (#674); process.cwd() is always the
+  // correct value by this point.
+  const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
 

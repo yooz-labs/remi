@@ -278,6 +278,73 @@ describe('SessionRegistryFile', () => {
     expect(live[0]!.wsPort).toBe(18770);
   });
 
+  // ---- projectPath normalization (#674) -----------------------------------
+
+  describe('projectPath normalization', () => {
+    test('tilde-form projectPath round-trips to an absolute normalized path', () => {
+      registry.register(
+        makeEntry({ sessionId: 'tilde', projectPath: '~/Documents/git/nemar/nemar-cli' }),
+      );
+
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(live[0]!.projectPath).toBe(path.join(os.homedir(), 'Documents/git/nemar/nemar-cli'));
+    });
+
+    test('tilde-form and absolute-form registrations end up with an identical projectPath', () => {
+      const absolutePath = path.join(os.homedir(), 'Documents/git/nemar/nemar-cli');
+      registry.register(
+        makeEntry({ sessionId: 'a', projectPath: '~/Documents/git/nemar/nemar-cli' }),
+      );
+      registry.register(makeEntry({ sessionId: 'b', projectPath: absolutePath }));
+
+      const live = registry.listLive();
+      const a = live.find((e) => e.sessionId === 'a');
+      const b = live.find((e) => e.sessionId === 'b');
+      expect(a!.projectPath).toBe(b!.projectPath);
+    });
+
+    test('setClaudeChildPid self-heals a legacy entry that still carries a raw tilde', () => {
+      // A legacy entry written directly (bypassing register()'s
+      // normalization) that still starts with `~` CAN be normalized on the
+      // next patch, since patchEntry round-trips through register().
+      fs.writeFileSync(
+        path.join(tmpDir, 'legacy.json'),
+        JSON.stringify(
+          makeEntry({ sessionId: 'legacy', projectPath: '~/Documents/git/nemar/nemar-cli' }),
+        ),
+      );
+
+      registry.setClaudeChildPid('legacy', 4242);
+
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(live[0]!.projectPath).toBe(path.join(os.homedir(), 'Documents/git/nemar/nemar-cli'));
+      expect(live[0]!.claudeChildPid).toBe(4242);
+    });
+
+    test('setClaudeChildPid cannot un-concatenate an already-mangled projectPath', () => {
+      // The exact malformed shape reported live (#674): once a `~` has been
+      // concatenated mid-string onto another absolute path, the result no
+      // longer starts with `~`, so normalizeProjectPath cannot recover it.
+      // The guarantee is that FRESH projectPath values are normalized from now
+      // on, not that this specific garbage string self-repairs.
+      const malformed =
+        '/Users/yahya/Documents/git/nemar/nemar-cli/~/Documents/git/nemar/nemar-cli';
+      fs.writeFileSync(
+        path.join(tmpDir, 'legacy.json'),
+        JSON.stringify(makeEntry({ sessionId: 'legacy', projectPath: malformed })),
+      );
+
+      registry.setClaudeChildPid('legacy', 4242);
+
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(live[0]!.projectPath).toBe(malformed);
+      expect(live[0]!.claudeChildPid).toBe(4242);
+    });
+  });
+
   // ---- Claude-child liveness (#451) ---------------------------------------
 
   describe('Claude child liveness', () => {

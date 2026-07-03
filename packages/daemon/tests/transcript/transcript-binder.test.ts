@@ -354,6 +354,71 @@ describe('TranscriptBinder', () => {
   });
 
   // -------------------------------------------------------------------------
+  // hasSiblingInDir tilde/absolute normalization (#674)
+  // -------------------------------------------------------------------------
+
+  describe('hasSiblingInDir projectPath normalization (#674)', () => {
+    test('sibling with a tilde-form projectPath is still detected against an absolute workingDirectory', () => {
+      registerSession();
+      const ourDir = path.join(os.homedir(), 'remi-674-test-nemar-cli');
+      // The sibling's live-sessions entry carries an unexpanded `~` form of
+      // the same directory -- the exact shape a pre-fix daemon persisted
+      // live (#674). Before normalizing both sides, the plain string
+      // equality in hasSiblingInDir() would miss this match entirely.
+      fs.writeFileSync(
+        path.join(liveSessionsRegistry.dirPath, 'sib.json'),
+        JSON.stringify({
+          sessionId: 'sib-1',
+          pid: process.pid,
+          wsPort: 18999,
+          hookPort: 18001,
+          projectPath: '~/remi-674-test-nemar-cli',
+          name: 'sib',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      const binder = new TranscriptBinder(
+        deps(),
+        { sessionId: SID, workingDirectory: ourDir },
+        'drive',
+      );
+      // No ownership marker -> with the sibling detected, this must defer.
+      const ev: BinderHookEvent = {
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+      };
+      expect(binder.decide(ev).classification).toBe('defer');
+    });
+
+    test('sibling with an absolute projectPath is still detected against a tilde-equivalent workingDirectory', () => {
+      registerSession();
+      const absoluteSiblingDir = path.join(os.homedir(), 'remi-674-test-nemar-cli-2');
+      fs.writeFileSync(
+        path.join(liveSessionsRegistry.dirPath, 'sib.json'),
+        JSON.stringify({
+          sessionId: 'sib-1',
+          pid: process.pid,
+          wsPort: 18999,
+          hookPort: 18001,
+          projectPath: absoluteSiblingDir,
+          name: 'sib',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      const binder = new TranscriptBinder(
+        deps(),
+        { sessionId: SID, workingDirectory: '~/remi-674-test-nemar-cli-2' },
+        'drive',
+      );
+      const ev: BinderHookEvent = {
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+      };
+      expect(binder.decide(ev).classification).toBe('defer');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // rotation ordering
   // -------------------------------------------------------------------------
 
