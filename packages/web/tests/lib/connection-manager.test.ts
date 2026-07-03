@@ -8,7 +8,23 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { collectPendingChallengeConnections } from '../../src/hooks/connection-manager-helpers';
+import {
+  collectPendingChallengeConnections,
+  DEVICE_ID_STORAGE_KEY,
+  getOrCreateDeviceId,
+  type KeyValueStorage,
+} from '../../src/hooks/connection-manager-helpers';
+
+/** In-memory Storage-compatible fake so tests don't need a browser DOM. */
+function fakeStorage(initial: Record<string, string> = {}): KeyValueStorage {
+  const map = new Map(Object.entries(initial));
+  return {
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, value) => {
+      map.set(key, value);
+    },
+  };
+}
 
 type FakeConn = {
   id: string;
@@ -56,5 +72,37 @@ describe('collectPendingChallengeConnections', () => {
     map.set('fourth', mkConn('fourth', true));
     const result = collectPendingChallengeConnections(map.values());
     expect(result.map((c) => c.id)).toEqual(['first', 'third', 'fourth']);
+  });
+});
+
+describe('getOrCreateDeviceId (#662)', () => {
+  test('generates and persists a new id when none is stored', () => {
+    const storage = fakeStorage();
+    const id = getOrCreateDeviceId(storage);
+
+    expect(id.length).toBeGreaterThan(0);
+    expect(storage.getItem(DEVICE_ID_STORAGE_KEY)).toBe(id);
+  });
+
+  test('returns the SAME id on repeated calls (persists across restarts)', () => {
+    const storage = fakeStorage();
+    const first = getOrCreateDeviceId(storage);
+    const second = getOrCreateDeviceId(storage);
+
+    expect(second).toBe(first);
+  });
+
+  test('reuses an existing stored id rather than generating a new one', () => {
+    const storage = fakeStorage({ [DEVICE_ID_STORAGE_KEY]: 'existing-device-id' });
+    const id = getOrCreateDeviceId(storage);
+
+    expect(id).toBe('existing-device-id');
+  });
+
+  test('two independent storages get different generated ids', () => {
+    const idA = getOrCreateDeviceId(fakeStorage());
+    const idB = getOrCreateDeviceId(fakeStorage());
+
+    expect(idA).not.toBe(idB);
   });
 });
