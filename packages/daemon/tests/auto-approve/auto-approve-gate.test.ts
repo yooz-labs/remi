@@ -1494,3 +1494,381 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
     expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #673: the gate has no channel for "this permission was already resolved
+// elsewhere" -- cancelStale only fires on the bound session's own
+// PreToolUse/PostToolUse/Stop/SessionEnd, deliberately narrow (#537), so a
+// permission answered directly in the terminal (a passthrough escalation is
+// never held, so Remi's own answer path never runs) or resolved by a
+// duplicate re-request left a stale push with nothing to answer it. Fixed by
+// `cancelExternallyResolved`, called from PreToolUse/PostToolUse in
+// hook-bridge-setup.ts on a signature match, plus a duplicate-re-request
+// check inside `escalateToUser` itself.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate external-resolution cancel (#673)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let escalations: PermissionRequestHookInput[];
+  let lastQuestionId: UUID | undefined;
+
+  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
+    return { evaluate: async () => result, cancel: () => true };
+  }
+
+  /** An evaluator with an INDEPENDENT deferred verdict per distinct
+   *  `tool_input`, so two concurrent evals (for two different permissions)
+   *  can be released separately. `cancelLog` records every `cancel()` call
+   *  with its reason, so a test can prove a specific eval was (or, for the
+   *  #537 regression, was NOT) cancelled. */
+  function multiDeferredEvaluator(
+    cancelLog: Array<{ reason: string; evalId: number | undefined }>,
+  ): {
+    service: AutoApproveEvaluator;
+    release: (toolInput: Record<string, unknown>, r: AutoApproveResult) => void;
+  } {
+    const resolvers = new Map<string, (r: AutoApproveResult) => void>();
+    const service: AutoApproveEvaluator = {
+      evaluate: (_toolName, toolInput) => {
+        const key = JSON.stringify(toolInput);
+        return new Promise<AutoApproveResult>((resolve) => {
+          resolvers.set(key, resolve);
+        });
+      },
+      cancel: (reason, evalId) => {
+        cancelLog.push({ reason, evalId });
+        return true;
+      },
+    };
+    return {
+      service,
+      release: (toolInput, r) => {
+        resolvers.get(JSON.stringify(toolInput))?.(r);
+      },
+    };
+  }
+
+  function gate(
+    service: AutoApproveEvaluator,
+    opts: {
+      holdMs?: number;
+      pushHoldMs?: number;
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        pushHoldMs: opts.pushHoldMs ?? 0,
+        alwaysEscalateTools: new Set(),
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    escalations = [];
+    lastQuestionId = undefined;
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  describe('signature-scoped matching', () => {
+    test('a matching (tool_name, tool_input) cancels the held question -> passthrough, never a fabricated allow/deny', async () => {
+      const g = gate(evaluator(escalate), { holdMs: 60_000 });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(escalations).toHaveLength(1);
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PreToolUse',
+      );
+
+      expect(await pending).toBe('passthrough');
+    });
+
+    test('same tool_name but DIFFERENT tool_input does NOT match', async () => {
+      const g = gate(evaluator(escalate), { holdMs: 60_000 });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      const qid = lastQuestionId as UUID;
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'rm -rf /' } },
+        'PreToolUse',
+      );
+
+      // Untouched: the hold still resolves normally.
+      expect(g.resolveHeld(qid, 'allow')).toBe(true);
+      expect(await pending).toBe('allow');
+    });
+
+    test('different tool_name but SAME tool_input does NOT match', async () => {
+      const g = gate(evaluator(escalate), { holdMs: 60_000 });
+      const pending = g.resolvePermission(pr({ tool_name: 'Bash', tool_input: { path: 'x.ts' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      const qid = lastQuestionId as UUID;
+
+      g.cancelExternallyResolved({ toolName: 'Edit', toolInput: { path: 'x.ts' } }, 'PreToolUse');
+
+      expect(g.resolveHeld(qid, 'allow')).toBe(true);
+      expect(await pending).toBe('allow');
+    });
+
+    test('key order in tool_input does not defeat the signature match', async () => {
+      const g = gate(evaluator(escalate), {
+        holdMs: 60_000,
+      });
+      const pending = g.resolvePermission(
+        pr({ tool_input: { command: 'ls', cwd: '/tmp', flags: '-la' } }),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Same object, keys in a different order.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { flags: '-la', command: 'ls', cwd: '/tmp' } },
+        'PreToolUse',
+      );
+
+      expect(await pending).toBe('passthrough');
+    });
+
+    test('an exact tool_use_id match disambiguates two open escalations that share (tool_name, tool_input)', async () => {
+      const g = gate(evaluator(escalate), { holdMs: 60_000 });
+      const pendingA = g.resolvePermission(
+        pr({ tool_input: { command: 'ls' }, tool_use_id: 'toolu_A' }),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      const qidA = lastQuestionId as UUID;
+      const pendingB = g.resolvePermission(
+        pr({ tool_input: { command: 'ls' }, tool_use_id: 'toolu_B' }),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      const qidB = lastQuestionId as UUID;
+      expect(qidA).not.toBe(qidB);
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'toolu_A' },
+        'PreToolUse',
+      );
+
+      expect(await pendingA).toBe('passthrough');
+      // B is untouched -- still directly resolvable.
+      expect(g.resolveHeld(qidB, 'allow')).toBe(true);
+      expect(await pendingB).toBe('allow');
+    });
+  });
+
+  describe("#537 regression: never touches a DIFFERENT permission's in-flight eval", () => {
+    test("cancelling A does not resolve B, and B's eval keeps running and reconciles normally", async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      // Part B (pushHoldMs) so BOTH A and B push+hold early WHILE their evals
+      // are still running -- the exact shape #537 is about.
+      const g = gate(service, { holdMs: 60_000, pushHoldMs: 10 });
+
+      const pendingA = g.resolvePermission(pr({ tool_input: { command: 'echo A' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      const pendingB = g.resolvePermission(pr({ tool_input: { command: 'echo B' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(escalations).toHaveLength(2);
+
+      let bSettled = false;
+      void pendingB.then(() => {
+        bSettled = true;
+      });
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'echo A' } },
+        'PreToolUse',
+      );
+
+      expect(await pendingA).toBe('passthrough');
+      // B must be completely unaffected by A's cancellation.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(bSettled).toBe(false);
+      expect(cancelLog).toHaveLength(1); // ONLY A's eval was cancelled
+
+      // Prove B's eval was never aborted: its late verdict still reconciles.
+      release({ command: 'echo B' }, approve);
+      expect(await pendingB).toBe('allow');
+    });
+  });
+
+  describe('full cleanup sequence fires on a match', () => {
+    test('releases the hold, cancels the tracked eval, removes the sessionRegistry question, and fires onResolved(cancelled)', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service } = multiDeferredEvaluator(cancelLog);
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10, // Part B: an eval is tracked (evalIdByQuestion) for this held question
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      const qid = lastQuestionId as UUID;
+      registry.addQuestion(SID, {
+        id: qid,
+        text: 'proceed?',
+        options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PreToolUse',
+      );
+
+      expect(await pending).toBe('passthrough');
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      expect(cancelLog).toHaveLength(1);
+      expect(cancelLog[0]?.reason).toBe('PreToolUse');
+      expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+    });
+
+    test('a NEVER-HELD (holding disabled) escalation is also cleaned up via signature match', async () => {
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 0, // holding disabled -> createHold resolves 'passthrough' immediately, no pendingHolds entry
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const decision = await g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      expect(decision).toBe('passthrough');
+      const qid = lastQuestionId as UUID;
+      registry.addQuestion(SID, {
+        id: qid,
+        text: 'proceed?',
+        options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PostToolUse',
+      );
+
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+    });
+  });
+
+  describe('duplicate re-request', () => {
+    test('a second escalation for the SAME signature cancels the first, now-stale one', async () => {
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 60_000,
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const pendingFirst = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      const firstQid = lastQuestionId as UUID;
+      expect(escalations).toHaveLength(1);
+
+      // Claude re-issues the IDENTICAL PermissionRequest a second time.
+      const pendingSecond = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      const secondQid = lastQuestionId as UUID;
+      expect(secondQid).not.toBe(firstQid);
+      expect(escalations).toHaveLength(2);
+
+      // The FIRST hold was cleaned up automatically -- it can never be held
+      // open forever waiting for an answer that will route to the SECOND.
+      expect(await pendingFirst).toBe('passthrough');
+      expect(resolvedLog).toEqual([{ qid: firstQid, reason: 'cancelled' }]);
+
+      // The SECOND is unaffected and answerable normally.
+      expect(g.resolveHeld(secondQid, 'allow')).toBe(true);
+      expect(await pendingSecond).toBe('allow');
+    });
+  });
+
+  describe('teardown clears tracking', () => {
+    test('cancelStale clears openQuestionSignatures (a later signature match is a harmless no-op)', async () => {
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 60_000,
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      g.cancelStale('SessionEnd');
+      expect(await pending).toBe('passthrough');
+      expect(resolvedLog).toHaveLength(1); // cancelStale's own releaseAllHolds fired it once
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PreToolUse',
+      );
+      // No double-resolution: the signature is no longer tracked.
+      expect(resolvedLog).toHaveLength(1);
+    });
+
+    test('forceRelease clears openQuestionSignatures', async () => {
+      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 60_000,
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+      g.forceRelease('remi unstick');
+      expect(await pending).toBe('passthrough');
+      expect(resolvedLog).toHaveLength(1);
+
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PreToolUse',
+      );
+      expect(resolvedLog).toHaveLength(1);
+    });
+  });
+
+  test('no match -> harmless no-op (no throw, nothing resolved)', () => {
+    const g = gate(evaluator(escalate), { holdMs: 60_000 });
+    expect(() =>
+      g.cancelExternallyResolved({ toolName: 'Bash', toolInput: { command: 'ls' } }, 'PreToolUse'),
+    ).not.toThrow();
+  });
+});

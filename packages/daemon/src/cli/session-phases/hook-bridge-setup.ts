@@ -524,6 +524,20 @@ export function setupHookBridge(
     // otherwise abort the NEXT permission's eval mid-flight ("Decision dropped"),
     // dropping a decision that was about to approve. Only Stop/SessionEnd (a real
     // session-end) cancel an eval now.
+    //
+    // #673: distinct from the above -- this does NOT broadly cancel evals. A
+    // PreToolUse whose (tool_name, tool_input) signature matches a currently
+    // OPEN escalation/hold proves that EXACT permission was already resolved
+    // externally (answered directly in the terminal, bypassing Remi's own
+    // answer path, or the other process's own permission mode), so the tool
+    // is now running and the pushed card would otherwise linger as an
+    // unanswerable "needs you" notification. Signature-scoped: it can only
+    // ever match the ONE question with that exact signature, never a
+    // different permission's still-running eval, so it cannot regress #537.
+    autoApproveGate.cancelExternallyResolved(
+      { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
+      'PreToolUse',
+    );
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -532,6 +546,13 @@ export function setupHookBridge(
     if (isSubagentEvent(input)) return;
     // See the PreToolUse note above: no cancelStale here (#537). The previous
     // tool's PostToolUse must not abort the next permission's in-flight eval.
+    // #673: same signature-scoped external-resolution cancel as PreToolUse
+    // above (a tool that has already FINISHED is at least as strong a signal
+    // that its permission was resolved elsewhere as one that just started).
+    autoApproveGate.cancelExternallyResolved(
+      { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
+      'PostToolUse',
+    );
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {

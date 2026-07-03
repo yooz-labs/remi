@@ -83,6 +83,17 @@ export interface PermissionRequestHookInput extends HookCommonInput {
   tool_name: string;
   tool_input: Record<string, unknown>;
   permission_suggestions?: PermissionSuggestion[];
+  /**
+   * Cheap future-proofing (#673): NOT sent by Claude Code today (confirmed
+   * against the cc-ref reference source — the PermissionRequest struct there
+   * carries only tool_name/input/modes/reason, no tool_use_id), unlike
+   * PreToolUse/PostToolUse which already do. Declared as an optional
+   * passthrough field so that if a future Claude Code version adds it, the
+   * external-resolution correlation in AutoApproveGate can prefer an exact
+   * id match over the tool_name+tool_input signature fallback with zero
+   * further plumbing.
+   */
+  tool_use_id?: string;
 }
 
 /** Fired after a tool call fails */

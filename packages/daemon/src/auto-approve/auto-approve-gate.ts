@@ -23,6 +23,28 @@
  * Both are read LIVE at each branch (never captured): the LLM eval is async, so the
  * subagent/Task context can open or close between the hook firing and the
  * `.then()`/`.catch()` running. Capturing would TOCTOU.
+ *
+ * #673: the gate also owns EXTERNAL-RESOLUTION cancellation. Every escalation
+ * this gate creates (held OR passthrough) is tracked in `openQuestionSignatures`
+ * by its (tool_name, tool_input) signature. Two triggers prove an open
+ * escalation was resolved WITHOUT going through Remi's own answer path:
+ *   - `cancelExternallyResolved`, called from PreToolUse/PostToolUse in
+ *     `hook-bridge-setup.ts` when the observed tool signature matches an open
+ *     escalation — the tool is now running, so the user must have answered it
+ *     directly in the terminal (a passthrough escalation was never held, so
+ *     Remi's own answer path never ran) or "the other process's own
+ *     permission mode" resolved it independently.
+ *   - a duplicate re-request: `escalateToUser` checks for an already-open
+ *     entry with the SAME signature before registering a new one — Claude
+ *     re-issuing the identical PermissionRequest proves the earlier one can
+ *     never be answered through its own hook response again.
+ * Both ALWAYS degrade to `releaseHeld(qid, 'passthrough')` — never a
+ * fabricated allow/deny — mirroring the existing fail-open philosophy: we
+ * cannot know what the user actually decided, so the safest response is "no
+ * decision from us," identical to a hold timing out. Own-session scope only:
+ * a foreign session's PermissionRequest never creates an entry here in the
+ * first place (post-#672 that stays entirely with ForeignSessionEscalator's
+ * informational-only push), so there is nothing for this gate to cancel for it.
  */
 
 import type { UUID } from '@remi/shared';
@@ -34,6 +56,50 @@ import { type DeliveryOutcome, isDelivered } from '../notifications/notification
 import type { SessionRegistry } from '../session/index.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { AutoApproveResult } from './types.ts';
+
+/** The (tool_name, tool_input) signature of an OPEN escalation (#673),
+ *  tracked so an external-resolution signal can find and cancel it. */
+interface ToolSignature {
+  readonly toolName: string;
+  readonly toolInputKey: string;
+  readonly toolUseId: string | undefined;
+}
+
+/** An observed tool call to correlate against `openQuestionSignatures`. Same
+ *  shape whether it came from a PreToolUse/PostToolUse hook or (for the
+ *  duplicate-re-request path) a fresh PermissionRequest. */
+export interface ObservedToolCall {
+  readonly toolName: string;
+  readonly toolInput: Record<string, unknown>;
+  readonly toolUseId?: string | undefined;
+}
+
+/**
+ * A stable, key-order-independent JSON key for `tool_input` (#673). Two
+ * logically identical tool_input objects with keys in a different order must
+ * compare equal, so the signature match is not order-fragile.
+ */
+function stableToolInputKey(toolInput: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(canonicalize(toolInput));
+  } catch {
+    // Non-serializable input should not happen (tool_input comes from a
+    // parsed JSON hook payload); degrade to a key that can never match
+    // anything rather than throwing into the escalation path.
+    return `__unserializable__:${Math.random()}`;
+  }
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === 'object') {
+    const sortedEntries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => [key, canonicalize((value as Record<string, unknown>)[key])] as const);
+    return Object.fromEntries(sortedEntries);
+  }
+  return value;
+}
 
 /**
  * Minimal seam the gate consumes. The real `AutoApproveService` satisfies it
@@ -194,6 +260,21 @@ export class AutoApproveGate {
    */
   private readonly evalIdByQuestion = new Map<UUID, number>();
 
+  /**
+   * Every OPEN escalation this gate has created (held OR passthrough), keyed
+   * by `Question.id`, by its (tool_name, tool_input) signature (#673). Entry
+   * lifecycle: created in `escalateToUser` on a successful escalation; removed
+   * unconditionally by the public `resolveHeld` / `releaseHeldAsPassthrough`
+   * (the normal answer path, whether or not a hold existed), by
+   * `cancelExternallyResolved` / the duplicate-re-request check in
+   * `escalateToUser` (both route through `resolveSupersededQuestion`), and
+   * wholesale-cleared by `cancelStale` (session end — nothing here is
+   * relevant once the session is gone). A stale entry is harmless (a signature
+   * match just triggers a redundant, idempotent cleanup), so this never needs
+   * to be perfectly pruned beyond those points.
+   */
+  private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
+
   constructor(
     private readonly deps: AutoApproveGateDeps,
     private readonly sessionId: UUID,
@@ -218,6 +299,11 @@ export class AutoApproveGate {
     // passthrough rather than hang. A held hook cannot normally co-occur with
     // Stop (Claude is blocked on the permission), but this is defensive.
     this.releaseAllHolds('passthrough', reason);
+    // #673: the session is ending, so every OPEN escalation this gate has
+    // tracked (held above, or a passthrough one with no hold) is moot. This is
+    // the ONLY place `openQuestionSignatures` is wholesale-cleared rather than
+    // entry-by-entry; releaseAllHolds only touched the held subset above.
+    this.openQuestionSignatures.clear();
     if (this.deps.service === null) return;
     if (this.deps.service.cancel(reason)) {
       log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
@@ -257,6 +343,9 @@ export class AutoApproveGate {
     const holds = this.pendingHolds.size;
     this.releaseAllHolds('passthrough', reason);
     this.evalIdByQuestion.clear();
+    // #673: mirrors cancelStale's wholesale clear -- a force-release is at
+    // least as final as a session end for bookkeeping purposes.
+    this.openQuestionSignatures.clear();
     const service = this.deps.service;
     if (service === null) return { holds, cancelled: false, drained: 0 };
     const cancelled = service.cancel(reason);
@@ -278,6 +367,10 @@ export class AutoApproveGate {
    * + #513 cue close exactly as for a silent auto-decision.
    */
   resolveHeld(questionId: UUID, decision: 'allow' | 'deny'): boolean {
+    // #673: this is the NORMAL answer path (input-events.ts), so an open
+    // escalation this question tracked is resolved now regardless of which
+    // branch below runs -- clear it unconditionally, not just on the hit path.
+    this.openQuestionSignatures.delete(questionId);
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -306,6 +399,12 @@ export class AutoApproveGate {
    * about to answer the native prompt, not a silent auto-decision).
    */
   releaseHeldAsPassthrough(questionId: UUID): boolean {
+    // #673: also the NORMAL answer path for a NON-held (passthrough-escalated)
+    // question -- input-events.ts calls this unconditionally on every answer,
+    // hold or not, so this is the ONE place that must unconditionally clear a
+    // passthrough-only entry (releaseHeld below no-ops before reaching any
+    // cleanup when there is no hold to release).
+    this.openQuestionSignatures.delete(questionId);
     return this.releaseHeld(questionId, 'passthrough');
   }
 
@@ -1018,6 +1117,112 @@ export class AutoApproveGate {
       // terminal cue (#513, cosmetic); a cue throw must not break the finally.
       this.safeCue('onEscalate', this.deps.onEscalate);
     }
+    if (questionId) {
+      const observed: ObservedToolCall = {
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+      };
+      // #673 duplicate re-request: Claude re-issuing the IDENTICAL
+      // PermissionRequest (same tool signature) proves any earlier OPEN
+      // escalation for it can never be answered through its own hook response
+      // again -- that response already went to a stale hook call. Clean it up
+      // BEFORE tracking the new one (the new questionId is not registered yet,
+      // so this can never find/cancel itself).
+      this.cancelExternallyResolved(observed, 'duplicate-re-request');
+      this.openQuestionSignatures.set(questionId, {
+        toolName: observed.toolName,
+        toolInputKey: stableToolInputKey(observed.toolInput),
+        toolUseId: observed.toolUseId,
+      });
+    }
     return questionId;
+  }
+
+  /**
+   * #673: called when an external signal proves a currently-OPEN escalation
+   * (held or passthrough) was already resolved without going through Remi's
+   * own answer path. Two callers:
+   *   - `hook-bridge-setup.ts`'s PreToolUse/PostToolUse listeners, when the
+   *     observed tool signature matches an open escalation — the tool is now
+   *     running, so the permission was answered directly in the terminal (a
+   *     passthrough escalation is never held, so Remi's own answer path never
+   *     ran) or by the other process's own permission mode.
+   *   - `escalateToUser`, for a duplicate re-request of the SAME signature.
+   * Signature-scoped (exact tool_name + tool_input match, or exact
+   * tool_use_id match when both sides carry one) so it can only ever touch
+   * the ONE question it matches — never a DIFFERENT permission's still-running
+   * eval (#537's concern for why PreToolUse/PostToolUse don't cancel broadly).
+   * A no-op when no open escalation matches.
+   */
+  cancelExternallyResolved(observed: ObservedToolCall, reason: string): void {
+    const qid = this.findOpenQuestionMatching(observed);
+    if (!qid) return;
+    this.resolveSupersededQuestion(qid, reason);
+  }
+
+  /** Find an open escalation matching `observed`, preferring an exact
+   *  tool_use_id match (future-proofing: not sent by Claude Code today) over
+   *  the tool_name + tool_input signature fallback. */
+  private findOpenQuestionMatching(observed: ObservedToolCall): UUID | undefined {
+    const observedKey = stableToolInputKey(observed.toolInput);
+    for (const [qid, sig] of this.openQuestionSignatures) {
+      if (sig.toolName !== observed.toolName || sig.toolInputKey !== observedKey) continue;
+      // Signature agrees. Two DIFFERENT tool calls can legitimately share an
+      // identical (tool_name, tool_input) (e.g. two `ls` calls in a row) --
+      // if BOTH sides carry a tool_use_id, it must ALSO agree, or this is a
+      // known-different call and must NOT be treated as a match. When at
+      // least one side has no id, the signature alone is the best available
+      // proof.
+      if (observed.toolUseId !== undefined && sig.toolUseId !== undefined) {
+        if (observed.toolUseId === sig.toolUseId) return qid;
+        continue;
+      }
+      return qid;
+    }
+    return undefined;
+  }
+
+  /**
+   * Guarded cleanup for a question proven stale by an external signal (#673).
+   * ALWAYS degrades to `releaseHeld(qid, 'passthrough')` — never a fabricated
+   * allow/deny, matching the hold-timeout fail-open philosophy: we cannot know
+   * what the user actually decided, so "no decision from us" is the only safe
+   * response. Mirrors input-events.ts's own answer-cleanup sequence: each step
+   * independently try/catch'd so one failure can never skip the rest —
+   * `removeQuestion` in particular must always run even if the eval was
+   * already gone or the hold release throws, or the pushed card lingers.
+   */
+  private resolveSupersededQuestion(qid: UUID, reason: string): void {
+    log(
+      `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
+    );
+    try {
+      this.releaseHeld(qid, 'passthrough');
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] releaseHeld during external-resolve cleanup threw:`,
+        err,
+      );
+    }
+    try {
+      this.cancelEvalForQuestion(qid, reason);
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] cancelEvalForQuestion during external-resolve cleanup threw:`,
+        err,
+      );
+    }
+    try {
+      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,
+        err,
+      );
+    }
+    // notifyResolved is already throw-safe internally; no extra wrap needed.
+    this.notifyResolved(qid, 'cancelled');
+    this.openQuestionSignatures.delete(qid);
   }
 }
