@@ -6,7 +6,7 @@
 
 import type { ConnectionStatus } from '@/types';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
-import { createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
+import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
 
 /** WebSocket client configuration */
 export interface WebSocketClientConfig {
@@ -22,7 +22,11 @@ export interface WebSocketClientConfig {
   readonly maxReconnectDelay?: number;
   /** Connection timeout in ms */
   readonly connectionTimeout?: number;
-  /** Heartbeat interval in ms (0 to disable). Closes stale connections that miss 2 heartbeats. */
+  /**
+   * Heartbeat interval in ms (0 to disable). Each tick sends the client's own
+   * `ping` probe and checks whether the previous one got any reply; closes
+   * the connection after `MAX_MISSED_HEARTBEATS` consecutive misses (#664).
+   */
   readonly heartbeatInterval?: number;
 }
 
@@ -55,6 +59,32 @@ export interface WebSocketClientEvents {
  */
 export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 6;
 
+/**
+ * Consecutive keep-alive probes allowed to go unanswered before the
+ * connection is treated as dead (#664). Each probe is the client's OWN
+ * outbound `ping`, sent every `heartbeatInterval`; the daemon always replies
+ * to a ping with a `pong` (connection.ts `handlePing`), so under a healthy
+ * network every probe gets some reply well inside one interval. This
+ * decouples client-side staleness detection from the server's independent
+ * keep-alive schedule -- the old bug was a passive silence watchdog whose
+ * 30s window had zero margin over the server's own 30s ping cadence, so any
+ * latency blip on the server's side force-closed a healthy socket. 3
+ * consecutive misses gives real tolerance for transient jitter while still
+ * catching a truly dead peer well inside the Bun-level idleTimeout backstop
+ * (120s, websocket-server.ts).
+ */
+const MAX_MISSED_HEARTBEATS = 3;
+
+/**
+ * Multiplier on `heartbeatInterval` used by `isHealthy` to decide whether a
+ * connection has seen traffic recently enough that a caller doing proactive
+ * housekeeping (e.g. an app-resume force-reconnect sweep, #664) can trust it
+ * without tearing it down. Looser than `MAX_MISSED_HEARTBEATS`, the reap
+ * threshold, on purpose: this only needs to rule out real doubt, not confirm
+ * death -- the internal heartbeat already owns the latter.
+ */
+const HEALTHY_WINDOW_MULTIPLIER = 2;
+
 /** Default configuration */
 const DEFAULT_CONFIG: Required<Omit<WebSocketClientConfig, 'url'>> = {
   autoReconnect: true,
@@ -80,6 +110,9 @@ export class WebSocketClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private lastDataReceived = 0;
   private missedHeartbeats = 0;
+  /** When the current cycle's keep-alive probe was sent; 0 if none is
+   *  outstanding yet (fresh connection, or heartbeat just (re)started). */
+  private lastPingSentAt = 0;
   private intentionalDisconnect = false;
   /** Live target URL. Starts at config.url; `reconnectWithUrl` rebinds it to a
    *  rediscovered port without recreating the client. */
@@ -104,6 +137,24 @@ export class WebSocketClient {
   /** Check if connected */
   get isConnected(): boolean {
     return this.status === 'connected';
+  }
+
+  /** Whether the underlying transport is currently open, independent of the
+   *  higher-level auth/connected status machine (#664): a status can lag a
+   *  zombie socket after a long background suspend, so a stampede-avoidance
+   *  caller needs the raw transport state to tell "already dead, reconnect
+   *  now" apart from "open but uncertain, worth staggering". */
+  get isTransportOpen(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** Whether this connection is open and has seen inbound traffic recently
+   *  enough that a caller doing proactive housekeeping (e.g. an app-resume
+   *  force-reconnect sweep, #664) can trust it without tearing it down. */
+  get isHealthy(): boolean {
+    if (!this.isTransportOpen) return false;
+    if (this.config.heartbeatInterval <= 0) return true;
+    return Date.now() - this.lastDataReceived < this.config.heartbeatInterval * HEALTHY_WINDOW_MULTIPLIER;
   }
 
   /** Connect to the daemon */
@@ -331,7 +382,14 @@ export class WebSocketClient {
     }
   }
 
-  /** Start heartbeat monitoring. Detects dead connections that the OS hasn't closed yet. */
+  /**
+   * Start heartbeat monitoring. Detects dead connections that the OS hasn't
+   * closed yet by actively probing the peer rather than passively waiting
+   * for it to speak first (#664): each tick checks whether the PREVIOUS
+   * probe got any reply (any inbound message counts, not just an explicit
+   * pong -- handleMessage already treats any message as proof of life), then
+   * sends this cycle's probe.
+   */
   private startHeartbeat(): void {
     this.stopHeartbeat();
     const interval = this.config.heartbeatInterval;
@@ -343,20 +401,24 @@ export class WebSocketClient {
         return;
       }
 
-      const elapsed = Date.now() - this.lastDataReceived;
-      if (elapsed > interval) {
-        this.missedHeartbeats++;
-      } else {
-        this.missedHeartbeats = 0;
+      // Skip the miss check on the very first tick: no probe has gone out yet.
+      if (this.lastPingSentAt > 0) {
+        if (this.lastDataReceived < this.lastPingSentAt) {
+          this.missedHeartbeats++;
+        } else {
+          this.missedHeartbeats = 0;
+        }
       }
 
-      // If no data received for 2 heartbeat intervals, the connection is likely dead.
-      // Force-close so reconnection logic kicks in.
-      if (this.missedHeartbeats >= 2) {
+      if (this.missedHeartbeats >= MAX_MISSED_HEARTBEATS) {
         this.stopHeartbeat();
-        this.handleError(new Error('Connection stale: no data received'));
+        this.handleError(new Error('Connection stale: no reply to keep-alive ping'));
         this.ws?.close();
+        return;
       }
+
+      this.lastPingSentAt = Date.now();
+      this.send(createPing());
     }, interval);
   }
 
@@ -367,6 +429,7 @@ export class WebSocketClient {
       this.heartbeatTimer = null;
     }
     this.missedHeartbeats = 0;
+    this.lastPingSentAt = 0;
   }
 
   /** Clear all timers */

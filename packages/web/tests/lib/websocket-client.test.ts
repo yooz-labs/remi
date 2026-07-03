@@ -12,7 +12,7 @@ import type {
   PongMessage,
   ProtocolMessage,
 } from '@remi/shared/protocol.ts';
-import { createPing, deserialize, serialize } from '@remi/shared/protocol.ts';
+import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
 import { DEFAULT_MAX_RECONNECT_ATTEMPTS, WebSocketClient } from '../../src/lib/websocket-client';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -373,6 +373,154 @@ describe('WebSocketClient ping/pong liveness (#662 review)', () => {
       for (const id of pingIds) {
         expect(pongIdsSeen.has(id)).toBe(true);
       }
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+/**
+ * Coverage for the #664 fix: the OLD heartbeat passively waited for silence
+ * to exceed a window EQUAL to the server's own independent 30s ping cadence
+ * (zero margin -- any latency blip on the server's side force-closed a
+ * healthy socket). The NEW heartbeat actively sends its own `ping` probe
+ * every interval and only counts a miss when the PREVIOUS probe got no
+ * reply, decoupling detection from the server's independent schedule and
+ * tolerating real jitter.
+ */
+describe('WebSocketClient heartbeat margin & round-trip liveness (#664)', () => {
+  test('does NOT disconnect a healthy connection whose replies are delayed past the old zero-margin window', async () => {
+    // 1.7x the heartbeat interval: strictly more than the OLD single-window
+    // margin (which was exactly 1x the server's cadence), on every single
+    // reply. The old passive-silence watchdog would have force-closed this
+    // within two ticks; the new round-trip model self-heals every cycle
+    // because SOME reply always eventually lands before the next check.
+    const interval = 100;
+    const replyDelay = Math.round(interval * 1.7);
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const raw = typeof data === 'string' ? data : data.toString();
+          const msg = deserialize(raw);
+          if (msg?.type === 'ping') {
+            setTimeout(() => {
+              ws.send(serialize(createPong((msg as PingMessage).id)));
+            }, replyDelay);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    let staleErrorSeen = false;
+    const client = track(
+      new WebSocketClient(
+        { url, heartbeatInterval: interval, connectionTimeout: 2000 },
+        {
+          onError: (err) => {
+            if (err.message.includes('stale')) staleErrorSeen = true;
+          },
+        },
+      ),
+    );
+
+    try {
+      client.connect();
+      // Run for well over 10 heartbeat cycles -- long enough that the old
+      // zero-margin model would have reaped it many times over.
+      await wait(interval * 12);
+
+      expect(staleErrorSeen).toBe(false);
+      expect(client.isTransportOpen).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('detects a genuinely silent server (no pings, no replies at all) as stale within a bounded time', async () => {
+    const interval = 100;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        // Never sends anything back, including replies to the client's own
+        // probes -- models a fully wedged peer (not just a slow one).
+        open() {},
+        message() {},
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    let staleErrorSeen = false;
+    const client = track(
+      new WebSocketClient(
+        { url, heartbeatInterval: interval, connectionTimeout: 2000, autoReconnect: false },
+        {
+          onError: (err) => {
+            if (err.message.includes('stale')) staleErrorSeen = true;
+          },
+        },
+      ),
+    );
+
+    try {
+      client.connect();
+      const start = Date.now();
+      // Bounded: must trip well within a handful of heartbeat intervals, not
+      // linger anywhere near the Bun-level idleTimeout backstop (120s).
+      while (!staleErrorSeen && Date.now() - start < 5000) await wait(25);
+
+      expect(staleErrorSeen).toBe(true);
+      expect(client.isTransportOpen).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('isHealthy is true immediately after connecting and false once the socket is closed', async () => {
+    const server = liveWsServer();
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(
+      new WebSocketClient({ url, heartbeatInterval: 5000, connectionTimeout: 2000 }),
+    );
+
+    try {
+      client.connect();
+      const start = Date.now();
+      while (!client.isTransportOpen && Date.now() - start < 2000) await wait(10);
+      expect(client.isTransportOpen).toBe(true);
+      expect(client.isHealthy).toBe(true);
+
+      client.disconnect();
+      expect(client.isTransportOpen).toBe(false);
+      expect(client.isHealthy).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('isHealthy treats a disabled heartbeat (interval 0) as healthy whenever the transport is open', async () => {
+    const server = liveWsServer();
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(new WebSocketClient({ url, heartbeatInterval: 0, connectionTimeout: 2000 }));
+
+    try {
+      client.connect();
+      const start = Date.now();
+      while (!client.isTransportOpen && Date.now() - start < 2000) await wait(10);
+      expect(client.isHealthy).toBe(true);
     } finally {
       server.stop();
     }
