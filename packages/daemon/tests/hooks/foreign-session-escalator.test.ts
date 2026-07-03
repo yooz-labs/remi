@@ -23,21 +23,6 @@ import { SessionStore } from '../../src/session/session-store.ts';
 
 const OUR_SESSION_ID = 'aaaaaaaa-0000-0000-0000-000000000001' as UUID;
 
-function permissionInput(
-  overrides: Partial<PermissionRequestHookInput> = {},
-): PermissionRequestHookInput {
-  return {
-    session_id: 'foreign-claude-id',
-    transcript_path: '/tmp/does-not-matter.jsonl',
-    cwd: '/tmp/some-project',
-    permission_mode: 'default',
-    hook_event_name: 'PermissionRequest',
-    tool_name: 'Bash',
-    tool_input: { command: 'ls' },
-    ...overrides,
-  };
-}
-
 describe('ForeignSessionEscalator (#672)', () => {
   let tmpDir: string;
   let sessionStore: SessionStore;
@@ -46,6 +31,12 @@ describe('ForeignSessionEscalator (#672)', () => {
   let deviceTokens: Map<string, DeviceTokenEntry>;
   let pushCalls: Array<{ token: string; opts: PushTriggerOptions }>;
   let nowMs: number;
+  /** A real, unmarked, well-aged (60s old) transcript file -- the default
+   *  transcript_path for `permissionInput()`, so "unclaimed" tests exercise
+   *  a genuinely markerless, settled file rather than a nonexistent path
+   *  (which would always classify as 'undetermined' -- see the dedicated
+   *  "marker-not-yet-provable" describe block below). */
+  let staleUnmarkedPath: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-foreign-escalator-'));
@@ -56,6 +47,7 @@ describe('ForeignSessionEscalator (#672)', () => {
     deviceTokens = new Map();
     pushCalls = [];
     nowMs = 1_000_000;
+    staleUnmarkedPath = writeUnmarkedTranscript('stale-unmarked.jsonl', 60_000);
     configureLogger({ writeLog: () => {} });
   });
 
@@ -63,6 +55,21 @@ describe('ForeignSessionEscalator (#672)', () => {
     __resetLoggerForTests();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  function permissionInput(
+    overrides: Partial<PermissionRequestHookInput> = {},
+  ): PermissionRequestHookInput {
+    return {
+      session_id: 'foreign-claude-id',
+      transcript_path: staleUnmarkedPath,
+      cwd: '/tmp/some-project',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      ...overrides,
+    };
+  }
 
   function deps(overrides: Partial<ForeignSessionEscalatorDeps> = {}): ForeignSessionEscalatorDeps {
     return {
@@ -101,6 +108,20 @@ describe('ForeignSessionEscalator (#672)', () => {
       p,
       `${JSON.stringify({ type: 'custom-title', customTitle: `remi:${port}`, sessionId: 's' })}\n`,
     );
+    return p;
+  }
+
+  /** A transcript with NO remi:<port> marker, backdated by `ageMs` (0 = just
+   *  written / "fresh"). Used to exercise the marker-unreadable tie-breaker:
+   *  a fresh markerless file is 'undetermined' (still possibly flushing); a
+   *  stale one is genuinely 'unclaimed'. */
+  function writeUnmarkedTranscript(name: string, ageMs = 0): string {
+    const p = path.join(tmpDir, name);
+    fs.writeFileSync(p, `${JSON.stringify({ type: 'user', message: 'hi' })}\n`);
+    if (ageMs > 0) {
+      const backdated = new Date(Date.now() - ageMs);
+      fs.utimesSync(p, backdated, backdated);
+    }
     return p;
   }
 
@@ -258,11 +279,41 @@ describe('ForeignSessionEscalator (#672)', () => {
 
       expect(pushCalls).toHaveLength(2);
     });
+
+    test('rate-limit map evicts the oldest entries once the tracked-session cap is exceeded', async () => {
+      // Small cap via a dedicated escalator would require exposing the
+      // constant; instead exercise the REAL 500-cap end-to-end with a burst
+      // of distinct session ids, then confirm the oldest was evicted (a
+      // repeat of it re-escalates instead of staying rate-limited).
+      registerToken();
+      const escalator = new ForeignSessionEscalator(deps({ rateLimitMs: 10 * 60_000 }));
+      const firstId = 'burst-session-0000';
+      escalator.handleUnadmitted(permissionInput({ session_id: firstId }), OUR_SESSION_ID);
+      await flush();
+      expect(pushCalls).toHaveLength(1);
+
+      for (let i = 1; i <= 500; i++) {
+        nowMs += 1;
+        escalator.handleUnadmitted(
+          permissionInput({ session_id: `burst-session-${i}` }),
+          OUR_SESSION_ID,
+        );
+      }
+      await flush();
+
+      // The very first id should have been evicted by the size cap (not by
+      // age -- rateLimitMs is 10 minutes and only ~500ms have elapsed), so
+      // it is no longer tracked and escalates again immediately: 1 (firstId)
+      // + 500 (burst, all unique) + 1 (firstId re-fired after eviction).
+      nowMs += 1;
+      escalator.handleUnadmitted(permissionInput({ session_id: firstId }), OUR_SESSION_ID);
+      await flush();
+      expect(pushCalls).toHaveLength(502);
+    });
   });
 
   // -------------------------------------------------------------------------
-  // Ladder step 3: ownership undetermined (a registry/store read failure) ->
-  // error-only, no escalation storm.
+  // Ladder step 3a: registry/store read failure -> undetermined, error-only.
   // -------------------------------------------------------------------------
 
   describe('undetermined ownership (registry read error) -> no escalation', () => {
@@ -277,6 +328,62 @@ describe('ForeignSessionEscalator (#672)', () => {
 
       const escalator = new ForeignSessionEscalator(deps({ bindingStore: brokenStore }));
       expect(() => escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID)).not.toThrow();
+      await flush();
+
+      expect(pushCalls).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Ladder step 3b (#672 review, critical 2): marker-not-yet-provable ->
+  // undetermined, NOT unclaimed. Regression coverage for the rotation-race
+  // false "unbound session" push about the user's OWN session.
+  // -------------------------------------------------------------------------
+
+  describe('undetermined ownership (marker not yet provable) -> no false-alarm push', () => {
+    test('a FRESH markerless transcript (possibly mid-flush) does NOT escalate', async () => {
+      registerToken();
+      // No sibling registered at all -- this is exactly the rotation-race
+      // shape: our own SessionStart just fired, the marker has not flushed
+      // yet, and there happens to be a sibling in the directory (irrelevant
+      // to classifyOwnership itself, which only sees the hook input).
+      const freshPath = writeUnmarkedTranscript('fresh-unmarked.jsonl', 0);
+      const escalator = new ForeignSessionEscalator(deps({ markerSettleMs: 10_000 }));
+
+      escalator.handleUnadmitted(
+        permissionInput({ session_id: 'our-own-rotating-session', transcript_path: freshPath }),
+        OUR_SESSION_ID,
+      );
+      await flush();
+
+      expect(pushCalls).toHaveLength(0);
+    });
+
+    test('a markerless transcript older than the settle window DOES escalate (genuinely foreign)', async () => {
+      registerToken();
+      const stalePath = writeUnmarkedTranscript('old-unmarked.jsonl', 20_000);
+      const escalator = new ForeignSessionEscalator(deps({ markerSettleMs: 10_000 }));
+
+      escalator.handleUnadmitted(
+        permissionInput({ session_id: 'genuinely-foreign-session', transcript_path: stalePath }),
+        OUR_SESSION_ID,
+      );
+      await flush();
+
+      expect(pushCalls).toHaveLength(1);
+    });
+
+    test('a missing transcript file is treated as undetermined, not unclaimed', async () => {
+      registerToken();
+      const escalator = new ForeignSessionEscalator(deps({ markerSettleMs: 10_000 }));
+
+      escalator.handleUnadmitted(
+        permissionInput({
+          session_id: 'session-with-vanished-transcript',
+          transcript_path: path.join(tmpDir, 'does-not-exist.jsonl'),
+        }),
+        OUR_SESSION_ID,
+      );
       await flush();
 
       expect(pushCalls).toHaveLength(0);
