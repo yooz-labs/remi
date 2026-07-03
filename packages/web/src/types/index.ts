@@ -20,6 +20,14 @@ export type MessageSource = 'optimistic' | 'pty' | 'transcript';
  */
 export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
 
+/**
+ * Client-side delivery state for a message bubble. Extends the wire-level
+ * `MessageState` with `'failed'` -- inferred locally when no `ack` arrives
+ * within the timeout after one automatic retry (#663). Never sent over the
+ * wire; the daemon only ever acks `'delivered'`.
+ */
+export type UIMessageState = MessageState | 'failed';
+
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';
 
@@ -103,7 +111,7 @@ export interface UIMessage {
   readonly sender: MessageSender;
   readonly content: string;
   readonly timestamp: Timestamp;
-  readonly state: MessageState;
+  readonly state: UIMessageState;
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
@@ -169,6 +177,15 @@ export interface UISession {
   readonly agentType?: string;
   /** For a subagent view: false once it finished (transcript stays viewable). */
   readonly subagentActive?: boolean;
+  /**
+   * Whether this session's connection holds the exclusive write lock
+   * ('attached') or is read-only, queued behind another client
+   * ('queued') (#662/#663). Patched from `hello_ack.attachState` and
+   * refreshed by a `NOT_ACTIVE_CONNECTION` error. `undefined` (older
+   * daemon, or a hello_ack sent outside the attach flow) is treated as
+   * attached -- the pre-#662 assumption every hello_ack held the lock.
+   */
+  readonly attachState?: 'attached' | 'queued';
 }
 
 /** Structured option for a question */
