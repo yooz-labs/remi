@@ -11,8 +11,10 @@ import { describe, expect, test } from 'bun:test';
 import {
   collectPendingChallengeConnections,
   DEVICE_ID_STORAGE_KEY,
+  type ForceReconnectCandidate,
   getOrCreateDeviceId,
   type KeyValueStorage,
+  planForceReconnect,
 } from '../../src/hooks/connection-manager-helpers';
 
 /** In-memory Storage-compatible fake so tests don't need a browser DOM. */
@@ -104,5 +106,111 @@ describe('getOrCreateDeviceId (#662)', () => {
     const idB = getOrCreateDeviceId(fakeStorage());
 
     expect(idA).not.toBe(idB);
+  });
+});
+
+/**
+ * Coverage for the reconnect-stampede fix (#664): on app resume / network
+ * change, `app-force-reconnect` used to unconditionally force-close every
+ * connected/authenticating connection at once -- with ~5 daemons that meant
+ * a guaranteed simultaneous visible reconnect cycle on every foreground.
+ * `planForceReconnect` decides per-connection whether a reconnect is even
+ * needed, and staggers the ones that are.
+ */
+describe('planForceReconnect (#664)', () => {
+  const candidate = (
+    connectionId: string,
+    isOpen: boolean,
+    isHealthy: boolean,
+  ): ForceReconnectCandidate => ({ connectionId, isOpen, isHealthy });
+
+  test('leaves a healthy, open connection alone entirely', () => {
+    const plan = planForceReconnect([candidate('a', true, true)], {
+      staggerStepMs: 300,
+      staggerJitterMs: 2000,
+    });
+
+    expect(plan).toEqual([{ connectionId: 'a', shouldReconnect: false, delayMs: 0 }]);
+  });
+
+  test('reconnects a not-open connection immediately, no stagger', () => {
+    const plan = planForceReconnect([candidate('a', false, false)], {
+      staggerStepMs: 300,
+      staggerJitterMs: 2000,
+    });
+
+    expect(plan).toEqual([{ connectionId: 'a', shouldReconnect: true, delayMs: 0 }]);
+  });
+
+  test('reconnects an open-but-unhealthy connection with a staggered delay', () => {
+    const plan = planForceReconnect([candidate('a', true, false)], {
+      staggerStepMs: 300,
+      staggerJitterMs: 2000,
+      random: () => 0.5,
+    });
+
+    expect(plan).toEqual([{ connectionId: 'a', shouldReconnect: true, delayMs: 1000 }]);
+  });
+
+  test('staggers multiple open-but-unhealthy connections across their index', () => {
+    const plan = planForceReconnect(
+      [
+        candidate('a', true, false),
+        candidate('b', true, false),
+        candidate('c', true, false),
+      ],
+      { staggerStepMs: 300, staggerJitterMs: 2000, random: () => 0 },
+    );
+
+    expect(plan.map((d) => d.delayMs)).toEqual([0, 300, 600]);
+  });
+
+  test('a healthy connection does not consume a stagger index (sibling unhealthy ones stay unaffected)', () => {
+    const plan = planForceReconnect(
+      [
+        candidate('healthy', true, true),
+        candidate('stale-1', true, false),
+        candidate('stale-2', true, false),
+      ],
+      { staggerStepMs: 300, staggerJitterMs: 0, random: () => 0 },
+    );
+
+    expect(plan).toEqual([
+      { connectionId: 'healthy', shouldReconnect: false, delayMs: 0 },
+      { connectionId: 'stale-1', shouldReconnect: true, delayMs: 0 },
+      { connectionId: 'stale-2', shouldReconnect: true, delayMs: 300 },
+    ]);
+  });
+
+  test('mixes immediate (dead) and staggered (uncertain) reconnects in one sweep', () => {
+    const plan = planForceReconnect(
+      [
+        candidate('healthy', true, true),
+        candidate('dead', false, false),
+        candidate('uncertain', true, false),
+      ],
+      { staggerStepMs: 300, staggerJitterMs: 0, random: () => 0 },
+    );
+
+    expect(plan).toEqual([
+      { connectionId: 'healthy', shouldReconnect: false, delayMs: 0 },
+      { connectionId: 'dead', shouldReconnect: true, delayMs: 0 },
+      { connectionId: 'uncertain', shouldReconnect: true, delayMs: 0 },
+    ]);
+  });
+
+  test('empty input produces an empty plan', () => {
+    expect(planForceReconnect([], { staggerStepMs: 300, staggerJitterMs: 2000 })).toEqual([]);
+  });
+
+  test('defaults to Math.random when no random fn is injected (delay stays within bounds)', () => {
+    const plan = planForceReconnect([candidate('a', true, false)], {
+      staggerStepMs: 300,
+      staggerJitterMs: 2000,
+    });
+
+    expect(plan[0]?.shouldReconnect).toBe(true);
+    expect(plan[0]?.delayMs).toBeGreaterThanOrEqual(0);
+    expect(plan[0]?.delayMs).toBeLessThan(2000);
   });
 });

@@ -256,12 +256,12 @@ export class Connection {
 
     // Any successfully-parsed message proves the peer is alive (#662 review),
     // not only an explicit 'pong'. The web/mobile client already sends its own
-    // keep-alive 'ping' to the server every 30s (useConnectionManager's
-    // startPing) on top of whatever protocol traffic is flowing, so gating
-    // liveness on 'pong' alone force-closed every healthy client connection
-    // on a ~60-90s cycle: it never answers the SERVER's ping with a protocol
-    // pong. Treating any inbound message as proof-of-life fixes that without
-    // depending on the client implementing pong replies correctly.
+    // keep-alive 'ping' to the server (WebSocketClient's internal heartbeat,
+    // 15s default, #664) on top of whatever protocol traffic is flowing, so
+    // gating liveness on 'pong' alone force-closed every healthy client
+    // connection on a ~60-90s cycle: it never answers the SERVER's ping with a
+    // protocol pong. Treating any inbound message as proof-of-life fixes that
+    // without depending on the client implementing pong replies correctly.
     this.missedPongs = 0;
 
     // Check for duplicate
