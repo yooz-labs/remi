@@ -10,7 +10,11 @@
  *   - Cursor starts on the first option of a tab; ↑/↓ move one option.
  *   - single-select: Enter chooses the cursor option AND auto-advances to the next
  *     tab (or submits if it's a lone single-select).
- *   - multi-select: Space toggles the cursor option (no advance); Tab/→ leaves.
+ *   - multi-select: Space toggles the cursor option (no advance). The option list
+ *     always has two FIXED trailing rows after the real options: "Type something"
+ *     then "Submit". There is no Tab/right-arrow shortcut out of a multi-select
+ *     (never observed in any capture) — leaving means navigating DOWN to that
+ *     trailing "Submit" row and pressing Enter on it.
  *   - review tab: "● <question> → <labels>" + "❯ 1. Submit answers  2. Cancel";
  *     Enter on "Submit answers" submits.
  *
@@ -45,9 +49,19 @@ export interface AuqQuestionSpec {
  * option indices.
  *   - single-select: exactly one target -> `↓×i` then `Enter` (selects + advances).
  *   - multi-select: toggle each target with `Space` (ascending, moving the cursor
- *     with `↓`), then `Tab` to advance toward the next tab / review.
+ *     with `↓`), then navigate `↓` to the trailing "Submit" row and `Enter` it to
+ *     leave the tab (see below — there is no Tab shortcut out of a multi-select).
  * Throws on an out-of-range or (for single-select) non-singular target so the
  * caller escalates rather than sending nonsense.
+ *
+ * Multi-select row layout (ground truth: `two-questions-single-and-multi.txt`,
+ * decoded lines 92-121 — the option cursor visits Apple/Banana/Cherry/Date, then
+ * "Type something", then lands on "Submit" before the closing Enter):
+ *   rows [0, optionCount)   = the real options
+ *   row  optionCount        = "Type something" (always present; fixed UI chrome)
+ *   row  optionCount + 1    = "Submit" (Enter here leaves the tab)
+ * So after the last `Space` toggle (cursor at the highest target index), the
+ * distance to "Submit" is `(optionCount + 1) - cursor`.
  */
 export function planQuestionKeys(
   spec: AuqQuestionSpec,
@@ -76,10 +90,14 @@ export function planQuestionKeys(
     keys.push(AUQ_KEYS.SPACE);
     cursor = idx;
   }
-  // Leave the multi-select tab toward the next tab / the review screen. Tab is the
-  // footer-advertised navigation key; if it fails to advance, the runner's closure
-  // + review verification degrades to escalate (never a wrong submit).
-  keys.push(AUQ_KEYS.TAB);
+  // Leave the multi-select tab via its own trailing "Submit" row — NOT Tab (no
+  // Tab/right-arrow shortcut out of a multi-select appears in any capture; see
+  // the row-layout note above). Navigate DOWN past the remaining options + "Type
+  // something" to "Submit", then Enter it (this advances to the next tab, or the
+  // review screen if it's the last question).
+  const submitRow = spec.optionCount + 1;
+  for (let d = 0; d < submitRow - cursor; d++) keys.push(AUQ_KEYS.DOWN);
+  keys.push(AUQ_KEYS.ENTER);
   return keys;
 }
 

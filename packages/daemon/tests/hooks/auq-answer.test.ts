@@ -12,7 +12,7 @@ import {
   reviewMatchesTarget,
 } from '../../src/hooks/auq-answer.ts';
 
-const { DOWN, ENTER, SPACE, TAB } = AUQ_KEYS;
+const { DOWN, ENTER, SPACE, UP } = AUQ_KEYS;
 const single = (optionCount: number): AuqQuestionSpec => ({ multiSelect: false, optionCount });
 const multi = (optionCount: number): AuqQuestionSpec => ({ multiSelect: true, optionCount });
 
@@ -33,6 +33,39 @@ function fixtureOutput(name: string): string {
   return out;
 }
 
+/**
+ * Minimal state machine modelling the multi-select TUI's row layout + key
+ * semantics (ground truth: two-questions-single-and-multi.txt, decoded IN/OUT
+ * lines 92-124 — see `.context/auq-tui-interaction-model.md`). Rows are
+ * `[0, optionCount)` the real options, then `optionCount` = "Type something",
+ * then `optionCount + 1` = "Submit". DOWN/UP move the cursor (clamped to the
+ * row range); SPACE toggles the option at the cursor (only meaningful on a real
+ * option row); ENTER on the Submit row leaves the tab. Used below to prove the
+ * planner's derived keystrokes land in the same terminal state as the real
+ * captured session, without needing a live PTY.
+ */
+function simulateMultiSelect(
+  optionCount: number,
+  keys: readonly string[],
+): { cursor: number; toggled: Set<number>; submitted: boolean } {
+  const typeSomethingRow = optionCount;
+  const submitRow = optionCount + 1;
+  let cursor = 0;
+  const toggled = new Set<number>();
+  let submitted = false;
+  for (const key of keys) {
+    if (submitted) break;
+    if (key === DOWN) cursor = Math.min(cursor + 1, submitRow);
+    else if (key === UP) cursor = Math.max(cursor - 1, 0);
+    else if (key === SPACE) {
+      if (cursor < typeSomethingRow) toggled.add(cursor);
+    } else if (key === ENTER && cursor === submitRow) {
+      submitted = true;
+    }
+  }
+  return { cursor, toggled, submitted };
+}
+
 describe('planQuestionKeys', () => {
   it('single-select: DOWN x index then ENTER (auto-advances)', () => {
     expect(planQuestionKeys(single(3), [0])).toEqual([ENTER]);
@@ -40,17 +73,78 @@ describe('planQuestionKeys', () => {
     expect(planQuestionKeys(single(3), [2])).toEqual([DOWN, DOWN, ENTER]);
   });
 
-  it('multi-select: SPACE-toggle each (ascending) then TAB to advance', () => {
-    // toggle index 0 and 2: cursor 0 -> SPACE, DOWN DOWN -> SPACE, then TAB.
-    expect(planQuestionKeys(multi(4), [0, 2])).toEqual([SPACE, DOWN, DOWN, SPACE, TAB]);
-    // unordered input is sorted; cursor advances minimally.
-    expect(planQuestionKeys(multi(4), [3, 1])).toEqual([DOWN, SPACE, DOWN, DOWN, SPACE, TAB]);
+  it('multi-select: SPACE-toggle each (ascending) then DOWN-navigate to Submit + ENTER', () => {
+    // toggle index 0 and 2 (optionCount=4): cursor 0 -> SPACE, DOWN DOWN -> SPACE
+    // (cursor now 2); Submit sits at row optionCount+1=5, so 3 more DOWNs then
+    // ENTER. Matches the captured fixture (two-questions-single-and-multi.txt,
+    // lines 99-122: toggle Apple + Cherry, then DOWN x3 through Date/"Type
+    // something" to "Submit", then Enter).
+    expect(planQuestionKeys(multi(4), [0, 2])).toEqual([
+      SPACE,
+      DOWN,
+      DOWN,
+      SPACE,
+      DOWN,
+      DOWN,
+      DOWN,
+      ENTER,
+    ]);
+    // unordered input is sorted; cursor advances minimally. Last toggle at index
+    // 3 (cursor=3): Submit at row 5, so 2 DOWNs then ENTER.
+    expect(planQuestionKeys(multi(4), [3, 1])).toEqual([
+      DOWN,
+      SPACE,
+      DOWN,
+      DOWN,
+      SPACE,
+      DOWN,
+      DOWN,
+      ENTER,
+    ]);
+  });
+
+  it('multi-select: a single toggle still navigates through "Type something" to Submit', () => {
+    // Lone target at index 0 (optionCount=3): cursor stays 0 after the toggle;
+    // Submit is at row optionCount+1=4, so 4 DOWNs then ENTER.
+    expect(planQuestionKeys(multi(3), [0])).toEqual([SPACE, DOWN, DOWN, DOWN, DOWN, ENTER]);
+  });
+
+  it('multi-select: toggling the LAST option still needs 2 DOWNs to reach Submit', () => {
+    // optionCount=4, target index 3 (the last real option): DOWN x3 to reach it,
+    // SPACE to toggle, then DOWN (Type something) DOWN (Submit), then ENTER.
+    expect(planQuestionKeys(multi(4), [3])).toEqual([DOWN, DOWN, DOWN, SPACE, DOWN, DOWN, ENTER]);
   });
 
   it('rejects out-of-range / malformed targets so the caller escalates', () => {
     expect(() => planQuestionKeys(single(3), [3])).toThrow();
     expect(() => planQuestionKeys(single(3), [0, 1])).toThrow(); // single needs exactly one
     expect(() => planQuestionKeys(multi(4), [])).toThrow(); // multi needs >=1
+  });
+
+  it('replays the captured fixture: the derived plan reaches the same terminal state (#661)', () => {
+    // Ground truth: two-questions-single-and-multi.txt, decoded IN lines for the
+    // Fruits tab (multi-select, optionCount=4: Apple/Banana/Cherry/Date):
+    //   99  SPACE            toggle Apple (cursor 0)
+    //   103 DOWN             -> Banana
+    //   105 DOWN             -> Cherry
+    //   107 DOWN             -> Date
+    //   109 UP               -> back to Cherry
+    //   111 SPACE            toggle Cherry
+    //   113 DOWN             -> Date
+    //   117 DOWN             -> "Type something"
+    //   120 DOWN             -> "Submit"
+    //   122 ENTER            leave the tab (-> review screen)
+    // A human explored the list (the UP detour); the driver never does that, but
+    // must land in the exact same place: Apple + Cherry toggled, resting on Submit.
+    const capturedKeys = [SPACE, DOWN, DOWN, DOWN, UP, SPACE, DOWN, DOWN, DOWN, ENTER];
+    const fromCapture = simulateMultiSelect(4, capturedKeys);
+    expect(fromCapture).toEqual({ cursor: 5, toggled: new Set([0, 2]), submitted: true });
+
+    // Our planner's minimal, open-loop derivation for the SAME target (Apple=0,
+    // Cherry=2) must reach the identical final state.
+    const planned = planQuestionKeys(multi(4), [0, 2]);
+    const fromPlan = simulateMultiSelect(4, planned);
+    expect(fromPlan).toEqual(fromCapture);
   });
 });
 
@@ -78,7 +172,10 @@ describe('planAnswerKeys (matches the captured canonical sequences)', () => {
       DOWN,
       DOWN,
       SPACE, // toggle Cherry (index2)
-      TAB, // leave multi toward review
+      DOWN,
+      DOWN,
+      DOWN, // past Date + "Type something" to "Submit"
+      ENTER, // leave multi toward review
     ]);
   });
 

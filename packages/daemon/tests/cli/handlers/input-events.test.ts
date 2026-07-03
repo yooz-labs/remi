@@ -304,15 +304,16 @@ describe('createInputHandlers', () => {
         'Review your answers● Q1? → Green● Q2? → Apple, CherryReady to submit your answers?❯ 1. Submit answers 2. Cancel';
       const CLOSED = "⏺ User answered Claude's questions:  ⎿ ·…";
       let writes = 0;
-      // After the 7 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,TAB) the review
-      // appears; the runner verifies it then sends ENTER, which closes the tool.
+      // After the 9 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,DOWN,DOWN,ENTER
+      // — Q2 has optionCount=3, so "Submit" sits at row 4) the review appears; the
+      // runner verifies it then sends ENTER, which closes the tool.
       const pty = {
         id: generateId(),
         write: (content: string) => {
           ptyCapture.writes.push(content);
           writes += 1;
-          if (writes === 7) appendPtyOutput(sessionId, REVIEW);
-          else if (writes >= 8 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
+          if (writes === 9) appendPtyOutput(sessionId, REVIEW);
+          else if (writes >= 10 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
         },
         submitInput: async () => {},
         close: async () => {},
@@ -364,8 +365,10 @@ describe('createInputHandlers', () => {
         AUQ_KEYS.SPACE, // toggle Apple
         AUQ_KEYS.DOWN,
         AUQ_KEYS.DOWN,
-        AUQ_KEYS.SPACE, // toggle Cherry
-        AUQ_KEYS.TAB, // leave Q2
+        AUQ_KEYS.SPACE, // toggle Cherry (cursor now at row 2, optionCount=3)
+        AUQ_KEYS.DOWN,
+        AUQ_KEYS.DOWN, // past "Type something" to "Submit" (row optionCount+1=4)
+        AUQ_KEYS.ENTER, // leave Q2 (-> review)
         AUQ_KEYS.ENTER, // submit (after review verified)
       ]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
