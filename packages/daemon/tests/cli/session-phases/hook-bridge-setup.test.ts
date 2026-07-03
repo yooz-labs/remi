@@ -7,6 +7,7 @@ import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
@@ -14,6 +15,7 @@ import { SessionBindingStore } from '../../../src/session/session-binding-store.
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
+import { TranscriptDiscovery } from '../../../src/transcript/index.ts';
 
 /**
  * Recording HookServer that captures `.on()` registrations AND lets tests
@@ -135,6 +137,12 @@ describe('setupHookBridge', () => {
   let hookServer: RecordingHookServer;
   let ptySubmits: string[];
   let messageApiLog: MessageApiCallLog;
+  // Every setupHookBridge() call in this file registers its returned handle
+  // here so afterEach can close its TranscriptBinder: the binder unconditionally
+  // arms a fallback poll + #452 rotation dir-poll (setInterval) whenever the
+  // session has a bound claudeSessionId, and only closeBinder() tears those
+  // down. Without this every such test would leak a live timer.
+  let bridgeHandles: HookBridgeHandle[];
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hook-bridge-'));
@@ -152,11 +160,19 @@ describe('setupHookBridge', () => {
     hookServer = new RecordingHookServer();
     ptySubmits = [];
     messageApiLog = { resetCalls: { n: 0 }, statusCalls: [], questionCalls: 0 };
+    bridgeHandles = [];
     configureLogger({ writeLog: () => {} });
   });
 
   afterEach(async () => {
     __resetLoggerForTests();
+    for (const h of bridgeHandles) {
+      try {
+        h.closeBinder();
+      } catch {
+        /* already closed */
+      }
+    }
     // Stop any transcript watchers a test left running (tests that fire
     // SessionStart start a real TranscriptWatcher with an fs.watch + 1s poll;
     // without this they leak a timer + fd past the test). Covers the
@@ -168,6 +184,13 @@ describe('setupHookBridge', () => {
         /* already stopped */
       }
     }
+    // Backstop: closeBinder() above already cancels each binder's own fallback
+    // timer, but clear the shared map directly too in case a test's handle was
+    // not registered in bridgeHandles.
+    for (const t of transcriptFallbackTimers.values()) {
+      clearInterval(t);
+    }
+    transcriptFallbackTimers.clear();
     await sessionRegistry.shutdown();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -257,7 +280,7 @@ describe('setupHookBridge', () => {
         } as unknown as import('../../../src/auto-approve/index.ts').AutoApproveService)
       : null;
 
-    setupHookBridge(
+    const handle = setupHookBridge(
       {
         sessionRegistry,
         bindingStore,
@@ -269,6 +292,7 @@ describe('setupHookBridge', () => {
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => 8765,
+        transcriptDiscovery: new TranscriptDiscovery(),
         ...(opts.broadcastResolvedLog
           ? {
               broadcastQuestionResolved: (
@@ -295,6 +319,7 @@ describe('setupHookBridge', () => {
         tracker,
       },
     );
+    bridgeHandles.push(handle);
     return { tracker };
   }
 
@@ -1287,27 +1312,30 @@ describe('setupHookBridge', () => {
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
     const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
 
-    setupHookBridge(
-      {
-        sessionRegistry,
-        bindingStore,
-        liveSessionsRegistry,
-        transcriptWatchers: transcriptWatchers as unknown as Map<
-          UUID,
-          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-        >,
-        transcriptFallbackTimers,
-        autoApproveService: null,
-        currentPort: () => 8765,
-      },
-      {
-        hookServer: hookServer as unknown as HookServer,
-        sessionId: SID,
-        workingDirectory: tmpDir,
-        messageApi: localApi,
-        sendAndRecord: () => {},
-        tracker,
-      },
+    bridgeHandles.push(
+      setupHookBridge(
+        {
+          sessionRegistry,
+          bindingStore,
+          liveSessionsRegistry,
+          transcriptWatchers: transcriptWatchers as unknown as Map<
+            UUID,
+            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+          >,
+          transcriptFallbackTimers,
+          autoApproveService: null,
+          currentPort: () => 8765,
+          transcriptDiscovery: new TranscriptDiscovery(),
+        },
+        {
+          hookServer: hookServer as unknown as HookServer,
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          messageApi: localApi,
+          sendAndRecord: () => {},
+          tracker,
+        },
+      ),
     );
 
     hookServer.fire('SessionStart', {
@@ -1365,27 +1393,30 @@ describe('setupHookBridge', () => {
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
     const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
 
-    setupHookBridge(
-      {
-        sessionRegistry,
-        bindingStore,
-        liveSessionsRegistry,
-        transcriptWatchers: transcriptWatchers as unknown as Map<
-          UUID,
-          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-        >,
-        transcriptFallbackTimers,
-        autoApproveService: null, // no auto-approve -> escalate path
-        currentPort: () => 8765,
-      },
-      {
-        hookServer: hookServer as unknown as HookServer,
-        sessionId: SID,
-        workingDirectory: tmpDir,
-        messageApi: localApi,
-        sendAndRecord: () => {},
-        tracker,
-      },
+    bridgeHandles.push(
+      setupHookBridge(
+        {
+          sessionRegistry,
+          bindingStore,
+          liveSessionsRegistry,
+          transcriptWatchers: transcriptWatchers as unknown as Map<
+            UUID,
+            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+          >,
+          transcriptFallbackTimers,
+          autoApproveService: null, // no auto-approve -> escalate path
+          currentPort: () => 8765,
+          transcriptDiscovery: new TranscriptDiscovery(),
+        },
+        {
+          hookServer: hookServer as unknown as HookServer,
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          messageApi: localApi,
+          sendAndRecord: () => {},
+          tracker,
+        },
+      ),
     );
 
     hookServer.fire('SessionStart', {
@@ -1437,27 +1468,30 @@ describe('setupHookBridge', () => {
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
     const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
 
-    setupHookBridge(
-      {
-        sessionRegistry,
-        bindingStore,
-        liveSessionsRegistry,
-        transcriptWatchers: transcriptWatchers as unknown as Map<
-          UUID,
-          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-        >,
-        transcriptFallbackTimers,
-        autoApproveService: null,
-        currentPort: () => 8765,
-      },
-      {
-        hookServer: hookServer as unknown as HookServer,
-        sessionId: SID,
-        workingDirectory: tmpDir,
-        messageApi: localApi,
-        sendAndRecord: () => {},
-        tracker,
-      },
+    bridgeHandles.push(
+      setupHookBridge(
+        {
+          sessionRegistry,
+          bindingStore,
+          liveSessionsRegistry,
+          transcriptWatchers: transcriptWatchers as unknown as Map<
+            UUID,
+            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+          >,
+          transcriptFallbackTimers,
+          autoApproveService: null,
+          currentPort: () => 8765,
+          transcriptDiscovery: new TranscriptDiscovery(),
+        },
+        {
+          hookServer: hookServer as unknown as HookServer,
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          messageApi: localApi,
+          sendAndRecord: () => {},
+          tracker,
+        },
+      ),
     );
 
     hookServer.fire('SessionStart', {
@@ -1918,7 +1952,7 @@ describe('setupHookBridge', () => {
         messageApiLog.questionCalls += 1;
         const _ = q;
       });
-      setupHookBridge(
+      const handle = setupHookBridge(
         {
           sessionRegistry,
           bindingStore,
@@ -1930,6 +1964,7 @@ describe('setupHookBridge', () => {
           transcriptFallbackTimers,
           autoApproveService: null,
           currentPort: () => 8765,
+          transcriptDiscovery: new TranscriptDiscovery(),
         },
         {
           hookServer: hookServer as unknown as HookServer,
@@ -1947,6 +1982,7 @@ describe('setupHookBridge', () => {
           tracker: tracker as unknown as QuestionPresenceTracker,
         },
       );
+      bridgeHandles.push(handle);
       return { sent };
     }
 
@@ -2523,30 +2559,33 @@ describe('setupHookBridge', () => {
         cancel: () => false,
       } as unknown as import('../../../src/auto-approve/index.ts').AutoApproveService;
       const freshHook = new RecordingHookServer();
-      setupHookBridge(
-        {
-          sessionRegistry,
-          bindingStore,
-          liveSessionsRegistry,
-          transcriptWatchers: transcriptWatchers as unknown as Map<
-            UUID,
-            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-          >,
-          transcriptFallbackTimers,
-          autoApproveService,
-          currentPort: () => 8765,
-        },
-        {
-          hookServer: freshHook as unknown as HookServer,
-          sessionId: freshSid,
-          workingDirectory: tmpDir,
-          messageApi: localApi,
-          sendAndRecord: (m) => {
-            throwingLog.push(m);
-            throw new Error('test: send blew up');
+      bridgeHandles.push(
+        setupHookBridge(
+          {
+            sessionRegistry,
+            bindingStore,
+            liveSessionsRegistry,
+            transcriptWatchers: transcriptWatchers as unknown as Map<
+              UUID,
+              import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+            >,
+            transcriptFallbackTimers,
+            autoApproveService,
+            currentPort: () => 8765,
+            transcriptDiscovery: new TranscriptDiscovery(),
           },
-          tracker: makePassthroughTracker(localApi),
-        },
+          {
+            hookServer: freshHook as unknown as HookServer,
+            sessionId: freshSid,
+            workingDirectory: tmpDir,
+            messageApi: localApi,
+            sendAndRecord: (m) => {
+              throwingLog.push(m);
+              throw new Error('test: send blew up');
+            },
+            tracker: makePassthroughTracker(localApi),
+          },
+        ),
       );
 
       freshHook.fire('SessionStart', {
