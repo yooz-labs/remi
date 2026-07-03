@@ -91,6 +91,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         // same limit the in-app reconnect has.
         guard let route = RemiNativeStore.route(forSession: sessionId), !route.wsUrl.isEmpty else {
             NSLog("[remi] relay: no stored daemon URL for session \(sessionId); cannot relay")
+            notifyDeliveryFailure()
             return
         }
         let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? route.claudeSessionId
@@ -98,6 +99,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let message = "\(sessionId)|\(questionId)|\(answerValue)"
         guard let auth = RemiNativeStore.sign(message: message) else {
             NSLog("[remi] relay: no signing identity stored; cannot relay")
+            notifyDeliveryFailure()
             return
         }
 
@@ -114,6 +116,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             .replacingOccurrences(of: "ws://", with: "http://")
         guard var comps = URLComponents(string: base) else {
             NSLog("[remi] relay: bad daemon URL \(base)")
+            notifyDeliveryFailure()
             return
         }
         comps.path = "/answer"
@@ -121,6 +124,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         comps.fragment = nil
         guard let url = comps.url else {
             NSLog("[remi] relay: cannot build /answer URL from \(base)")
+            notifyDeliveryFailure()
             return
         }
 
@@ -149,7 +153,10 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         if let cid = claudeSessionId { body["claudeSessionId"] = cid }
 
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
-            NSLog("[remi] relay: failed to encode body"); endTask(); return
+            NSLog("[remi] relay: failed to encode body")
+            notifyDeliveryFailure()
+            endTask()
+            return
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -158,16 +165,41 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         req.timeoutInterval = 20
 
         NSLog("[remi] relay: POST \(url.absoluteString) answer=\(answer)")
-        URLSession.shared.dataTask(with: req) { data, resp, err in
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, err in
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let result = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             if let err = err {
                 NSLog("[remi] relay: POST failed: \(err.localizedDescription)")
+                self?.notifyDeliveryFailure()
+            } else if !(200...299).contains(status) {
+                NSLog("[remi] relay: POST status=\(status) result=\(result)")
+                self?.notifyDeliveryFailure()
             } else {
                 NSLog("[remi] relay: POST status=\(status) result=\(result)")
             }
             endTask()
         }.resume()
+    }
+
+    // MARK: Visible failure
+
+    /// #665: this native relay can run when the app never opens (a mirrored
+    /// Watch action or a cold/background launch that dies again right after),
+    /// so an NSLog-only failure would be invisible to the user. Mirrors the
+    /// wording of the JS `notifyFailure()` in App.tsx, which shows the same
+    /// message when a push answer can't be delivered from the web layer.
+    /// One notification per failed attempt; no retry loop (see #612 for the
+    /// signaling reverse-relay fallback, out of scope here).
+    private func notifyDeliveryFailure() {
+        let content = UNMutableNotificationContent()
+        content.title = "Answer not delivered"
+        content.body = "Open Remi to respond to the question."
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                NSLog("[remi] relay: failed to schedule delivery-failure notification: \(error.localizedDescription)")
+            }
+        }
     }
 }
 
