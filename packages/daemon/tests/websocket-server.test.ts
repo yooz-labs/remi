@@ -747,11 +747,11 @@ describe('WebSocketServer', () => {
 
     test('a connection sending ordinary traffic (never an explicit pong) is never force-closed (#662 review)', async () => {
       // Regression: the real web/mobile client sends its own client-initiated
-      // 'ping' every 30s (useConnectionManager's startPing) but, before the
-      // review fix, never replied with a protocol 'pong' to the SERVER's
-      // ping. Gating liveness on 'pong' alone force-closed every healthy
-      // client on a ~60-90s cycle. Any successfully-parsed inbound message
-      // must count as proof-of-life, not only 'pong'.
+      // 'ping' (WebSocketClient's internal heartbeat, 15s default, #664) but,
+      // before the review fix, never replied with a protocol 'pong' to the
+      // SERVER's ping. Gating liveness on 'pong' alone force-closed every
+      // healthy client on a ~60-90s cycle. Any successfully-parsed inbound
+      // message must count as proof-of-life, not only 'pong'.
       const pingInterval = 40;
       let disconnected = false;
       server = new WebSocketServer(
