@@ -527,7 +527,27 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
       const session = sessionRegistry.getSessionForConnection(connectionId);
       if (!session) {
-        log(`No session found for connection ${connectionId}`);
+        // #662: this connection does not hold the exclusive write lock —
+        // either it's read-only (queued behind the active connection: a
+        // second client, or this same client's new connection racing the
+        // pong-reaper's eviction of its own stale one) or the session no
+        // longer exists. Previously this dropped the input with only a
+        // server-side log line, so the sender's UI showed the message as
+        // "sent" while it silently vanished. Surface it as an error instead.
+        const sessionExists = sessionRegistry.getSession(sessionId) !== undefined;
+        log(
+          `No session found for connection ${connectionId} (session ${sessionExists ? 'exists but this connection is not active' : 'not found'})`,
+        );
+        send(
+          connectionId,
+          sessionExists
+            ? createError(
+                'NOT_ACTIVE_CONNECTION',
+                'This connection is read-only (another connection holds the session); input was not delivered.',
+                { sessionId },
+              )
+            : createError('SESSION_NOT_FOUND', `Session ${sessionId} not found on this daemon`),
+        );
         return;
       }
 
