@@ -18,7 +18,12 @@ import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
-import { collectPendingChallengeConnections, getOrCreateDeviceId } from './connection-manager-helpers';
+import {
+  collectPendingChallengeConnections,
+  type ForceReconnectCandidate,
+  getOrCreateDeviceId,
+  planForceReconnect,
+} from './connection-manager-helpers';
 import { splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
@@ -30,7 +35,6 @@ import {
   createCancelQuestion,
   createCreateSessionRequest,
   createHello,
-  createPing,
   createResumeSessionRequest,
   createSessionHistoryRequest,
   createSessionListRequest,
@@ -43,6 +47,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 function makeConnectionId(raw: string): ConnectionId {
   return raw as ConnectionId;
 }
+
+/**
+ * Force-reconnect stagger tuning (#664): fixed spacing per staggered
+ * connection index plus random jitter, so N daemons don't all visibly drop
+ * and reconnect in the same instant on app resume / network change.
+ */
+const FORCE_RECONNECT_STAGGER_STEP_MS = 300;
+const FORCE_RECONNECT_STAGGER_JITTER_MS = 2000;
 
 /** Internal per-connection state */
 interface ManagedConnection {
@@ -71,7 +83,6 @@ interface ManagedConnection {
   needsPassphrase: boolean;
   serverFingerprint: string | null;
   directory?: string;
-  pingInterval?: ReturnType<typeof setInterval>;
   /** True while escalateReconnect is probing; prevents concurrent escalations
    *  racing reconnectWithUrl against themselves (#435). */
   escalating?: boolean;
@@ -444,22 +455,6 @@ export function useConnectionManager(
     [handleAuthChallenge, handleAuthResult, syncState],
   );
 
-  /** Start ping keep-alive for a connection */
-  const startPing = useCallback((mc: ManagedConnection) => {
-    if (mc.pingInterval) clearInterval(mc.pingInterval);
-    mc.pingInterval = setInterval(() => {
-      mc.client.send(createPing());
-    }, 30000);
-  }, []);
-
-  /** Stop ping keep-alive for a connection */
-  const stopPing = useCallback((mc: ManagedConnection) => {
-    if (mc.pingInterval) {
-      clearInterval(mc.pingInterval);
-      mc.pingInterval = undefined;
-    }
-  }, []);
-
   // Reconnect escalation: auto-reconnect exhausted the ceiling on the current
   // port. Re-resolve the daemon's port from the host (the old port is hinted
   // first, then the full range is scanned). Reconnect on the winner, or fall
@@ -475,11 +470,11 @@ export function useConnectionManager(
       mc.escalating = true;
 
       const { host, port } = splitConnectionId(mc.connectionId);
-      // Set 'reconnecting' directly (the client emits onReconnectExhausted, not
-      // a status), and stop the old ping so it cannot fire during the probe.
+      // Set 'reconnecting' directly (the client emits onReconnectExhausted,
+      // not a status). The client's own keep-alive already stopped itself
+      // when the transport closed (WebSocketClient#handleClose).
       mc.status = 'reconnecting';
       mc.error = null;
-      stopPing(mc);
       syncState();
       console.debug(`[ConnectionManager] escalate ${mc.connectionId}: probing ${host}`);
 
@@ -492,7 +487,6 @@ export function useConnectionManager(
           console.warn(`[ConnectionManager] no daemon on ${host}; marking unreachable`);
           mc.status = 'unreachable';
           mc.error = new Error(`No daemon answered on ${host}`);
-          stopPing(mc);
           syncState();
           return;
         }
@@ -509,14 +503,13 @@ export function useConnectionManager(
           console.error(`[ConnectionManager] escalateReconnect failed on ${mc.connectionId}:`, err);
           mc.status = 'unreachable';
           mc.error = err instanceof Error ? err : new Error(String(err));
-          stopPing(mc);
           syncState();
         }
       } finally {
         mc.escalating = false;
       }
     },
-    [stopPing, syncState],
+    [syncState],
   );
 
   // Connect to a daemon (direct WebSocket)
@@ -537,7 +530,6 @@ export function useConnectionManager(
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
-        stopPing(existing);
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
       }
@@ -579,13 +571,11 @@ export function useConnectionManager(
 
           if (newStatus === 'connected') {
             mc.error = null;
-            startPing(mc);
           }
 
           if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
             mc.sessionId = null;
             mc.helloSent = false;
-            stopPing(mc);
           }
 
           syncState();
@@ -608,7 +598,7 @@ export function useConnectionManager(
 
       return connectionId;
     },
-    [createMessageHandler, sendHello, startPing, stopPing, syncState, escalateReconnect],
+    [createMessageHandler, sendHello, syncState, escalateReconnect],
   );
 
   // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
@@ -636,23 +626,21 @@ export function useConnectionManager(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
-      stopPing(mc);
       mc.client.disconnect();
       connectionsMapRef.current.delete(connectionId);
       syncState();
     },
-    [stopPing, syncState],
+    [syncState],
   );
 
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
-      stopPing(mc);
       mc.client.disconnect();
     }
     connectionsMapRef.current.clear();
     syncState();
-  }, [stopPing, syncState]);
+  }, [syncState]);
 
   const sendToConnection = useCallback(
     (connectionId: ConnectionId, message: ProtocolMessage): boolean => {
@@ -857,13 +845,49 @@ export function useConnectionManager(
   const passphraseConnectionId = passphraseConnection?.connectionId ?? null;
   const passphraseServerFingerprint = passphraseConnection?.serverFingerprint ?? null;
 
-  // Force reconnect on network change or app resume (iOS)
+  // Force reconnect on network change or app resume (iOS, main.tsx). Before
+  // #664 this unconditionally force-closed EVERY connected/authenticating
+  // connection at once: with ~5 daemons, foregrounding the phone guaranteed a
+  // full simultaneous reconnect cycle even when every socket was still
+  // perfectly healthy. planForceReconnect (#664) decides per-connection
+  // whether a reconnect is even needed, and staggers the ones that are.
   useEffect(() => {
     const handleForceReconnect = () => {
+      const mcs: ManagedConnection[] = [];
+      const candidates: ForceReconnectCandidate<ConnectionId>[] = [];
       for (const mc of connectionsMapRef.current.values()) {
-        if (mc.status === 'connected' || mc.status === 'authenticating') {
+        if (mc.status !== 'connected' && mc.status !== 'authenticating') continue;
+        mcs.push(mc);
+        candidates.push({
+          connectionId: mc.connectionId,
+          isOpen: mc.client.isTransportOpen,
+          isHealthy: mc.client.isHealthy,
+        });
+      }
+      if (candidates.length === 0) return;
+
+      const plan = planForceReconnect(candidates, {
+        staggerStepMs: FORCE_RECONNECT_STAGGER_STEP_MS,
+        staggerJitterMs: FORCE_RECONNECT_STAGGER_JITTER_MS,
+      });
+      const byId = new Map(mcs.map((mc) => [mc.connectionId, mc]));
+
+      for (const decision of plan) {
+        if (!decision.shouldReconnect) continue;
+        const mc = byId.get(decision.connectionId);
+        if (!mc) continue;
+
+        if (decision.delayMs <= 0) {
           mc.client.forceReconnect();
+          continue;
         }
+        setTimeout(() => {
+          // Re-check the live map: the connection may have been replaced or
+          // torn down during the staggered delay.
+          if (connectionsMapRef.current.get(decision.connectionId) === mc) {
+            mc.client.forceReconnect();
+          }
+        }, decision.delayMs);
       }
     };
     document.addEventListener('app-force-reconnect', handleForceReconnect);
@@ -874,7 +898,6 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
-        if (mc.pingInterval) clearInterval(mc.pingInterval);
         mc.client.disconnect();
       }
       connectionsMapRef.current.clear();
