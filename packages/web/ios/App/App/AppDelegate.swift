@@ -78,13 +78,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         UNUserNotificationCenter.current().setNotificationCategories([yn, yna, multi])
     }
 
-    /// #665: poll for the Capacitor bridge's notification router so
-    /// RemiAnswerRelay can be installed on a cold/background launch, not just
-    /// on applicationDidBecomeActive. `CAPBridgeViewController.bridge` stays
-    /// nil until `loadView()` runs; retry on the main queue rather than
-    /// assuming `makeKeyAndVisible()` already triggered it synchronously.
-    /// `RemiAnswerRelay.install` is idempotent, so this is safe to race
-    /// against the applicationDidBecomeActive call below.
+    /// #665: install RemiAnswerRelay from the launch path itself, not just
+    /// applicationDidBecomeActive, so a background launch that exists solely
+    /// to deliver a notification action still gets it installed. In today's
+    /// Capacitor 8 lifecycle, `makeKeyAndVisible()` above triggers
+    /// `loadView()` synchronously, which registers plugins (including the
+    /// push handler) before this method runs, so attempt 0 succeeds. The
+    /// retry is a defensive backstop against that ordering changing (e.g. a
+    /// future move to the UIScene/SwiftUI app lifecycle) rather than a live
+    /// race today. `RemiAnswerRelay.install` is idempotent, so this is also
+    /// safe to race against the applicationDidBecomeActive call below.
     private func installAnswerRelayWithRetry(attempt: Int = 0, maxAttempts: Int = 25) {
         if let bridgeVC = window?.rootViewController as? CAPBridgeViewController,
            bridgeVC.bridge?.notificationRouter != nil {

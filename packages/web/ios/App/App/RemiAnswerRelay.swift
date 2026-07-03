@@ -15,7 +15,8 @@ import Capacitor
 /// Gotchas handled (from Capacitor/NotificationRouter.swift):
 ///  - `pushNotificationHandler` is WEAK -> `shared` retains this instance.
 ///  - `didReceive` is synchronous and the router calls its completionHandler right
-///    after, so the async POST runs under its own `beginBackgroundTask`.
+///    after, so `relay()` runs the whole attempt (every guard plus the async
+///    POST) under one `beginBackgroundTask`, ended exactly once.
 ///  - install runs AFTER the push plugin's load() (called from a deferred hook).
 ///
 /// Inputs are bridged from JS via Capacitor Preferences (UserDefaults
@@ -59,10 +60,28 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     // MARK: Relay
 
     private func relay(response: UNNotificationResponse) {
+        // didReceive is synchronous and the router calls its completion handler
+        // right after, so extend execution ourselves for the async work below
+        // (~30s budget) — every guard in this method and in post() can trigger
+        // an async notifyDeliveryFailure() or POST, so the task starts here,
+        // before the first guard, and is the single owner of its lifecycle: it
+        // ends exactly once, on whichever path (early return or post()'s async
+        // completion) runs. The expiry handler and the URLSession completion
+        // can fire on different queues, so serialize with a lock to avoid a
+        // double endBackgroundTask race.
+        let lock = NSLock()
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        let endTask = {
+            lock.lock(); defer { lock.unlock() }
+            if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid }
+        }
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "RemiAnswerRelay") { endTask() }
+
         let userInfo = response.notification.request.content.userInfo
         guard let sessionId = userInfo["sessionId"] as? String,
               let questionId = userInfo["questionId"] as? String else {
             NSLog("[remi] relay: push missing sessionId/questionId; ignoring")
+            endTask()
             return
         }
 
@@ -80,6 +99,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         }
         guard let answerValue = answer, !answerValue.isEmpty else {
             NSLog("[remi] relay: no actionable answer (action=\(response.actionIdentifier)); deferring to app")
+            endTask()
             return
         }
 
@@ -91,7 +111,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         // same limit the in-app reconnect has.
         guard let route = RemiNativeStore.route(forSession: sessionId), !route.wsUrl.isEmpty else {
             NSLog("[remi] relay: no stored daemon URL for session \(sessionId); cannot relay")
-            notifyDeliveryFailure()
+            notifyDeliveryFailure(questionId: questionId)
+            endTask()
             return
         }
         let claudeSessionId = (userInfo["claudeSessionId"] as? String) ?? route.claudeSessionId
@@ -99,16 +120,18 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         let message = "\(sessionId)|\(questionId)|\(answerValue)"
         guard let auth = RemiNativeStore.sign(message: message) else {
             NSLog("[remi] relay: no signing identity stored; cannot relay")
-            notifyDeliveryFailure()
+            notifyDeliveryFailure(questionId: questionId)
+            endTask()
             return
         }
 
         post(wsUrl: route.wsUrl, sessionId: sessionId, questionId: questionId,
-             answer: answerValue, claudeSessionId: claudeSessionId, auth: auth)
+             answer: answerValue, claudeSessionId: claudeSessionId, auth: auth, endTask: endTask)
     }
 
     private func post(wsUrl: String, sessionId: String, questionId: String,
-                      answer: String, claudeSessionId: String?, auth: RemiNativeStore.Auth) {
+                      answer: String, claudeSessionId: String?, auth: RemiNativeStore.Auth,
+                      endTask: @escaping () -> Void) {
         // Normalize the daemon ws(s):// URL to http(s):// and target the root
         // `/answer` endpoint (mirrors push-answer-relay.ts `answerUrl`).
         let base = wsUrl
@@ -116,7 +139,8 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             .replacingOccurrences(of: "ws://", with: "http://")
         guard var comps = URLComponents(string: base) else {
             NSLog("[remi] relay: bad daemon URL \(base)")
-            notifyDeliveryFailure()
+            notifyDeliveryFailure(questionId: questionId)
+            endTask()
             return
         }
         comps.path = "/answer"
@@ -124,21 +148,10 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
         comps.fragment = nil
         guard let url = comps.url else {
             NSLog("[remi] relay: cannot build /answer URL from \(base)")
-            notifyDeliveryFailure()
+            notifyDeliveryFailure(questionId: questionId)
+            endTask()
             return
         }
-
-        // didReceive is synchronous + the router completes immediately, so extend
-        // execution ourselves for the async POST (~30s budget). The expiry handler
-        // and the URLSession completion can fire on different queues, so serialize
-        // the end-task with a lock to avoid a double endBackgroundTask race.
-        let lock = NSLock()
-        var bgTask: UIBackgroundTaskIdentifier = .invalid
-        let endTask = {
-            lock.lock(); defer { lock.unlock() }
-            if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid }
-        }
-        bgTask = UIApplication.shared.beginBackgroundTask(withName: "RemiAnswerRelay") { endTask() }
 
         var body: [String: Any] = [
             "sessionId": sessionId,
@@ -154,7 +167,7 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
 
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
             NSLog("[remi] relay: failed to encode body")
-            notifyDeliveryFailure()
+            notifyDeliveryFailure(questionId: questionId)
             endTask()
             return
         }
@@ -170,10 +183,10 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
             let result = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             if let err = err {
                 NSLog("[remi] relay: POST failed: \(err.localizedDescription)")
-                self?.notifyDeliveryFailure()
+                self?.notifyDeliveryFailure(questionId: questionId)
             } else if !(200...299).contains(status) {
                 NSLog("[remi] relay: POST status=\(status) result=\(result)")
-                self?.notifyDeliveryFailure()
+                self?.notifyDeliveryFailure(questionId: questionId)
             } else {
                 NSLog("[remi] relay: POST status=\(status) result=\(result)")
             }
@@ -188,13 +201,17 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     /// so an NSLog-only failure would be invisible to the user. Mirrors the
     /// wording of the JS `notifyFailure()` in App.tsx, which shows the same
     /// message when a push answer can't be delivered from the web layer.
-    /// One notification per failed attempt; no retry loop (see #612 for the
-    /// signaling reverse-relay fallback, out of scope here).
-    private func notifyDeliveryFailure() {
+    /// The identifier is stable per question (falls back to a constant if the
+    /// push never carried one), so repeated failures for the same question
+    /// replace the prior notification instead of stacking duplicates. No
+    /// retry loop (see #612 for the signaling reverse-relay fallback, out of
+    /// scope here).
+    private func notifyDeliveryFailure(questionId: String?) {
         let content = UNMutableNotificationContent()
         content.title = "Answer not delivered"
         content.body = "Open Remi to respond to the question."
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        let identifier = "remi-answer-failure-\(questionId ?? "unknown")"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
                 NSLog("[remi] relay: failed to schedule delivery-failure notification: \(error.localizedDescription)")
