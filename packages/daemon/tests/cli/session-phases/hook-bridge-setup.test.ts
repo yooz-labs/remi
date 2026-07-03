@@ -221,6 +221,10 @@ describe('setupHookBridge', () => {
        *  the (questionId, reason) the bridge forwarded. Defaults to undefined
        *  (dep not wired). */
       broadcastResolvedLog?: Array<{ questionId: UUID; reason: string }>;
+      /** Capture every foreignSessionEscalator.handleUnadmitted call (#672).
+       *  Each entry is the (input, callerSessionId) the resolver forwarded.
+       *  Defaults to undefined (dep not wired). */
+      foreignEscalationLog?: Array<{ input: unknown; sessionId: UUID }>;
     } = {},
   ): { tracker: QuestionPresenceTracker } {
     const localMessageApi = fakeMessageAPI(
@@ -300,6 +304,14 @@ describe('setupHookBridge', () => {
                 questionId: UUID,
                 reason: 'auto_approved' | 'auto_denied' | 'cancelled',
               ) => opts.broadcastResolvedLog?.push({ questionId, reason }),
+            }
+          : {}),
+        ...(opts.foreignEscalationLog
+          ? {
+              foreignSessionEscalator: {
+                handleUnadmitted: (input: unknown, sid: UUID) =>
+                  opts.foreignEscalationLog?.push({ input, sessionId: sid }),
+              } as unknown as import('../../../src/hooks/index.ts').ForeignSessionEscalator,
             }
           : {}),
       },
@@ -751,6 +763,70 @@ describe('setupHookBridge', () => {
         expect(ptySubmits).toEqual([]);
         resolve();
       }, 50);
+    });
+  });
+
+  describe('#672 foreignSessionEscalator wiring', () => {
+    function bindOurSession(): void {
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-mine',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+    }
+
+    test('calls handleUnadmitted with the raw input + our sessionId when a PermissionRequest is NOT admitted', async () => {
+      bindOurSession();
+      const foreignEscalationLog: Array<{ input: unknown; sessionId: UUID }> = [];
+      build({ foreignEscalationLog });
+
+      const input = {
+        session_id: 'claude-someone-else',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' },
+      };
+      const decision = await hookServer.firePermission(input);
+
+      expect(decision).toBe('passthrough');
+      expect(foreignEscalationLog).toHaveLength(1);
+      expect(foreignEscalationLog[0]?.sessionId).toBe(SID);
+      expect(foreignEscalationLog[0]?.input).toMatchObject({ session_id: 'claude-someone-else' });
+    });
+
+    test('does NOT call handleUnadmitted when the PermissionRequest IS admitted (our own session)', async () => {
+      bindOurSession();
+      const foreignEscalationLog: Array<{ input: unknown; sessionId: UUID }> = [];
+      build({ foreignEscalationLog, autoApprove: true, autoApproveDecision: 'approve' });
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-mine',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      expect(decision).toBe('allow');
+      expect(foreignEscalationLog).toHaveLength(0);
+    });
+
+    test('with no foreignSessionEscalator wired, a foreign PermissionRequest still passes through cleanly (no throw)', async () => {
+      bindOurSession();
+      build(); // no foreignEscalationLog -> dep left unwired
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-someone-else',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' },
+      });
+
+      expect(decision).toBe('passthrough');
     });
   });
 

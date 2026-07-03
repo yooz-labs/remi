@@ -62,6 +62,19 @@ export class SessionBindingStore {
   }
 
   /**
+   * The port recorded for this remi session at spawn time (#672). Written once
+   * by `preAssign` and never refreshed on a later daemon restart, so it stays
+   * fixed at whatever port was live when the session was created — unlike the
+   * live `currentPort()`, which can drift to a different port after a restart
+   * (port-selection #146). Callers use this as a fallback ownership signal when
+   * a transcript's `remi:<port>` marker no longer matches the live port: the
+   * marker may still match the port THIS session originally ran on.
+   */
+  getStoredPort(remiSessionId: UUID): number | null {
+    return this.store.findByRemiSessionId(remiSessionId)?.port ?? null;
+  }
+
+  /**
    * Update the durable binding on rotation / first discovery. Delegates to
    * SessionStore.updateClaudeSessionId (a no-op when the record is absent, matching
    * today). Together with preAssign, the ONLY claudeSessionId writer.
