@@ -103,12 +103,18 @@ export interface UseConnectionManagerReturn {
   reconnect: (connectionId: ConnectionId) => void;
   /** Disconnect all connections */
   disconnectAll: () => void;
-  /** Send user input routed to the correct connection */
+  /**
+   * Send user input routed to the correct connection. `id`, when passed,
+   * is used as the wire message id instead of generating a fresh one --
+   * callers retrying a timed-out send (#663) pass the ORIGINAL id back in
+   * so the daemon's dedup makes the retry idempotent.
+   */
   sendInput: (
     connectionId: ConnectionId,
     sessionId: UUID,
     content: string,
     claudeSessionId?: UUID,
+    id?: UUID,
   ) => boolean;
   /** Send a bare Esc keystroke to the session (interrupt / escape any prompt). */
   sendEscape: (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID) => boolean;
@@ -668,10 +674,11 @@ export function useConnectionManager(
       sessionId: UUID,
       content: string,
       claudeSessionId?: UUID,
+      id?: UUID,
     ): boolean => {
       return sendToConnection(
         connectionId,
-        createUserInput(sessionId, content, undefined, claudeSessionId),
+        createUserInput(sessionId, content, undefined, claudeSessionId, id),
       );
     },
     [sendToConnection],
