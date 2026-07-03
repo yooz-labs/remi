@@ -1454,4 +1454,132 @@ describe('TranscriptBinder', () => {
       expect(admitted).toBe(false);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // #672 review (critical 1): port-reuse hijack. A storedPort match ALONE is
+  // not proof of ownership -- findAvailableTcpPort can hand our old,
+  // drifted-away port to a completely different LIVE sibling. Reproduces the
+  // reviewer's end-to-end repro: daemon X (SID) recorded storedPort 18775,
+  // drifted to live port 8765; a live sibling Y later legitimately gets
+  // assigned 18775 and writes remi:18775 to ITS OWN transcript. X must NOT
+  // treat Y's live transcript as its own and rebind onto Y's session.
+  // -------------------------------------------------------------------------
+
+  describe('#672 review: port-reuse hijack guard (live-sibling cross-check + freshness gate)', () => {
+    function recordStoredPort(port: number): void {
+      bindingStore.preAssign({
+        remiSessionId: SID,
+        claudeSessionId: null,
+        projectPath: tmpDir,
+        port,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+    }
+
+    function bindOld(): TranscriptBinder {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'claude-OLD',
+        transcript_path: path.join(tmpDir, 'old.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+      return binder;
+    }
+
+    function registerLiveSibling(sessionId: string, wsPort: number): void {
+      liveSessionsRegistry.register({
+        sessionId,
+        pid: process.pid,
+        wsPort,
+        hookPort: wsPort + 1000,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      });
+    }
+
+    test('does NOT reclaim (admits stays false) when a LIVE sibling currently holds the recycled stored port', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      // A live sibling now legitimately runs on port 18775 (our old, drifted
+      // storedPort, recycled by findAvailableTcpPort) and writes ITS OWN
+      // remi:18775 transcript.
+      registerLiveSibling('sibling-remi-session', 18775);
+      const siblingPath = writeMarkedTranscript('sibling-live.jsonl', 18775);
+
+      const admitted = binder.admits({
+        session_id: 'claude-SIBLING-LIVE',
+        transcript_path: siblingPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('does NOT rebind via onHookEvent when a live sibling holds the recycled stored port', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      registerLiveSibling('sibling-remi-session-2', 18775);
+      const siblingPath = writeMarkedTranscript('sibling-live-2.jsonl', 18775);
+
+      binder.onHookEvent({
+        session_id: 'claude-SIBLING-LIVE-2',
+        transcript_path: siblingPath,
+        hook_event_name: 'PermissionRequest',
+      });
+
+      // The binder must still be bound to its ORIGINAL claude id -- no
+      // hijack, no watcher swap, no bindingStore rewrite onto the sibling.
+      expect(binder.snapshot().claudeSessionId).toBe('claude-OLD');
+    });
+
+    test('a zombie sibling (claude child exited) does not by itself block reclaim, but staleness does', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      // The sibling's Claude child has exited (a zombie daemon entry) --
+      // claudeChildLooksAlive() is false for it, so the live-sibling gate
+      // alone would NOT block this reclaim. The freshness gate is the second,
+      // independent layer: a transcript that hasn't been touched in a long
+      // time is rejected regardless of what the live registry says.
+      liveSessionsRegistry.register({
+        sessionId: 'zombie-sibling',
+        pid: process.pid,
+        wsPort: 18775,
+        hookPort: 19775,
+        projectPath: tmpDir,
+        name: 'zombie',
+        startedAt: new Date().toISOString(),
+        claudeChildPid: 999999,
+        claudeChildExited: true,
+      });
+      const oldPath = writeMarkedTranscript('zombie-old.jsonl', 18775);
+      const longAgo = new Date(Date.now() - 10 * 60_000); // 10 min, past ROTATION_FRESHNESS_MS
+      fs.utimesSync(oldPath, longAgo, longAgo);
+
+      const admitted = binder.admits({
+        session_id: 'claude-ZOMBIE-OLD',
+        transcript_path: oldPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('a FRESH stored-port transcript with no live sibling still reclaims (legitimate case unaffected)', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      // No live sibling registered anywhere; the transcript is freshly
+      // written (as it would be for a genuine, currently-active reclaim).
+      const freshPath = writeMarkedTranscript('fresh-legit.jsonl', 18775);
+
+      const admitted = binder.admits({
+        session_id: 'claude-LEGIT-FRESH',
+        transcript_path: freshPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+  });
 });
