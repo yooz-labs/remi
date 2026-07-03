@@ -94,6 +94,7 @@ loadDotenvFile();
 
 import {
   createDaemonUpdateAvailable,
+  createError,
   createHelloAck,
   createQuestionResolved,
   createReplayBatch,
@@ -969,6 +970,23 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    onConnectionReclaimed: (sessionId, staleConnectionId, newConnectionId) => {
+      // Same device reconnected while its own previous connection still held
+      // the lock (#662) — likely a dead socket the pong reaper hasn't caught
+      // yet. The registry already moved the lock to newConnectionId; force-
+      // close the stale transport so it can't linger as a second listener.
+      log(
+        `Session ${sessionId} reclaimed by same device: evicting stale connection ${staleConnectionId} for ${newConnectionId}`,
+      );
+      registry.sendRaw(
+        staleConnectionId,
+        createError(
+          'SESSION_RECLAIMED',
+          'This device reconnected from a new connection; closing this one.',
+        ),
+      );
+      registry.closeConnection(staleConnectionId, 'Reclaimed by the same device reconnecting');
+    },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
       // NOTE: this resolves the hello_ack binding inline rather than via
@@ -993,6 +1011,7 @@ const sessionRegistry = new SessionRegistry(
             nextBulletId: result.nextBulletId,
           },
           { claudeSessionId: claudeId, transcriptPath: tpath },
+          result.attachState,
         ),
       );
       if (!sent) {

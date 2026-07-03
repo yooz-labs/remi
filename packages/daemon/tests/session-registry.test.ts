@@ -34,6 +34,7 @@ describe('SessionRegistry', () => {
     onSessionOrphaned: ReturnType<typeof mock>;
     onSessionResumed: ReturnType<typeof mock>;
     onConnectionPromoted: ReturnType<typeof mock>;
+    onConnectionReclaimed: ReturnType<typeof mock>;
   };
 
   beforeEach(() => {
@@ -43,6 +44,7 @@ describe('SessionRegistry', () => {
       onSessionOrphaned: mock(() => {}),
       onSessionResumed: mock(() => {}),
       onConnectionPromoted: mock(() => {}),
+      onConnectionReclaimed: mock(() => {}),
     };
 
     registry = new SessionRegistry(
@@ -222,6 +224,161 @@ describe('SessionRegistry', () => {
       expect(registry.getSessionForConnection(activeConnId)?.sessionId).toBe(sessionId);
       // Queued must NOT.
       expect(registry.getSessionForConnection(queuedConnId)).toBeUndefined();
+    });
+
+    test('attachState is "attached" for a fresh (non-busy) attach', () => {
+      const sessionId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      const result = registry.attachConnection(sessionId, generateId());
+
+      expect(result.attachState).toBe('attached');
+    });
+
+    test('attachState is "queued" when the session already has an active connection', () => {
+      const sessionId = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+      registry.attachConnection(sessionId, generateId());
+
+      const result = registry.attachConnection(sessionId, generateId());
+
+      expect(result.attachState).toBe('queued');
+    });
+  });
+
+  describe('same-device lock reclaim (#662)', () => {
+    test('reconnect with the SAME deviceId reclaims the lock instead of queuing', () => {
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, staleConn, 'device-A');
+      const result = registry.attachConnection(sessionId, newConn, 'device-A');
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('attached');
+      expect(registry.waitingConnectionCount).toBe(0);
+
+      const session = registry.getSession(sessionId);
+      expect(session?.activeConnectionId).toBe(newConn);
+      // The new connection now holds the write lock...
+      expect(registry.getSessionForConnection(newConn)?.sessionId).toBe(sessionId);
+      // ...and the stale one no longer does (it was evicted, not queued).
+      expect(registry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
+
+    test('fires onConnectionReclaimed with the stale and new connection ids', () => {
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, staleConn, 'device-A');
+      registry.attachConnection(sessionId, newConn, 'device-A');
+
+      expect(events.onConnectionReclaimed).toHaveBeenCalledTimes(1);
+      expect(events.onConnectionReclaimed).toHaveBeenCalledWith(sessionId, staleConn, newConn);
+    });
+
+    test('a DIFFERENT deviceId still queues behind the active connection', () => {
+      const sessionId = generateId();
+      const activeConn = generateId();
+      const otherConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, activeConn, 'device-A');
+      const result = registry.attachConnection(sessionId, otherConn, 'device-B');
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('queued');
+      expect(registry.waitingConnectionCount).toBe(1);
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
+
+    test("an UNDEFINED deviceId keeps today's behavior: queues, never reclaims", () => {
+      const sessionId = generateId();
+      const activeConn = generateId();
+      const otherConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      // Active connection attached WITHOUT a deviceId (older client).
+      registry.attachConnection(sessionId, activeConn);
+      const result = registry.attachConnection(sessionId, otherConn);
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('queued');
+      expect(registry.waitingConnectionCount).toBe(1);
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
+
+    test('a NEW connection with a deviceId does not reclaim when the active connection has none', () => {
+      const sessionId = generateId();
+      const activeConn = generateId();
+      const otherConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      // Active connection has no deviceId (e.g. an older client); the new
+      // connection sending one must not be treated as a match against "no
+      // device on record" — queue as normal.
+      registry.attachConnection(sessionId, activeConn);
+      const result = registry.attachConnection(sessionId, otherConn, 'device-A');
+
+      expect(result.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
+
+    test('reclaimed session replays full history to the new connection', () => {
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI(3));
+
+      registry.attachConnection(sessionId, staleConn, 'device-A');
+      const msg: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
+      registry.recordOutgoingMessage(sessionId, msg);
+
+      const result = registry.attachConnection(sessionId, newConn, 'device-A');
+
+      expect(result.replayMessages).toContain(msg);
+      expect(result.nextBulletId).toBe(4);
+    });
+
+    test('after reclaim, detaching the stale connection id is a no-op (does not orphan)', () => {
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, staleConn, 'device-A');
+      registry.attachConnection(sessionId, newConn, 'device-A');
+
+      // The stale connection's own disconnect (e.g. its socket finally
+      // errors out after being evicted) must not clobber the new connection's
+      // lock: activeConnectionId no longer equals staleConn, so this is a no-op.
+      registry.detachConnection(staleConn);
+
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(newConn);
+      expect(events.onSessionOrphaned).not.toHaveBeenCalled();
+    });
+
+    test('after reclaim, a genuinely different device attaching later still queues', () => {
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      const otherDeviceConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, staleConn, 'device-A');
+      registry.attachConnection(sessionId, newConn, 'device-A');
+
+      const result = registry.attachConnection(sessionId, otherDeviceConn, 'device-B');
+
+      expect(result.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(newConn);
     });
   });
 

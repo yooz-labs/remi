@@ -34,6 +34,8 @@ export interface WebSocketPlatformData {
    * session exists.
    */
   readonly mode?: 'query' | 'attach' | undefined;
+  /** Stable per-device identifier from the client's hello (#662). */
+  readonly deviceId?: string | null;
 }
 
 export interface TelegramPlatformData {
@@ -214,6 +216,13 @@ export interface ConnectionAdapter {
    * Check if a connection exists and is active.
    */
   hasConnection(connectionId: UUID): boolean;
+
+  /**
+   * Force-close a specific connection (#662: same-device lock reclaim evicts
+   * a stale connection this way). Optional: adapters with no meaningful
+   * "close a single connection" concept (e.g. Telegram) can omit it.
+   */
+  closeConnection?(connectionId: UUID, reason: string): boolean;
 }
 
 /**

@@ -71,14 +71,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
 
-      // resumeSessionId and mode are only carried by the websocket adapter.
-      // Telegram and relay clients have no equivalent (their adapter selects
-      // session ownership differently).
+      // resumeSessionId, mode, and deviceId are only carried by the websocket
+      // adapter. Telegram and relay clients have no equivalent (their adapter
+      // selects session ownership differently).
       const platformData = metadata.platformData;
       const resumeSessionId =
         platformData?.kind === 'websocket'
           ? (platformData.resumeSessionId ?? undefined)
           : undefined;
+      const deviceId =
+        platformData?.kind === 'websocket' ? (platformData.deviceId ?? undefined) : undefined;
       const currentPrimary = getPrimarySessionId();
 
       // Unified connection flow: one session per daemon, both modes behave the same.
@@ -100,7 +102,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       if (currentPrimary) {
         // Only auto-attach if the client wants to attach, not a utility client like ls/kill.
         if (!isQueryMode) {
-          const result = sessionRegistry.attachConnection(currentPrimary, connectionId);
+          const result = sessionRegistry.attachConnection(currentPrimary, connectionId, deviceId);
           if (result.success) {
             send(
               connectionId,
@@ -113,13 +115,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
                   nextBulletId: result.nextBulletId,
                 },
                 currentBinding(),
+                result.attachState,
               ),
             );
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
             }
             cancelOrphanTimeout();
-            log(`Attached connection ${connectionId} to session ${currentPrimary}`);
+            log(
+              `${result.attachState === 'queued' ? 'Queued' : 'Attached'} connection ${connectionId} ${result.attachState === 'queued' ? 'behind' : 'to'} session ${currentPrimary}`,
+            );
             return;
           }
         }
