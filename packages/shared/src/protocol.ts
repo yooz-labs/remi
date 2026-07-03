@@ -960,16 +960,22 @@ export function createStructuredAgentOutput(
 
 /**
  * Create a user input message.
+ *
+ * `id` is optional and defaults to a fresh `generateId()`. Callers that need
+ * the ack/retry state machine (#663) pass the SAME id back in on a retry so
+ * the daemon's `MessageIdTracker` dedups a resend that already landed,
+ * making the retry idempotent instead of double-submitting to the PTY.
  */
 export function createUserInput(
   sessionId: UUID,
   content: string,
   raw?: boolean,
   claudeSessionId?: UUID,
+  id?: UUID,
 ): UserInputMessage {
   return {
     type: 'user_input',
-    id: generateId(),
+    id: id ?? generateId(),
     timestamp: now(),
     sessionId,
     content,
