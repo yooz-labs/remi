@@ -11,6 +11,7 @@ import { hapticImpact } from '@/lib/haptics';
 import type { ReplyContext } from '@/lib/reply-format';
 import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
+import { Lock } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { ChatHeader } from './ChatHeader';
 import { InputArea } from './InputArea';
@@ -44,6 +45,8 @@ interface ChatViewProps {
   /** Long-press on a message bubble fires this with the message; consumer
    *  records it as the active reply context for the session (#401). */
   readonly onReply?: (message: UIMessage) => void;
+  /** Tap-to-retry a 'failed' message bubble (#663). */
+  readonly onRetryMessage?: (message: UIMessage) => void;
   /** Active reply context for this session, if any (#401). */
   readonly replyContext?: ReplyContext | null;
   /** Clear the active reply context (X button on the InputArea banner). */
@@ -75,6 +78,7 @@ export function ChatView({
   onAuqAnswer,
   onCancelQuestion,
   onReply,
+  onRetryMessage,
   replyContext,
   onClearReply,
   onCancel,
@@ -103,6 +107,11 @@ export function ChatView({
     session.status === 'executing' ||
     session.status === 'evaluating';
   const isConnected = session.connectionStatus === 'connected';
+  // Read-only: this session's connection is queued behind another client
+  // holding the exclusive write lock (#662/#663). Rare -- the daemon
+  // FIFO-promotes on disconnect and same-device reconnects self-heal via
+  // reclaim -- but must be visible instead of silently dropping input.
+  const isQueued = session.attachState === 'queued';
 
   // Render a stack of QuestionCards (main + any subagent prompts, #437) pinned
   // at the top of the chat. A pending card needs a live connection; an
@@ -150,6 +159,15 @@ export function ChatView({
         onEndSession={onEndSession}
       />
 
+      {/* Read-only banner (#662/#663): another client holds the write lock.
+          Rendered above the question stack so it's the first thing noticed. */}
+      {isQueued && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-warning)]/10 px-4 py-2 text-xs text-[var(--color-warning)]">
+          <Lock className="size-3.5 shrink-0" />
+          <span>Read-only: another device is attached to this session. Waiting for control.</span>
+        </div>
+      )}
+
       {/* Pinned question stack -- the headline interaction. One card per
           concurrent prompt (main + any subagent prompts, #437). Kept above
           the scroll so the answer is always reachable without scrolling. */}
@@ -174,6 +192,7 @@ export function ChatView({
         onRetry={onRetry}
         onBulletExpand={onBulletExpand}
         onReply={onReply}
+        onRetryMessage={onRetryMessage}
         viewMode={viewMode}
         keyboardVisible={keyboardVisible}
         showTimestamps={showTimestamps}
@@ -190,14 +209,14 @@ export function ChatView({
           onCancel={onCancel}
           question={null}
           isAgentBusy={isAgentBusy}
-          disabled={!isConnected}
+          disabled={!isConnected || isQueued}
           replyContext={replyContext ?? null}
           onClearReply={onClearReply}
           // Session-scoped draft persistence so a half-typed message survives
           // app suspension on iOS (#226) and switching to a different session
           // doesn't leak the draft across.
           draftKey={`remi-draft-${session.id}`}
-          placeholder={!isConnected ? 'Not connected' : 'Type a message...'}
+          placeholder={!isConnected ? 'Not connected' : isQueued ? 'Read-only' : 'Type a message...'}
         />
       )}
     </div>

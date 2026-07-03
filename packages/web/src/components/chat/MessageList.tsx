@@ -21,6 +21,8 @@ interface MessageListProps {
   readonly onBulletExpand?: (bulletId: number) => void;
   /** Long-press on a message bubble fires this with the message (#401). */
   readonly onReply?: (message: UIMessage) => void;
+  /** Tap-to-retry a 'failed' message bubble (#663). */
+  readonly onRetryMessage?: (message: UIMessage) => void;
   readonly viewMode?: ViewMode;
   readonly keyboardVisible?: boolean;
   readonly showTimestamps?: boolean;
@@ -128,6 +130,7 @@ export function MessageList({
   onRetry,
   onBulletExpand,
   onReply,
+  onRetryMessage,
   viewMode = 'compact',
   keyboardVisible = false,
   showTimestamps = true,
@@ -229,6 +232,7 @@ export function MessageList({
                   message={message}
                   onBulletExpand={onBulletExpand}
                   onReply={onReply}
+                  onRetryMessage={onRetryMessage}
                   viewMode={viewMode}
                   showTimestamp={showTimestamps}
                 />

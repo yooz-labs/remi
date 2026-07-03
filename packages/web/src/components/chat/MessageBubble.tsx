@@ -6,9 +6,8 @@
 
 import { useLongPress } from '@/hooks/useLongPress';
 import { hapticImpact } from '@/lib/haptics';
-import type { UIBullet, UIMessage } from '@/types';
+import type { UIBullet, UIMessage, UIMessageState } from '@/types';
 import type { TranscriptContentBlock } from '@remi/shared/protocol.ts';
-import type { MessageState } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
 import {
   AlertCircle,
@@ -19,6 +18,7 @@ import {
   FileText,
   Loader2,
   Pencil,
+  RotateCw,
   Terminal,
   Wrench,
 } from 'lucide-react';
@@ -32,11 +32,14 @@ interface MessageBubbleProps {
   readonly onBulletExpand?: (bulletId: number) => void;
   /** Long-press the bubble to set this message as the reply context (#401). */
   readonly onReply?: (message: UIMessage) => void;
+  /** Tap-to-retry a message stuck in the 'failed' state (#663): no ack
+   *  arrived within the timeout even after one automatic retry. */
+  readonly onRetryMessage?: (message: UIMessage) => void;
   readonly viewMode?: ViewMode;
 }
 
 /** Status icon based on message delivery state */
-function StatusIcon({ state }: { readonly state: MessageState }) {
+function StatusIcon({ state }: { readonly state: UIMessageState }) {
   switch (state) {
     case 'sending':
       return <Clock className="size-3.5 text-[var(--color-status-sending)]" />;
@@ -46,6 +49,8 @@ function StatusIcon({ state }: { readonly state: MessageState }) {
       return <CheckCheck className="size-3.5 text-[var(--color-status-delivered)]" />;
     case 'read':
       return <CheckCheck className="size-3.5 text-[var(--color-status-read)]" />;
+    case 'failed':
+      return <AlertCircle className="size-3.5 text-[var(--color-error)]" />;
     default:
       return null;
   }
@@ -258,6 +263,7 @@ export function MessageBubble({
   showTimestamp = true,
   onBulletExpand,
   onReply,
+  onRetryMessage,
   viewMode = 'compact',
 }: MessageBubbleProps) {
   const isUser = message.sender === 'user';
@@ -328,6 +334,8 @@ export function MessageBubble({
           message.isStreaming && 'animate-pulse',
           // Editing indicator
           message.isEditing && 'border-[var(--color-primary)] border-dashed',
+          // Failed-send indicator (#663): no ack within the timeout after retry.
+          message.state === 'failed' && 'border-[var(--color-error)]',
           // Long-press affordance hint on touch devices only.
           // `select-none` would break copy-paste on desktop; the
           // `pointer-coarse:` variant scopes the rule to touch input
@@ -382,8 +390,22 @@ export function MessageBubble({
             </span>
           )}
 
-          {/* Delivery status (only for user messages) */}
-          {isUser && <StatusIcon state={message.state} />}
+          {/* Delivery status (only for user messages). A failed send with a
+              retry handler renders as a tappable "Retry" affordance instead
+              of a bare icon (#663). */}
+          {isUser && message.state === 'failed' && onRetryMessage ? (
+            <button
+              type="button"
+              onClick={() => onRetryMessage(message)}
+              className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-error)] hover:opacity-80"
+              aria-label="Retry sending message"
+            >
+              <RotateCw className="size-3" />
+              Retry
+            </button>
+          ) : (
+            isUser && <StatusIcon state={message.state} />
+          )}
         </div>
       </div>
     </div>
