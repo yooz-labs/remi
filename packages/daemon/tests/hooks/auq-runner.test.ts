@@ -49,10 +49,13 @@ describe('runAuqAnswer', () => {
   });
 
   it('two questions: drives, sees the review, verifies, submits, closes', async () => {
-    // After all 7 planned keys, the review shows; the next ENTER (submit) closes.
+    // Planned keys: single(3) target[1] = DOWN,ENTER (2); multi(4) targets[0,2] =
+    // SPACE,DOWN,DOWN,SPACE,DOWN,DOWN,DOWN,ENTER (8) — DOWN-navigate to "Submit"
+    // (row optionCount+1) after the last toggle, not TAB (#661). Total 10 planned
+    // keys; after all of them, the review shows; the next ENTER (submit) closes.
     let phase: 'ans' | 'review' | 'done' = 'ans';
     const { deps, state } = makeSim((key, s) => {
-      if (phase === 'ans' && s.keys.length >= 7) {
+      if (phase === 'ans' && s.keys.length >= 10) {
         phase = 'review';
         return REVIEW;
       }
@@ -71,10 +74,10 @@ describe('runAuqAnswer', () => {
       deps,
     );
     expect(outcome).toBe('submitted');
-    // 7 planned keys + 1 submit ENTER; no Esc ever.
-    expect(state.keys).toHaveLength(8);
+    // 10 planned keys + 1 submit ENTER; no Esc ever.
+    expect(state.keys).toHaveLength(11);
     expect(state.keys).not.toContain(AUQ_KEYS.ESC);
-    expect(state.keys[7]).toBe(AUQ_KEYS.ENTER);
+    expect(state.keys[10]).toBe(AUQ_KEYS.ENTER);
   });
 
   it('review mismatch: escalates WITHOUT submitting or pressing Esc', async () => {
@@ -82,7 +85,7 @@ describe('runAuqAnswer', () => {
     const wrongReview = REVIEW.replace('→ Green', '→ Blue');
     let phase: 'ans' | 'review' = 'ans';
     const { deps, state } = makeSim((_key, s) => {
-      if (phase === 'ans' && s.keys.length >= 7) {
+      if (phase === 'ans' && s.keys.length >= 10) {
         phase = 'review';
         return wrongReview;
       }
@@ -97,8 +100,8 @@ describe('runAuqAnswer', () => {
       deps,
     );
     expect(outcome).toBe('escalated');
-    // Only the 7 planned keys; no submit ENTER beyond them, no Esc.
-    expect(state.keys).toHaveLength(7);
+    // Only the 10 planned keys; no submit ENTER beyond them, no Esc.
+    expect(state.keys).toHaveLength(10);
     expect(state.keys).not.toContain(AUQ_KEYS.ESC);
   });
 

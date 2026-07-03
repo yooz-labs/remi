@@ -1326,6 +1326,12 @@ async function createNewSession(
       wsPort: remiStatus.wsPort,
       sendMessage,
       cleanup,
+      // #538/#661: an AUQ answered directly in the terminal (after the runner
+      // escalated) is detected in onData; wire the same cross-client dismissal +
+      // eval-cancel the phone-answered path uses (createInputHandlers below).
+      onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
+      cancelAutoApproveForQuestion: (sid, questionId, reason) =>
+        sessionGateHandles.get(sid)?.cancelEvalForQuestion(questionId, reason),
     },
     { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );

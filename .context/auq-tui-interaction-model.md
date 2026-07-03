@@ -6,6 +6,24 @@ in `packages/daemon/tests/fixtures/auq/`. This is the ground truth the answer dr
 is built on. **Re-verify on Claude Code releases** — the renderer is undocumented
 and can drift (cf. ExitPlanMode order, #598).
 
+> **Correction (2026-07-03, #661):** the multi-select "leave via `Enter` (or
+> `→`/`Tab`)" claim below was WRONG. `Tab`/right-arrow never appear in any
+> committed capture (`two-questions-single-and-multi.txt`, decoded lines
+> 99-122): the only way out of a multi-select is navigating `↓` past the
+> remaining options and "Type something" to a trailing "Submit" list item,
+> then `Enter`. The planner shipped on that wrong assumption and every
+> multi-select answer timed out and escalated (#661). See
+> `packages/daemon/src/hooks/auq-answer.ts`'s `planQuestionKeys` for the
+> corrected keystroke derivation. Do not reintroduce Tab/arrow as a
+> leave-multi-select shortcut without a fresh capture proving it.
+>
+> The corrected plan was live-validated 2026-07-03 against a real Claude Code
+> session (lone multi-select, runner-driven end-to-end: toggle -> down-nav to
+> Submit -> review verified -> submitted); that capture is committed as the
+> fourth fixture, `one-question-multi-select.txt`. Before it, only THREE
+> captures were ever committed despite the "Four captures" note above — the
+> missing one was exactly the lone multi-select this bug lived in.
+
 ## Shape
 
 AskUserQuestion renders an interactive **tabbed form**, NOT a numbered prompt:
@@ -38,8 +56,11 @@ Cursor starts on the FIRST option when a tab opens; `↑`/`↓` move exactly one
   option. If more tabs remain it **auto-advances** to the next tab; if it is the
   last unanswered input it triggers submit (see below).
 - **Multi-select**: `❯ [ ] Apple / [ ] Banana / … / [ ] Type something / Submit`.
-  `Space` toggles the cursor option (does NOT advance). The trailing `Submit` item
-  + `Enter` (or `→`/`Tab`) leaves the tab.
+  `Space` toggles the cursor option (does NOT advance). The option list has two
+  FIXED trailing rows after the real options: "Type something" then "Submit".
+  There is NO `Tab`/right-arrow shortcut out of a multi-select (never observed
+  in any capture, see the 2026-07-03 correction above) — leaving means
+  navigating `↓` to that trailing "Submit" row and pressing `Enter` on it.
 - **Review/Submit tab**: `Review your answers  ● <question> → <label>[, <label>…]`
   then `Ready to submit your answers?  ❯ 1. Submit answers  2. Cancel`. `Enter` on
   "Submit answers" submits. Result → transcript `User answered Claude's questions:`.
@@ -73,7 +94,9 @@ submit. Loop until closed or timeout.
 2. Per question, send keystrokes open-loop from the target answer:
    - single-select target i: `↓×i`, `Enter` (auto-advances).
    - multi-select target set S: from cursor 0, for each s∈S ascending: `↓×(s-prev)`,
-     `Space`; then advance toward the review (`→`/`Tab`).
+     `Space`; then `↓` from the last toggled index to the trailing "Submit" row
+     (row `optionCount + 1`, past the remaining options and "Type something"),
+     `Enter` on it (leaves the tab toward the next tab / review).
 3. After the keystrokes, monitor closure. If not closed, the review tab is up:
    parse `● <q> → <labels>` and compare to the target. **Only send the submit
    `Enter` when the review matches**; otherwise `Esc` + surface the raw prompt

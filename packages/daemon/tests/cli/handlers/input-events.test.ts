@@ -346,15 +346,16 @@ describe('createInputHandlers', () => {
         'Review your answers● Q1? → Green● Q2? → Apple, CherryReady to submit your answers?❯ 1. Submit answers 2. Cancel';
       const CLOSED = "⏺ User answered Claude's questions:  ⎿ ·…";
       let writes = 0;
-      // After the 7 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,TAB) the review
-      // appears; the runner verifies it then sends ENTER, which closes the tool.
+      // After the 9 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,DOWN,DOWN,ENTER
+      // — Q2 has optionCount=3, so "Submit" sits at row 4) the review appears; the
+      // runner verifies it then sends ENTER, which closes the tool.
       const pty = {
         id: generateId(),
         write: (content: string) => {
           ptyCapture.writes.push(content);
           writes += 1;
-          if (writes === 7) appendPtyOutput(sessionId, REVIEW);
-          else if (writes >= 8 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
+          if (writes === 9) appendPtyOutput(sessionId, REVIEW);
+          else if (writes >= 10 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
         },
         submitInput: async () => {},
         close: async () => {},
@@ -406,10 +407,70 @@ describe('createInputHandlers', () => {
         AUQ_KEYS.SPACE, // toggle Apple
         AUQ_KEYS.DOWN,
         AUQ_KEYS.DOWN,
-        AUQ_KEYS.SPACE, // toggle Cherry
-        AUQ_KEYS.TAB, // leave Q2
+        AUQ_KEYS.SPACE, // toggle Cherry (cursor now at row 2, optionCount=3)
+        AUQ_KEYS.DOWN,
+        AUQ_KEYS.DOWN, // past "Type something" to "Submit" (row optionCount+1=4)
+        AUQ_KEYS.ENTER, // leave Q2 (-> review)
         AUQ_KEYS.ENTER, // submit (after review verified)
       ]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      clearPtyOutput(sessionId);
+    });
+
+    // Regression for #661: the AUQ success branch (outcome closed/submitted) must
+    // consume the question exactly once EVEN IF cancelAutoApproveForQuestion
+    // throws, mirroring the plain-answer path's try/finally below.
+    test('a throwing cancelAutoApproveForQuestion still consumes the AUQ question and propagates', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      const pty = {
+        id: generateId(),
+        write: (content: string) => {
+          if (content === AUQ_KEYS.ENTER) {
+            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Green");
+          }
+        },
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession;
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Color: What is your favorite color?',
+        options: [
+          { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        kind: 'multi_question',
+        questions: [
+          {
+            header: 'Color',
+            text: 'What is your favorite color?',
+            multiSelect: false,
+            options: [
+              { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+              { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+            ],
+          },
+        ],
+      });
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        cancelAutoApproveForQuestion: () => {
+          throw new Error('eval-cancel gone');
+        },
+      });
+      await expect(
+        handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+          selections: [{ questionIndex: 0, optionIndices: [1] }],
+        }),
+      ).rejects.toThrow('eval-cancel gone');
+
+      // No zombie question left behind despite the throw.
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
       clearPtyOutput(sessionId);
     });
