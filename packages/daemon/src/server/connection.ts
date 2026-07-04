@@ -404,14 +404,20 @@ export class Connection {
       return;
     }
 
-    const result = await this.config.authenticator.verifyResponse(this.id, message);
+    const { result, verifiedFingerprint } = await this.config.authenticator.verifyResponse(
+      this.id,
+      message,
+    );
     this.send(result);
 
     if (result.success) {
-      // Auth passed; transition to 'connecting' (waiting for hello)
+      // Auth passed; transition to 'connecting' (waiting for hello). Bind the
+      // server-derived fingerprint (#671), never `message.clientFingerprint`
+      // — that field is client-claimed and unverified; the Authenticator
+      // guarantees `verifiedFingerprint` is set whenever `result.success`.
       this.state = 'connecting';
-      this.authenticatedFingerprint = message.clientFingerprint;
-      this.events.onAuthSuccess?.(message.clientFingerprint);
+      this.authenticatedFingerprint = verifiedFingerprint ?? null;
+      this.events.onAuthSuccess?.(this.authenticatedFingerprint ?? '');
     } else {
       this.events.onAuthFailed?.(result.error ?? 'unknown', message.clientFingerprint);
       this.close(`Authentication failed: ${result.error}`);
