@@ -13,7 +13,7 @@ would.
 
 It is **not wired into CI** — it needs an authenticated `claude` and a trusted
 working directory, and it drives a TUI with timing-sensitive input. Run it by
-hand when changing the binding/rotation code or before flipping the binder flag.
+hand when changing the binding/rotation code.
 
 ## What it validates
 
@@ -25,6 +25,13 @@ distinguish scenarios by. Two scenarios remain, split by daemon topology:
 |---|---|---|
 | 1. Single daemon | fm-430, fm-438, fm-452, GAP-6 | binder drives the bind (`[Binder] Lock adopted from binding store`); `/clear` rotates exactly once, caught either by the hook path (`Claude restart detected`) or the re-arming dir-poll (`No-hooks rotation detected via dir poll`, the #452 backstop); rebound + watcher rearmed; follow-up routes to the new transcript; old transcript frozen; no "Transcript not found"; `/compact` does not rotate or over-fire the dir-poll |
 | 2. Two daemons, same cwd | fm-427, fm-451 | distinct binds, content segregated (ALPHA↔D1, BETA↔D2), per-port `remi:<port>` markers; zombie sibling (dead claude child, live wrapper) does **not** poison the other daemon's binding |
+
+Hooks are up in scenario 1, so whether the hook path or the dir-poll observes
+a `/clear` rotation first is a genuine race (a local `readdir` tick vs. a hook
+POST round-trip), not a bug either way — `run.sh` reports which mechanism won
+as informational rather than requiring the dir-poll specifically. Only fm-452
+(hooks forced **down**, manual-only) proves the dir-poll as the sole path; see
+`failure-mode-matrix.md`.
 
 See `failure-mode-matrix.md` for the full per-mode repro + oracle reference and
 the two non-negotiable traps (assert the on-disk id actually changed; in the

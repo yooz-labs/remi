@@ -37,12 +37,18 @@ the live daemon log plus the on-disk transcripts:
 - `[Binder] No-hooks rotation detected via dir poll: <old> -> <new> (<path>)` —
   a rotation the 1.5s re-arming dir-poll caught (the #452 backstop; it also
   frequently wins the race against the hook path even when hooks are up, since
-  it is a local `readdir` versus a hook POST round-trip).
+  it is a local `readdir` versus a hook POST round-trip). Because it is a race
+  in a hooks-up run, `run.sh`'s single-daemon scenario treats this line as
+  informational (reports whichever mechanism won) rather than requiring it —
+  only the hooks-**down** leg below forces the dir-poll to be the sole path.
 - `[Binder] rotation poll: <id> owned by port <p>, not <ours>; ignoring` —
   sibling-marker gate rejecting a foreign transcript during the poll.
-- `[Binder] Dropped foreign <event>: lock=<id> incoming=<id>` — sibling-marker
-  gate rejecting a foreign transcript at the hook-listener boundary
-  (`binder.admits()`).
+- `[Binder] Dropped foreign <event>: lock=<id> incoming=<id>` — logged from
+  `onHookEvent()`'s `classify() === 'foreign'` branch (transcript-binder.ts:373)
+  when the sibling-marker check rejects an incoming transcript as not ours.
+  (`binder.admits()` is a separate, pure boolean gate with no logging of its
+  own — it decides whether a listener processes an event at all, upstream of
+  this classification.)
 - the on-disk `<id>.jsonl` files themselves — an id actually changed, content
   segregated, the old file frozen.
 

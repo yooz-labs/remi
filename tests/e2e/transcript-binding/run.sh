@@ -55,6 +55,18 @@ B=$(bound_transcript "$CWD" 18811 2>/dev/null | awk '{print $1}')
 check "/clear rotated to a NEW id (B != A)" "[ -n '$B' ] && [ '$B' != '$A' ]"
 check "rotation announced exactly once" "[ \$(grep -c '\[Binder\] Claude restart detected' '$E2E_STATE/s1.log') -eq 1 ]"
 check "no Transcript-not-found wedge" "[ \$(grep -ci 'not found' '$E2E_STATE/s1.log') -eq 0 ]"
+# Hooks are up in this scenario, so which mechanism observes the /clear
+# rotation first is a genuine race (a local readdir tick vs. a hook POST
+# round-trip) — NOT a bug either way. The dir-poll firing is not required
+# here; only the hooks-DOWN leg (fm-452, manual, see failure-mode-matrix.md)
+# forces it to be the sole path. Report which mechanism won as informational,
+# but if the dir-poll DID engage, its own two log lines must both be present.
+if grep -q 'No-hooks rotation detected via dir poll' "$E2E_STATE/s1.log"; then
+  ok "dir-poll (#452 machinery) engaged this run: No-hooks rotation detected via dir poll"
+  check "dir-poll rebound + rearmed watcher on B" "grep -q 'Transcript from DirPollRotation' '$E2E_STATE/s1.log'"
+else
+  ok "hook path caught the rotation first this run (dir-poll backstop did not need to engage)"
+fi
 
 Bf=$(tdir_for "$CWD")/$B.jsonl; Af=$(tdir_for "$CWD")/$A.jsonl
 bb=$(wc -l < "$Bf" 2>/dev/null || echo 0); ab=$(wc -l < "$Af" 2>/dev/null || echo 0)
