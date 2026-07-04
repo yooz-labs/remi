@@ -547,6 +547,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       content: string,
       raw?: boolean,
       claudeSessionId?: UUID,
+      messageId?: UUID,
     ): Promise<void> => {
       log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
 
@@ -569,7 +570,12 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             ? createError(
                 'NOT_ACTIVE_CONNECTION',
                 'This connection is read-only (another connection holds the session); input was not delivered.',
-                { sessionId },
+                // #681: carry the rejected input's own message id so the client
+                // can flip that SPECIFIC bubble to 'failed' -- the daemon acks
+                // user_input unconditionally before this check runs (connection.ts
+                // handleUserInput), so the sender otherwise sees a false
+                // "delivered" with only the read-only banner as a signal.
+                { sessionId, ...(messageId !== undefined && { messageId }) },
               )
             : createError('SESSION_NOT_FOUND', `Session ${sessionId} not found on this daemon`),
         );

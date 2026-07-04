@@ -92,6 +92,58 @@ describe('relay-adapter routeMessage forwards claudeSessionId (#429)', () => {
     expect(calls[0]?.claudeSessionId).toBeUndefined();
   });
 
+  test('user_input with id forwards it as messageId, the 6th arg (#681)', () => {
+    const calls: Array<{ messageId: string | undefined }> = [];
+    const adapter = makeAdapter({
+      onUserInput: (
+        _connectionId: UUID,
+        _sessionId: UUID,
+        _content: string,
+        _raw?: boolean,
+        _claudeSessionId?: string,
+        messageId?: string,
+      ) => {
+        calls.push({ messageId });
+      },
+    });
+
+    const msgId = 'aaaa1111-2222-3333-4444-555555555555';
+    callRoute(adapter, {
+      type: 'user_input',
+      sessionId: SID,
+      content: 'ls',
+      id: msgId,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.messageId).toBe(msgId);
+  });
+
+  test('user_input without id forwards messageId undefined', () => {
+    const calls: Array<{ messageId: string | undefined }> = [];
+    const adapter = makeAdapter({
+      onUserInput: (
+        _connectionId: UUID,
+        _sessionId: UUID,
+        _content: string,
+        _raw?: boolean,
+        _claudeSessionId?: string,
+        messageId?: string,
+      ) => {
+        calls.push({ messageId });
+      },
+    });
+
+    callRoute(adapter, {
+      type: 'user_input',
+      sessionId: SID,
+      content: 'ls',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.messageId).toBeUndefined();
+  });
+
   test('answer with claudeSessionId is forwarded as the 5th arg', () => {
     const calls: Array<{ claudeSessionId: string | undefined }> = [];
     const adapter = makeAdapter({

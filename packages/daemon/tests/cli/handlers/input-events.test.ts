@@ -167,11 +167,44 @@ describe('createInputHandlers', () => {
       const msg = sendCalls[0]?.message as {
         type: string;
         code?: string;
-        details?: { sessionId?: string };
+        details?: { sessionId?: string; messageId?: string };
       };
       expect(msg.type).toBe('error');
       expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
       expect(msg.details?.sessionId).toBe(sessionId);
+      // No messageId was passed in -- details must not carry a stray key.
+      expect(msg.details?.messageId).toBeUndefined();
+    });
+
+    test('NOT_ACTIVE_CONNECTION details carry the rejected input message id (#681)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY({ writes: [], submits: [] }),
+        fakeMessageAPI(new Map()),
+      );
+      const activeConn = generateId();
+      sessionRegistry.attachConnection(sessionId, activeConn);
+      // CID is a different connection queued behind the active one.
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const droppedMessageId = generateId();
+      await handlers.onUserInput(CID, sessionId, 'ignored', false, undefined, droppedMessageId);
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        code?: string;
+        details?: { sessionId?: string; messageId?: string };
+      };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
+      expect(msg.details?.sessionId).toBe(sessionId);
+      // The specific dropped message's id, so the client can flip that ONE
+      // bubble to 'failed' instead of only refreshing the read-only banner.
+      expect(msg.details?.messageId).toBe(droppedMessageId);
     });
 
     test('swallows pty.write errors and logs them (raw path)', async () => {
