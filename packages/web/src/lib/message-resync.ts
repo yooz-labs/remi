@@ -63,6 +63,18 @@ export function selectResyncSurvivors(
  * entry is recent enough to be a candidate match for a survivor's send (see
  * `mergeResyncSurvivors`). The daemon is reached over a local network, so
  * drift should be minor, but isn't assumed to be exactly zero.
+ *
+ * Known tradeoff: `survivor.timestamp` is the CLIENT's clock (set at
+ * `handleSend`); the reloaded entry's `timestamp` is the DAEMON's clock (from
+ * Claude Code's JSONL `createdAt`). These are two different machines' clocks,
+ * not just network latency -- a remote setup (phone over Wi-Fi/cellular to a
+ * dev machine, rather than same-machine/LAN) can plausibly drift past 5s.
+ * If it does, a genuinely-landed send gets wrongly rejected as a candidate
+ * match and is re-appended as a survivor alongside its own transcript twin:
+ * a non-destructive duplicate bubble (the failed-looking bubble plus its
+ * landed copy), not data loss. That's the accepted failure mode here --
+ * strictly better than the pre-fix behavior of silently dropping the
+ * message entirely.
  */
 const CLOCK_SKEW_TOLERANCE_MS = 5000;
 
