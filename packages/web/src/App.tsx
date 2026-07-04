@@ -60,6 +60,7 @@ import {
   createDetachSession,
   createKillSessionRequest,
   createRegisterDeviceToken,
+  createUnregisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
@@ -2168,9 +2169,23 @@ function App() {
     [connectDirect],
   );
 
-  // Disconnect a connection and remove from persisted localStorage
+  // Disconnect a connection and remove from persisted localStorage.
+  //
+  // Device tokens otherwise persist across disconnect ON PURPOSE (push must
+  // keep working while the app is suspended, see the onDisconnect comment in
+  // the daemon's connection-events handler). This is the one explicit
+  // user-removal path where the token really should stop pushing (#690):
+  // best-effort unregister BEFORE closing the socket, tolerating a dead
+  // socket — local removal must proceed either way.
   const handleDisconnect = useCallback(
     (connectionId: ConnectionId) => {
+      if (deviceTokenRef.current) {
+        try {
+          cmSendMessage(connectionId, createUnregisterDeviceToken(deviceTokenRef.current));
+        } catch (err) {
+          console.warn('[App] Failed to send unregister_device_token:', err);
+        }
+      }
       disconnectConnection(connectionId);
       try {
         const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
@@ -2181,11 +2196,22 @@ function App() {
         console.warn('[App] Failed to update persisted connections:', err);
       }
     },
-    [disconnectConnection],
+    [disconnectConnection, cmSendMessage],
   );
 
-  // Disconnect ALL connections and clear everything (back to connect screen)
+  // Disconnect ALL connections and clear everything (back to connect screen).
+  // Same explicit-removal unregister as handleDisconnect, sent to every
+  // connection best-effort before disconnectAll() closes the sockets.
   const handleDisconnectAll = useCallback(() => {
+    if (deviceTokenRef.current) {
+      for (const conn of connectionsRef.current) {
+        try {
+          cmSendMessage(conn.connectionId, createUnregisterDeviceToken(deviceTokenRef.current));
+        } catch (err) {
+          console.warn('[App] Failed to send unregister_device_token:', err);
+        }
+      }
+    }
     disconnectAll();
     setSessions([]);
     setMessages([]);
@@ -2197,7 +2223,7 @@ function App() {
     } catch (err) {
       console.warn('[App] Failed to clear persisted connections:', err);
     }
-  }, [disconnectAll]);
+  }, [disconnectAll, cmSendMessage]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
