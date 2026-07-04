@@ -209,6 +209,16 @@ export interface NotificationDispatcherDeps {
    * token stays in the map; tests / old callers). */
   pruneToken?: (token: string) => void;
   /**
+   * Pull in a removal/registration recorded by another daemon on this machine
+   * since the shared store last read the file (#690). Wired to
+   * `DeviceTokenStore.refreshFromDisk` (read + reconcile, no write). Called at
+   * the top of every push decision so a server the user just removed stops
+   * getting pushed without waiting for this dispatcher's own next unrelated
+   * register/prune call. Absent => no refresh (tests / old callers); must be
+   * synchronous and non-throwing.
+   */
+  refreshDeviceTokens?: () => void;
+  /**
    * Current push config; read on every dispatch so the caller can swap the
    * source without re-wiring. Must be synchronous and non-throwing.
    */
@@ -282,6 +292,12 @@ export class NotificationDispatcher {
     held: boolean,
   ): Promise<DeliveryOutcome> {
     const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
+
+    // #690: pick up a token removal/registration a sibling daemon on this
+    // machine recorded since our last read, so a just-removed server stops
+    // pushing promptly instead of on this dispatcher's own next unrelated
+    // register/prune call.
+    this.deps.refreshDeviceTokens?.();
 
     const sessionForPush = sessionRegistry.getSession(questionSessionId);
     const hasActiveClient =

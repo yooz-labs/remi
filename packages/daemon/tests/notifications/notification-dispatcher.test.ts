@@ -767,6 +767,99 @@ describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
   });
 });
 
+describe('NotificationDispatcher.refreshDeviceTokens (#690)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+
+  function register(): void {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    configureLogger({ writeLog: () => {} });
+  });
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('is called before every push decision when wired', async () => {
+    register();
+    deviceTokens.set('tok', { token: 'tok', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let calls = 0;
+    const dispatcher = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: async () => {},
+        refreshDeviceTokens: () => {
+          calls++;
+        },
+      },
+      SID,
+    );
+    await dispatcher.maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(calls).toBe(1);
+  });
+
+  test('a sibling-recorded removal picked up by refreshDeviceTokens drops the push channel', async () => {
+    register();
+    deviceTokens.set('tok', { token: 'tok', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let pushed = false;
+    const dispatcher = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: async () => {
+          pushed = true;
+        },
+        // Simulates DeviceTokenStore.refreshFromDisk() finding a sibling
+        // daemon's tombstone for this token and dropping it from the SAME
+        // shared map the dispatcher reads.
+        refreshDeviceTokens: () => {
+          deviceTokens.delete('tok');
+        },
+      },
+      SID,
+    );
+    const outcome = await dispatcher.maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(outcome).toBe('no_channel');
+    expect(pushed).toBe(false);
+  });
+
+  test('absent refreshDeviceTokens is a no-op (backward compatible)', async () => {
+    register();
+    deviceTokens.set('tok', { token: 'tok', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let pushed = false;
+    const dispatcher = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: async () => {
+          pushed = true;
+        },
+      },
+      SID,
+    );
+    const outcome = await dispatcher.maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(outcome).toBe('pushed');
+    expect(pushed).toBe(true);
+  });
+});
+
 describe('isTokenInvalidError (#603 Phase 6)', () => {
   test('matches the structured tokenInvalid flag and the APNS token reasons', () => {
     expect(isTokenInvalidError(new Error('502 {"error":"x","tokenInvalid":true}'))).toBe(true);

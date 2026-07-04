@@ -40,6 +40,9 @@ export interface MessageApiSetupDeps {
   /** Prune a permanently-invalid device token (epic #603 Phase 6). Forwarded to
    *  the dispatcher so a BadDeviceToken push removes the dead token. */
   pruneToken?: (token: string) => void;
+  /** Pull in a sibling daemon's token removal/registration before a push
+   *  decision (#690). Forwarded to the dispatcher. */
+  refreshDeviceTokens?: () => void;
   /**
    * Called on every question emission so the caller can swap config sources
    * without re-wiring the factory. MUST be synchronous and non-throwing: it
@@ -80,6 +83,7 @@ export function createMessageApiForSession(
     transcriptWatchers,
     deviceTokens,
     pruneToken,
+    refreshDeviceTokens,
     pushConfig,
     updateRemiStatus,
     maxBulletLength,
@@ -106,6 +110,7 @@ export function createMessageApiForSession(
       pushConfig,
       getPrimarySessionId,
       ...(pruneToken ? { pruneToken } : {}),
+      ...(refreshDeviceTokens ? { refreshDeviceTokens } : {}),
     },
     sessionId,
   );
