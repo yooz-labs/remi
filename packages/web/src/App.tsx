@@ -39,6 +39,7 @@ import { dismissDeliveredNotification } from '@/lib/notifications';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
+import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
@@ -402,25 +403,25 @@ function App() {
           void syncNativeIdentity();
         }
 
-        // Reconnect-mid-rotation only: if the chat the user is CURRENTLY
-        // viewing belongs to this connection and the daemon came back with a
-        // new session id, follow it into the new session. A fresh connect (no
-        // chat open) must NOT bypass the session list -- land on the list so
-        // the user picks a session. Notification deep-links navigate via their
-        // own `push-notification-tap` handler, not here.
+        // If the chat the user is CURRENTLY viewing belongs to this
+        // connection and the daemon came back with a different session id,
+        // the `cleaned` filter above already dropped that old session from
+        // `sessions` for this connection -- it no longer resolves to
+        // anything. Fall back to the session list rather than silently
+        // follow into a session the user never picked (#688): a stray
+        // reconnect must never swap the user into a different live
+        // session's input box. `evictIfActive` is a no-op if the user has
+        // since navigated away from `oldActive` on their own. A fresh
+        // connect (no chat open) stays on the list either way. Notification
+        // deep-links navigate via their own `push-notification-tap` handler,
+        // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive !== message.sessionId) {
+        if (oldActive && oldActive !== message.sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
-          // `oldActive &&` both gates on a chat being open (so a fresh connect
-          // stays on the list) and narrows oldActive to non-null for the
-          // cleanup below.
-          if (oldActive && oldSession?.connectionId === connectionId) {
-            setActiveSessionId(message.sessionId);
+          if (oldSession?.connectionId === connectionId) {
+            setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));
             setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
             setQuestions((prev) => clearSessionQuestions(prev, oldActive));
-            // Load the followed session's transcript so the chat isn't left
-            // empty after a reconnect-mid-rotation adopt (#499).
-            ensureTranscriptLoaded(connectionId, message.sessionId);
           }
         }
         break;
@@ -884,11 +885,12 @@ function App() {
           const evictedIds = [...evictedSet];
           forgetEvictedSessions(evictedIds);
           for (const id of evictedIds) loadedTranscriptsRef.current.delete(id);
-          // If the active session was evicted, clear it so the UI doesn't sit on
-          // a dead session and re-request its (gone) transcript.
-          if (activeSessionIdRef.current && evictedSet.has(activeSessionIdRef.current)) {
-            setActiveSessionId(null);
-          }
+          // If the active session was evicted, clear it so the UI doesn't sit
+          // on a dead session and re-request its (gone) transcript. Routed
+          // through the same #688 rule as every other selection-changing
+          // path: a phantom sweep can only clear the active session, never
+          // swap it for a different live one.
+          setActiveSessionId(evictManyIfActive(activeSessionIdRef.current, evictedSet));
           console.warn('[App] Evicted stale phantom sessions (#577):', evictedIds);
         }
 
@@ -1154,9 +1156,14 @@ function App() {
           break;
         }
         // NOT_FOUND with a current-session redirect (#499): the requested
-        // session is stale (the daemon restarted or rotated past it). Follow the
-        // daemon to its current session and load it, instead of dead-ending on a
-        // "Transcript for session X not found" bubble the user can't escape.
+        // session is stale (the daemon restarted or rotated past it). The
+        // daemon's error carries no id for which request this was, so it
+        // cannot be correlated to a specific in-flight load (#688) -- only
+        // auto-follow when nothing is currently selected (matches the
+        // fresh-connect gate above); otherwise this would risk silently
+        // swapping whatever live session the user is looking at for the
+        // daemon's current one. The upsert below still makes the daemon's
+        // current session visible/tappable in the list either way.
         if (errorCode === 'NOT_FOUND') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const currentSessionId = asNonEmptyString(details?.['currentSessionId']) as
@@ -1204,12 +1211,28 @@ function App() {
             // session's already-rendered messages. ensureTranscriptLoaded gates
             // on the loaded marker, so it fetches only if not already loaded
             // (no wipe, no duplicate append) (#499 review).
-            setActiveSessionId(currentSessionId);
+            //
+            // Refresh and navigate are separate concerns (#688 review): the
+            // refresh must happen whenever currentSessionId is present --
+            // including when it's already the active session (e.g. a
+            // bindingRotated hello_ack cleared its loaded marker without a
+            // re-fetch) -- while navigation is gated on autoSelectIfNone so a
+            // stale/racy redirect never steals focus from a different
+            // explicit selection.
             ensureTranscriptLoaded(connectionId, currentSessionId);
-            console.warn(
-              '[App] Stale transcript request; following daemon to current session',
-              currentSessionId,
-            );
+            const nextActive = autoSelectIfNone(activeSessionIdRef.current, currentSessionId);
+            if (nextActive !== activeSessionIdRef.current) {
+              setActiveSessionId(nextActive);
+              console.warn(
+                '[App] Stale transcript request; following daemon to current session',
+                currentSessionId,
+              );
+            } else {
+              console.warn(
+                '[App] Stale transcript request; daemon current session available but not followed (active selection present)',
+                currentSessionId,
+              );
+            }
             break;
           }
         }
