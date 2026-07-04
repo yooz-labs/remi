@@ -512,6 +512,27 @@ describe('SessionRegistry', () => {
       expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
     });
 
+    test('matching deviceId + active has NO fingerprint but reconnect sends one: refused', () => {
+      // The other mismatch direction: the active connection is loopback-
+      // exempt / unauthenticated (no bound identity), and a fingerprint-
+      // bearing (authenticated, networked) peer replays/guesses its deviceId.
+      // A networked peer must not be able to reclaim a loopback-held lock
+      // with deviceId alone just because the active side has nothing to
+      // check against — strict null==null equality means "one side null,
+      // the other not" is always a mismatch, never a free pass.
+      const sessionId = generateId();
+      const activeConn = generateId();
+      const attackerConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, activeConn, 'device-A'); // loopback, no fingerprint
+      const result = registry.attachConnection(sessionId, attackerConn, 'device-A', 'fp-mallory');
+
+      expect(result.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
+
     test('matching deviceId with NO fingerprint on either side still reclaims (auth off)', () => {
       // Localhost-only daemons (or loopback-exempt peers) never authenticate,
       // so neither side ever carries a clientFingerprint. Falls back to
@@ -559,6 +580,38 @@ describe('SessionRegistry', () => {
       const genuine = registry.attachConnection(sessionId, generateId(), 'device-B', 'fp-bob');
       expect(genuine.attachState).toBe('attached');
       expect(events.onConnectionReclaimed).toHaveBeenCalledTimes(1);
+    });
+
+    test('PoC: reclaim bound to the actual authenticated identity (not a forged claim) lands queued, victim untouched', () => {
+      // Mirrors connection-auth.test.ts's TOFU PoC one layer down: even if an
+      // attacker completed authentication while WIRE-claiming the victim's
+      // fingerprint, the fix means only their OWN server-derived fingerprint
+      // is ever bound to their connection (never the claim). So the value
+      // that actually reaches attachConnection for the attacker's connection
+      // is their own, genuinely different, fingerprint — the victim's lock
+      // must survive untouched.
+      const sessionId = generateId();
+      const victimConn = generateId();
+      const attackerConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, victimConn, 'victim-device', 'fp-victim-real');
+
+      // Attacker replays/guesses the victim's deviceId; even though they
+      // WIRE-claimed 'fp-victim-real' during their own auth handshake, the
+      // daemon only ever binds the derived fingerprint of the key they
+      // actually control, which differs from the victim's.
+      const result = registry.attachConnection(
+        sessionId,
+        attackerConn,
+        'victim-device',
+        'fp-attacker-derived',
+      );
+
+      expect(result.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(victimConn);
+      expect(registry.getSessionForConnection(victimConn)?.sessionId).toBe(sessionId);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
     });
   });
 

@@ -416,21 +416,26 @@ export class SessionRegistry {
   }
 
   /**
-   * Whether an incoming hello's `deviceId` (+ `clientFingerprint`, when the
-   * active connection has an authenticated identity to bind to) matches the
+   * Whether an incoming hello's `deviceId` + `clientFingerprint` match the
    * identity already recorded for the session's active connection (#671).
    *
    * `deviceId` alone is a client-supplied, self-reported string (persisted in
    * `localStorage`) with no cryptographic binding, so trusting it in
    * isolation lets any peer that can complete a hello (a hostile local
    * process, or an authenticated-but-different networked peer) evict the
-   * legitimate device by guessing or replaying its `deviceId`. When the
-   * active connection has a bound `clientFingerprint` (established via the
-   * Ed25519 challenge-response), the incoming `clientFingerprint` must match
-   * it too. When the active connection has NO bound fingerprint — auth is
-   * disabled daemon-wide, or this peer was loopback-exempted from auth —
-   * there is no authenticated identity to check against, so this falls back
-   * to today's `deviceId`-only comparison.
+   * legitimate device by guessing or replaying its `deviceId`.
+   *
+   * `clientFingerprint` must match via STRICT equality, where "both null"
+   * counts as a match: `null` means "no authenticated identity" (auth
+   * disabled daemon-wide, or this peer was loopback-exempted from auth), and
+   * a loopback peer reclaiming its own loopback-held lock (both null) is the
+   * original #666 feature this must keep working. Every other combination —
+   * fingerprint-bearing peer against a fingerprint-less active connection,
+   * fingerprint-less peer against a fingerprint-bound active connection, or
+   * two different fingerprints — is a genuine identity mismatch and must
+   * queue, not reclaim. A user switching transports (e.g. network-authenticated
+   * one moment, SSH-tunnel loopback the next) is an accepted, deliberate
+   * consequence: it queues FIFO instead of reclaiming.
    */
   private matchesActiveDevice(
     session: ManagedSession,
@@ -440,12 +445,7 @@ export class SessionRegistry {
     if (session.activeDeviceId === null || session.activeDeviceId !== deviceId) {
       return false;
     }
-    if (session.activeClientFingerprint !== null) {
-      return (
-        clientFingerprint !== undefined && clientFingerprint === session.activeClientFingerprint
-      );
-    }
-    return true;
+    return session.activeClientFingerprint === (clientFingerprint ?? null);
   }
 
   /**
