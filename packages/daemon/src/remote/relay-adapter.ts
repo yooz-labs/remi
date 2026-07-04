@@ -337,12 +337,14 @@ export class RelayAdapter implements ConnectionAdapter {
         }
         const claudeId =
           typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
+        const messageId = typeof msg['id'] === 'string' ? msg['id'] : undefined;
         this.events.onUserInput?.(
           connectionId,
           msg['sessionId'],
           msg['content'],
           msg['raw'] === true,
           claudeId,
+          messageId,
         );
         break;
       }

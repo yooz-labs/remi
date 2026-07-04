@@ -60,8 +60,16 @@ export interface ConnectionEvents {
   /** Connection closed */
   onDisconnect: (reason: string) => void;
 
-  /** User input received */
-  onUserInput: (sessionId: UUID, content: string, raw?: boolean, claudeSessionId?: UUID) => void;
+  /** User input received. `messageId` is the wire message's own id (#681),
+   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
+   *  specific bubble that was dropped. */
+  onUserInput: (
+    sessionId: UUID,
+    content: string,
+    raw?: boolean,
+    claudeSessionId?: UUID,
+    messageId?: UUID,
+  ) => void;
 
   /** Answer to question received. `extra` carries the structured AskUserQuestion
    *  selections / cancel flag (#627); omitted for a plain single answer. */
@@ -457,6 +465,7 @@ export class Connection {
       message.content,
       message.raw,
       message.claudeSessionId,
+      message.id,
     );
   }
 
