@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
+import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { isProcessAlive } from './process-alive.ts';
 
 export interface StoredSession {
@@ -65,6 +66,13 @@ export class SessionStore {
       // Normalize legacy entries that lack the pid field
       for (const s of data.sessions) {
         s.pid ??= null;
+        // Self-heal a tilde-form or otherwise unnormalized projectPath (#680):
+        // every read re-normalizes so a legacy entry (or one written by an
+        // older binary) becomes safe to `chdir`/compare against without a
+        // dedicated migration. Mirrors SessionRegistryFile's persist-side fix
+        // for #674; not written back to disk here, but any subsequent write()
+        // (save/markExited/updateClaudeSessionId/purge) persists the fix.
+        s.projectPath = normalizeProjectPath(s.projectPath);
       }
       return data.sessions;
     } catch (err) {
@@ -100,14 +108,24 @@ export class SessionStore {
     }
   }
 
-  /** Save or update a session record. Trims to MAX_SESSIONS. */
+  /**
+   * Save or update a session record. Trims to MAX_SESSIONS. Normalizes
+   * `projectPath` (expands `~`, resolves to absolute) before persisting, so a
+   * caller passing a raw, unexpanded path never writes a malformed entry that
+   * `--resume` would later `chdir` into (#680). Mirrors SessionRegistryFile's
+   * `register()` fix for the live-sessions registry (#674).
+   */
   save(session: StoredSession): void {
+    const normalized: StoredSession = {
+      ...session,
+      projectPath: normalizeProjectPath(session.projectPath),
+    };
     const sessions = this.read();
-    const idx = sessions.findIndex((s) => s.remiSessionId === session.remiSessionId);
+    const idx = sessions.findIndex((s) => s.remiSessionId === normalized.remiSessionId);
     if (idx >= 0) {
-      sessions[idx] = session;
+      sessions[idx] = normalized;
     } else {
-      sessions.push(session);
+      sessions.push(normalized);
     }
     // Trim oldest exited sessions if over limit
     if (sessions.length > MAX_SESSIONS) {
