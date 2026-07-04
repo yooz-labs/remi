@@ -1013,6 +1013,10 @@ export class TranscriptBinder {
    */
   private maybeRearmRotationPoll(storedId: string | null): void {
     if (storedId === null || this.mode === 'shadow' || this.closed) return;
+    // Not just a fast-path: armRotationPoll() below is ALREADY idempotent on
+    // this same check, but without it here the log line would fire on every
+    // hook event once armed, not just on the actual re-arm. This check exists
+    // to gate the log, not to prevent a double-arm.
     if (this.rotationPollTimer !== null) return; // already armed
     log(
       `[Binder] Re-arming rotation dir-poll from a later bindingStore read (missed at construction, #676): claude=${storedId.slice(0, 8)}`,
