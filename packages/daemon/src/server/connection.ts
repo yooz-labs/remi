@@ -158,6 +158,11 @@ export class Connection {
   private resumeSessionId: UUID | null = null;
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
+  /** Authenticated client fingerprint from the Ed25519 challenge-response
+   *  (#671), null until `handleAuthResponse` succeeds. Stays null for the
+   *  lifetime of the connection when no authenticator is configured (auth
+   *  disabled, or this peer was loopback-exempted). */
+  private authenticatedFingerprint: string | null = null;
 
   private readonly ws: WebSocket;
   private readonly config: Required<ConnectionConfig> & {
@@ -236,6 +241,12 @@ export class Connection {
   /** Stable per-device identifier from the client's hello, if sent (#662). */
   get connectionDeviceId(): string | null {
     return this.deviceId;
+  }
+
+  /** Authenticated client fingerprint, if this connection completed the
+   *  Ed25519 challenge-response (#671). Null when unauthenticated. */
+  get connectionClientFingerprint(): string | null {
+    return this.authenticatedFingerprint;
   }
 
   /** Check if connection is active */
@@ -399,6 +410,7 @@ export class Connection {
     if (result.success) {
       // Auth passed; transition to 'connecting' (waiting for hello)
       this.state = 'connecting';
+      this.authenticatedFingerprint = message.clientFingerprint;
       this.events.onAuthSuccess?.(message.clientFingerprint);
     } else {
       this.events.onAuthFailed?.(result.error ?? 'unknown', message.clientFingerprint);

@@ -39,17 +39,20 @@ export interface SessionRegistryConfig {
 
 /**
  * A connection waiting for the active connection to disconnect, plus the
- * deviceId its hello carried (#662). Carrying deviceId here (not just the
- * bare connectionId) means a queued connection that gets FIFO-promoted still
- * has its device identity on record afterward — so if IT later goes stale,
- * a genuine reconnect from the same device can still reclaim the lock
- * instead of falling back to queuing behind a connection that's gone for
- * good. Without this, only the FIRST-ever active connection's device got
- * reclaim protection; every promoted connection would lose it.
+ * deviceId (and, when authenticated, clientFingerprint) its hello carried
+ * (#662, #671). Carrying these here (not just the bare connectionId) means a
+ * queued connection that gets FIFO-promoted still has its identity on record
+ * afterward — so if IT later goes stale, a genuine reconnect from the same
+ * device can still reclaim the lock instead of falling back to queuing
+ * behind a connection that's gone for good. Without this, only the
+ * FIRST-ever active connection's identity got reclaim protection; every
+ * promoted connection would lose it.
  */
 interface WaitingConnection {
   readonly connectionId: UUID;
   readonly deviceId?: string;
+  /** Authenticated identity bound to this deviceId at hello time (#671). */
+  readonly clientFingerprint?: string;
 }
 
 /** Result of attempting to attach a connection to a session */
@@ -133,6 +136,18 @@ export interface ManagedSession {
    * the lock) from "a second writer" (queue behind the FIFO as before).
    */
   activeDeviceId: string | null;
+  /**
+   * Authenticated client fingerprint bound to the active connection at hello
+   * time (#671), null when the connection had no authenticated identity to
+   * bind (auth disabled daemon-wide, or this peer was loopback-exempted from
+   * auth). `deviceId` alone is client-supplied and replayable, so when this
+   * is non-null a reclaim attempt must match it too, not just `deviceId` —
+   * otherwise an authenticated-but-different peer could evict the legitimate
+   * device by guessing/replaying its deviceId. When null, there is no
+   * authenticated identity to bind to, so reclaim falls back to today's
+   * deviceId-only comparison.
+   */
+  activeClientFingerprint: string | null;
   /** When session was last disconnected (null if connected) */
   lastDisconnectedAt: Timestamp | null;
   /** Timeout handle for orphan cleanup */
@@ -223,6 +238,7 @@ export class SessionRegistry {
       lastActivityAt: createdAt,
       activeConnectionId: null,
       activeDeviceId: null,
+      activeClientFingerprint: null,
       lastDisconnectedAt: null,
       orphanTimeoutId: null,
       messageHistory: [],
@@ -296,9 +312,17 @@ export class SessionRegistry {
   /**
    * Attach a connection to the session. `deviceId`, when present and equal to
    * the device already holding the exclusive write lock, reclaims that lock
-   * instead of queuing behind it (#662) — see `reclaimForSameDevice`.
+   * instead of queuing behind it (#662) — see `reclaimForSameDevice`. When
+   * the active connection has a bound `clientFingerprint` (#671), reclaim
+   * additionally requires the incoming `clientFingerprint` to match it —
+   * see `matchesActiveDevice`.
    */
-  attachConnection(sessionId: UUID, connectionId: UUID, deviceId?: string): AttachResult {
+  attachConnection(
+    sessionId: UUID,
+    connectionId: UUID,
+    deviceId?: string,
+    clientFingerprint?: string,
+  ): AttachResult {
     if (this.session === null || this.session.sessionId !== sessionId) {
       return {
         success: false,
@@ -312,22 +336,27 @@ export class SessionRegistry {
     }
 
     if (this.session.activeConnectionId !== null) {
-      const sameDeviceReconnecting =
+      if (
         deviceId !== undefined &&
-        this.session.activeDeviceId !== null &&
-        this.session.activeDeviceId === deviceId;
-
-      if (sameDeviceReconnecting) {
-        return this.reclaimForSameDevice(this.session, connectionId, deviceId);
+        this.matchesActiveDevice(this.session, deviceId, clientFingerprint)
+      ) {
+        return this.reclaimForSameDevice(this.session, connectionId, deviceId, clientFingerprint);
       }
 
-      // Different (or unknown) device: provide replay history (read-only)
-      // and queue for write promotion when the active connection disconnects.
-      // Writes from queued connections are blocked at getSessionForConnection.
-      // deviceId travels with the queue entry (#662) so promotion still
-      // leaves this connection reclaimable if it later goes stale itself.
+      // Different (or unknown) device, or a fingerprint mismatch against an
+      // authenticated active connection (#671): provide replay history
+      // (read-only) and queue for write promotion when the active connection
+      // disconnects. Writes from queued connections are blocked at
+      // getSessionForConnection. deviceId/clientFingerprint travel with the
+      // queue entry (#662, #671) so promotion still leaves this connection
+      // reclaimable (under the same identity check) if it later goes stale
+      // itself.
       if (!this.waitingConnections.some((w) => w.connectionId === connectionId)) {
-        this.waitingConnections.push({ connectionId, ...(deviceId !== undefined && { deviceId }) });
+        this.waitingConnections.push({
+          connectionId,
+          ...(deviceId !== undefined && { deviceId }),
+          ...(clientFingerprint !== undefined && { clientFingerprint }),
+        });
       }
       const MAX_REPLAY_MESSAGES = 200;
       const replayMessages =
@@ -356,6 +385,7 @@ export class SessionRegistry {
     // Attach connection
     this.session.activeConnectionId = connectionId;
     this.session.activeDeviceId = deviceId ?? null;
+    this.session.activeClientFingerprint = clientFingerprint ?? null;
     this.session.lastDisconnectedAt = null;
     this.session.explicitlyDetached = false;
 
@@ -386,6 +416,39 @@ export class SessionRegistry {
   }
 
   /**
+   * Whether an incoming hello's `deviceId` (+ `clientFingerprint`, when the
+   * active connection has an authenticated identity to bind to) matches the
+   * identity already recorded for the session's active connection (#671).
+   *
+   * `deviceId` alone is a client-supplied, self-reported string (persisted in
+   * `localStorage`) with no cryptographic binding, so trusting it in
+   * isolation lets any peer that can complete a hello (a hostile local
+   * process, or an authenticated-but-different networked peer) evict the
+   * legitimate device by guessing or replaying its `deviceId`. When the
+   * active connection has a bound `clientFingerprint` (established via the
+   * Ed25519 challenge-response), the incoming `clientFingerprint` must match
+   * it too. When the active connection has NO bound fingerprint — auth is
+   * disabled daemon-wide, or this peer was loopback-exempted from auth —
+   * there is no authenticated identity to check against, so this falls back
+   * to today's `deviceId`-only comparison.
+   */
+  private matchesActiveDevice(
+    session: ManagedSession,
+    deviceId: string,
+    clientFingerprint?: string,
+  ): boolean {
+    if (session.activeDeviceId === null || session.activeDeviceId !== deviceId) {
+      return false;
+    }
+    if (session.activeClientFingerprint !== null) {
+      return (
+        clientFingerprint !== undefined && clientFingerprint === session.activeClientFingerprint
+      );
+    }
+    return true;
+  }
+
+  /**
    * Same physical device reconnecting while its own previous connection is
    * still marked active (#662) — a dead-socket reconnect (missed pongs, iOS
    * background, NAT drop) rather than a second writer. Evicts the stale
@@ -394,11 +457,15 @@ export class SessionRegistry {
    * likely never come back. `onConnectionReclaimed` tells the caller which
    * connection id is now stale so it can force-close the underlying
    * transport; the registry itself has no transport handle to do that.
+   *
+   * Callers must have already verified the identity match via
+   * `matchesActiveDevice` (#671).
    */
   private reclaimForSameDevice(
     session: ManagedSession,
     connectionId: UUID,
     deviceId: string,
+    clientFingerprint?: string,
   ): AttachResult {
     const staleId = session.activeConnectionId;
     if (staleId === null) {
@@ -409,6 +476,7 @@ export class SessionRegistry {
 
     session.activeConnectionId = connectionId;
     session.activeDeviceId = deviceId;
+    session.activeClientFingerprint = clientFingerprint ?? null;
     session.lastDisconnectedAt = null;
     session.explicitlyDetached = false;
 
@@ -457,16 +525,23 @@ export class SessionRegistry {
     // Detach connection
     this.session.activeConnectionId = null;
     this.session.activeDeviceId = null;
+    this.session.activeClientFingerprint = null;
     this.session.lastDisconnectedAt = now();
 
     // Try to promote the next waiting connection (loop until one succeeds or queue exhausted)
     while (this.waitingConnections.length > 0) {
       const next = this.waitingConnections.shift();
       if (!next) continue;
-      // Carrying deviceId through promotion (#662) means this connection
-      // stays reclaimable by the same device if it later goes stale itself,
-      // instead of only the original active connection getting that protection.
-      const result = this.attachConnection(sessionId, next.connectionId, next.deviceId);
+      // Carrying deviceId + clientFingerprint through promotion (#662, #671)
+      // means this connection stays reclaimable (under the same identity
+      // check) by the same device if it later goes stale itself, instead of
+      // only the original active connection getting that protection.
+      const result = this.attachConnection(
+        sessionId,
+        next.connectionId,
+        next.deviceId,
+        next.clientFingerprint,
+      );
       if (result.success) {
         try {
           this.events.onConnectionPromoted?.(sessionId, next.connectionId, result);
@@ -479,6 +554,7 @@ export class SessionRegistry {
           );
           this.session.activeConnectionId = null;
           this.session.activeDeviceId = null;
+          this.session.activeClientFingerprint = null;
           this.session.lastDisconnectedAt = now();
           continue;
         }
