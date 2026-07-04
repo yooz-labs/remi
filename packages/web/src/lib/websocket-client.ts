@@ -28,6 +28,18 @@ export interface WebSocketClientConfig {
    * the connection after `MAX_MISSED_HEARTBEATS` consecutive misses (#664).
    */
   readonly heartbeatInterval?: number;
+  /**
+   * Fixed per-connection offset in ms, added to every automatic-reconnect
+   * delay computed by `scheduleReconnect` (#685). The owner managing
+   * multiple simultaneous connections (e.g. `useConnectionManager`, one
+   * `WebSocketClient` per daemon) assigns each a distinct offset so that N
+   * connections whose heartbeats independently detect staleness at ~the same
+   * wall-clock tick don't all schedule their reconnect within the same
+   * few-hundred-ms window -- the residual stampede left over after #664
+   * staggered only the explicit `app-force-reconnect` sweep. Defaults to 0
+   * (no stagger), which leaves the single-connection case unaffected.
+   */
+  readonly reconnectStaggerMs?: number;
 }
 
 /** WebSocket client events */
@@ -96,7 +108,37 @@ const DEFAULT_CONFIG: Required<Omit<WebSocketClientConfig, 'url'>> = {
   maxReconnectDelay: 30000,
   connectionTimeout: 10000,
   heartbeatInterval: 15000,
+  reconnectStaggerMs: 0,
 };
+
+/** Options for {@link computeReconnectDelay}. */
+export interface ReconnectDelayOptions {
+  /** Base delay in ms before backoff (config.reconnectDelay). */
+  readonly reconnectDelay: number;
+  /** Cap on the backoff component, before jitter/stagger (config.maxReconnectDelay). */
+  readonly maxReconnectDelay: number;
+  /** Fixed per-connection offset in ms; see `WebSocketClientConfig.reconnectStaggerMs` (#685). */
+  readonly staggerMs?: number;
+  /** Injectable for deterministic tests; defaults to `Math.random`. */
+  readonly random?: () => number;
+}
+
+/**
+ * Pure exponential-backoff-with-jitter(-and-stagger) delay computation,
+ * extracted out of `scheduleReconnect` so it's unit-testable without real
+ * timers/sockets (#685, precedent: `planForceReconnect` in
+ * `connection-manager-helpers.ts`). `attempt` is the 1-based reconnect
+ * attempt number (i.e. `reconnectAttempts` AFTER incrementing).
+ */
+export function computeReconnectDelay(attempt: number, options: ReconnectDelayOptions): number {
+  const random = options.random ?? Math.random;
+  const base = options.reconnectDelay * Math.pow(2, Math.min(attempt - 1, 10));
+  const capped = Math.min(base, options.maxReconnectDelay);
+  // Up to 25% jitter to prevent thundering herd between unrelated clients
+  // retrying at the same base delay.
+  const jitter = capped * random() * 0.25;
+  return capped + jitter + (options.staggerMs ?? 0);
+}
 
 /**
  * WebSocket client for connecting to the Remi daemon.
@@ -364,12 +406,11 @@ export class WebSocketClient {
     this.setStatus('reconnecting');
     this.reconnectAttempts++;
 
-    // Exponential backoff with jitter, capped at maxReconnectDelay
-    const base = this.config.reconnectDelay * Math.pow(2, Math.min(this.reconnectAttempts - 1, 10));
-    const capped = Math.min(base, this.config.maxReconnectDelay);
-    // Add up to 25% jitter to prevent thundering herd
-    const jitter = capped * Math.random() * 0.25;
-    const delay = capped + jitter;
+    const delay = computeReconnectDelay(this.reconnectAttempts, {
+      reconnectDelay: this.config.reconnectDelay,
+      maxReconnectDelay: this.config.maxReconnectDelay,
+      staggerMs: this.config.reconnectStaggerMs,
+    });
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
