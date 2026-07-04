@@ -173,6 +173,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onRegisterDeviceToken?.(connectionId, token, platform);
       },
 
+      onUnregisterDeviceToken: (connectionId, token) => {
+        this.events.onUnregisterDeviceToken?.(connectionId, token);
+      },
+
       onError: (error) => {
         // For server-level errors, use a dummy connection ID
         this.events.onError?.('server' as UUID, error);

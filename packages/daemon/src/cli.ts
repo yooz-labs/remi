@@ -1186,6 +1186,9 @@ async function createNewSession(
       // #603 Phase 6: prune a permanently-invalid token (BadDeviceToken) so the
       // daemon stops retrying it; the store removes + persists it.
       pruneToken: (token) => deviceTokenStore.prune(token, 'apns-invalid'),
+      // #690: pick up a sibling daemon's removal/registration before deciding
+      // whether to push.
+      refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
       pushConfig: () => ({
         signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
         ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1470,6 +1473,9 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
   registerDeviceToken: (token, platform, connectionId) =>
     deviceTokenStore.register(token, platform, connectionId),
+  // #690: explicit user removal of this server from the phone app. Never
+  // fires on a mere disconnect/app suspension — those must keep pushing.
+  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
   sessionStore,
   sessionRegistry,
   send: sendToConnection,

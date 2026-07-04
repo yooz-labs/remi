@@ -9,6 +9,7 @@ import { AppLayout } from '@/components/layout';
 import { ConnectModal, NewSessionModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
+import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
 import { dedupeConnectionUrls } from '@/lib/connection-id';
@@ -65,6 +66,7 @@ import {
   createDetachSession,
   createKillSessionRequest,
   createRegisterDeviceToken,
+  createUnregisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
@@ -1512,6 +1514,9 @@ function App() {
             ),
           );
         }
+        // #690: resolves handleDisconnect's await on the unregister_device_token
+        // ack, if one is pending for this id. No-op otherwise (see ack-waiter.ts).
+        resolveAckWaiter(ackWaitersRef.current, message.ack.messageId);
         break;
       }
 
@@ -1896,6 +1901,10 @@ function App() {
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
+  // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
+  // used only by handleDisconnect's unregister_device_token wait; see the
+  // 'ack' case in handleMessage for the resolving side.
+  const ackWaitersRef = useRef<AckWaiters>(new Map());
   useEffect(() => {
     const handleToken = (e: Event) => {
       const token = (e as CustomEvent<string>).detail;
@@ -2370,24 +2379,138 @@ function App() {
     [connectDirect],
   );
 
-  // Disconnect a connection and remove from persisted localStorage
+  // Bounded wait for the unregister ack before re-registering siblings (see
+  // handleDisconnect). Must stay well under anything a user would notice as
+  // "hung" -- a timeout is a normal, self-healing outcome, not a failure.
+  const UNREGISTER_ACK_TIMEOUT_MS = 2000;
+
+  // Disconnect a connection and remove from persisted localStorage.
+  //
+  // Device tokens otherwise persist across disconnect ON PURPOSE (push must
+  // keep working while the app is suspended, see the onDisconnect comment in
+  // the daemon's connection-events handler). This is the one explicit
+  // user-removal path where the token really should stop pushing (#690):
+  // best-effort unregister BEFORE closing the socket, tolerating a dead
+  // socket — local removal must proceed either way.
+  //
+  // The shared ~/.remi/device-tokens.json keys entries by TOKEN, not by
+  // connection, so several servers running on the SAME machine share one
+  // entry. Unregistering with just the removed connection would tombstone
+  // that shared entry for every OTHER server on that machine too. So after
+  // the unregister, re-send register_device_token to every OTHER
+  // still-connected daemon: its fresh `registeredAt` outraces the tombstone
+  // the removed daemon just wrote, which is what keeps the token alive for
+  // the servers the user did NOT remove (see DeviceTokenStore's reconcile
+  // rule).
+  //
+  // Ordering guarantee: the two sends are two synchronous ws.send()s on
+  // SEPARATE connections to SEPARATE daemon processes -- there is no
+  // happens-before between them on the wire. If the re-register reached its
+  // daemon and committed BEFORE the removed daemon committed its tombstone,
+  // the later-but-numerically-newer tombstone would silently win the race
+  // and defeat a re-registration the user never asked for. So this AWAITS
+  // the unregister's `ack` -- which the daemon deliberately sends only AFTER
+  // the tombstone is written to disk (see Connection
+  // .handleUnregisterDeviceToken) -- before firing the re-register loop,
+  // making "tombstone committed" a real happens-before in the common case.
+  // Bounded to UNREGISTER_ACK_TIMEOUT_MS so a slow/unresponsive daemon can
+  // never hang this UI action: on timeout (or an immediate send failure),
+  // proceed with the re-registers anyway -- the same race as before this
+  // fix, which self-heals on the sibling's next connection cycle either way.
+  // Known gap: the relay (WebRTC) transport does not send acks for this
+  // message type at all (packages/daemon/src/remote/relay-adapter.ts never
+  // calls sendAck), so removing a relay-connected server always takes the
+  // full timeout before re-registering siblings -- same bounded, self-healing
+  // fallback, just always on that path rather than only when the daemon is
+  // slow.
   const handleDisconnect = useCallback(
     (connectionId: ConnectionId) => {
-      disconnectConnection(connectionId);
-      try {
-        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
-        const urls: string[] = stored ? JSON.parse(stored) : [];
-        const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
-        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
-      } catch (err) {
-        console.warn('[App] Failed to update persisted connections:', err);
+      const finish = (): void => {
+        disconnectConnection(connectionId);
+        try {
+          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+          const urls: string[] = stored ? JSON.parse(stored) : [];
+          const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
+          localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
+        } catch (err) {
+          console.warn('[App] Failed to update persisted connections:', err);
+        }
+      };
+
+      const token = deviceTokenRef.current;
+      if (!token) {
+        finish();
+        return;
       }
+
+      const reregisterSiblings = (): void => {
+        for (const id of connectedIds) {
+          if (id === connectionId) continue;
+          try {
+            const ok = cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+            if (!ok) {
+              console.warn(`[App] Could not re-register device token with ${id}`);
+            }
+          } catch (err) {
+            console.warn('[App] Failed to re-register device token:', err);
+          }
+        }
+      };
+
+      const unregisterMsg = createUnregisterDeviceToken(token);
+      let sent = false;
+      try {
+        sent = cmSendMessage(connectionId, unregisterMsg);
+      } catch (err) {
+        console.warn('[App] Failed to send unregister_device_token:', err);
+      }
+
+      if (!sent) {
+        // Nothing to await -- the connection is already unreachable, so
+        // there is no ack race to guard against.
+        console.warn(
+          `[App] Could not notify ${connectionId} (unreachable); it may resume pushing if it comes back`,
+        );
+        reregisterSiblings();
+        finish();
+        return;
+      }
+
+      void awaitAck(ackWaitersRef.current, unregisterMsg.id, UNREGISTER_ACK_TIMEOUT_MS).then((acked) => {
+        if (!acked) {
+          console.warn(
+            `[App] No unregister ack from ${connectionId} within ${UNREGISTER_ACK_TIMEOUT_MS}ms; re-registering siblings anyway (self-heals on next connection cycle)`,
+          );
+        }
+        reregisterSiblings();
+        finish();
+      });
     },
-    [disconnectConnection],
+    [disconnectConnection, cmSendMessage, connectedIds],
   );
 
-  // Disconnect ALL connections and clear everything (back to connect screen)
+  // Disconnect ALL connections and clear everything (back to connect screen).
+  // Same explicit-removal unregister as handleDisconnect, sent to every
+  // connection best-effort before disconnectAll() closes the sockets. No
+  // re-register here — every server is being removed, so the whole machine's
+  // token is meant to go quiet (an accepted limitation: an unreachable
+  // connection cannot be notified and may resume pushing if it comes back).
   const handleDisconnectAll = useCallback(() => {
+    const token = deviceTokenRef.current;
+    if (token) {
+      for (const conn of connectionsRef.current) {
+        try {
+          const sent = cmSendMessage(conn.connectionId, createUnregisterDeviceToken(token));
+          if (!sent) {
+            console.warn(
+              `[App] Could not notify ${conn.connectionId} (unreachable); it may resume pushing if it comes back`,
+            );
+          }
+        } catch (err) {
+          console.warn('[App] Failed to send unregister_device_token:', err);
+        }
+      }
+    }
     disconnectAll();
     setSessions([]);
     setMessages([]);
@@ -2399,7 +2522,7 @@ function App() {
     } catch (err) {
       console.warn('[App] Failed to clear persisted connections:', err);
     }
-  }, [disconnectAll]);
+  }, [disconnectAll, cmSendMessage]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {

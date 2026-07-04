@@ -99,6 +99,7 @@ export type ProtocolMessage =
   | DetachSessionMessage
   | DetachSessionAckMessage
   | RegisterDeviceTokenMessage
+  | UnregisterDeviceTokenMessage
   | DaemonUpdateAvailableMessage
   | SessionRotatedMessage
   | SessionViewsMessage
@@ -719,6 +720,20 @@ export interface RegisterDeviceTokenMessage {
 }
 
 /**
+ * Unregister a device token (#690). Sent only on explicit user removal of a
+ * server/machine from the app — NOT on ordinary disconnect or app suspension,
+ * both of which must keep pushing to a suspended device. See handleDisconnect
+ * / handleDisconnectAll in the web client.
+ */
+export interface UnregisterDeviceTokenMessage {
+  readonly type: 'unregister_device_token';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** APNS or FCM device token to remove */
+  readonly token: string;
+}
+
+/**
  * Daemon notifies attached clients that a newer remi binary is on disk.
  *
  * The running wrapper is locked to its startup-time code and cannot be
@@ -850,6 +865,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'detach_session',
     'detach_session_ack',
     'register_device_token',
+    'unregister_device_token',
     'daemon_update_available',
     'session_rotated',
     'session_views',
@@ -1573,6 +1589,16 @@ export function createRegisterDeviceToken(
     timestamp: now(),
     token,
     platform,
+  };
+}
+
+/** Create a device token unregistration message (#690) */
+export function createUnregisterDeviceToken(token: string): UnregisterDeviceTokenMessage {
+  return {
+    type: 'unregister_device_token',
+    id: generateId(),
+    timestamp: now(),
+    token,
   };
 }
 

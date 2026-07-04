@@ -31,6 +31,7 @@ import {
   createSessionUpdate,
   createStructuredAgentOutput,
   createTranscriptContent,
+  createUnregisterDeviceToken,
   createUserInput,
   deserialize,
   generateId,
@@ -201,6 +202,19 @@ describe('deserialize()', () => {
 
     expect(parsed).not.toBeNull();
     expect(parsed?.type).toBe('ping');
+  });
+
+  test('accepts a raw unregister_device_token payload (#690)', () => {
+    const json = JSON.stringify({
+      type: 'unregister_device_token',
+      id: generateId(),
+      timestamp: now(),
+      token: 'ios-device-token-abc',
+    });
+    const parsed = deserialize(json);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.type).toBe('unregister_device_token');
   });
 
   test('returns null for invalid JSON', () => {
@@ -925,6 +939,25 @@ describe('Message factory functions', () => {
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('detach_session_ack');
+    });
+  });
+
+  describe('createUnregisterDeviceToken() (#690)', () => {
+    test('creates unregister request carrying the token', () => {
+      const msg = createUnregisterDeviceToken('ios-device-token-abc');
+      expect(msg.type).toBe('unregister_device_token');
+      expect(msg.token).toBe('ios-device-token-abc');
+      expect(msg.id).toBeDefined();
+      expect(msg.timestamp).toBeDefined();
+    });
+
+    test('serializes and deserializes', () => {
+      const msg = createUnregisterDeviceToken('ios-device-token-abc');
+      const serialized = serialize(msg);
+      const deserialized = deserialize(serialized);
+      expect(deserialized).not.toBeNull();
+      expect(deserialized?.type).toBe('unregister_device_token');
+      expect((deserialized as { token: string }).token).toBe('ios-device-token-abc');
     });
   });
 

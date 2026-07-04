@@ -117,6 +117,9 @@ export interface ServerEvents {
   /** Device token registered for push notifications */
   onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
 
+  /** Device token unregistered — explicit user removal of this server (#690) */
+  onUnregisterDeviceToken: (connectionId: UUID, token: string) => void;
+
   /** Error occurred */
   onError: (error: Error) => void;
 }
@@ -594,6 +597,10 @@ export class WebSocketServer {
 
       onRegisterDeviceToken: (token, platform) => {
         this.events.onRegisterDeviceToken?.(ws.data.connectionId, token, platform);
+      },
+
+      onUnregisterDeviceToken: (token) => {
+        this.events.onUnregisterDeviceToken?.(ws.data.connectionId, token);
       },
 
       onError: (error) => {
