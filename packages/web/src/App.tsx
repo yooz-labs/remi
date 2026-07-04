@@ -83,6 +83,13 @@ const LOCALSTORAGE_SESSION_DAEMONS_KEY = 'remi-session-daemons';
 // so this comfortably covers a real catch-up burst without mistaking a much
 // later, genuinely new turn for part of the same resync.
 const RESYNC_FLUSH_DEBOUNCE_MS = 1500;
+// Hard ceiling on how long survivors can sit stashed (armed once, at the
+// first stash for a session -- not reset by the debounce). Without this, a
+// session that keeps streaming transcript_content (e.g. a long mid-turn
+// response arriving as a live-watcher reload, which never sends
+// transcript_load_complete) re-arms RESYNC_FLUSH_DEBOUNCE_MS forever and the
+// failed bubble + Retry stay invisible for the whole turn (#687 review).
+const RESYNC_MAX_STASH_AGE_MS = 10000;
 
 /**
  * Narrow an unknown JSON value to a non-empty string. Used at the
@@ -273,18 +280,28 @@ function App() {
   // Unconfirmed messages stashed by clearSessionForRebind, keyed by session
   // id, awaiting re-merge into the freshly reloaded transcript (#687).
   const resyncSurvivorsRef = useRef<Map<UUID, readonly UIMessage[]>>(new Map());
+  // Debounced flush: re-armed on every transcript_content for the session.
   const resyncFlushTimersRef = useRef<Map<UUID, ReturnType<typeof setTimeout>>>(new Map());
+  // Hard-ceiling flush: armed once, at the first stash, never reset. Whichever
+  // of transcript_load_complete / debounce-quiet / this cap fires first wins
+  // (flushResyncSurvivors' delete-first guard makes the other two safe no-ops).
+  const resyncMaxAgeTimersRef = useRef<Map<UUID, ReturnType<typeof setTimeout>>>(new Map());
 
   // Flush timers must not outlive the component (React 18 StrictMode
   // double-invokes effects in dev, which would otherwise leak a duplicate
   // set of timers).
   useEffect(() => {
-    const timers = resyncFlushTimersRef.current;
+    const flushTimers = resyncFlushTimersRef.current;
+    const maxAgeTimers = resyncMaxAgeTimersRef.current;
     return () => {
-      for (const timer of timers.values()) {
+      for (const timer of flushTimers.values()) {
         clearTimeout(timer);
       }
-      timers.clear();
+      flushTimers.clear();
+      for (const timer of maxAgeTimers.values()) {
+        clearTimeout(timer);
+      }
+      maxAgeTimers.clear();
     };
   }, []);
 
@@ -308,24 +325,45 @@ function App() {
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
+    // Cancel and forget both resync timers for `sid`, if any -- shared by
+    // flushResyncSurvivors (a trigger just fired) and discardResyncStash (the
+    // session is gone, no trigger will ever fire).
+    const clearResyncTimers = (sid: UUID) => {
+      const flushTimer = resyncFlushTimersRef.current.get(sid);
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        resyncFlushTimersRef.current.delete(sid);
+      }
+      const maxAgeTimer = resyncMaxAgeTimersRef.current.get(sid);
+      if (maxAgeTimer) {
+        clearTimeout(maxAgeTimer);
+        resyncMaxAgeTimersRef.current.delete(sid);
+      }
+    };
+
     // Re-attach any unconfirmed messages stashed for `sid` by
     // clearSessionForRebind, now that a fresh reload has landed (#687).
-    // Cancels the fallback debounce timer since this call already IS the
-    // flush; idempotent no-op if nothing is pending.
+    // Cancels both resync timers since this call already IS the flush;
+    // idempotent no-op if nothing is pending (safe to call from more than
+    // one trigger -- see clearSessionForRebind).
     const flushResyncSurvivors = (sid: UUID) => {
       const survivors = resyncSurvivorsRef.current.get(sid);
       if (!survivors) return;
       resyncSurvivorsRef.current.delete(sid);
-      const timer = resyncFlushTimersRef.current.get(sid);
-      if (timer) {
-        clearTimeout(timer);
-        resyncFlushTimersRef.current.delete(sid);
-      }
+      clearResyncTimers(sid);
       setMessages((prev) => {
         const reloaded = prev.filter((m) => m.sessionId === sid);
         const others = prev.filter((m) => m.sessionId !== sid);
         return [...others, ...mergeResyncSurvivors(reloaded, survivors)];
       });
+    };
+
+    // The session is gone (kill_session_response success): drop any stashed
+    // survivors and their timers without flushing -- there is no message
+    // slice left to re-insert them into (#687 review finding 3).
+    const discardResyncStash = (sid: UUID) => {
+      resyncSurvivorsRef.current.delete(sid);
+      clearResyncTimers(sid);
     };
 
     // (Re)arm the fallback flush: if no further transcript_content for `sid`
@@ -349,7 +387,16 @@ function App() {
     // forget the loaded-transcript marker so the load gate re-pulls history.
     // Unconfirmed client-only messages (still-sending, unacked, or failed
     // sends and their failure notes) are stashed rather than dropped, so a
-    // resync never silently loses what the user typed (#687).
+    // resync never silently loses what the user typed (#687). Three
+    // independent triggers can flush the stash back in (flushResyncSurvivors'
+    // delete-first guard makes any of them safe to fire after another already
+    // has): transcript_load_complete (explicit "reload done" signal, the
+    // one-shot transcript_load_request path), the debounce below (no further
+    // transcript_content for a quiet period -- the fallback for the
+    // live-watcher reload path, which has no completion signal), and a hard
+    // RESYNC_MAX_STASH_AGE_MS cap armed once, here, so an actively-streaming
+    // session that keeps re-arming the debounce can't starve the flush
+    // indefinitely.
     const clearSessionForRebind = (sid: string) => {
       // Read messagesRef (not a setMessages updater) so the ref mutation +
       // schedule-flush decision below run synchronously against a value we
@@ -367,6 +414,12 @@ function App() {
       loadedTranscriptsRef.current.delete(sid);
       if (resyncSurvivorsRef.current.has(sid as UUID)) {
         scheduleResyncFlush(sid as UUID);
+        if (!resyncMaxAgeTimersRef.current.has(sid as UUID)) {
+          resyncMaxAgeTimersRef.current.set(
+            sid as UUID,
+            setTimeout(() => flushResyncSurvivors(sid as UUID), RESYNC_MAX_STASH_AGE_MS),
+          );
+        }
       }
     };
 
@@ -1055,6 +1108,12 @@ function App() {
         }
         const killedSessionId = pending?.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
         if (message.success) {
+          // Session torn down: drop any resync stash + timers for it rather
+          // than let a pending flush re-insert messages into a dead session's
+          // slice later (#687 review finding 3).
+          if (killedSessionId) {
+            discardResyncStash(killedSessionId);
+          }
           // Session torn down; refresh the list so the dead session drops off.
           const reqList = requestSessionListRef.current;
           if (reqList) {

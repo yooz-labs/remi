@@ -59,15 +59,57 @@ export function selectResyncSurvivors(
 }
 
 /**
+ * Allowance for client/server clock drift when deciding whether a reloaded
+ * entry is recent enough to be a candidate match for a survivor's send (see
+ * `mergeResyncSurvivors`). The daemon is reached over a local network, so
+ * drift should be minor, but isn't assumed to be exactly zero.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 5000;
+
+/**
+ * Indices into `reloaded` that are content-eligible matches for `survivor`:
+ * same sender+content, AND timestamped at or after the survivor's own send
+ * (minus clock-skew tolerance). The timestamp floor is what excludes
+ * unrelated, already-landed history that merely happens to share the same
+ * text (e.g. the user replied "ok" three times earlier in the conversation,
+ * long before this survivor's own, unrelated "ok" was typed) -- a plain
+ * content match with no time bound would misclassify that old, unrelated
+ * send as "this one landed" and drop it.
+ */
+function candidateLandedIndices(survivor: UIMessage, reloaded: readonly UIMessage[]): number[] {
+  const cutoff = Date.parse(survivor.timestamp) - CLOCK_SKEW_TOLERANCE_MS;
+  const indices: number[] = [];
+  reloaded.forEach((r, i) => {
+    if (r.sender === survivor.sender && r.content === survivor.content) {
+      const rTime = Date.parse(r.timestamp);
+      // An unparseable timestamp can't be confirmed as at-or-after the
+      // survivor's send; treat it as not a match rather than risk a false
+      // positive (losing genuine user intent is worse than a rare
+      // stray duplicate).
+      if (!Number.isNaN(rTime) && rTime >= cutoff) indices.push(i);
+    }
+  });
+  return indices;
+}
+
+/**
  * Re-attach `survivors` after a fresh transcript reload. A survivor is
  * dropped instead of re-attached when it turns out to have landed after all
- * -- a reloaded message with matching sender+content (the ack or its note
- * was lost, not the send itself; the daemon's `MessageIdTracker` makes a
- * same-id retry idempotent, but the reloaded transcript's entry ids are
- * generated independently of the client's wire message id, so content is
- * the only correlation available here -- same as the existing optimistic
- * <-> transcript reconciliation in message-dedup.ts). A system note is kept
- * only alongside the send it describes, never on its own.
+ * -- a reloaded message with matching sender+content and a plausible
+ * timestamp (the ack or its note was lost, not the send itself; the
+ * daemon's `MessageIdTracker` makes a same-id retry idempotent, but the
+ * reloaded transcript's entry ids are generated independently of the
+ * client's wire message id, so content is the only correlation available
+ * here -- same as the existing optimistic <-> transcript reconciliation in
+ * message-dedup.ts). A system note is kept only alongside the send it
+ * describes, never on its own.
+ *
+ * Claim discipline: each reloaded entry can satisfy at most one survivor
+ * (first-come, in `survivors` order). Without this, two distinct sends with
+ * identical content -- one landed, one genuinely failed (e.g. the user typed
+ * "continue" twice) -- would BOTH match the single reloaded entry and both
+ * get dropped, reproducing the #687 bug class via duplicate content instead
+ * of via a resync wipe.
  *
  * Ordering: survivors are appended after `reloaded` -- they are
  * chronologically the newest thing that happened before the resync. If
@@ -81,12 +123,20 @@ export function mergeResyncSurvivors(
 ): readonly UIMessage[] {
   if (survivors.length === 0) return reloaded;
 
-  const landedByContent = (m: UIMessage) =>
-    reloaded.some((r) => r.sender === m.sender && r.content === m.content);
+  const claimedReloadedIndices = new Set<number>();
+  const survivingUserIds = new Set<UIMessage['id']>();
 
-  const survivingUserIds = new Set(
-    survivors.filter((m) => m.sender === 'user' && !landedByContent(m)).map((m) => m.id),
-  );
+  for (const m of survivors) {
+    if (m.sender !== 'user') continue;
+    const candidates = candidateLandedIndices(m, reloaded).filter(
+      (i) => !claimedReloadedIndices.has(i),
+    );
+    if (candidates.length > 0) {
+      claimedReloadedIndices.add(candidates[0]);
+    } else {
+      survivingUserIds.add(m.id);
+    }
+  }
 
   const finalSurvivors = survivors.filter((m) => {
     if (m.sender === 'user') return survivingUserIds.has(m.id);

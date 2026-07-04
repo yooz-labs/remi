@@ -163,6 +163,64 @@ describe('mergeResyncSurvivors', () => {
     expect(merged).toEqual([reloadedEquivalent, failed]);
   });
 
+  test('claim discipline: 2 survivors with identical content vs 1 reloaded entry -- only one is deduped', () => {
+    // Two distinct sends, same text (e.g. the user typed "continue" twice):
+    // one landed, one genuinely failed. A plain "does some reloaded entry
+    // match this content" check (no claim discipline) would match BOTH
+    // survivors against the single reloaded entry and drop both -- silently
+    // losing the one that really did fail.
+    const first = makeUIMessage({
+      id: 'attempt-1' as UIMessage['id'],
+      state: 'sent',
+      content: 'continue',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
+    const second = makeUIMessage({
+      id: 'attempt-2' as UIMessage['id'],
+      state: 'failed',
+      content: 'continue',
+      timestamp: '2024-01-01T00:00:05Z',
+    });
+    const reloadedEquivalent = makeUIMessage({
+      id: 'transcript-entry-1' as UIMessage['id'],
+      content: 'continue',
+      state: 'read',
+      entryUuid: 'entry-1',
+      timestamp: '2024-01-01T00:00:01Z',
+    });
+    const merged = mergeResyncSurvivors([reloadedEquivalent], [first, second]);
+    // Exactly one of the two identical-content survivors is claimed by the
+    // single reloaded entry; the other is preserved, not silently dropped.
+    expect(merged).toHaveLength(2);
+    expect(merged).toContainEqual(reloadedEquivalent);
+    const remainingSurvivor = merged.find((m) => m.id !== reloadedEquivalent.id);
+    expect(remainingSurvivor).toBeDefined();
+    expect([first, second].some((s) => s.id === remainingSurvivor?.id)).toBe(true);
+  });
+
+  test('a failed survivor is NOT deduped against an unrelated earlier landed message with the same content', () => {
+    // The conversation already has an OLDER, already-landed "ok" (sent long
+    // before the outage). This survivor's own "ok" is a separate, later,
+    // genuinely-failed attempt that merely happens to share the same text --
+    // it must not be misclassified as "the same send that already landed".
+    const earlierLanded = makeUIMessage({
+      id: 'transcript-entry-old' as UIMessage['id'],
+      content: 'ok',
+      state: 'read',
+      entryUuid: 'entry-old',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
+    const failed = makeUIMessage({
+      id: 'failed-1' as UIMessage['id'],
+      state: 'failed',
+      content: 'ok',
+      // Well after the earlier landed message -- not a plausible match for it.
+      timestamp: '2024-01-01T01:00:00Z',
+    });
+    const merged = mergeResyncSurvivors([earlierLanded], [failed]);
+    expect(merged).toEqual([earlierLanded, failed]);
+  });
+
   test('a failed send + its note both dropped when the send turns out to have landed', () => {
     const landed = makeUIMessage({
       id: 'sent-1' as UIMessage['id'],
