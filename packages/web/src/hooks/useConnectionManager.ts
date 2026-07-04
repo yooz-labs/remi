@@ -23,9 +23,10 @@ import {
   collectPendingChallengeConnections,
   type ForceReconnectCandidate,
   getOrCreateDeviceId,
+  isConnectionReplaceable,
   planForceReconnect,
 } from './connection-manager-helpers';
-import { splitConnectionId } from '@/lib/connection-id';
+import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
@@ -191,12 +192,12 @@ export interface UseConnectionManagerReturn {
 export function parseConnectionId(url: string): ConnectionId {
   try {
     const parsed = new URL(url);
-    const host = parsed.hostname || 'localhost';
+    const host = normalizeConnectionHost(parsed.hostname || 'localhost');
     const port = parsed.port || String(DAEMON_BASE_PORT);
     return makeConnectionId(`${host}:${port}`);
   } catch (err) {
     console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
-    return makeConnectionId(url);
+    return makeConnectionId(normalizeConnectionHost(url));
   }
 }
 
@@ -536,13 +537,7 @@ export function useConnectionManager(
       // If already connected/connecting to this host:port, skip
       const existing = connectionsMapRef.current.get(connectionId);
       if (existing) {
-        const s = existing.status;
-        if (
-          s === 'connected' ||
-          s === 'connecting' ||
-          s === 'authenticating' ||
-          s === 'reconnecting'
-        ) {
+        if (!isConnectionReplaceable(existing.status)) {
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.

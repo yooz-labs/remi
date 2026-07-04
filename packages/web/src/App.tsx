@@ -10,6 +10,8 @@ import { ConnectModal, NewSessionModal, SessionList } from '@/components/session
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { probeAuthInfo } from '@/lib/auth-probe';
+import { deriveConnectionBannerError } from '@/lib/connection-banner';
+import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
@@ -1500,7 +1502,16 @@ function App() {
       const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
       if (stored) {
         const urls: string[] = JSON.parse(stored);
-        for (const url of urls) {
+        // Reconcile aliases persisted under different host spellings (e.g. a
+        // 'localhost' URL saved before a later 'ws://127.0.0.1:.../ws'
+        // connect) to one entry per daemon (#682): connecting to both would
+        // leave a stale duplicate manager entry that can drive a stale error
+        // banner even while the deduped survivor is healthy and attached.
+        const deduped = dedupeConnectionUrls(urls, parseConnectionId);
+        if (deduped.length !== urls.length) {
+          localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
+        }
+        for (const url of deduped) {
           connectDirectRef.current(url);
         }
       }
@@ -2176,14 +2187,16 @@ function App() {
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
       connectDirect(url, directory);
-      // Persist connected URLs
+      // Persist connected URLs. Dedupe by normalized connectionId (#682) so
+      // reconnecting to the same daemon through a different host alias
+      // (e.g. '127.0.0.1' after a previously-stored 'localhost' URL) replaces
+      // the old entry instead of accumulating a second string that resolves
+      // to the same daemon.
       try {
         const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
         const urls: string[] = stored ? JSON.parse(stored) : [];
-        if (!urls.includes(url)) {
-          urls.push(url);
-        }
-        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(urls));
+        const deduped = dedupeConnectionUrls([...urls, url], parseConnectionId);
+        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
       } catch (err) {
         console.warn('[App] Failed to persist connection URL:', err);
       }
@@ -2413,11 +2426,21 @@ function App() {
     URL.revokeObjectURL(url);
   }, [sessionMessages, activeSessionId]);
 
-  // Derive error from the most recently errored connection (if any)
+  // Derive error from the most recently errored connection (if any). Used
+  // for the ConnectModal's own connect-attempt feedback, which is
+  // deliberately global -- it's about the connection the user just tried,
+  // not about any particular chat session.
   const errorConnection = connections.find((c) => c.status === 'error');
   const error: string | null = errorConnection
     ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
     : null;
+
+  // Chat-view banner (#682): scoped to the connection serving the ACTIVE
+  // session, so an unrelated errored/duplicate connection can't pin a
+  // "Connection error" banner (and, via the same session.connectionStatus
+  // path the InputArea reads, disable the chat input) while the session on
+  // screen is healthy and attached.
+  const chatError = deriveConnectionBannerError(connections, activeSession?.connectionId ?? null);
 
   // Compute effective status for ConnectModal: show the latest connection's status
   const effectiveStatus = (() => {
@@ -2463,7 +2486,7 @@ function App() {
       session={activeSession}
       messages={sessionMessages}
       questions={sessionQuestions}
-      error={error}
+      error={chatError}
       onSend={handleSend}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}
