@@ -49,12 +49,23 @@ function makeConnectionId(raw: string): ConnectionId {
 }
 
 /**
- * Force-reconnect stagger tuning (#664): fixed spacing per staggered
- * connection index plus random jitter, so N daemons don't all visibly drop
- * and reconnect in the same instant on app resume / network change.
+ * Stagger tuning shared by both reconnect-stampede fixes: fixed spacing per
+ * connection index, so N daemons don't all visibly drop and reconnect in the
+ * same instant -- whether triggered by an explicit app-force-reconnect sweep
+ * (#664, `staggerStepMs` below) or by each connection's own heartbeat
+ * independently detecting staleness (#685, `reconnectStaggerMs` below).
  */
-const FORCE_RECONNECT_STAGGER_STEP_MS = 300;
+const CONNECTION_STAGGER_STEP_MS = 300;
 const FORCE_RECONNECT_STAGGER_JITTER_MS = 2000;
+
+/**
+ * Ceiling on the per-connection heartbeat-reconnect stagger offset (#685).
+ * `nextStaggerIndexRef` grows monotonically with every distinct connection
+ * ever created (`connectDirect`), not just the currently-live ones, so a
+ * long session that adds/removes many connections over time is bounded here
+ * rather than growing the offset unboundedly.
+ */
+const HEARTBEAT_STAGGER_CEILING_MS = 3000;
 
 /** Internal per-connection state */
 interface ManagedConnection {
@@ -233,6 +244,10 @@ export function useConnectionManager(
   const onMessageRef = useRef(onMessage);
   const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
   const autoReconnectRef = useRef(autoReconnect);
+  /** Monotonic counter assigning each new WebSocketClient a distinct
+   *  heartbeat-reconnect stagger offset (#685). See CONNECTION_STAGGER_STEP_MS
+   *  / HEARTBEAT_STAGGER_CEILING_MS. */
+  const nextStaggerIndexRef = useRef(0);
 
   useEffect(() => {
     onMessageRef.current = onMessage;
@@ -552,9 +567,20 @@ export function useConnectionManager(
         directory,
       };
 
+      // Each connection gets a distinct offset so that if several daemons'
+      // heartbeats independently detect staleness at ~the same wall-clock
+      // tick, their automatic reconnects don't cluster within the same
+      // few-hundred-ms window (#685).
+      const staggerIndex = nextStaggerIndexRef.current++;
+      const reconnectStaggerMs = Math.min(
+        staggerIndex * CONNECTION_STAGGER_STEP_MS,
+        HEARTBEAT_STAGGER_CEILING_MS,
+      );
+
       const config: WebSocketClientConfig = {
         url,
         autoReconnect: autoReconnectRef.current,
+        reconnectStaggerMs,
       };
 
       const messageHandler = createMessageHandler(connectionId);
@@ -867,7 +893,7 @@ export function useConnectionManager(
       if (candidates.length === 0) return;
 
       const plan = planForceReconnect(candidates, {
-        staggerStepMs: FORCE_RECONNECT_STAGGER_STEP_MS,
+        staggerStepMs: CONNECTION_STAGGER_STEP_MS,
         staggerJitterMs: FORCE_RECONNECT_STAGGER_JITTER_MS,
       });
       const byId = new Map(mcs.map((mc) => [mc.connectionId, mc]));
