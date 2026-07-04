@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
+import { normalizeProjectPath } from '../../src/cli/path-resolver.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionStore, type StoredSession } from '../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../src/session/transcript-index.ts';
@@ -144,5 +145,21 @@ describe('SessionBindingStore', () => {
     const entry = index.get(session.remiSessionId);
     expect(entry?.claudeSessionId).toBe('claude-new');
     expect(entry?.projectPath).toBe(session.projectPath);
+  });
+
+  test('preAssign seeds TranscriptIndex with the NORMALIZED projectPath, not the raw input (#680)', () => {
+    // A caller passing an unnormalized (tilde-form) projectPath must not make
+    // TranscriptIndex diverge from what SessionStore actually persisted.
+    const indexPath = path.join(path.dirname(filePath), 'transcript-index.json');
+    const index = new TranscriptIndex(indexPath);
+    const withIndex = new SessionBindingStore(store, index);
+
+    const tildePath = '~/Documents/git/nemar/nemar-cli';
+    const session = makeSession({ claudeSessionId: 'claude-tilde', projectPath: tildePath });
+    withIndex.preAssign(session);
+
+    const expected = normalizeProjectPath(tildePath);
+    expect(store.findByRemiSessionId(session.remiSessionId)?.projectPath).toBe(expected);
+    expect(index.get(session.remiSessionId)?.projectPath).toBe(expected);
   });
 });

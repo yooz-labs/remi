@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
+import { normalizeProjectPath } from '../src/cli/path-resolver.ts';
 import { SessionStore, type StoredSession } from '../src/session/session-store.ts';
 
 function makeTmpPath(): string {
@@ -241,5 +242,68 @@ describe('SessionStore', () => {
     const aliveSession = sessions.find((s) => s.remiSessionId === alive.remiSessionId);
     expect(staleSession?.exitedAt).not.toBeNull();
     expect(aliveSession?.exitedAt).toBeNull();
+  });
+
+  describe('projectPath normalization (#680)', () => {
+    test('save normalizes a tilde-form projectPath before persisting', () => {
+      const session = makeSession({ projectPath: '~/Documents/git/nemar/nemar-cli' });
+      store.save(session);
+      const found = store.findByRemiSessionId(session.remiSessionId);
+      expect(found?.projectPath).toBe(path.join(os.homedir(), 'Documents/git/nemar/nemar-cli'));
+    });
+
+    test('tilde-form and absolute-form saves converge to the same projectPath', () => {
+      const tilde = makeSession({ projectPath: '~/Documents/git/nemar/nemar-cli' });
+      const absolute = makeSession({
+        projectPath: path.join(os.homedir(), 'Documents/git/nemar/nemar-cli'),
+      });
+      store.save(tilde);
+      store.save(absolute);
+      const foundTilde = store.findByRemiSessionId(tilde.remiSessionId);
+      const foundAbsolute = store.findByRemiSessionId(absolute.remiSessionId);
+      expect(foundTilde?.projectPath).toBe(foundAbsolute?.projectPath ?? '');
+    });
+
+    test('reading a legacy raw-tilde entry off disk self-heals projectPath', () => {
+      // Write a pre-#680 entry directly to disk, bypassing save()'s
+      // normalization, to simulate a value written by an older binary.
+      const legacy: StoredSession = makeSession({
+        projectPath: '~/Documents/git/nemar/nemar-cli',
+      });
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ version: 1, sessions: [legacy] }, null, 2),
+        'utf-8',
+      );
+
+      const found = store.findByRemiSessionId(legacy.remiSessionId);
+      expect(found?.projectPath).toBe(normalizeProjectPath(legacy.projectPath));
+
+      const listed = store.list();
+      expect(listed[0]?.projectPath).toBe(normalizeProjectPath(legacy.projectPath));
+
+      const recent = store.getMostRecent();
+      expect(recent?.projectPath).toBe(normalizeProjectPath(legacy.projectPath));
+    });
+
+    test('self-healed projectPath is persisted on the next write', () => {
+      const legacy: StoredSession = makeSession({
+        projectPath: '~/Documents/git/nemar/nemar-cli',
+      });
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ version: 1, sessions: [legacy] }, null, 2),
+        'utf-8',
+      );
+
+      store.markExited(legacy.remiSessionId, 0);
+
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+        sessions: StoredSession[];
+      };
+      expect(raw.sessions[0]?.projectPath).toBe(normalizeProjectPath(legacy.projectPath));
+    });
   });
 });
