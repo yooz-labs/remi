@@ -455,6 +455,113 @@ describe('SessionRegistry', () => {
     });
   });
 
+  describe('fingerprint-bound reclaim (#671)', () => {
+    test('matching deviceId + matching clientFingerprint reclaims (auth on)', () => {
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, staleConn, 'device-A', 'fp-alice');
+      const result = registry.attachConnection(sessionId, newConn, 'device-A', 'fp-alice');
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('attached');
+      expect(registry.waitingConnectionCount).toBe(0);
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(newConn);
+      expect(registry.getSessionForConnection(staleConn)).toBeUndefined();
+      expect(events.onConnectionReclaimed).toHaveBeenCalledWith(sessionId, staleConn, newConn);
+    });
+
+    test('matching deviceId + DIFFERENT clientFingerprint is refused: queues, no eviction', () => {
+      const sessionId = generateId();
+      const activeConn = generateId();
+      const attackerConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      // Legitimate device authenticates and holds the lock.
+      registry.attachConnection(sessionId, activeConn, 'device-A', 'fp-alice');
+
+      // A different authenticated peer replays/guesses the same deviceId but
+      // cannot produce the same fingerprint. Must be refused: queued, not
+      // evicted.
+      const result = registry.attachConnection(sessionId, attackerConn, 'device-A', 'fp-mallory');
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('queued');
+      expect(registry.waitingConnectionCount).toBe(1);
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(registry.getSessionForConnection(activeConn)?.sessionId).toBe(sessionId);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
+
+    test('matching deviceId + active has a fingerprint but reconnect sends none: refused', () => {
+      // A downgrade attempt: the legitimate device authenticated once, but a
+      // later hello for the same deviceId arrives with no clientFingerprint
+      // at all (e.g. an unauthenticated connection). Must not reclaim.
+      const sessionId = generateId();
+      const activeConn = generateId();
+      const attackerConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, activeConn, 'device-A', 'fp-alice');
+      const result = registry.attachConnection(sessionId, attackerConn, 'device-A');
+
+      expect(result.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+    });
+
+    test('matching deviceId with NO fingerprint on either side still reclaims (auth off)', () => {
+      // Localhost-only daemons (or loopback-exempt peers) never authenticate,
+      // so neither side ever carries a clientFingerprint. Falls back to
+      // today's deviceId-only reclaim.
+      const sessionId = generateId();
+      const staleConn = generateId();
+      const newConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, staleConn, 'device-A');
+      const result = registry.attachConnection(sessionId, newConn, 'device-A');
+
+      expect(result.success).toBe(true);
+      expect(result.attachState).toBe('attached');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(newConn);
+      expect(events.onConnectionReclaimed).toHaveBeenCalledWith(sessionId, staleConn, newConn);
+    });
+
+    test('a FIFO-promoted connection carries its clientFingerprint forward for later reclaim checks', () => {
+      // Mirrors the deviceId-through-promotion fix (#662): a connection
+      // promoted from the waiting queue must keep the SAME identity bar for
+      // a later reclaim attempt against it, not silently downgrade to
+      // deviceId-only just because it arrived via promotion.
+      const sessionId = generateId();
+      const connA = generateId();
+      const connB = generateId();
+      const attackerConn = generateId();
+      registry.registerSession(sessionId, '/test/dir', createMockPTY(), createMockMessageAPI());
+
+      registry.attachConnection(sessionId, connA); // active, no identity
+      registry.attachConnection(sessionId, connB, 'device-B', 'fp-bob'); // queued, authenticated
+
+      registry.detachConnection(connA); // connB promoted to active
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connB);
+      expect(registry.getSession(sessionId)?.activeClientFingerprint).toBe('fp-bob');
+
+      // An attacker guesses device-B's id but cannot produce fp-bob.
+      const spoofed = registry.attachConnection(sessionId, attackerConn, 'device-B', 'fp-mallory');
+      expect(spoofed.attachState).toBe('queued');
+      expect(registry.getSession(sessionId)?.activeConnectionId).toBe(connB);
+      expect(events.onConnectionReclaimed).not.toHaveBeenCalled();
+
+      // The real device-B reconnecting with the matching fingerprint still
+      // reclaims normally.
+      const genuine = registry.attachConnection(sessionId, generateId(), 'device-B', 'fp-bob');
+      expect(genuine.attachState).toBe('attached');
+      expect(events.onConnectionReclaimed).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('detachConnection()', () => {
     test('detaches connection and marks session orphaned', () => {
       const sessionId = generateId();
