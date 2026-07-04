@@ -1150,6 +1150,169 @@ describe('TranscriptBinder', () => {
       binder.rotationPollTick();
       expect(rotations()).toHaveLength(0);
     });
+
+    // -----------------------------------------------------------------------
+    // Re-arm on a later bind (#676)
+    // -----------------------------------------------------------------------
+    describe('re-arm on later bind (#676)', () => {
+      /** Pre-assign a durable binding, mirroring cli.ts writing it before
+       *  Bun.spawn (#427). Construction's `start()` is intentionally NEVER
+       *  called by these tests — simulating the transient bindingStore/
+       *  SessionStore throw that routes into the same "no pre-assigned id"
+       *  branch as a legitimate null (#676), so the dir-poll is unarmed until
+       *  a later hook event's `adoptLockFromStore` re-adopts it. */
+      function preAssign(claudeSessionId: string | null): void {
+        bindingStore.preAssign({
+          remiSessionId: SID,
+          claudeSessionId,
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+      }
+
+      test('start() skipped at construction; the next hook event arms the dir-poll from the store read', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = makeDriveBinder(); // NOT started
+
+        // The first hook event re-adopts the pre-assigned id from the store.
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+        expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+
+        // Proof the dir-poll is now armed: a later no-hooks rotation the
+        // poll alone can catch (no further hook event feeds it) is detected.
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+
+        expect(rotations()).toEqual([
+          {
+            old: 'claude-A',
+            new: 'claude-B',
+            path: path.join(rotationDir(), 'claude-B.jsonl'),
+            reason: 'restart',
+          },
+        ]);
+        expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+        binder.close();
+      });
+
+      test('re-arm is idempotent: a second hook event does not double-arm', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = makeDriveBinder(); // NOT started
+
+        // First event arms the poll (as above).
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+
+        // A second, already-bound ('match') event re-reads the store again —
+        // adoptLockFromStore runs on every event — and must be a no-op re-arm
+        // attempt rather than creating a second poll interval/seed-set.
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: path.join(rotationDir(), 'claude-A.jsonl'),
+        });
+
+        // A single rotation candidate must cross the wire exactly once even
+        // across repeated ticks; a double-arm would risk double-processing.
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        binder.rotationPollTick();
+
+        expect(rotations()).toHaveLength(1);
+        expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+        binder.close();
+      });
+
+      test('no binding in the store yet: the dir-poll stays unarmed until one actually lands', () => {
+        registerSession();
+        // No preAssign: the store has no record for this session at all, so
+        // `bindingStore.update()` in the first-adopt path below also no-ops
+        // (SessionStore.updateClaudeSessionId is a no-op on an absent record) —
+        // the binding genuinely does not exist yet, unlike the primary #676
+        // scenario where cli.ts already wrote it and only the READ failed.
+        const binder = makeDriveBinder(); // NOT started
+
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(0); // still unarmed: no binding exists yet
+
+        // The binding now genuinely lands in the store (e.g. a delayed sibling
+        // write). The next hook event's adoptLockFromStore re-reads it and
+        // arms the dir-poll from there.
+        sessionStore.save({
+          remiSessionId: SID,
+          claudeSessionId: 'claude-A',
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: path.join(rotationDir(), 'claude-A.jsonl'),
+        });
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(1);
+        binder.close();
+      });
+
+      test('closed binder does not re-arm on a stray post-close event', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = makeDriveBinder(); // NOT started
+        binder.close(); // torn down before any event ever arrives
+
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(0);
+      });
+
+      test('shadow mode never re-arms via the store-read path', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = new TranscriptBinder(
+          deps(),
+          { sessionId: SID, workingDirectory: tmpDir },
+          'shadow',
+          { rotationPollIntervalMs: 20 },
+        );
+
+        binder.decide({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(0);
+      });
+    });
   });
 
   describe('ensureWatching', () => {

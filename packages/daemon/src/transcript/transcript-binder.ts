@@ -175,6 +175,9 @@ export class TranscriptBinder {
    *  yet readable is re-polled until its file has been settled-and-markerless for
    *  this long (by mtime), then recorded as seen. Test-overridable. */
   private markerSettleMs: number = MARKER_SETTLE_MS;
+  /** Set by `close()`; a torn-down binder must never re-arm the dir-poll it just
+   *  cancelled, even if a stray hook event reaches it after teardown (#676). */
+  private closed = false;
 
   private readonly deps: TranscriptBinderDeps;
   private readonly sessionId: UUID;
@@ -785,6 +788,18 @@ export class TranscriptBinder {
   private adoptLockFromStore(): void {
     try {
       const storedId = this.deps.bindingStore.get(this.sessionId)?.claudeSessionId ?? null;
+      // #676: `setupHookBridge`'s pre-assigned-id read (which arms the #452
+      // dir-poll via `start()`) is wrapped in try/catch to survive a transient
+      // bindingStore/SessionStore throw. A throw there routes into the same
+      // "no pre-assigned id" branch as a legitimate null and `start()` is never
+      // called, permanently disarming the dir-poll for the session's whole
+      // lifetime. This read runs on every hook event (via `onHookEvent`/
+      // `admits`/`decide`) and already re-adopts a stored id the constructor
+      // missed, so it is the natural point to re-arm the dir-poll it missed —
+      // no restart required. Runs BEFORE the early-return below so it fires
+      // even when storedId already equals currentBoundId (the common
+      // steady-state adopt).
+      this.maybeRearmRotationPoll(storedId);
       if (storedId === null || storedId === this.currentBoundId) return;
       const previous = this.currentBoundId;
       this.currentBoundId = storedId;
@@ -947,6 +962,7 @@ export class TranscriptBinder {
    * cli.ts:822-829 and ensures the dir-poll never outlives the binder).
    */
   close(): void {
+    this.closed = true;
     this.teardownWatcher('close');
     this.cancelFallbackTimer();
     this.cancelRotationPoll();
@@ -984,6 +1000,28 @@ export class TranscriptBinder {
       () => this.rotationPollTick(),
       this.rotationPollIntervalMs,
     );
+  }
+
+  /**
+   * Re-arm path (#676). `armRotationPoll` is only ever called from `start()`
+   * (construction time) today; if that call was skipped — the pre-assigned-id
+   * read threw, or genuinely found no id yet — the dir-poll stays unarmed
+   * forever, even once a later read succeeds. Called from `adoptLockFromStore`
+   * on every hook event so a later successful read arms it instead. Idempotent
+   * (delegates to `armRotationPoll`'s own already-armed guard) and inert in
+   * shadow mode or after `close()`.
+   */
+  private maybeRearmRotationPoll(storedId: string | null): void {
+    if (storedId === null || this.mode === 'shadow' || this.closed) return;
+    // Not just a fast-path: armRotationPoll() below is ALREADY idempotent on
+    // this same check, but without it here the log line would fire on every
+    // hook event once armed, not just on the actual re-arm. This check exists
+    // to gate the log, not to prevent a double-arm.
+    if (this.rotationPollTimer !== null) return; // already armed
+    log(
+      `[Binder] Re-arming rotation dir-poll from a later bindingStore read (missed at construction, #676): claude=${storedId.slice(0, 8)}`,
+    );
+    this.armRotationPoll(storedId);
   }
 
   private cancelRotationPoll(): void {
