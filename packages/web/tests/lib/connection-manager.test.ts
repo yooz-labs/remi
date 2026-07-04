@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  allocateStaggerSlot,
   collectPendingChallengeConnections,
   DEVICE_ID_STORAGE_KEY,
   type ForceReconnectCandidate,
@@ -212,5 +213,88 @@ describe('planForceReconnect (#664)', () => {
     expect(plan[0]?.shouldReconnect).toBe(true);
     expect(plan[0]?.delayMs).toBeGreaterThanOrEqual(0);
     expect(plan[0]?.delayMs).toBeLessThan(2000);
+  });
+});
+
+/**
+ * Coverage for the #685 PR review finding: the first version of this fix
+ * assigned each connection's heartbeat-reconnect stagger offset from a
+ * monotonically-growing counter, clamped at a ceiling once it got too
+ * large. In a long-lived session that repeatedly tears down and recreates
+ * a still-unreachable connection (the real trigger: `App.tsx`'s
+ * `session_list_response` handler re-calls `connectDirect` for every
+ * sibling daemon port on every reconnect / app resume), that counter
+ * quickly passes the ceiling, and every connection created after that point
+ * -- including ones still live -- gets the SAME clamped offset, silently
+ * reintroducing the exact clustering bug #685 fixes. `allocateStaggerSlot`
+ * reuses the smallest FREE slot instead, so live connections' offsets stay
+ * distinct no matter how many connect/disconnect cycles have happened.
+ */
+describe('allocateStaggerSlot (#685 review: bounded, collision-free per-connection offsets)', () => {
+  test('returns 0 for the first connection', () => {
+    expect(allocateStaggerSlot(new Set())).toBe(0);
+  });
+
+  test('returns the smallest slot not already in use', () => {
+    expect(allocateStaggerSlot(new Set([0, 1, 2]))).toBe(3);
+    expect(allocateStaggerSlot(new Set([0, 2]))).toBe(1);
+    expect(allocateStaggerSlot(new Set([1, 2]))).toBe(0);
+  });
+
+  test('reuses a freed slot instead of growing past the live connection count', () => {
+    const used = new Set<number>();
+    const a = allocateStaggerSlot(used);
+    used.add(a);
+    const b = allocateStaggerSlot(used);
+    used.add(b);
+    const c = allocateStaggerSlot(used);
+    used.add(c);
+    expect([a, b, c]).toEqual([0, 1, 2]);
+
+    used.delete(b); // b disconnects, freeing slot 1
+    const d = allocateStaggerSlot(used);
+    expect(d).toBe(1); // reused, not grown to 3
+  });
+
+  test('a connection stuck reconnecting and repeatedly recreated never collides with live siblings, even after many cycles', () => {
+    // Models the real trigger directly: B..E are stable/live connections;
+    // A is 'unreachable' and gets torn down + recreated on every
+    // session_list_response cycle. A monotonic ever-growing counter would
+    // eventually assign A the SAME clamped offset as a stable sibling; slot
+    // reuse must not, no matter how many cycles pass.
+    const used = new Set<number>();
+    const slotOf = new Map<string, number>();
+
+    const connect = (id: string) => {
+      const slot = allocateStaggerSlot(used);
+      used.add(slot);
+      slotOf.set(id, slot);
+    };
+    const disconnect = (id: string) => {
+      const slot = slotOf.get(id);
+      if (slot !== undefined) used.delete(slot);
+      slotOf.delete(id);
+    };
+
+    connect('B');
+    connect('C');
+    connect('D');
+    connect('E');
+
+    for (let cycle = 0; cycle < 15; cycle++) {
+      connect('A');
+      const liveSlots = Array.from(slotOf.values());
+      // Every currently-live connection must hold a DISTINCT slot -- this
+      // must hold on every single cycle, including well past the old
+      // design's 10-slot clamp ceiling.
+      expect(new Set(liveSlots).size).toBe(liveSlots.length);
+      disconnect('A'); // 'unreachable' again; torn down before the next cycle
+    }
+  });
+
+  test('slots return to 0 once every connection has disconnected', () => {
+    const used = new Set<number>([0, 1, 2]);
+    used.clear();
+    expect(allocateStaggerSlot(used)).toBe(0);
   });
 });
