@@ -205,6 +205,39 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
     expect(c.map.has('shared-tok')).toBe(true);
   });
 
+  test('reverse interleaving: a re-register processed BEFORE the unregister commits still loses (why the client ack-gate is needed)', () => {
+    // Store-level last-write-wins cannot tell "the re-register happened
+    // first" apart from "the unregister happened first" -- it only sees
+    // timestamps. handleDisconnect sends the unregister to daemon A and the
+    // re-register to sibling B as two independent ws.send()s on SEPARATE
+    // connections/processes: there is no happens-before between them. If B
+    // commits its re-register BEFORE A commits its tombstone (plausible: the
+    // removed daemon is often idle/slow, the kept ones busy), A's
+    // later-but-numerically-newer tombstone silently wins and defeats a
+    // re-registration the user never asked for. This is exactly why the
+    // daemon acks unregister_device_token only AFTER the tombstone commits,
+    // and the client awaits that ack before firing the re-register loop —
+    // making "tombstone committed" a real happens-before in the common path,
+    // with a bounded timeout as the fallback (self-heals on B's next cycle).
+    const a = new DeviceTokenStore(file);
+    a.register('shared-tok', 'ios', 'connA');
+    const b = new DeviceTokenStore(file);
+    b.register('shared-tok', 'ios', 'connB');
+
+    // The re-register reaches b and commits FIRST...
+    b.register('shared-tok', 'ios', 'connB');
+    // ...and only afterward does the removed daemon commit its tombstone.
+    a.unregister('shared-tok');
+
+    expect(tokensOnDisk(file)).toEqual([]);
+    expect(tombstonesOnDisk(file)).toContain('shared-tok');
+    // b's own next push would refresh from disk before deciding whether to
+    // push (#690, NotificationDispatcher.computeDelivery) and pick up the
+    // same defeat, even though the user never removed b's server.
+    b.refreshFromDisk();
+    expect(b.map.has('shared-tok')).toBe(false);
+  });
+
   test('machine-fully-removed: tombstone survives B persist, and C refreshFromDisk drops a held copy', () => {
     const a = new DeviceTokenStore(file);
     a.register('shared-tok', 'ios', 'connA');

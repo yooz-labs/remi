@@ -550,9 +550,22 @@ export class Connection {
     this.events.onRegisterDeviceToken?.(message.token, message.platform);
   }
 
+  /**
+   * Deliberate exception to the "ack acknowledges receipt, fires before the
+   * domain event" pattern used everywhere else in this class (see
+   * handleUserInput, handleRegisterDeviceToken, etc.): the unregister path is
+   * fully synchronous all the way down to `fs.writeFileSync` (DeviceTokenStore
+   * .unregister -> .persist), so firing the event FIRST and acking AFTER turns
+   * this ack into a genuine "tombstone committed to disk" signal. The web
+   * client (#690) awaits this exact ack, correlated by message id, before
+   * re-registering with sibling connections — without this ordering the ack
+   * would only mean "message received", not "safe to race a re-register
+   * against", and the two-process race the tombstone design depends on
+   * winning would be unguaranteed.
+   */
   private handleUnregisterDeviceToken(message: UnregisterDeviceTokenMessage): void {
-    this.sendAck(message.id, 'delivered');
     this.events.onUnregisterDeviceToken?.(message.token);
+    this.sendAck(message.id, 'delivered');
   }
 
   private handleTerminalResize(message: TerminalResizeMessage): void {
