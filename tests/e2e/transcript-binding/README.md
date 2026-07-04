@@ -13,15 +13,25 @@ would.
 
 It is **not wired into CI** — it needs an authenticated `claude` and a trusted
 working directory, and it drives a TUI with timing-sensitive input. Run it by
-hand when changing the binding/rotation code or before flipping the binder flag.
+hand when changing the binding/rotation code.
 
 ## What it validates
 
+The `TranscriptBinder` has run as the single, unconditional binding path since
+#503/#470 — there is no alternate path or shadow-comparison mode left to
+distinguish scenarios by. Two scenarios remain, split by daemon topology:
+
 | Scenario | Failure modes | Key checks |
 |---|---|---|
-| 1. Shadow (shipping default) | fm-430, fm-438, fm-435b, GAP-6 | binding correct; **0 `[ShadowBinder] DISAGREE`** on a normal session and across a `/clear`; rotation announced once; follow-up routes to the new transcript; old transcript frozen; `/compact` does not rotate |
-| 2. Drive (the binder itself) | fm-452, fm-438, GAP-6 | binder drives the bind (shadow suppressed); `/clear` caught by the **new re-arming dir-poll** (`No-hooks rotation detected via dir poll`), rebound + watcher rearmed; no "Transcript not found"; `/compact` does not over-fire the dir-poll |
-| 3. Two daemons, same cwd | fm-427, fm-451 | distinct binds, content segregated (ALPHA↔D1, BETA↔D2), per-port `remi:<port>` markers; zombie sibling (dead claude child, live wrapper) does **not** poison the other daemon's binding |
+| 1. Single daemon | fm-430, fm-438, fm-452, GAP-6 | binder drives the bind (`[Binder] Lock adopted from binding store`); `/clear` rotates exactly once, caught either by the hook path (`Claude restart detected`) or the re-arming dir-poll (`No-hooks rotation detected via dir poll`, the #452 backstop); rebound + watcher rearmed; follow-up routes to the new transcript; old transcript frozen; no "Transcript not found"; `/compact` does not rotate or over-fire the dir-poll |
+| 2. Two daemons, same cwd | fm-427, fm-451 | distinct binds, content segregated (ALPHA↔D1, BETA↔D2), per-port `remi:<port>` markers; zombie sibling (dead claude child, live wrapper) does **not** poison the other daemon's binding |
+
+Hooks are up in scenario 1, so whether the hook path or the dir-poll observes
+a `/clear` rotation first is a genuine race (a local `readdir` tick vs. a hook
+POST round-trip), not a bug either way — `run.sh` reports which mechanism won
+as informational rather than requiring the dir-poll specifically. Only fm-452
+(hooks forced **down**, manual-only) proves the dir-poll as the sole path; see
+`failure-mode-matrix.md`.
 
 See `failure-mode-matrix.md` for the full per-mode repro + oracle reference and
 the two non-negotiable traps (assert the on-disk id actually changed; in the
@@ -60,6 +70,9 @@ renders are left in the printed `E2E_STATE` dir for inspection.
   background `sleep`; it is both the input channel and the observer (the real
   client path). claude's composer treats the first burst as a bracketed paste,
   so a prompt is submitted with a **separate** Enter keystroke.
-- The oracle is the daemon log: `[ShadowBinder] DISAGREE` (shadow), the
-  `[Binder] …` rotation lines (drive), and `owned by port X, not Y; ignoring`
-  (marker-based sibling/zombie defer), plus the on-disk `<id>.jsonl` files.
+- The oracle is the daemon log: the `[Binder] …` bind/rotation lines
+  (`Lock adopted`, `Transcript from`, `Claude restart detected`, `No-hooks
+  rotation detected via dir poll`) and `owned by port X, not Y; ignoring`
+  (marker-based sibling/zombie defer), plus the on-disk `<id>.jsonl` files. See
+  `failure-mode-matrix.md` → "The oracle" for the full list and how it
+  changed after the shadow-mode differential harness was deleted (#470).

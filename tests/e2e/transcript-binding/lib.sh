@@ -22,19 +22,20 @@ mkdir -p "$E2E_STATE"
 # Strip ANSI/OSC so logs and renders are greppable.
 deansi() { sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][0-9;]*\x07//g; s/\r//g'; }
 
-# start_daemon NAME CWD PORT MODE(shadow|drive|off)
+# start_daemon NAME CWD PORT
 # Launches a daemon with ANTHROPIC_MODEL=haiku (claude --model is not forwarded
 # by --daemon, but the daemon's env is, and claude honours ANTHROPIC_MODEL).
+#
+# The TranscriptBinder has run as the single, unconditional binding path since
+# #470/#503 — there is no shadow/drive/off mode to select anymore
+# (REMI_TRANSCRIPT_BINDER_SHADOW no longer exists;
+# REMI_TRANSCRIPT_BINDER_ENABLED is read but only logs a deprecation warning
+# on false, it no longer changes behavior). See failure-mode-matrix.md → "The
+# oracle".
 start_daemon() {
-  local name=$1 cwd=$2 port=$3 mode=$4
+  local name=$1 cwd=$2 port=$3
   local log="$E2E_STATE/$name.log"
   rm -f "$log"
-  local sh=false dr=false
-  case "$mode" in
-    shadow) sh=true ;;
-    drive)  dr=true ;;
-    off)    : ;;
-  esac
   cat > "$E2E_STATE/launch-$name.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$cwd"
@@ -42,12 +43,10 @@ exec "$REMI_BIN" --daemon --bind 127.0.0.1 --port $port --no-auth --no-relay --n
 LAUNCH
   chmod +x "$E2E_STATE/launch-$name.sh"
   ANTHROPIC_MODEL=haiku \
-  REMI_TRANSCRIPT_BINDER_SHADOW=$sh \
-  REMI_TRANSCRIPT_BINDER_ENABLED=$dr \
     nohup bash "$E2E_STATE/launch-$name.sh" > "$log" 2>&1 &
   echo "$!" > "$E2E_STATE/$name.pid"
   echo "$port" > "$E2E_STATE/$name.port"
-  echo "daemon[$name] pid=$(cat "$E2E_STATE/$name.pid") port=$port mode=$mode log=$log"
+  echo "daemon[$name] pid=$(cat "$E2E_STATE/$name.pid") port=$port log=$log"
 }
 
 wait_ready() {
