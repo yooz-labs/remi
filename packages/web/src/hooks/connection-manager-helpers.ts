@@ -5,6 +5,7 @@
  * pulling in React, the WebSocket client, or identity-store side effects.
  */
 
+import type { ConnectionStatus } from '@/types';
 import { generateId } from '@remi/shared';
 
 /**
@@ -151,4 +152,28 @@ export function allocateStaggerSlot(usedSlots: ReadonlySet<number>): number {
   let slot = 0;
   while (usedSlots.has(slot)) slot++;
   return slot;
+}
+
+/** Statuses in which an existing manager entry is still doing something --
+ *  `connectDirect` must leave it alone rather than tearing it down for a
+ *  fresh attempt at the same (normalized) endpoint. */
+const LIVE_CONNECTION_STATUSES = new Set<ConnectionStatus>([
+  'connected',
+  'connecting',
+  'authenticating',
+  'reconnecting',
+]);
+
+/**
+ * Whether an existing manager entry should be torn down and replaced by a
+ * fresh `connectDirect` call to the same connectionId (#682). An
+ * 'error'/'disconnected'/'unreachable' entry is superseded -- e.g. a stale
+ * entry left behind by an earlier connect attempt through a host alias
+ * (`localhost`) is replaced the moment the same daemon is reached through a
+ * different alias (`127.0.0.1`) that normalizes to the same connectionId
+ * (`normalizeConnectionHost`). A still-live entry is left alone so a
+ * duplicate connect call can't interrupt it mid-handshake.
+ */
+export function isConnectionReplaceable(status: ConnectionStatus): boolean {
+  return !LIVE_CONNECTION_STATUSES.has(status);
 }

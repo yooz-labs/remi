@@ -14,6 +14,7 @@ import {
   DEVICE_ID_STORAGE_KEY,
   type ForceReconnectCandidate,
   getOrCreateDeviceId,
+  isConnectionReplaceable,
   type KeyValueStorage,
   planForceReconnect,
 } from '../../src/hooks/connection-manager-helpers';
@@ -296,5 +297,42 @@ describe('allocateStaggerSlot (#685 review: bounded, collision-free per-connecti
     const used = new Set<number>([0, 1, 2]);
     used.clear();
     expect(allocateStaggerSlot(used)).toBe(0);
+  });
+});
+
+/**
+ * Coverage for #682: `connectDirect` must supersede a stale/errored manager
+ * entry when a fresh connect attempt targets the same connectionId (e.g. the
+ * same daemon reached through a different host alias that
+ * `normalizeConnectionHost` collapses to one key), but must never interrupt
+ * an entry that's already live.
+ */
+describe('isConnectionReplaceable (#682)', () => {
+  test('an errored entry is replaceable (superseded by a fresh connect)', () => {
+    expect(isConnectionReplaceable('error')).toBe(true);
+  });
+
+  test('a disconnected entry is replaceable', () => {
+    expect(isConnectionReplaceable('disconnected')).toBe(true);
+  });
+
+  test('an unreachable entry is replaceable', () => {
+    expect(isConnectionReplaceable('unreachable')).toBe(true);
+  });
+
+  test('a connected entry is NOT replaceable', () => {
+    expect(isConnectionReplaceable('connected')).toBe(false);
+  });
+
+  test('a connecting entry is NOT replaceable', () => {
+    expect(isConnectionReplaceable('connecting')).toBe(false);
+  });
+
+  test('an authenticating entry is NOT replaceable', () => {
+    expect(isConnectionReplaceable('authenticating')).toBe(false);
+  });
+
+  test('a reconnecting entry is NOT replaceable', () => {
+    expect(isConnectionReplaceable('reconnecting')).toBe(false);
   });
 });
