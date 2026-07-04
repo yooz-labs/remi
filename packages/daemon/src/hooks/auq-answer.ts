@@ -121,13 +121,30 @@ export function planAnswerKeys(
   return keys;
 }
 
-/** Strip ANSI/control bytes to the visible text (for parsing rendered frames). */
+/**
+ * Strip ANSI/control bytes to the visible text (for parsing rendered frames),
+ * PRESERVING the frame's line/segment structure. The renderer partial-repaints:
+ * it jumps the cursor between rows/columns and rewrites only changed fragments
+ * (captured example: "Ready\x1b[11Gubmi\x1b[17Gyour answers?" repaints only the
+ * changed characters of "Ready to submit your answers?"). Deleting the cursor
+ * moves outright splices unrelated fragments into one token ("Readyubmiyour
+ * answers?"), which defeated the review-trailer cutoff and swallowed the last
+ * question's label on the review screen (#677). So: vertical moves and CR
+ * become newlines, horizontal moves become spaces; only pure styling
+ * (colors/erase/modes) is deleted.
+ */
 function visible(s: string): string {
-  return s
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-    .replace(/\r/g, '');
+  return (
+    s
+      .replace(/\x1b\][^\x07]*\x07/g, '')
+      // Vertical cursor moves (CUU/CUD/CNL/CPL/CUP/VPA) start a new logical line.
+      .replace(/\x1b\[[0-9;]*[ABEFHd]/g, '\n')
+      // Horizontal cursor moves (CUF/CUB/CHA) separate fragments within a row.
+      .replace(/\x1b\[[0-9;]*[CDG]/g, ' ')
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+      .replace(/\r/g, '\n')
+  );
 }
 
 /** Text Claude prints once an AskUserQuestion's answer has been accepted. */
@@ -163,8 +180,13 @@ export function parseReviewAnswers(frameText: string): ReviewAnswer[] {
     const arrow = chunk.indexOf('→');
     if (arrow < 0) continue;
     const question = chunk.slice(0, arrow).trim();
-    // The label list runs until the next UI element (submit prompt / separators).
+    // The label list runs until the next UI element. A review row is a single
+    // rendered line, so the first line break ends it — everything after (the
+    // "Ready to submit" prompt block, possibly fragmented by a partial repaint
+    // beyond what the trailer regex can recognize, #677) is never label text.
+    // The trailer split stays as defense for a run-together same-line render.
     let rest = chunk.slice(arrow + 1);
+    rest = rest.split('\n').find((l) => l.trim().length > 0) ?? rest;
     rest = rest.split(/Ready to submit|❯|─{3,}|Submit answers/)[0] ?? rest;
     const labels = rest
       .split(',')
