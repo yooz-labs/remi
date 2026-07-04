@@ -2177,13 +2177,40 @@ function App() {
   // user-removal path where the token really should stop pushing (#690):
   // best-effort unregister BEFORE closing the socket, tolerating a dead
   // socket — local removal must proceed either way.
+  //
+  // The shared ~/.remi/device-tokens.json keys entries by TOKEN, not by
+  // connection, so several servers running on the SAME machine share one
+  // entry. Unregistering with just the removed connection would tombstone
+  // that shared entry for every OTHER server on that machine too. So right
+  // after the unregister, re-send register_device_token to every OTHER
+  // still-connected daemon: its fresh `registeredAt` outraces the tombstone
+  // the removed daemon just wrote, which is what keeps the token alive for
+  // the servers the user did NOT remove (see DeviceTokenStore's reconcile
+  // rule). Order matters — unregister first, then the re-registers.
   const handleDisconnect = useCallback(
     (connectionId: ConnectionId) => {
-      if (deviceTokenRef.current) {
+      const token = deviceTokenRef.current;
+      if (token) {
         try {
-          cmSendMessage(connectionId, createUnregisterDeviceToken(deviceTokenRef.current));
+          const sent = cmSendMessage(connectionId, createUnregisterDeviceToken(token));
+          if (!sent) {
+            console.warn(
+              `[App] Could not notify ${connectionId} (unreachable); it may resume pushing if it comes back`,
+            );
+          }
         } catch (err) {
           console.warn('[App] Failed to send unregister_device_token:', err);
+        }
+        for (const id of connectedIds) {
+          if (id === connectionId) continue;
+          try {
+            const sent = cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+            if (!sent) {
+              console.warn(`[App] Could not re-register device token with ${id}`);
+            }
+          } catch (err) {
+            console.warn('[App] Failed to re-register device token:', err);
+          }
         }
       }
       disconnectConnection(connectionId);
@@ -2196,17 +2223,26 @@ function App() {
         console.warn('[App] Failed to update persisted connections:', err);
       }
     },
-    [disconnectConnection, cmSendMessage],
+    [disconnectConnection, cmSendMessage, connectedIds],
   );
 
   // Disconnect ALL connections and clear everything (back to connect screen).
   // Same explicit-removal unregister as handleDisconnect, sent to every
-  // connection best-effort before disconnectAll() closes the sockets.
+  // connection best-effort before disconnectAll() closes the sockets. No
+  // re-register here — every server is being removed, so the whole machine's
+  // token is meant to go quiet (an accepted limitation: an unreachable
+  // connection cannot be notified and may resume pushing if it comes back).
   const handleDisconnectAll = useCallback(() => {
-    if (deviceTokenRef.current) {
+    const token = deviceTokenRef.current;
+    if (token) {
       for (const conn of connectionsRef.current) {
         try {
-          cmSendMessage(conn.connectionId, createUnregisterDeviceToken(deviceTokenRef.current));
+          const sent = cmSendMessage(conn.connectionId, createUnregisterDeviceToken(token));
+          if (!sent) {
+            console.warn(
+              `[App] Could not notify ${conn.connectionId} (unreachable); it may resume pushing if it comes back`,
+            );
+          }
         } catch (err) {
           console.warn('[App] Failed to send unregister_device_token:', err);
         }
