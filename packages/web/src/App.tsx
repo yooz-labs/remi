@@ -15,6 +15,7 @@ import {
   acknowledgeSend,
   EMPTY_PENDING_SENDS,
   type PendingSendMap,
+  rejectSend,
   sweepTimeouts,
   trackSend,
 } from '@/lib/message-ack-tracker';
@@ -1240,11 +1241,11 @@ function App() {
         // another client holds the session's exclusive write lock -- and the
         // input that triggered this error was never delivered to the PTY
         // (the daemon still sent an `ack` for it separately; `ack` only means
-        // "the daemon received the frame", not "Claude saw it"). The error
-        // carries no messageId to flip a specific bubble to failed, so the
-        // fix is to refresh the persistent read-only banner (ChatView) rather
-        // than only a one-off chat bubble the user can miss or that scrolls
-        // away.
+        // "the daemon received the frame", not "Claude saw it"). Refresh the
+        // persistent read-only banner (ChatView) AND, since #681, the error
+        // now carries the rejected input's own messageId -- flip that
+        // specific bubble to 'failed' so the user can tell which queued-era
+        // message(s) actually landed instead of relying on the banner alone.
         if (errorCode === 'NOT_ACTIVE_CONNECTION') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const queuedSessionId = asNonEmptyString(details?.['sessionId']);
@@ -1257,9 +1258,21 @@ function App() {
               ),
             );
           }
+          // The ack for this same input usually lands first (bubble already
+          // at 'delivered') since the daemon acks unconditionally before the
+          // async read-only check runs -- this rejection is authoritative
+          // and must win over that.
+          const rejectedMessageId = asNonEmptyString(details?.['messageId']);
+          if (rejectedMessageId) {
+            pendingSendsRef.current = rejectSend(pendingSendsRef.current, rejectedMessageId);
+            setMessages((prev) =>
+              prev.map((m) => (m.id === rejectedMessageId ? { ...m, state: 'failed' as const } : m)),
+            );
+          }
           console.warn(
             '[App] NOT_ACTIVE_CONNECTION: input not delivered, session is read-only',
             queuedSessionId,
+            rejectedMessageId,
           );
           break;
         }
