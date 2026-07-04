@@ -1211,10 +1211,18 @@ function App() {
             // session's already-rendered messages. ensureTranscriptLoaded gates
             // on the loaded marker, so it fetches only if not already loaded
             // (no wipe, no duplicate append) (#499 review).
+            //
+            // Refresh and navigate are separate concerns (#688 review): the
+            // refresh must happen whenever currentSessionId is present --
+            // including when it's already the active session (e.g. a
+            // bindingRotated hello_ack cleared its loaded marker without a
+            // re-fetch) -- while navigation is gated on autoSelectIfNone so a
+            // stale/racy redirect never steals focus from a different
+            // explicit selection.
+            ensureTranscriptLoaded(connectionId, currentSessionId);
             const nextActive = autoSelectIfNone(activeSessionIdRef.current, currentSessionId);
             if (nextActive !== activeSessionIdRef.current) {
               setActiveSessionId(nextActive);
-              ensureTranscriptLoaded(connectionId, currentSessionId);
               console.warn(
                 '[App] Stale transcript request; following daemon to current session',
                 currentSessionId,
