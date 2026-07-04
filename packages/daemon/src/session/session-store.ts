@@ -114,8 +114,13 @@ export class SessionStore {
    * caller passing a raw, unexpanded path never writes a malformed entry that
    * `--resume` would later `chdir` into (#680). Mirrors SessionRegistryFile's
    * `register()` fix for the live-sessions registry (#674).
+   *
+   * Returns the normalized record so a caller that mirrors it elsewhere (e.g.
+   * `SessionBindingStore.preAssign` seeding `TranscriptIndex`) uses the same
+   * normalized `projectPath` this store actually persisted, instead of
+   * silently diverging from it (#680 review).
    */
-  save(session: StoredSession): void {
+  save(session: StoredSession): StoredSession {
     const normalized: StoredSession = {
       ...session,
       projectPath: normalizeProjectPath(session.projectPath),
@@ -135,9 +140,10 @@ export class SessionStore {
       const removeIds = new Set(exited.slice(0, toRemove).map((s) => s.remiSessionId));
       const trimmed = sessions.filter((s) => !removeIds.has(s.remiSessionId));
       this.write(trimmed);
-      return;
+      return normalized;
     }
     this.write(sessions);
+    return normalized;
   }
 
   /**

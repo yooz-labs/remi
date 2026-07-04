@@ -98,20 +98,20 @@ export class SessionBindingStore {
    * responsibility to populate correctly — the accessor does not own them.
    */
   preAssign(session: StoredSession): void {
-    this.store.save(session);
+    // Mirror from save()'s returned (normalized) record, not the raw input —
+    // otherwise a caller passing an unnormalized projectPath would seed
+    // TranscriptIndex with a value that silently diverges from what
+    // SessionStore actually persisted (#680 review).
+    const saved = this.store.save(session);
     // Seed the durable mirror at spawn so the binding is recoverable even if the
     // session never rotates and is later purged from sessions.json (#577).
-    if (session.claudeSessionId) {
-      this.transcriptIndex?.record(
-        session.remiSessionId,
-        session.claudeSessionId,
-        session.projectPath,
-      );
+    if (saved.claudeSessionId) {
+      this.transcriptIndex?.record(saved.remiSessionId, saved.claudeSessionId, saved.projectPath);
     } else if (this.transcriptIndex) {
       // No claude id yet (deferred to the first update() on hook adopt/rotation).
       // Log so the deferred index seed is traceable rather than silently skipped.
       log(
-        `[transcript-index] preAssign for ${session.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
+        `[transcript-index] preAssign for ${saved.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
       );
     }
   }
