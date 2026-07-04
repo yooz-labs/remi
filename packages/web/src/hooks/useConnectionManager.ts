@@ -944,6 +944,7 @@ export function useConnectionManager(
         mc.client.disconnect();
       }
       connectionsMapRef.current.clear();
+      usedStaggerSlotsRef.current.clear();
     };
   }, []);
 
