@@ -226,7 +226,7 @@ export class RelayAdapter implements ConnectionAdapter {
       return;
     }
 
-    const result = await this.config.authenticator.verifyResponse(
+    const { result } = await this.config.authenticator.verifyResponse(
       this.clientConnectionId,
       response,
     );
@@ -337,12 +337,14 @@ export class RelayAdapter implements ConnectionAdapter {
         }
         const claudeId =
           typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
+        const messageId = typeof msg['id'] === 'string' ? msg['id'] : undefined;
         this.events.onUserInput?.(
           connectionId,
           msg['sessionId'],
           msg['content'],
           msg['raw'] === true,
           claudeId,
+          messageId,
         );
         break;
       }

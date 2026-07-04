@@ -71,9 +71,9 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
 
-      // resumeSessionId, mode, and deviceId are only carried by the websocket
-      // adapter. Telegram and relay clients have no equivalent (their adapter
-      // selects session ownership differently).
+      // resumeSessionId, mode, deviceId, and clientFingerprint are only
+      // carried by the websocket adapter. Telegram and relay clients have no
+      // equivalent (their adapter selects session ownership differently).
       const platformData = metadata.platformData;
       const resumeSessionId =
         platformData?.kind === 'websocket'
@@ -81,6 +81,14 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
           : undefined;
       const deviceId =
         platformData?.kind === 'websocket' ? (platformData.deviceId ?? undefined) : undefined;
+      // Authenticated identity bound to deviceId (#671); undefined when this
+      // connection has no authenticated identity (auth disabled, or a
+      // loopback-exempt peer) — attachConnection then falls back to
+      // deviceId-only reclaim matching.
+      const clientFingerprint =
+        platformData?.kind === 'websocket'
+          ? (platformData.clientFingerprint ?? undefined)
+          : undefined;
       const currentPrimary = getPrimarySessionId();
 
       // Unified connection flow: one session per daemon, both modes behave the same.
@@ -102,7 +110,12 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       if (currentPrimary) {
         // Only auto-attach if the client wants to attach, not a utility client like ls/kill.
         if (!isQueryMode) {
-          const result = sessionRegistry.attachConnection(currentPrimary, connectionId, deviceId);
+          const result = sessionRegistry.attachConnection(
+            currentPrimary,
+            connectionId,
+            deviceId,
+            clientFingerprint,
+          );
           if (result.success) {
             send(
               connectionId,

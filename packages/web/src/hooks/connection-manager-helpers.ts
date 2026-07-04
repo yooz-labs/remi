@@ -5,6 +5,7 @@
  * pulling in React, the WebSocket client, or identity-store side effects.
  */
 
+import type { ConnectionStatus } from '@/types';
 import { generateId } from '@remi/shared';
 
 /**
@@ -125,4 +126,54 @@ export function planForceReconnect<Id extends string = string>(
     staggerIndex++;
     return { connectionId, shouldReconnect: true, delayMs };
   });
+}
+
+/**
+ * Allocate the smallest stagger slot not already in `usedSlots` (#685
+ * review). Each live `WebSocketClient` gets a fixed per-connection offset
+ * (`slot * stepMs`, see `useConnectionManager`'s `CONNECTION_STAGGER_STEP_MS`)
+ * added to its automatic heartbeat-reconnect delay, so N daemons that go
+ * stale at ~the same wall-clock tick don't cluster their reconnects. A
+ * monotonically-growing counter (the first version of this fix) assigns a
+ * FRESH index to every connection ever created, including one that's
+ * repeatedly torn down and recreated while stuck 'unreachable' (the real
+ * trigger: `App.tsx`'s `session_list_response` handler re-calls
+ * `connectDirect` for every sibling daemon port on every reconnect / app
+ * resume). Clamping that ever-growing counter at a ceiling then assigns TWO
+ * live connections the identical offset once the counter passes the
+ * ceiling -- reintroducing the exact clustering bug this fix exists to
+ * prevent. Reusing the smallest FREE slot instead keeps every currently
+ * live connection's offset distinct and bounded by how many are live RIGHT
+ * NOW, never by how many have ever existed. The caller must release a
+ * connection's slot (remove it from `usedSlots`) when that connection is
+ * torn down, so a later connection can reuse it.
+ */
+export function allocateStaggerSlot(usedSlots: ReadonlySet<number>): number {
+  let slot = 0;
+  while (usedSlots.has(slot)) slot++;
+  return slot;
+}
+
+/** Statuses in which an existing manager entry is still doing something --
+ *  `connectDirect` must leave it alone rather than tearing it down for a
+ *  fresh attempt at the same (normalized) endpoint. */
+const LIVE_CONNECTION_STATUSES = new Set<ConnectionStatus>([
+  'connected',
+  'connecting',
+  'authenticating',
+  'reconnecting',
+]);
+
+/**
+ * Whether an existing manager entry should be torn down and replaced by a
+ * fresh `connectDirect` call to the same connectionId (#682). An
+ * 'error'/'disconnected'/'unreachable' entry is superseded -- e.g. a stale
+ * entry left behind by an earlier connect attempt through a host alias
+ * (`localhost`) is replaced the moment the same daemon is reached through a
+ * different alias (`127.0.0.1`) that normalizes to the same connectionId
+ * (`normalizeConnectionHost`). A still-live entry is left alone so a
+ * duplicate connect call can't interrupt it mid-handshake.
+ */
+export function isConnectionReplaceable(status: ConnectionStatus): boolean {
+  return !LIVE_CONNECTION_STATUSES.has(status);
 }

@@ -13,7 +13,11 @@ import type {
   ProtocolMessage,
 } from '@remi/shared/protocol.ts';
 import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
-import { DEFAULT_MAX_RECONNECT_ATTEMPTS, WebSocketClient } from '../../src/lib/websocket-client';
+import {
+  computeReconnectDelay,
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  WebSocketClient,
+} from '../../src/lib/websocket-client';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -524,5 +528,182 @@ describe('WebSocketClient heartbeat margin & round-trip liveness (#664)', () => 
     } finally {
       server.stop();
     }
+  });
+});
+
+/**
+ * Coverage for the residual reconnect-stampede fix (#685). #684 staggered
+ * reconnects only for the explicit `app-force-reconnect` sweep
+ * (`planForceReconnect`); when several connections instead go stale via
+ * their OWN heartbeat at ~the same wall-clock tick, each independently fell
+ * into `scheduleReconnect`'s exponential-backoff-plus-jitter path with no
+ * per-connection separation, clustering within a few hundred ms by chance.
+ * `computeReconnectDelay` is the pure delay math pulled out of
+ * `scheduleReconnect` (same precedent as `planForceReconnect` in
+ * connection-manager-helpers.ts) so a per-connection `staggerMs` can be
+ * layered on top and verified deterministically.
+ */
+describe('computeReconnectDelay (#685)', () => {
+  test('first attempt uses the base reconnectDelay (no backoff yet) plus deterministic jitter', () => {
+    const delay = computeReconnectDelay(1, {
+      reconnectDelay: 1000,
+      maxReconnectDelay: 30000,
+      random: () => 0.5,
+    });
+    // base = 1000 * 2^0 = 1000, capped = 1000, jitter = 1000 * 0.5 * 0.25 = 125
+    expect(delay).toBe(1125);
+  });
+
+  test('backoff doubles per attempt and caps at maxReconnectDelay', () => {
+    const opts = { reconnectDelay: 1000, maxReconnectDelay: 5000, random: () => 0 };
+    expect(computeReconnectDelay(1, opts)).toBe(1000);
+    expect(computeReconnectDelay(2, opts)).toBe(2000);
+    expect(computeReconnectDelay(3, opts)).toBe(4000);
+    // Uncapped this would be 8000; the cap holds it at maxReconnectDelay.
+    expect(computeReconnectDelay(4, opts)).toBe(5000);
+    // Stays capped even for a very high attempt count (no overflow/growth).
+    expect(computeReconnectDelay(20, opts)).toBe(5000);
+  });
+
+  test('staggerMs is added on top of the capped backoff+jitter', () => {
+    const opts = { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0, staggerMs: 300 };
+    expect(computeReconnectDelay(1, opts)).toBe(1300);
+    expect(computeReconnectDelay(5, opts)).toBe(1000 * 2 ** 4 + 300);
+  });
+
+  test('defaults staggerMs to 0 -- the single-connection case is unaffected', () => {
+    const delay = computeReconnectDelay(1, {
+      reconnectDelay: 1000,
+      maxReconnectDelay: 30000,
+      random: () => 0,
+    });
+    expect(delay).toBe(1000);
+  });
+
+  test('N simultaneous same-attempt connections with distinct stagger seeds produce delays separated by at least the step size', () => {
+    const step = 300;
+    const opts = { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0 };
+    const delays = [0, 1, 2, 3, 4].map((i) =>
+      computeReconnectDelay(1, { ...opts, staggerMs: i * step }),
+    );
+
+    expect(delays).toEqual([1000, 1300, 1600, 1900, 2200]);
+    for (let i = 1; i < delays.length; i++) {
+      expect(delays[i]! - delays[i - 1]!).toBeGreaterThanOrEqual(step);
+    }
+  });
+
+  test('jitter alone (no stagger) can leave same-attempt delays within a few hundred ms of each other -- the bug this fix addresses', () => {
+    // Two connections at the SAME attempt count with different random draws
+    // can still land close together purely by chance when nothing but the
+    // 25% jitter separates them -- this is exactly the residual stampede
+    // #685 fixes by layering a deterministic per-connection stagger on top,
+    // rather than relying on jitter alone.
+    const a = computeReconnectDelay(1, { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0.1 });
+    const b = computeReconnectDelay(1, { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0.15 });
+    expect(Math.abs(a - b)).toBeLessThan(50);
+  });
+
+  test('defaults to Math.random when no random fn is injected (delay stays within bounds)', () => {
+    const delay = computeReconnectDelay(1, { reconnectDelay: 1000, maxReconnectDelay: 30000 });
+    expect(delay).toBeGreaterThanOrEqual(1000);
+    expect(delay).toBeLessThan(1250);
+  });
+});
+
+/**
+ * End-to-end (real sockets, real timers) confirmation that `reconnectStaggerMs`
+ * actually delays `scheduleReconnect`'s automatic retry, not just the pure
+ * math above (#685).
+ */
+describe('WebSocketClient reconnectStaggerMs (#685)', () => {
+  test('delays the automatic reconnect by roughly its configured stagger offset', async () => {
+    const url = 'ws://127.0.0.1:49252/ws'; // refused: nothing listens here
+    const staggerMs = 500;
+    const timestamps: number[] = [];
+
+    const client = track(
+      new WebSocketClient(
+        {
+          url,
+          autoReconnect: true,
+          maxReconnectAttempts: 1,
+          reconnectDelay: 50,
+          connectionTimeout: 200,
+          heartbeatInterval: 0,
+          reconnectStaggerMs: staggerMs,
+        },
+        {
+          onStatusChange: (s) => {
+            if (s === 'connecting') timestamps.push(Date.now());
+          },
+        },
+      ),
+    );
+
+    const start = Date.now();
+    client.connect();
+    // Wait for the second 'connecting' transition: the staggered reconnect.
+    while (timestamps.length < 2 && Date.now() - start < 5000) await wait(25);
+
+    expect(timestamps.length).toBeGreaterThanOrEqual(2);
+    const gap = timestamps[1]! - timestamps[0]!;
+    // The un-staggered component (reconnectDelay=50, capped, +25% jitter) is at
+    // most ~62ms, so a gap at or above staggerMs proves the offset applied.
+    expect(gap).toBeGreaterThanOrEqual(staggerMs);
+  });
+
+  test('two clients failing at ~the same instant with distinct stagger offsets reconnect separated by at least the difference between them', async () => {
+    const stepMs = 300;
+    const reconnectDelay = 50;
+
+    const makeClient = (url: string, reconnectStaggerMs: number) => {
+      const timestamps: number[] = [];
+      const client = track(
+        new WebSocketClient(
+          {
+            url,
+            autoReconnect: true,
+            maxReconnectAttempts: 1,
+            reconnectDelay,
+            connectionTimeout: 200,
+            heartbeatInterval: 0,
+            reconnectStaggerMs,
+          },
+          {
+            onStatusChange: (s) => {
+              if (s === 'connecting') timestamps.push(Date.now());
+            },
+          },
+        ),
+      );
+      return { client, timestamps };
+    };
+
+    // Distinct refused ports so the two clients' connection attempts don't
+    // interact; both are unreachable, modeling two daemons that dropped at
+    // the same wall-clock tick.
+    const a = makeClient('ws://127.0.0.1:49253/ws', 0);
+    const b = makeClient('ws://127.0.0.1:49254/ws', stepMs);
+
+    const start = Date.now();
+    a.client.connect();
+    b.client.connect();
+
+    while (
+      (a.timestamps.length < 2 || b.timestamps.length < 2) &&
+      Date.now() - start < 5000
+    ) {
+      await wait(25);
+    }
+
+    expect(a.timestamps.length).toBeGreaterThanOrEqual(2);
+    expect(b.timestamps.length).toBeGreaterThanOrEqual(2);
+
+    const gap = b.timestamps[1]! - a.timestamps[1]!;
+    // b carries a full extra step of stagger; its reconnect must land
+    // meaningfully later than a's, breaking up the simultaneous-detection
+    // cluster the bug produced.
+    expect(gap).toBeGreaterThanOrEqual(stepMs * 0.8);
   });
 });

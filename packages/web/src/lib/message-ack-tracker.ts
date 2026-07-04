@@ -75,6 +75,27 @@ export function acknowledgeSend(pending: PendingSendMap, messageId: string): Ack
   return { pending: next, matched: true };
 }
 
+/**
+ * The daemon explicitly REJECTED `messageId` (#681, e.g. a `NOT_ACTIVE_CONNECTION`
+ * error naming this id): the send is authoritatively dead, not merely
+ * unacknowledged. Stops tracking it so a later `acknowledgeSend` (a stale ack
+ * that was already in flight) or `sweepTimeouts` retry/failure for the same id
+ * is a no-op instead of re-animating it -- the caller marks the message
+ * bubble 'failed' directly and that must WIN over anything the pending-map
+ * bookkeeping does afterward, including a bubble already at 'delivered' from
+ * an earlier ack. Idempotent: rejecting an id that isn't (or is no longer)
+ * tracked is a no-op, since by the time this fires the ack has usually
+ * already removed it from `pending`.
+ */
+export function rejectSend(pending: PendingSendMap, messageId: string): PendingSendMap {
+  if (!pending.has(messageId)) {
+    return pending;
+  }
+  const next = new Map(pending);
+  next.delete(messageId);
+  return next;
+}
+
 export type TimeoutOutcome =
   /** First timeout: resend `entry` (same messageId) and keep waiting. */
   | { readonly kind: 'retry'; readonly entry: PendingSend }

@@ -42,13 +42,16 @@ export interface ServerEvents {
   /** Client disconnected */
   onClientDisconnect: (connectionId: UUID, reason: string) => void;
 
-  /** User input from client */
+  /** User input from client. `messageId` is the wire message's own id (#681),
+   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
+   *  specific bubble that was dropped. */
   onUserInput: (
     connectionId: UUID,
     sessionId: UUID,
     content: string,
     raw?: boolean,
     claudeSessionId?: UUID,
+    messageId?: UUID,
   ) => void;
 
   /** Answer from client. `extra` carries structured AskUserQuestion selections /
@@ -534,8 +537,15 @@ export class WebSocketServer {
         this.events.onClientDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (sessionId, content, raw, claudeSessionId) => {
-        this.events.onUserInput?.(ws.data.connectionId, sessionId, content, raw, claudeSessionId);
+      onUserInput: (sessionId, content, raw, claudeSessionId, messageId) => {
+        this.events.onUserInput?.(
+          ws.data.connectionId,
+          sessionId,
+          content,
+          raw,
+          claudeSessionId,
+          messageId,
+        );
       },
 
       onAnswer: (sessionId, questionId, answer, claudeSessionId, extra) => {

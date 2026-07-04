@@ -106,7 +106,7 @@ describe('RelayAdapter auth flow', () => {
       clientIdentity.fingerprint,
     );
 
-    const result = await authenticator.verifyResponse('conn-1', response);
+    const { result } = await authenticator.verifyResponse('conn-1', response);
     expect(result.success).toBe(true);
     expect(result.serverSignature).toBeDefined();
   });
@@ -126,7 +126,7 @@ describe('RelayAdapter auth flow', () => {
       unauthorizedIdentity.fingerprint,
     );
 
-    const result = await authenticator.verifyResponse('conn-1', response);
+    const { result } = await authenticator.verifyResponse('conn-1', response);
     expect(result.success).toBe(false);
     expect(result.error).toContain('UNKNOWN_KEY');
   });

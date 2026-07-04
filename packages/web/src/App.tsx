@@ -11,16 +11,20 @@ import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
+import { deriveConnectionBannerError } from '@/lib/connection-banner';
+import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
   EMPTY_PENDING_SENDS,
   type PendingSendMap,
+  rejectSend,
   sweepTimeouts,
   trackSend,
 } from '@/lib/message-ack-tracker';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
+import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resync';
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { setSoundEnabled } from '@/lib/notifications';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
@@ -40,6 +44,7 @@ import { dismissDeliveredNotification } from '@/lib/notifications';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
+import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
@@ -74,6 +79,22 @@ const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
 // cold-start push answers so multi-daemon users do not silently answer the
 // wrong daemon. Issue #389 review.
 const LOCALSTORAGE_SESSION_DAEMONS_KEY = 'remi-session-daemons';
+// A resync wipe (clearSessionForRebind) stashes unconfirmed messages instead
+// of dropping them, then waits this long with no further transcript_content
+// for the session before flushing them back in (#687). A one-shot
+// transcript_load_complete flushes immediately instead of waiting out this
+// window; this is the fallback for the live-watcher reload path, which has
+// no equivalent "done" signal. Local disk reads finish well under a second,
+// so this comfortably covers a real catch-up burst without mistaking a much
+// later, genuinely new turn for part of the same resync.
+const RESYNC_FLUSH_DEBOUNCE_MS = 1500;
+// Hard ceiling on how long survivors can sit stashed (armed once, at the
+// first stash for a session -- not reset by the debounce). Without this, a
+// session that keeps streaming transcript_content (e.g. a long mid-turn
+// response arriving as a live-watcher reload, which never sends
+// transcript_load_complete) re-arms RESYNC_FLUSH_DEBOUNCE_MS forever and the
+// failed bubble + Retry stay invisible for the whole turn (#687 review).
+const RESYNC_MAX_STASH_AGE_MS = 10000;
 
 /**
  * Narrow an unknown JSON value to a non-empty string. Used at the
@@ -261,6 +282,33 @@ function App() {
   const pendingKillsRef = useRef<
     Map<UUID, { sessionId: UUID; timeoutId: ReturnType<typeof setTimeout> }>
   >(new Map());
+  // Unconfirmed messages stashed by clearSessionForRebind, keyed by session
+  // id, awaiting re-merge into the freshly reloaded transcript (#687).
+  const resyncSurvivorsRef = useRef<Map<UUID, readonly UIMessage[]>>(new Map());
+  // Debounced flush: re-armed on every transcript_content for the session.
+  const resyncFlushTimersRef = useRef<Map<UUID, ReturnType<typeof setTimeout>>>(new Map());
+  // Hard-ceiling flush: armed once, at the first stash, never reset. Whichever
+  // of transcript_load_complete / debounce-quiet / this cap fires first wins
+  // (flushResyncSurvivors' delete-first guard makes the other two safe no-ops).
+  const resyncMaxAgeTimersRef = useRef<Map<UUID, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Flush timers must not outlive the component (React 18 StrictMode
+  // double-invokes effects in dev, which would otherwise leak a duplicate
+  // set of timers).
+  useEffect(() => {
+    const flushTimers = resyncFlushTimersRef.current;
+    const maxAgeTimers = resyncMaxAgeTimersRef.current;
+    return () => {
+      for (const timer of flushTimers.values()) {
+        clearTimeout(timer);
+      }
+      flushTimers.clear();
+      for (const timer of maxAgeTimers.values()) {
+        clearTimeout(timer);
+      }
+      maxAgeTimers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -282,14 +330,102 @@ function App() {
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
+    // Cancel and forget both resync timers for `sid`, if any -- shared by
+    // flushResyncSurvivors (a trigger just fired) and discardResyncStash (the
+    // session is gone, no trigger will ever fire).
+    const clearResyncTimers = (sid: UUID) => {
+      const flushTimer = resyncFlushTimersRef.current.get(sid);
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        resyncFlushTimersRef.current.delete(sid);
+      }
+      const maxAgeTimer = resyncMaxAgeTimersRef.current.get(sid);
+      if (maxAgeTimer) {
+        clearTimeout(maxAgeTimer);
+        resyncMaxAgeTimersRef.current.delete(sid);
+      }
+    };
+
+    // Re-attach any unconfirmed messages stashed for `sid` by
+    // clearSessionForRebind, now that a fresh reload has landed (#687).
+    // Cancels both resync timers since this call already IS the flush;
+    // idempotent no-op if nothing is pending (safe to call from more than
+    // one trigger -- see clearSessionForRebind).
+    const flushResyncSurvivors = (sid: UUID) => {
+      const survivors = resyncSurvivorsRef.current.get(sid);
+      if (!survivors) return;
+      resyncSurvivorsRef.current.delete(sid);
+      clearResyncTimers(sid);
+      setMessages((prev) => {
+        const reloaded = prev.filter((m) => m.sessionId === sid);
+        const others = prev.filter((m) => m.sessionId !== sid);
+        return [...others, ...mergeResyncSurvivors(reloaded, survivors)];
+      });
+    };
+
+    // The session is gone (kill_session_response success): drop any stashed
+    // survivors and their timers without flushing -- there is no message
+    // slice left to re-insert them into (#687 review finding 3).
+    const discardResyncStash = (sid: UUID) => {
+      resyncSurvivorsRef.current.delete(sid);
+      clearResyncTimers(sid);
+    };
+
+    // (Re)arm the fallback flush: if no further transcript_content for `sid`
+    // arrives within the debounce window, flush whatever reloaded so far.
+    // The live-watcher reload path (session_rotated / reconnect-mid-rotation)
+    // has no explicit "done" signal the way the one-shot transcript_load
+    // request/complete pair does, so this is what guarantees survivors are
+    // never stuck in the ref forever (#687).
+    const scheduleResyncFlush = (sid: UUID) => {
+      const existing = resyncFlushTimersRef.current.get(sid);
+      if (existing) clearTimeout(existing);
+      resyncFlushTimersRef.current.set(
+        sid,
+        setTimeout(() => flushResyncSurvivors(sid), RESYNC_FLUSH_DEBOUNCE_MS),
+      );
+    };
+
     // Drop a session's now-orphaned chat so its (new) transcript re-fetches.
     // Shared by session_rotated (live rotation) and hello_ack
     // (reconnect-mid-rotation, #439): both clear stale messages + questions and
     // forget the loaded-transcript marker so the load gate re-pulls history.
+    // Unconfirmed client-only messages (still-sending, unacked, or failed
+    // sends and their failure notes) are stashed rather than dropped, so a
+    // resync never silently loses what the user typed (#687). Three
+    // independent triggers can flush the stash back in (flushResyncSurvivors'
+    // delete-first guard makes any of them safe to fire after another already
+    // has): transcript_load_complete (explicit "reload done" signal, the
+    // one-shot transcript_load_request path), the debounce below (no further
+    // transcript_content for a quiet period -- the fallback for the
+    // live-watcher reload path, which has no completion signal), and a hard
+    // RESYNC_MAX_STASH_AGE_MS cap armed once, here, so an actively-streaming
+    // session that keeps re-arming the debounce can't starve the flush
+    // indefinitely.
     const clearSessionForRebind = (sid: string) => {
+      // Read messagesRef (not a setMessages updater) so the ref mutation +
+      // schedule-flush decision below run synchronously against a value we
+      // control -- a setState updater's execution is deferred by React (and
+      // can run twice under StrictMode), which would make an immediate
+      // `resyncSurvivorsRef.current.has(sid)` check after `setMessages(...)`
+      // see stale (pre-update) ref state.
+      const freshSurvivors = selectResyncSurvivors(messagesRef.current, sid);
+      if (freshSurvivors.length > 0) {
+        const existing = resyncSurvivorsRef.current.get(sid as UUID) ?? [];
+        resyncSurvivorsRef.current.set(sid as UUID, [...existing, ...freshSurvivors]);
+      }
       setMessages((prev) => prev.filter((m) => m.sessionId !== sid));
       setQuestions((prev) => clearSessionQuestions(prev, sid));
       loadedTranscriptsRef.current.delete(sid);
+      if (resyncSurvivorsRef.current.has(sid as UUID)) {
+        scheduleResyncFlush(sid as UUID);
+        if (!resyncMaxAgeTimersRef.current.has(sid as UUID)) {
+          resyncMaxAgeTimersRef.current.set(
+            sid as UUID,
+            setTimeout(() => flushResyncSurvivors(sid as UUID), RESYNC_MAX_STASH_AGE_MS),
+          );
+        }
+      }
     };
 
     // Fetch a session's transcript if we haven't already, so that FOLLOWING the
@@ -404,25 +540,25 @@ function App() {
           void syncNativeIdentity();
         }
 
-        // Reconnect-mid-rotation only: if the chat the user is CURRENTLY
-        // viewing belongs to this connection and the daemon came back with a
-        // new session id, follow it into the new session. A fresh connect (no
-        // chat open) must NOT bypass the session list -- land on the list so
-        // the user picks a session. Notification deep-links navigate via their
-        // own `push-notification-tap` handler, not here.
+        // If the chat the user is CURRENTLY viewing belongs to this
+        // connection and the daemon came back with a different session id,
+        // the `cleaned` filter above already dropped that old session from
+        // `sessions` for this connection -- it no longer resolves to
+        // anything. Fall back to the session list rather than silently
+        // follow into a session the user never picked (#688): a stray
+        // reconnect must never swap the user into a different live
+        // session's input box. `evictIfActive` is a no-op if the user has
+        // since navigated away from `oldActive` on their own. A fresh
+        // connect (no chat open) stays on the list either way. Notification
+        // deep-links navigate via their own `push-notification-tap` handler,
+        // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive !== message.sessionId) {
+        if (oldActive && oldActive !== message.sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
-          // `oldActive &&` both gates on a chat being open (so a fresh connect
-          // stays on the list) and narrows oldActive to non-null for the
-          // cleanup below.
-          if (oldActive && oldSession?.connectionId === connectionId) {
-            setActiveSessionId(message.sessionId);
+          if (oldSession?.connectionId === connectionId) {
+            setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));
             setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
             setQuestions((prev) => clearSessionQuestions(prev, oldActive));
-            // Load the followed session's transcript so the chat isn't left
-            // empty after a reconnect-mid-rotation adopt (#499).
-            ensureTranscriptLoaded(connectionId, message.sessionId);
           }
         }
         break;
@@ -521,6 +657,12 @@ function App() {
         setSessions((prev) =>
           updateSessionActivity(prev, sessionId, activeSessionIdRef.current, structuredMsg.content),
         );
+        // A resync wipe is stashing survivors for this session (#687): each
+        // arrival re-arms the debounce so the flush waits for the reload
+        // burst to actually quiet down instead of firing mid-burst.
+        if (resyncSurvivorsRef.current.has(sessionId as UUID)) {
+          scheduleResyncFlush(sessionId as UUID);
+        }
         break;
       }
 
@@ -886,11 +1028,12 @@ function App() {
           const evictedIds = [...evictedSet];
           forgetEvictedSessions(evictedIds);
           for (const id of evictedIds) loadedTranscriptsRef.current.delete(id);
-          // If the active session was evicted, clear it so the UI doesn't sit on
-          // a dead session and re-request its (gone) transcript.
-          if (activeSessionIdRef.current && evictedSet.has(activeSessionIdRef.current)) {
-            setActiveSessionId(null);
-          }
+          // If the active session was evicted, clear it so the UI doesn't sit
+          // on a dead session and re-request its (gone) transcript. Routed
+          // through the same #688 rule as every other selection-changing
+          // path: a phantom sweep can only clear the active session, never
+          // swap it for a different live one.
+          setActiveSessionId(evictManyIfActive(activeSessionIdRef.current, evictedSet));
           console.warn('[App] Evicted stale phantom sessions (#577):', evictedIds);
         }
 
@@ -970,6 +1113,12 @@ function App() {
         }
         const killedSessionId = pending?.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
         if (message.success) {
+          // Session torn down: drop any resync stash + timers for it rather
+          // than let a pending flush re-insert messages into a dead session's
+          // slice later (#687 review finding 3).
+          if (killedSessionId) {
+            discardResyncStash(killedSessionId);
+          }
           // Session torn down; refresh the list so the dead session drops off.
           const reqList = requestSessionListRef.current;
           if (reqList) {
@@ -1019,6 +1168,12 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === message.sessionId ? { ...s, isLoadingTranscript: false } : s)),
         );
+        // Explicit "reload finished" signal (the one-shot transcript_load_request
+        // path): flush any stashed survivors now rather than waiting out the
+        // debounce (#687).
+        if (resyncSurvivorsRef.current.has(message.sessionId as UUID)) {
+          flushResyncSurvivors(message.sessionId as UUID);
+        }
         break;
       }
 
@@ -1156,9 +1311,14 @@ function App() {
           break;
         }
         // NOT_FOUND with a current-session redirect (#499): the requested
-        // session is stale (the daemon restarted or rotated past it). Follow the
-        // daemon to its current session and load it, instead of dead-ending on a
-        // "Transcript for session X not found" bubble the user can't escape.
+        // session is stale (the daemon restarted or rotated past it). The
+        // daemon's error carries no id for which request this was, so it
+        // cannot be correlated to a specific in-flight load (#688) -- only
+        // auto-follow when nothing is currently selected (matches the
+        // fresh-connect gate above); otherwise this would risk silently
+        // swapping whatever live session the user is looking at for the
+        // daemon's current one. The upsert below still makes the daemon's
+        // current session visible/tappable in the list either way.
         if (errorCode === 'NOT_FOUND') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const currentSessionId = asNonEmptyString(details?.['currentSessionId']) as
@@ -1206,12 +1366,28 @@ function App() {
             // session's already-rendered messages. ensureTranscriptLoaded gates
             // on the loaded marker, so it fetches only if not already loaded
             // (no wipe, no duplicate append) (#499 review).
-            setActiveSessionId(currentSessionId);
+            //
+            // Refresh and navigate are separate concerns (#688 review): the
+            // refresh must happen whenever currentSessionId is present --
+            // including when it's already the active session (e.g. a
+            // bindingRotated hello_ack cleared its loaded marker without a
+            // re-fetch) -- while navigation is gated on autoSelectIfNone so a
+            // stale/racy redirect never steals focus from a different
+            // explicit selection.
             ensureTranscriptLoaded(connectionId, currentSessionId);
-            console.warn(
-              '[App] Stale transcript request; following daemon to current session',
-              currentSessionId,
-            );
+            const nextActive = autoSelectIfNone(activeSessionIdRef.current, currentSessionId);
+            if (nextActive !== activeSessionIdRef.current) {
+              setActiveSessionId(nextActive);
+              console.warn(
+                '[App] Stale transcript request; following daemon to current session',
+                currentSessionId,
+              );
+            } else {
+              console.warn(
+                '[App] Stale transcript request; daemon current session available but not followed (active selection present)',
+                currentSessionId,
+              );
+            }
             break;
           }
         }
@@ -1219,11 +1395,11 @@ function App() {
         // another client holds the session's exclusive write lock -- and the
         // input that triggered this error was never delivered to the PTY
         // (the daemon still sent an `ack` for it separately; `ack` only means
-        // "the daemon received the frame", not "Claude saw it"). The error
-        // carries no messageId to flip a specific bubble to failed, so the
-        // fix is to refresh the persistent read-only banner (ChatView) rather
-        // than only a one-off chat bubble the user can miss or that scrolls
-        // away.
+        // "the daemon received the frame", not "Claude saw it"). Refresh the
+        // persistent read-only banner (ChatView) AND, since #681, the error
+        // now carries the rejected input's own messageId -- flip that
+        // specific bubble to 'failed' so the user can tell which queued-era
+        // message(s) actually landed instead of relying on the banner alone.
         if (errorCode === 'NOT_ACTIVE_CONNECTION') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const queuedSessionId = asNonEmptyString(details?.['sessionId']);
@@ -1236,9 +1412,21 @@ function App() {
               ),
             );
           }
+          // The ack for this same input usually lands first (bubble already
+          // at 'delivered') since the daemon acks unconditionally before the
+          // async read-only check runs -- this rejection is authoritative
+          // and must win over that.
+          const rejectedMessageId = asNonEmptyString(details?.['messageId']);
+          if (rejectedMessageId) {
+            pendingSendsRef.current = rejectSend(pendingSendsRef.current, rejectedMessageId);
+            setMessages((prev) =>
+              prev.map((m) => (m.id === rejectedMessageId ? { ...m, state: 'failed' as const } : m)),
+            );
+          }
           console.warn(
             '[App] NOT_ACTIVE_CONNECTION: input not delivered, session is read-only',
             queuedSessionId,
+            rejectedMessageId,
           );
           break;
         }
@@ -1482,7 +1670,16 @@ function App() {
       const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
       if (stored) {
         const urls: string[] = JSON.parse(stored);
-        for (const url of urls) {
+        // Reconcile aliases persisted under different host spellings (e.g. a
+        // 'localhost' URL saved before a later 'ws://127.0.0.1:.../ws'
+        // connect) to one entry per daemon (#682): connecting to both would
+        // leave a stale duplicate manager entry that can drive a stale error
+        // banner even while the deduped survivor is healthy and attached.
+        const deduped = dedupeConnectionUrls(urls, parseConnectionId);
+        if (deduped.length !== urls.length) {
+          localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
+        }
+        for (const url of deduped) {
           connectDirectRef.current(url);
         }
       }
@@ -2017,6 +2214,9 @@ function App() {
           timestamp: new Date().toISOString(),
           state: 'delivered',
           isEditing: false,
+          // Ties this note to the failed send so a resync merge (#687) keeps
+          // them together -- both survive, or neither does.
+          relatedMessageId: messageId,
         };
         setMessages((prev) => [...prev, errorMsg]);
       }
@@ -2162,14 +2362,16 @@ function App() {
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
       connectDirect(url, directory);
-      // Persist connected URLs
+      // Persist connected URLs. Dedupe by normalized connectionId (#682) so
+      // reconnecting to the same daemon through a different host alias
+      // (e.g. '127.0.0.1' after a previously-stored 'localhost' URL) replaces
+      // the old entry instead of accumulating a second string that resolves
+      // to the same daemon.
       try {
         const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
         const urls: string[] = stored ? JSON.parse(stored) : [];
-        if (!urls.includes(url)) {
-          urls.push(url);
-        }
-        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(urls));
+        const deduped = dedupeConnectionUrls([...urls, url], parseConnectionId);
+        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
       } catch (err) {
         console.warn('[App] Failed to persist connection URL:', err);
       }
@@ -2513,11 +2715,21 @@ function App() {
     URL.revokeObjectURL(url);
   }, [sessionMessages, activeSessionId]);
 
-  // Derive error from the most recently errored connection (if any)
+  // Derive error from the most recently errored connection (if any). Used
+  // for the ConnectModal's own connect-attempt feedback, which is
+  // deliberately global -- it's about the connection the user just tried,
+  // not about any particular chat session.
   const errorConnection = connections.find((c) => c.status === 'error');
   const error: string | null = errorConnection
     ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
     : null;
+
+  // Chat-view banner (#682): scoped to the connection serving the ACTIVE
+  // session, so an unrelated errored/duplicate connection can't pin a
+  // "Connection error" banner (and, via the same session.connectionStatus
+  // path the InputArea reads, disable the chat input) while the session on
+  // screen is healthy and attached.
+  const chatError = deriveConnectionBannerError(connections, activeSession?.connectionId ?? null);
 
   // Compute effective status for ConnectModal: show the latest connection's status
   const effectiveStatus = (() => {
@@ -2563,7 +2775,7 @@ function App() {
       session={activeSession}
       messages={sessionMessages}
       questions={sessionQuestions}
-      error={error}
+      error={chatError}
       onSend={handleSend}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}

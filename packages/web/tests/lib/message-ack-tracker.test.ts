@@ -4,6 +4,7 @@ import {
   acknowledgeSend,
   EMPTY_PENDING_SENDS,
   type PendingSend,
+  rejectSend,
   sweepTimeouts,
   trackSend,
 } from '../../src/lib/message-ack-tracker';
@@ -70,6 +71,59 @@ describe('acknowledgeSend', () => {
     const result = acknowledgeSend(pending, 'm1');
     expect(result.pending.has('m1')).toBe(false);
     expect(result.pending.has('m2')).toBe(true);
+  });
+});
+
+describe('rejectSend', () => {
+  test('removes an outstanding (unacknowledged) send', () => {
+    const pending = trackSend(EMPTY_PENDING_SENDS, entry('m1'));
+    const next = rejectSend(pending, 'm1');
+    expect(next.has('m1')).toBe(false);
+  });
+
+  test('does not mutate the input map', () => {
+    const pending = trackSend(EMPTY_PENDING_SENDS, entry('m1'));
+    rejectSend(pending, 'm1');
+    expect(pending.has('m1')).toBe(true);
+  });
+
+  test('leaves other outstanding sends untouched', () => {
+    let pending = trackSend(EMPTY_PENDING_SENDS, entry('m1'));
+    pending = trackSend(pending, entry('m2'));
+    const next = rejectSend(pending, 'm1');
+    expect(next.has('m1')).toBe(false);
+    expect(next.has('m2')).toBe(true);
+  });
+
+  test('is a no-op for an id that was never tracked', () => {
+    const pending = trackSend(EMPTY_PENDING_SENDS, entry('m1'));
+    const next = rejectSend(pending, 'never-tracked');
+    expect(next).toBe(pending);
+  });
+
+  test('delivered->failed: a rejection arriving after the ack already removed the entry is a harmless no-op', () => {
+    // Mirrors the #681 flow: the daemon acks user_input unconditionally
+    // (bubble flips 'sent' -> 'delivered', acknowledgeSend already removed
+    // it from the pending map) BEFORE the async read-only check runs and
+    // sends NOT_ACTIVE_CONNECTION. By the time rejectSend runs, the id is
+    // already gone -- rejectSend must not throw or resurrect it, and the
+    // caller forces the bubble to 'failed' independent of this map.
+    let pending = trackSend(EMPTY_PENDING_SENDS, entry('m1'));
+    ({ pending } = acknowledgeSend(pending, 'm1'));
+    expect(pending.has('m1')).toBe(false);
+
+    const afterReject = rejectSend(pending, 'm1');
+    expect(afterReject.has('m1')).toBe(false);
+  });
+
+  test('a rejection stops a subsequent sweep from retrying or failing the same id', () => {
+    // If the rejection instead raced an in-flight (unacked) retry, rejectSend
+    // must stop the sweep from later emitting a redundant retry/failed
+    // outcome for an id the caller already forced to 'failed'.
+    const pending = trackSend(EMPTY_PENDING_SENDS, entry('m1', { sentAt: NOW }));
+    const rejected = rejectSend(pending, 'm1');
+    const { outcomes } = sweepTimeouts(rejected, NOW + ACK_TIMEOUT_MS);
+    expect(outcomes).toHaveLength(0);
   });
 });
 

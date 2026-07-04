@@ -131,6 +131,14 @@ export interface UIMessage {
   readonly lastBulletId?: number;
   /** Raw content blocks from transcript (Text, ToolUse, ToolResult) */
   readonly contentBlocks?: readonly import('@remi/shared/protocol.ts').TranscriptContentBlock[];
+  /**
+   * For a `sender: 'system'` note describing a failed send (e.g. "Failed to
+   * send message"): the `id` of the user message it describes. Lets a
+   * resync merge (#687) keep the note attached to its send -- both survive
+   * together, or neither does. Client-only bookkeeping; never sent over the
+   * wire.
+   */
+  readonly relatedMessageId?: UUID;
 }
 
 /** Session information for the UI */

@@ -19,12 +19,14 @@ import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-cli
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
 import {
+  allocateStaggerSlot,
   collectPendingChallengeConnections,
   type ForceReconnectCandidate,
   getOrCreateDeviceId,
+  isConnectionReplaceable,
   planForceReconnect,
 } from './connection-manager-helpers';
-import { splitConnectionId } from '@/lib/connection-id';
+import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
@@ -49,11 +51,13 @@ function makeConnectionId(raw: string): ConnectionId {
 }
 
 /**
- * Force-reconnect stagger tuning (#664): fixed spacing per staggered
- * connection index plus random jitter, so N daemons don't all visibly drop
- * and reconnect in the same instant on app resume / network change.
+ * Stagger tuning shared by both reconnect-stampede fixes: fixed spacing per
+ * connection slot, so N daemons don't all visibly drop and reconnect in the
+ * same instant -- whether triggered by an explicit app-force-reconnect sweep
+ * (#664, `staggerStepMs` below) or by each connection's own heartbeat
+ * independently detecting staleness (#685, `reconnectStaggerMs` below).
  */
-const FORCE_RECONNECT_STAGGER_STEP_MS = 300;
+const CONNECTION_STAGGER_STEP_MS = 300;
 const FORCE_RECONNECT_STAGGER_JITTER_MS = 2000;
 
 /** Internal per-connection state */
@@ -86,6 +90,11 @@ interface ManagedConnection {
   /** True while escalateReconnect is probing; prevents concurrent escalations
    *  racing reconnectWithUrl against themselves (#435). */
   escalating?: boolean;
+  /** Heartbeat-reconnect stagger slot allocated to this connection's
+   *  `WebSocketClient` (#685, `allocateStaggerSlot`). Released back to
+   *  `usedStaggerSlotsRef` when this connection is torn down, so a later
+   *  connection can reuse it instead of growing the offset forever. */
+  staggerSlot: number;
 }
 
 /** Hook options */
@@ -183,12 +192,12 @@ export interface UseConnectionManagerReturn {
 export function parseConnectionId(url: string): ConnectionId {
   try {
     const parsed = new URL(url);
-    const host = parsed.hostname || 'localhost';
+    const host = normalizeConnectionHost(parsed.hostname || 'localhost');
     const port = parsed.port || String(DAEMON_BASE_PORT);
     return makeConnectionId(`${host}:${port}`);
   } catch (err) {
     console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
-    return makeConnectionId(url);
+    return makeConnectionId(normalizeConnectionHost(url));
   }
 }
 
@@ -233,6 +242,14 @@ export function useConnectionManager(
   const onMessageRef = useRef(onMessage);
   const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
   const autoReconnectRef = useRef(autoReconnect);
+  /** Stagger slots currently held by live connections (#685,
+   *  `allocateStaggerSlot`). Each new WebSocketClient claims the smallest
+   *  free slot for its heartbeat-reconnect offset (`slot *
+   *  CONNECTION_STAGGER_STEP_MS`); a connection's slot is released back to
+   *  this set when it's torn down, so a long session that repeatedly
+   *  recreates a still-unreachable connection can't grow offsets forever or
+   *  collide with a stable sibling. */
+  const usedStaggerSlotsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     onMessageRef.current = onMessage;
@@ -520,19 +537,32 @@ export function useConnectionManager(
       // If already connected/connecting to this host:port, skip
       const existing = connectionsMapRef.current.get(connectionId);
       if (existing) {
-        const s = existing.status;
-        if (
-          s === 'connected' ||
-          s === 'connecting' ||
-          s === 'authenticating' ||
-          s === 'reconnecting'
-        ) {
+        if (!isConnectionReplaceable(existing.status)) {
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
+        // Free its stagger slot: this connection may be recreated repeatedly
+        // (e.g. App.tsx's session_list_response handler re-calling
+        // connectDirect for a still-unreachable sibling port on every
+        // reconnect / app resume) -- without releasing the slot here, a
+        // monotonic-counter design would hand it a fresh, ever-growing
+        // offset each time (#685 review).
+        usedStaggerSlotsRef.current.delete(existing.staggerSlot);
       }
+
+      // Each connection gets a distinct offset so that if several daemons'
+      // heartbeats independently detect staleness at ~the same wall-clock
+      // tick, their automatic reconnects don't cluster within the same
+      // few-hundred-ms window (#685). The slot is reused from the pool of
+      // currently-free slots (not a monotonic counter), so it stays bounded
+      // by how many connections are live RIGHT NOW and never collides with
+      // a live sibling no matter how many connect/disconnect cycles a long
+      // session goes through.
+      const staggerSlot = allocateStaggerSlot(usedStaggerSlotsRef.current);
+      usedStaggerSlotsRef.current.add(staggerSlot);
+      const reconnectStaggerMs = staggerSlot * CONNECTION_STAGGER_STEP_MS;
 
       const mc: ManagedConnection = {
         // client is initialized after this object because WebSocketClient callbacks
@@ -550,11 +580,13 @@ export function useConnectionManager(
         needsPassphrase: false,
         serverFingerprint: null,
         directory,
+        staggerSlot,
       };
 
       const config: WebSocketClientConfig = {
         url,
         autoReconnect: autoReconnectRef.current,
+        reconnectStaggerMs,
       };
 
       const messageHandler = createMessageHandler(connectionId);
@@ -628,6 +660,8 @@ export function useConnectionManager(
       if (!mc) return;
       mc.client.disconnect();
       connectionsMapRef.current.delete(connectionId);
+      // Free the stagger slot (#685) so a later connection can reuse it.
+      usedStaggerSlotsRef.current.delete(mc.staggerSlot);
       syncState();
     },
     [syncState],
@@ -639,6 +673,7 @@ export function useConnectionManager(
       mc.client.disconnect();
     }
     connectionsMapRef.current.clear();
+    usedStaggerSlotsRef.current.clear();
     syncState();
   }, [syncState]);
 
@@ -867,7 +902,7 @@ export function useConnectionManager(
       if (candidates.length === 0) return;
 
       const plan = planForceReconnect(candidates, {
-        staggerStepMs: FORCE_RECONNECT_STAGGER_STEP_MS,
+        staggerStepMs: CONNECTION_STAGGER_STEP_MS,
         staggerJitterMs: FORCE_RECONNECT_STAGGER_JITTER_MS,
       });
       const byId = new Map(mcs.map((mc) => [mc.connectionId, mc]));
@@ -904,6 +939,7 @@ export function useConnectionManager(
         mc.client.disconnect();
       }
       connectionsMapRef.current.clear();
+      usedStaggerSlotsRef.current.clear();
     };
   }, []);
 

@@ -386,6 +386,70 @@ describe('createConnectionHandlers', () => {
       expect(sessionRegistry.waitingConnectionCount).toBe(0);
       expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
     });
+
+    test('same deviceId + matching clientFingerprint reclaims (#671, auth on)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      const staleConn = generateId();
+      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A', 'fp-alice');
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A', clientFingerprint: 'fp-alice' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.attachState).toBe('attached');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.waitingConnectionCount).toBe(0);
+      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
+
+    test('same deviceId + DIFFERENT clientFingerprint is refused: queues, does not evict (#671)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // Legitimate device holds the lock after authenticating.
+      const activeConn = generateId();
+      sessionRegistry.attachConnection(sessionId, activeConn, 'device-A', 'fp-alice');
+
+      // A different authenticated peer replays the same deviceId but cannot
+      // produce the matching fingerprint (it authenticated with its OWN key).
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A', clientFingerprint: 'fp-mallory' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.attachState).toBe('queued');
+      // Legitimate device keeps the lock; nothing was evicted.
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(sessionRegistry.getSessionForConnection(activeConn)?.sessionId).toBe(sessionId);
+    });
+
+    test('same deviceId with no clientFingerprint on either side still reclaims (#671, auth off)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // Localhost daemon / loopback-exempt peer: no authenticator, so no
+      // clientFingerprint is ever produced on either side.
+      const staleConn = generateId();
+      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A');
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.attachState).toBe('attached');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
   });
 
   describe('onDisconnect', () => {

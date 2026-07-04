@@ -21,6 +21,7 @@ import {
   createPing,
   createUserInput,
   deserialize,
+  fingerprint,
   fromBase64,
   serialize,
   sign,
@@ -174,6 +175,129 @@ describe('Connection auth state machine', () => {
       expect(helloAck).toBeDefined();
     });
 
+    test('exposes connectionClientFingerprint after successful auth (#671)', async () => {
+      const ws = new MockWebSocket();
+      const conn = new Connection(ws as unknown as WebSocket, {}, { authenticator });
+
+      expect(conn.connectionClientFingerprint).toBeNull();
+
+      const challenge = ws.sentMessages[0] as ProtocolMessage & { challenge: string };
+      const challengeData = fromBase64(challenge.challenge);
+      const signature = await sign(clientIdentity.privateKey, challengeData);
+      const response = createAuthResponse(clientPublicKeyBase64, signature, clientFingerprint);
+      conn.handleMessage(serialize(response));
+      await new Promise((r) => setTimeout(r, 100));
+
+      // The value bound here is the REAL fingerprint derived from the
+      // client's Ed25519 key via the challenge-response, not a client-supplied
+      // string — this is what the same-device reclaim check (#671) binds
+      // deviceId to, so a peer without this exact key can never produce it.
+      expect(conn.connectionClientFingerprint).toBe(clientFingerprint);
+    });
+
+    test('two different authenticated clients get different connectionClientFingerprint values (#671)', async () => {
+      const otherIdFile = await createIdentity('otherpass');
+      const otherIdentity = await unlockIdentity(otherIdFile, 'otherpass');
+      await store.addAuthorizedKey(otherIdFile.publicKey, 'Other Client');
+
+      const wsA = new MockWebSocket();
+      const connA = new Connection(wsA as unknown as WebSocket, {}, { authenticator });
+      const challengeA = wsA.sentMessages[0] as ProtocolMessage & { challenge: string };
+      const sigA = await sign(clientIdentity.privateKey, fromBase64(challengeA.challenge));
+      connA.handleMessage(
+        serialize(createAuthResponse(clientPublicKeyBase64, sigA, clientFingerprint)),
+      );
+      await new Promise((r) => setTimeout(r, 100));
+
+      const wsB = new MockWebSocket();
+      const connB = new Connection(wsB as unknown as WebSocket, {}, { authenticator });
+      const challengeB = wsB.sentMessages[0] as ProtocolMessage & { challenge: string };
+      const sigB = await sign(otherIdentity.privateKey, fromBase64(challengeB.challenge));
+      connB.handleMessage(
+        serialize(createAuthResponse(otherIdFile.publicKey, sigB, otherIdFile.fingerprint)),
+      );
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(connA.connectionClientFingerprint).toBe(clientFingerprint);
+      expect(connB.connectionClientFingerprint).toBe(otherIdFile.fingerprint);
+      expect(connA.connectionClientFingerprint).not.toBe(connB.connectionClientFingerprint);
+    });
+
+    test('a forged clientFingerprint claim is ignored: the DERIVED fingerprint is bound, not the claim (#671 critical)', async () => {
+      // The client's Ed25519 signature only proves possession of
+      // clientPublicKey; AuthResponseMessage.clientFingerprint is a
+      // client-supplied wire field the signature says nothing about. An
+      // already-authorized client lying about its OWN fingerprint (claiming
+      // an arbitrary forged value instead of its real one) must still get
+      // its REAL, server-derived fingerprint bound to the connection.
+      const ws = new MockWebSocket();
+      const conn = new Connection(ws as unknown as WebSocket, {}, { authenticator });
+
+      const challenge = ws.sentMessages[0] as ProtocolMessage & { challenge: string };
+      const signature = await sign(clientIdentity.privateKey, fromBase64(challenge.challenge));
+      const forgedClaim = 'forged-victim-fingerprint-0000';
+      conn.handleMessage(
+        serialize(createAuthResponse(clientPublicKeyBase64, signature, forgedClaim)),
+      );
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(conn.connectionState).toBe('connecting');
+      expect(conn.connectionClientFingerprint).toBe(clientFingerprint);
+      expect(conn.connectionClientFingerprint).not.toBe(forgedClaim);
+    });
+
+    test('PoC: a fresh throwaway keypair cannot bind a forged victim fingerprint via TOFU (#671 critical)', async () => {
+      // Reproduces the reported exploit: an attacker who owns no authorized
+      // key generates a brand-new keypair, completes a perfectly valid
+      // signature over the challenge with it, and claims the VICTIM's real
+      // fingerprint in AuthResponseMessage.clientFingerprint. Before the fix,
+      // Connection bound that claim directly, so the attacker's connection
+      // would present as the victim's authenticated identity — which, paired
+      // with the victim's (guessable/replayable) deviceId, would pass the
+      // same-device reclaim check in SessionRegistry and evict the victim.
+      const tofuAuthenticator = new Authenticator({
+        identity: serverIdentity,
+        identityStore: store,
+        tofuMode: 'auto-accept',
+      });
+
+      const attackerIdFile = await createIdentity('attackerpass');
+      const attackerIdentity = await unlockIdentity(attackerIdFile, 'attackerpass');
+      // Deliberately NOT authorizing attackerIdFile.publicKey up front — TOFU
+      // is what lets a never-seen key complete authentication.
+
+      const ws = new MockWebSocket();
+      const conn = new Connection(
+        ws as unknown as WebSocket,
+        {},
+        {
+          authenticator: tofuAuthenticator,
+        },
+      );
+
+      const challenge = ws.sentMessages[0] as ProtocolMessage & { challenge: string };
+      const signature = await sign(attackerIdentity.privateKey, fromBase64(challenge.challenge));
+      // Attacker claims the VICTIM's real fingerprint (clientFingerprint, from
+      // the shared beforeEach) while signing with their OWN key.
+      conn.handleMessage(
+        serialize(createAuthResponse(attackerIdFile.publicKey, signature, clientFingerprint)),
+      );
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Auth succeeds (TOFU auto-accepts the attacker's own, never-seen key)...
+      expect(conn.connectionState).toBe('connecting');
+      // ...but the identity bound to the connection is the attacker's OWN
+      // derived fingerprint, never the victim's claimed one.
+      const attackerDerivedFingerprint = await fingerprint(fromBase64(attackerIdFile.publicKey));
+      expect(conn.connectionClientFingerprint).toBe(attackerDerivedFingerprint);
+      expect(conn.connectionClientFingerprint).not.toBe(clientFingerprint);
+
+      // The authorized-keys store also recorded the attacker under their OWN
+      // correctly-derived fingerprint, not the forged claim (defense in depth
+      // in IdentityStore/createAuthorizedKey, unaffected by this fix).
+      expect(store.isAuthorized(attackerIdFile.publicKey, attackerDerivedFingerprint)).toBe(true);
+    });
+
     test('rejects non-auth messages during authenticating state', () => {
       const ws = new MockWebSocket();
       const conn = new Connection(ws as unknown as WebSocket, {}, { authenticator });
@@ -278,6 +402,21 @@ describe('Connection auth state machine', () => {
       expect(conn.connectionState).toBe('connecting');
       // No auth_challenge sent
       expect(ws.sentMessages.length).toBe(0);
+    });
+
+    test('connectionClientFingerprint stays null with no authenticator (#671)', () => {
+      // No authenticator configured (auth disabled daemon-wide, or the peer
+      // was loopback-exempted): there is no authenticated identity to bind,
+      // so the same-device reclaim check (#671) must fall back to
+      // deviceId-only matching for this connection.
+      const ws = new MockWebSocket();
+      const conn = new Connection(ws as unknown as WebSocket, {}, {});
+
+      const hello = createHello('test-client', '1.0.0');
+      conn.handleMessage(serialize(hello));
+
+      expect(conn.connectionState).toBe('connected');
+      expect(conn.connectionClientFingerprint).toBeNull();
     });
 
     test('accepts hello and transitions to connected', () => {

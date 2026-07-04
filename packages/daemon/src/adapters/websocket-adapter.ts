@@ -102,6 +102,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
             resumeSessionId: connection.connectionResumeSessionId,
             mode: connection.connectionMode,
             deviceId: connection.connectionDeviceId,
+            clientFingerprint: connection.connectionClientFingerprint,
           },
         };
         this.events.onConnect?.(connection.id, metadata);
@@ -111,8 +112,15 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (connectionId, sessionId, content, raw, claudeSessionId) => {
-        this.events.onUserInput?.(connectionId, sessionId, content, raw, claudeSessionId);
+      onUserInput: (connectionId, sessionId, content, raw, claudeSessionId, messageId) => {
+        this.events.onUserInput?.(
+          connectionId,
+          sessionId,
+          content,
+          raw,
+          claudeSessionId,
+          messageId,
+        );
       },
 
       onAnswer: (connectionId, sessionId, questionId, answer, claudeSessionId, extra) => {

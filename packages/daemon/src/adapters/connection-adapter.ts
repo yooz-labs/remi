@@ -36,6 +36,12 @@ export interface WebSocketPlatformData {
   readonly mode?: 'query' | 'attach' | undefined;
   /** Stable per-device identifier from the client's hello (#662). */
   readonly deviceId?: string | null;
+  /**
+   * Authenticated client fingerprint from the Ed25519 challenge-response
+   * (#671), null when this connection has no authenticated identity (auth
+   * disabled daemon-wide, or this peer was loopback-exempted from auth).
+   */
+  readonly clientFingerprint?: string | null;
 }
 
 export interface TelegramPlatformData {
@@ -72,13 +78,16 @@ export interface AdapterEvents {
   /** Connection closed */
   onDisconnect: (connectionId: UUID, reason: string) => void;
 
-  /** User input received */
+  /** User input received. `messageId` is the wire message's own id (#681),
+   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
+   *  specific bubble that was dropped. */
   onUserInput: (
     connectionId: UUID,
     sessionId: UUID,
     content: string,
     raw?: boolean,
     claudeSessionId?: UUID,
+    messageId?: UUID,
   ) => void;
 
   /** Answer to question received. `extra` carries structured AskUserQuestion
