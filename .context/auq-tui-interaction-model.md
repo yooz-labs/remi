@@ -24,6 +24,26 @@ and can drift (cf. ExitPlanMode order, #598).
 > captures were ever committed despite the "Four captures" note above — the
 > missing one was exactly the lone multi-select this bug lived in.
 
+> **Mid-form multi-select confirmed + parser hazard (2026-07-04, #677):** a
+> fifth capture, `three-questions-multi-middle.txt` (single/multi/single),
+> settles the open question from #661: `Enter` on a MID-form multi-select's
+> trailing "Submit" row ADVANCES to the next question tab — it does NOT jump
+> the tab bar to the review. `planAnswerKeys` needs no shape-special-casing;
+> the captured keystrokes match its output byte-for-byte and the run was
+> live-validated end-to-end (verify -> submit -> resolved "answered").
+>
+> The real #677 bug was in PARSING, not keystrokes: the renderer
+> partial-repaints (rewrites only changed characters, jumping the cursor with
+> CHA/CUF column moves — captured: `Ready\x1b[11Gubmi\x1b[17Gyour answers?`).
+> `visible()` used to DELETE cursor-move sequences, splicing fragments into
+> one token ("SmallReadyubmiyour answers?") that swallowed the last review
+> label past the trailer cutoff — so review verification failed and EVERY
+> shape whose review frame partial-repainted escalated instead of submitting.
+> `visible()` now maps vertical moves/CR to newlines and horizontal moves to
+> spaces, and `parseReviewAnswers` bounds a label row at its first line
+> break. Any future frame parser MUST preserve cursor-move structure the same
+> way — never strip positioning codes to nothing.
+
 ## Shape
 
 AskUserQuestion renders an interactive **tabbed form**, NOT a numbered prompt:

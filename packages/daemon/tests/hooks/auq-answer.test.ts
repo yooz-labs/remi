@@ -373,6 +373,43 @@ describe('review parsing + verification (against real captures)', () => {
   });
 });
 
+describe('mid-form multi-select (#677, three-questions-multi-middle capture)', () => {
+  const FIXTURE = 'three-questions-multi-middle.txt';
+  // Captured live 2026-07-04: Color (single, 2 opts) / Fruits (multi, 3 opts) /
+  // Size (single, 2 opts); the auto-answer drove targets [0],[0],[0].
+  const SPECS = [single(2), multi(3), single(2)];
+
+  it('captured keystrokes equal the planner output byte-for-byte', () => {
+    const keyTokens = new Set<string>([SPACE, ENTER, UP, DOWN, AUQ_KEYS.TAB, AUQ_KEYS.RIGHT]);
+    const keys = fixtureInputs(FIXTURE).filter((p) => keyTokens.has(p));
+    // keys[0] is the prompt-submit ENTER; the remainder is the AUQ drive.
+    expect(keys.slice(1)).toEqual(planAnswerKeys(SPECS, [[0], [0], [0]]));
+  });
+
+  it('Enter on the mid-form Submit row ADVANCES to the next question tab', () => {
+    // The #677 hypothesis was that a mid-form multi-select's per-tab Submit
+    // Enter jumps the tab bar straight to the review, skipping later questions.
+    // The capture disproves it: after Q2's Submit-row Enter, the single trailing
+    // ENTER answered Q3, and the review shows all THREE questions answered.
+    const out = fixtureOutput(FIXTURE);
+    expect(isReviewScreen(out)).toBe(true);
+    const parsed = parseReviewAnswers(out);
+    expect(parsed.map((p) => p.question)).toEqual(['Pick a color', 'Pick fruits', 'Pick a size']);
+    expect(parsed.map((p) => p.labels)).toEqual([['Red'], ['Apple'], ['Small']]);
+  });
+
+  it('verification passes despite the partial-repaint splice (#677 root cause)', () => {
+    // The capture's review frame repaints "Ready to submit your answers?" with
+    // cursor-column jumps ("Ready\x1b[11Gubmi\x1b[17Gyour answers?"). The old
+    // visible() deleted the jumps, splicing the fragments into the LAST label
+    // ("SmallReadyubmiyour answers?") past the trailer cutoff -> verification
+    // failed -> silent escalate for every shape whose review partial-repaints.
+    const out = fixtureOutput(FIXTURE);
+    const parsed = parseReviewAnswers(out);
+    expect(reviewMatchesTarget(parsed, [['Red'], ['Apple'], ['Small']])).toBe(true);
+  });
+});
+
 describe('parseAnsweredSummary (#661 review: precise post-submit matching)', () => {
   it('parses the post-submit summary from the real two-question capture', () => {
     const out = fixtureOutput('two-questions-single-and-multi.txt');
