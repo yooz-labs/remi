@@ -102,6 +102,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
             resumeSessionId: connection.connectionResumeSessionId,
             mode: connection.connectionMode,
             deviceId: connection.connectionDeviceId,
+            clientFingerprint: connection.connectionClientFingerprint,
           },
         };
         this.events.onConnect?.(connection.id, metadata);

@@ -36,6 +36,12 @@ export interface WebSocketPlatformData {
   readonly mode?: 'query' | 'attach' | undefined;
   /** Stable per-device identifier from the client's hello (#662). */
   readonly deviceId?: string | null;
+  /**
+   * Authenticated client fingerprint from the Ed25519 challenge-response
+   * (#671), null when this connection has no authenticated identity (auth
+   * disabled daemon-wide, or this peer was loopback-exempted from auth).
+   */
+  readonly clientFingerprint?: string | null;
 }
 
 export interface TelegramPlatformData {

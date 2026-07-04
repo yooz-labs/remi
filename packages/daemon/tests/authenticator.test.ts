@@ -84,7 +84,7 @@ describe('Authenticator', () => {
 
       const response = createAuthResponse(clientPublicKeyBase64, signature, clientFingerprint);
 
-      const result = await authenticator.verifyResponse('conn-1', response);
+      const { result } = await authenticator.verifyResponse('conn-1', response);
       expect(result.success).toBe(true);
       expect(result.serverSignature).toBeDefined();
       expect(result.error).toBeUndefined();
@@ -102,7 +102,7 @@ describe('Authenticator', () => {
 
       const response = createAuthResponse(unknownId.publicKey, signature, unknownId.fingerprint);
 
-      const result = await authenticator.verifyResponse('conn-1', response);
+      const { result } = await authenticator.verifyResponse('conn-1', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('UNKNOWN_KEY');
     });
@@ -116,7 +116,7 @@ describe('Authenticator', () => {
 
       const response = createAuthResponse(clientPublicKeyBase64, signature, clientFingerprint);
 
-      const result = await authenticator.verifyResponse('conn-1', response);
+      const { result } = await authenticator.verifyResponse('conn-1', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('INVALID_SIGNATURE');
     });
@@ -130,11 +130,11 @@ describe('Authenticator', () => {
       const response = createAuthResponse(clientPublicKeyBase64, signature, clientFingerprint);
 
       // First use succeeds
-      const result1 = await authenticator.verifyResponse('conn-1', response);
+      const { result: result1 } = await authenticator.verifyResponse('conn-1', response);
       expect(result1.success).toBe(true);
 
       // Second use fails (challenge consumed)
-      const result2 = await authenticator.verifyResponse('conn-1', response);
+      const { result: result2 } = await authenticator.verifyResponse('conn-1', response);
       expect(result2.success).toBe(false);
       expect(result2.error).toBe('NO_PENDING_CHALLENGE');
     });
@@ -148,7 +148,7 @@ describe('Authenticator', () => {
       const response = createAuthResponse(clientPublicKeyBase64, signature, clientFingerprint);
 
       // Try to use conn-2's response for conn-1 (conn-1's challenge was already consumed by conn-2's creation)
-      const result = await authenticator.verifyResponse('conn-999', response);
+      const { result } = await authenticator.verifyResponse('conn-999', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('NO_PENDING_CHALLENGE');
     });
@@ -178,7 +178,7 @@ describe('Authenticator', () => {
 
       const response = createAuthResponse(clientPublicKeyBase64, signature, clientFingerprint);
 
-      const result = await authenticator.verifyResponse('conn-1', response);
+      const { result } = await authenticator.verifyResponse('conn-1', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('NO_PENDING_CHALLENGE');
     });
@@ -222,7 +222,7 @@ describe('Authenticator', () => {
       const signature = await sign(unknownIdentity.privateKey, challengeData);
       const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
 
-      const result = await tofuAuthenticator.verifyResponse('conn-tofu', response);
+      const { result } = await tofuAuthenticator.verifyResponse('conn-tofu', response);
       expect(result.success).toBe(true);
       expect(result.serverSignature).toBeDefined();
     });
@@ -248,7 +248,7 @@ describe('Authenticator', () => {
       const signature = await sign(unknownIdentity.privateKey, wrongData.buffer);
       const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
 
-      const result = await tofuAuthenticator.verifyResponse('conn-tofu', response);
+      const { result } = await tofuAuthenticator.verifyResponse('conn-tofu', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('INVALID_SIGNATURE');
 
@@ -269,7 +269,7 @@ describe('Authenticator', () => {
       const signature = await sign(unknownIdentity.privateKey, challengeData);
       const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
 
-      const result = await rejectAuthenticator.verifyResponse('conn-reject', response);
+      const { result } = await rejectAuthenticator.verifyResponse('conn-reject', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('UNKNOWN_KEY');
     });
@@ -284,7 +284,7 @@ describe('Authenticator', () => {
       const signature = await sign(unknownIdentity.privateKey, challengeData);
       const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
 
-      const result = await tofuAuthenticator.verifyResponse('conn-existing', response);
+      const { result } = await tofuAuthenticator.verifyResponse('conn-existing', response);
       expect(result.success).toBe(true);
 
       // Should still have just one key entry (not duplicated)
@@ -305,7 +305,7 @@ describe('Authenticator', () => {
       const signature = await sign(unknownIdentity.privateKey, challengeData);
       const response = createAuthResponse(unknownPublicKeyBase64, signature, unknownFingerprint);
 
-      const result = await defaultAuth.verifyResponse('conn-default', response);
+      const { result } = await defaultAuth.verifyResponse('conn-default', response);
       expect(result.success).toBe(false);
       expect(result.error).toBe('UNKNOWN_KEY');
     });
@@ -321,7 +321,7 @@ describe('Authenticator', () => {
       await store.addAuthorizedKey(unknownPublicKeyBase64, 'concurrent-add');
 
       // TOFU should still succeed (catches DuplicateKeyError)
-      const result = await tofuAuthenticator.verifyResponse('conn-race', response);
+      const { result } = await tofuAuthenticator.verifyResponse('conn-race', response);
       expect(result.success).toBe(true);
     });
   });

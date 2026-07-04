@@ -166,6 +166,11 @@ export class Connection {
   private resumeSessionId: UUID | null = null;
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
+  /** Authenticated client fingerprint from the Ed25519 challenge-response
+   *  (#671), null until `handleAuthResponse` succeeds. Stays null for the
+   *  lifetime of the connection when no authenticator is configured (auth
+   *  disabled, or this peer was loopback-exempted). */
+  private authenticatedFingerprint: string | null = null;
 
   private readonly ws: WebSocket;
   private readonly config: Required<ConnectionConfig> & {
@@ -244,6 +249,12 @@ export class Connection {
   /** Stable per-device identifier from the client's hello, if sent (#662). */
   get connectionDeviceId(): string | null {
     return this.deviceId;
+  }
+
+  /** Authenticated client fingerprint, if this connection completed the
+   *  Ed25519 challenge-response (#671). Null when unauthenticated. */
+  get connectionClientFingerprint(): string | null {
+    return this.authenticatedFingerprint;
   }
 
   /** Check if connection is active */
@@ -401,13 +412,20 @@ export class Connection {
       return;
     }
 
-    const result = await this.config.authenticator.verifyResponse(this.id, message);
+    const { result, verifiedFingerprint } = await this.config.authenticator.verifyResponse(
+      this.id,
+      message,
+    );
     this.send(result);
 
     if (result.success) {
-      // Auth passed; transition to 'connecting' (waiting for hello)
+      // Auth passed; transition to 'connecting' (waiting for hello). Bind the
+      // server-derived fingerprint (#671), never `message.clientFingerprint`
+      // — that field is client-claimed and unverified; the Authenticator
+      // guarantees `verifiedFingerprint` is set whenever `result.success`.
       this.state = 'connecting';
-      this.events.onAuthSuccess?.(message.clientFingerprint);
+      this.authenticatedFingerprint = verifiedFingerprint ?? null;
+      this.events.onAuthSuccess?.(this.authenticatedFingerprint ?? '');
     } else {
       this.events.onAuthFailed?.(result.error ?? 'unknown', message.clientFingerprint);
       this.close(`Authentication failed: ${result.error}`);

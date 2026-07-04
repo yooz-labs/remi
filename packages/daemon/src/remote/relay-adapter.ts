@@ -226,7 +226,7 @@ export class RelayAdapter implements ConnectionAdapter {
       return;
     }
 
-    const result = await this.config.authenticator.verifyResponse(
+    const { result } = await this.config.authenticator.verifyResponse(
       this.clientConnectionId,
       response,
     );

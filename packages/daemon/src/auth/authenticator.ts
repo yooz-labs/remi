@@ -21,6 +21,7 @@ import { errorToString } from '@remi/shared';
 import {
   createAuthChallenge,
   createAuthResult,
+  fingerprint,
   fromBase64,
   generateChallenge,
   importPublicKey,
@@ -28,6 +29,23 @@ import {
   verify,
 } from '@remi/shared';
 import { DuplicateKeyError, type IdentityStore } from './identity-store.ts';
+
+/**
+ * Outcome of `verifyResponse` (#671 follow-up). `result` is the wire
+ * `AuthResultMessage` to send back to the client, unchanged. `verifiedFingerprint`
+ * is set ONLY when `result.success` is true, and is always derived
+ * server-side from the Ed25519-verified `clientPublicKey` — never from
+ * `response.clientFingerprint`, which is a client-supplied, unverified wire
+ * field (documented as "for display" in the protocol type). Binding the
+ * unverified claim to a connection's identity would let an attacker who
+ * merely owns SOME valid keypair complete authentication while claiming to
+ * BE a different (victim) fingerprint, defeating any identity check
+ * (e.g. the same-device lock reclaim, #671) keyed off it.
+ */
+export interface VerifyResponseOutcome {
+  readonly result: AuthResultMessage;
+  readonly verifiedFingerprint?: string;
+}
 
 export type TofuMode = 'auto-accept' | 'reject';
 
@@ -62,45 +80,61 @@ export class Authenticator {
 
   /**
    * Verify a client's auth response.
-   * Returns an AuthResultMessage with success/failure.
+   * Returns a `VerifyResponseOutcome`: the wire `AuthResultMessage` plus,
+   * on success, the server-derived `verifiedFingerprint`.
    *
    * Order: verify signature first (bad sigs never trigger TOFU),
    * then check authorization, then TOFU if applicable.
+   *
+   * `response.clientFingerprint` is NEVER used for authorization or identity
+   * binding (#671): it is a client-supplied wire field, and Ed25519
+   * signature verification only proves possession of `clientPublicKey`, not
+   * that the claimed fingerprint actually hashes from that key. Every
+   * identity-bearing check here (authorized-keys lookup, TOFU, lastUsedAt,
+   * and the fingerprint returned to the caller) uses `derivedFingerprint`,
+   * computed server-side from the verified public key.
    */
   async verifyResponse(
     connectionId: string,
     response: AuthResponseMessage,
-  ): Promise<AuthResultMessage> {
+  ): Promise<VerifyResponseOutcome> {
     const challenge = this.pendingChallenges.get(connectionId);
     if (!challenge) {
-      return createAuthResult(false, undefined, 'NO_PENDING_CHALLENGE');
+      return { result: createAuthResult(false, undefined, 'NO_PENDING_CHALLENGE') };
     }
 
     // Remove challenge (one-time use)
     this.pendingChallenges.delete(connectionId);
 
     // Step 1: Verify the signature FIRST (before checking authorization)
+    let derivedFingerprint: string;
     try {
-      const clientPublicKey = await importPublicKey(fromBase64(response.clientPublicKey));
+      const clientPublicKeyRaw = fromBase64(response.clientPublicKey);
+      const clientPublicKey = await importPublicKey(clientPublicKeyRaw);
       const challengeData = fromBase64(challenge);
       const valid = await verify(clientPublicKey, challengeData, response.signature);
 
       if (!valid) {
-        return createAuthResult(false, undefined, 'INVALID_SIGNATURE');
+        return { result: createAuthResult(false, undefined, 'INVALID_SIGNATURE') };
       }
+
+      // Derive the fingerprint from the VERIFIED public key, not from the
+      // client's claim (#671) — this is the only fingerprint value ever
+      // treated as this client's identity from here on.
+      derivedFingerprint = await fingerprint(clientPublicKeyRaw);
     } catch (err) {
       const code = err instanceof DOMException ? 'INVALID_KEY_DATA' : 'VERIFICATION_ERROR';
-      return createAuthResult(false, undefined, code);
+      return { result: createAuthResult(false, undefined, code) };
     }
 
     // Step 2: Check if client's key is authorized
     let isAuthorized: boolean;
     try {
-      isAuthorized = this.store.isAuthorized(response.clientPublicKey, response.clientFingerprint);
+      isAuthorized = this.store.isAuthorized(response.clientPublicKey, derivedFingerprint);
     } catch (err) {
       const detail = errorToString(err);
       console.error(`Auth store error during verification: ${detail}`);
-      return createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`);
+      return { result: createAuthResult(false, undefined, `AUTH_STORE_ERROR: ${detail}`) };
     }
 
     // Step 3: TOFU - if not authorized and auto-accept is enabled, add the key
@@ -109,7 +143,7 @@ export class Authenticator {
         try {
           const label = `tofu-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`;
           await this.store.addAuthorizedKey(response.clientPublicKey, label);
-          console.log(`New client auto-accepted (TOFU): ${response.clientFingerprint} [${label}]`);
+          console.log(`New client auto-accepted (TOFU): ${derivedFingerprint} [${label}]`);
           isAuthorized = true;
         } catch (err) {
           if (err instanceof DuplicateKeyError) {
@@ -118,26 +152,29 @@ export class Authenticator {
           } else {
             const detail = errorToString(err);
             console.error(`TOFU auto-accept failed: ${detail}`);
-            return createAuthResult(false, undefined, 'TOFU_FAILED');
+            return { result: createAuthResult(false, undefined, 'TOFU_FAILED') };
           }
         }
       } else {
-        return createAuthResult(false, undefined, 'UNKNOWN_KEY');
+        return { result: createAuthResult(false, undefined, 'UNKNOWN_KEY') };
       }
     }
 
     // Update lastUsedAt (non-critical; don't let failures break auth)
-    this.store.touchAuthorizedKey(response.clientFingerprint);
+    this.store.touchAuthorizedKey(derivedFingerprint);
 
     // Sign the same challenge with server's key for mutual authentication
     try {
       const challengeData = fromBase64(challenge);
       const serverSignature = await sign(this.identity.privateKey, challengeData);
-      return createAuthResult(true, serverSignature);
+      return {
+        result: createAuthResult(true, serverSignature),
+        verifiedFingerprint: derivedFingerprint,
+      };
     } catch (err) {
       const detail = errorToString(err);
       console.error(`Server failed to sign mutual auth challenge: ${detail}`);
-      return createAuthResult(false, undefined, 'SERVER_SIGN_ERROR');
+      return { result: createAuthResult(false, undefined, 'SERVER_SIGN_ERROR') };
     }
   }
 
