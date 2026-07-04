@@ -36,68 +36,45 @@ reset_cwd() {
 EXPLORE="Read README.md or list the files here, then give a 2-sentence summary. Read-only, do not modify anything."
 
 # ---------------------------------------------------------------------------
-echo "### Scenario 1: SHADOW (shipping default) — bind + /clear rotation + /compact"
+echo "### Scenario 1: SINGLE DAEMON — bind + /clear rotation (hook or dir-poll) + /compact"
 # ---------------------------------------------------------------------------
+# The TranscriptBinder is the single, unconditional binding path (#470/#503) —
+# there is no shadow/drive mode to select; every check below exercises the
+# real driving path. See failure-mode-matrix.md -> "The oracle".
 reset_cwd
-start_daemon s1 "$CWD" 18811 shadow; wait_ready s1 || exit 1
+start_daemon s1 "$CWD" 18811; wait_ready s1 || exit 1
 SID=$(session_id 18811); attach_start s1 18811 "$SID"; sleep 2
 prompt s1 "$EXPLORE"
-A=$(wait_bound "$CWD" 18811 8 100) || { bad "shadow: initial bind"; A=""; }
-[ -n "$A" ] && ok "shadow: claude bound (honoured pre-assigned --session-id): $A"
-check "shadow: 0 DISAGREE on a normal session" "[ \$(grep -c 'ShadowBinder] DISAGREE' '$E2E_STATE/s1.log') -eq 0 ]"
+A=$(wait_bound "$CWD" 18811 8 100) || { bad "initial bind"; A=""; }
+[ -n "$A" ] && ok "claude bound (honoured pre-assigned --session-id): $A"
+check "binder drove the bind" "grep -q 'Binder] Lock adopted' '$E2E_STATE/s1.log'"
 
 prompt s1 "/clear"
-wait_log s1 "restart detected" 25   # the new transcript file appears slightly before the daemon logs the rotation
+wait_log s1 "DirPollRotation|restart detected" 25
 B=$(bound_transcript "$CWD" 18811 2>/dev/null | awk '{print $1}')
-check "shadow: /clear rotated to a NEW id (B != A)" "[ -n '$B' ] && [ '$B' != '$A' ]"
-check "shadow: rotation announced exactly once (old path drives)" "[ \$(grep -c '\[Hooks\] Claude restart detected' '$E2E_STATE/s1.log') -eq 1 ]"
-check "shadow: still 0 DISAGREE after /clear"        "[ \$(grep -c 'ShadowBinder] DISAGREE' '$E2E_STATE/s1.log') -eq 0 ]"
+check "/clear rotated to a NEW id (B != A)" "[ -n '$B' ] && [ '$B' != '$A' ]"
+check "rotation announced exactly once" "[ \$(grep -c '\[Binder\] Claude restart detected' '$E2E_STATE/s1.log') -eq 1 ]"
+check "no Transcript-not-found wedge" "[ \$(grep -ci 'not found' '$E2E_STATE/s1.log') -eq 0 ]"
 
 Bf=$(tdir_for "$CWD")/$B.jsonl; Af=$(tdir_for "$CWD")/$A.jsonl
 bb=$(wc -l < "$Bf" 2>/dev/null || echo 0); ab=$(wc -l < "$Af" 2>/dev/null || echo 0)
 prompt s1 "Say the word DELTA."
 for i in $(seq 1 20); do [ "$(wc -l < "$Bf" 2>/dev/null||echo 0)" -gt "$bb" ] && break; sleep 2; done
-check "shadow: follow-up landed in rotated session B" "[ \$(grep -c DELTA '$Bf' 2>/dev/null) -ge 1 ]"
-check "shadow: old session A stayed frozen"           "[ \$(wc -l < '$Af' 2>/dev/null) -eq $ab ]"
+check "follow-up landed in rotated session B" "[ \$(grep -c DELTA '$Bf' 2>/dev/null) -ge 1 ]"
+check "old session A stayed frozen"           "[ \$(wc -l < '$Af' 2>/dev/null) -eq $ab ]"
 
-rb=$(grep -c 'restart detected' "$E2E_STATE/s1.log")
+rc=$(grep -c 'rotation detected\|restart detected\|DirPollRotation' "$E2E_STATE/s1.log")
 prompt s1 "/compact"; sleep 12
-check "shadow: /compact did NOT rotate (no new restart)" "[ \$(grep -c 'restart detected' '$E2E_STATE/s1.log') -eq $rb ]"
+check "/compact did NOT rotate or over-fire the dir-poll" "[ \$(grep -c 'rotation detected\|restart detected\|DirPollRotation' '$E2E_STATE/s1.log') -eq $rc ]"
 attach_stop s1; stop_daemon s1
 
 # ---------------------------------------------------------------------------
-echo "### Scenario 2: DRIVE (the binder itself) — bind + /clear via dir-poll + /compact"
+echo "### Scenario 2: TWO daemons, same cwd — cross-bind (fm-427) + zombie (fm-451)"
 # ---------------------------------------------------------------------------
 reset_cwd
-start_daemon s2 "$CWD" 18812 drive; wait_ready s2 || exit 1
-SID=$(session_id 18812); attach_start s2 18812 "$SID"; sleep 2
-prompt s2 "$EXPLORE"
-A2=$(wait_bound "$CWD" 18812 8 100) || { bad "drive: initial bind"; A2=""; }
-check "drive: binder drove the bind" "grep -q 'Binder] Lock adopted' '$E2E_STATE/s2.log'"
-
-prompt s2 "/clear"
-wait_log s2 "DirPollRotation|restart detected" 25
-B2=$(bound_transcript "$CWD" 18812 2>/dev/null | awk '{print $1}')
-check "drive: /clear rotated (B != A)" "[ -n '$B2' ] && [ '$B2' != '$A2' ]"
-check "drive: new dir-poll detected the rotation (#452 machinery)" "grep -q 'No-hooks rotation detected via dir poll' '$E2E_STATE/s2.log'"
-check "drive: rebound + rearmed watcher on B" "grep -q 'Transcript from DirPollRotation' '$E2E_STATE/s2.log'"
-check "drive: no Transcript-not-found wedge" "[ \$(grep -ci 'not found' '$E2E_STATE/s2.log') -eq 0 ]"
-
-rc=$(grep -c 'rotation detected\|restart detected\|DirPollRotation' "$E2E_STATE/s2.log")
-prompt s2 "/compact"; sleep 12
-check "drive: /compact did NOT over-fire the dir-poll" "[ \$(grep -c 'rotation detected\|restart detected\|DirPollRotation' '$E2E_STATE/s2.log') -eq $rc ]"
-# Checked after events have flowed (a bind + a real rotation), so a leaked
-# shadow comparison would have had its chance to log.
-check "drive: shadow suppressed throughout (no [ShadowBinder] lines)" "[ \$(grep -c 'ShadowBinder' '$E2E_STATE/s2.log') -eq 0 ]"
-attach_stop s2; stop_daemon s2
-
-# ---------------------------------------------------------------------------
-echo "### Scenario 3: TWO daemons, same cwd — cross-bind (fm-427) + zombie (fm-451)"
-# ---------------------------------------------------------------------------
-reset_cwd
-start_daemon d1 "$CWD" 18813 drive; wait_ready d1 || exit 1
+start_daemon d1 "$CWD" 18813; wait_ready d1 || exit 1
 sleep 2   # stagger so the two daemons do not collide writing ~/.remi/sessions.json
-start_daemon d2 "$CWD" 18814 drive; wait_ready d2 || exit 1
+start_daemon d2 "$CWD" 18814; wait_ready d2 || exit 1
 S1=$(session_id 18813); S2=$(session_id 18814)
 attach_start d1 18813 "$S1"; attach_start d2 18814 "$S2"; sleep 2
 prompt d1 "Say the word ALPHA."
