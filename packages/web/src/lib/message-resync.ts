@@ -94,7 +94,7 @@ function candidateLandedIndices(survivor: UIMessage, reloaded: readonly UIMessag
   reloaded.forEach((r, i) => {
     if (r.sender === survivor.sender && r.content === survivor.content) {
       const rTime = Date.parse(r.timestamp);
-      // An unparseable timestamp can't be confirmed as at-or-after the
+      // An unparsable timestamp can't be confirmed as at-or-after the
       // survivor's send; treat it as not a match rather than risk a false
       // positive (losing genuine user intent is worse than a rare
       // stray duplicate).
