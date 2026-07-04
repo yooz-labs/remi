@@ -455,6 +455,13 @@ export class RelayAdapter implements ConnectionAdapter {
         }
         this.events.onRegisterDeviceToken?.(connectionId, msg['token'], msg['platform']);
         break;
+      case 'unregister_device_token':
+        if (typeof msg['token'] !== 'string') {
+          console.warn('Invalid unregister_device_token payload: missing token');
+          return;
+        }
+        this.events.onUnregisterDeviceToken?.(connectionId, msg['token']);
+        break;
       case 'ping':
         // Liveness ping needs no reply over relay.
         break;

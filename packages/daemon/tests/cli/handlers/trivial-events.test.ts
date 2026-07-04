@@ -54,6 +54,7 @@ describe('createTrivialHandlers', () => {
     const handlers = createTrivialHandlers({
       registerDeviceToken: (token, platform, connectionId) =>
         calls.push({ token, platform, connectionId }),
+      unregisterDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -65,11 +66,29 @@ describe('createTrivialHandlers', () => {
     expect(calls).toEqual([{ token: 'ios-device-token-abc', platform: 'ios', connectionId: CID }]);
   });
 
+  test('onUnregisterDeviceToken forwards token to the store (#690)', () => {
+    const calls: string[] = [];
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({
+      registerDeviceToken: () => {},
+      unregisterDeviceToken: (token) => calls.push(token),
+      sessionStore,
+      sessionRegistry,
+      send,
+    });
+    configureLogger({ writeLog: () => {} });
+
+    handlers.onUnregisterDeviceToken(CID, 'ios-device-token-abc');
+
+    expect(calls).toEqual(['ios-device-token-abc']);
+  });
+
   test('onTerminalResize logs and returns when no session is attached', () => {
     const logs: string[] = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
       registerDeviceToken: () => {},
+      unregisterDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -87,6 +106,7 @@ describe('createTrivialHandlers', () => {
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
       registerDeviceToken: () => {},
+      unregisterDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -102,6 +122,7 @@ describe('createTrivialHandlers', () => {
     const { send, captured } = makeSend();
     const handlers = createTrivialHandlers({
       registerDeviceToken: () => {},
+      unregisterDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,
@@ -119,6 +140,7 @@ describe('createTrivialHandlers', () => {
     const { send, captured } = makeSend();
     const handlers = createTrivialHandlers({
       registerDeviceToken: () => {},
+      unregisterDeviceToken: () => {},
       sessionStore,
       sessionRegistry,
       send,

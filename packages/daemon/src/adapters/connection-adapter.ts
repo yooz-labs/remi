@@ -144,6 +144,9 @@ export interface AdapterEvents {
   /** Device token registered for push notifications */
   onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
 
+  /** Device token unregistered — explicit user removal of this server (#690) */
+  onUnregisterDeviceToken: (connectionId: UUID, token: string) => void;
+
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
 }

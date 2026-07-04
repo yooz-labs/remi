@@ -105,6 +105,51 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
     expect(new Set(tokensOnDisk(file))).toEqual(new Set(['tok-a', 'tok-b', 'tok-d']));
   });
 
+  test('unregister removes a token and persists the removal (#690)', () => {
+    const s = new DeviceTokenStore(file);
+    s.register('tok-a', 'ios', CID);
+    expect(s.unregister('tok-a')).toBe(true);
+    expect(s.map.has('tok-a')).toBe(false);
+    expect(tokensOnDisk(file)).toEqual([]);
+  });
+
+  test('unregister of an unknown token returns false and does not persist', () => {
+    const s = new DeviceTokenStore(file);
+    s.register('live', 'ios', CID);
+    expect(s.unregister('nope')).toBe(false);
+    expect(tokensOnDisk(file)).toEqual(['live']);
+  });
+
+  test('an unregistered token is NOT re-adopted from a concurrent daemon stale copy (#690)', () => {
+    const a = new DeviceTokenStore(file);
+    a.register('removed-me', 'ios', CID);
+    a.unregister('removed-me');
+    // Another daemon still lists the (now user-removed) token because it has
+    // not read-merged yet.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        tokens: [{ token: 'removed-me', platform: 'ios', registeredAt: 1, connectionId: 'conn2' }],
+      }),
+    );
+    // a's next persist read-merge must NOT re-adopt the token it just unregistered.
+    a.register('fresh', 'ios', 'conn3');
+    expect(a.map.has('removed-me')).toBe(false);
+    expect(new Set(tokensOnDisk(file))).toEqual(new Set(['fresh']));
+  });
+
+  test('re-registering an unregistered token clears the removed mark (#690)', () => {
+    const s = new DeviceTokenStore(file);
+    s.register('tok-a', 'ios', CID);
+    s.unregister('tok-a');
+    // Re-register the same token (e.g. the user re-adds the server later).
+    // Without clearing the `removed` mark this token would be blacklisted
+    // forever, even though the app explicitly registered it again.
+    s.register('tok-a', 'ios', CID);
+    expect(s.map.get('tok-a')?.platform).toBe('ios');
+    expect(tokensOnDisk(file)).toEqual(['tok-a']);
+  });
+
   test('a pruned token is NOT re-adopted from a concurrent daemon stale copy', () => {
     const a = new DeviceTokenStore(file);
     a.register('dead', 'ios', CID);

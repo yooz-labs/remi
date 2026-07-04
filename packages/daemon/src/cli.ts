@@ -1470,6 +1470,9 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
   registerDeviceToken: (token, platform, connectionId) =>
     deviceTokenStore.register(token, platform, connectionId),
+  // #690: explicit user removal of this server from the phone app. Never
+  // fires on a mere disconnect/app suspension — those must keep pushing.
+  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
   sessionStore,
   sessionRegistry,
   send: sendToConnection,

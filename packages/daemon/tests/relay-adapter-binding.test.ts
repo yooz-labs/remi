@@ -239,6 +239,34 @@ describe('relay-adapter routeMessage no-longer-silently-drops requests (#453 pha
     expect(calls).toHaveLength(0);
   });
 
+  test('unregister_device_token dispatches onUnregisterDeviceToken (#690)', () => {
+    const calls: Array<{ connectionId: UUID; token: string }> = [];
+    const adapter = makeAdapter({
+      onUnregisterDeviceToken: (connectionId: UUID, token: string) => {
+        calls.push({ connectionId, token });
+      },
+    });
+
+    callRoute(adapter, { type: 'unregister_device_token', token: 'abc123' });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.connectionId).toBe(CID);
+    expect(calls[0]?.token).toBe('abc123');
+  });
+
+  test('unregister_device_token with missing token is NOT dispatched', () => {
+    const calls: Array<{ token: string }> = [];
+    const adapter = makeAdapter({
+      onUnregisterDeviceToken: (_c: UUID, token: string) => {
+        calls.push({ token });
+      },
+    });
+
+    callRoute(adapter, { type: 'unregister_device_token' });
+
+    expect(calls).toHaveLength(0);
+  });
+
   test('unknown type now rejects via sendRelay with error + UNSUPPORTED (no silent drop)', () => {
     const adapter = makeAdapter({});
     const sent = attachSendRelaySpy(adapter);

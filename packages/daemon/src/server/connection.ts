@@ -45,6 +45,7 @@ import type {
   TerminalResizeMessage,
   TranscriptLoadRequestMessage,
   UUID,
+  UnregisterDeviceTokenMessage,
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
@@ -102,6 +103,9 @@ export interface ConnectionEvents {
 
   /** Device token registered for push notifications */
   onRegisterDeviceToken: (token: string, platform: 'ios' | 'android') => void;
+
+  /** Device token unregistered — explicit user removal of this server (#690) */
+  onUnregisterDeviceToken: (token: string) => void;
 
   /** Authentication succeeded */
   onAuthSuccess: (clientFingerprint: string) => void;
@@ -331,6 +335,9 @@ export class Connection {
       case 'register_device_token':
         this.handleRegisterDeviceToken(message);
         break;
+      case 'unregister_device_token':
+        this.handleUnregisterDeviceToken(message);
+        break;
       case 'pong':
         // Explicit protocol-level liveness reply. Redundant with the
         // any-message reset above (kept as documentation of intent and a
@@ -541,6 +548,11 @@ export class Connection {
   private handleRegisterDeviceToken(message: RegisterDeviceTokenMessage): void {
     this.sendAck(message.id, 'delivered');
     this.events.onRegisterDeviceToken?.(message.token, message.platform);
+  }
+
+  private handleUnregisterDeviceToken(message: UnregisterDeviceTokenMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onUnregisterDeviceToken?.(message.token);
   }
 
   private handleTerminalResize(message: TerminalResizeMessage): void {

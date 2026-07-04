@@ -103,6 +103,24 @@ export class DeviceTokenStore {
     return had;
   }
 
+  /**
+   * Unregister a token on explicit user removal (#690) — the user removed this
+   * server/machine from the phone app. Same semantics as `prune` (delete +
+   * remember so a concurrent daemon's stale copy is not re-adopted), distinct
+   * reason for the log line. Does NOT fire on mere disconnect/app suspension;
+   * push-while-suspended must keep working, so tokens persist across those.
+   * Returns true iff the token was present.
+   */
+  unregister(token: string): boolean {
+    const had = this.tokens.delete(token);
+    this.removed.add(token);
+    if (had) {
+      log(`[DeviceTokens] Unregistered by device: ${token.slice(0, 20)}...`);
+      this.persist();
+    }
+    return had;
+  }
+
   private readFile(): DeviceTokenEntry[] {
     try {
       const raw = fs.readFileSync(this.filePath, 'utf8');
