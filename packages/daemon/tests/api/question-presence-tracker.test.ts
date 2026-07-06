@@ -560,13 +560,14 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes.length).toBe(0);
     });
 
-    it('a prompt with a pending hook record does NOT double-push via the orphan path', async () => {
+    it('a SAME-AGENT pending hook record does NOT double-push via the orphan path', async () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
         hasLiveQuestions: () => false,
         orphanDebounceMs: DEBOUNCE_MS,
       });
-      // A hook fired for some agent and the gate has not resolved it yet.
+      // A hook fired for the main agent (no agentId -> MAIN_AGENT_ID key,
+      // same as the PTY question below) and the gate has not resolved it yet.
       tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
@@ -575,6 +576,57 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes.length).toBe(0);
       // The stashed hook record is untouched by the orphan path.
       expect(tracker.hasPendingForTest()).toBe(true);
+    });
+
+    it('a DIFFERENT-agent pending hook record does NOT suppress an orphan prompt (scoped ownership)', async () => {
+      // A background subagent's PermissionRequest is still mid-flight
+      // (agent-X) while an unrelated main-screen orphan prompt (e.g. a
+      // native agent-team permission, no hook at all) renders. The
+      // subagent's in-flight record must not swallow the main orphan for
+      // the whole window it's pending — that's the exact class of
+      // notification loss #712 exists to fix.
+      //
+      // Note: the debounce fire routes through the same onPTYPromptVisible
+      // merge/push path a non-orphan prompt uses (per spec), so with exactly
+      // one OTHER pending record its pre-existing sole-candidate heuristic
+      // (#483) may still attach agent-X's labels — a separate, pre-existing
+      // cross-agent attribution question this test does not assert on.
+      // What matters here is that the push fires at all.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash?'), agentId: 'agent-X' });
+
+      // No agentId -> keyed to MAIN_AGENT_ID, distinct from 'agent-X'.
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Agent-team permission prompt'));
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(1);
+    });
+
+    it('2+ different-agent pending records do NOT suppress an orphan prompt — pushes bare (#425/#483)', async () => {
+      // With 2+ unrelated pending agents, onPTYPromptVisible's existing
+      // anti-guessing rule pushes the bare PTY question (no merge) and
+      // drops the ambiguous records, so this case has no attribution
+      // ambiguity: a clean demonstration that scoped ownership lets the
+      // orphan through untouched by other agents' in-flight hooks.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash A?'), agentId: 'agent-A' });
+      tracker.recordPendingHook({ ...makeHookQuestion('Allow Edit B?'), agentId: 'agent-B' });
+
+      const ptyQ = makePTYQuestion('Agent-team permission prompt');
+      tracker.onOrphanPTYPrompt(ptyQ);
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]).toBe(ptyQ); // bare, not merged with either agent's hook
+      expect(tracker.hasPendingForTest()).toBe(false);
     });
 
     it("status leaving 'waiting' before the debounce fires cancels the push", async () => {
@@ -660,6 +712,26 @@ describe('QuestionPresenceTracker', () => {
 
       await wait(DEBOUNCE_MS * 2);
       expect(pushes.length).toBe(0);
+    });
+
+    it('hasLiveQuestions() throwing is caught and treated as no live questions (fail-open)', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => {
+          throw new Error('sessionRegistry lookup blew up');
+        },
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      // Must not throw synchronously out of onOrphanPTYPrompt, and must not
+      // get stuck suppressed forever — a possibly-redundant push beats a
+      // crash or a silently swallowed genuine orphan.
+      expect(() =>
+        tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?')),
+      ).not.toThrow();
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(1);
     });
   });
 });
