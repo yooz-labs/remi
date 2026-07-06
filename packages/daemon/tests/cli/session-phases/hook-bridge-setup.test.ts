@@ -529,6 +529,50 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual([]);
   });
 
+  test('#710 regression: PostToolUse(Task) tagged with the spawned agent_id still pops the tracker', () => {
+    // The leak: PreToolUse(Task) fires untagged (main context) and tracks
+    // tool_use_id X. Claude Code may stamp the Task's OWN completion
+    // PostToolUse with the spawned agent's agent_id. Pre-fix, the PostToolUse
+    // listener's `if (isSubagentEvent(input)) return;` dropped that event
+    // BEFORE it reached handlers.onPostToolUse -> handlePostToolUse -> the
+    // tracker pop, so X was never popped and isInSubagentContext() stuck true
+    // forever. Post-fix, the subagent-tagged drop path pops via
+    // hookBridge.noteSubagentToolEnd() before returning.
+    build();
+    const bridge = bridgeHandles[bridgeHandles.length - 1]?.bridge;
+    if (!bridge) throw new Error('test setup: no bridge handle');
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-leak-1',
+      transcript_path: path.join(tmpDir, 'leak.jsonl'),
+      hook_event_name: 'SessionStart',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-leak-1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_use_id: 'tu_leak_1',
+      tool_input: { prompt: 'spawn subagent' },
+    });
+    expect(bridge.isInSubagentContext()).toBe(true);
+
+    // The Task's own completion event arrives tagged with the spawned agent's
+    // agent_id (the observed 0.6.18-dev.24 soak shape) — NOT untagged as the
+    // matching PreToolUse was.
+    hookServer.fire('PostToolUse', {
+      session_id: 'claude-leak-1',
+      hook_event_name: 'PostToolUse',
+      agent_id: 'spawned-agent-1',
+      tool_name: 'Task',
+      tool_use_id: 'tu_leak_1',
+      tool_input: {},
+      tool_response: { result: 'done' },
+    });
+
+    expect(bridge.isInSubagentContext()).toBe(false);
+  });
+
   test('PermissionRequest with auto-approve APPROVE returns "allow" (no inject) (#496)', async () => {
     build({ autoApprove: true });
 
@@ -1770,14 +1814,17 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual([]);
   });
 
-  test('Phase 4 wiring: escalate + active Task context default-denies (no hang)', async () => {
-    // PR #424 review pr-test-analyzer Gap 2 (criticality 8): when
-    // auto-approve cannot decide ('escalate') AND a Task tool call is
-    // open on the main session, the bridge must inject '3' rather than
-    // surface a question (the user can't answer a subagent's prompt
-    // visible only to the subagent). With the TOCTOU fix from this
-    // commit, the subagent context is read live in the .then(), so a
-    // Task that opens mid-eval is correctly caught.
+  test('#710: escalate + active Task context but UNTAGGED PermissionRequest now escalates, not denies', async () => {
+    // PR #424 originally asserted this default-denied (pr-test-analyzer Gap 2):
+    // auto-approve escalates AND a Task tool call is open on the main session,
+    // with no agent_id on the PermissionRequest itself (the SubagentContextTracker
+    // legacy-support safety net). #710 changed the policy: an UNTAGGED event
+    // (agent_id absent) reaching the default-deny branch with
+    // isInSubagentContext() true is now treated as tracker-leak evidence, not a
+    // genuine legacy subagent — current Claude Code tags the Task's own
+    // PostToolUse completion with agent_id (the actual leak mechanism fixed by
+    // this issue), so escalating (holdable via Model B) is strictly safer than a
+    // silent main-agent deny. The bridge resets the tracker and escalates as main.
     build({ autoApprove: true, autoApproveDecision: 'escalate' });
 
     hookServer.fire('SessionStart', {
@@ -1797,8 +1844,7 @@ describe('setupHookBridge', () => {
       tool_use_id: 'tu_task_esc',
     });
 
-    // Subagent-internal Bash PermissionRequest (no agent_id; the
-    // Task-context safety net catches it).
+    // Untagged PermissionRequest while the tracker is (still) open.
     const decision = await hookServer.firePermission({
       session_id: 'claude-esc-task',
       hook_event_name: 'PermissionRequest',
@@ -1806,18 +1852,13 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // #496: escalate in a subagent (Task) context -> 'deny' via the response —
-    // no hang, no PTY inject, no question.
-    expect(decision).toBe('deny');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
-    expect(messageApiLog.questionCalls).toBe(0);
+    expect(messageApiLog.questionCalls).toBe(1); // escalated to the user, not silently denied
   });
 
-  test('Phase 4 wiring: autoApproveThrows + active Task context default-denies', async () => {
-    // PR #424 review pr-test-analyzer Gap 3 (criticality 7): the
-    // .catch() handler's `if (hookBridge.isInSubagentContext())` branch.
-    // A dropped guard would route the catch through escalateToUser
-    // instead of inject-deny, hanging the subagent.
+  test('#710: autoApproveThrows + active Task context but UNTAGGED PermissionRequest now escalates, not denies', async () => {
+    // Mirrors the escalate case above for the eval-error (.catch) branch.
     build({ autoApprove: true, autoApproveThrows: true });
 
     hookServer.fire('SessionStart', {
@@ -1843,17 +1884,12 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // #496: eval error in a subagent (Task) context -> 'deny' via the response.
-    expect(decision).toBe('deny');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
   });
 
-  test('Phase 4 wiring: no auto-approve + active Task context default-denies', async () => {
-    // PR #424 review pr-test-analyzer #4 (criticality 6): the
-    // synchronous fallback `if (hookBridge.isInSubagentContext())` at
-    // the bottom of the listener (no autoApproveService case). Uses a
-    // Task context, not an agent_id-tagged event, so the
-    // SubagentContextTracker bookkeeping is what carries the gate.
+  test('#710: no auto-approve + active Task context but UNTAGGED PermissionRequest now escalates, not denies', async () => {
+    // Mirrors the escalate case above for the no-service branch.
     build(); // no autoApprove
 
     hookServer.fire('SessionStart', {
@@ -1879,7 +1915,41 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // #496: no auto-approve + subagent (Task) context -> 'deny' via the response.
+    expect(decision).toBe('passthrough');
+    expect(ptySubmits).toEqual([]);
+    expect(messageApiLog.questionCalls).toBe(1); // escalated to the user, not silently denied
+  });
+
+  test('#710: a genuinely subagent-TAGGED PermissionRequest (agent_id set) during an active Task context still default-denies', async () => {
+    // The still-valid case: agent_id present proves this really is a subagent
+    // prompt (not a leak), so it must keep default-denying via the response.
+    build({ autoApprove: true, autoApproveDecision: 'escalate' });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-esc-task-tagged',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'esctask-tagged.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-esc-task-tagged',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Task',
+      tool_input: { subagent_type: 'general-purpose', prompt: 'do stuff' },
+      tool_use_id: 'tu_task_esc_tagged',
+    });
+
+    const decision = await hookServer.firePermission({
+      session_id: 'claude-esc-task-tagged',
+      agent_id: 'subagent-tagged-1',
+      agent_type: 'general-purpose',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+
     expect(decision).toBe('deny');
     expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(0);

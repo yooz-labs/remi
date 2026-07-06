@@ -119,6 +119,33 @@ export class HookEventBridge {
     return this.subagentContext.isInSubagentContext();
   }
 
+  /**
+   * Pop the tracker for a PostToolUse that `hook-bridge-setup.ts` drops for
+   * being subagent-tagged (`agent_id` present) BEFORE it would reach
+   * `handlePostToolUse` (#710). Claude Code may stamp the SPAWNED agent's own
+   * `agent_id` on the Task/Agent completion PostToolUse that closes the exact
+   * tool_use_id the untagged PreToolUse tracked when the Task started; without
+   * this call the use_id is never popped, `isInSubagentContext()` sticks true
+   * forever, and the gate default-denies every later MAIN-agent
+   * PermissionRequest. Safe for a genuine subagent-internal PostToolUse too:
+   * its use_ids were never tracked (subagent PreToolUse events are dropped
+   * without tracking), so popping them is a no-op.
+   */
+  noteSubagentToolEnd(toolName: string, toolUseId: string | undefined): void {
+    this.subagentContext.onPostToolUse(toolName, toolUseId);
+  }
+
+  /**
+   * Reset the subagent-context tracker (#710). Called by the auto-approve gate
+   * when a MAIN-tagged PermissionRequest (agent_id absent) observes
+   * `isInSubagentContext()` stuck true — proof the tracker leaked rather than
+   * a real subagent prompt — so the gate can recover instead of silently
+   * denying the main agent forever.
+   */
+  resetSubagentContext(): void {
+    this.subagentContext.reset();
+  }
+
   /** Returns HookServerEvents handlers wired to this bridge */
   hookHandlers(): Partial<HookServerEvents> {
     return {

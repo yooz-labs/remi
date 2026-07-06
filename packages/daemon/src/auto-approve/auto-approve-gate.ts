@@ -139,6 +139,16 @@ export interface AutoApproveGateDeps {
   tracker: QuestionPresenceTracker;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per branch (async TOCTOU). */
   isInSubagentContext: () => boolean;
+  /**
+   * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
+   * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
+   * stuck true — proof of a tracker leak (a dropped PostToolUse(Task/Agent)
+   * completion), never a real subagent prompt (those carry `agent_id` and
+   * default-deny instead). Optional so tests that don't wire it degrade to a
+   * no-op; the escalate-as-main recovery still happens without it, just
+   * without clearing the leaked state.
+   */
+  resetSubagentContext?: () => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -670,10 +680,17 @@ export class AutoApproveGate {
    *   - approve -> 'allow', deny -> 'deny' (Claude proceeds; NO PTY inject).
    *   - escalate (main) -> escalateToUser + 'passthrough' (Claude renders the
    *     prompt; the user answers).
-   *   - escalate / no-service in a SUBAGENT context -> 'deny' via the hook
-   *     response. This is the core fix: the old PTY-inject default-deny couldn't
-   *     tell whose prompt was on the PTY for parallel subagents and leaked; the
-   *     synchronous deny needs no PTY at all.
+   *   - escalate / no-service / eval-error in a SUBAGENT-TAGGED context
+   *     (`agent_id` present) -> 'deny' via the hook response. This is the core
+   *     fix: the old PTY-inject default-deny couldn't tell whose prompt was on
+   *     the PTY for parallel subagents and leaked; the synchronous deny needs
+   *     no PTY at all.
+   *   - the SAME three branches with `isInSubagentContext()` true but NO
+   *     `agent_id` on the input -> this is the #710 tracker-leak signature
+   *     (a PostToolUse(Task/Agent) completion tagged with the spawned agent's
+   *     own agent_id was dropped before popping the tracker), NOT a real
+   *     subagent prompt. Reset the tracker and escalate as main instead of
+   *     silently denying the main agent forever.
    *   - pick (multi-choice) -> inject the index + 'passthrough' (the hook
    *     response can't express "pick option N"; keep the PTY for this rare case).
    *   - cancelled -> 'passthrough' (the user already advanced).
@@ -691,8 +708,17 @@ export class AutoApproveGate {
     // leak); main escalates to the user (holding the hook when binary, #573).
     if (!service) {
       if (isInSubagentContext()) {
-        log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
-        return 'deny';
+        if (this.isSubagentEvent(input)) {
+          log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
+          return 'deny';
+        }
+        // #710: a MAIN-tagged event (no agent_id) reaching here means the
+        // tracker leaked, not a real subagent prompt. Reset and fall through
+        // to escalateMain below instead of denying the main agent.
+        logError(
+          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, no-service path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+        );
+        this.deps.resetSubagentContext?.();
       }
       return this.escalateMain(input);
     }
@@ -733,8 +759,16 @@ export class AutoApproveGate {
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
       if (isInSubagentContext()) {
-        this.markHandled();
-        return 'deny';
+        if (this.isSubagentEvent(input)) {
+          this.markHandled();
+          return 'deny';
+        }
+        // #710: MAIN-tagged + stuck tracker == leak, not a real subagent
+        // prompt. Reset and fall through to escalateMain below.
+        logError(
+          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, eval-error path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+        );
+        this.deps.resetSubagentContext?.();
       }
       return this.escalateMain(input);
     }
@@ -774,19 +808,27 @@ export class AutoApproveGate {
       return this.escalatePassthrough(input);
     }
     // escalate: a subagent prompt the user cannot answer is default-denied via
-    // the response (no hang, no PTY).
+    // the response (no hang, no PTY). A MAIN-tagged event (agent_id absent)
+    // reaching here with isInSubagentContext() true is NOT a real subagent
+    // prompt: it is the #710 tracker-leak signature (a PostToolUse(Task/Agent)
+    // completion stamped with the SPAWNED agent's own agent_id never popped
+    // the use_id an earlier untagged PreToolUse tracked). Denying it would
+    // silently drop the main agent's own prompts (including AskUserQuestion)
+    // forever, so reset the tracker and fall through to escalate as main
+    // instead. Tradeoff (#710): on a legacy Claude Code version that predates
+    // agent_id, a genuine synchronous subagent prompt would now escalate+hold
+    // instead of deny — still answerable via the Model B hook response
+    // (below), strictly better than a silent main-agent deny.
     if (isInSubagentContext()) {
-      if (!this.isSubagentEvent(input)) {
-        // A MAIN-agent event reaching here means the subagent-context tracker
-        // leaked (a PostToolUse(Task) was dropped). Surface it loudly — otherwise
-        // the main session silently denies every permission.
-        logError(
-          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}); denying. Possible subagent-context tracker leak.`,
-        );
+      if (this.isSubagentEvent(input)) {
+        log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
+        this.markHandled();
+        return 'deny';
       }
-      log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
-      this.markHandled();
-      return 'deny';
+      logError(
+        `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+      );
+      this.deps.resetSubagentContext?.();
     }
     // Second opinion (#522): the fast model would escalate, but a heavier
     // escalate_model may resolve it (honoring a broad approve policy) before we
