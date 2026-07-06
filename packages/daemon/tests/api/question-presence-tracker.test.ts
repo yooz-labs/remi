@@ -521,4 +521,145 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes.length).toBe(1);
     });
   });
+
+  describe('orphan PTY prompt fallback (#712)', () => {
+    // Short real timer (no fake-timer precedent in this suite) — see
+    // auto-approve-gate.test.ts's `holdMs: 30` pattern.
+    const DEBOUNCE_MS = 20;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it('genuine orphan (no live questions, no pending hooks, no eval) pushes after the debounce', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      const ptyQ = makePTYQuestion('Agent-team permission prompt');
+
+      tracker.onOrphanPTYPrompt(ptyQ);
+      expect(pushes.length).toBe(0); // debounced, not immediate
+
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]).toBe(ptyQ);
+    });
+
+    it('a prompt while the gate has a live registered question does NOT push', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        // Gate already registered (and likely already pushed) a question for
+        // this prompt cycle: this is the echo the #625 suppression exists for.
+        hasLiveQuestions: () => true,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(0);
+    });
+
+    it('a prompt with a pending hook record does NOT double-push via the orphan path', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      // A hook fired for some agent and the gate has not resolved it yet.
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(0);
+      // The stashed hook record is untouched by the orphan path.
+      expect(tracker.hasPendingForTest()).toBe(true);
+    });
+
+    it("status leaving 'waiting' before the debounce fires cancels the push", async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Agent-team permission prompt'));
+      expect(tracker.hasArmedOrphanTimerForTest()).toBe(true);
+
+      tracker.onStatusChange('executing'); // the prompt is gone from screen
+      expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
+
+      await wait(DEBOUNCE_MS * 2);
+      expect(pushes.length).toBe(0);
+    });
+
+    it('clearPending cancels the armed orphan timer', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Agent-team permission prompt'));
+      expect(tracker.hasArmedOrphanTimerForTest()).toBe(true);
+
+      tracker.clearPending();
+      expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
+
+      await wait(DEBOUNCE_MS * 2);
+      expect(pushes.length).toBe(0);
+    });
+
+    it('autoApproveInFlight still buffers the orphan prompt; escalate releases it (#484 semantics unchanged)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      tracker.onAutoApproveStart();
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0);
+      // Buffered like onPTYPromptVisible, not routed through the debounce.
+      expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
+
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate();
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    });
+
+    it('a second orphan before the timer fires replaces the first — only the latest pushes, once', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('first orphan'));
+      tracker.onOrphanPTYPrompt(makePTYQuestion('second orphan'));
+
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('second orphan');
+    });
+
+    it('re-checks ownership at debounce fire: a live question registered mid-window suppresses the push', async () => {
+      const pushes: Question[] = [];
+      let live = false;
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => live,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      live = true; // the gate registered a question for this cycle mid-debounce
+
+      await wait(DEBOUNCE_MS * 2);
+      expect(pushes.length).toBe(0);
+    });
+  });
 });
