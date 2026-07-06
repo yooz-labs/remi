@@ -715,6 +715,16 @@ export class AutoApproveGate {
         // #710: a MAIN-tagged event (no agent_id) reaching here means the
         // tracker leaked, not a real subagent prompt. Reset and fall through
         // to escalateMain below instead of denying the main agent.
+        //
+        // #716 (blanket-reset tradeoff): resetSubagentContext() clears ALL
+        // tracked use_ids, not just the leaked one -- it cannot tell which
+        // entry is stale. If a genuinely-running concurrent synchronous Task
+        // is ALSO open right now, its own later agent_id-tagged permission
+        // requests will see isInSubagentContext() false and escalate as main
+        // instead of default-denying. Accepted: (a) that escalation is
+        // held/answerable (Model B), the same way async/background subagents
+        // and team members already behave; (b) the alternative -- silently
+        // denying the MAIN agent -- is the #710 bug this reset exists to fix.
         logError(
           `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, no-service path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
         );
@@ -764,7 +774,9 @@ export class AutoApproveGate {
           return 'deny';
         }
         // #710: MAIN-tagged + stuck tracker == leak, not a real subagent
-        // prompt. Reset and fall through to escalateMain below.
+        // prompt. Reset and fall through to escalateMain below. Blanket-reset
+        // tradeoff (clears ALL tracked use_ids, not just the leaked one):
+        // see the no-service branch above (#716).
         logError(
           `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, eval-error path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
         );
@@ -825,8 +837,10 @@ export class AutoApproveGate {
         this.markHandled();
         return 'deny';
       }
+      // Blanket-reset tradeoff (clears ALL tracked use_ids, not just the
+      // leaked one): see the no-service branch above (#716).
       logError(
-        `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+        `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, escalate path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
       );
       this.deps.resetSubagentContext?.();
     }

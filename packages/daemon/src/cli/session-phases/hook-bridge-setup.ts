@@ -559,6 +559,13 @@ export function setupHookBridge(
       // its use_ids were never tracked in the first place (subagent PreToolUse
       // events are dropped without tracking, same as this listener's PreToolUse
       // sibling above).
+      //
+      // Residual gap (#716): this pop only runs when `binder.admits(input)`
+      // above is true. A Task-closing PostToolUse that `admits()` rejects (a
+      // rotation/sibling race) never reaches here and can still leak the
+      // tracked use_id -- bounded by the Stop/SessionEnd/StopFailure resets
+      // in hook-event-bridge.ts and by the gate's #710 leak-recovery
+      // escalate (reset + escalate as main instead of denying).
       hookBridge.noteSubagentToolEnd(input.tool_name, input.tool_use_id);
       return;
     }
