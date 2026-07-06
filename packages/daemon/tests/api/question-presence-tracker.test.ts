@@ -464,6 +464,92 @@ describe('QuestionPresenceTracker', () => {
     });
   });
 
+  describe('fallback options do not overwrite PTY truth (#718)', () => {
+    it('a fallback hook record loses its options to a concrete PTY option set (hook text still wins)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      const fallbackHook: Question = {
+        ...makePermissionRequestHook('Allow Bash: git push'),
+        options: [
+          makeOption('Yes', '1', { isYes: true, isRecommended: true }),
+          makeOption('No', '2', { isNo: true }),
+        ],
+        optionsAreFallback: true,
+      };
+      tracker.recordPendingHook(fallbackHook);
+
+      // The PTY parsed the ACTUAL rendered prompt: a real 2-option Yes/No
+      // with its own labels (e.g. Claude's real wording), not the hook's bare
+      // substitute.
+      const ptyQ: Question = {
+        ...makePTYQuestion('Do you want to proceed?'),
+        options: [
+          makeOption('Yes, and add to allowlist', 'y', { isYes: true }),
+          makeOption('No, ask every time', 'n', { isNo: true }),
+        ],
+      };
+      tracker.onPTYPromptVisible(ptyQ);
+
+      expect(pushes.length).toBe(1);
+      // Text still comes from the hook (tool + command context, #497).
+      expect(pushes[0]?.text).toBe('Allow Bash: git push');
+      // But the OPTIONS are the PTY's real ones, not the hook's fallback.
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
+        'Yes, and add to allowlist',
+        'No, ask every time',
+      ]);
+    });
+
+    it('a suggestion-derived (non-fallback) hook record still wins over the PTY options', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      const structuredHook: Question = {
+        ...makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'),
+        options: [
+          makeOption('Yes', '1', { isYes: true, isRecommended: true }),
+          makeOption('Yes, always allow: rm -rf /tmp/foo', '2', {
+            isYes: true,
+            suggestionIndex: 0,
+          }),
+          makeOption('No', '3', { isNo: true }),
+        ],
+        // optionsAreFallback intentionally absent: this is a real derived set.
+      };
+      tracker.recordPendingHook(structuredHook);
+
+      const ptyQ = makePTYQuestion('Do you want to proceed?');
+      tracker.onPTYPromptVisible(ptyQ);
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
+        'Yes',
+        'Yes, always allow: rm -rf /tmp/foo',
+        'No',
+      ]);
+      expect(pushes[0]?.options[1]?.suggestionIndex).toBe(0);
+    });
+
+    it('a fallback hook record keeps its own options when the PTY question has none', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      const fallbackHook: Question = {
+        ...makePermissionRequestHook('Allow Bash: git push'),
+        options: [
+          makeOption('Yes', '1', { isYes: true, isRecommended: true }),
+          makeOption('No', '2', { isNo: true }),
+        ],
+        optionsAreFallback: true,
+      };
+      tracker.recordPendingHook(fallbackHook);
+
+      const ptyQ: Question = { ...makePTYQuestion('Do you want to proceed?'), options: [] };
+      tracker.onPTYPromptVisible(ptyQ);
+
+      // No PTY options to prefer: the hook's fallback is still better than nothing.
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+    });
+  });
+
   describe('auto-approve buffer (#484)', () => {
     it('PTY prompt during an eval is BUFFERED, not pushed', () => {
       const pushes: Question[] = [];

@@ -76,6 +76,9 @@ describe('parseQuestion() - literal yes/no (subprocess prompts)', () => {
     expect(result.question?.options.length).toBe(2);
     expect(result.question?.options[0]?.isYes).toBe(true);
     expect(result.question?.options[1]?.isNo).toBe(true);
+    // #718: explicitly NOT the daemon's synthetic Yes/No fallback, even
+    // though the labels now coincide post-#718 (see question-merge.ts).
+    expect(result.question?.optionsAreFallback).toBe(false);
   });
 
   test('detects [y/n] pattern', () => {
