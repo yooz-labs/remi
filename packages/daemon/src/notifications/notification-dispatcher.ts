@@ -410,8 +410,9 @@ export class NotificationDispatcher {
    * fails fast so the gate can fail the hold open. Resolves true on a 2xx.
    *
    * Shared by alert pushes (`maybePush`) and quiet dismissals (`dismiss`, #723);
-   * `logCtx` carries the caller's exact success/failure messages so the log
-   * formats stay grep-stable per caller.
+   * `logCtx` carries the caller's exact success/failure messages, so message
+   * wording is owned by each caller (this helper never invents log formats —
+   * changing a caller's strings is a deliberate, greppable act at the call site).
    */
   private async pushOnceWithRetry(
     signalingUrl: string,
