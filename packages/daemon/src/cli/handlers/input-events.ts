@@ -31,11 +31,16 @@ export interface InputHandlerDeps {
    * blocked on the hook, not rendering a prompt). Absent / false => the answer
    * takes the existing PTY-submit path (multi-choice pick, non-AA session, or
    * Part-B-disabled escalation that passed through). Session-keyed by cli.ts.
+   *
+   * `suggestionIndex` (#718): present when the answered option was derived
+   * from a structured `permission_suggestions` entry, so the hold resolves
+   * with a real `updatedPermissions` echo instead of a bare `allow`.
    */
   resolveHeldPermission?: (
     sessionId: UUID,
     questionId: UUID,
     decision: 'allow' | 'deny',
+    suggestionIndex?: number,
   ) => boolean;
   /**
    * Release a HELD binary PermissionRequest hook to 'passthrough' for `sessionId`
@@ -163,28 +168,48 @@ function resolveOption(
  */
 const noopSend: SendToConnection = () => false;
 
+/** Result of {@link mapAnswerToDecision}: the binary decision for the held
+ *  hook response, plus the suggestion index to echo back (#718) when the
+ *  answered option was derived from a structured `permission_suggestions`
+ *  entry. */
+interface AnswerDecision {
+  readonly decision: 'allow' | 'deny';
+  readonly suggestionIndex?: number;
+}
+
 /**
- * Map a resolved option to a binary allow/deny decision (#573). Reads the
- * option's `isYes` / `isNo` flags. Returns:
- *   - 'deny' for a no-shaped option;
- *   - 'allow' for a yes-shaped option ONLY when it is a one-time "Yes" — an
- *     "always"-shaped label ("Yes, always") is NOT mapped, because the binary
- *     PermissionRequest hook response can only express allow/deny, never the
- *     session-wide "always" the user picked. Downgrading it to a one-time allow
- *     would silently lose that choice, so it returns null and the caller takes
- *     the native PTY path (which can express "always" via the digit);
- *   - null otherwise (always-shaped, unknown value/label, or free text) -> PTY path.
+ * Map a resolved option to a binary allow/deny decision (#573, #718). Reads
+ * the option's `isYes` / `isNo` / `suggestionIndex` flags. Returns:
+ *   - `{decision:'deny'}` for a no-shaped option;
+ *   - `{decision:'allow', suggestionIndex}` for a suggestion-derived "Yes,
+ *     always allow: ..." option (#718) — the hold resolves with the real
+ *     `updatedPermissions` echo instead of a bare allow;
+ *   - `{decision:'allow'}` for a yes-shaped option ONLY when it is a one-time
+ *     "Yes" — an "always"-shaped label with no `suggestionIndex` is NOT
+ *     mapped, because the binary PermissionRequest hook response can only
+ *     express allow/deny/updatedPermissions, never a session-wide "always"
+ *     with no suggestion to echo. Downgrading it to a one-time allow would
+ *     silently lose that choice, so it returns null and the caller takes the
+ *     native PTY path (which can express "always" via the digit);
+ *   - null otherwise (always-shaped with no suggestion, unknown value/label,
+ *     or free text) -> PTY path.
  */
 function mapAnswerToDecision(
   options: readonly QuestionOption[],
   answer: string,
-): 'allow' | 'deny' | null {
+): AnswerDecision | null {
   const option = resolveOption(options, answer);
   if (!option) return null;
-  if (option.isNo) return 'deny';
-  // "always" cannot be expressed in the binary hook response, so a yes-shaped
-  // "always" option must NOT collapse to a one-time allow.
-  if (option.isYes && !option.label.toLowerCase().includes('always')) return 'allow';
+  if (option.isNo) return { decision: 'deny' };
+  if (option.suggestionIndex !== undefined) {
+    return { decision: 'allow', suggestionIndex: option.suggestionIndex };
+  }
+  // "always" cannot be expressed in the binary hook response without an
+  // accompanying suggestion to echo, so a yes-shaped "always" option must NOT
+  // collapse to a one-time allow.
+  if (option.isYes && !option.label.toLowerCase().includes('always')) {
+    return { decision: 'allow' };
+  }
   return null;
 }
 
@@ -468,13 +493,14 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     }
 
     // Model B (#573): if the auto-approve gate is HOLDING this permission's
-    // hook, a binary (one-time Yes / No) answer resolves it via the hook
-    // response — Claude is blocked on the hook and is NOT rendering a prompt,
-    // so a PTY submit would land in the wrong place. An answer the binary
-    // response cannot express ("Yes, always", a multi-choice pick, free text)
-    // first RELEASES the held hook to passthrough so Claude renders its native
-    // numbered prompt, then submits the digit (the only way to express
-    // "always" / a specific pick).
+    // hook, a binary (one-time Yes / No) or suggestion-derived "Yes, always
+    // allow: ..." answer (#718) resolves it via the hook response — Claude is
+    // blocked on the hook and is NOT rendering a prompt, so a PTY submit would
+    // land in the wrong place. An answer the hook response cannot express (a
+    // bare "always" with no suggestion to echo, a multi-choice pick, free
+    // text) first RELEASES the held hook to passthrough so Claude renders its
+    // native numbered prompt, then submits the digit (the only way to express
+    // those).
     //
     // The submit/hold-resolution + question removal are wrapped so the question
     // is ALWAYS consumed exactly once: if `submitInput` throws, the `finally`
@@ -484,7 +510,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     let hadHold = false;
     try {
       if (decision !== null) {
-        hadHold = resolveHeldPermission?.(session.sessionId, questionId, decision) ?? false;
+        hadHold =
+          resolveHeldPermission?.(
+            session.sessionId,
+            questionId,
+            decision.decision,
+            decision.suggestionIndex,
+          ) ?? false;
       }
       if (!hadHold) {
         // decision === null (always/pick/free-text) OR no hold for this question:

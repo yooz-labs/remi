@@ -255,6 +255,12 @@ interface PendingHold {
    *  MAIN holds and leaves this one intact -- its pushed card stays
    *  answerable via `resolveHeld`. */
   isSubagent: boolean;
+  /** The escalated input's own `permission_suggestions`, stashed so a later
+   *  `resolveHeld(..., suggestionIndex)` can echo the EXACT original entry
+   *  back as `updatedPermissions` (#718) -- Claude Code's hooks docs: echoing
+   *  a received suggestion "is equivalent to the user selecting that 'always
+   *  allow' option in the dialog." Undefined when the input carried none. */
+  suggestions: readonly unknown[] | undefined;
 }
 
 export class AutoApproveGate {
@@ -452,8 +458,19 @@ export class AutoApproveGate {
    * a multi-choice pick or a non-auto-approve session, takes the PTY path).
    * Clears the hold's timer and marks the permission handled so the #484 buffer
    * + #513 cue close exactly as for a silent auto-decision.
+   *
+   * `suggestionIndex` (#718): present when the user picked a suggestion-derived
+   * "Yes, always allow: ..." option. `decision` is still `'allow'` in that case
+   * (the caller maps isNo -> deny, everything else it can express -> allow);
+   * this resolves the hook with the RICHER `{behavior:'allow',
+   * updatedPermissions:[suggestions[suggestionIndex]]}` instead, echoing the
+   * exact original entry back to Claude Code so it actually persists the
+   * choice — the real "Yes, always" the bare `allow` could never express. A
+   * stale/out-of-range index (the hold's stashed suggestions no longer have
+   * that entry) degrades to a plain `allow` with a loud warning rather than
+   * silently dropping the escalation.
    */
-  resolveHeld(questionId: UUID, decision: 'allow' | 'deny'): boolean {
+  resolveHeld(questionId: UUID, decision: 'allow' | 'deny', suggestionIndex?: number): boolean {
     // #673: this is the NORMAL answer path (input-events.ts), so an open
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
@@ -469,9 +486,22 @@ export class AutoApproveGate {
     // removes it in handleAnswer's finally; a double-remove is idempotent.
     this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
     this.markHandled(hold.isSubagent);
-    hold.resolve(decision);
+    let resolvedDecision: PermissionDecision = decision;
+    let logSuffix: string = decision;
+    if (decision === 'allow' && suggestionIndex !== undefined) {
+      const suggestion = hold.suggestions?.[suggestionIndex];
+      if (suggestion !== undefined) {
+        resolvedDecision = { behavior: 'allow', updatedPermissions: [suggestion] };
+        logSuffix = 'allow (updatedPermissions echoed)';
+      } else {
+        logError(
+          `[AutoApprove ${this.sessionTag}] Held hook ${questionId.slice(0, 8)}: suggestionIndex ${suggestionIndex} missing from stashed permission_suggestions; falling back to plain allow`,
+        );
+      }
+    }
+    hold.resolve(resolvedDecision);
     log(
-      `[AutoApprove ${this.sessionTag}] Held hook ${questionId.slice(0, 8)} resolved: ${decision}`,
+      `[AutoApprove ${this.sessionTag}] Held hook ${questionId.slice(0, 8)} resolved: ${logSuffix}`,
     );
     return true;
   }
@@ -570,7 +600,14 @@ export class AutoApproveGate {
       // setTimeout keeps the event loop alive for the whole human-paced hold;
       // unref so a held hook never blocks daemon shutdown.
       timer.unref?.();
-      this.pendingHolds.set(qid, { resolve, timer, isSubagent: this.isSubagentEvent(input) });
+      this.pendingHolds.set(qid, {
+        resolve,
+        timer,
+        isSubagent: this.isSubagentEvent(input),
+        // #718: stashed so a later resolveHeld(..., suggestionIndex) can echo
+        // back the exact original entry the user picked.
+        suggestions: input.permission_suggestions,
+      });
     });
     // Phase 1 (#603, R1/R2): gate the hold on CONFIRMED delivery. A held hook is
     // only worth blocking Claude for if the user can actually be notified; if
@@ -664,7 +701,12 @@ export class AutoApproveGate {
         );
       }, holdUnconfirmedMs);
       timer.unref?.();
-      this.pendingHolds.set(qid, { resolve: hold.resolve, timer, isSubagent: hold.isSubagent });
+      this.pendingHolds.set(qid, {
+        resolve: hold.resolve,
+        timer,
+        isSubagent: hold.isSubagent,
+        suggestions: hold.suggestions,
+      });
       logError(
         `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} notification UNCONFIRMED (${reason}); holding ${Math.round(holdUnconfirmedMs / 1000)}s (hold_unconfirmed_timeout) with retry before fail-open`,
       );

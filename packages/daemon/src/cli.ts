@@ -1490,8 +1490,8 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // #573: route a held-permission answer / release-to-passthrough / eval-cancel
   // to the RIGHT session's gate (the map is populated per session in
   // createNewSession).
-  resolveHeldPermission: (sessionId, questionId, decision) =>
-    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision) ?? false,
+  resolveHeldPermission: (sessionId, questionId, decision, suggestionIndex) =>
+    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision, suggestionIndex) ?? false,
   releaseHeldAsPassthrough: (sessionId, questionId) =>
     sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
   // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,

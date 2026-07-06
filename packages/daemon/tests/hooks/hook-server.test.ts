@@ -474,6 +474,28 @@ describe('HookServer', () => {
       });
     });
 
+    it('returns the object decision verbatim, echoing updatedPermissions (#718)', async () => {
+      const updatedPermissions = [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'git push' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ];
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => ({ behavior: 'allow', updatedPermissions }));
+      server.start();
+      const res = await postPermission(port);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'allow', updatedPermissions },
+        },
+      });
+    });
+
     it("returns {} for 'passthrough' (Claude renders the prompt)", async () => {
       server = new HookServer({ port });
       server.setPermissionResolver(async () => 'passthrough');

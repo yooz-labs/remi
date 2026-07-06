@@ -55,13 +55,24 @@ type Listener<T> = (input: T) => void;
 
 /**
  * Synchronous decision for a PermissionRequest (#496). Claude Code BLOCKS on
- * the hook response and honors `hookSpecificOutput.decision.behavior`:
- *   - 'allow' / 'deny' => Claude proceeds WITHOUT rendering the prompt.
+ * the hook response and honors `hookSpecificOutput.decision`:
+ *   - 'allow' / 'deny' => Claude proceeds WITHOUT rendering the prompt, via
+ *                         `{behavior: decision}`.
  *   - 'passthrough'    => `{}` body; Claude renders the prompt as usual (the
  *                         resolver has already escalated to the user / injected
  *                         a multi-choice pick).
+ *   - `{behavior:'allow', updatedPermissions}` (#718) => Claude proceeds AND
+ *     persists the echoed `permission_suggestions` entry, exactly as if the
+ *     user had picked that "always allow" option in its own dialog (ground
+ *     truth: code.claude.com/docs/en/hooks). Produced when the user's answer
+ *     picked a suggestion-derived option on a HELD escalation
+ *     (`AutoApproveGate.resolveHeld` with a `suggestionIndex`).
  */
-export type PermissionDecision = 'allow' | 'deny' | 'passthrough';
+export type PermissionDecision =
+  | 'allow'
+  | 'deny'
+  | 'passthrough'
+  | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] };
 
 export type PermissionResolver = (input: PermissionRequestHookInput) => Promise<PermissionDecision>;
 
@@ -243,19 +254,22 @@ export class HookServer {
   }
 
   /**
-   * Serialise a PermissionDecision into the Claude Code hook response. allow/deny
-   * use the verified `hookSpecificOutput.decision.behavior` shape; passthrough is
-   * the bare `{}` that lets Claude render the prompt.
+   * Serialise a PermissionDecision into the Claude Code hook response. allow/
+   * deny use the verified `hookSpecificOutput.decision.behavior` shape;
+   * passthrough is the bare `{}` that lets Claude render the prompt; the
+   * object variant (#718) passes its `{behavior:'allow', updatedPermissions}`
+   * through verbatim, so Claude persists the echoed suggestion.
    */
   private permissionDecisionResponse(decision: PermissionDecision): Response {
     const headers = { 'Content-Type': 'application/json' };
     if (decision === 'passthrough') {
       return new Response('{}', { status: 200, headers });
     }
+    const hookDecision = typeof decision === 'string' ? { behavior: decision } : decision;
     const body = JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PermissionRequest',
-        decision: { behavior: decision },
+        decision: hookDecision,
       },
     });
     return new Response(body, { status: 200, headers });
