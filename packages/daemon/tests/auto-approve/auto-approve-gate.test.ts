@@ -953,6 +953,247 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #711: a lead agent's Stop fires whenever it idles even while agent-team
+// teammates (subagent/`agent_id`-tagged PermissionRequests) keep working. A
+// wholesale cancelStale('Stop') released every teammate's already-pushed held
+// card as passthrough (phantom -- answering it resolved nothing) and killed
+// their in-flight evals. `cancelStale('Stop', { mainOnly: true })` scopes the
+// release/cancel to MAIN-tagged holds + evals only; `SessionEnd` and
+// `forceRelease` are real teardown and keep releasing/cancelling everything.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let lastQuestionId: UUID | undefined;
+
+  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
+    return { evaluate: async () => result, cancel: () => true };
+  }
+
+  function gate(
+    service: AutoApproveEvaluator,
+    opts: {
+      holdMs?: number;
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: opts.holdMs ?? 60_000,
+        alwaysEscalateTools: new Set(),
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      ...over,
+    };
+  }
+
+  /** An `agent_id`-tagged override -- the sole discriminator `isSubagentEvent`
+   *  reads (#711). */
+  const teammate = { agent_id: 'teammate-1', agent_type: 'general-purpose' };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    lastQuestionId = undefined;
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('(a) a SUBAGENT-tagged hold survives cancelStale(Stop, mainOnly) and stays resolvable', async () => {
+    const g = gate(evaluator(escalate));
+    const pending = g.resolvePermission(pr(teammate));
+    await new Promise((r) => setTimeout(r, 20));
+    const qid = lastQuestionId as UUID;
+
+    g.cancelStale('Stop', { mainOnly: true });
+
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBe(false); // still held -- mainOnly spared it
+
+    expect(g.resolveHeld(qid, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
+  test('(b) a MAIN hold IS released on cancelStale(Stop, mainOnly), with notifyResolved(cancelled)', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate(evaluator(escalate), {
+      onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+    });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    const qid = lastQuestionId as UUID;
+
+    g.cancelStale('Stop', { mainOnly: true });
+
+    expect(await pending).toBe('passthrough');
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+    expect(g.resolveHeld(qid, 'allow')).toBe(false); // the hold is gone
+  });
+
+  test('(c) SessionEnd (cancelStale with no opts) releases BOTH main and subagent holds', async () => {
+    const g = gate(evaluator(escalate));
+    const pendingMain = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    const qidMain = lastQuestionId as UUID;
+    const pendingSub = g.resolvePermission(pr(teammate));
+    await new Promise((r) => setTimeout(r, 20));
+    const qidSub = lastQuestionId as UUID;
+
+    g.cancelStale('SessionEnd');
+
+    expect(await pendingMain).toBe('passthrough');
+    expect(await pendingSub).toBe('passthrough');
+    expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
+    expect(g.resolveHeld(qidSub, 'allow')).toBe(false);
+  });
+
+  test('(e) forceRelease still releases BOTH main and subagent holds', async () => {
+    const g = gate(evaluator(escalate));
+    const pendingMain = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 20));
+    const qidMain = lastQuestionId as UUID;
+    const pendingSub = g.resolvePermission(pr(teammate));
+    await new Promise((r) => setTimeout(r, 20));
+    const qidSub = lastQuestionId as UUID;
+
+    g.forceRelease('remi unstick');
+
+    expect(await pendingMain).toBe('passthrough');
+    expect(await pendingSub).toBe('passthrough');
+    expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
+    expect(g.resolveHeld(qidSub, 'allow')).toBe(false);
+  });
+
+  test('cancelStale(Stop, mainOnly) cancels only the in-flight MAIN eval; a concurrent SUBAGENT eval keeps running and its late verdict still reconciles', async () => {
+    const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+    const resolvers = new Map<string, (r: AutoApproveResult) => void>();
+    const service: AutoApproveEvaluator = {
+      evaluate: (_toolName, toolInput) => {
+        const key = JSON.stringify(toolInput);
+        return new Promise<AutoApproveResult>((resolve) => {
+          resolvers.set(key, resolve);
+        });
+      },
+      cancel: (reason, evalId) => {
+        cancelLog.push({ reason, evalId });
+        return true;
+      },
+    };
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    // Part B (pushHoldMs) so BOTH evals are held early WHILE still running --
+    // the exact concurrent-teammate shape the #711 rationale is about.
+    const g = new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        alwaysEscalateTools: new Set(),
+      },
+      SID,
+    );
+
+    const pendingMain = g.resolvePermission(pr({ tool_input: { command: 'echo main' } }));
+    await new Promise((r) => setTimeout(r, 20));
+    const pendingSub = g.resolvePermission(
+      pr({ tool_input: { command: 'echo sub' }, ...teammate }),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    let subSettled = false;
+    void pendingSub.then(() => {
+      subSettled = true;
+    });
+
+    g.cancelStale('Stop', { mainOnly: true });
+
+    expect(await pendingMain).toBe('passthrough'); // main hold released + eval cancelled
+    await new Promise((r) => setTimeout(r, 10));
+    expect(subSettled).toBe(false); // subagent untouched: hold AND eval survive
+    expect(cancelLog).toHaveLength(1); // ONLY the main eval's cancel() call
+
+    // Prove the subagent eval was never aborted: its late verdict reconciles.
+    resolvers.get(JSON.stringify({ command: 'echo sub' }))?.(approve);
+    expect(await pendingSub).toBe('allow');
+  });
+
+  test('#711 onEvalStart/onHandled ctx carries isSubagent (true for agent_id, false for main)', async () => {
+    const ctxLog: Array<{ isSubagent: boolean }> = [];
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(approve),
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => undefined,
+        onEvalStart: (ctx) => ctxLog.push(ctx),
+        onHandled: (ctx) => ctxLog.push(ctx),
+      },
+      SID,
+    );
+    expect(await g.resolvePermission(pr(teammate))).toBe('allow');
+    expect(await g.resolvePermission(pr())).toBe('allow');
+    expect(ctxLog).toEqual([
+      { isSubagent: true },
+      { isSubagent: true },
+      { isSubagent: false },
+      { isSubagent: false },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Part B (#573): slow-eval early push + hold. ISOLATED behind push_hold_timeout.
 // A deferred eval lets the test control whether the eval or the push-hold timer
 // wins the race deterministically.

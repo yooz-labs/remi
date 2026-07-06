@@ -2001,7 +2001,13 @@ describe('setupHookBridge', () => {
     expect(cancelLog).not.toContain('PostToolUse');
   });
 
-  test('Stop cancels stale auto-approve LLM eval', () => {
+  test('Stop cancels a stale in-flight MAIN auto-approve LLM eval (#711 mainOnly scope)', () => {
+    // #711: cancelStale('Stop') is now scoped to mainOnly -- it only cancels
+    // evals tagged main (no agent_id), so this test must have a real in-flight
+    // MAIN eval for Stop to catch. `firePermission` is fire-and-forget (not
+    // awaited): the gate stamps/tracks the eval's id SYNCHRONOUSLY before its
+    // first `await`, so by the time the very next line (`hookServer.fire('Stop', ...)`)
+    // runs, the eval is already tracked as in-flight and main-tagged.
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
     hookServer.fire('SessionStart', {
@@ -2011,12 +2017,47 @@ describe('setupHookBridge', () => {
       source: 'startup',
       model: 'test',
     });
+    void hookServer.firePermission({
+      session_id: 'claude-locked-stop',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
     hookServer.fire('Stop', {
       session_id: 'claude-locked-stop',
       hook_event_name: 'Stop',
       stop_hook_active: false,
     });
     expect(cancelLog).toContain('Stop');
+  });
+
+  test('#711 Stop with mainOnly does NOT cancel a still-running SUBAGENT (agent_id) eval', () => {
+    // The mirror of the test above: a teammate's PermissionRequest eval must
+    // survive a lead Stop -- it is untouched because it is tagged subagent,
+    // not because nothing was in flight.
+    const cancelLog: string[] = [];
+    build({ autoApprove: true, cancelLog });
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-locked-stop-sub',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'cancel-test-sub.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+    void hookServer.firePermission({
+      session_id: 'claude-locked-stop-sub',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      agent_id: 'teammate-1',
+      agent_type: 'general-purpose',
+    });
+    hookServer.fire('Stop', {
+      session_id: 'claude-locked-stop-sub',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+    });
+    expect(cancelLog).not.toContain('Stop');
   });
 
   test('SessionEnd cancels stale auto-approve LLM eval', () => {
@@ -2684,6 +2725,35 @@ describe('setupHookBridge', () => {
       // onEscalate deliberately does NOT broadcast (the bridge's
       // handlePermissionRequest -> onStatusChange('waiting') already does);
       // and onHandled is not reached on an escalate verdict.
+      expect(statuses).not.toContain('approved');
+    });
+
+    test('#711 a SUBAGENT (agent_id) eval broadcasts NEITHER "evaluating" NOR "approved" (no phantom pill)', async () => {
+      const sendLog: ProtocolMessage[] = [];
+      build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 10, sendLog });
+
+      hookServer.fire('SessionStart', {
+        session_id: 'claude-aa-subagent',
+        hook_event_name: 'SessionStart',
+        transcript_path: path.join(tmpDir, 'aa-subagent.jsonl'),
+        source: 'startup',
+        model: 'test',
+      });
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-aa-subagent',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        agent_id: 'teammate-1',
+        agent_type: 'general-purpose',
+      });
+      expect(decision).toBe('allow');
+
+      const statuses = sessionUpdateStatuses(sendLog);
+      // The tracker buffer + StatusWriter terminal cue still ran (decision is
+      // still 'allow'); only the CLIENT session_update broadcast is skipped.
+      expect(statuses).not.toContain('evaluating');
       expect(statuses).not.toContain('approved');
     });
 

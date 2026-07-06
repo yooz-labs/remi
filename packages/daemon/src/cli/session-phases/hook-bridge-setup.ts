@@ -24,7 +24,11 @@
  * the bridge's `isInSubagentContext` + the router's `onPermissionRequest` as
  * callbacks; Stop/SessionEnd call `gate.cancelStale()` to abort an in-flight eval
  * when the Claude session actually ends. (Pre/PostToolUse deliberately do NOT
- * cancel — under synchronous decisions the eval is never stale; see #537.)
+ * cancel — under synchronous decisions the eval is never stale; see #537.) Stop
+ * passes `{ mainOnly: true }` (#711): it fires whenever the LEAD idles even
+ * while agent-team teammates keep working, so it releases/cancels only
+ * MAIN-context holds and evals, sparing a teammate's still-open escalation.
+ * SessionEnd is real teardown and stays unscoped (releases/cancels everything).
  *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
@@ -371,11 +375,15 @@ export function setupHookBridge(
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
       // status line via the StatusWriter. A COUNT (start/end) replaces the old
       // shared title spinner, which raced under concurrent evals.
-      onEvalStart: () => {
+      onEvalStart: (ctx) => {
         tracker.onAutoApproveStart();
         deps.statusWriter?.autoApproveStart(Date.now());
         // #576: surface the in-flight eval on the client pill ('working').
-        broadcastAutoApproveStatus('evaluating');
+        // #711: skip the CLIENT broadcast for a subagent/team-member eval --
+        // the user never saw it asked, so flashing the pill to 'evaluating'
+        // for it reads as a phantom auto-approval. The tracker buffer + the
+        // StatusWriter terminal cue above still fire unconditionally.
+        if (!ctx.isSubagent) broadcastAutoApproveStatus('evaluating');
       },
       onEscalate: () => {
         tracker.onAutoApproveEscalate();
@@ -393,11 +401,12 @@ export function setupHookBridge(
       // held Question.id, so the tracker pushes that exact question immediately
       // (-> addQuestion + maybePush) under the id the hold is keyed by.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
-      onHandled: () => {
+      onHandled: (ctx) => {
         deps.statusWriter?.autoApproveEnd('approved', Date.now());
         // #576: the permission was silently allowed; tell clients so the pill
         // doesn't sit stale on 'evaluating' until the next hook fires.
-        broadcastAutoApproveStatus('approved');
+        // #711: same subagent skip as onEvalStart above -- see that comment.
+        if (!ctx.isSubagent) broadcastAutoApproveStatus('approved');
       },
       onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
       // #585: a held question that resolves without a user answer (Part-B late
@@ -633,7 +642,13 @@ export function setupHookBridge(
   hookServer.on('Stop', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
-    autoApproveGate.cancelStale('Stop');
+    // #711: mainOnly -- Stop fires whenever the LEAD agent idles, even while
+    // teammates (subagent/agent_id-tagged permission escalations) are still
+    // running. A wholesale cancelStale here released every teammate's
+    // already-pushed held card as passthrough (phantom: answering it resolved
+    // nothing) and killed their in-flight evals. SessionEnd below is real
+    // teardown and keeps the wholesale release/cancel.
+    autoApproveGate.cancelStale('Stop', { mainOnly: true });
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
