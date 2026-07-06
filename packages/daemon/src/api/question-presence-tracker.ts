@@ -60,6 +60,35 @@ function agentKey(question: Question): string {
   return question.agentId ?? MAIN_AGENT_ID;
 }
 
+/** Debounce (ms) before an orphan PTY prompt (#712: no pending hook record,
+ *  no live registered question) is pushed. Guards a residual render flash —
+ *  a prompt painted mid-redraw that is gone a moment later (status leaves
+ *  'waiting', or `clearPending` fires, before the timer) — without holding a
+ *  genuine orphan (agent-team permission, MCP elicitation dialog, a
+ *  passthrough re-render after a held hook's card was already dismissed)
+ *  long enough to matter to the user. */
+const DEFAULT_ORPHAN_DEBOUNCE_MS = 1500;
+
+export interface QuestionPresenceTrackerDeps {
+  /** True iff the session currently has at least one registered, unanswered
+   *  question (`sessionRegistry.getSession(id)?.currentQuestions.size > 0`).
+   *  Used ONLY by the #712 orphan-prompt fallback: every gate-pushed
+   *  escalation (held or passthrough) registers a question via `addQuestion`
+   *  before or synchronously with the corresponding PTY render, so this is
+   *  what tells an orphan PTY prompt apart from an echo of something the
+   *  gate already owns. Absent (e.g. existing tests / no-hook-server
+   *  construction) is treated as "no live questions". MUST be synchronous
+   *  and non-throwing (same contract as `MessageApiSetupDeps.pushConfig` /
+   *  `getClaudeSessionId`): it runs inline in the PTY-parse callback with no
+   *  surrounding try/catch at the call site — `isGateOwnedCycle` guards
+   *  against a throw, but implementations should still absorb their own
+   *  errors rather than relying on that. */
+  hasLiveQuestions?: () => boolean;
+  /** Override for `DEFAULT_ORPHAN_DEBOUNCE_MS`. Exists so tests can use a
+   *  short real timer instead of faking time. */
+  orphanDebounceMs?: number;
+}
+
 export class QuestionPresenceTracker {
   /** Hook-derived questions not yet paired with PTY confirmation or cleared,
    *  keyed by agent. At most one per agent: a second hook for the SAME agent
@@ -103,7 +132,21 @@ export class QuestionPresenceTracker {
    *  fresh. */
   private pushedHeldIds = new Set<string>();
 
-  constructor(private readonly push: PushQuestion) {}
+  /** Armed orphan-prompt debounce timer (#712), or null when none is armed.
+   *  Cancelled by `onStatusChange` (status leaves `'waiting'`) and by
+   *  `clearPending`, so no stale timer can outlive the prompt cycle or the
+   *  session. */
+  private orphanTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The PTY question armed on `orphanTimer`. A second orphan prompt arriving
+   *  before the timer fires REPLACES this (not merges): only the latest
+   *  candidate pushes, once — mirroring the rising-edge-only PTY emission
+   *  (#486), which never re-emits for the tracker to catch on a later tick. */
+  private armedOrphanQuestion: Question | null = null;
+
+  constructor(
+    private readonly push: PushQuestion,
+    private readonly deps: QuestionPresenceTrackerDeps = {},
+  ) {}
 
   /**
    * Hook fired (PermissionRequest or Notification(permission_prompt)).
@@ -292,6 +335,115 @@ export class QuestionPresenceTracker {
   }
 
   /**
+   * PTY parser saw a prompt on screen for a HOOKED session, where the #625
+   * gate normally owns every push (cli.ts routes here instead of
+   * `onPTYPromptVisible` when a hook server is active). Most PTY renders in a
+   * hooked session are an ECHO of something the gate already pushed — its own
+   * PermissionRequest escalation, rendered natively once the hook response
+   * returns — and re-pushing those is the #625 phantom flood. But some
+   * prompts reach ONLY the PTY (#712): Claude's native agent-team permission
+   * prompts (no PermissionRequest hook fires for these at all, see
+   * anthropics/claude-code #23983), a prompt re-rendered as passthrough after
+   * a held hook was released (its card already dismissed, registry entry
+   * removed), and MCP elicitation dialogs. Those must still reach the phone.
+   *
+   * Disambiguation is structural, not content-based: if the gate already owns
+   * this prompt cycle, EITHER it has already registered a live question
+   * (`hasLiveQuestions`, backed by `sessionRegistry` — a global check, since a
+   * gate push registers regardless of which agent it was for) OR THIS SAME
+   * AGENT still has a hook record stashed mid-flight (`pending`, scoped by
+   * `agentKey` — an unrelated agent's in-flight hook must not swallow a
+   * genuine main-screen orphan for the whole window it's pending). If neither
+   * is true, nothing else is ever going to push this prompt — it is a genuine
+   * orphan.
+   *
+   * Orphans are not pushed immediately: `armOrphanTimer` arms a short
+   * debounce so a residual render flash never reaches the phone, and the
+   * debounce fire re-checks ownership (an eval or a hook record could have
+   * started in the window) before pushing through the normal
+   * `onPTYPromptVisible` merge/push path.
+   */
+  onOrphanPTYPrompt(ptyQuestion: Question): void {
+    if (this.autoApproveInFlight) {
+      // Same #484 semantics as onPTYPromptVisible: the eval owns this prompt
+      // cycle; only its own escalate verdict may release it.
+      this.bufferedDuringEval = ptyQuestion;
+      return;
+    }
+    if (this.isGateOwnedCycle(ptyQuestion)) {
+      console.debug(
+        `[QuestionPresenceTracker] Orphan PTY prompt suppressed (gate owns this cycle): "${ptyQuestion.text.slice(0, 60)}"`,
+      );
+      return;
+    }
+    this.armOrphanTimer(ptyQuestion);
+  }
+
+  /** True when the auto-approve gate already owns `ptyQuestion`'s prompt
+   *  cycle: either it registered a live question SOMEWHERE in the session
+   *  (`hasLiveQuestions` — global, a gate push registers regardless of
+   *  agent), or THIS agent specifically still has a hook record stashed
+   *  mid-flight (`pending`, scoped by `agentKey` — a different agent's
+   *  pending record must not suppress this one; that would swallow the
+   *  exact main-screen orphan class #712 exists to fix). This is the check
+   *  that keeps the #625 phantom flood dead while still letting a genuine
+   *  orphan through. `hasLiveQuestions` is an injected dep and MUST be
+   *  non-throwing by contract, but a throw is still caught here and treated
+   *  as "no live questions" (fail-open: a possibly-redundant push is far
+   *  better than crashing the daemon or silently swallowing a real orphan). */
+  private isGateOwnedCycle(ptyQuestion: Question): boolean {
+    if (this.pending.has(agentKey(ptyQuestion))) return true;
+    try {
+      return this.deps.hasLiveQuestions?.() ?? false;
+    } catch (err) {
+      console.error(
+        `[QuestionPresenceTracker] hasLiveQuestions() threw: ${err instanceof Error ? err.message : String(err)}; treating as no live questions`,
+      );
+      return false;
+    }
+  }
+
+  /** Arm (or replace) the orphan debounce timer with `ptyQuestion` as the
+   *  sole candidate to push when it fires. */
+  private armOrphanTimer(ptyQuestion: Question): void {
+    if (this.orphanTimer) {
+      clearTimeout(this.orphanTimer);
+    }
+    this.armedOrphanQuestion = ptyQuestion;
+    const ms = this.deps.orphanDebounceMs ?? DEFAULT_ORPHAN_DEBOUNCE_MS;
+    this.orphanTimer = setTimeout(() => {
+      this.orphanTimer = null;
+      const armed = this.armedOrphanQuestion;
+      this.armedOrphanQuestion = null;
+      if (armed === null) return;
+      // Re-check ownership: an eval could have started, or the gate could
+      // have taken the prompt (registered / stashed a same-agent hook
+      // record), during the debounce window.
+      if (this.autoApproveInFlight) {
+        this.bufferedDuringEval = armed;
+        return;
+      }
+      if (this.isGateOwnedCycle(armed)) {
+        console.debug(
+          `[QuestionPresenceTracker] Orphan PTY prompt suppressed at debounce fire (gate took ownership): "${armed.text.slice(0, 60)}"`,
+        );
+        return;
+      }
+      // Still orphaned: push through the SAME merge/push path a non-orphan
+      // PTY prompt uses, per spec, rather than a bespoke bare push — that
+      // keeps ptyShowingQuestion / pairing semantics identical. A pending
+      // record for a DIFFERENT agent (already ruled out as THIS agent's
+      // owner above) can still attach via onPTYPromptVisible's own sole-
+      // candidate heuristic (#483); that is pre-existing, general-purpose
+      // pairing behavior, not something this fallback adds.
+      this.onPTYPromptVisible(armed);
+    }, ms);
+    // Never let an armed 1.5s debounce block a graceful daemon shutdown
+    // (mirrors the sibling hold/delivery timers in auto-approve-gate.ts).
+    this.orphanTimer.unref?.();
+  }
+
+  /**
    * Status transition observed. When status leaves 'waiting', the user
    * advanced past whatever prompts were up: drop all pending hook records
    * so they cannot push later (Claude is busy executing, the prompts are
@@ -309,6 +461,10 @@ export class QuestionPresenceTracker {
       // suppress an identical id in a future one (ids are unique, so this is
       // belt-and-suspenders, but keeps the set bounded). (#573)
       this.pushedHeldIds.clear();
+      // #712: the prompt the armed orphan timer was waiting on is gone from
+      // screen (Claude advanced past it) — cancel so it cannot fire a stale
+      // push after the fact.
+      this.cancelOrphanTimer();
     }
   }
 
@@ -362,6 +518,18 @@ export class QuestionPresenceTracker {
     this.autoApproveInFlight = false;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();
+    // #712: the prompt was answered in-terminal or the session is rotating —
+    // either way an armed orphan timer for it must not fire a stale push.
+    this.cancelOrphanTimer();
+  }
+
+  /** Cancel any armed orphan-prompt debounce timer and discard its candidate. */
+  private cancelOrphanTimer(): void {
+    if (this.orphanTimer) {
+      clearTimeout(this.orphanTimer);
+      this.orphanTimer = null;
+    }
+    this.armedOrphanQuestion = null;
   }
 
   /**
@@ -387,5 +555,10 @@ export class QuestionPresenceTracker {
   /** Test-only: number of distinct agents with a pending hook record. */
   pendingCountForTest(): number {
     return this.pending.size;
+  }
+
+  /** Test-only: whether an orphan-prompt debounce timer is currently armed. */
+  hasArmedOrphanTimerForTest(): boolean {
+    return this.orphanTimer !== null;
   }
 }

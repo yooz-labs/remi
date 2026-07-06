@@ -1223,8 +1223,12 @@ async function createNewSession(
   // QuestionPresenceTracker pairs hook-derived metadata with PTY-derived
   // screen presence: hooks record (no push), PTY confirms (push). Status
   // transitions out of 'waiting' drop pending records so auto-approve
-  // silent paths never push.
-  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts));
+  // silent paths never push. `hasLiveQuestions` backs the #712 orphan-prompt
+  // fallback: it is how the tracker tells a PTY echo of a gate-pushed
+  // escalation (already registered here) apart from a genuine orphan.
+  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
+    hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+  });
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1235,22 +1239,20 @@ async function createNewSession(
       },
       onQuestion: (question) => {
         // #625 single gate: when a hook server is active the auto-approve gate is
-        // the SOLE authority for permission questions and pushes escalations itself
-        // (binary via onHeldEscalate, passthrough via escalatePassthrough). The PTY
-        // parser echoes EVERY on-screen prompt — including ones the gate already
-        // auto-approved — so routing it here is the phantom-notification source
-        // (>1,100 confirmed pushes fired right after a 0 ms approve). Suppress it for
-        // hooked sessions; keep it as the only signal when no hook server is
-        // configured (the genuine fallback).
+        // the primary authority for permission questions and pushes escalations
+        // itself (binary via onHeldEscalate, passthrough via escalatePassthrough).
+        // The PTY parser echoes EVERY on-screen prompt — including ones the gate
+        // already auto-approved — so routing those through unconditionally was the
+        // phantom-notification source (>1,100 confirmed pushes fired right after a
+        // 0 ms approve). But #624/#712 review found real prompts that reach ONLY
+        // the PTY (Claude's native Agent-Teams permissions, a passthrough
+        // re-render after a held hook's card was already dismissed, MCP
+        // elicitation dialogs) — those were silently swallowed by the old
+        // unconditional suppression. `onOrphanPTYPrompt` tells the two apart
+        // structurally (pending hook record / live registered question means the
+        // gate owns this cycle) and debounces the genuine orphans before pushing.
         if (hookServer) {
-          // #624 review: a prompt with NO PermissionRequest hook (Claude's native
-          // Agent-Teams permissions, MCP elicitation dialogs) reaches only the PTY,
-          // so suppression here means it is not pushed. Log it (not silent) so a
-          // stuck no-hook prompt leaves a trace; routing these through without
-          // reintroducing the phantom flood is a tracked follow-up.
-          log(
-            `[Question] PTY question suppressed (hook server active; gate owns escalations): "${question.text.slice(0, 60)}"`,
-          );
+          tracker.onOrphanPTYPrompt(question);
           return;
         }
         tracker.onPTYPromptVisible(question);
