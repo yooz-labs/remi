@@ -181,21 +181,20 @@ describe('QuestionDedup', () => {
 });
 
 describe('looksLikeDefaultPermissionQuestion', () => {
-  test('matches Yes / Yes always / No', () => {
+  // #718: the daemon's fallback shrank from a fabricated 3-set (Yes / Yes,
+  // always / No) to the honest 2-set Yes/No, so this heuristic now matches
+  // on a 2-option Yes/No shape instead of 3.
+  test('matches Yes / No', () => {
     const question = {
-      options: [{ label: 'Yes' }, { label: 'Yes, always' }, { label: 'No' }],
+      options: [{ label: 'Yes' }, { label: 'No' }],
       allowsFreeText: false,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
   });
 
-  test('matches Yes / Yes-and-do-not-ask / No (real Claude wording)', () => {
+  test('matches Yes / No-and-tell-Claude (real Claude wording)', () => {
     const question = {
-      options: [
-        { label: 'Yes' },
-        { label: "Yes, and don't ask again this session" },
-        { label: 'No, and tell Claude what to do differently' },
-      ],
+      options: [{ label: 'Yes' }, { label: 'No, and tell Claude what to do differently' }],
       allowsFreeText: false,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
@@ -203,7 +202,7 @@ describe('looksLikeDefaultPermissionQuestion', () => {
 
   test('matches case-insensitively with whitespace', () => {
     const question = {
-      options: [{ label: '  YES  ' }, { label: 'yes ALWAYS' }, { label: 'no thanks' }],
+      options: [{ label: '  YES  ' }, { label: 'no thanks' }],
       allowsFreeText: false,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
@@ -217,9 +216,24 @@ describe('looksLikeDefaultPermissionQuestion', () => {
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
   });
 
-  test('does not match 2-option Y/N', () => {
+  test('a genuine 2-option Yes/No is indistinguishable from the fallback by label alone (#718)', () => {
+    // This heuristic operates on a bare {options, allowsFreeText} shape with
+    // no `optionsAreFallback` signal (unlike the web client's question-merge
+    // guard, which has that field to disambiguate) — a real PTY-parsed [y/n]
+    // prompt necessarily matches too. Documented tradeoff, not a design goal:
+    // PushDedup only uses this to decide whether an equal-or-lower-rank
+    // duplicate within the window should suppress, which is the desired
+    // outcome for two emissions of the very same on-screen 2-option prompt.
     const question = {
       options: [{ label: 'Yes' }, { label: 'No' }],
+      allowsFreeText: false,
+    };
+    expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
+  });
+
+  test('does not match a 3-option suggestion-derived set (#718)', () => {
+    const question = {
+      options: [{ label: 'Yes' }, { label: 'Yes, always allow: rm -rf /tmp' }, { label: 'No' }],
       allowsFreeText: false,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
@@ -235,7 +249,7 @@ describe('looksLikeDefaultPermissionQuestion', () => {
 
   test('does not match free-text prompts', () => {
     const question = {
-      options: [{ label: 'Yes' }, { label: 'Yes, always' }, { label: 'No' }],
+      options: [{ label: 'Yes' }, { label: 'No' }],
       allowsFreeText: true,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);

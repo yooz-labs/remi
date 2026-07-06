@@ -20,7 +20,12 @@
  * which are usually <80 chars after normalization.
  */
 
-import { MAIN_AGENT_ID, QUESTION_DEDUP_WINDOW_MS, type Question } from '@remi/shared';
+import {
+  DEFAULT_PERMISSION_LABELS,
+  MAIN_AGENT_ID,
+  QUESTION_DEDUP_WINDOW_MS,
+  type Question,
+} from '@remi/shared';
 
 interface LastEmitted {
   fingerprint: string;
@@ -82,21 +87,22 @@ function fingerprint(text: string): string {
 }
 
 /**
- * True when a parsed question matches the shape of Claude Code's hardcoded
- * 3-option permission prompt (Yes / Yes-always / No). Used to drop redundant
- * PTY-parsed permission emissions when the hook bridge has already produced
- * the same question — text fingerprints differ between the two sources
- * (hook builds "Allow Bash: ls", PTY extracts whatever appears above the
- * numbered list), so structural matching is safer than text dedup alone.
+ * True when a parsed question matches the shape of the daemon's hardcoded
+ * Yes/No permission fallback (#718; a fabricated 3-set Yes/Yes-always/No
+ * pre-#718). Used to drop redundant PTY-parsed permission emissions when the
+ * hook bridge has already produced the same question — text fingerprints
+ * differ between the two sources (hook builds "Allow Bash: ls", PTY extracts
+ * whatever appears above the numbered list), so structural matching is safer
+ * than text dedup alone.
  */
 export function looksLikeDefaultPermissionQuestion(question: {
   options: ReadonlyArray<{ label: string }>;
   allowsFreeText: boolean;
 }): boolean {
   if (question.allowsFreeText) return false;
-  if (question.options.length !== 3) return false;
+  if (question.options.length !== DEFAULT_PERMISSION_LABELS.length) return false;
   const labels = question.options.map((o) => (o.label ?? '').toLowerCase().trim());
   const first = labels[0] ?? '';
-  const last = labels[2] ?? '';
+  const last = labels[labels.length - 1] ?? '';
   return first.startsWith('yes') && last.startsWith('no');
 }

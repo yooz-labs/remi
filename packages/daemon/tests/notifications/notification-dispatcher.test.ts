@@ -63,6 +63,13 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory([yesOpt])).toBeUndefined();
     expect(selectPushCategory([])).toBeUndefined();
   });
+
+  test('#718: the honest 2-option Yes/No fallback selects REMI_YN, not REMI_YNA', () => {
+    // Category correctness falls out of the count-based mapping once the
+    // daemon's fallback is a genuine 2-set instead of a fabricated 3-set —
+    // no dispatcher change was needed, this just pins the observable result.
+    expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
+  });
 });
 
 describe('buildPushText (#574 issues 3+4)', () => {
