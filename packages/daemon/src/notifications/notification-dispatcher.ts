@@ -42,6 +42,28 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
   return undefined;
 }
 
+/**
+ * Whether a question qualifies for the NSE's per-notification dynamic
+ * category (#719): a single-question prompt (never a multi-sub-question
+ * AskUserQuestion form, which stays app-routed via its topic-list summary)
+ * with 2-4 options, each carrying a REAL label (not just a fallback value —
+ * the entire point of the dynamic category is showing the true option text).
+ *
+ * This is an ADDITIVE hint alongside `selectPushCategory`'s STATIC category,
+ * which is always sent unconditionally as the fallback. A client without the
+ * Notification Service Extension (or one where the NSE fails, races, or is
+ * simply not yet installed) ignores `dynOptions` entirely and falls back to
+ * the static category exactly as before #719 — never worse.
+ */
+export function selectDynOptions(question: Question): boolean {
+  if (question.kind === 'multi_question' && question.questions && question.questions.length > 1) {
+    return false;
+  }
+  const { options } = question;
+  if (options.length < 2 || options.length > 4) return false;
+  return options.every((o) => o.label.trim().length > 0);
+}
+
 /** Cap for the APNS title; iOS truncates visually but a hard cap keeps the
  *  payload bounded for long Bash commands. */
 const TITLE_MAX = 120;
@@ -339,6 +361,11 @@ export class NotificationDispatcher {
     // sending labels here does not break delivery. Fall back to the value when a
     // label is empty so the button still carries something answerable.
     const pushOptions = question.options.map((o) => o.label || o.value);
+    // #719: hint the NSE to build a per-notification dynamic category with the
+    // real option labels as action titles. `pushCategory` above is untouched —
+    // it remains the static fallback the NSE (and any client without one)
+    // falls back to.
+    const dynOptions = selectDynOptions(question);
     const { title, body } = buildPushText(sessionName, question);
     const opts = {
       title,
@@ -348,6 +375,7 @@ export class NotificationDispatcher {
       questionId: question.id,
       ...(pushCategory !== undefined ? { category: pushCategory } : {}),
       ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
+      ...(dynOptions ? { dynOptions: true } : {}),
     };
 
     const perToken = [...deviceTokens.values()].map((dt) =>
