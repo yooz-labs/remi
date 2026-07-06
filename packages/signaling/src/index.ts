@@ -46,6 +46,14 @@ interface PushRequestBody {
   category?: string;
   /** Answer values for action buttons: mapped to opt_0, opt_1, ... in APNS data */
   options?: string[];
+  /**
+   * NSE dynamic-category hint (#719): when true and `options` is non-empty,
+   * the push sets `mutable-content: 1` and a `dynCategory: "1"` data field so
+   * the iOS Notification Service Extension can register a per-notification
+   * category with the real option labels as action titles. Additive only —
+   * `category` is still sent as the static fallback for a missing/failed NSE.
+   */
+  dynOptions?: boolean;
   /** Reserved for future per-request sandbox override; daemon does not send this today */
   sandbox?: boolean;
   /**
@@ -281,6 +289,13 @@ export default {
           data[`opt_${idx}`] = String(val);
         });
       }
+      // #719: only meaningful alongside real options — a dynCategory hint with
+      // nothing in opt_0.. would just make the NSE run for no benefit.
+      const wantsDynCategory =
+        body.dynOptions === true && Array.isArray(body.options) && body.options.length > 0;
+      if (wantsDynCategory) {
+        data['dynCategory'] = '1';
+      }
       const category = body.category && body.category.length > 0 ? body.category : undefined;
 
       let result: { success: boolean; error?: string };
@@ -297,6 +312,10 @@ export default {
             sandbox,
             data: Object.keys(data).length > 0 ? data : undefined,
             category,
+            // #719: mutable-content lets the NSE intercept and mutate the
+            // notification before display (to attach the dynamic category);
+            // only set when there is something for it to build actions from.
+            ...(wantsDynCategory ? { mutableContent: true } : {}),
             // Collapse repeated pushes for the same question (#575, P4a).
             ...(body.questionId && body.questionId.length > 0
               ? { collapseId: body.questionId }

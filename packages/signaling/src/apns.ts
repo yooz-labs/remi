@@ -16,6 +16,14 @@ interface ApnsPayload {
   /** UNNotificationCategory identifier for action buttons (lock screen / Watch) */
   category?: string;
   /**
+   * `mutable-content: 1` (#719): lets the iOS Notification Service Extension
+   * intercept and mutate the notification (to register a per-notification
+   * dynamic category) before it displays. Only set when the payload carries
+   * `dynCategory` data for the NSE to act on; absent otherwise so a normal
+   * push's `aps` dict is byte-identical to pre-#719.
+   */
+  mutableContent?: boolean;
+  /**
    * Collapse identifier (#575, P4a). Sent as the `apns-collapse-id` header AND
    * used to de-dup at the device. A re-push for the same questionId replaces the
    * earlier notification instead of stacking a duplicate. Apple caps this at 64
@@ -108,6 +116,7 @@ export function buildApnsRequest(payload: ApnsPayload, jwt: string): ApnsRequest
         // wake opportunity.
         'content-available': 1,
         ...(payload.category ? { category: payload.category } : {}),
+        ...(payload.mutableContent ? { 'mutable-content': 1 } : {}),
       };
 
   const body = JSON.stringify({

@@ -25,6 +25,7 @@ function parseBody(body: string): {
     badge?: number;
     'content-available'?: number;
     category?: string;
+    'mutable-content'?: number;
   };
   [key: string]: unknown;
 } {
@@ -90,6 +91,20 @@ describe('buildApnsRequest (#575 P4a)', () => {
     expect(buildApnsRequest({ ...BASE, sandbox: true }, 'jwt').url).toContain(
       'api.sandbox.push.apple.com',
     );
+  });
+
+  test('omits mutable-content by default (#719, byte-identical to pre-#719)', () => {
+    const req = buildApnsRequest(BASE, 'jwt-token');
+    const payload = parseBody(req.body);
+    expect(payload.aps['mutable-content']).toBeUndefined();
+  });
+
+  test('sets mutable-content: 1 when mutableContent is requested (#719)', () => {
+    const req = buildApnsRequest({ ...BASE, mutableContent: true }, 'jwt-token');
+    const payload = parseBody(req.body);
+    expect(payload.aps['mutable-content']).toBe(1);
+    // Coexists with the rest of the alert; not a silent/dismiss push.
+    expect(payload.aps.alert?.title).toBe(BASE.title);
   });
 
   test('always sets the standard APNS headers', () => {
