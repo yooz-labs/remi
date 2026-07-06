@@ -126,8 +126,12 @@ describe('ack-gated re-register on disconnect (#690)', () => {
     expect(receivedB).toHaveLength(1);
     expect(receivedB[0]?.message.type).toBe('register_device_token');
     // The re-register could not have been SENT before the ack delay elapsed,
-    // since awaitAck only resolves once serverA's delayed ack arrives.
-    expect(registerSentAt).toBeGreaterThanOrEqual(sentAt + ACK_DELAY_MS);
+    // since awaitAck only resolves once serverA's delayed ack arrives. The
+    // 10ms epsilon is for timer rounding: JS timers may fire up to ~1ms early
+    // and Date.now() has ms granularity, so the hard >= bound failed by
+    // exactly 1ms on loaded CI runners (#725). The ordering guarantee itself
+    // is causal (awaitAck resolution), not this wall-clock inequality.
+    expect(registerSentAt).toBeGreaterThanOrEqual(sentAt + ACK_DELAY_MS - 10);
   });
 
   test('the sibling re-register still fires on timeout when no ack ever arrives', async () => {

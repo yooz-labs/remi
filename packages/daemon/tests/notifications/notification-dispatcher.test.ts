@@ -513,6 +513,70 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
     make().dismiss(SID, QID);
     expect(pushed).toHaveLength(0);
   });
+
+  /** Poll until `cond` holds — dismiss() is fire-and-forget, so retry/prune
+   *  effects land asynchronously (after the 400ms backoff sleep). */
+  async function waitUntil(cond: () => boolean, timeoutMs = 3000): Promise<void> {
+    const start = Date.now();
+    while (!cond()) {
+      if (Date.now() - start > timeoutMs) throw new Error('waitUntil timed out');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  function makeWith(fn: PushFn, pruneToken?: (token: string) => void): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: fn,
+        ...(pruneToken ? { pruneToken } : {}),
+      },
+      SID,
+    );
+  }
+
+  test('#723: a rate-limited (429) dismissal is retried with backoff, then succeeds', async () => {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let calls = 0;
+    const flaky: PushFn = async () => {
+      calls++;
+      if (calls === 1) {
+        throw new Error('Push trigger failed: 429 {"error":"RATE_LIMITED"}');
+      }
+    };
+    makeWith(flaky).dismiss(SID, QID);
+    await waitUntil(() => calls === 2);
+    expect(calls).toBe(2);
+  });
+
+  test('#723: a permanently dead token on a dismissal is pruned (self-heal)', async () => {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    const prunedTokens: string[] = [];
+    let calls = 0;
+    const dead: PushFn = async () => {
+      calls++;
+      throw new Error(
+        'Push trigger failed: 502 {"success":false,"tokenInvalid":true,"error":"APNS 400: BadDeviceToken"}',
+      );
+    };
+    makeWith(dead, (t) => prunedTokens.push(t)).dismiss(SID, QID);
+    await waitUntil(() => prunedTokens.length === 1);
+    expect(prunedTokens).toEqual(['a']);
+    expect(calls).toBe(1); // permanent rejection: no retry before pruning
+  });
 });
 
 describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
