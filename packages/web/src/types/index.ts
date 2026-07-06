@@ -246,6 +246,12 @@ export interface UIQuestion {
   readonly submitting?: boolean;
   /** #627: the daemon could not auto-answer; the card invites Cancel / terminal. */
   readonly autoAnswerFailed?: boolean;
+  /** #718: mirrors `Question.optionsAreFallback` — true when `structuredOptions`
+   *  is the daemon's honest Yes/No fallback rather than a real PTY/suggestion-
+   *  derived set. Lets the #396 richer-wins guard (`question-merge.ts`)
+   *  distinguish the fallback from a genuine 2-option Yes/No question that
+   *  happens to share the same labels. */
+  readonly optionsAreFallback?: boolean;
 }
 
 /** App settings */

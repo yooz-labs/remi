@@ -841,6 +841,7 @@ function App() {
           ...(q.kind ? { kind: q.kind } : {}),
           ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
           ...(q.submitLabel ? { submitLabel: q.submitLabel } : {}),
+          ...(q.optionsAreFallback ? { optionsAreFallback: true } : {}),
         };
         const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {
