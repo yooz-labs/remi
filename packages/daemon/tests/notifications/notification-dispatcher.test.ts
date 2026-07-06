@@ -9,6 +9,7 @@ import {
   isDelivered,
   isRetriablePushError,
   isTokenInvalidError,
+  selectDynOptions,
   selectPushCategory,
 } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
@@ -69,6 +70,73 @@ describe('selectPushCategory', () => {
     // daemon's fallback is a genuine 2-set instead of a fabricated 3-set —
     // no dispatcher change was needed, this just pins the observable result.
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
+  });
+});
+
+describe('selectDynOptions (#719)', () => {
+  test('single-question AskUserQuestion with 3 options qualifies', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'DB: Which database?',
+      options: [
+        { value: '1', label: 'Postgres', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'SQLite', isRecommended: false, isYes: false, isNo: false },
+        { value: '3', label: 'MySQL', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        {
+          header: 'DB',
+          text: 'Which database?',
+          multiSelect: false,
+          options: [],
+        },
+      ],
+    };
+    expect(selectDynOptions(q)).toBe(true);
+  });
+
+  test('a 4-option structured-suggestion permission card qualifies', () => {
+    expect(selectDynOptions(question('q', [yesOpt, yesAlwaysOpt, noOpt, yesOpt]))).toBe(true);
+  });
+
+  test('a multi-sub-question AskUserQuestion form does NOT qualify (stays app-routed)', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      options: [
+        { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        { header: 'Collab PI', text: 'Who is the PI?', multiSelect: false, options: [] },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+      ],
+    };
+    expect(selectDynOptions(q)).toBe(false);
+  });
+
+  test('free-text (0 options) does NOT qualify', () => {
+    expect(selectDynOptions(question('q', []))).toBe(false);
+  });
+
+  test('5+ options does NOT qualify', () => {
+    const five = [yesOpt, noOpt, yesOpt, noOpt, yesOpt];
+    expect(selectDynOptions(question('q', five))).toBe(false);
+  });
+
+  test('an empty label disqualifies even though the push falls back to the value', () => {
+    const blankLabel: QuestionOption = { ...yesOpt, label: '' };
+    expect(selectDynOptions(question('q', [blankLabel, noOpt]))).toBe(false);
+  });
+
+  test('the honest 2-option Yes/No fallback qualifies', () => {
+    expect(selectDynOptions(question('q', [yesOpt, noOpt]))).toBe(true);
   });
 });
 
@@ -284,6 +352,41 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed).toHaveLength(1);
     expect(pushed[0]?.opts['options']).toEqual(['Yes', 'Yes, always', 'No']);
     expect(pushed[0]?.opts['category']).toBe('REMI_YNA');
+  });
+
+  // #719: the NSE dynamic-category hint rides alongside the static category.
+  test('carries dynOptions:true for a qualifying 2-4 option question', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    make().maybePush(SID, question('q1', defaultThreeSet, 'Allow Bash: git push'));
+
+    expect(pushed[0]?.opts['dynOptions']).toBe(true);
+    expect(pushed[0]?.opts['category']).toBe('REMI_YNA'); // static fallback unchanged
+  });
+
+  test('omits dynOptions for a multi-sub-question AskUserQuestion form', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    const mq: Question = {
+      id: 'q1' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      options: [
+        { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        { header: 'Collab PI', text: 'Who is the PI?', multiSelect: false, options: [] },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+      ],
+    };
+    make().maybePush(SID, mq);
+
+    expect(pushed[0]?.opts['dynOptions']).toBeUndefined();
   });
 
   // #626: an AskUserQuestion must NOT get a count-based category (REMI_YN/YNA

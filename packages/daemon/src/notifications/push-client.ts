@@ -25,6 +25,15 @@ export interface PushTriggerOptions {
   /** Answer values for action buttons: opt_0, opt_1, ... */
   options?: string[];
   /**
+   * Hint for the iOS Notification Service Extension (#719): when true (and
+   * `options` carries 2-4 real labels), the signaling worker sets
+   * `mutable-content: 1` so the NSE runs and can register a per-notification
+   * dynamic category showing the real labels as action titles. Purely
+   * additive — `category` above is still sent unconditionally as the static
+   * fallback for a missing/failed/racing NSE.
+   */
+  dynOptions?: boolean;
+  /**
    * Dismissal trigger (#585, P7). When true the signaling server sends a QUIET
    * `content-available` push (no alert) carrying the same `apns-collapse-id` =
    * questionId, so the device replaces/clears the lock-screen card for an
@@ -72,6 +81,9 @@ export async function sendPushTrigger(
   }
   if (opts.options && opts.options.length > 0) {
     payload['options'] = opts.options;
+  }
+  if (opts.dynOptions) {
+    payload['dynOptions'] = true;
   }
   if (opts.dismiss) {
     payload['dismiss'] = true;

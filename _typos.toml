@@ -9,4 +9,7 @@ extend-exclude = [
   "packages/daemon/tests/parser/fixtures/",
   # Captured AskUserQuestion TUI sessions (#627) — raw terminal bytes, not prose.
   "packages/daemon/tests/fixtures/auq/",
+  # Xcode project files are machine-format: 24-hex object IDs (e.g.
+  # "719E75D1BA17...") tokenize into false-positive "words" like BA (#719).
+  "*.pbxproj",
 ]
