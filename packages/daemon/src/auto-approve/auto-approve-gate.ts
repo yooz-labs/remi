@@ -349,6 +349,12 @@ export class AutoApproveGate {
    * in-flight evals. `SessionEnd` and `forceRelease` are real teardown and
    * always release/cancel everything (mainOnly absent/false) -- there is no
    * "the rest of the team is still going" case once the session has ended.
+   *
+   * Accepted tradeoff: if a teammate is killed WITHOUT Claude ever emitting
+   * its own `SessionEnd` for that team member (e.g. the whole process is
+   * torn down externally), its spared held card has no further release
+   * trigger and sits until the pre-existing `hold_timeout` (default 1800s)
+   * fails it open on its own timer -- bounded, not indefinite.
    */
   cancelStale(reason: string, opts?: { mainOnly?: boolean }): void {
     const mainOnly = opts?.mainOnly ?? false;
@@ -381,13 +387,13 @@ export class AutoApproveGate {
     // decisions a main eval cannot be in flight at Stop anyway (Claude blocks
     // on the hook while the gate evaluates it), so this is defensive; any eval
     // that IS running/queued at lead-Stop is a teammate's and must keep going.
-    let cancelledAny = false;
+    let cancelledCount = 0;
     for (const [evalId, isSubagent] of this.evalIsSubagentById) {
       if (isSubagent) continue;
-      if (this.deps.service.cancel(reason, evalId)) cancelledAny = true;
+      if (this.deps.service.cancel(reason, evalId)) cancelledCount += 1;
     }
-    if (cancelledAny) {
-      log(`[AutoApprove] Cancelled stale MAIN-context LLM eval: ${reason}`);
+    if (cancelledCount > 0) {
+      log(`[AutoApprove] Cancelled ${cancelledCount} stale MAIN-context LLM eval(s): ${reason}`);
     }
   }
 
@@ -936,6 +942,13 @@ export class AutoApproveGate {
     if (escalateModel) {
       let second: AutoApproveResult;
       try {
+        // #711: deliberately NOT tagged in evalIsSubagentById (no evalId passed) --
+        // the same "Claude blocks on the hook while the gate evaluates" invariant
+        // that keeps a MAIN primary eval from ever being in flight at Stop applies
+        // here too, since Claude is still blocked on this same hook response
+        // while the second opinion runs. A mainOnly Stop therefore has nothing to
+        // cancel for this call by construction; leaving it untracked is correct,
+        // not a gap.
         second = await service.evaluate(
           input.tool_name,
           input.tool_input,

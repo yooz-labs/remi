@@ -1790,6 +1790,38 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
     expect(await gate.resolvePermission(pr())).toBe('passthrough');
     expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
   });
+
+  // #711 review follow-up: onDeliveryUnconfirmed's short-window RE-ARM rebuilds
+  // the PendingHold entry (new timer, same resolve) -- prove that rebuild
+  // preserves `isSubagent`, not just the initial `createHold` tagging.
+  test('#711 a SUBAGENT hold re-armed via onDeliveryUnconfirmed keeps isSubagent tagged (survives mainOnly Stop)', async () => {
+    const gate = deliveryGate({
+      delivery: Promise.resolve('failed'),
+      deliveryConfirmMs: 20,
+      holdUnconfirmedMs: 500, // long enough to land cancelStale inside the re-armed window
+      holdMs: 60_000,
+    });
+    const pending = gate.resolvePermission(
+      pr({ agent_id: 'teammate-1', agent_type: 'general-purpose' }),
+    );
+    // Past deliveryConfirmMs: onDeliveryUnconfirmed has fired and re-armed the
+    // hold via `this.pendingHolds.set(qid, { resolve: hold.resolve, timer, isSubagent: hold.isSubagent })`.
+    await new Promise((r) => setTimeout(r, 60));
+
+    // If the re-arm dropped the isSubagent tag, mainOnly would wrongly treat
+    // this as a main hold and release it here.
+    gate.cancelStale('Stop', { mainOnly: true });
+
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false); // still held -- re-armed hold correctly tagged subagent
+
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
 });
 
 // ---------------------------------------------------------------------------
