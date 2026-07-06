@@ -290,9 +290,18 @@ export default {
         });
       }
       // #719: only meaningful alongside real options — a dynCategory hint with
-      // nothing in opt_0.. would just make the NSE run for no benefit.
+      // nothing in opt_0.. would just make the NSE run for no benefit. The
+      // upper bound (6) is an INVARIANT CHAIN shared with the NSE's own
+      // option-count ceiling (NotificationService.swift's `0...5` loop) and is
+      // deliberately looser than the daemon's current 2-4 gate
+      // (notification-dispatcher.ts `selectDynOptions`), so loosening the
+      // daemon gate up to 6 needs no worker change. Keep all three in sync if
+      // the ceiling itself ever moves.
       const wantsDynCategory =
-        body.dynOptions === true && Array.isArray(body.options) && body.options.length > 0;
+        body.dynOptions === true &&
+        Array.isArray(body.options) &&
+        body.options.length >= 2 &&
+        body.options.length <= 6;
       if (wantsDynCategory) {
         data['dynCategory'] = '1';
       }

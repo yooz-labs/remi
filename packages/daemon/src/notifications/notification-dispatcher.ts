@@ -54,6 +54,14 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
  * Notification Service Extension (or one where the NSE fails, races, or is
  * simply not yet installed) ignores `dynOptions` entirely and falls back to
  * the static category exactly as before #719 — never worse.
+ *
+ * INVARIANT CHAIN (#719 review): this gate is the narrowest of three — the
+ * signaling worker's `wantsDynCategory` check and the NSE's own option-count
+ * ceiling both allow up to 6 options, a defensive upper bound so loosening
+ * THIS gate (2-4 -> up to 6) needs no worker/NSE change. Keep all three in
+ * sync if the ceiling itself ever moves: packages/signaling/src/index.ts
+ * (`wantsDynCategory`) and packages/web/ios/App/RemiNotificationService/
+ * NotificationService.swift (`buildDynamicCategory`'s `0...5` loop).
  */
 export function selectDynOptions(question: Question): boolean {
   if (question.kind === 'multi_question' && question.questions && question.questions.length > 1) {

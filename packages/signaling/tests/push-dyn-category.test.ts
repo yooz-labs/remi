@@ -109,6 +109,30 @@ describe('/push NSE dynamic-category contract (#719)', () => {
     expect(parsed['opt_2']).toBe('No');
   });
 
+  test('7+ options exceeds the shared NSE ceiling (6) and gets no mutable-content/dynCategory', async () => {
+    // INVARIANT CHAIN (#719 review): this upper bound mirrors the NSE's own
+    // option-count ceiling (NotificationService.swift's `0...5` loop) so the
+    // worker never asks the NSE to run for a shape it cannot build actions
+    // from.
+    const res = await worker.fetch(
+      pushRequest({
+        token: 'device-abc',
+        title: 'T',
+        body: 'B',
+        questionId: 'q-7',
+        options: ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+        dynOptions: true,
+      }),
+      env as never,
+    );
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(appleRequests[0]?.body ?? '{}');
+    expect(parsed.aps['mutable-content']).toBeUndefined();
+    expect(parsed['dynCategory']).toBeUndefined();
+    // The opt_N fields still ride along unconditionally — only the NSE hint is gated.
+    expect(parsed['opt_6']).toBe('G');
+  });
+
   test('dynOptions is a no-op without any options (nothing for the NSE to build)', async () => {
     const res = await worker.fetch(
       pushRequest({
