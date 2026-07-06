@@ -80,9 +80,19 @@ const rateLimiter = new RateLimiter(10, 60_000);
  *     alert pushes.
  */
 const PUSH_AUTH_LIMIT = 60;
+/**
+ * Dismiss ceiling (#723). Sharing PUSH_AUTH_LIMIT starved dismissals in
+ * practice: ALL of a machine's daemons share one identity bucket, and every
+ * resolved question fans a dismissal out per device token, so a multi-session
+ * agent-team soak (4+ sessions x 2 tokens) blew through 60/min and left
+ * already-answered cards on the lock screen. Dismisses are quiet
+ * content-available pushes with no alert cost, so the ceiling is only a
+ * runaway-loop backstop — sized ~5x the alert budget rather than removed.
+ */
+const DISMISS_AUTH_LIMIT = 300;
 const pushAuthRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
 const pushIpRateLimiter = new RateLimiter(5, 60_000);
-const dismissRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
+const dismissRateLimiter = new RateLimiter(DISMISS_AUTH_LIMIT, 60_000);
 /** Per-IP rate limiter for the answer relay: 10 answers per 60 seconds */
 const answerRateLimiter = new RateLimiter(10, 60_000);
 

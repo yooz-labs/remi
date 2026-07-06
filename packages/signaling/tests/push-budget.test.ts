@@ -148,6 +148,21 @@ describe('/push budget (#603 Phase 2)', () => {
     expect(dRes.status).toBe(200);
   });
 
+  test('#723: dismiss budget is raised above the alert budget; ceiling still enforced', async () => {
+    const secret = freshSecret();
+    const env = { ...baseEnv, PUSH_SECRET: secret } as TestEnv;
+    const ip = '198.51.100.52';
+    // A multi-session agent-team machine resolves far more than 60 questions/min
+    // (each fanned out per device token). All 300 dismisses in the window must
+    // pass; the 301st hits the runaway-loop backstop.
+    for (let i = 0; i < 300; i++) {
+      const res = await worker.fetch(dismissReq({ ip, secret }), env as never);
+      expect(res.status).toBe(200);
+    }
+    const limited = await worker.fetch(dismissReq({ ip, secret }), env as never);
+    expect(limited.status).toBe(429);
+  });
+
   test('unauthenticated dismiss uses the tight per-IP fallback, not the raised budget', async () => {
     const env = { ...baseEnv } as TestEnv; // no PUSH_SECRET
     ipCounter += 1;
