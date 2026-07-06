@@ -1,5 +1,5 @@
 /**
- * Tests for the client-side richer-wins guard (#396).
+ * Tests for the client-side richer-wins guard (#396, #718).
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -19,6 +19,7 @@ function uiq(
     timestamp?: string;
     answeredWith?: string;
     resolvedReason?: UIQuestionResolvedReason;
+    optionsAreFallback?: boolean;
   } = {},
 ): UIQuestion {
   const structured: UIQuestionOption[] = options.map((o, i) => ({
@@ -39,10 +40,29 @@ function uiq(
     timestamp: ts,
     ...(extra.answeredWith !== undefined ? { answeredWith: extra.answeredWith } : {}),
     ...(extra.resolvedReason !== undefined ? { resolvedReason: extra.resolvedReason } : {}),
+    ...(extra.optionsAreFallback !== undefined
+      ? { optionsAreFallback: extra.optionsAreFallback }
+      : {}),
   };
 }
 
-const yesYesalwaysNo = [
+// #718: the daemon's honest fallback (no usable permission_suggestions),
+// explicitly flagged the way the real daemon/App.tsx wiring does.
+const yesNoFallback = (prompt = 'Allow Bash: ls') =>
+  uiq(
+    prompt,
+    [
+      { label: 'Yes', isYes: true },
+      { label: 'No', isNo: true },
+    ],
+    { optionsAreFallback: true },
+  );
+
+// A 3-option set that used to double as "the bland default" pre-#718 (when
+// the fallback itself was a 3-set). Under the new 2-option fallback shape
+// this is just an ordinary non-default set (e.g. a #718 suggestion-derived
+// card with one middle "always allow" option) — never flagged.
+const threeOptionNonDefault = [
   { label: 'Yes', isYes: true },
   { label: 'Yes, always', isYes: true },
   { label: 'No', isNo: true },
@@ -58,58 +78,68 @@ const fourSentenceOptions = [
 const fixedNow = (ms: number) => () => ms;
 
 describe('shouldKeepExisting', () => {
-  test('keeps a multi-choice when a default 3-set arrives next', () => {
+  test('keeps a multi-choice when a default fallback arrives next', () => {
     const existing = uiq('Which approach?', fourSentenceOptions);
-    const incoming = uiq('Claude needs your permission to use Bash', yesYesalwaysNo);
+    const incoming = yesNoFallback('Claude needs your permission to use Bash');
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 
-  test('keeps a 3-set with custom labels when default 3-set arrives next', () => {
+  test('keeps a 3-set with custom labels when default fallback arrives next', () => {
     // Edit tool's permission_suggestions (rich) followed by the hook's
-    // default fallback (poor) at equal option count.
+    // honest fallback (poor) at equal-or-lower option count.
     const existing = uiq('Allow Edit: src/foo.ts', [
       { label: 'Yes' },
       { label: "Yes, and don't ask again this session" },
       { label: 'No, and tell Claude what to do differently' },
     ]);
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = yesNoFallback();
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 
   test('replaces when incoming has more options', () => {
-    const existing = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const existing = uiq('Allow Bash: ls', threeOptionNonDefault);
     const incoming = uiq('Pick a destination', fourSentenceOptions);
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
-  test('keeps a 2-option Yes/No when default 3-set arrives next (#407)', () => {
-    // The reported regression: PTY parser detects [y/n], emits 2-option
-    // Yes/No. Hook bridge then emits the bland default 3-set. Ranking by
-    // count alone made the 3-set "richer" and replaced the 2-option,
-    // showing three buttons for what the user expected to be a yes/no.
-    // The default-3-set must always lose to a non-default shape.
-    const existing = uiq('Continue?', [
-      { label: 'Yes', isYes: true },
-      { label: 'No', isNo: true },
-    ]);
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+  test('keeps a genuine 2-option Yes/No when the default fallback arrives next (#407, #718)', () => {
+    // The reported regression: the PTY parser detects a subprocess (y/n)
+    // prompt and emits a genuine 2-option Yes/No, explicitly flagged
+    // `optionsAreFallback: false` (question-parser.ts). Hook bridge then
+    // falls back to the honest Yes/No default (flagged true) for the SAME
+    // prompt cycle. Label/count alone can no longer tell these apart
+    // post-#718 (both are 2-option Yes/No) — `optionsAreFallback` is what
+    // lets the genuine one win.
+    const existing = uiq(
+      'Continue?',
+      [
+        { label: 'Yes', isYes: true },
+        { label: 'No', isNo: true },
+      ],
+      { optionsAreFallback: false },
+    );
+    const incoming = yesNoFallback();
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 
-  test('replaces when existing is the bland default and incoming is non-default (#407)', () => {
-    // Symmetric: if the daemon's hook fired the 3-set first and the PTY
+  test('replaces when existing is the bland fallback and incoming is non-default (#407)', () => {
+    // Symmetric: if the daemon's hook fired the fallback first and the PTY
     // then surfaced a real 2-option Yes/No, the richer one wins.
-    const existing = uiq('Allow Bash: ls', yesYesalwaysNo);
-    const incoming = uiq('Continue?', [
-      { label: 'Yes', isYes: true },
-      { label: 'No', isNo: true },
-    ]);
+    const existing = yesNoFallback();
+    const incoming = uiq(
+      'Continue?',
+      [
+        { label: 'Yes', isYes: true },
+        { label: 'No', isNo: true },
+      ],
+      { optionsAreFallback: false },
+    );
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
-  test('replaces when both are default 3-sets (truly equivalent)', () => {
-    const existing = uiq('Allow Bash: ls', yesYesalwaysNo);
-    const incoming = uiq('Allow Edit: foo', yesYesalwaysNo);
+  test('replaces when both are default fallback sets (truly equivalent)', () => {
+    const existing = yesNoFallback('Allow Bash: ls');
+    const incoming = yesNoFallback('Allow Edit: foo');
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
@@ -117,14 +147,14 @@ describe('shouldKeepExisting', () => {
     const existing = uiq('Which approach?', fourSentenceOptions, {
       answeredWith: 'Refactor the authentication module',
     });
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = yesNoFallback();
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
   test('replaces when existing is older than the freshness window', () => {
     const stale = new Date(1_000_000).toISOString();
     const existing = uiq('Old plan question', fourSentenceOptions, { timestamp: stale });
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = yesNoFallback();
     // 6 seconds later: stale, allow replacement.
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_006_001) })).toBe(false);
   });
@@ -133,34 +163,37 @@ describe('shouldKeepExisting', () => {
     const existing = uiq('Which approach?', fourSentenceOptions, {
       timestamp: new Date(1_000_000).toISOString(),
     });
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = uiq('Allow Bash: ls', threeOptionNonDefault);
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_004_999) })).toBe(true);
   });
 
-  test('replaces when incoming has same count and existing is also a 3-set default', () => {
-    // Edge case: identical default-shape pairs come through; the second
-    // is no worse than the first so we let it replace (last wins).
-    const existing = uiq('Allow Bash: ls', yesYesalwaysNo);
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+  test('replaces when incoming has same count as an ordinary 3-option set (truly equivalent)', () => {
+    // Edge case: identical non-default 3-option pairs come through; the
+    // second is no worse than the first so we let it replace (last wins).
+    const existing = uiq('Allow Bash: ls', threeOptionNonDefault);
+    const incoming = uiq('Allow Bash: ls', threeOptionNonDefault);
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
-  test('shape outranks count: keeps a 2-option Yes/No over a 3-set default (#407)', () => {
-    // Pre-#407 this asserted the opposite — that the default 3-set
-    // replaces the 2-option Yes/No. That was the bug: the bland default
-    // is the daemon's "no real options" fallback and must never replace
-    // a non-default shape regardless of count.
-    const existing = uiq('Run this?', [
-      { label: 'Yes', isYes: true },
-      { label: 'No', isNo: true },
-    ]);
-    const incoming = uiq('Run this?', yesYesalwaysNo);
+  test('shape outranks count: keeps a 2-option Yes/No over a default fallback (#407, #718)', () => {
+    // Pre-#407 this asserted the opposite — that the (then 3-set) default
+    // replaces the 2-option Yes/No. That was the bug: the bland fallback
+    // must never replace a non-default shape regardless of count.
+    const existing = uiq(
+      'Run this?',
+      [
+        { label: 'Yes', isYes: true },
+        { label: 'No', isNo: true },
+      ],
+      { optionsAreFallback: false },
+    );
+    const incoming = yesNoFallback('Run this?');
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 
-  test('keeps 4-option richer when poorer 4-option arrives (not a default 3-set)', () => {
-    // Equal count but neither is the default 3-set shape — let it through.
-    // We only special-case the daemon's hardcoded fallback.
+  test('keeps 4-option richer when poorer 4-option arrives (not a default fallback)', () => {
+    // Equal count but neither is the daemon's fallback shape — let it
+    // through. We only special-case the daemon's hardcoded fallback.
     const existing = uiq('Pick a city', [
       { label: 'New York' },
       { label: 'San Francisco' },
@@ -178,7 +211,7 @@ describe('shouldKeepExisting', () => {
 
   test('malformed timestamp falls open and allows replacement (fail-closed)', () => {
     const existing = uiq('Plan', fourSentenceOptions, { timestamp: 'not-a-date' });
-    const incoming = uiq('Allow Bash', yesYesalwaysNo);
+    const incoming = yesNoFallback('Allow Bash');
     // A corrupted/legacy timestamp must not pin the UI: the guard
     // returns false so the new emission renders normally.
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
@@ -201,7 +234,7 @@ describe('shouldKeepExisting', () => {
       answeredWith: 'Refactor the authentication module',
     });
     // Different id; treat as a genuinely new prompt.
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = yesNoFallback();
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
   });
 
@@ -212,7 +245,7 @@ describe('shouldKeepExisting', () => {
     // applies normally.
     const future = new Date(2_000_000).toISOString();
     const existing = uiq('Old plan', fourSentenceOptions, { timestamp: future });
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = yesNoFallback();
     // 6 seconds after the existing's claimed time => stale, replace.
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(2_006_001) })).toBe(false);
   });
@@ -221,36 +254,62 @@ describe('shouldKeepExisting', () => {
     const existing = uiq('Plan', fourSentenceOptions, {
       timestamp: new Date(1_000_000).toISOString(),
     });
-    const incoming = uiq('Allow Bash: ls', yesYesalwaysNo);
+    const incoming = yesNoFallback();
     // Strict >= boundary: 5000ms exactly is stale, allow replacement.
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_005_000) })).toBe(false);
   });
 
-  test('default-shape detection is case-insensitive', () => {
+  test('default-shape detection: an unflagged case-varied Yes/No is still caught by the label fallback', () => {
+    // No `optionsAreFallback` on either side (as if from a pre-#718 daemon):
+    // the guard falls back to its label heuristic, which is case-insensitive.
     const existing = uiq('Custom prompt', [
       { label: 'Yes' },
       { label: "Yes, and don't ask again this session" },
       { label: 'No' },
     ]);
-    const incoming = uiq('Allow Bash: ls', [
-      { label: '  YES  ' },
-      { label: 'yes, ALWAYS' },
-      { label: ' no ' },
-    ]);
+    const incoming = uiq('Allow Bash: ls', [{ label: '  YES  ' }, { label: ' no ' }]);
+    expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
+  });
+
+  test('an explicit optionsAreFallback: false overrides a label-coincidence match', () => {
+    // Even though the labels alone would match the fallback heuristic, an
+    // explicit `false` from the daemon is authoritative: this is a real
+    // question, not the bland substitute, so it must not be treated as
+    // "poorer" than another default-shaped arrival.
+    const existing = uiq(
+      'Which approach?',
+      [
+        { label: 'Refactor the authentication module' },
+        { label: 'Patch the immediate bug only' },
+        { label: 'Rewrite from scratch using a library' },
+        { label: 'Skip and document the issue' },
+      ],
+      { optionsAreFallback: false },
+    );
+    const incoming = uiq(
+      'Allow Bash: ls',
+      [
+        { label: 'Yes', isYes: true },
+        { label: 'No', isNo: true },
+      ],
+      { optionsAreFallback: false },
+    );
+    // Neither is the fallback (both explicitly false); falls through to
+    // count-based ranking — existing (4) beats incoming (2).
     expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
   });
 
   describe('resolved-elsewhere trace (#652)', () => {
     test('a resolvedReason trace never blocks a genuinely new prompt (different id)', () => {
       // A richer (4-option) trace would normally out-rank an incoming default
-      // 3-set; once resolved it must step aside so the live prompt shows.
+      // fallback; once resolved it must step aside so the live prompt shows.
       const existing = uiq('Which approach?', fourSentenceOptions, { resolvedReason: 'answered' });
-      const incoming = uiq('Claude needs your permission to use Bash', yesYesalwaysNo);
+      const incoming = yesNoFallback('Claude needs your permission to use Bash');
       expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(false);
     });
 
     test('a same-id replay keeps the resolved trace (no re-prompt)', () => {
-      const existing = uiq('Allow Bash: ls', yesYesalwaysNo, { resolvedReason: 'cancelled' });
+      const existing = uiq('Allow Bash: ls', threeOptionNonDefault, { resolvedReason: 'cancelled' });
       const incoming = { ...existing };
       expect(shouldKeepExisting(existing, incoming, { now: fixedNow(1_001_000) })).toBe(true);
     });

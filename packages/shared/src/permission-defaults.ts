@@ -1,21 +1,28 @@
 /**
  * Hardcoded fallback values shared by the daemon's HookEventBridge and the
- * web client's question-merge guard (#396).
+ * web client's question-merge guard (#396, #718).
  *
  * Both layers need to know what the daemon emits when a `PermissionRequest`
- * arrives without `permission_suggestions`: the daemon uses these as the
- * default option labels; the client uses them to detect "this incoming
- * question is the bland fallback, not a richer custom 3-set worth keeping
- * over a freshly rendered multi-choice." Keeping the values in one place
- * prevents the two layers from drifting out of sync.
+ * arrives with NO usable `permission_suggestions` (none at all, or every
+ * entry filtered out): the daemon uses these as the default option labels;
+ * the client uses them to detect "this incoming question is the bland
+ * fallback, not a richer question worth keeping over a freshly rendered
+ * multi-choice." Keeping the values in one place prevents the two layers
+ * from drifting out of sync.
+ *
+ * #718: this used to be a fabricated 3-set (`['Yes', 'Yes, always', 'No']`)
+ * even though the daemon has no way to actually persist an "always" choice
+ * without a real `permission_suggestions` entry to echo back as
+ * `updatedPermissions`. It is now the honest 2-set the binary hook response
+ * can always express.
  */
 
 /**
- * Default option labels for permission prompts when Claude Code does not
- * provide `permission_suggestions`. Order matters: daemon assigns numeric
- * values 1-3 to the entries in this order.
+ * Default option labels for permission prompts when Claude Code sends no
+ * USABLE `permission_suggestions`. Order matters: daemon assigns numeric
+ * values 1-2 to the entries in this order.
  */
-export const DEFAULT_PERMISSION_LABELS = ['Yes', 'Yes, always', 'No'] as const;
+export const DEFAULT_PERMISSION_LABELS = ['Yes', 'No'] as const;
 
 /**
  * Window during which the daemon's `QuestionDedup` and the client's

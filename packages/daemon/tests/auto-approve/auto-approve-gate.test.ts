@@ -708,6 +708,44 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     await pending;
   });
 
+  test('resolveHeld with a suggestionIndex echoes updatedPermissions with the EXACT original entry (#718)', async () => {
+    const suggestion = {
+      type: 'addRules',
+      rules: [{ toolName: 'Bash', ruleContent: 'git push' }],
+      behavior: 'allow',
+      destination: 'session',
+    };
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr({ permission_suggestions: [suggestion] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow', 0)).toBe(true);
+    const decision = await pending;
+    expect(decision).toEqual({ behavior: 'allow', updatedPermissions: [suggestion] });
+  });
+
+  test('resolveHeld with a stale/out-of-range suggestionIndex falls back to plain allow', async () => {
+    const suggestion = { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' };
+    const gate = holdGate(evaluator(escalate));
+    // Only ONE suggestion was stashed with the hold; the answer path asks for
+    // index 5, which does not exist.
+    const pending = gate.resolvePermission(pr({ permission_suggestions: [suggestion] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow', 5)).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
+  test('resolveHeld without a suggestionIndex still resolves a plain allow (unchanged)', async () => {
+    const suggestion = { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' };
+    const gate = holdGate(evaluator(escalate));
+    const pending = gate.resolvePermission(pr({ permission_suggestions: [suggestion] }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
+    expect(await pending).toBe('allow');
+  });
+
   test('multi-choice escalate returns passthrough immediately (NO hold)', async () => {
     // 4+ string suggestions => multi-choice; the hook response cannot pick.
     const gate = holdGate(evaluator(escalate));

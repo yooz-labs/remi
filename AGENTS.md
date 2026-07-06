@@ -93,13 +93,14 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
 - iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`.
 
-**Constraints from real logs (2026-04-12 analysis):**
+**Constraints from real logs (2026-04-12 analysis, updated #718 2026-07-06):**
 
-- Bash `PermissionRequest` has `permission_suggestions=undefined` (no suggestions).
-- Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options.
-- Claude Code always offers 3 options for permissions: Yes / Yes always / No.
+- Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
+- Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
+- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count card: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option.
 - Numbered option text appears only in the terminal UI, not in hook events.
-- `HookEventBridge` emits the default 3-option set immediately; no parsing or merge timer needed.
+- `HookEventBridge` emits the option set immediately; no parsing or merge timer needed.
+- A "Yes, always allow: ..." option answered on a HELD hook resolves it with `{behavior:"allow", updatedPermissions:[<the original permission_suggestions entry>]}` — echoing a received suggestion back is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog." `QuestionOption.suggestionIndex` carries which original entry to echo.
 - Redeploy the signaling server after any `packages/signaling/` change.
 
 ### PTY-fallback question patterns

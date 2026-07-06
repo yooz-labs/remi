@@ -185,8 +185,13 @@ export interface SessionGateHandle {
    * caller then SKIPS the PTY inject — Claude is blocked on the hook, not
    * rendering); false when no hold exists (the answer takes the PTY path, e.g. a
    * multi-choice pick or a non-AA session).
+   *
+   * `suggestionIndex` (#718): present when the answered option was derived
+   * from a structured `permission_suggestions` entry ("Yes, always allow:
+   * ..."); forwarded to `AutoApproveGate.resolveHeld` so the hook resolves
+   * with the real `updatedPermissions` echo instead of a bare `allow`.
    */
-  resolveHeld: (questionId: UUID, decision: 'allow' | 'deny') => boolean;
+  resolveHeld: (questionId: UUID, decision: 'allow' | 'deny', suggestionIndex?: number) => boolean;
   /**
    * Release a held hook to 'passthrough' so Claude renders its native numbered
    * prompt (#573), for answers the binary hook response cannot express ("Yes,
@@ -735,7 +740,8 @@ export function setupHookBridge(
       hookServer.setPermissionResolver(null);
     },
     gate: {
-      resolveHeld: (questionId, decision) => autoApproveGate.resolveHeld(questionId, decision),
+      resolveHeld: (questionId, decision, suggestionIndex) =>
+        autoApproveGate.resolveHeld(questionId, decision, suggestionIndex),
       releaseHeldAsPassthrough: (questionId) =>
         autoApproveGate.releaseHeldAsPassthrough(questionId),
       cancelStale: (reason) => autoApproveGate.cancelStale(reason),

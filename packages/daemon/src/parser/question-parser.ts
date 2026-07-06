@@ -204,14 +204,22 @@ function tryParseYesNo(lines: readonly string[]): ParseResult | null {
         detected: true,
         type: 'yes_no',
         confidence: 0.9,
-        question: createQuestion(
-          questionText,
-          [
-            createOption('Yes', 'y', true, true, false),
-            createOption('No', 'n', false, false, true),
-          ],
-          false,
-        ),
+        question: {
+          ...createQuestion(
+            questionText,
+            [
+              createOption('Yes', 'y', true, true, false),
+              createOption('No', 'n', false, false, true),
+            ],
+            false,
+          ),
+          // #718: a genuinely parsed subprocess (y/n) prompt, not the
+          // daemon's synthetic Yes/No fallback -- the two now share
+          // identical labels since the fallback shrank from a 3-set, so the
+          // web guard (question-merge.ts) needs this explicit signal to
+          // avoid misclassifying a real prompt as the bland default.
+          optionsAreFallback: false,
+        },
       };
     }
   }

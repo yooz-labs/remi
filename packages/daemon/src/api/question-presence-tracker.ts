@@ -257,6 +257,14 @@ export class QuestionPresenceTracker {
    * proceed?"). The PTY contributes `id` / `allowsFreeText` / `isAnswered` and
    * its presence is the push trigger (#497). The consumed hook entry is removed.
    *
+   * Options exception (#718): when the hook record's options are the daemon's
+   * honest Yes/No FALLBACK (`hookRecord.optionsAreFallback`, set when
+   * `permission_suggestions` had no usable entry) AND the PTY question has its
+   * own non-empty options, the PTY's options win instead — the PTY parsed the
+   * ACTUAL rendered prompt, so its options are strictly more trustworthy than
+   * a bare substitute. Text/agentId/kind/questions/submitLabel/summary still
+   * prefer the hook record as before; only the options selection changes.
+   *
    * Pending is mutated BEFORE the push so a re-entrant call cannot re-merge
    * the same record. Push errors are caught and logged but not rethrown — the
    * next PTY emit for the same prompt retries WITHOUT the hook merge (PTY's
@@ -303,6 +311,10 @@ export class QuestionPresenceTracker {
       this.pending.delete(recordKey);
     }
 
+    // #718: a fallback hook record must not overwrite the PTY's own options
+    // when it has some — the PTY parsed the actual rendered prompt.
+    const useHookOptions = !hookRecord?.optionsAreFallback || ptyQuestion.options.length === 0;
+
     const merged: Question =
       hookRecord && hookRecord.options.length > 0
         ? {
@@ -310,8 +322,16 @@ export class QuestionPresenceTracker {
             // The hook text carries the tool/command/agent context; the PTY's is
             // the bare terminal prompt. Use the hook's when it has one (#497).
             text: hookRecord.text || ptyQuestion.text,
-            options: [...hookRecord.options],
+            options: useHookOptions ? [...hookRecord.options] : [...ptyQuestion.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
+            // #718 review: `optionsAreFallback` must describe whichever
+            // `options` ended up on the merged question, not silently inherit
+            // whatever `ptyQuestion` happened to carry from the `...ptyQuestion`
+            // spread above (a different, unrelated signal). When the hook's
+            // options won, mirror the hook record's own flag (true, or
+            // undefined for a real derived set); when the PTY's options won,
+            // they are concrete by construction, so this is always false.
+            optionsAreFallback: useHookOptions ? hookRecord.optionsAreFallback : false,
             // #626/#628: the PTY base carries none of the structured fields, so a
             // merge must preserve the hook record's AskUserQuestion structure +
             // lock-screen summary — else a merged card loses questions[]/summary.

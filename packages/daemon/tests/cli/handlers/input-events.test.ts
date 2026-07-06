@@ -812,6 +812,55 @@ describe('createInputHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
+    test('a suggestion-derived "Yes, always allow" option threads suggestionIndex to resolveHeldPermission (#718)', async () => {
+      // Unlike the legacy "Yes, always" string-suggestion label (FIX 1 above),
+      // a #718 structured-suggestion-derived option carries a suggestionIndex,
+      // so it CAN resolve the held hook (with a real updatedPermissions echo)
+      // instead of falling back to the native PTY prompt.
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: rm -rf /tmp/foo',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          {
+            value: '2',
+            label: 'Yes, always allow: rm -rf /tmp/foo',
+            isRecommended: false,
+            isYes: true,
+            isNo: false,
+            suggestionIndex: 0,
+          },
+          { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const held: Array<{ decision: 'allow' | 'deny'; suggestionIndex: number | undefined }> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d, suggestionIndex) => {
+          held.push({ decision: d, suggestionIndex });
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '2'); // the suggestion-derived option
+
+      expect(held).toEqual([{ decision: 'allow', suggestionIndex: 0 }]);
+      expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
+    });
+
     test('a non-held answer still scoped-cancels its own question and submits to the PTY (#617)', async () => {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
       const sessionId = sessionRegistry.createSessionId();
