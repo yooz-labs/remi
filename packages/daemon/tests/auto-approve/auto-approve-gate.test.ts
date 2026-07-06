@@ -67,6 +67,10 @@ describe('AutoApproveGate', () => {
   let cancels: string[];
   let tracker: QuestionPresenceTracker;
   let subagent: boolean;
+  // #710: records resetSubagentContext() calls, so tests can assert the gate
+  // resets the leaked tracker ONLY for a MAIN-tagged event, never for a
+  // genuine subagent-tagged one.
+  let resets: number;
 
   function evaluator(
     result: AutoApproveResult,
@@ -97,6 +101,9 @@ describe('AutoApproveGate', () => {
         sessionRegistry: registry,
         tracker,
         isInSubagentContext: () => subagent,
+        resetSubagentContext: () => {
+          resets++;
+        },
         escalate: (i) => {
           escalations.push(i);
           return generateId();
@@ -125,6 +132,9 @@ describe('AutoApproveGate', () => {
         sessionRegistry: registry,
         tracker,
         isInSubagentContext: () => subagent,
+        resetSubagentContext: () => {
+          resets++;
+        },
         escalate: (i) => {
           escalations.push(i);
           return generateId();
@@ -154,6 +164,7 @@ describe('AutoApproveGate', () => {
     escalations = [];
     cancels = [];
     subagent = false;
+    resets = 0;
     tracker = new QuestionPresenceTracker(() => {});
     configureLogger({ writeLog: () => {} });
   });
@@ -239,10 +250,44 @@ describe('AutoApproveGate', () => {
 
   test('escalate in subagent context default-denies via the response, no inject (#496)', async () => {
     subagent = true;
-    const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
+    // #710: default-deny requires a genuinely subagent-TAGGED event
+    // (agent_id present), not just isInSubagentContext() true — otherwise a
+    // leaked tracker would deny the main agent forever.
+    const d = await gateWith(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }));
     expect(d).toBe('deny');
     expect(submits).toHaveLength(0); // the core fix: deny without touching the PTY
     expect(escalations).toHaveLength(0);
+    expect(resets).toBe(0); // a real subagent event never resets the tracker
+  });
+
+  test('#710 regression: MAIN-tagged escalate with a stuck tracker resets it and escalates instead of denying', async () => {
+    // The bug: isInSubagentContext() stuck true (tracker leak) must NOT deny a
+    // MAIN-agent PermissionRequest (agent_id absent) — that silently ate the
+    // main agent's own AskUserQuestion/permission prompts in the 0.6.18-dev.24
+    // soak. The gate must recognize the missing agent_id as proof of a leak,
+    // reset the tracker, and escalate to the user like any other main event.
+    subagent = true;
+    const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(1); // escalated as main, not denied
+    expect(resets).toBe(1); // tracker reset exactly once
+  });
+
+  test('#710 regression: MAIN-tagged no-service with a stuck tracker resets and escalates', async () => {
+    subagent = true;
+    const d = await gateWith(null).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+    expect(resets).toBe(1);
+  });
+
+  test('#710 regression: MAIN-tagged eval-error with a stuck tracker resets and escalates', async () => {
+    subagent = true;
+    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+    expect(resets).toBe(1);
   });
 
   test('cancelled clears the tracker pending and returns passthrough; no inject/escalate', async () => {
@@ -311,18 +356,24 @@ describe('AutoApproveGate', () => {
 
   test('eval rejection in subagent context default-denies via the response', async () => {
     subagent = true;
-    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(pr());
+    // #710: requires agent_id (a real subagent-tagged event); see the
+    // escalate-branch test above for the rationale.
+    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(
+      pr({ agent_id: 'agent-1' }),
+    );
     expect(d).toBe('deny');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
+    expect(resets).toBe(0);
   });
 
   test('no service + subagent: default-deny via the response', async () => {
     subagent = true;
-    const d = await gateWith(null).resolvePermission(pr());
+    const d = await gateWith(null).resolvePermission(pr({ agent_id: 'agent-1' }));
     expect(d).toBe('deny');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
+    expect(resets).toBe(0);
   });
 
   test('no service + main context: escalate to user, passthrough', async () => {
@@ -368,7 +419,8 @@ describe('AutoApproveGate', () => {
 
   test('escalate_model is NOT consulted in a subagent context (denies via response) (#522)', async () => {
     subagent = true;
-    const d = await gateWithSecondOpinion(approve).resolvePermission(pr());
+    // #710: a real subagent-tagged event (agent_id present).
+    const d = await gateWithSecondOpinion(approve).resolvePermission(pr({ agent_id: 'agent-1' }));
     // Subagent escalate denies directly; the second opinion (which would allow)
     // must not run, since the user could not answer a subagent prompt anyway.
     expect(d).toBe('deny');
@@ -425,7 +477,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     );
   }
 
-  function pr(): PermissionRequestHookInput {
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
     return {
       session_id: 'claude-test',
       transcript_path: '/tmp/t.jsonl',
@@ -434,6 +486,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
+      ...over,
     };
   }
 
@@ -481,7 +534,10 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
 
   test('subagent escalate->deny still fires handled (buffer + cue close), no inject', async () => {
     subagent = true;
-    expect(await gate(evaluator(escalate)).resolvePermission(pr())).toBe('deny');
+    // #710: default-deny requires a real subagent-tagged event (agent_id set).
+    expect(await gate(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }))).toBe(
+      'deny',
+    );
     // Subagent escalate default-denies via the RESPONSE (no inject) -> markHandled.
     expect(submits).toHaveLength(0);
     expect(events).toEqual(['start', 'handled']);

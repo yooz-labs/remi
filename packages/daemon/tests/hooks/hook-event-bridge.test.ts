@@ -802,6 +802,65 @@ describe('HookEventBridge', () => {
       expect(bridge.isInSubagentContext()).toBe(false);
     });
 
+    it('noteSubagentToolEnd pops a tracked use_id without touching status (#710)', () => {
+      const { bridge, statuses } = createBridge();
+
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_note_1',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+      statuses.length = 0;
+
+      // The hook-bridge-setup listener calls this directly (instead of
+      // handlePostToolUse) for a PostToolUse it drops as subagent-tagged, so
+      // it must pop the tracker WITHOUT emitting the normal 'thinking' status.
+      bridge.noteSubagentToolEnd('Task', 'tu_note_1');
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+      expect(statuses).toEqual([]);
+    });
+
+    it('noteSubagentToolEnd on an untracked use_id is a no-op (genuine subagent-internal call)', () => {
+      const { bridge } = createBridge();
+
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_outer',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      // A subagent's own internal tool call was never tracked (its PreToolUse
+      // was dropped without tracking), so popping it must not affect the
+      // outer Task's tracked entry.
+      bridge.noteSubagentToolEnd('Bash', 'tu_inner_untracked');
+
+      expect(bridge.isInSubagentContext()).toBe(true);
+    });
+
+    it('resetSubagentContext clears tracked state (#710)', () => {
+      const { bridge } = createBridge();
+
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_reset_1',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      bridge.resetSubagentContext();
+
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
     it('handleSessionStart resets any stale state from prior session', () => {
       const { bridge } = createBridge();
       bridge.handlePreToolUse({

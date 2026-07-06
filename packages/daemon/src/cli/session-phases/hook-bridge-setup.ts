@@ -357,6 +357,10 @@ export function setupHookBridge(
       sessionRegistry,
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
+      // #710: lets the gate recover from a tracker leak (a MAIN-tagged
+      // PermissionRequest observing isInSubagentContext() stuck true) instead
+      // of denying the main agent forever.
+      resetSubagentContext: () => hookBridge.resetSubagentContext(),
       // Call the bridge DIRECTLY (not via the void-typed handlers map) so the
       // created Question.id flows back to the gate; a binary escalation holds
       // the hook keyed by it (#573). The bridge still does the onQuestion +
@@ -543,7 +547,28 @@ export function setupHookBridge(
   hookServer.on('PostToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
-    if (isSubagentEvent(input)) return;
+    if (isSubagentEvent(input)) {
+      // #710: the subagent-context tracker pop must see EVERY admitted
+      // PostToolUse, even one Claude Code stamps with the SPAWNED agent's own
+      // agent_id (its Task/Agent completion event) — that is exactly the
+      // event that closes the tool_use_id an earlier, untagged PreToolUse(Task)
+      // started tracking. Dropping it here without popping first leaked the
+      // tracked use_id forever, sticking isInSubagentContext() true and
+      // default-denying every later MAIN-agent PermissionRequest. Popping by
+      // tool_use_id is safe for a genuine subagent-internal PostToolUse too:
+      // its use_ids were never tracked in the first place (subagent PreToolUse
+      // events are dropped without tracking, same as this listener's PreToolUse
+      // sibling above).
+      //
+      // Residual gap (#716): this pop only runs when `binder.admits(input)`
+      // above is true. A Task-closing PostToolUse that `admits()` rejects (a
+      // rotation/sibling race) never reaches here and can still leak the
+      // tracked use_id -- bounded by the Stop/SessionEnd/StopFailure resets
+      // in hook-event-bridge.ts and by the gate's #710 leak-recovery
+      // escalate (reset + escalate as main instead of denying).
+      hookBridge.noteSubagentToolEnd(input.tool_name, input.tool_use_id);
+      return;
+    }
     // See the PreToolUse note above: no cancelStale here (#537). The previous
     // tool's PostToolUse must not abort the next permission's in-flight eval.
     // #673: same signature-scoped external-resolution cancel as PreToolUse
