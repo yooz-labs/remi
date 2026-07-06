@@ -5,12 +5,19 @@
  * the OutputProcessor previously produced from terminal parsing.
  * This is the hook-based replacement for terminal output parsing.
  *
- * Permission question flow (verified from real hook logs 2026-04-12):
+ * Permission question flow (verified from real hook logs 2026-04-12, updated
+ * #718 for structured suggestions observed 2026-07-06):
  *   - PermissionRequest fires with tool_name, tool_input, and optionally
- *     permission_suggestions (e.g. ["Yes","Always","No"] for Edit).
+ *     permission_suggestions. This is either a legacy plain-string label set
+ *     (e.g. ["Yes","Always","No"] for Edit) OR, since ~Claude Code 2.0.54, a
+ *     STRUCTURED array of typed entries (`addRules`, `addDirectories`,
+ *     `setMode`, ...) — see `optionsFromSuggestions` for how each shape maps
+ *     to a variable-count option set (never a fixed 3). With NO usable
+ *     suggestions of either shape, the honest Yes/No 2-set substitutes.
  *   - Notification(permission_prompt) fires shortly after with a plain-text
  *     message like "Claude needs your permission to use Bash" (no numbered
- *     options; those appear only in the terminal UI).
+ *     options; those appear only in the terminal UI) — always the Yes/No
+ *     fallback, since this event never carries permission_suggestions.
  *   - Both events forward their question to onQuestion. The push gate is
  *     QuestionPresenceTracker (cli.ts wiring): hook events stash the
  *     metadata; PTY confirms presence and fires the push. If both events
@@ -43,10 +50,13 @@ export interface HookBridgeEvents {
   onSessionInfo: (claudeSessionId: string, transcriptPath: string) => void;
 }
 
-/** Default permission options. Claude Code always offers these for tool
- *  permissions; the Notification hook message never contains numbered options.
- *  Labels are imported from `@remi/shared` so the web client's question-merge
- *  guard recognises them as the bland fallback (#396). */
+/** Honest Yes/No fallback options (#718): used when a PermissionRequest
+ *  carries NO usable `permission_suggestions` (none at all, or every entry
+ *  filtered out). Labels are imported from `@remi/shared` so the web
+ *  client's question-merge guard recognises them as the bland fallback
+ *  (#396). Replaces the old fabricated Yes / Yes-always / No 3-set — the
+ *  daemon has no `permission_suggestions` entry to echo back for an
+ *  "always" choice here, so pretending one exists was dishonest (#718). */
 const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
   {
     label: DEFAULT_PERMISSION_LABELS[0],
@@ -59,36 +69,154 @@ const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
     label: DEFAULT_PERMISSION_LABELS[1],
     value: '2',
     isRecommended: false,
-    isYes: true,
-    isNo: false,
-  },
-  {
-    label: DEFAULT_PERMISSION_LABELS[2],
-    value: '3',
-    isRecommended: false,
     isYes: false,
     isNo: true,
   },
 ];
 
+/** Maximum options a permission card can show (iOS push-category/action
+ *  budget: `selectPushCategory` maps 2/3/4 options to REMI_YN/REMI_YNA/
+ *  REMI_MULTI; nothing beyond 4 has a category). Yes and No are always
+ *  present, so at most `MAX_PERMISSION_OPTIONS - 2` suggestion-derived
+ *  middle options are kept. */
+const MAX_PERMISSION_OPTIONS = 4;
+
+/** Approximate cap (characters) for a suggestion-derived option label
+ *  before truncation, so a long shell command or rule list can't blow out
+ *  the push notification body / iOS action button. */
+const SUGGESTION_LABEL_MAX = 80;
+
+function truncateLabel(label: string): string {
+  return label.length > SUGGESTION_LABEL_MAX
+    ? `${label.slice(0, SUGGESTION_LABEL_MAX - 3)}...`
+    : label;
+}
+
 /**
- * Build options from a PermissionRequest's `permission_suggestions`. The union
- * carries string labels (pickable) and structured objects (rule-suggestion
- * metadata the iOS card cannot render); only >= 2 string labels yield real
- * options, otherwise the default Yes / Yes, always / No 3-set substitutes.
+ * Build the label for ONE usable structured `permission_suggestions` entry
+ * (#718), or null when the entry is not a "yes"-shaped suggestion this card
+ * can safely render as a one-tap option: a deny/ask-behavior `addRules`, a
+ * `removeRules` / `replaceRules` / `removeDirectories` (these narrow or
+ * reset permissions — never a "yes" variant), or a `type` Claude Code has
+ * not documented yet (ground truth: code.claude.com/docs/en/hooks).
+ */
+function labelForStructuredSuggestion(entry: Record<string, unknown>): string | null {
+  const type = entry['type'];
+  if (type === 'addRules') {
+    if (entry['behavior'] !== 'allow') return null;
+    const rules = Array.isArray(entry['rules']) ? entry['rules'] : [];
+    const parts = rules
+      .map((rule): string | undefined => {
+        if (typeof rule !== 'object' || rule === null) return undefined;
+        const ruleContent = (rule as Record<string, unknown>)['ruleContent'];
+        const toolName = (rule as Record<string, unknown>)['toolName'];
+        if (typeof ruleContent === 'string' && ruleContent.length > 0) return ruleContent;
+        return typeof toolName === 'string' && toolName.length > 0 ? toolName : undefined;
+      })
+      .filter((s): s is string => s !== undefined);
+    if (parts.length === 0) return null;
+    const suffix = entry['destination'] === 'session' ? ' (this session)' : '';
+    return truncateLabel(`Yes, always allow: ${parts.join(', ')}${suffix}`);
+  }
+  if (type === 'addDirectories') {
+    const directories = Array.isArray(entry['directories'])
+      ? entry['directories'].filter((d): d is string => typeof d === 'string' && d.length > 0)
+      : [];
+    if (directories.length === 0) return null;
+    return truncateLabel(`Yes, allow directory ${directories.join(', ')}`);
+  }
+  if (type === 'setMode') {
+    const mode = entry['mode'];
+    if (typeof mode !== 'string' || mode.length === 0) return null;
+    return truncateLabel(`Yes, switch to ${mode} mode`);
+  }
+  return null;
+}
+
+/** Result of {@link optionsFromSuggestions}: the options to render, and
+ *  whether they are the honest fallback rather than a real derived set. */
+export interface PermissionOptionsResult {
+  readonly options: QuestionOption[];
+  /** True when `options` is the {@link DEFAULT_PERMISSION_OPTIONS} fallback
+   *  (#718): no usable suggestion contributed a middle option. Threaded onto
+   *  the emitted `Question` so the tracker's merge policy never lets this
+   *  bare fallback overwrite a concrete PTY-parsed set of options. */
+  readonly isFallback: boolean;
+}
+
+/**
+ * Build options from a PermissionRequest's `permission_suggestions` (#718).
+ * Two shapes:
+ *   - Legacy: >= 2 plain string labels (e.g. Edit's `["Yes","Always","No"]`)
+ *     map directly to options, unchanged since #574.
+ *   - Structured (Claude Code >= ~2.0.54): each USABLE entry (`addRules`
+ *     with `behavior:"allow"`, `addDirectories`, `setMode`) becomes ONE
+ *     middle option between a plain [Yes] and [No]; entries this card
+ *     cannot safely render as a one-tap "yes" are skipped (see
+ *     {@link labelForStructuredSuggestion}). Capped at
+ *     {@link MAX_PERMISSION_OPTIONS} total — the first usable suggestions
+ *     are kept, the rest dropped with a warning.
+ * With NO usable suggestions of either shape, the honest Yes/No fallback
+ * substitutes (`isFallback: true`) instead of a fabricated 3-set.
  * Exported so the mapping is unit-testable independent of the bridge.
  */
-export function optionsFromSuggestions(suggestions: unknown): QuestionOption[] {
+export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsResult {
   const stringSuggestions = Array.isArray(suggestions)
     ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
     : [];
-  if (stringSuggestions.length < 2) return [...DEFAULT_PERMISSION_OPTIONS];
-  return stringSuggestions.map((suggestion, idx) => {
-    const lower = suggestion.toLowerCase();
-    const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
-    const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
-    return { label: suggestion, value: String(idx + 1), isRecommended: idx === 0, isYes, isNo };
+  if (stringSuggestions.length >= 2) {
+    const options = stringSuggestions.map((suggestion, idx) => {
+      const lower = suggestion.toLowerCase();
+      const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
+      const isNo = lower.startsWith('no') || lower === 'deny' || lower === 'reject';
+      return { label: suggestion, value: String(idx + 1), isRecommended: idx === 0, isYes, isNo };
+    });
+    return { options, isFallback: false };
+  }
+
+  const entries = Array.isArray(suggestions) ? suggestions : [];
+  const middleLabels: string[] = [];
+  const suggestionIndices: number[] = [];
+  entries.forEach((entry, idx) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return;
+    const label = labelForStructuredSuggestion(entry as Record<string, unknown>);
+    if (label === null) {
+      console.debug(
+        `[HookEventBridge] Skipping unusable permission_suggestions[${idx}] (type=${String((entry as Record<string, unknown>)['type'])})`,
+      );
+      return;
+    }
+    middleLabels.push(label);
+    suggestionIndices.push(idx);
   });
+
+  if (middleLabels.length === 0) {
+    return { options: [...DEFAULT_PERMISSION_OPTIONS], isFallback: true };
+  }
+
+  const maxMiddle = MAX_PERMISSION_OPTIONS - 2; // Yes + No are always present
+  if (middleLabels.length > maxMiddle) {
+    console.warn(
+      `[HookEventBridge] ${middleLabels.length} usable permission_suggestions exceed the ${MAX_PERMISSION_OPTIONS}-option card budget; keeping the first ${maxMiddle}, dropping ${middleLabels.length - maxMiddle}`,
+    );
+  }
+  const keptLabels = middleLabels.slice(0, maxMiddle);
+  const keptIndices = suggestionIndices.slice(0, maxMiddle);
+
+  let value = 1;
+  const options: QuestionOption[] = [
+    { label: 'Yes', value: String(value++), isRecommended: true, isYes: true, isNo: false },
+    ...keptLabels.map((label, i) => ({
+      label,
+      value: String(value++),
+      isRecommended: false,
+      isYes: true,
+      isNo: false,
+      suggestionIndex: keptIndices[i],
+    })),
+    { label: 'No', value: String(value++), isRecommended: false, isYes: false, isNo: true },
+  ];
+  return { options, isFallback: false };
 }
 
 export class HookEventBridge {
@@ -196,6 +324,10 @@ export class HookEventBridge {
         // Generic fallback: the tracker must let a richer PermissionRequest
         // for the same agent win over this text/options (#574).
         source: 'notification',
+        // #718: this generic Notification never carries permission_suggestions
+        // at all, so it is always the honest Yes/No fallback — never let it
+        // overwrite a PTY-parsed question's own options in the tracker merge.
+        optionsAreFallback: true,
       };
       this.events.onQuestion(question);
       this.events.onStatusChange('waiting');
@@ -263,6 +395,7 @@ export class HookEventBridge {
 
     let promptText: string;
     let options: QuestionOption[];
+    let optionsAreFallback = false;
     if (toolQuestion) {
       // Already phrased as a question, so no "Allow" prefix. A subagent prompt
       // still names the agent so the user knows WHO is asking.
@@ -277,7 +410,9 @@ export class HookEventBridge {
       // A subagent prompt names the agent, e.g.
       // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
       promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
-      options = optionsFromSuggestions(input.permission_suggestions);
+      const built = optionsFromSuggestions(input.permission_suggestions);
+      options = built.options;
+      optionsAreFallback = built.isFallback;
     }
 
     const questionId = generateId();
@@ -291,6 +426,9 @@ export class HookEventBridge {
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
+      // #718: lets the tracker's merge policy keep a PTY-parsed question's own
+      // options instead of overwriting them with this bare fallback set.
+      ...(optionsAreFallback ? { optionsAreFallback: true } : {}),
       // #626: surface the full AskUserQuestion structure (all sub-questions with
       // headers, descriptions, multiSelect) so the client can render it properly.
       // text/options above still mirror questions[0] for back-compat.

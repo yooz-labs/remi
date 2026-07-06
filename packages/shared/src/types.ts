@@ -216,6 +216,19 @@ export interface Question {
    * escalations with no model summary.
    */
   readonly summary?: string | undefined;
+
+  /**
+   * True when `options` is the daemon's honest Yes/No fallback (#718): Claude
+   * Code sent no USABLE `permission_suggestions` (none at all, or every entry
+   * was filtered out — deny/ask-behavior, an unsupported type), so the daemon
+   * substituted the plain binary set instead of a real suggestion-derived
+   * card. Consumed by `QuestionPresenceTracker.onPTYPromptVisible`'s merge
+   * policy: a fallback set must NOT overwrite a PTY-parsed question's own
+   * (possibly richer) options, unlike a real hook-derived set which always
+   * wins. Absent/false for every other question, including the legacy
+   * plain-string suggestion path.
+   */
+  readonly optionsAreFallback?: boolean | undefined;
 }
 
 /**
@@ -272,6 +285,19 @@ export interface QuestionOption {
    * Absent for plain permission options (Yes / Yes, always / No).
    */
   readonly description?: string | undefined;
+
+  /**
+   * Index into the ORIGINAL `permission_suggestions` array this option was
+   * derived from (#718). Present only for a structured-suggestion-derived
+   * "yes" option (e.g. "Yes, always allow: rm -rf ..."); absent for the
+   * plain Yes/No options and for the legacy plain-string suggestion path.
+   * The daemon threads this back through the answer path so picking the
+   * option can resolve a held PermissionRequest hook with
+   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}` —
+   * the real "Yes, always" the Claude Code hooks docs describe, instead of a
+   * bare `allow` that persists nothing.
+   */
+  readonly suggestionIndex?: number | undefined;
 }
 
 /**

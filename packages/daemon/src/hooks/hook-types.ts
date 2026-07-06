@@ -69,11 +69,34 @@ export interface SessionStartHookInput extends HookCommonInput {
 // --- 20 new events ---
 
 /**
- * One entry in `permission_suggestions`. Strings are the binary-label
- * shape (e.g. Edit's `["Yes", "Always", "No"]`). Objects carry tool-
- * specific structured options discriminated by `type` — for example
- * `{type:"addDirectories",...}` or `{type:"setMode",...}`. The wider
- * shape is open: callers must treat unknown `type` values as opaque.
+ * One entry in `permission_suggestions`. Strings are the legacy binary-label
+ * shape (e.g. Edit's `["Yes", "Always", "No"]`).
+ *
+ * Objects are a "permission update entry" (ground truth:
+ * code.claude.com/docs/en/hooks, #718) — the SAME shape Claude Code's own
+ * permission-update API uses, discriminated by `type`:
+ *   - `{type:"addRules", rules:[{toolName, ruleContent?}], behavior:"allow"|
+ *     "deny"|"ask", destination}` — add a rule; only `behavior:"allow"` is a
+ *     "yes"-shaped suggestion the daemon can render as a one-tap option.
+ *   - `{type:"replaceRules"|"removeRules", ...same shape}` — narrows/resets
+ *     rules; never a "yes" variant, always skipped.
+ *   - `{type:"setMode", mode, destination}` — switch permission mode (e.g.
+ *     "plan", "acceptEdits").
+ *   - `{type:"addDirectories"|"removeDirectories", directories:[...],
+ *     destination}` — grant/revoke directory access; only `addDirectories`
+ *     is a "yes" variant.
+ *   - `destination` is `"session" | "localSettings" | "projectSettings" |
+ *     "userSettings"` on every variant.
+ *
+ * `optionsFromSuggestions` (hook-event-bridge.ts) is the single place that
+ * interprets this union into option labels; an answer that picks a
+ * suggestion-derived option round-trips the ORIGINAL entry back to Claude
+ * Code as `hookSpecificOutput.decision.updatedPermissions` (real "Yes,
+ * always", #718) — per the docs, "a hook can echo one of the
+ * permission_suggestions it received as its own updatedPermissions output,
+ * which is equivalent to the user selecting that 'always allow' option in
+ * the dialog." The wider shape is open: callers must treat unknown `type`
+ * values as opaque and skip them rather than guess.
  */
 export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
 
