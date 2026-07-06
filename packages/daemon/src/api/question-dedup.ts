@@ -94,11 +94,22 @@ function fingerprint(text: string): string {
  * differ between the two sources (hook builds "Allow Bash: ls", PTY extracts
  * whatever appears above the numbered list), so structural matching is safer
  * than text dedup alone.
+ *
+ * Primary signal (#718 review): `question.optionsAreFallback`, when present,
+ * is authoritative — trust it either way, mirroring the same fix in the web
+ * client's `question-merge.ts`. The label heuristic below only runs when the
+ * flag is absent (a question from a caller that doesn't thread it through),
+ * and is inherently approximate for the reason its own doc comment on the
+ * shared type explains: once the fallback shrank to a plain 2-option Yes/No,
+ * a genuine "Yes"/"No"-labelled question can coincidentally match it by
+ * label alone.
  */
 export function looksLikeDefaultPermissionQuestion(question: {
   options: ReadonlyArray<{ label: string }>;
   allowsFreeText: boolean;
+  optionsAreFallback?: boolean | undefined;
 }): boolean {
+  if (question.optionsAreFallback !== undefined) return question.optionsAreFallback;
   if (question.allowsFreeText) return false;
   if (question.options.length !== DEFAULT_PERMISSION_LABELS.length) return false;
   const labels = question.options.map((o) => (o.label ?? '').toLowerCase().trim());

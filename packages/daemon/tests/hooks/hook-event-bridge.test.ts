@@ -543,6 +543,47 @@ describe('HookEventBridge', () => {
       expect(label.endsWith('...')).toBe(true);
     });
 
+    it('disambiguates two suggestions that truncate to an identical label (#718 review)', () => {
+      // Two long commands sharing the first ~90 characters would otherwise
+      // both truncate to the SAME 80-char label. That is not just cosmetic:
+      // the lock-screen relay answers by LABEL, and resolveOption matches an
+      // answer to its option by label first, so identical labels would let
+      // an answer resolve to the WRONG suggestionIndex and echo the wrong
+      // permission_suggestions entry back to Claude Code.
+      const sharedPrefix = 'echo '.repeat(20); // 100 chars, identical for both
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: {},
+        permission_suggestions: [
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: `${sharedPrefix}one` }],
+            behavior: 'allow',
+          },
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: `${sharedPrefix}two` }],
+            behavior: 'allow',
+          },
+        ],
+      } as PermissionRequestHookInput);
+
+      const opts = questions[0]?.options ?? [];
+      expect(opts).toHaveLength(4);
+      // Distinct labels: the 2nd occurrence gets an ordinal suffix.
+      expect(opts[1]?.label).not.toBe(opts[2]?.label);
+      expect(opts[2]?.label.endsWith(' (2)')).toBe(true);
+      // Each label still maps back to the CORRECT original suggestion.
+      expect(opts[1]?.suggestionIndex).toBe(0);
+      expect(opts[2]?.suggestionIndex).toBe(1);
+      // Total length still fits the cap even with the ordinal suffix appended.
+      expect(opts[2]?.label.length).toBeLessThanOrEqual(80);
+    });
+
     it('unknown/undocumented suggestion types are skipped, falling back to Yes/No', () => {
       const { bridge, questions } = createBridge();
 

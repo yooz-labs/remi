@@ -93,6 +93,31 @@ function truncateLabel(label: string): string {
 }
 
 /**
+ * Disambiguate duplicate labels after truncation (#718 review). Two
+ * suggestions that share their first ~80 characters (e.g. two long `Bash`
+ * commands with the same prefix) would otherwise truncate to the IDENTICAL
+ * label. That is not just cosmetic: the lock-screen relay posts back the
+ * option's LABEL, and `resolveOption` (input-events.ts) matches an incoming
+ * answer by label before falling back to value, so a duplicate label would
+ * let the answer resolve to the WRONG option — echoing a different
+ * `permission_suggestions` entry (`suggestionIndex`) than the one the user
+ * actually picked. Appends " (2)", " (3)", ... to the 2nd+ occurrence of a
+ * duplicate, re-truncating the base so the total still fits the cap.
+ */
+function disambiguateLabels(labels: readonly string[]): string[] {
+  const seenCounts = new Map<string, number>();
+  return labels.map((label) => {
+    const occurrence = (seenCounts.get(label) ?? 0) + 1;
+    seenCounts.set(label, occurrence);
+    if (occurrence === 1) return label;
+    const suffix = ` (${occurrence})`;
+    const maxBaseLength = SUGGESTION_LABEL_MAX - suffix.length;
+    const base = label.length > maxBaseLength ? label.slice(0, maxBaseLength) : label;
+    return `${base}${suffix}`;
+  });
+}
+
+/**
  * Build the label for ONE usable structured `permission_suggestions` entry
  * (#718), or null when the entry is not a "yes"-shaped suggestion this card
  * can safely render as a one-tap option: a deny/ask-behavior `addRules`, a
@@ -200,7 +225,9 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
       `[HookEventBridge] ${middleLabels.length} usable permission_suggestions exceed the ${MAX_PERMISSION_OPTIONS}-option card budget; keeping the first ${maxMiddle}, dropping ${middleLabels.length - maxMiddle}`,
     );
   }
-  const keptLabels = middleLabels.slice(0, maxMiddle);
+  // Disambiguate AFTER slicing to the cap (only the displayed labels need to
+  // be distinct) and BEFORE the labels are assigned to options / suggestionIndex.
+  const keptLabels = disambiguateLabels(middleLabels.slice(0, maxMiddle));
   const keptIndices = suggestionIndices.slice(0, maxMiddle);
 
   let value = 1;
@@ -388,9 +415,10 @@ export class HookEventBridge {
 
     // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
     // question + option labels in tool_input; surface those instead of the
-    // generic "Allow <tool>" + Yes / Yes, always / No (#597). The options are
-    // picks (1-based value, never isYes/isNo) so a user answer releases the held
-    // hook and submits the matching digit to Claude's native numbered prompt.
+    // generic "Allow <tool>" + whatever optionsFromSuggestions derives (or the
+    // honest Yes/No 2-set, #718; #597). The options are picks (1-based value,
+    // never isYes/isNo) so a user answer releases the held hook and submits
+    // the matching digit to Claude's native numbered prompt.
     const toolQuestion = extractToolQuestion(toolName, input.tool_input);
 
     let promptText: string;

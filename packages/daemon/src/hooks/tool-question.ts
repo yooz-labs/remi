@@ -2,9 +2,10 @@
  * Extract the real user-facing question + options a tool poses in its
  * PermissionRequest, for tools whose escalation is genuinely the user's decision
  * (AskUserQuestion, ExitPlanMode). Without this the `HookEventBridge` falls back
- * to "Allow <tool>" + the default Yes / Yes, always / No, which is wrong for a
- * multi-option plan/design question (#597) — the user sees a generic prompt and
- * the wrong choices on both the in-app card and the lock-screen notification.
+ * to "Allow <tool>" + whatever `optionsFromSuggestions` derives (or the honest
+ * Yes/No 2-set, #718), which is wrong for a multi-option plan/design question
+ * (#597) — the user sees a generic prompt and the wrong choices on both the
+ * in-app card and the lock-screen notification.
  *
  * The options are PICKS: `value` is the 1-based index and `isYes`/`isNo` are
  * always false. That routes a user's answer through the daemon's release-hook +

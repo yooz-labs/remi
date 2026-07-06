@@ -324,6 +324,14 @@ export class QuestionPresenceTracker {
             text: hookRecord.text || ptyQuestion.text,
             options: useHookOptions ? [...hookRecord.options] : [...ptyQuestion.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
+            // #718 review: `optionsAreFallback` must describe whichever
+            // `options` ended up on the merged question, not silently inherit
+            // whatever `ptyQuestion` happened to carry from the `...ptyQuestion`
+            // spread above (a different, unrelated signal). When the hook's
+            // options won, mirror the hook record's own flag (true, or
+            // undefined for a real derived set); when the PTY's options won,
+            // they are concrete by construction, so this is always false.
+            optionsAreFallback: useHookOptions ? hookRecord.optionsAreFallback : false,
             // #626/#628: the PTY base carries none of the structured fields, so a
             // merge must preserve the hook record's AskUserQuestion structure +
             // lock-screen summary — else a merged card loses questions[]/summary.

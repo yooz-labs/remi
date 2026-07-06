@@ -216,19 +216,52 @@ describe('looksLikeDefaultPermissionQuestion', () => {
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
   });
 
-  test('a genuine 2-option Yes/No is indistinguishable from the fallback by label alone (#718)', () => {
-    // This heuristic operates on a bare {options, allowsFreeText} shape with
-    // no `optionsAreFallback` signal (unlike the web client's question-merge
-    // guard, which has that field to disambiguate) — a real PTY-parsed [y/n]
-    // prompt necessarily matches too. Documented tradeoff, not a design goal:
-    // PushDedup only uses this to decide whether an equal-or-lower-rank
-    // duplicate within the window should suppress, which is the desired
-    // outcome for two emissions of the very same on-screen 2-option prompt.
+  test('WITH NO optionsAreFallback signal, a genuine 2-option Yes/No is indistinguishable from the fallback by label alone (#718)', () => {
+    // When the caller does not thread `optionsAreFallback` through at all
+    // (the flag is absent, not `false`), this heuristic falls back to the
+    // label match — a real PTY-parsed [y/n] prompt necessarily matches too.
+    // Documented tradeoff, not a design goal: PushDedup only uses this to
+    // decide whether an equal-or-lower-rank duplicate within the window
+    // should suppress, which is the desired outcome for two emissions of the
+    // very same on-screen 2-option prompt.
     const question = {
       options: [{ label: 'Yes' }, { label: 'No' }],
       allowsFreeText: false,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
+  });
+
+  describe('optionsAreFallback is authoritative when present (#718 review)', () => {
+    test('optionsAreFallback: true wins even when the labels look nothing like the default', () => {
+      const question = {
+        options: [{ label: 'Refactor' }, { label: 'Patch' }],
+        allowsFreeText: false,
+        optionsAreFallback: true,
+      };
+      expect(looksLikeDefaultPermissionQuestion(question)).toBe(true);
+    });
+
+    test('optionsAreFallback: false overrides a label match that would otherwise say "default"', () => {
+      // The exact case the flag exists to fix: a genuine 2-option Yes/No
+      // question (e.g. from the PTY y/n parser, which sets this explicitly)
+      // must NOT be treated as the bland fallback merely because its labels
+      // happen to read Yes/No.
+      const question = {
+        options: [{ label: 'Yes' }, { label: 'No' }],
+        allowsFreeText: false,
+        optionsAreFallback: false,
+      };
+      expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
+    });
+
+    test('optionsAreFallback: false wins even over a 3-option shape (length check never runs)', () => {
+      const question = {
+        options: [{ label: 'Yes' }, { label: 'Maybe' }, { label: 'No' }],
+        allowsFreeText: false,
+        optionsAreFallback: false,
+      };
+      expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
+    });
   });
 
   test('does not match a 3-option suggestion-derived set (#718)', () => {

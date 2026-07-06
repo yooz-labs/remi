@@ -10,13 +10,18 @@ function opt(label: string): QuestionOption {
   return { label, value: label, isRecommended: false, isYes: false, isNo: false };
 }
 
-function q(options: readonly string[], allowsFreeText = false): Question {
+function q(
+  options: readonly string[],
+  allowsFreeText = false,
+  optionsAreFallback?: boolean,
+): Question {
   return {
     id: 'q-id',
     text: 'prompt text',
     options: options.map(opt),
     allowsFreeText,
     isAnswered: false,
+    ...(optionsAreFallback !== undefined ? { optionsAreFallback } : {}),
   };
 }
 
@@ -138,5 +143,18 @@ describe('PushDedup', () => {
     expect(dedup.shouldPush(q(editStyleTwoSet))).toBe(true);
     t += 100;
     expect(dedup.shouldPush(q(defaultTwoSet))).toBe(false);
+  });
+
+  test('an explicit optionsAreFallback: false is authoritative over the label match (#718 review)', () => {
+    // Without the flag, a genuine Yes/No question is indistinguishable from
+    // the daemon's own fallback (both look "default"-shaped by label). A
+    // caller that KNOWS this is a real question (e.g. the PTY y/n parser)
+    // marks it optionsAreFallback: false, so it fires as an upgrade over a
+    // preceding real fallback push instead of being suppressed as "same shape".
+    let t = 1000;
+    const dedup = new PushDedup(5000, () => t);
+    expect(dedup.shouldPush(q(defaultTwoSet, false, true))).toBe(true);
+    t += 100;
+    expect(dedup.shouldPush(q(['Yes', 'No'], false, false))).toBe(true);
   });
 });

@@ -41,6 +41,7 @@ import {
   resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
+import { mapQuestionToUIQuestion } from '@/lib/question-mapping';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
@@ -54,7 +55,6 @@ import type {
   UIBullet,
   UIMessage,
   UIQuestion,
-  UIQuestionOption,
   UISession,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
@@ -777,48 +777,6 @@ function App() {
           break;
         }
         lastQuestionIdRef.current = q.id;
-        // Map daemon Question to UIQuestion.
-        // Use yes_no ONLY for exactly 2 options with clear yes+no.
-        // Use multi_option for 3+ options (even if they include yes/no).
-        // Use numbered for options without yes/no semantics.
-        let questionType: UIQuestion['type'] = 'free_text';
-        if (q.options.length > 0) {
-          if (q.options.length === 2) {
-            const hasYes = q.options.some((o) => o.isYes);
-            const hasNo = q.options.some((o) => o.isNo);
-            questionType = hasYes && hasNo ? 'yes_no' : 'multi_option';
-          } else {
-            // 3+ options: always show all of them
-            const hasYesNo = q.options.some((o) => o.isYes || o.isNo);
-            questionType = hasYesNo ? 'multi_option' : 'numbered';
-          }
-        }
-
-        // Build structured options with full metadata
-        const structuredOptions: UIQuestionOption[] = q.options.map((o) => ({
-          label: o.label,
-          value: o.value,
-          isYes: o.isYes || undefined,
-          isNo: o.isNo || undefined,
-          isRecommended: o.isRecommended || undefined,
-          description: o.description || undefined,
-        }));
-
-        // #626: carry the full AskUserQuestion structure (headers, per-option
-        // descriptions, multiSelect) so the card can render it properly.
-        const uiQuestions: UIQuestion['questions'] = q.questions?.map((step) => ({
-          ...(step.header ? { header: step.header } : {}),
-          text: step.text,
-          multiSelect: step.multiSelect,
-          options: step.options.map((o) => ({
-            label: o.label,
-            value: o.value,
-            isYes: o.isYes || undefined,
-            isNo: o.isNo || undefined,
-            isRecommended: o.isRecommended || undefined,
-            description: o.description || undefined,
-          })),
-        }));
 
         // sessionId is mandatory on the wire now (#437); never fall back to
         // the active session (that cross-contaminated when another session or
@@ -828,21 +786,10 @@ function App() {
           console.warn('[App] Dropping question with no sessionId');
           break;
         }
+        // Map daemon Question to UIQuestion (pure function, unit-tested in
+        // lib/question-mapping.test.ts).
+        const uiQuestion = mapQuestionToUIQuestion(q, questionSessionId);
         const questionAgentId = q.agentId;
-        const uiQuestion: UIQuestion = {
-          id: q.id,
-          sessionId: questionSessionId,
-          type: questionType,
-          prompt: q.text,
-          options: q.options.length > 0 ? q.options.map((o) => o.label) : undefined,
-          structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
-          timestamp: new Date().toISOString(),
-          agentId: questionAgentId,
-          ...(q.kind ? { kind: q.kind } : {}),
-          ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
-          ...(q.submitLabel ? { submitLabel: q.submitLabel } : {}),
-          ...(q.optionsAreFallback ? { optionsAreFallback: true } : {}),
-        };
         const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {
           // Richer-wins guard (#396), scoped to this agent's slot. The daemon

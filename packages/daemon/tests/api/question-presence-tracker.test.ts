@@ -498,6 +498,47 @@ describe('QuestionPresenceTracker', () => {
         'Yes, and add to allowlist',
         'No, ask every time',
       ]);
+      // The merged question's own flag must describe what actually won: the
+      // PTY's options, which are concrete (#718 review).
+      expect(pushes[0]?.optionsAreFallback).toBe(false);
+    });
+
+    it('overrides a stale optionsAreFallback the PTY question itself happened to carry', () => {
+      // The PTY base is spread first (`...ptyQuestion`), so its OWN
+      // optionsAreFallback must not leak through when the hook's options win
+      // (#718 review) — the merged flag must reflect the hook record, not
+      // whatever the PTY parser separately decided about ITS OWN options.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      const structuredHook: Question = {
+        ...makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'),
+        options: [
+          makeOption('Yes', '1', { isYes: true, isRecommended: true }),
+          makeOption('Yes, always allow: rm -rf /tmp/foo', '2', {
+            isYes: true,
+            suggestionIndex: 0,
+          }),
+          makeOption('No', '3', { isNo: true }),
+        ],
+        // Real derived set: no optionsAreFallback flag.
+      };
+      tracker.recordPendingHook(structuredHook);
+
+      const ptyQ: Question = {
+        ...makePTYQuestion('Do you want to proceed?'),
+        optionsAreFallback: false,
+      };
+      tracker.onPTYPromptVisible(ptyQ);
+
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
+        'Yes',
+        'Yes, always allow: rm -rf /tmp/foo',
+        'No',
+      ]);
+      // The hook's options won and the hook record has no fallback flag, so
+      // the merged question must not carry `false` (or any stale value)
+      // leaked from the PTY base.
+      expect(pushes[0]?.optionsAreFallback).toBeUndefined();
     });
 
     it('a suggestion-derived (non-fallback) hook record still wins over the PTY options', () => {
@@ -527,6 +568,7 @@ describe('QuestionPresenceTracker', () => {
         'No',
       ]);
       expect(pushes[0]?.options[1]?.suggestionIndex).toBe(0);
+      expect(pushes[0]?.optionsAreFallback).toBeUndefined();
     });
 
     it('a fallback hook record keeps its own options when the PTY question has none', () => {
@@ -547,6 +589,9 @@ describe('QuestionPresenceTracker', () => {
 
       // No PTY options to prefer: the hook's fallback is still better than nothing.
       expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+      // The hook's own options won (no PTY options to prefer), so the merged
+      // flag mirrors the hook record's fallback flag.
+      expect(pushes[0]?.optionsAreFallback).toBe(true);
     });
   });
 
