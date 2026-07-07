@@ -150,6 +150,89 @@ describe('Model B hold over a real HookServer (#573)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({}); // passthrough = bare {}
   });
+
+  test('#733: hold timeout fires onHoldTimeout once, then fails open to passthrough', async () => {
+    // Dedicated gate/server with a FAST hold so the timeout path runs for real.
+    const timeoutCue: UUID[] = [];
+    let qid: UUID | undefined;
+    const fastGate = new AutoApproveGate(
+      {
+        service: evaluator(escalate),
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          qid = generateId();
+          return qid;
+        },
+        onHoldTimeout: (id) => timeoutCue.push(id),
+        holdMs: 80,
+        alwaysEscalateTools: new Set<string>(),
+      },
+      SID,
+    );
+    const fastServer = new HookServer({ port: 0 });
+    fastServer.setPermissionResolver((input) => fastGate.resolvePermission(input));
+    fastServer.start();
+    try {
+      const res = await fetch(fastServer.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: permissionBody(),
+      });
+      // The hold expired unanswered: handoff cue fired exactly once with the
+      // held question's id, BEFORE the fail-open resolved the hook to
+      // passthrough (bare {}).
+      expect(await res.json()).toEqual({});
+      expect(qid).toBeDefined();
+      expect(timeoutCue).toEqual([qid as UUID]);
+    } finally {
+      fastServer.stop();
+    }
+  });
+
+  test('#733: an answered hold never fires onHoldTimeout', async () => {
+    const timeoutCue: UUID[] = [];
+    let qid: UUID | undefined;
+    const cueGate = new AutoApproveGate(
+      {
+        service: evaluator(escalate),
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          qid = generateId();
+          return qid;
+        },
+        onHoldTimeout: (id) => timeoutCue.push(id),
+        holdMs: 120,
+        alwaysEscalateTools: new Set<string>(),
+      },
+      SID,
+    );
+    const cueServer = new HookServer({ port: 0 });
+    cueServer.setPermissionResolver((input) => cueGate.resolvePermission(input));
+    cueServer.start();
+    try {
+      const post = fetch(cueServer.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: permissionBody(),
+      });
+      await waitFor(() => qid !== undefined);
+      cueGate.resolveHeld(qid as UUID, 'allow');
+      const body = (await (await post).json()) as {
+        hookSpecificOutput?: { decision?: { behavior?: string } };
+      };
+      expect(body.hookSpecificOutput?.decision?.behavior).toBe('allow');
+      // Give the (cancelled) hold timer window a chance to elapse: the cue must
+      // stay silent because the hold was answered, not timed out.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(timeoutCue).toEqual([]);
+    } finally {
+      cueServer.stop();
+    }
+  });
 });
 
 /** Poll `cond` up to ~1s; throw if it never becomes true (real timing, no mock). */

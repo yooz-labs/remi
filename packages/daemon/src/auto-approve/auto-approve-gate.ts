@@ -210,6 +210,15 @@ export interface AutoApproveGateDeps {
    *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
    *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
+  /** Called when a HELD question's hold-timeout expires unanswered, JUST BEFORE
+   *  it fails open to passthrough (#733). Fired only on the TIMEOUT path — never
+   *  on the undeliverable fail-open (#603 delivery gate), where the push channel
+   *  is already known broken and a handoff push would be pointless. The question
+   *  is still registered in sessionRegistry when this fires, so the callback can
+   *  read its text to build a "moved to the terminal" handoff notification.
+   *  Without it, the timeout is SILENT on the phone: the card is dismissed and
+   *  nothing says the prompt now waits in the terminal. Throw-safe (safeCue). */
+  onHoldTimeout?: (questionId: UUID) => void;
   /** Called when the permission was auto-approved/denied silently (inject
    *  succeeded; the user never sees it). Drives the terminal "done" cue. #513.
    *  `ctx.isSubagent` (#711): same client-broadcast-only skip as `onEvalStart`
@@ -640,6 +649,14 @@ export class AutoApproveGate {
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
+        // #733: tell the phone the prompt is MOVING to the terminal before the
+        // card is dismissed — while the question is still in sessionRegistry so
+        // the handoff push can carry its text. Guarded on the hold still being
+        // live so an already-answered/cancelled hold never fires a stale
+        // handoff (failOpenHeld below no-ops the same way).
+        if (this.pendingHolds.has(qid)) {
+          this.safeCueWithArg('onHoldTimeout', this.deps.onHoldTimeout, qid);
+        }
         this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} timed out -> passthrough`);
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;

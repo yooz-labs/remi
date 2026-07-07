@@ -474,6 +474,58 @@ export class NotificationDispatcher {
   }
 
   /**
+   * Alert push telling the user a held escalation TIMED OUT and its prompt has
+   * moved to the terminal (#733). Fired by the gate's `onHoldTimeout` cue just
+   * before the hold fails open, while the question is still registered — so the
+   * body can carry the actual ask. Without this, a timeout is silent on the
+   * phone: the card's dismissal collapses it away and nothing says the agent is
+   * now blocked on a native terminal prompt.
+   *
+   * Deliberate differences from `maybePush`:
+   *  - always pushes (no attached-client skip, no dedup): this is a one-shot
+   *    state-change notice, and an attached client only sees the card VANISH;
+   *  - no category/options/dynOptions: there is nothing to answer from the
+   *    lock screen anymore — tapping opens the app;
+   *  - collapse key is `handoff-<questionId>`, NOT the question id, so the
+   *    original card's quiet dismissal (collapse-id = question id) cannot
+   *    collapse this notice away.
+   */
+  pushHoldTimeoutHandoff(questionSessionId: UUID, questionId: UUID): void {
+    const { deviceTokens, pushConfig, sessionRegistry } = this.deps;
+    if (deviceTokens.size === 0) return;
+    const session = sessionRegistry.getSession(this.sessionId);
+    const question = session?.currentQuestions.get(questionId);
+    const sessionName = session?.name || 'Agent';
+    const ask =
+      normalizeNotificationText(question?.summary || question?.text || '') ||
+      'a permission request';
+    const title = `${sessionName}: answer in the terminal`.slice(0, TITLE_MAX);
+    const body = `Timed out waiting for you — the prompt moved to the terminal: ${ask}`.slice(
+      0,
+      BODY_MAX,
+    );
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    for (const dt of deviceTokens.values()) {
+      void this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          title,
+          body,
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId: `handoff-${questionId}`,
+        },
+        {
+          sent: `Push timeout-handoff sent for question ${questionId}`,
+          failed: `Push timeout-handoff failed for question ${questionId}`,
+        },
+      );
+    }
+  }
+
+  /**
    * Fire a QUIET APNS dismissal for a resolved question (#585, P7). Sends a
    * `content-available` push (no alert, no sound) keyed by `apns-collapse-id` =
    * questionId so a suspended device replaces/clears the earlier lock-screen card
