@@ -145,16 +145,18 @@ import { findAvailableTcpPort } from '../session/port-utils.ts';
 import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-registry-file.ts';
 
 /**
- * Start the remi daemon in the background.
+ * Start the remi HUB in the background (#542): a session-less `remi serve`
+ * process. Historically this spawned a one-session `--daemon` that launched
+ * Claude in the caller's cwd; that junk-conversation behavior is gone.
  * Returns the PID of the spawned process.
  */
 export async function startDaemon(opts?: StartOptions): Promise<number> {
   ensureRemiDir();
-  const existingPid = getRunningDaemonPid();
+  const existingPid = getRunningDaemonPid() ?? readStatusFilePidIfAlive();
   if (existingPid) {
     const status = readStatus();
     const port = status?.['wsPort'] ?? 'unknown';
-    console.error(`Daemon already running (PID ${existingPid}, port ${port}).`);
+    console.error(`Hub already running (PID ${existingPid}, port ${port}).`);
     console.error('Use `remi stop` to stop it first.');
     process.exit(1);
   }
@@ -173,8 +175,11 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
     daemonPort = freePort;
   }
 
+  // `remi start` launches the session-less HUB (#542), not a session daemon:
+  // no Claude process is spawned in this cwd, no conversation appears in the
+  // app. Sessions are created from the app or `remi new`.
   const { command, baseArgs } = resolveRemiCommand();
-  const spawnArgs = [...baseArgs, '--daemon', '--port', String(daemonPort)];
+  const spawnArgs = [...baseArgs, 'serve', '--port', String(daemonPort)];
   if (opts?.extraArgs) {
     spawnArgs.push(...opts.extraArgs);
   }
@@ -203,20 +208,8 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
     process.exit(1);
   }
 
-  try {
-    const fd = fs.openSync(PID_FILE, 'wx');
-    fs.writeSync(fd, String(pid));
-    fs.closeSync(fd);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-      console.error('Another daemon appears to be starting. Check with `remi status`.');
-    } else {
-      const msg = errorToString(err);
-      console.error(`Failed to write PID file: ${msg}`);
-    }
-    fs.closeSync(logFd);
-    process.exit(1);
-  }
+  // No parent-side PID write: the hub self-writes daemon.pid at boot (#542),
+  // which also covers LaunchAgent-launched hubs that never pass through here.
   child.unref();
   fs.closeSync(logFd);
 
@@ -234,12 +227,17 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
     try {
       process.kill(pid, 0);
     } catch {
-      console.error('Daemon process exited unexpectedly. Check logs:');
+      console.error('Hub process exited unexpectedly. Check logs:');
       console.error(`  ${LOG_FILE}`);
+      // Remove the hub's self-written PID file only if it actually names the
+      // child that just died -- never a concurrently started foreign hub's.
       try {
-        fs.unlinkSync(PID_FILE);
+        const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+        if (Number.parseInt(content, 10) === pid) {
+          fs.unlinkSync(PID_FILE);
+        }
       } catch {
-        // PID file may already be cleaned up
+        // PID file may never have been written or already cleaned up
       }
       process.exit(1);
     }
@@ -247,12 +245,11 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
   }
 
   if (port === 'unknown') {
-    console.log(
-      `Daemon started (PID ${pid}) but did not report its port within ${timeout / 1000}s.`,
-    );
-    console.log('The daemon may still be initializing. Check status with: remi status');
+    console.log(`Hub started (PID ${pid}) but did not report its port within ${timeout / 1000}s.`);
+    console.log('The hub may still be initializing. Check status with: remi status');
   } else {
-    console.log(`Daemon started (PID ${pid}, port ${port}).`);
+    console.log(`Hub started (PID ${pid}, port ${port}).`);
+    console.log('Sessions: create from the app or `remi new`.');
   }
   console.log(`Logs: ${LOG_FILE}`);
   return pid;
