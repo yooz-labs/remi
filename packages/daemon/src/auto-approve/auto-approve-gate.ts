@@ -309,6 +309,15 @@ export class AutoApproveGate {
    * path clears the timer and deletes the entry, so it never leaks.
    */
   private readonly pendingHolds = new Map<UUID, PendingHold>();
+  /**
+   * Held question ids whose notification was CONFIRMED delivered (#603 probe
+   * resolved in_app/pushed). The #733 hold-timeout handoff cue fires only for
+   * these (or when delivery gating is disabled entirely): "timed out waiting
+   * for you" is only meaningful if the user was actually notified — a hold
+   * whose delivery was never confirmed is the undeliverable machinery's
+   * problem, not a handoff. Entries are dropped in `releaseHeld`.
+   */
+  private readonly confirmedDeliveries = new Set<UUID>();
 
   /** Monotonic id stamped on each primary eval (#617), so a held question can be
    *  tied to the exact eval running for it and a manual answer cancels only that
@@ -529,6 +538,7 @@ export class AutoApproveGate {
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
     this.openQuestionSignatures.delete(questionId);
+    this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -652,9 +662,16 @@ export class AutoApproveGate {
         // #733: tell the phone the prompt is MOVING to the terminal before the
         // card is dismissed — while the question is still in sessionRegistry so
         // the handoff push can carry its text. Guarded on the hold still being
-        // live so an already-answered/cancelled hold never fires a stale
-        // handoff (failOpenHeld below no-ops the same way).
-        if (this.pendingHolds.has(qid)) {
+        // live (an answered/cancelled hold never fires a stale handoff;
+        // failOpenHeld below no-ops the same way) AND on the user having been
+        // reachable: either delivery was CONFIRMED (in_app/pushed), or delivery
+        // gating is disabled so there is no confirmation signal at all (legacy
+        // hold — assume the push went out). A hold whose delivery was pending/
+        // failed is the #603 undeliverable machinery's territory — pushing
+        // "timed out waiting for you" at someone who was never notified would
+        // be noise on a channel that is likely broken anyway.
+        const gatingDisabled = (this.deps.deliveryConfirmMs ?? 0) <= 0;
+        if (this.pendingHolds.has(qid) && (gatingDisabled || this.confirmedDeliveries.has(qid))) {
           this.safeCueWithArg('onHoldTimeout', this.deps.onHoldTimeout, qid);
         }
         this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} timed out -> passthrough`);
@@ -728,7 +745,13 @@ export class AutoApproveGate {
         // The hold may already be resolved (user answered, Part-B verdict, or a
         // cancel) — then there is nothing to gate.
         if (!this.pendingHolds.has(qid)) return;
-        if (result !== 'timeout' && isDelivered(result)) return; // confirmed: keep holding
+        if (result !== 'timeout' && isDelivered(result)) {
+          // Confirmed: keep holding — and remember it, so a later hold-timeout
+          // knows the user really WAS notified and a #733 handoff notice is
+          // meaningful (see the cue gate in createHold).
+          this.confirmedDeliveries.add(qid);
+          return;
+        }
         this.onDeliveryUnconfirmed(qid, result);
       })
       .catch((err) => {
@@ -1250,6 +1273,9 @@ export class AutoApproveGate {
    */
   private releaseHeld(questionId: UUID, decision: PermissionDecision): boolean {
     this.openQuestionSignatures.delete(questionId);
+    // #733: unconditional for the same leak reason as the signature delete
+    // above — every hold exit path funnels through here.
+    this.confirmedDeliveries.delete(questionId);
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);

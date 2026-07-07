@@ -1617,6 +1617,12 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
    *  the test controls. `delivery` is what `awaitDelivery` resolves to (or
    *  undefined for "no delivery signal recorded"). `evalNeverSettles` + a
    *  `pushHoldMs` exercise the Part-B early-push path combined with the gate. */
+  // #733 invariant: the timeout-handoff cue must NEVER fire on the
+  // undeliverable fail-open paths (the push channel is already known broken,
+  // so a handoff push would be pointless). Every deliveryGate() wires the cue
+  // into this shared recorder; the fail-open tests assert it stays empty.
+  let holdTimeoutCues: UUID[];
+
   function deliveryGate(opts: {
     delivery: Promise<DeliveryOutcome> | undefined;
     deliveryConfirmMs?: number;
@@ -1650,6 +1656,7 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
         awaitDelivery: () => opts.delivery,
         deliveryConfirmMs: opts.deliveryConfirmMs ?? 0,
         holdUnconfirmedMs: opts.holdUnconfirmedMs ?? 0,
+        onHoldTimeout: (id) => holdTimeoutCues.push(id),
         ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
         alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
       },
@@ -1661,12 +1668,16 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
     registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     escalations = [];
     lastQuestionId = undefined;
+    holdTimeoutCues = [];
     configureLogger({ writeLog: () => {} });
   });
 
   afterEach(async () => {
     __resetLoggerForTests();
     await registry.shutdown();
+    // #733: no delivery-gate fail-open in this block may EVER have fired the
+    // timeout-handoff cue — it belongs exclusively to the hold-timeout path.
+    expect(holdTimeoutCues).toEqual([]);
   });
 
   test('undelivered (failed push) fails the hold open fast, not after hold_timeout', async () => {

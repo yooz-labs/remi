@@ -191,6 +191,48 @@ describe('Model B hold over a real HookServer (#573)', () => {
     }
   });
 
+  test('#733: with delivery gating ON, a CONFIRMED delivery still fires the cue on timeout', async () => {
+    // The cue is gated on the user having been reachable: confirmed delivery
+    // ('pushed') + hold expiry => handoff fires. (The inverse — unconfirmed
+    // delivery never fires it — is pinned by the delivery-gating describe
+    // block's afterEach invariant in auto-approve-gate.test.ts.)
+    const timeoutCue: UUID[] = [];
+    let qid: UUID | undefined;
+    const gatedGate = new AutoApproveGate(
+      {
+        service: evaluator(escalate),
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          qid = generateId();
+          return qid;
+        },
+        onHoldTimeout: (id) => timeoutCue.push(id),
+        holdMs: 120,
+        awaitDelivery: () => Promise.resolve('pushed' as const),
+        deliveryConfirmMs: 5000,
+        alwaysEscalateTools: new Set<string>(),
+      },
+      SID,
+    );
+    const gatedServer = new HookServer({ port: 0 });
+    gatedServer.setPermissionResolver((input) => gatedGate.resolvePermission(input));
+    gatedServer.start();
+    try {
+      const res = await fetch(gatedServer.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: permissionBody(),
+      });
+      expect(await res.json()).toEqual({}); // timed out -> passthrough
+      expect(qid).toBeDefined();
+      expect(timeoutCue).toEqual([qid as UUID]);
+    } finally {
+      gatedServer.stop();
+    }
+  });
+
   test('#733: an answered hold never fires onHoldTimeout', async () => {
     const timeoutCue: UUID[] = [];
     let qid: UUID | undefined;
