@@ -49,23 +49,22 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
 
     func willPresent(notification: UNNotification) -> UNNotificationPresentationOptions {
         // #734: while the app is FOREGROUNDED, iOS presents a push only with
-        // the options returned here — and the previous `wrapped ?? []` meant
-        // question pushes showed NOTHING (no banner, no sound) whenever the
-        // app happened to be open (session list, another session, or the phone
-        // driven via iPhone Mirroring). The daemon-side card arrives over the
-        // WebSocket, but nothing ALERTS the user, so escalations sat unanswered
-        // until the #733 hold timeout. Present question-carrying pushes
-        // (userInfo.questionId — permission cards AND the #733 timeout-handoff
-        // notice) with a real banner; everything else keeps deferring to the
-        // wrapped Capacitor handler.
-        let userInfo = notification.request.content.userInfo
-        if userInfo["questionId"] != nil {
-            if #available(iOS 14.0, *) {
-                return [.banner, .list, .sound]
-            }
-            return [.alert, .sound]
+        // the options returned here — and `wrapped ?? []` meant every Remi
+        // push showed NOTHING (no banner, no sound) whenever the app happened
+        // to be open (session list, another session, or the phone driven via
+        // iPhone Mirroring). #734 first special-cased userInfo.questionId
+        // (permission cards, the #733 timeout-handoff notice), but review of
+        // #738 found the same silence for #672's "unbound Claude session"
+        // informational push, which deliberately carries no questionId (it
+        // isn't answerable). Remi has exactly one push producer (its own
+        // daemon/signaling worker) and every alert-carrying push it sends is
+        // meant to interrupt the user — a quiet dismiss push (#585) carries no
+        // `aps.alert` and never reaches `willPresent` at all. So: always
+        // present with a banner + sound rather than gating on payload shape.
+        if #available(iOS 14.0, *) {
+            return [.banner, .list, .sound]
         }
-        return wrapped?.willPresent(notification: notification) ?? []
+        return [.alert, .sound]
     }
 
     func didReceive(response: UNNotificationResponse) {
@@ -246,20 +245,30 @@ enum RemiNativeStore {
     private static let identityKey = "CapacitorStorage.remi-native-identity"
     private static let routesKey = "CapacitorStorage.remi-native-routes"
 
-    private static func jsonObject(_ key: String) -> Any? {
-        guard let s = UserDefaults.standard.string(forKey: key),
-              let data = s.data(using: .utf8) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data)
-    }
-
     /// Sign `message` with the bridged Ed25519 seed. Returns the base64 signature
     /// + the public key (raw, base64) + fingerprint for the daemon's auth block.
+    /// Distinguishes "never set up" (silent nil, expected pre-onboarding) from a
+    /// corrupt blob / invalid key / signing failure (logged) — mirrors `route()`
+    /// below, so a previously-working device suddenly failing to answer isn't
+    /// indistinguishable from one that was simply never configured.
     static func sign(message: String) -> Auth? {
-        guard let obj = jsonObject(identityKey) as? [String: String],
+        guard let raw = UserDefaults.standard.string(forKey: identityKey) else { return nil }
+        guard let data = raw.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
               let seedB64 = obj["seed"], let pub = obj["publicKey"], let fp = obj["fingerprint"],
-              let seed = Data(base64Encoded: seedB64) else { return nil }
-        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed),
-              let sig = try? key.signature(for: Data(message.utf8)) else { return nil }
+              let seed = Data(base64Encoded: seedB64)
+        else {
+            NSLog("[remi] RemiNativeStore: identity blob is corrupt or unreadable")
+            return nil
+        }
+        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+            NSLog("[remi] RemiNativeStore: identity seed is not a valid Curve25519 key")
+            return nil
+        }
+        guard let sig = try? key.signature(for: Data(message.utf8)) else {
+            NSLog("[remi] RemiNativeStore: failed to sign with stored identity")
+            return nil
+        }
         return Auth(signature: sig.base64EncodedString(), publicKey: pub, fingerprint: fp)
     }
 
