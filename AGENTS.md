@@ -71,6 +71,30 @@ Key directories to know:
 | Happy Coder | No custom relay; delegates to Tailscale / SSH |
 | Muxer (Swift) | Cross-platform; faster development |
 
+## Hub mode (`remi serve` / `remi start`)
+
+Epic #648 phase 1 (#542). The hub is a **session-less supervisor**: it binds
+the well-known port (18765 preferred, 20-port probe), runs the shared services
+(WebSocket, mDNS, relay, Telegram, device tokens), serves the machine's
+session list (`daemonPorts` from `~/.remi/live-sessions/`), and spawns child
+`remi --daemon` session daemons on create-session requests. It **never**
+spawns Claude, never installs Claude hook config in its cwd, and never
+registers itself in live-sessions.
+
+- `remi serve` = foreground hub (the LaunchAgent/systemd entrypoint).
+- `remi start` = detached hub launcher; `remi stop`/`status` manage it.
+  `remi start` no longer creates a Claude session in the cwd.
+- The hub self-writes `~/.remi/daemon.pid`; `remi status`/`stop` fall back to
+  `daemon-status.json` (`mode: "hub"`) when the PID file is missing.
+- Hub-spawned children get `REMI_SPAWNED_CHILD=1` and write per-port
+  `status-<PORT>.json` instead of clobbering the hub's `daemon-status.json`.
+- A session-less daemon answers `hello` with `hello_ack{sessionId: null}`;
+  clients then discover children via the session-list `daemonPorts` broadcast
+  (live-sessions watcher, all modes).
+- `--install` generates a LaunchAgent running `<PATH-resolved remi> serve`
+  with `KeepAlive.SuccessfulExit=false` (clean stop stays stopped; crash
+  exit(1) restarts).
+
 ## Transport Options
 
 | Method | When to use |
