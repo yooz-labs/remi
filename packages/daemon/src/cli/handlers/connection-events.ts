@@ -152,8 +152,12 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         return;
       }
 
-      // No session available.
-      send(connectionId, createError('NO_SESSION', 'No active session available'));
+      // No session available: still ack the connection with a null sessionId
+      // rather than erroring out. This is the normal steady state for a
+      // session-less hub daemon (#542) and also covers the brief startup
+      // window on an ordinary daemon before its primary session is created.
+      send(connectionId, createHelloAck('1.0.0', null));
+      log(`Connection ${connectionId} connected session-less (no active session)`);
     },
 
     onDisconnect: async (connectionId: UUID, reason: string): Promise<void> => {

@@ -437,6 +437,22 @@ describe('Message factory functions', () => {
       expect(msg.serverVersion).toBe('1.0.0');
       expect(msg.sessionId).toBe('session-456');
     });
+
+    test('creates a session-less hello ack (null sessionId, #542 hub)', () => {
+      const msg = createHelloAck('1.0.0', null);
+
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBeNull();
+    });
+
+    test('a session-less hello ack round-trips through serialize/deserialize', () => {
+      const msg = createHelloAck('1.0.0', null);
+      const parsed = deserialize(serialize(msg));
+
+      expect(parsed).not.toBeNull();
+      expect(parsed?.type).toBe('hello_ack');
+      expect((parsed as { sessionId?: unknown } | null)?.sessionId).toBeNull();
+    });
   });
 
   describe('createAgentOutput()', () => {
