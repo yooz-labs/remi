@@ -25,7 +25,7 @@ function ensureRemiDir(): void {
 /**
  * Read the PID file and check whether the process it names is alive.
  * Returns null (and unlinks the file) if the file is missing, malformed, or
- * names a dead process. Extracted from `getRunningDaemonPid` (#542) so a hub
+ * names a dead process. Used by `remi stop`/`status` and by a booting hub
  * process can also probe/clean up the PID file it is about to self-write.
  */
 export function readPidFileLive(): number | null {
@@ -58,14 +58,6 @@ export function readPidFileLive(): number | null {
     }
     return null;
   }
-}
-
-/**
- * Read the daemon PID from the PID file.
- * Returns null if no PID file exists or the process is not running.
- */
-export function getRunningDaemonPid(): number | null {
-  return readPidFileLive();
 }
 
 /**
@@ -153,7 +145,7 @@ import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-regist
  */
 export async function startDaemon(opts?: StartOptions): Promise<number> {
   ensureRemiDir();
-  const existingPid = getRunningDaemonPid() ?? readStatusFilePidIfAlive();
+  const existingPid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (existingPid) {
     const status = readStatus();
     const port = status?.['wsPort'] ?? 'unknown';
@@ -258,7 +250,7 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
 }
 
 export function stopDaemon(): void {
-  const pid = getRunningDaemonPid() ?? readStatusFilePidIfAlive();
+  const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (!pid) {
     console.error('No running daemon found.');
     process.exit(1);
@@ -306,7 +298,7 @@ export function stopDaemon(): void {
 }
 
 export function showDaemonStatus(): void {
-  const pid = getRunningDaemonPid() ?? readStatusFilePidIfAlive();
+  const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (!pid) {
     console.log('Daemon is not running.');
     return;

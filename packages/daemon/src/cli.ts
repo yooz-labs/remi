@@ -386,6 +386,12 @@ if (cliInstall || cliUninstall) {
         if (!pathResolved) {
           console.log('note: no `remi` on PATH; the absolute binary path was baked into the');
           console.log('LaunchAgent. Re-run `remi --install` after upgrading remi.');
+        } else if (fs.realpathSync(pathResolved) !== fs.realpathSync(process.execPath)) {
+          // A dev running --install from a local dist/remi while a different
+          // remi sits on PATH would otherwise silently bake the OTHER binary.
+          console.log('note: PATH remi differs from the binary running --install');
+          console.log(`  LaunchAgent will run: ${fs.realpathSync(pathResolved)}`);
+          console.log(`  You are running:      ${fs.realpathSync(process.execPath)}`);
         }
         console.log('The Remi hub will start automatically on login.');
       } else {
@@ -1986,7 +1992,13 @@ if (cliDaemonMode) {
     logError,
   });
 
-  installStatusLine(REMI_DIR);
+  // Statusline install mutates the GLOBAL ~/.claude/settings.json; a
+  // session-less hub never runs Claude, so it has no business touching it
+  // (the first session child installs it anyway). Session daemons keep the
+  // existing behavior.
+  if (!serveMode) {
+    installStatusLine(REMI_DIR);
+  }
 
   if (serveMode) {
     // Hub mode (#542): a session-less supervisor. It binds the well-known
@@ -2023,8 +2035,18 @@ if (cliDaemonMode) {
         await registry.stopAll();
         process.exit(1);
       }
-      // readPidFileLive() already unlinked the stale entry; retry once.
-      writeHubPidFile();
+      // readPidFileLive() already unlinked the stale entry; retry once. If a
+      // concurrent boot wins the race in this gap, exit too — continuing
+      // would leave a live hub whose PID is recorded nowhere, invisible to
+      // `remi stop`/`status` forever (review finding on #731).
+      if (!writeHubPidFile()) {
+        const winnerPid = readPidFileLive();
+        console.error(
+          `Another hub claimed the PID file${winnerPid !== null ? ` (PID ${winnerPid})` : ''}; exiting.`,
+        );
+        await registry.stopAll();
+        process.exit(1);
+      }
     }
 
     updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });

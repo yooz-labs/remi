@@ -2,12 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { getRunningDaemonPid, readPidFileLive } from '../../src/cli/daemon-manager.ts';
+import { readPidFileLive } from '../../src/cli/daemon-manager.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
 
-describe('getRunningDaemonPid', () => {
+describe('readPidFileLive', () => {
   afterEach(() => {
     // Clean up test PID files
     try {
@@ -38,7 +38,7 @@ describe('getRunningDaemonPid', () => {
     }
 
     try {
-      const pid = getRunningDaemonPid();
+      const pid = readPidFileLive();
       // Could be null (no file) or a real PID if daemon is running
       // When we removed the file, it should be null
       expect(pid).toBeNull();
@@ -57,7 +57,7 @@ describe('getRunningDaemonPid', () => {
     // Write a PID that definitely doesn't exist
     fs.mkdirSync(REMI_DIR, { recursive: true });
     fs.writeFileSync(PID_FILE, '999999', 'utf-8');
-    const pid = getRunningDaemonPid();
+    const pid = readPidFileLive();
     expect(pid).toBeNull();
     // Should have cleaned up the stale file
     expect(fs.existsSync(PID_FILE)).toBe(false);
@@ -66,7 +66,7 @@ describe('getRunningDaemonPid', () => {
   test('returns null for invalid PID file content', () => {
     fs.mkdirSync(REMI_DIR, { recursive: true });
     fs.writeFileSync(PID_FILE, 'not-a-number', 'utf-8');
-    const pid = getRunningDaemonPid();
+    const pid = readPidFileLive();
     expect(pid).toBeNull();
   });
 
@@ -75,7 +75,7 @@ describe('getRunningDaemonPid', () => {
     fs.mkdirSync(REMI_DIR, { recursive: true });
     const ourPid = process.pid;
     fs.writeFileSync(PID_FILE, String(ourPid), 'utf-8');
-    const pid = getRunningDaemonPid();
+    const pid = readPidFileLive();
     expect(pid).toBe(ourPid);
     // Clean up
     fs.unlinkSync(PID_FILE);

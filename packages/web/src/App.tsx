@@ -446,7 +446,9 @@ function App() {
       case 'hello_ack': {
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
-          console.warn('[App] Received hello_ack without sessionId from connection:', connectionId);
+          // Normal for a session-less hub (#542): its ack carries null and
+          // the session list arrives next with the children's daemonPorts.
+          console.debug('[App] Session-less hello_ack (hub) from connection:', connectionId);
           break;
         }
         // Narrowed local: `message.sessionId` is `string | null` on the type
