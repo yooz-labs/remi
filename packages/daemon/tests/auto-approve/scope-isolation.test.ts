@@ -370,7 +370,7 @@ describe('AutoApproveGate cross-session isolation via shared AutoApproveService 
     await Promise.all(registries.map((r) => r.shutdown()));
   });
 
-  test("cancelStale does not drain a sibling session's queued eval (#730 BUG 1)", async () => {
+  test("cancelStale never touches a sibling session's QUEUED eval (#730 cross-session isolation)", async () => {
     const service = new AutoApproveService(makeConfig(server), noLog);
     const SID_A = generateId() as UUID;
     const SID_B = generateId() as UUID;
@@ -409,7 +409,11 @@ describe('AutoApproveGate cross-session isolation via shared AutoApproveService 
     expect(await pendingB).toBe('allow');
   });
 
-  test("cancelStale(SessionEnd) does not cancel a sibling session's RUNNING eval (#730 BUG 3)", async () => {
+  // This single scenario proves BOTH named bugs end-to-end: A's own QUEUED
+  // eval is drained by A's cancelStale and never reaches the LLM (BUG 1 --
+  // requestCount stays 1), while B's RUNNING eval survives A's untargeted
+  // SessionEnd cancel (BUG 3).
+  test("cancelStale drains its OWN queued eval (#730 BUG 1) and spares a sibling's RUNNING eval (#730 BUG 3)", async () => {
     const service = new AutoApproveService(makeConfig(server), noLog);
     const SID_A = generateId() as UUID;
     const SID_B = generateId() as UUID;
