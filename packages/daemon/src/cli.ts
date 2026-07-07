@@ -134,6 +134,7 @@ import {
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { installProcessGuards } from './cli/process-guards.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -1829,6 +1830,11 @@ async function cleanup(): Promise<void> {
     liveSessionsRegistry.unregister(primary);
   }
 }
+
+// Guard against unhandled rejections / uncaught exceptions killing the whole
+// daemon unsupervised (#534). Covers wrapper mode + daemon mode; short-lived
+// subcommands process.exit() earlier and never reach this line.
+installProcessGuards({ logError, onFatal: cleanup });
 
 // ---------------------------------------------------------------------------
 // Main: Start in wrapper or daemon mode
