@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { getRunningDaemonPid } from '../../src/cli/daemon-manager.ts';
+import { getRunningDaemonPid, readPidFileLive } from '../../src/cli/daemon-manager.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
@@ -79,5 +79,40 @@ describe('getRunningDaemonPid', () => {
     expect(pid).toBe(ourPid);
     // Clean up
     fs.unlinkSync(PID_FILE);
+  });
+});
+
+describe('readPidFileLive (#542)', () => {
+  // Same real-~/.remi discipline as above: only fake PIDs are ever written,
+  // and every branch restores/cleans in a finally. The status-file fallback
+  // (readStatusFilePidIfAlive) is deliberately NOT unit-tested here —
+  // daemon-status.json is actively rewritten by any live daemon on this
+  // machine, so it is exercised in the hub integration test against an
+  // isolated $HOME instead.
+  test('unlinks a stale entry and returns null; live pid round-trips', () => {
+    fs.mkdirSync(REMI_DIR, { recursive: true });
+    const backup = `${PID_FILE}.backup`;
+    let hadExisting = false;
+    if (fs.existsSync(PID_FILE)) {
+      fs.renameSync(PID_FILE, backup);
+      hadExisting = true;
+    }
+    try {
+      fs.writeFileSync(PID_FILE, '999999', 'utf-8');
+      expect(readPidFileLive()).toBeNull();
+      expect(fs.existsSync(PID_FILE)).toBe(false);
+
+      fs.writeFileSync(PID_FILE, String(process.pid), 'utf-8');
+      expect(readPidFileLive()).toBe(process.pid);
+      fs.unlinkSync(PID_FILE);
+    } finally {
+      if (hadExisting) {
+        try {
+          fs.renameSync(backup, PID_FILE);
+        } catch {
+          // ignore
+        }
+      }
+    }
   });
 });

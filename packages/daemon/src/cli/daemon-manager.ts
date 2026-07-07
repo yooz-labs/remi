@@ -13,7 +13,7 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
-const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
+export const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
 const STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 const LOG_FILE = path.join(REMI_DIR, 'daemon.log');
 
@@ -22,10 +22,12 @@ function ensureRemiDir(): void {
 }
 
 /**
- * Read the daemon PID from the PID file.
- * Returns null if no PID file exists or the process is not running.
+ * Read the PID file and check whether the process it names is alive.
+ * Returns null (and unlinks the file) if the file is missing, malformed, or
+ * names a dead process. Extracted from `getRunningDaemonPid` (#542) so a hub
+ * process can also probe/clean up the PID file it is about to self-write.
  */
-export function getRunningDaemonPid(): number | null {
+export function readPidFileLive(): number | null {
   let content: string;
   try {
     content = fs.readFileSync(PID_FILE, 'utf-8').trim();
@@ -53,6 +55,35 @@ export function getRunningDaemonPid(): number | null {
         console.error(`Warning: cannot remove stale PID file: ${code}`);
       }
     }
+    return null;
+  }
+}
+
+/**
+ * Read the daemon PID from the PID file.
+ * Returns null if no PID file exists or the process is not running.
+ */
+export function getRunningDaemonPid(): number | null {
+  return readPidFileLive();
+}
+
+/**
+ * Fallback for `remi status`/`remi stop` when the PID file is missing (#542):
+ * a hub launched outside `startDaemon()` (e.g. directly via `remi serve`, or
+ * a future LaunchAgent path that no longer pre-writes the PID file) still
+ * self-writes the PID file on boot, so this should be rare in practice, but
+ * covers the window before that write lands and any other split-brain edge
+ * case. Reads the PID out of the self-written status file instead and
+ * confirms it names a live process.
+ */
+function readStatusFilePidIfAlive(): number | null {
+  const status = readStatus();
+  const pid = status?.['pid'];
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch {
     return null;
   }
 }
@@ -228,7 +259,7 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
 }
 
 export function stopDaemon(): void {
-  const pid = getRunningDaemonPid();
+  const pid = getRunningDaemonPid() ?? readStatusFilePidIfAlive();
   if (!pid) {
     console.error('No running daemon found.');
     process.exit(1);
@@ -276,7 +307,7 @@ export function stopDaemon(): void {
 }
 
 export function showDaemonStatus(): void {
-  const pid = getRunningDaemonPid();
+  const pid = getRunningDaemonPid() ?? readStatusFilePidIfAlive();
   if (!pid) {
     console.log('Daemon is not running.');
     return;
@@ -285,6 +316,9 @@ export function showDaemonStatus(): void {
   const status = readStatus();
   if (status && status['pid'] === pid) {
     console.log(`Daemon running (PID ${pid})`);
+    if (status['mode'] === 'hub') {
+      console.log('  Mode: hub');
+    }
     console.log(`  Port: ${status['wsPort']}`);
     console.log(`  Connections: ${status['connections']}`);
     console.log(`  Status: ${status['sessionStatus']}`);
@@ -347,6 +381,10 @@ export async function spawnRemiDaemon(
   const childEnv = { ...process.env };
   // biome-ignore lint/performance/noDelete: must truly remove env var from child process
   delete childEnv['REMI_PORT'];
+  // Marks this process as a hub-spawned session child (#542): its
+  // StatusWriter then writes the per-port status-<PORT>.json a wrapper would,
+  // instead of clobbering the hub's own ~/.remi/daemon-status.json.
+  childEnv['REMI_SPAWNED_CHILD'] = '1';
 
   let child: ReturnType<typeof spawn>;
   try {

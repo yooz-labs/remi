@@ -79,7 +79,12 @@ const statusWriter = new StatusWriter(
     autoApprove: { ...IDLE_AUTO_APPROVE },
   },
   {
-    getTargetFile: () => (cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE),
+    // A hub-spawned session child (#542, REMI_SPAWNED_CHILD) writes its
+    // per-port status file exactly like a wrapper does, instead of
+    // clobbering the hub's own daemon-status.json with its single-session
+    // state.
+    getTargetFile: () =>
+      cliDaemonMode && process.env['REMI_SPAWNED_CHILD'] !== '1' ? DAEMON_STATUS_FILE : STATUS_FILE,
     isEnabled: () => isWrapperMode() || cliDaemonMode,
     writeLog: writeToLog,
   },
@@ -111,6 +116,7 @@ import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
+import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
@@ -1852,6 +1858,23 @@ async function cleanup(): Promise<void> {
   if (primary) {
     liveSessionsRegistry.unregister(primary);
   }
+
+  // Remove the hub PID file (#542), but only if it still names THIS process
+  // -- a foreign hub that won the write race (or that started after a stale
+  // entry was cleaned up) must keep its own entry intact.
+  if (serveMode) {
+    try {
+      const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+      if (Number.parseInt(content, 10) === process.pid) {
+        fs.unlinkSync(PID_FILE);
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        logError(`[Hub] Failed to clean up PID file: ${errorToString(err)}`);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1942,6 +1965,36 @@ if (cliDaemonMode) {
     // machinery unchanged). The hub must NEVER: spawn Claude, install
     // Claude-Code hook config for its own cwd, or register itself in
     // ~/.remi/live-sessions (it would read as a phantom session).
+
+    // Self-write the PID file so `remi stop`/`remi status` can find this hub
+    // regardless of how it was launched (a bare `remi serve`, `remi start`,
+    // or a LaunchAgent) -- closing the split-brain where only the CLI parent
+    // process (the old `startDaemon()`) ever wrote it.
+    const writeHubPidFile = (): boolean => {
+      try {
+        const fd = fs.openSync(PID_FILE, 'wx');
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+          console.error(`Failed to write hub PID file: ${errorToString(err)}`);
+          return false;
+        }
+        return false;
+      }
+    };
+    if (!writeHubPidFile()) {
+      const foreignPid = readPidFileLive();
+      if (foreignPid !== null) {
+        console.error(`Hub already running (PID ${foreignPid}). Use \`remi status\`.`);
+        await registry.stopAll();
+        process.exit(1);
+      }
+      // readPidFileLive() already unlinked the stale entry; retry once.
+      writeHubPidFile();
+    }
+
     updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
 
     console.log('');
