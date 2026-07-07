@@ -1318,6 +1318,9 @@ async function createNewSession(
         // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
         // gate can hold. The dispatcher records the per-question delivery outcome.
         awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
+        // #733: when a held escalation times out unanswered, tell the phone the
+        // prompt moved to the terminal instead of silently dismissing the card.
+        onHoldTimeout: (questionId) => notifications.pushHoldTimeoutHandoff(sessionId, questionId),
         deliveryConfirmSec: autoApproveService
           ? remiConfig.auto_approve.delivery_confirm_timeout
           : 0,
