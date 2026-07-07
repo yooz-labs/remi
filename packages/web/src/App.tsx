@@ -449,6 +449,12 @@ function App() {
           console.warn('[App] Received hello_ack without sessionId from connection:', connectionId);
           break;
         }
+        // Narrowed local: `message.sessionId` is `string | null` on the type
+        // (a session-less hub ack carries null, #542), but TypeScript does not
+        // carry the guard above's narrowing into the closures below. Capture
+        // the checked, non-null value once so every use downstream (including
+        // inside setSessions/setMessages callbacks) stays a plain string.
+        const sessionId = message.sessionId;
         // Phase 2 daemons attach the binding here so the client knows
         // which transcript it's talking to before the first session_list
         // round-trip (#430). Older daemons omit; the field stays undefined.
@@ -467,27 +473,27 @@ function App() {
         // This read must precede the setSessions enqueue below, which is what
         // overwrites the binding.
         const prevClaudeSessionId = sessionsRef.current.find(
-          (s) => s.id === message.sessionId && s.connectionId === connectionId,
+          (s) => s.id === sessionId && s.connectionId === connectionId,
         )?.claudeSessionId;
         // Reconnect-mid-rotation: the binding changed while we were away, so the
         // chat on screen belongs to the OLD Claude session. Clear it first, then
         // let the setSessions below swap the binding. Same effect as a live
         // session_rotated, which also clears before swapping (#439).
         if (bindingRotated(prevClaudeSessionId, ackClaudeSessionId)) {
-          clearSessionForRebind(message.sessionId);
+          clearSessionForRebind(sessionId);
         }
         setSessions((prev) => {
           // On reconnect, remove stale sessions from this connection that have a different
           // session ID (the daemon may have assigned a new session). Keep sessions from
           // other connections and sessions matching the new ID untouched.
           const cleaned = prev.filter(
-            (s) => s.connectionId !== connectionId || s.id === message.sessionId,
+            (s) => s.connectionId !== connectionId || s.id === sessionId,
           );
 
-          const exists = cleaned.some((s) => s.id === message.sessionId);
+          const exists = cleaned.some((s) => s.id === sessionId);
           if (exists) {
             return cleaned.map((s) =>
-              s.id === message.sessionId
+              s.id === sessionId
                 ? {
                     ...s,
                     connectionStatus: 'connected',
@@ -507,7 +513,7 @@ function App() {
           return [
             ...cleaned,
             {
-              id: message.sessionId,
+              id: sessionId,
               name: 'Claude Code Session',
               createdAt: new Date().toISOString(),
               lastActiveAt: new Date().toISOString(),
@@ -522,18 +528,18 @@ function App() {
             } satisfies UISession,
           ];
         });
-        localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
+        localStorage.setItem(LOCALSTORAGE_SESSION_KEY, sessionId);
 
         // Pin sessionId -> daemon URL so cold-start push answers route to the
         // right daemon when multiple are paired. Look up the connection's URL
         // synchronously from the latest snapshot.
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
         if (conn?.url) {
-          rememberSessionDaemon(message.sessionId, conn.url);
+          rememberSessionDaemon(sessionId, conn.url);
           // Mirror the daemon URL + signer to native storage (#591 P2) so a
           // lock-screen answer can sign + POST to the daemon's /answer endpoint
           // without opening the app. No-ops off-native; never throws.
-          void setNativeRoute(message.sessionId, {
+          void setNativeRoute(sessionId, {
             wsUrl: conn.url,
             ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
           });
@@ -553,7 +559,7 @@ function App() {
         // deep-links navigate via their own `push-notification-tap` handler,
         // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive && oldActive !== message.sessionId) {
+        if (oldActive && oldActive !== sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
           if (oldSession?.connectionId === connectionId) {
             setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));

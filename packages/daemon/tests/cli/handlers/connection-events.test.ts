@@ -86,7 +86,7 @@ describe('createConnectionHandlers', () => {
   }
 
   describe('onConnect', () => {
-    test('tracks connection and sends NO_SESSION when no primary session exists', async () => {
+    test('tracks connection and sends a session-less hello_ack when no primary session exists (#542)', async () => {
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
         platformData: { kind: 'websocket' },
@@ -94,10 +94,30 @@ describe('createConnectionHandlers', () => {
 
       expect(trackedConnections).toEqual([{ id: CID, type: 'websocket' }]);
       expect(connectionAddedCount).toBe(1);
+      // A hub daemon (or an ordinary daemon in the brief pre-session window)
+      // acks the connection with sessionId: null instead of erroring, so a
+      // client can sit connected until a session is created (#542).
       expect(sendCalls).toHaveLength(1);
-      const msg = sendCalls[0]?.message as { type: string; code?: string };
-      expect(msg.type).toBe('error');
-      expect(msg.code).toBe('NO_SESSION');
+      const msg = sendCalls[0]?.message as { type: string; sessionId?: unknown };
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBeNull();
+    });
+
+    test('a primary session set still attaches normally (regression, #542)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as { type: string; sessionId?: unknown };
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBe(sessionId);
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
     });
 
     test('auto-attaches and sends helloAck when a primary session exists (non-query)', async () => {

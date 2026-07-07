@@ -138,7 +138,13 @@ export interface HelloAckMessage {
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly serverVersion: string;
-  readonly sessionId: UUID;
+  /**
+   * The daemon's primary session (null on a session-less hub daemon, #542):
+   * a hub boots with no session of its own, so a connecting client still
+   * gets an ack (rather than a NO_SESSION error) while it waits for one to
+   * be created via `create_session_request` or `remi new`.
+   */
+  readonly sessionId: UUID | null;
   /**
    * Claude Code session UUID this daemon's PTY is bound to (#427/#429).
    * Always populated post-phase-1 because the daemon pre-assigns the id
@@ -920,7 +926,7 @@ export function createHello(
  */
 export function createHelloAck(
   serverVersion: string,
-  sessionId: UUID,
+  sessionId: UUID | null,
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
   binding?: { claudeSessionId: UUID | null; transcriptPath: string | null },
   attachState?: 'attached' | 'queued',

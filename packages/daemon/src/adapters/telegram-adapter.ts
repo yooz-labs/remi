@@ -344,6 +344,10 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       case 'hello_ack': {
         const ack = message as HelloAckMessage;
+        // A session-less hub ack (#542) carries sessionId: null; Telegram
+        // topics are only ever bound once a real session exists, so skip
+        // rather than clobber the binding with null.
+        if (ack.sessionId === null) return true;
         const sessionKey = this.connectionToSession.get(connectionId);
         if (sessionKey) {
           const session = this.sessions.get(sessionKey);
