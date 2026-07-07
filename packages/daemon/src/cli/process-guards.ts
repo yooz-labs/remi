@@ -86,8 +86,14 @@ export function installProcessGuards(deps: ProcessGuardsDeps): () => void {
     }
     handlingFatal = true;
 
+    // Deliberately NOT unref'd: this timer is the watchdog. If onFatal()
+    // hangs on a promise with no remaining I/O refs (plausible — cleanup()
+    // stops every server/watcher first, then awaits their shutdowns), an
+    // unref'd timer would let the event loop drain and the process exit 0
+    // "cleanly" before the timeout ever fires — which supervisors treat as
+    // a clean stop and do NOT restart. Keeping the ref guarantees the
+    // process stays alive exactly long enough to exit(1).
     const timer = setTimeout(() => doExit(1), fatalTimeoutMs);
-    timer.unref();
 
     Promise.resolve()
       .then(() => deps.onFatal())

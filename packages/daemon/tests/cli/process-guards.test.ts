@@ -11,7 +11,10 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { installProcessGuards } from '../../src/cli/process-guards';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { installProcessGuards } from '../../src/cli/process-guards.ts';
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -157,6 +160,37 @@ describe('installProcessGuards', () => {
     await wait(80);
     expect(exitCalls).toEqual([1]);
   });
+
+  test('watchdog holds the event loop: hanging onFatal exits 1, not 0 (real subprocess)', async () => {
+    // The in-runner tests above cannot catch a watchdog-timer lifetime bug:
+    // bun:test itself keeps the process alive, so an unref'd (broken) timer
+    // still fires there. This spawns a REAL bun process whose only remaining
+    // event-loop work after the crash is the watchdog itself — with an
+    // unref'd timer the loop drains and the process exits 0 (a "clean stop"
+    // no supervisor would restart); the referenced timer must force exit 1.
+    const guardsPath = path.join(import.meta.dir, '../../src/cli/process-guards.ts');
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-process-guards-'));
+    const script = path.join(sandbox, 'crash.ts');
+    fs.writeFileSync(
+      script,
+      [
+        `import { installProcessGuards } from ${JSON.stringify(guardsPath)};`,
+        'installProcessGuards({',
+        '  logError: () => {},',
+        '  onFatal: () => new Promise(() => {}), // hangs forever, holds no refs',
+        '  fatalTimeoutMs: 100,',
+        '});',
+        "setTimeout(() => { throw new Error('kaboom'); }, 10);",
+      ].join('\n'),
+    );
+    try {
+      const proc = Bun.spawn(['bun', script], { stdout: 'ignore', stderr: 'ignore' });
+      const code = await proc.exited;
+      expect(code).toBe(1);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 15000);
 
   test('uninstall removes both listeners', () => {
     const before = {
