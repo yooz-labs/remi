@@ -9,6 +9,7 @@ import {
   isDelivered,
   isRetriablePushError,
   isTokenInvalidError,
+  selectDynOptions,
   selectPushCategory,
 } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
@@ -62,6 +63,80 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBe('REMI_MULTI');
     expect(selectPushCategory([yesOpt])).toBeUndefined();
     expect(selectPushCategory([])).toBeUndefined();
+  });
+
+  test('#718: the honest 2-option Yes/No fallback selects REMI_YN, not REMI_YNA', () => {
+    // Category correctness falls out of the count-based mapping once the
+    // daemon's fallback is a genuine 2-set instead of a fabricated 3-set —
+    // no dispatcher change was needed, this just pins the observable result.
+    expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
+  });
+});
+
+describe('selectDynOptions (#719)', () => {
+  test('single-question AskUserQuestion with 3 options qualifies', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'DB: Which database?',
+      options: [
+        { value: '1', label: 'Postgres', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'SQLite', isRecommended: false, isYes: false, isNo: false },
+        { value: '3', label: 'MySQL', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        {
+          header: 'DB',
+          text: 'Which database?',
+          multiSelect: false,
+          options: [],
+        },
+      ],
+    };
+    expect(selectDynOptions(q)).toBe(true);
+  });
+
+  test('a 4-option structured-suggestion permission card qualifies', () => {
+    expect(selectDynOptions(question('q', [yesOpt, yesAlwaysOpt, noOpt, yesOpt]))).toBe(true);
+  });
+
+  test('a multi-sub-question AskUserQuestion form does NOT qualify (stays app-routed)', () => {
+    const q: Question = {
+      id: 'q' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      options: [
+        { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        { header: 'Collab PI', text: 'Who is the PI?', multiSelect: false, options: [] },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+      ],
+    };
+    expect(selectDynOptions(q)).toBe(false);
+  });
+
+  test('free-text (0 options) does NOT qualify', () => {
+    expect(selectDynOptions(question('q', []))).toBe(false);
+  });
+
+  test('5+ options does NOT qualify', () => {
+    const five = [yesOpt, noOpt, yesOpt, noOpt, yesOpt];
+    expect(selectDynOptions(question('q', five))).toBe(false);
+  });
+
+  test('an empty label disqualifies even though the push falls back to the value', () => {
+    const blankLabel: QuestionOption = { ...yesOpt, label: '' };
+    expect(selectDynOptions(question('q', [blankLabel, noOpt]))).toBe(false);
+  });
+
+  test('the honest 2-option Yes/No fallback qualifies', () => {
+    expect(selectDynOptions(question('q', [yesOpt, noOpt]))).toBe(true);
   });
 });
 
@@ -279,6 +354,41 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['category']).toBe('REMI_YNA');
   });
 
+  // #719: the NSE dynamic-category hint rides alongside the static category.
+  test('carries dynOptions:true for a qualifying 2-4 option question', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    make().maybePush(SID, question('q1', defaultThreeSet, 'Allow Bash: git push'));
+
+    expect(pushed[0]?.opts['dynOptions']).toBe(true);
+    expect(pushed[0]?.opts['category']).toBe('REMI_YNA'); // static fallback unchanged
+  });
+
+  test('omits dynOptions for a multi-sub-question AskUserQuestion form', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    const mq: Question = {
+      id: 'q1' as UUID,
+      text: 'Collab PI: Who is the PI?',
+      options: [
+        { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
+        { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'multi_question',
+      questions: [
+        { header: 'Collab PI', text: 'Who is the PI?', multiSelect: false, options: [] },
+        { header: 'Software focus', text: 'Which tools?', multiSelect: true, options: [] },
+      ],
+    };
+    make().maybePush(SID, mq);
+
+    expect(pushed[0]?.opts['dynOptions']).toBeUndefined();
+  });
+
   // #626: an AskUserQuestion must NOT get a count-based category (REMI_YN/YNA
   // would mislabel arbitrary picks as Yes/No); the lock screen opens the app.
   test('multi-question (AskUserQuestion) pushes with NO category', () => {
@@ -401,6 +511,147 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
       handleStatusChange: () => {},
     } as never);
     make().dismiss(SID, QID);
+    expect(pushed).toHaveLength(0);
+  });
+
+  /** Poll until `cond` holds — dismiss() is fire-and-forget, so retry/prune
+   *  effects land asynchronously (after the 400ms backoff sleep). */
+  async function waitUntil(cond: () => boolean, timeoutMs = 3000): Promise<void> {
+    const start = Date.now();
+    while (!cond()) {
+      if (Date.now() - start > timeoutMs) throw new Error('waitUntil timed out');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  function makeWith(fn: PushFn, pruneToken?: (token: string) => void): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: fn,
+        ...(pruneToken ? { pruneToken } : {}),
+      },
+      SID,
+    );
+  }
+
+  test('#723: a rate-limited (429) dismissal is retried with backoff, then succeeds', async () => {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let calls = 0;
+    const flaky: PushFn = async () => {
+      calls++;
+      if (calls === 1) {
+        throw new Error('Push trigger failed: 429 {"error":"RATE_LIMITED"}');
+      }
+    };
+    makeWith(flaky).dismiss(SID, QID);
+    await waitUntil(() => calls === 2);
+    expect(calls).toBe(2);
+  });
+
+  test('#723: a permanently dead token on a dismissal is pruned (self-heal)', async () => {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    const prunedTokens: string[] = [];
+    let calls = 0;
+    const dead: PushFn = async () => {
+      calls++;
+      throw new Error(
+        'Push trigger failed: 502 {"success":false,"tokenInvalid":true,"error":"APNS 400: BadDeviceToken"}',
+      );
+    };
+    makeWith(dead, (t) => prunedTokens.push(t)).dismiss(SID, QID);
+    await waitUntil(() => prunedTokens.length === 1);
+    expect(prunedTokens).toEqual(['a']);
+    expect(calls).toBe(1); // permanent rejection: no retry before pruning
+  });
+});
+
+describe('NotificationDispatcher.pushHoldTimeoutHandoff (#733)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  let pushed: Array<{ token: string; opts: Record<string, unknown> }>;
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+  const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
+
+  const pushFn: PushFn = async (_url, token, opts) => {
+    pushed.push({ token, opts: opts as unknown as Record<string, unknown> });
+  };
+
+  function make(): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn,
+      },
+      SID,
+    );
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    pushed = [];
+    configureLogger({ writeLog: () => {} });
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('carries the ask, a handoff collapse key, and NO answer category', async () => {
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    registry.addQuestion(SID, question(QID, [yesOpt, noOpt], 'Allow Bash: rm -rf .venv?'));
+
+    make().pushHoldTimeoutHandoff(SID, QID);
+    // pushOnceWithRetry resolves on a microtask; flush it.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(pushed).toHaveLength(1);
+    const opts = pushed[0]?.opts as Record<string, unknown>;
+    expect(String(opts['title'])).toContain('answer in the terminal');
+    expect(String(opts['body'])).toContain('Allow Bash: rm -rf .venv?');
+    // Distinct collapse key: the original card's quiet dismissal (collapse-id
+    // = the question id) must NOT collapse this handoff notice away.
+    expect(opts['questionId']).toBe(`handoff-${QID}`);
+    expect(opts['category']).toBeUndefined();
+    expect(opts['options']).toBeUndefined();
+    expect(opts['dynOptions']).toBeUndefined();
+  });
+
+  test('question already gone from the registry: still pushes with a generic ask', async () => {
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    make().pushHoldTimeoutHandoff(SID, QID);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(pushed).toHaveLength(1);
+    expect(String(pushed[0]?.opts['body'])).toContain('a permission request');
+  });
+
+  test('no device tokens: no-op', () => {
+    make().pushHoldTimeoutHandoff(SID, QID);
     expect(pushed).toHaveLength(0);
   });
 });
@@ -764,6 +1015,99 @@ describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
     };
     await make(fail).maybePush(SID, question('q1', [yesOpt, noOpt]));
     expect(pruned).toEqual([]);
+  });
+});
+
+describe('NotificationDispatcher.refreshDeviceTokens (#690)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+
+  function register(): void {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    configureLogger({ writeLog: () => {} });
+  });
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('is called before every push decision when wired', async () => {
+    register();
+    deviceTokens.set('tok', { token: 'tok', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let calls = 0;
+    const dispatcher = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: async () => {},
+        refreshDeviceTokens: () => {
+          calls++;
+        },
+      },
+      SID,
+    );
+    await dispatcher.maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(calls).toBe(1);
+  });
+
+  test('a sibling-recorded removal picked up by refreshDeviceTokens drops the push channel', async () => {
+    register();
+    deviceTokens.set('tok', { token: 'tok', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let pushed = false;
+    const dispatcher = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: async () => {
+          pushed = true;
+        },
+        // Simulates DeviceTokenStore.refreshFromDisk() finding a sibling
+        // daemon's tombstone for this token and dropping it from the SAME
+        // shared map the dispatcher reads.
+        refreshDeviceTokens: () => {
+          deviceTokens.delete('tok');
+        },
+      },
+      SID,
+    );
+    const outcome = await dispatcher.maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(outcome).toBe('no_channel');
+    expect(pushed).toBe(false);
+  });
+
+  test('absent refreshDeviceTokens is a no-op (backward compatible)', async () => {
+    register();
+    deviceTokens.set('tok', { token: 'tok', platform: 'ios', registeredAt: 1, connectionId: SID });
+    let pushed = false;
+    const dispatcher = new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn: async () => {
+          pushed = true;
+        },
+      },
+      SID,
+    );
+    const outcome = await dispatcher.maybePush(SID, question('q1', [yesOpt, noOpt]));
+    expect(outcome).toBe('pushed');
+    expect(pushed).toBe(true);
   });
 });
 

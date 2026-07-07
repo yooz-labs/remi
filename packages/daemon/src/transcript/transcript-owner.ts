@@ -26,6 +26,17 @@ import { logError } from '../cli/logger.ts';
 /** Only the first few lines can hold the head marker; cap the read. */
 const HEAD_BYTES = 8192;
 
+/**
+ * How long a transcript may sit with an unreadable `remi:<port>` head marker
+ * before it is treated as genuinely (permanently) markerless rather than
+ * still-flushing. Shared home for a value both `TranscriptBinder`'s rotation
+ * dir-poll and `ForeignSessionEscalator`'s ownership ladder (#672 review) need:
+ * both must tell "still settling, ask again later" apart from "genuinely has
+ * no marker" using the same threshold. 10s is far beyond Claude's synchronous
+ * create-to-marker gap.
+ */
+export const MARKER_SETTLE_MS = 10_000;
+
 interface CustomTitleEntry {
   type?: string;
   customTitle?: string;

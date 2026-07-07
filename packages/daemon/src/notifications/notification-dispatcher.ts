@@ -42,6 +42,36 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
   return undefined;
 }
 
+/**
+ * Whether a question qualifies for the NSE's per-notification dynamic
+ * category (#719): a single-question prompt (never a multi-sub-question
+ * AskUserQuestion form, which stays app-routed via its topic-list summary)
+ * with 2-4 options, each carrying a REAL label (not just a fallback value —
+ * the entire point of the dynamic category is showing the true option text).
+ *
+ * This is an ADDITIVE hint alongside `selectPushCategory`'s STATIC category,
+ * which is always sent unconditionally as the fallback. A client without the
+ * Notification Service Extension (or one where the NSE fails, races, or is
+ * simply not yet installed) ignores `dynOptions` entirely and falls back to
+ * the static category exactly as before #719 — never worse.
+ *
+ * INVARIANT CHAIN (#719 review): this gate is the narrowest of three — the
+ * signaling worker's `wantsDynCategory` check and the NSE's own option-count
+ * ceiling both allow up to 6 options, a defensive upper bound so loosening
+ * THIS gate (2-4 -> up to 6) needs no worker/NSE change. Keep all three in
+ * sync if the ceiling itself ever moves: packages/signaling/src/index.ts
+ * (`wantsDynCategory`) and packages/web/ios/App/RemiNotificationService/
+ * NotificationService.swift (`buildDynamicCategory`'s `0...5` loop).
+ */
+export function selectDynOptions(question: Question): boolean {
+  if (question.kind === 'multi_question' && question.questions && question.questions.length > 1) {
+    return false;
+  }
+  const { options } = question;
+  if (options.length < 2 || options.length > 4) return false;
+  return options.every((o) => o.label.trim().length > 0);
+}
+
 /** Cap for the APNS title; iOS truncates visually but a hard cap keeps the
  *  payload bounded for long Bash commands. */
 const TITLE_MAX = 120;
@@ -209,6 +239,16 @@ export interface NotificationDispatcherDeps {
    * token stays in the map; tests / old callers). */
   pruneToken?: (token: string) => void;
   /**
+   * Pull in a removal/registration recorded by another daemon on this machine
+   * since the shared store last read the file (#690). Wired to
+   * `DeviceTokenStore.refreshFromDisk` (read + reconcile, no write). Called at
+   * the top of every push decision so a server the user just removed stops
+   * getting pushed without waiting for this dispatcher's own next unrelated
+   * register/prune call. Absent => no refresh (tests / old callers); must be
+   * synchronous and non-throwing.
+   */
+  refreshDeviceTokens?: () => void;
+  /**
    * Current push config; read on every dispatch so the caller can swap the
    * source without re-wiring. Must be synchronous and non-throwing.
    */
@@ -283,6 +323,12 @@ export class NotificationDispatcher {
   ): Promise<DeliveryOutcome> {
     const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
 
+    // #690: pick up a token removal/registration a sibling daemon on this
+    // machine recorded since our last read, so a just-removed server stops
+    // pushing promptly instead of on this dispatcher's own next unrelated
+    // register/prune call.
+    this.deps.refreshDeviceTokens?.();
+
     const sessionForPush = sessionRegistry.getSession(questionSessionId);
     const hasActiveClient =
       sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
@@ -323,6 +369,11 @@ export class NotificationDispatcher {
     // sending labels here does not break delivery. Fall back to the value when a
     // label is empty so the button still carries something answerable.
     const pushOptions = question.options.map((o) => o.label || o.value);
+    // #719: hint the NSE to build a per-notification dynamic category with the
+    // real option labels as action titles. `pushCategory` above is untouched —
+    // it remains the static fallback the NSE (and any client without one)
+    // falls back to.
+    const dynOptions = selectDynOptions(question);
     const { title, body } = buildPushText(sessionName, question);
     const opts = {
       title,
@@ -332,10 +383,14 @@ export class NotificationDispatcher {
       questionId: question.id,
       ...(pushCategory !== undefined ? { category: pushCategory } : {}),
       ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
+      ...(dynOptions ? { dynOptions: true } : {}),
     };
 
     const perToken = [...deviceTokens.values()].map((dt) =>
-      this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, pushSessionId),
+      this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, {
+        sent: `Push notification sent for session ${pushSessionId}`,
+        failed: `Push notification failed for session ${pushSessionId}`,
+      }),
     );
     // Delivered if ANY registered device accepted the push. For a HELD
     // escalation we gate on THIS push result — not on socket-attachment —
@@ -353,17 +408,22 @@ export class NotificationDispatcher {
    * 5xx) with short backoff (epic #603 Phase 1). A permanent token rejection
    * (BadDeviceToken etc., which the Worker wraps as 502) is NOT retried — it
    * fails fast so the gate can fail the hold open. Resolves true on a 2xx.
+   *
+   * Shared by alert pushes (`maybePush`) and quiet dismissals (`dismiss`, #723);
+   * `logCtx` carries the caller's exact success/failure messages, so message
+   * wording is owned by each caller (this helper never invents log formats —
+   * changing a caller's strings is a deliberate, greppable act at the call site).
    */
   private async pushOnceWithRetry(
     signalingUrl: string,
     token: string,
     opts: Parameters<PushFn>[2],
-    pushSessionId: UUID,
+    logCtx: { sent: string; failed: string },
   ): Promise<boolean> {
     for (let attempt = 0; ; attempt++) {
       try {
         await this.pushFn(signalingUrl, token, opts);
-        log(`Push notification sent for session ${pushSessionId}`);
+        log(logCtx.sent);
         return true;
       } catch (err) {
         if (isRetriablePushError(err) && attempt < MAX_PUSH_RETRIES) {
@@ -377,7 +437,7 @@ export class NotificationDispatcher {
         // Loud: a real push attempt failed (permanent token rejection, network
         // error, or exhausted retries). This is the root cause behind a held
         // hook's fail-open, so it must be visible at error level, not buried.
-        logError(`Push notification failed for session ${pushSessionId}: ${err}`);
+        logError(`${logCtx.failed}: ${err}`);
         // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
         // unregistered / wrong-app) is pruned so it is never retried again. A
         // network error or exhausted-transient failure is NOT a token problem,
@@ -414,6 +474,58 @@ export class NotificationDispatcher {
   }
 
   /**
+   * Alert push telling the user a held escalation TIMED OUT and its prompt has
+   * moved to the terminal (#733). Fired by the gate's `onHoldTimeout` cue just
+   * before the hold fails open, while the question is still registered — so the
+   * body can carry the actual ask. Without this, a timeout is silent on the
+   * phone: the card's dismissal collapses it away and nothing says the agent is
+   * now blocked on a native terminal prompt.
+   *
+   * Deliberate differences from `maybePush`:
+   *  - always pushes (no attached-client skip, no dedup): this is a one-shot
+   *    state-change notice, and an attached client only sees the card VANISH;
+   *  - no category/options/dynOptions: there is nothing to answer from the
+   *    lock screen anymore — tapping opens the app;
+   *  - collapse key is `handoff-<questionId>`, NOT the question id, so the
+   *    original card's quiet dismissal (collapse-id = question id) cannot
+   *    collapse this notice away.
+   */
+  pushHoldTimeoutHandoff(questionSessionId: UUID, questionId: UUID): void {
+    const { deviceTokens, pushConfig, sessionRegistry } = this.deps;
+    if (deviceTokens.size === 0) return;
+    const session = sessionRegistry.getSession(this.sessionId);
+    const question = session?.currentQuestions.get(questionId);
+    const sessionName = session?.name || 'Agent';
+    const ask =
+      normalizeNotificationText(question?.summary || question?.text || '') ||
+      'a permission request';
+    const title = `${sessionName}: answer in the terminal`.slice(0, TITLE_MAX);
+    const body = `Timed out waiting for you — the prompt moved to the terminal: ${ask}`.slice(
+      0,
+      BODY_MAX,
+    );
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    for (const dt of deviceTokens.values()) {
+      void this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          title,
+          body,
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId: `handoff-${questionId}`,
+        },
+        {
+          sent: `Push timeout-handoff sent for question ${questionId}`,
+          failed: `Push timeout-handoff failed for question ${questionId}`,
+        },
+      );
+    }
+  }
+
+  /**
    * Fire a QUIET APNS dismissal for a resolved question (#585, P7). Sends a
    * `content-available` push (no alert, no sound) keyed by `apns-collapse-id` =
    * questionId so a suspended device replaces/clears the earlier lock-screen card
@@ -432,18 +544,26 @@ export class NotificationDispatcher {
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
     for (const dt of deviceTokens.values()) {
-      this.pushFn(cfg.signalingUrl, dt.token, {
-        // No title/body: a dismissal is a silent content-available push, and the
-        // relay skips the title/body requirement for it (#585, P7).
-        ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
-        sessionId: pushSessionId,
-        questionId,
-        dismiss: true,
-      })
-        .then(() => log(`Push dismissal sent for question ${questionId}`))
-        .catch((err) =>
-          logError(`Push dismissal failed (signaling worker redeploy needed?): ${err}`),
-        );
+      // #723: same transient-retry path as alert pushes — a 429/5xx dismissal
+      // is retried with backoff (a LATE dismissal still clears the stale card),
+      // and a permanently-invalid token is pruned here too. Fire-and-forget:
+      // the helper never rejects, it resolves false after logging.
+      void this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          // No title/body: a dismissal is a silent content-available push, and
+          // the relay skips the title/body requirement for it (#585, P7).
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId,
+          dismiss: true,
+        },
+        {
+          sent: `Push dismissal sent for question ${questionId}`,
+          failed: `Push dismissal failed for question ${questionId}`,
+        },
+      );
     }
   }
 }

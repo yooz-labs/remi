@@ -27,6 +27,13 @@ export interface TrivialHandlerDeps {
    * connection drops that connection's OTHER, now-rotated token) and persists.
    */
   registerDeviceToken: (token: string, platform: string, connectionId: UUID) => void;
+  /**
+   * Unregister a device token (#690) — the store deletes it and marks it
+   * `removed` so a concurrent daemon's stale copy is not re-adopted. Fires
+   * ONLY from an explicit user-removal action (web `handleDisconnect` /
+   * `handleDisconnectAll`), never from a mere disconnect or app suspension.
+   */
+  unregisterDeviceToken: (token: string) => void;
   sessionStore: SessionStore;
   sessionRegistry: SessionRegistry;
   send: SendToConnection;
@@ -35,12 +42,17 @@ export interface TrivialHandlerDeps {
 export type TrivialHandlers = ReturnType<typeof createTrivialHandlers>;
 
 export function createTrivialHandlers(deps: TrivialHandlerDeps) {
-  const { registerDeviceToken, sessionStore, sessionRegistry, send } = deps;
+  const { registerDeviceToken, unregisterDeviceToken, sessionStore, sessionRegistry, send } = deps;
 
   return {
     onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string): void => {
       log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
       registerDeviceToken(token, platform, connectionId);
+    },
+
+    onUnregisterDeviceToken: (connectionId: UUID, token: string): void => {
+      log(`Device token unregistered from ${connectionId}: ${token.slice(0, 20)}...`);
+      unregisterDeviceToken(token);
     },
 
     onSessionHistoryRequest: (

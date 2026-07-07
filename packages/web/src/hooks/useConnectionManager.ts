@@ -18,8 +18,15 @@ import { DAEMON_BASE_PORT, errorToString } from '@remi/shared';
 import { WebSocketClient, type WebSocketClientConfig } from '@/lib/websocket-client';
 import type { ConnectionId, ConnectionState, ConnectionStatus } from '@/types';
 import type { UnlockedIdentity } from '@remi/shared';
-import { collectPendingChallengeConnections } from './connection-manager-helpers';
-import { splitConnectionId } from '@/lib/connection-id';
+import {
+  allocateStaggerSlot,
+  collectPendingChallengeConnections,
+  type ForceReconnectCandidate,
+  getOrCreateDeviceId,
+  isConnectionReplaceable,
+  planForceReconnect,
+} from './connection-manager-helpers';
+import { normalizeConnectionHost, splitConnectionId } from '@/lib/connection-id';
 import { buildWsUrl, parseHostInput, resolveDaemonPort } from '@/lib/port-discovery';
 import { createAuthResponse, fromBase64, importPublicKey, sign, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
@@ -30,7 +37,6 @@ import {
   createCancelQuestion,
   createCreateSessionRequest,
   createHello,
-  createPing,
   createResumeSessionRequest,
   createSessionHistoryRequest,
   createSessionListRequest,
@@ -44,6 +50,16 @@ function makeConnectionId(raw: string): ConnectionId {
   return raw as ConnectionId;
 }
 
+/**
+ * Stagger tuning shared by both reconnect-stampede fixes: fixed spacing per
+ * connection slot, so N daemons don't all visibly drop and reconnect in the
+ * same instant -- whether triggered by an explicit app-force-reconnect sweep
+ * (#664, `staggerStepMs` below) or by each connection's own heartbeat
+ * independently detecting staleness (#685, `reconnectStaggerMs` below).
+ */
+const CONNECTION_STAGGER_STEP_MS = 300;
+const FORCE_RECONNECT_STAGGER_JITTER_MS = 2000;
+
 /** Internal per-connection state */
 interface ManagedConnection {
   client: WebSocketClient;
@@ -53,6 +69,15 @@ interface ManagedConnection {
   status: ConnectionStatus;
   error: Error | null;
   sessionId: UUID | null;
+  /**
+   * Whether this connection holds the session's exclusive write lock
+   * ('attached') or is read-only, queued behind another connection
+   * ('queued') (#662). `undefined` before the first hello_ack, or when the
+   * daemon didn't send the field (older daemon, or a hello_ack sent outside
+   * the attach flow). Surfaced so a follow-up (#663) can render a
+   * read-only/waiting state instead of the user believing their input sent.
+   */
+  attachState?: 'attached' | 'queued';
   helloSent: boolean;
   pendingChallenge: {
     challenge: string;
@@ -62,10 +87,14 @@ interface ManagedConnection {
   needsPassphrase: boolean;
   serverFingerprint: string | null;
   directory?: string;
-  pingInterval?: ReturnType<typeof setInterval>;
   /** True while escalateReconnect is probing; prevents concurrent escalations
    *  racing reconnectWithUrl against themselves (#435). */
   escalating?: boolean;
+  /** Heartbeat-reconnect stagger slot allocated to this connection's
+   *  `WebSocketClient` (#685, `allocateStaggerSlot`). Released back to
+   *  `usedStaggerSlotsRef` when this connection is torn down, so a later
+   *  connection can reuse it instead of growing the offset forever. */
+  staggerSlot: number;
 }
 
 /** Hook options */
@@ -94,12 +123,18 @@ export interface UseConnectionManagerReturn {
   reconnect: (connectionId: ConnectionId) => void;
   /** Disconnect all connections */
   disconnectAll: () => void;
-  /** Send user input routed to the correct connection */
+  /**
+   * Send user input routed to the correct connection. `id`, when passed,
+   * is used as the wire message id instead of generating a fresh one --
+   * callers retrying a timed-out send (#663) pass the ORIGINAL id back in
+   * so the daemon's dedup makes the retry idempotent.
+   */
   sendInput: (
     connectionId: ConnectionId,
     sessionId: UUID,
     content: string,
     claudeSessionId?: UUID,
+    id?: UUID,
   ) => boolean;
   /** Send a bare Esc keystroke to the session (interrupt / escape any prompt). */
   sendEscape: (connectionId: ConnectionId, sessionId: UUID, claudeSessionId?: UUID) => boolean;
@@ -157,12 +192,12 @@ export interface UseConnectionManagerReturn {
 export function parseConnectionId(url: string): ConnectionId {
   try {
     const parsed = new URL(url);
-    const host = parsed.hostname || 'localhost';
+    const host = normalizeConnectionHost(parsed.hostname || 'localhost');
     const port = parsed.port || String(DAEMON_BASE_PORT);
     return makeConnectionId(`${host}:${port}`);
   } catch (err) {
     console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, err);
-    return makeConnectionId(url);
+    return makeConnectionId(normalizeConnectionHost(url));
   }
 }
 
@@ -187,6 +222,7 @@ function toConnectionState(mc: ManagedConnection): ConnectionState {
     serverFingerprint: mc.serverFingerprint,
     error: mc.error?.message ?? null,
     sessionId: mc.sessionId,
+    attachState: mc.attachState ?? null,
   };
 }
 
@@ -206,6 +242,14 @@ export function useConnectionManager(
   const onMessageRef = useRef(onMessage);
   const identityRef = useRef<UnlockedIdentity | null>(unlockedIdentity ?? null);
   const autoReconnectRef = useRef(autoReconnect);
+  /** Stagger slots currently held by live connections (#685,
+   *  `allocateStaggerSlot`). Each new WebSocketClient claims the smallest
+   *  free slot for its heartbeat-reconnect offset (`slot *
+   *  CONNECTION_STAGGER_STEP_MS`); a connection's slot is released back to
+   *  this set when it's torn down, so a long session that repeatedly
+   *  recreates a still-unreachable connection can't grow offsets forever or
+   *  collide with a stable sibling. */
+  const usedStaggerSlotsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     onMessageRef.current = onMessage;
@@ -242,6 +286,11 @@ export function useConnectionManager(
         createHello(clientId, clientVersion, {
           directory: mc.directory,
           resumeSessionId: resumeId,
+          // Same-device lock reclaim (#662): lets the daemon recognize this
+          // hello as the same physical client reconnecting after a dead
+          // connection, instead of queuing it behind a socket that will
+          // never come back.
+          deviceId: getOrCreateDeviceId(window.localStorage),
         }),
       );
     },
@@ -406,9 +455,10 @@ export function useConnectionManager(
           return;
         }
 
-        // Track session ID from hello_ack
+        // Track session ID + attach state from hello_ack
         if (message.type === 'hello_ack') {
           mc.sessionId = message.sessionId;
+          mc.attachState = message.attachState;
           if (mc.client && !mc.client.isConnected) {
             mc.client.setConnected();
           }
@@ -421,22 +471,6 @@ export function useConnectionManager(
     },
     [handleAuthChallenge, handleAuthResult, syncState],
   );
-
-  /** Start ping keep-alive for a connection */
-  const startPing = useCallback((mc: ManagedConnection) => {
-    if (mc.pingInterval) clearInterval(mc.pingInterval);
-    mc.pingInterval = setInterval(() => {
-      mc.client.send(createPing());
-    }, 30000);
-  }, []);
-
-  /** Stop ping keep-alive for a connection */
-  const stopPing = useCallback((mc: ManagedConnection) => {
-    if (mc.pingInterval) {
-      clearInterval(mc.pingInterval);
-      mc.pingInterval = undefined;
-    }
-  }, []);
 
   // Reconnect escalation: auto-reconnect exhausted the ceiling on the current
   // port. Re-resolve the daemon's port from the host (the old port is hinted
@@ -453,11 +487,11 @@ export function useConnectionManager(
       mc.escalating = true;
 
       const { host, port } = splitConnectionId(mc.connectionId);
-      // Set 'reconnecting' directly (the client emits onReconnectExhausted, not
-      // a status), and stop the old ping so it cannot fire during the probe.
+      // Set 'reconnecting' directly (the client emits onReconnectExhausted,
+      // not a status). The client's own keep-alive already stopped itself
+      // when the transport closed (WebSocketClient#handleClose).
       mc.status = 'reconnecting';
       mc.error = null;
-      stopPing(mc);
       syncState();
       console.debug(`[ConnectionManager] escalate ${mc.connectionId}: probing ${host}`);
 
@@ -470,7 +504,6 @@ export function useConnectionManager(
           console.warn(`[ConnectionManager] no daemon on ${host}; marking unreachable`);
           mc.status = 'unreachable';
           mc.error = new Error(`No daemon answered on ${host}`);
-          stopPing(mc);
           syncState();
           return;
         }
@@ -487,14 +520,13 @@ export function useConnectionManager(
           console.error(`[ConnectionManager] escalateReconnect failed on ${mc.connectionId}:`, err);
           mc.status = 'unreachable';
           mc.error = err instanceof Error ? err : new Error(String(err));
-          stopPing(mc);
           syncState();
         }
       } finally {
         mc.escalating = false;
       }
     },
-    [stopPing, syncState],
+    [syncState],
   );
 
   // Connect to a daemon (direct WebSocket)
@@ -505,20 +537,32 @@ export function useConnectionManager(
       // If already connected/connecting to this host:port, skip
       const existing = connectionsMapRef.current.get(connectionId);
       if (existing) {
-        const s = existing.status;
-        if (
-          s === 'connected' ||
-          s === 'connecting' ||
-          s === 'authenticating' ||
-          s === 'reconnecting'
-        ) {
+        if (!isConnectionReplaceable(existing.status)) {
           return connectionId;
         }
         // Tear down the rest (error / disconnected / unreachable) before reconnecting.
-        stopPing(existing);
         existing.client.disconnect();
         connectionsMapRef.current.delete(connectionId);
+        // Free its stagger slot: this connection may be recreated repeatedly
+        // (e.g. App.tsx's session_list_response handler re-calling
+        // connectDirect for a still-unreachable sibling port on every
+        // reconnect / app resume) -- without releasing the slot here, a
+        // monotonic-counter design would hand it a fresh, ever-growing
+        // offset each time (#685 review).
+        usedStaggerSlotsRef.current.delete(existing.staggerSlot);
       }
+
+      // Each connection gets a distinct offset so that if several daemons'
+      // heartbeats independently detect staleness at ~the same wall-clock
+      // tick, their automatic reconnects don't cluster within the same
+      // few-hundred-ms window (#685). The slot is reused from the pool of
+      // currently-free slots (not a monotonic counter), so it stays bounded
+      // by how many connections are live RIGHT NOW and never collides with
+      // a live sibling no matter how many connect/disconnect cycles a long
+      // session goes through.
+      const staggerSlot = allocateStaggerSlot(usedStaggerSlotsRef.current);
+      usedStaggerSlotsRef.current.add(staggerSlot);
+      const reconnectStaggerMs = staggerSlot * CONNECTION_STAGGER_STEP_MS;
 
       const mc: ManagedConnection = {
         // client is initialized after this object because WebSocketClient callbacks
@@ -536,11 +580,13 @@ export function useConnectionManager(
         needsPassphrase: false,
         serverFingerprint: null,
         directory,
+        staggerSlot,
       };
 
       const config: WebSocketClientConfig = {
         url,
         autoReconnect: autoReconnectRef.current,
+        reconnectStaggerMs,
       };
 
       const messageHandler = createMessageHandler(connectionId);
@@ -557,13 +603,11 @@ export function useConnectionManager(
 
           if (newStatus === 'connected') {
             mc.error = null;
-            startPing(mc);
           }
 
           if (newStatus === 'disconnected' || newStatus === 'reconnecting') {
             mc.sessionId = null;
             mc.helloSent = false;
-            stopPing(mc);
           }
 
           syncState();
@@ -586,7 +630,7 @@ export function useConnectionManager(
 
       return connectionId;
     },
-    [createMessageHandler, sendHello, startPing, stopPing, syncState, escalateReconnect],
+    [createMessageHandler, sendHello, syncState, escalateReconnect],
   );
 
   // Retry a connection that gave up ('unreachable'/'error'/'disconnected') by
@@ -614,23 +658,24 @@ export function useConnectionManager(
     (connectionId: ConnectionId) => {
       const mc = connectionsMapRef.current.get(connectionId);
       if (!mc) return;
-      stopPing(mc);
       mc.client.disconnect();
       connectionsMapRef.current.delete(connectionId);
+      // Free the stagger slot (#685) so a later connection can reuse it.
+      usedStaggerSlotsRef.current.delete(mc.staggerSlot);
       syncState();
     },
-    [stopPing, syncState],
+    [syncState],
   );
 
   // Disconnect all
   const disconnectAll = useCallback(() => {
     for (const mc of connectionsMapRef.current.values()) {
-      stopPing(mc);
       mc.client.disconnect();
     }
     connectionsMapRef.current.clear();
+    usedStaggerSlotsRef.current.clear();
     syncState();
-  }, [stopPing, syncState]);
+  }, [syncState]);
 
   const sendToConnection = useCallback(
     (connectionId: ConnectionId, message: ProtocolMessage): boolean => {
@@ -652,10 +697,11 @@ export function useConnectionManager(
       sessionId: UUID,
       content: string,
       claudeSessionId?: UUID,
+      id?: UUID,
     ): boolean => {
       return sendToConnection(
         connectionId,
-        createUserInput(sessionId, content, undefined, claudeSessionId),
+        createUserInput(sessionId, content, undefined, claudeSessionId, id),
       );
     },
     [sendToConnection],
@@ -834,13 +880,52 @@ export function useConnectionManager(
   const passphraseConnectionId = passphraseConnection?.connectionId ?? null;
   const passphraseServerFingerprint = passphraseConnection?.serverFingerprint ?? null;
 
-  // Force reconnect on network change or app resume (iOS)
+  // Force reconnect on network change or app resume (iOS, main.tsx). Before
+  // #664 this unconditionally force-closed EVERY connected/authenticating
+  // connection at once: with ~5 daemons, foregrounding the phone guaranteed a
+  // full simultaneous reconnect cycle even when every socket was still
+  // perfectly healthy. planForceReconnect (#664) decides per-connection
+  // whether a reconnect is even needed, and staggers the ones that are.
   useEffect(() => {
     const handleForceReconnect = () => {
+      const mcs: ManagedConnection[] = [];
+      const candidates: ForceReconnectCandidate<ConnectionId>[] = [];
       for (const mc of connectionsMapRef.current.values()) {
-        if (mc.status === 'connected' || mc.status === 'authenticating') {
+        if (mc.status !== 'connected' && mc.status !== 'authenticating') continue;
+        mcs.push(mc);
+        candidates.push({
+          connectionId: mc.connectionId,
+          isOpen: mc.client.isTransportOpen,
+          isHealthy: mc.client.isHealthy,
+        });
+      }
+      if (candidates.length === 0) return;
+
+      const plan = planForceReconnect(candidates, {
+        staggerStepMs: CONNECTION_STAGGER_STEP_MS,
+        staggerJitterMs: FORCE_RECONNECT_STAGGER_JITTER_MS,
+      });
+      const byId = new Map(mcs.map((mc) => [mc.connectionId, mc]));
+
+      for (const decision of plan) {
+        if (!decision.shouldReconnect) continue;
+        const mc = byId.get(decision.connectionId);
+        if (!mc) continue;
+
+        if (decision.delayMs <= 0) {
           mc.client.forceReconnect();
+          continue;
         }
+        setTimeout(() => {
+          // Re-check both connection identity (it may have been replaced or
+          // torn down during the delay) and current health (isHealthy already
+          // implies the transport is open) -- a connection that self-healed
+          // during its stagger delay (e.g. its own heartbeat probe finally
+          // got a reply) should be left alone, not torn down anyway.
+          if (connectionsMapRef.current.get(decision.connectionId) === mc && !mc.client.isHealthy) {
+            mc.client.forceReconnect();
+          }
+        }, decision.delayMs);
       }
     };
     document.addEventListener('app-force-reconnect', handleForceReconnect);
@@ -851,10 +936,10 @@ export function useConnectionManager(
   useEffect(() => {
     return () => {
       for (const mc of connectionsMapRef.current.values()) {
-        if (mc.pingInterval) clearInterval(mc.pingInterval);
         mc.client.disconnect();
       }
       connectionsMapRef.current.clear();
+      usedStaggerSlotsRef.current.clear();
     };
   }, []);
 

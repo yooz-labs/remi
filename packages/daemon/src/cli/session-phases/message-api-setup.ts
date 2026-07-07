@@ -40,6 +40,9 @@ export interface MessageApiSetupDeps {
   /** Prune a permanently-invalid device token (epic #603 Phase 6). Forwarded to
    *  the dispatcher so a BadDeviceToken push removes the dead token. */
   pruneToken?: (token: string) => void;
+  /** Pull in a sibling daemon's token removal/registration before a push
+   *  decision (#690). Forwarded to the dispatcher. */
+  refreshDeviceTokens?: () => void;
   /**
    * Called on every question emission so the caller can swap config sources
    * without re-wiring the factory. MUST be synchronous and non-throwing: it
@@ -80,6 +83,7 @@ export function createMessageApiForSession(
     transcriptWatchers,
     deviceTokens,
     pruneToken,
+    refreshDeviceTokens,
     pushConfig,
     updateRemiStatus,
     maxBulletLength,
@@ -106,6 +110,7 @@ export function createMessageApiForSession(
       pushConfig,
       getPrimarySessionId,
       ...(pruneToken ? { pruneToken } : {}),
+      ...(refreshDeviceTokens ? { refreshDeviceTokens } : {}),
     },
     sessionId,
   );
@@ -147,8 +152,15 @@ export function createMessageApiForSession(
       // client sees it in-app). A HELD escalation (#603 Phase 3) always also
       // pushes to the lock screen — the attached client may be backgrounded.
       // maybePush records the delivery outcome (#603 Phase 1) for the gate to
-      // probe; the regular question path does not await it.
-      void notifications.maybePush(questionSessionId, question, { held: opts?.held === true });
+      // probe; the regular question path does not await it. Fire-and-forget
+      // from this synchronous hook callback, so guard against a future
+      // pushConfig/refreshDeviceTokens contract change surfacing as an
+      // unhandled rejection (matches the escalator's #672 push guard).
+      void notifications
+        .maybePush(questionSessionId, question, { held: opts?.held === true })
+        .catch((err) => {
+          logError(`[Session ${sessionId}] Question push threw:`, err);
+        });
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);

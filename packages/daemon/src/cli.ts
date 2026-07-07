@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.17'; // REMI_COMPILED_VERSION
+      return '0.6.18-dev.38'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.17'; // REMI_COMPILED_VERSION
+    return '0.6.18-dev.38'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -94,6 +94,7 @@ loadDotenvFile();
 
 import {
   createDaemonUpdateAvailable,
+  createError,
   createHelloAck,
   createQuestionResolved,
   createReplayBatch,
@@ -133,6 +134,7 @@ import {
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { installProcessGuards } from './cli/process-guards.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -140,11 +142,10 @@ import { createPtySessionForSession } from './cli/session-phases/pty-session-set
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
-import { startTranscriptFallback } from './cli/transcript-fallback.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
-import { HookConfigManager, HookServer } from './hooks/index.ts';
+import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
@@ -465,18 +466,6 @@ if (
 // Instantiated early so subcommand handlers (ls, attach, kill) can use it.
 const liveSessionsRegistry = new SessionRegistryFile();
 
-// Experimental TranscriptBinder flags (#453 phase 3). Snapshotted into immutable
-// module-level consts at boot and NEVER re-read per session: a mid-process flip
-// would split sessions across the old/new code paths, which share the
-// transcriptWatchers map. SIGUSR1 / config reload is a no-op for these; an
-// instant flip-back means a daemon restart (design §3.1 v4 #9).
-// transcript_binder_enabled defaults ON (#503); transcript_binder_shadow OFF.
-const binderEnabled = remiConfig.features.transcript_binder_enabled;
-// Drive mode and shadow mode are mutually exclusive: enabled wins. When the
-// binder DRIVES, running the shadow alongside it would be meaningless (and would
-// double-construct the binder), so the shadow is suppressed whenever drive is on.
-const binderShadow = remiConfig.features.transcript_binder_shadow && !binderEnabled;
-
 // Handle 'ls' subcommand: query live sessions from running daemon(s)
 if (cliSubcommand === 'ls') {
   const { runLsCommand } = await import('./cli/cmd-ls.ts');
@@ -716,6 +705,23 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHo
   process.chdir(dirResult.resolved);
 }
 
+// Every read-only / remote-client subcommand (ls, recent, kill, detach, attach,
+// code, start/stop/status/logs, keys, autostart, --host remote-new) has already
+// exited above. Everything past this point boots a daemon or a local wrapper
+// session, both of which construct a TranscriptBinder via setupHookBridge.
+//
+// `transcript_binder_enabled` is a deprecated kill-switch (#470): the old
+// hook-binding path it used to select back to has been deleted, so setting it
+// false has no effect on behavior anymore — warn so an operator relying on it
+// as an escape hatch notices instead of silently getting drive mode anyway.
+// Gated here (not earlier) so read-only client invocations, which never touch
+// the binder, don't get spammed with a warning about it.
+if (!remiConfig.features.transcript_binder_enabled) {
+  logError(
+    '[Config] transcript_binder_enabled=false is deprecated and has no effect: the old hook-binding path it used to restore was deleted in #470. The TranscriptBinder always drives session binding now.',
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Config (merge: CLI flags > env vars > config file > built-in defaults)
 // ---------------------------------------------------------------------------
@@ -856,11 +862,10 @@ const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
-// Per-session drive-mode TranscriptBinder teardown hooks (#453 phase 3, commit
-// 5). The shared transcriptWatchers/transcriptFallbackTimers cleanup below stops
-// the binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
-// interval (it lives inside the binder); close() reaches all three. Empty when
-// transcript_binder_enabled is off (no binder is ever constructed).
+// Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
+// shared transcriptWatchers/transcriptFallbackTimers cleanup below stops the
+// binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
+// interval (it lives inside the binder); close() reaches all three.
 const binderClosers: Map<UUID, () => void> = new Map();
 // Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
 // by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
@@ -969,6 +974,23 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    onConnectionReclaimed: (sessionId, staleConnectionId, newConnectionId) => {
+      // Same device reconnected while its own previous connection still held
+      // the lock (#662) — likely a dead socket the pong reaper hasn't caught
+      // yet. The registry already moved the lock to newConnectionId; force-
+      // close the stale transport so it can't linger as a second listener.
+      log(
+        `Session ${sessionId} reclaimed by same device: evicting stale connection ${staleConnectionId} for ${newConnectionId}`,
+      );
+      registry.sendRaw(
+        staleConnectionId,
+        createError(
+          'SESSION_RECLAIMED',
+          'This device reconnected from a new connection; closing this one.',
+        ),
+      );
+      registry.closeConnection(staleConnectionId, 'Reclaimed by the same device reconnecting');
+    },
     onConnectionPromoted: (sessionId, connectionId, result) => {
       log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
       // NOTE: this resolves the hello_ack binding inline rather than via
@@ -993,6 +1015,7 @@ const sessionRegistry = new SessionRegistry(
             nextBulletId: result.nextBulletId,
           },
           { claudeSessionId: claudeId, transcriptPath: tpath },
+          result.attachState,
         ),
       );
       if (!sent) {
@@ -1036,6 +1059,21 @@ const spawningPorts = new Set<number>();
 const deviceTokenStore = new DeviceTokenStore(path.join(REMI_DIR, 'device-tokens.json'));
 deviceTokenStore.load();
 const deviceTokens = deviceTokenStore.map;
+
+// Daemon-wide fail-safe for a PermissionRequest no session on this daemon owns
+// (#672): shared by every session's hook bridge so its escalation rate-limit
+// is per foreign claude session id ACROSS the whole daemon, not reset per
+// session. See ForeignSessionEscalator's module doc for the ownership ladder.
+const foreignSessionEscalator = new ForeignSessionEscalator({
+  liveSessionsRegistry,
+  bindingStore,
+  deviceTokens,
+  pushConfig: () => ({
+    signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+    ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+  }),
+  currentPort: () => PORT,
+});
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
@@ -1149,6 +1187,9 @@ async function createNewSession(
       // #603 Phase 6: prune a permanently-invalid token (BadDeviceToken) so the
       // daemon stops retrying it; the store removes + persists it.
       pruneToken: (token) => deviceTokenStore.prune(token, 'apns-invalid'),
+      // #690: pick up a sibling daemon's removal/registration before deciding
+      // whether to push.
+      refreshDeviceTokens: () => deviceTokenStore.refreshFromDisk(),
       pushConfig: () => ({
         signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
         ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
@@ -1183,8 +1224,12 @@ async function createNewSession(
   // QuestionPresenceTracker pairs hook-derived metadata with PTY-derived
   // screen presence: hooks record (no push), PTY confirms (push). Status
   // transitions out of 'waiting' drop pending records so auto-approve
-  // silent paths never push.
-  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts));
+  // silent paths never push. `hasLiveQuestions` backs the #712 orphan-prompt
+  // fallback: it is how the tracker tells a PTY echo of a gate-pushed
+  // escalation (already registered here) apart from a genuine orphan.
+  const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
+    hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+  });
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1195,22 +1240,20 @@ async function createNewSession(
       },
       onQuestion: (question) => {
         // #625 single gate: when a hook server is active the auto-approve gate is
-        // the SOLE authority for permission questions and pushes escalations itself
-        // (binary via onHeldEscalate, passthrough via escalatePassthrough). The PTY
-        // parser echoes EVERY on-screen prompt — including ones the gate already
-        // auto-approved — so routing it here is the phantom-notification source
-        // (>1,100 confirmed pushes fired right after a 0 ms approve). Suppress it for
-        // hooked sessions; keep it as the only signal when no hook server is
-        // configured (the genuine fallback).
+        // the primary authority for permission questions and pushes escalations
+        // itself (binary via onHeldEscalate, passthrough via escalatePassthrough).
+        // The PTY parser echoes EVERY on-screen prompt — including ones the gate
+        // already auto-approved — so routing those through unconditionally was the
+        // phantom-notification source (>1,100 confirmed pushes fired right after a
+        // 0 ms approve). But #624/#712 review found real prompts that reach ONLY
+        // the PTY (Claude's native Agent-Teams permissions, a passthrough
+        // re-render after a held hook's card was already dismissed, MCP
+        // elicitation dialogs) — those were silently swallowed by the old
+        // unconditional suppression. `onOrphanPTYPrompt` tells the two apart
+        // structurally (pending hook record / live registered question means the
+        // gate owns this cycle) and debounces the genuine orphans before pushing.
         if (hookServer) {
-          // #624 review: a prompt with NO PermissionRequest hook (Claude's native
-          // Agent-Teams permissions, MCP elicitation dialogs) reaches only the PTY,
-          // so suppression here means it is not pushed. Log it (not silent) so a
-          // stuck no-hook prompt leaves a trace; routing these through without
-          // reintroducing the phantom flood is a tracked follow-up.
-          log(
-            `[Question] PTY question suppressed (hook server active; gate owns escalations): "${question.text.slice(0, 60)}"`,
-          );
+          tracker.onOrphanPTYPrompt(question);
           return;
         }
         tracker.onPTYPromptVisible(question);
@@ -1258,11 +1301,10 @@ async function createNewSession(
         transcriptFallbackTimers,
         autoApproveService,
         currentPort: () => PORT,
-        shadowBinder: binderShadow,
-        binderEnabled,
         transcriptDiscovery,
         subagentViews,
         statusWriter,
+        foreignSessionEscalator,
         // #573: classify holdable escalations + the hold / slow-eval-push budgets
         // (seconds; the gate converts to ms and treats <=0 as disabled).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
@@ -1276,6 +1318,9 @@ async function createNewSession(
         // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
         // gate can hold. The dispatcher records the per-question delivery outcome.
         awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
+        // #733: when a held escalation times out unanswered, tell the phone the
+        // prompt moved to the terminal instead of silently dismissing the card.
+        onHoldTimeout: (questionId) => notifications.pushHoldTimeoutHandoff(sessionId, questionId),
         deliveryConfirmSec: autoApproveService
           ? remiConfig.auto_approve.delivery_confirm_timeout
           : 0,
@@ -1288,10 +1333,10 @@ async function createNewSession(
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
-    // In drive mode the binder owns the fallback poll + #452 dir-watch (armed by
-    // its start() inside setupHookBridge); record its teardown so cleanup()
-    // reaches the rotation dir-poll interval the shared maps below cannot.
-    if (binderEnabled) binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
+    // The binder owns the fallback poll + #452 dir-watch (armed by its start()
+    // inside setupHookBridge); record its teardown so cleanup() reaches the
+    // rotation dir-poll interval the shared maps below cannot.
+    binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
     // Register the per-session gate handle (#573) so the WebSocket answer path
     // can resolve a held permission / cancel the eval for this exact session.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
@@ -1306,6 +1351,12 @@ async function createNewSession(
       wsPort: remiStatus.wsPort,
       sendMessage,
       cleanup,
+      // #538/#661: an AUQ answered directly in the terminal (after the runner
+      // escalated) is detected in onData; wire the same cross-client dismissal +
+      // eval-cancel the phone-answered path uses (createInputHandlers below).
+      onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
+      cancelAutoApproveForQuestion: (sid, questionId, reason) =>
+        sessionGateHandles.get(sid)?.cancelEvalForQuestion(questionId, reason),
     },
     { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );
@@ -1364,24 +1415,9 @@ async function createNewSession(
     logError(`[live-sessions] No Claude child pid after PTY start for session ${sessionId}`);
   }
 
-  // In drive mode the TranscriptBinder's start() (inside setupHookBridge) already
-  // armed BOTH the fallback poll and the #452 rotation dir-watch; arming it again
-  // here would double-arm the same fallback timer. Only the old path needs this.
-  if (!binderEnabled) {
-    startTranscriptFallback(
-      {
-        sessionRegistry,
-        transcriptDiscovery,
-        transcriptWatchers,
-        transcriptFallbackTimers,
-      },
-      sessionId,
-      workingDirectory,
-      binding.claudeSessionId,
-      messageApi,
-      sendAndRecord,
-    );
-  }
+  // The TranscriptBinder's start() (inside setupHookBridge) already armed BOTH
+  // the fallback poll and the #452 rotation dir-watch; calling
+  // startTranscriptFallback again here would double-arm the same fallback timer.
 
   return ptySession;
 }
@@ -1443,6 +1479,9 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
   registerDeviceToken: (token, platform, connectionId) =>
     deviceTokenStore.register(token, platform, connectionId),
+  // #690: explicit user removal of this server from the phone app. Never
+  // fires on a mere disconnect/app suspension — those must keep pushing.
+  unregisterDeviceToken: (token) => deviceTokenStore.unregister(token),
   sessionStore,
   sessionRegistry,
   send: sendToConnection,
@@ -1455,8 +1494,8 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // #573: route a held-permission answer / release-to-passthrough / eval-cancel
   // to the RIGHT session's gate (the map is populated per session in
   // createNewSession).
-  resolveHeldPermission: (sessionId, questionId, decision) =>
-    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision) ?? false,
+  resolveHeldPermission: (sessionId, questionId, decision, suggestionIndex) =>
+    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision, suggestionIndex) ?? false,
   releaseHeldAsPassthrough: (sessionId, questionId) =>
     sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
   // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,
@@ -1762,9 +1801,8 @@ async function cleanup(): Promise<void> {
     mdnsPublisher = null;
   }
 
-  // Drive-mode binders own a rotation dir-poll interval the shared maps below do
-  // not reach; close() tears down its watcher + fallback timer + dir-poll. No-op
-  // map when transcript_binder_enabled is off.
+  // Binders own a rotation dir-poll interval the shared maps below do not
+  // reach; close() tears down its watcher + fallback timer + dir-poll.
   for (const closeBinder of binderClosers.values()) {
     closeBinder();
   }
@@ -1795,6 +1833,11 @@ async function cleanup(): Promise<void> {
     liveSessionsRegistry.unregister(primary);
   }
 }
+
+// Guard against unhandled rejections / uncaught exceptions killing the whole
+// daemon unsupervised (#534). Covers wrapper mode + daemon mode; short-lived
+// subcommands process.exit() earlier and never reach this line.
+installProcessGuards({ logError, onFatal: cleanup });
 
 // ---------------------------------------------------------------------------
 // Main: Start in wrapper or daemon mode
@@ -1856,8 +1899,14 @@ if (cliDaemonMode) {
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Create the daemon's single session (one session per daemon)
-  const workingDirectory = cliDir ? path.resolve(cliDir) : process.cwd();
+  // Create the daemon's single session (one session per daemon).
+  // NOTE: when --dir/--recent was passed, we already `process.chdir()`'d to
+  // the tilde-expanded, validated directory above (see the `resolveDirectory`
+  // calls near the top of this file). Re-resolving the raw `cliDir` string
+  // here (which may still contain a literal `~`) against that NEW cwd used to
+  // produce a malformed concatenated path (#674); process.cwd() is always the
+  // correct value by this point.
+  const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
 

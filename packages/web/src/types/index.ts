@@ -4,10 +4,29 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
+import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
 /** Source that produced a UI message */
 export type MessageSource = 'optimistic' | 'pty' | 'transcript';
+
+/**
+ * How a question resolved on a channel OTHER than this client's own answer
+ * (#652). Derived from the wire type so the two can never drift; drives the
+ * brief "resolved elsewhere" trace the card shows before it fades, so a
+ * lock-screen or terminal answer leaves visible confirmation instead of
+ * vanishing. A new wire reason makes `resolveTraceLabel`'s switch non-exhaustive
+ * (a compile error), forcing it to be handled here too.
+ */
+export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
+
+/**
+ * Client-side delivery state for a message bubble. Extends the wire-level
+ * `MessageState` with `'failed'` -- inferred locally when no `ack` arrives
+ * within the timeout after one automatic retry (#663). Never sent over the
+ * wire; the daemon only ever acks `'delivered'`.
+ */
+export type UIMessageState = MessageState | 'failed';
 
 /** Peer role in WebRTC connection */
 export type PeerRole = 'host' | 'client';
@@ -39,6 +58,14 @@ export interface ConnectionState {
   readonly error: string | null;
   /** The session ID from hello_ack (the directly attached session) */
   readonly sessionId: string | null;
+  /**
+   * Whether this connection holds the session's exclusive write lock
+   * ('attached') or is read-only, queued behind another connection
+   * ('queued') (#662). `null` before the first hello_ack or when the daemon
+   * didn't send the field. A follow-up (#663) renders this as a
+   * read-only/waiting state in the UI.
+   */
+  readonly attachState: 'attached' | 'queued' | null;
 }
 
 /** Agent status as displayed in the UI. Mirrors the daemon's `AgentStatus`
@@ -84,7 +111,7 @@ export interface UIMessage {
   readonly sender: MessageSender;
   readonly content: string;
   readonly timestamp: Timestamp;
-  readonly state: MessageState;
+  readonly state: UIMessageState;
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
@@ -104,6 +131,14 @@ export interface UIMessage {
   readonly lastBulletId?: number;
   /** Raw content blocks from transcript (Text, ToolUse, ToolResult) */
   readonly contentBlocks?: readonly import('@remi/shared/protocol.ts').TranscriptContentBlock[];
+  /**
+   * For a `sender: 'system'` note describing a failed send (e.g. "Failed to
+   * send message"): the `id` of the user message it describes. Lets a
+   * resync merge (#687) keep the note attached to its send -- both survive
+   * together, or neither does. Client-only bookkeeping; never sent over the
+   * wire.
+   */
+  readonly relatedMessageId?: UUID;
 }
 
 /** Session information for the UI */
@@ -150,6 +185,15 @@ export interface UISession {
   readonly agentType?: string;
   /** For a subagent view: false once it finished (transcript stays viewable). */
   readonly subagentActive?: boolean;
+  /**
+   * Whether this session's connection holds the exclusive write lock
+   * ('attached') or is read-only, queued behind another client
+   * ('queued') (#662/#663). Patched from `hello_ack.attachState` and
+   * refreshed by a `NOT_ACTIVE_CONNECTION` error. `undefined` (older
+   * daemon, or a hello_ack sent outside the attach flow) is treated as
+   * attached -- the pre-#662 assumption every hello_ack held the lock.
+   */
+  readonly attachState?: 'attached' | 'queued';
 }
 
 /** Structured option for a question */
@@ -182,6 +226,11 @@ export interface UIQuestion {
   readonly timestamp: Timestamp;
   /** The answer that was selected (set after answering) */
   readonly answeredWith?: string;
+  /** #652: the prompt resolved on another channel (lock screen / terminal /
+   *  another client). Set by the `question_resolved` handler when the card was
+   *  NOT answered locally, so the card shows a brief trace then fades instead of
+   *  vanishing with no confirmation. Mutually exclusive with `answeredWith`. */
+  readonly resolvedReason?: UIQuestionResolvedReason;
   /** The Claude agent this prompt belongs to ('main' default). Keys the
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
@@ -197,6 +246,12 @@ export interface UIQuestion {
   readonly submitting?: boolean;
   /** #627: the daemon could not auto-answer; the card invites Cancel / terminal. */
   readonly autoAnswerFailed?: boolean;
+  /** #718: mirrors `Question.optionsAreFallback` — true when `structuredOptions`
+   *  is the daemon's honest Yes/No fallback rather than a real PTY/suggestion-
+   *  derived set. Lets the #396 richer-wins guard (`question-merge.ts`)
+   *  distinguish the fallback from a genuine 2-option Yes/No question that
+   *  happens to share the same labels. */
+  readonly optionsAreFallback?: boolean;
 }
 
 /** App settings */

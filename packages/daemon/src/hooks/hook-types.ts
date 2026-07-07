@@ -69,11 +69,34 @@ export interface SessionStartHookInput extends HookCommonInput {
 // --- 20 new events ---
 
 /**
- * One entry in `permission_suggestions`. Strings are the binary-label
- * shape (e.g. Edit's `["Yes", "Always", "No"]`). Objects carry tool-
- * specific structured options discriminated by `type` — for example
- * `{type:"addDirectories",...}` or `{type:"setMode",...}`. The wider
- * shape is open: callers must treat unknown `type` values as opaque.
+ * One entry in `permission_suggestions`. Strings are the legacy binary-label
+ * shape (e.g. Edit's `["Yes", "Always", "No"]`).
+ *
+ * Objects are a "permission update entry" (ground truth:
+ * code.claude.com/docs/en/hooks, #718) — the SAME shape Claude Code's own
+ * permission-update API uses, discriminated by `type`:
+ *   - `{type:"addRules", rules:[{toolName, ruleContent?}], behavior:"allow"|
+ *     "deny"|"ask", destination}` — add a rule; only `behavior:"allow"` is a
+ *     "yes"-shaped suggestion the daemon can render as a one-tap option.
+ *   - `{type:"replaceRules"|"removeRules", ...same shape}` — narrows/resets
+ *     rules; never a "yes" variant, always skipped.
+ *   - `{type:"setMode", mode, destination}` — switch permission mode (e.g.
+ *     "plan", "acceptEdits").
+ *   - `{type:"addDirectories"|"removeDirectories", directories:[...],
+ *     destination}` — grant/revoke directory access; only `addDirectories`
+ *     is a "yes" variant.
+ *   - `destination` is `"session" | "localSettings" | "projectSettings" |
+ *     "userSettings"` on every variant.
+ *
+ * `optionsFromSuggestions` (hook-event-bridge.ts) is the single place that
+ * interprets this union into option labels; an answer that picks a
+ * suggestion-derived option round-trips the ORIGINAL entry back to Claude
+ * Code as `hookSpecificOutput.decision.updatedPermissions` (real "Yes,
+ * always", #718) — per the docs, "a hook can echo one of the
+ * permission_suggestions it received as its own updatedPermissions output,
+ * which is equivalent to the user selecting that 'always allow' option in
+ * the dialog." The wider shape is open: callers must treat unknown `type`
+ * values as opaque and skip them rather than guess.
  */
 export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
 
@@ -83,6 +106,17 @@ export interface PermissionRequestHookInput extends HookCommonInput {
   tool_name: string;
   tool_input: Record<string, unknown>;
   permission_suggestions?: PermissionSuggestion[];
+  /**
+   * Cheap future-proofing (#673): NOT sent by Claude Code today (confirmed
+   * against the cc-ref reference source — the PermissionRequest struct there
+   * carries only tool_name/input/modes/reason, no tool_use_id), unlike
+   * PreToolUse/PostToolUse which already do. Declared as an optional
+   * passthrough field so that if a future Claude Code version adds it, the
+   * external-resolution correlation in AutoApproveGate can prefer an exact
+   * id match over the tool_name+tool_input signature fallback with zero
+   * further plumbing.
+   */
+  tool_use_id?: string;
 }
 
 /** Fired after a tool call fails */

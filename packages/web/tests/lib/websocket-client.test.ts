@@ -7,7 +7,17 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { DEFAULT_MAX_RECONNECT_ATTEMPTS, WebSocketClient } from '../../src/lib/websocket-client';
+import type {
+  PingMessage,
+  PongMessage,
+  ProtocolMessage,
+} from '@remi/shared/protocol.ts';
+import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
+import {
+  computeReconnectDelay,
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  WebSocketClient,
+} from '../../src/lib/websocket-client';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -257,5 +267,443 @@ describe('WebSocketClient reconnectWithUrl', () => {
     } finally {
       server.stop();
     }
+  });
+});
+
+/**
+ * Regression coverage for the PR #666 review finding: the daemon's pong-based
+ * liveness reaper (connection.ts, #662) force-closed every healthy web/mobile
+ * connection every ~60-90s because WebSocketClient never replied to the
+ * server's protocol-level 'ping' with a 'pong'. Exercises the REAL
+ * WebSocketClient against a real Bun WebSocket server (no mocks, no DOM
+ * needed — WebSocketClient only touches the global WebSocket API, which Bun
+ * implements natively, same pattern as the reconnect tests above).
+ */
+describe('WebSocketClient ping/pong liveness (#662 review)', () => {
+  test('replies with pong when the server sends a protocol ping', async () => {
+    const received: ProtocolMessage[] = [];
+    let pingSent: PingMessage | null = null;
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          const ping = createPing();
+          pingSent = ping;
+          ws.send(serialize(ping));
+        },
+        message(_ws, data) {
+          const raw = typeof data === 'string' ? data : data.toString();
+          const msg = deserialize(raw);
+          if (msg) received.push(msg);
+        },
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(
+      new WebSocketClient({ url, heartbeatInterval: 0, connectionTimeout: 2000 }),
+    );
+
+    try {
+      client.connect();
+      const start = Date.now();
+      while (!received.some((m) => m.type === 'pong') && Date.now() - start < 3000) {
+        await wait(25);
+      }
+
+      const pong = received.find((m) => m.type === 'pong') as PongMessage | undefined;
+      expect(pong).toBeDefined();
+      // The reply must ack the SPECIFIC ping (pingId), not just any pong.
+      expect(pong?.pingId).toBe(pingSent?.id);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('replies with pong repeatedly across multiple server pings', async () => {
+    // The real daemon reaper checks on every tick (#662): a client that
+    // answers once but goes quiet afterward would still get reaped, so this
+    // guards against a reply that only fires on the FIRST ping.
+    const pingIds: string[] = [];
+    const pongIdsSeen = new Set<string>();
+    let serverWs: Bun.ServerWebSocket<unknown> | null = null;
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          serverWs = ws;
+        },
+        message(_ws, data) {
+          const raw = typeof data === 'string' ? data : data.toString();
+          const msg = deserialize(raw);
+          if (msg?.type === 'pong') pongIdsSeen.add(msg.pingId);
+        },
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(
+      new WebSocketClient({ url, heartbeatInterval: 0, connectionTimeout: 2000 }),
+    );
+
+    try {
+      client.connect();
+      const openStart = Date.now();
+      while (!serverWs && Date.now() - openStart < 2000) {
+        await wait(10);
+      }
+      expect(serverWs).not.toBeNull();
+
+      for (let i = 0; i < 3; i++) {
+        const ping = createPing();
+        pingIds.push(ping.id);
+        serverWs?.send(serialize(ping));
+        await wait(50);
+      }
+
+      expect(pongIdsSeen.size).toBe(3);
+      for (const id of pingIds) {
+        expect(pongIdsSeen.has(id)).toBe(true);
+      }
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+/**
+ * Coverage for the #664 fix: the OLD heartbeat passively waited for silence
+ * to exceed a window EQUAL to the server's own independent 30s ping cadence
+ * (zero margin -- any latency blip on the server's side force-closed a
+ * healthy socket). The NEW heartbeat actively sends its own `ping` probe
+ * every interval and only counts a miss when the PREVIOUS probe got no
+ * reply, decoupling detection from the server's independent schedule and
+ * tolerating real jitter.
+ */
+describe('WebSocketClient heartbeat margin & round-trip liveness (#664)', () => {
+  test('does NOT disconnect a healthy connection whose replies are delayed past the old zero-margin window', async () => {
+    // 1.7x the heartbeat interval: strictly more than the OLD single-window
+    // margin (which was exactly 1x the server's cadence), on every single
+    // reply. The old passive-silence watchdog would have force-closed this
+    // within two ticks; the new round-trip model self-heals every cycle
+    // because SOME reply always eventually lands before the next check.
+    const interval = 100;
+    const replyDelay = Math.round(interval * 1.7);
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const raw = typeof data === 'string' ? data : data.toString();
+          const msg = deserialize(raw);
+          if (msg?.type === 'ping') {
+            setTimeout(() => {
+              ws.send(serialize(createPong((msg as PingMessage).id)));
+            }, replyDelay);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    let staleErrorSeen = false;
+    const client = track(
+      new WebSocketClient(
+        { url, heartbeatInterval: interval, connectionTimeout: 2000 },
+        {
+          onError: (err) => {
+            if (err.message.includes('stale')) staleErrorSeen = true;
+          },
+        },
+      ),
+    );
+
+    try {
+      client.connect();
+      // Run for well over 10 heartbeat cycles -- long enough that the old
+      // zero-margin model would have reaped it many times over.
+      await wait(interval * 12);
+
+      expect(staleErrorSeen).toBe(false);
+      expect(client.isTransportOpen).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('detects a genuinely silent server (no pings, no replies at all) as stale within a bounded time', async () => {
+    const interval = 100;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response('no upgrade', { status: 400 });
+      },
+      websocket: {
+        // Never sends anything back, including replies to the client's own
+        // probes -- models a fully wedged peer (not just a slow one).
+        open() {},
+        message() {},
+        close() {},
+      },
+    });
+
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    let staleErrorSeen = false;
+    const client = track(
+      new WebSocketClient(
+        { url, heartbeatInterval: interval, connectionTimeout: 2000, autoReconnect: false },
+        {
+          onError: (err) => {
+            if (err.message.includes('stale')) staleErrorSeen = true;
+          },
+        },
+      ),
+    );
+
+    try {
+      client.connect();
+      const start = Date.now();
+      // Bounded: must trip well within a handful of heartbeat intervals, not
+      // linger anywhere near the Bun-level idleTimeout backstop (120s).
+      while (!staleErrorSeen && Date.now() - start < 5000) await wait(25);
+
+      expect(staleErrorSeen).toBe(true);
+      expect(client.isTransportOpen).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('isHealthy is true immediately after connecting and false once the socket is closed', async () => {
+    const server = liveWsServer();
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(
+      new WebSocketClient({ url, heartbeatInterval: 5000, connectionTimeout: 2000 }),
+    );
+
+    try {
+      client.connect();
+      const start = Date.now();
+      while (!client.isTransportOpen && Date.now() - start < 2000) await wait(10);
+      expect(client.isTransportOpen).toBe(true);
+      expect(client.isHealthy).toBe(true);
+
+      client.disconnect();
+      expect(client.isTransportOpen).toBe(false);
+      expect(client.isHealthy).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('isHealthy treats a disabled heartbeat (interval 0) as healthy whenever the transport is open', async () => {
+    const server = liveWsServer();
+    const url = `ws://127.0.0.1:${server.port}/ws`;
+    const client = track(new WebSocketClient({ url, heartbeatInterval: 0, connectionTimeout: 2000 }));
+
+    try {
+      client.connect();
+      const start = Date.now();
+      while (!client.isTransportOpen && Date.now() - start < 2000) await wait(10);
+      expect(client.isHealthy).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
+/**
+ * Coverage for the residual reconnect-stampede fix (#685). #684 staggered
+ * reconnects only for the explicit `app-force-reconnect` sweep
+ * (`planForceReconnect`); when several connections instead go stale via
+ * their OWN heartbeat at ~the same wall-clock tick, each independently fell
+ * into `scheduleReconnect`'s exponential-backoff-plus-jitter path with no
+ * per-connection separation, clustering within a few hundred ms by chance.
+ * `computeReconnectDelay` is the pure delay math pulled out of
+ * `scheduleReconnect` (same precedent as `planForceReconnect` in
+ * connection-manager-helpers.ts) so a per-connection `staggerMs` can be
+ * layered on top and verified deterministically.
+ */
+describe('computeReconnectDelay (#685)', () => {
+  test('first attempt uses the base reconnectDelay (no backoff yet) plus deterministic jitter', () => {
+    const delay = computeReconnectDelay(1, {
+      reconnectDelay: 1000,
+      maxReconnectDelay: 30000,
+      random: () => 0.5,
+    });
+    // base = 1000 * 2^0 = 1000, capped = 1000, jitter = 1000 * 0.5 * 0.25 = 125
+    expect(delay).toBe(1125);
+  });
+
+  test('backoff doubles per attempt and caps at maxReconnectDelay', () => {
+    const opts = { reconnectDelay: 1000, maxReconnectDelay: 5000, random: () => 0 };
+    expect(computeReconnectDelay(1, opts)).toBe(1000);
+    expect(computeReconnectDelay(2, opts)).toBe(2000);
+    expect(computeReconnectDelay(3, opts)).toBe(4000);
+    // Uncapped this would be 8000; the cap holds it at maxReconnectDelay.
+    expect(computeReconnectDelay(4, opts)).toBe(5000);
+    // Stays capped even for a very high attempt count (no overflow/growth).
+    expect(computeReconnectDelay(20, opts)).toBe(5000);
+  });
+
+  test('staggerMs is added on top of the capped backoff+jitter', () => {
+    const opts = { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0, staggerMs: 300 };
+    expect(computeReconnectDelay(1, opts)).toBe(1300);
+    expect(computeReconnectDelay(5, opts)).toBe(1000 * 2 ** 4 + 300);
+  });
+
+  test('defaults staggerMs to 0 -- the single-connection case is unaffected', () => {
+    const delay = computeReconnectDelay(1, {
+      reconnectDelay: 1000,
+      maxReconnectDelay: 30000,
+      random: () => 0,
+    });
+    expect(delay).toBe(1000);
+  });
+
+  test('N simultaneous same-attempt connections with distinct stagger seeds produce delays separated by at least the step size', () => {
+    const step = 300;
+    const opts = { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0 };
+    const delays = [0, 1, 2, 3, 4].map((i) =>
+      computeReconnectDelay(1, { ...opts, staggerMs: i * step }),
+    );
+
+    expect(delays).toEqual([1000, 1300, 1600, 1900, 2200]);
+    for (let i = 1; i < delays.length; i++) {
+      expect(delays[i]! - delays[i - 1]!).toBeGreaterThanOrEqual(step);
+    }
+  });
+
+  test('jitter alone (no stagger) can leave same-attempt delays within a few hundred ms of each other -- the bug this fix addresses', () => {
+    // Two connections at the SAME attempt count with different random draws
+    // can still land close together purely by chance when nothing but the
+    // 25% jitter separates them -- this is exactly the residual stampede
+    // #685 fixes by layering a deterministic per-connection stagger on top,
+    // rather than relying on jitter alone.
+    const a = computeReconnectDelay(1, { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0.1 });
+    const b = computeReconnectDelay(1, { reconnectDelay: 1000, maxReconnectDelay: 30000, random: () => 0.15 });
+    expect(Math.abs(a - b)).toBeLessThan(50);
+  });
+
+  test('defaults to Math.random when no random fn is injected (delay stays within bounds)', () => {
+    const delay = computeReconnectDelay(1, { reconnectDelay: 1000, maxReconnectDelay: 30000 });
+    expect(delay).toBeGreaterThanOrEqual(1000);
+    expect(delay).toBeLessThan(1250);
+  });
+});
+
+/**
+ * End-to-end (real sockets, real timers) confirmation that `reconnectStaggerMs`
+ * actually delays `scheduleReconnect`'s automatic retry, not just the pure
+ * math above (#685).
+ */
+describe('WebSocketClient reconnectStaggerMs (#685)', () => {
+  test('delays the automatic reconnect by roughly its configured stagger offset', async () => {
+    const url = 'ws://127.0.0.1:49252/ws'; // refused: nothing listens here
+    const staggerMs = 500;
+    const timestamps: number[] = [];
+
+    const client = track(
+      new WebSocketClient(
+        {
+          url,
+          autoReconnect: true,
+          maxReconnectAttempts: 1,
+          reconnectDelay: 50,
+          connectionTimeout: 200,
+          heartbeatInterval: 0,
+          reconnectStaggerMs: staggerMs,
+        },
+        {
+          onStatusChange: (s) => {
+            if (s === 'connecting') timestamps.push(Date.now());
+          },
+        },
+      ),
+    );
+
+    const start = Date.now();
+    client.connect();
+    // Wait for the second 'connecting' transition: the staggered reconnect.
+    while (timestamps.length < 2 && Date.now() - start < 5000) await wait(25);
+
+    expect(timestamps.length).toBeGreaterThanOrEqual(2);
+    const gap = timestamps[1]! - timestamps[0]!;
+    // The un-staggered component (reconnectDelay=50, capped, +25% jitter) is at
+    // most ~62ms, so a gap at or above staggerMs proves the offset applied.
+    expect(gap).toBeGreaterThanOrEqual(staggerMs);
+  });
+
+  test('two clients failing at ~the same instant with distinct stagger offsets reconnect separated by at least the difference between them', async () => {
+    const stepMs = 300;
+    const reconnectDelay = 50;
+
+    const makeClient = (url: string, reconnectStaggerMs: number) => {
+      const timestamps: number[] = [];
+      const client = track(
+        new WebSocketClient(
+          {
+            url,
+            autoReconnect: true,
+            maxReconnectAttempts: 1,
+            reconnectDelay,
+            connectionTimeout: 200,
+            heartbeatInterval: 0,
+            reconnectStaggerMs,
+          },
+          {
+            onStatusChange: (s) => {
+              if (s === 'connecting') timestamps.push(Date.now());
+            },
+          },
+        ),
+      );
+      return { client, timestamps };
+    };
+
+    // Distinct refused ports so the two clients' connection attempts don't
+    // interact; both are unreachable, modeling two daemons that dropped at
+    // the same wall-clock tick.
+    const a = makeClient('ws://127.0.0.1:49253/ws', 0);
+    const b = makeClient('ws://127.0.0.1:49254/ws', stepMs);
+
+    const start = Date.now();
+    a.client.connect();
+    b.client.connect();
+
+    while (
+      (a.timestamps.length < 2 || b.timestamps.length < 2) &&
+      Date.now() - start < 5000
+    ) {
+      await wait(25);
+    }
+
+    expect(a.timestamps.length).toBeGreaterThanOrEqual(2);
+    expect(b.timestamps.length).toBeGreaterThanOrEqual(2);
+
+    const gap = b.timestamps[1]! - a.timestamps[1]!;
+    // b carries a full extra step of stagger; its reconnect must land
+    // meaningfully later than a's, breaking up the simultaneous-detection
+    // cluster the bug produced.
+    expect(gap).toBeGreaterThanOrEqual(stepMs * 0.8);
   });
 });

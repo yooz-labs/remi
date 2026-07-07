@@ -101,6 +101,8 @@ export class WebSocketAdapter implements ConnectionAdapter {
             directory: connection.connectionDirectory,
             resumeSessionId: connection.connectionResumeSessionId,
             mode: connection.connectionMode,
+            deviceId: connection.connectionDeviceId,
+            clientFingerprint: connection.connectionClientFingerprint,
           },
         };
         this.events.onConnect?.(connection.id, metadata);
@@ -110,8 +112,15 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (connectionId, sessionId, content, raw, claudeSessionId) => {
-        this.events.onUserInput?.(connectionId, sessionId, content, raw, claudeSessionId);
+      onUserInput: (connectionId, sessionId, content, raw, claudeSessionId, messageId) => {
+        this.events.onUserInput?.(
+          connectionId,
+          sessionId,
+          content,
+          raw,
+          claudeSessionId,
+          messageId,
+        );
       },
 
       onAnswer: (connectionId, sessionId, questionId, answer, claudeSessionId, extra) => {
@@ -162,6 +171,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
       onRegisterDeviceToken: (connectionId, token, platform) => {
         this.events.onRegisterDeviceToken?.(connectionId, token, platform);
+      },
+
+      onUnregisterDeviceToken: (connectionId, token) => {
+        this.events.onUnregisterDeviceToken?.(connectionId, token);
       },
 
       onError: (error) => {
@@ -245,5 +258,9 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
   hasConnection(connectionId: UUID): boolean {
     return this.server?.getConnection(connectionId) !== undefined;
+  }
+
+  closeConnection(connectionId: UUID, reason: string): boolean {
+    return this.server?.closeConnection(connectionId, reason) ?? false;
   }
 }

@@ -71,13 +71,23 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
 
-      // resumeSessionId and mode are only carried by the websocket adapter.
-      // Telegram and relay clients have no equivalent (their adapter selects
-      // session ownership differently).
+      // resumeSessionId, mode, deviceId, and clientFingerprint are only
+      // carried by the websocket adapter. Telegram and relay clients have no
+      // equivalent (their adapter selects session ownership differently).
       const platformData = metadata.platformData;
       const resumeSessionId =
         platformData?.kind === 'websocket'
           ? (platformData.resumeSessionId ?? undefined)
+          : undefined;
+      const deviceId =
+        platformData?.kind === 'websocket' ? (platformData.deviceId ?? undefined) : undefined;
+      // Authenticated identity bound to deviceId (#671); undefined when this
+      // connection has no authenticated identity (auth disabled, or a
+      // loopback-exempt peer) — attachConnection then falls back to
+      // deviceId-only reclaim matching.
+      const clientFingerprint =
+        platformData?.kind === 'websocket'
+          ? (platformData.clientFingerprint ?? undefined)
           : undefined;
       const currentPrimary = getPrimarySessionId();
 
@@ -100,7 +110,12 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       if (currentPrimary) {
         // Only auto-attach if the client wants to attach, not a utility client like ls/kill.
         if (!isQueryMode) {
-          const result = sessionRegistry.attachConnection(currentPrimary, connectionId);
+          const result = sessionRegistry.attachConnection(
+            currentPrimary,
+            connectionId,
+            deviceId,
+            clientFingerprint,
+          );
           if (result.success) {
             send(
               connectionId,
@@ -113,13 +128,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
                   nextBulletId: result.nextBulletId,
                 },
                 currentBinding(),
+                result.attachState,
               ),
             );
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
             }
             cancelOrphanTimeout();
-            log(`Attached connection ${connectionId} to session ${currentPrimary}`);
+            log(
+              `${result.attachState === 'queued' ? 'Queued' : 'Attached'} connection ${connectionId} ${result.attachState === 'queued' ? 'behind' : 'to'} session ${currentPrimary}`,
+            );
             return;
           }
         }

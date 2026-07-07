@@ -46,6 +46,14 @@ interface PushRequestBody {
   category?: string;
   /** Answer values for action buttons: mapped to opt_0, opt_1, ... in APNS data */
   options?: string[];
+  /**
+   * NSE dynamic-category hint (#719): when true and `options` is non-empty,
+   * the push sets `mutable-content: 1` and a `dynCategory: "1"` data field so
+   * the iOS Notification Service Extension can register a per-notification
+   * category with the real option labels as action titles. Additive only —
+   * `category` is still sent as the static fallback for a missing/failed NSE.
+   */
+  dynOptions?: boolean;
   /** Reserved for future per-request sandbox override; daemon does not send this today */
   sandbox?: boolean;
   /**
@@ -72,9 +80,19 @@ const rateLimiter = new RateLimiter(10, 60_000);
  *     alert pushes.
  */
 const PUSH_AUTH_LIMIT = 60;
+/**
+ * Dismiss ceiling (#723). Sharing PUSH_AUTH_LIMIT starved dismissals in
+ * practice: ALL of a machine's daemons share one identity bucket, and every
+ * resolved question fans a dismissal out per device token, so a multi-session
+ * agent-team soak (4+ sessions x 2 tokens) blew through 60/min and left
+ * already-answered cards on the lock screen. Dismisses are quiet
+ * content-available pushes with no alert cost, so the ceiling is only a
+ * runaway-loop backstop — sized ~5x the alert budget rather than removed.
+ */
+const DISMISS_AUTH_LIMIT = 300;
 const pushAuthRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
 const pushIpRateLimiter = new RateLimiter(5, 60_000);
-const dismissRateLimiter = new RateLimiter(PUSH_AUTH_LIMIT, 60_000);
+const dismissRateLimiter = new RateLimiter(DISMISS_AUTH_LIMIT, 60_000);
 /** Per-IP rate limiter for the answer relay: 10 answers per 60 seconds */
 const answerRateLimiter = new RateLimiter(10, 60_000);
 
@@ -281,6 +299,22 @@ export default {
           data[`opt_${idx}`] = String(val);
         });
       }
+      // #719: only meaningful alongside real options — a dynCategory hint with
+      // nothing in opt_0.. would just make the NSE run for no benefit. The
+      // upper bound (6) is an INVARIANT CHAIN shared with the NSE's own
+      // option-count ceiling (NotificationService.swift's `0...5` loop) and is
+      // deliberately looser than the daemon's current 2-4 gate
+      // (notification-dispatcher.ts `selectDynOptions`), so loosening the
+      // daemon gate up to 6 needs no worker change. Keep all three in sync if
+      // the ceiling itself ever moves.
+      const wantsDynCategory =
+        body.dynOptions === true &&
+        Array.isArray(body.options) &&
+        body.options.length >= 2 &&
+        body.options.length <= 6;
+      if (wantsDynCategory) {
+        data['dynCategory'] = '1';
+      }
       const category = body.category && body.category.length > 0 ? body.category : undefined;
 
       let result: { success: boolean; error?: string };
@@ -297,6 +331,10 @@ export default {
             sandbox,
             data: Object.keys(data).length > 0 ? data : undefined,
             category,
+            // #719: mutable-content lets the NSE intercept and mutate the
+            // notification before display (to attach the dynamic category);
+            // only set when there is something for it to build actions from.
+            ...(wantsDynCategory ? { mutableContent: true } : {}),
             // Collapse repeated pushes for the same question (#575, P4a).
             ...(body.questionId && body.questionId.length > 0
               ? { collapseId: body.questionId }

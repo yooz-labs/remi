@@ -28,6 +28,16 @@ type BinaryDecision = 'approve' | 'deny' | 'escalate';
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 /**
+ * Sentinel scope (#730) used when a caller omits `scope` from `evaluate()` /
+ * `cancel()` — a direct-service unit test, or any other caller that never
+ * mixes sessions. All such callers implicitly share this one scope, so their
+ * behavior is unchanged from before per-session scoping existed: a single
+ * caller's evalId is still enough to disambiguate. Only `AutoApproveGate`
+ * (the one production caller) passes a real scope, its own `sessionId`.
+ */
+const DEFAULT_SCOPE = '__default__';
+
+/**
  * Convert one `permission_suggestions` entry into an LLM-ready label, or
  * null when the entry carries no useful content. Strings pass through;
  * objects are JSON-serialised so the LLM can read a structured option like
@@ -122,24 +132,41 @@ export class AutoApproveService {
    *  queued. */
   private evalActive = false;
   private readonly evalQueue: Array<{
-    /** Id of the queued eval (#617), so cancel(reason, evalId) can drop a waiter
-     *  whose question was answered before it ever reached the GPU. */
+    /** Caller's scope (#730), normally an `AutoApproveGate`'s own sessionId —
+     *  see `DEFAULT_SCOPE`. Lets `drainScope` drop one session's queued
+     *  waiters without touching a sibling session's. */
+    scope: string;
+    /** Id of the queued eval (#617), so cancel(reason, evalId, scope) can drop
+     *  a waiter whose question was answered before it ever reached the GPU. */
     evalId: number | undefined;
+    /** Tags a subagent/team-member eval (#730), so `drainScope(scope,
+     *  {mainOnly: true})` can spare it the same way `cancelStale`'s running-
+     *  eval cancel already spares a subagent eval via `evalIsSubagentById`. */
+    isSubagent: boolean;
     /** Take the slot (becomes the running eval). */
     grant: () => void;
-    /** Resolve as NOT acquired -> the eval escalates gracefully (force-release /
-     *  answered-while-queued) instead of seizing the slot. */
-    deny: () => void;
+    /** Resolve as NOT acquired -> the eval escalates gracefully instead of
+     *  seizing the slot. The outcome distinguishes the global `drainQueue`
+     *  (force-release) from the scoped `drainScope` (#730, cancelStale) so
+     *  the escalation reasoning never misattributes one to the other. */
+    deny: (outcome: 'drained' | 'drained-scope') => void;
   }> = [];
   /** Active LLM call's controller; cleared in the eval finally block. cancel()
    *  aborts via this. Held alongside the active slot so they share the same
    *  lifecycle window. */
   private currentAbortController: AbortController | null = null;
+  /** Caller's scope (#730) for the eval currently holding the slot — see
+   *  `DEFAULT_SCOPE`. `cancel(reason, evalId, scope)` only aborts the running
+   *  eval when this matches the caller's own scope, so one session's teardown
+   *  can never abort a DIFFERENT session's eval just because it happens to be
+   *  the one holding the shared (daemon-wide) slot. null when idle. */
+  private currentScope: string | null = null;
   /** Caller-supplied id of the eval currently holding the slot (#617). Lets
-   *  `cancel(reason, evalId)` abort ONLY the targeted eval instead of whatever
-   *  happens to be running — so a manual answer for question X frees X's eval and
-   *  never a different permission's (the wrong-victim risk that forced the old
-   *  answer-cancel to be gated). null when the running eval supplied no id. */
+   *  `cancel(reason, evalId, scope)` abort ONLY the targeted eval instead of
+   *  whatever happens to be running — so a manual answer for question X frees
+   *  X's eval and never a different permission's (the wrong-victim risk that
+   *  forced the old answer-cancel to be gated). null when the running eval
+   *  supplied no id. */
   private currentEvalId: number | null = null;
   /** Set by cancel() so the catch block can distinguish a user-driven abort
    *  (Claude advanced past the prompt) from a timeout abort. */
@@ -180,9 +207,16 @@ export class AutoApproveService {
    * risking the ~600s hook budget); `'drained'` if force-release (#617) dropped
    * the waiter. When the slot is free it is taken immediately; otherwise the
    * caller is queued FIFO and granted by `releaseSlot`. `evalId` tags the waiter
-   * so a per-question cancel can drop it while still queued.
+   * so a per-question cancel can drop it while still queued; `scope` (#730)
+   * and `isSubagent` let `drainScope` drop it (or spare it, mainOnly) without
+   * touching a sibling session's queue.
    */
-  private acquireSlot(deadlineMs: number, evalId?: number): Promise<SlotOutcome> {
+  private acquireSlot(
+    deadlineMs: number,
+    scope: string,
+    evalId: number | undefined,
+    isSubagent: boolean,
+  ): Promise<SlotOutcome> {
     if (!this.evalActive) {
       this.evalActive = true;
       return Promise.resolve('acquired');
@@ -199,9 +233,16 @@ export class AutoApproveService {
         resolve(outcome);
       };
       const waiter = {
+        scope,
         evalId,
+        isSubagent,
         grant: () => settle('acquired'),
-        deny: () => settle('drained'),
+        // Accepts which 'drained' flavor happened (#730): the global
+        // `drainQueue` (forceRelease) vs. the scoped `drainScope`
+        // (cancelStale) produce DIFFERENT escalation reasoning below, so a
+        // log reader is never told "remi unstick" for a plain session
+        // teardown.
+        deny: (outcome: 'drained' | 'drained-scope') => settle(outcome),
       };
       this.evalQueue.push(waiter);
       if (deadlineMs > 0) {
@@ -238,7 +279,35 @@ export class AutoApproveService {
   drainQueue(): number {
     let drained = 0;
     for (let next = this.evalQueue.shift(); next; next = this.evalQueue.shift()) {
-      next.deny();
+      next.deny('drained');
+      drained++;
+    }
+    return drained;
+  }
+
+  /**
+   * Drain queued waiters belonging to `scope` (#730), resolving each as NOT
+   * acquired so its eval takes the graceful escalate path instead of
+   * eventually being promoted to the GPU for permission work `cancelStale`
+   * has already decided is moot (session ended, or a mainOnly Stop). Unlike
+   * `drainQueue` (the global `forceRelease`/`remi unstick` escape hatch) this
+   * never touches a sibling session's queue. `opts.mainOnly` additionally
+   * SPARES a subagent/team-member waiter — mirrors how `AutoApproveGate.
+   * cancelStale('Stop', {mainOnly:true})` already spares a subagent's RUNNING
+   * eval via `evalIsSubagentById`, so a lead's Stop can never starve a
+   * teammate's still-legitimate queued eval. Does NOT touch the eval
+   * currently holding the slot — `cancel()` targets that. Returns the number
+   * of waiters drained.
+   */
+  drainScope(scope: string, opts?: { mainOnly?: boolean }): number {
+    const mainOnly = opts?.mainOnly ?? false;
+    let drained = 0;
+    for (let i = this.evalQueue.length - 1; i >= 0; i--) {
+      const waiter = this.evalQueue[i];
+      if (!waiter || waiter.scope !== scope) continue;
+      if (mainOnly && waiter.isSubagent) continue;
+      this.evalQueue.splice(i, 1);
+      waiter.deny('drained-scope');
       drained++;
     }
     return drained;
@@ -275,6 +344,16 @@ export class AutoApproveService {
    *            hook. When present and shape qualifies as multi-choice (#399),
    *            evaluation is routed through the multi-choice path instead of
    *            the binary approve/deny path.
+   * @param scope #730: the caller's own scope (an `AutoApproveGate`'s
+   *            sessionId), so this shared daemon-wide service can isolate
+   *            concurrent sessions — `cancel()`/`drainScope()` can then act
+   *            on exactly this session's eval without risk of hitting a
+   *            different session's. Omitted callers (direct-service unit
+   *            tests) implicitly share `DEFAULT_SCOPE`.
+   * @param isSubagent #730: tags this eval as belonging to a subagent/team-
+   *            member permission (mirrors the gate's own `evalIsSubagentById`),
+   *            so a QUEUED waiter for it can be spared by
+   *            `drainScope(scope, {mainOnly: true})`.
    */
   async evaluate(
     toolName: string,
@@ -283,6 +362,8 @@ export class AutoApproveService {
     permissionSuggestions?: readonly unknown[],
     modelOverride?: string,
     evalId?: number,
+    scope?: string,
+    isSubagent?: boolean,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // modelOverride (#522: the escalate_model second opinion) replaces the base
@@ -290,6 +371,7 @@ export class AutoApproveService {
     const baseModel = modelOverride || this.llmConfig.model;
     const model = baseModel;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
+    const resolvedScope = scope ?? DEFAULT_SCOPE;
 
     const normalisedSuggestions = Array.isArray(permissionSuggestions)
       ? permissionSuggestions
@@ -384,18 +466,30 @@ export class AutoApproveService {
       // A second request QUEUES instead of escalating-on-busy; only a request
       // that waits past queue_timeout escalates gracefully so a deep burst
       // (parallel subagents) never risks the ~600s hook budget.
-      const slot = await this.acquireSlot(this.queueTimeoutMs, evalId);
+      const slot = await this.acquireSlot(
+        this.queueTimeoutMs,
+        resolvedScope,
+        evalId,
+        isSubagent ?? false,
+      );
       if (slot !== 'acquired') {
         const durationMs = Date.now() - start;
+        // #730: 'drained-scope' (cancelStale) gets its OWN reasoning, distinct
+        // from 'drained' (force-release/remi unstick) and from a per-question
+        // answered-while-queued cancel — a log reader must never be told
+        // "remi unstick" for a plain session teardown or Stop.
         const reasoning =
           slot === 'drained'
             ? 'force-released (remi unstick) before slot acquisition; escalating to user'
-            : `eval queue wait exceeded ${this.queueTimeoutMs}ms; escalating to user`;
+            : slot === 'drained-scope'
+              ? 'session queue drained (cancelStale) before slot acquisition; escalating to user'
+              : `eval queue wait exceeded ${this.queueTimeoutMs}ms; escalating to user`;
         this.logFn(`${prefix} ${toolName}: escalate (${durationMs}ms) - ${reasoning}`);
         return { decision: 'escalate', reasoning, durationMs, model };
       }
 
       this.currentAbortController = new AbortController();
+      this.currentScope = resolvedScope;
       this.currentEvalId = evalId ?? null;
       const externalSignal = this.currentAbortController.signal;
       // The heavy escalate_model gets its dedicated (longer) budget when set, so
@@ -502,6 +596,7 @@ export class AutoApproveService {
       } finally {
         if (raceTimer !== null) clearTimeout(raceTimer);
         this.currentAbortController = null;
+        this.currentScope = null;
         this.currentEvalId = null;
         this.releaseSlot();
       }
@@ -555,13 +650,29 @@ export class AutoApproveService {
    * answer never triggers a now-pointless LLM call. With no `evalId` it aborts
    * whatever is in flight (session teardown / force-release).
    *
+   * `scope` (#730): the caller's own scope (an `AutoApproveGate`'s sessionId).
+   * When given, an abort of the RUNNING eval fires ONLY if it ALSO belongs to
+   * that scope — this is what stops one session's SessionEnd (or a stale
+   * per-question cancel) from ever aborting a DIFFERENT session's eval just
+   * because it happens to be the one holding the single daemon-wide slot
+   * (`evalId` alone cannot tell — it is only unique per-gate, so two sessions
+   * can legitimately stamp the same number). A QUEUED waiter is likewise only
+   * dropped by `evalId` when its own `scope` also matches. Omitting `scope`
+   * skips this check entirely (matches ANY scope) — reserved for
+   * `forceRelease` (`remi unstick`), the one caller that is DELIBERATELY
+   * global; every per-session caller (`cancelStale`, `cancelEvalForQuestion`)
+   * must pass its own scope.
+   *
    * Returns true if a call was actually cancelled (running aborted or queued
    * dropped), false otherwise (idempotent, safe to call always).
    */
-  cancel(reason: string, evalId?: number): boolean {
-    // The running eval: abort when untargeted, or when the target matches.
+  cancel(reason: string, evalId?: number, scope?: string): boolean {
+    const scopeMatches = scope === undefined || this.currentScope === scope;
+    // The running eval: abort when untargeted (by evalId), or when the target
+    // matches — and, when a scope was given, only when it too matches.
     if (
       this.currentAbortController !== null &&
+      scopeMatches &&
       (evalId === undefined || this.currentEvalId === evalId)
     ) {
       this.cancelReason = reason;
@@ -570,11 +681,17 @@ export class AutoApproveService {
     }
     // A targeted eval still waiting for the slot: drop it so it escalates
     // instead of running after its question was already answered (#617).
+    // Scope-filtered the same way when given (#730).
     if (evalId !== undefined) {
-      const i = this.evalQueue.findIndex((w) => w.evalId === evalId);
+      const i = this.evalQueue.findIndex(
+        (w) => w.evalId === evalId && (scope === undefined || w.scope === scope),
+      );
       if (i !== -1) {
         const waiter = this.evalQueue.splice(i, 1)[0];
-        waiter?.deny();
+        // Same 'drained' outcome/reasoning as the global drainQueue (unchanged
+        // from before #730): this is the #617 answered-while-queued path, not
+        // a scoped cancelStale drain.
+        waiter?.deny('drained');
         return true;
       }
     }
@@ -582,6 +699,9 @@ export class AutoApproveService {
   }
 }
 
-/** Outcome of an `acquireSlot` request (#617): the eval ran, timed out waiting,
- *  or was dropped by force-release / a per-question cancel. */
-type SlotOutcome = 'acquired' | 'timeout' | 'drained';
+/** Outcome of an `acquireSlot` request: the eval ran, timed out waiting, was
+ *  dropped by force-release / a per-question cancel (#617, 'drained'), or was
+ *  dropped by a scoped `drainScope` (#730, 'drained-scope') — kept distinct
+ *  from 'drained' so the escalation reasoning never misattributes a plain
+ *  session teardown to `remi unstick`. */
+type SlotOutcome = 'acquired' | 'timeout' | 'drained' | 'drained-scope';

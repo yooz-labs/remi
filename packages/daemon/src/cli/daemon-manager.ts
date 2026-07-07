@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { rotateIfNeeded } from './log-rotation.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
@@ -148,6 +149,7 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
     spawnArgs.push(...opts.extraArgs);
   }
 
+  rotateIfNeeded(LOG_FILE);
   const logFd = fs.openSync(LOG_FILE, 'a');
   fs.writeSync(logFd, `\n--- Daemon starting at ${new Date().toISOString()} ---\n`);
 
@@ -341,6 +343,7 @@ export async function spawnRemiDaemon(
   }
   spawnArgs.push(...extraArgs);
 
+  rotateIfNeeded(LOG_FILE);
   const logFd = fs.openSync(LOG_FILE, 'a');
   fs.writeSync(logFd, `\n--- Spawning daemon on port ${port} at ${new Date().toISOString()} ---\n`);
 

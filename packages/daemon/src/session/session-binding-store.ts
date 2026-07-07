@@ -62,6 +62,19 @@ export class SessionBindingStore {
   }
 
   /**
+   * The port recorded for this remi session at spawn time (#672). Written once
+   * by `preAssign` and never refreshed on a later daemon restart, so it stays
+   * fixed at whatever port was live when the session was created — unlike the
+   * live `currentPort()`, which can drift to a different port after a restart
+   * (port-selection #146). Callers use this as a fallback ownership signal when
+   * a transcript's `remi:<port>` marker no longer matches the live port: the
+   * marker may still match the port THIS session originally ran on.
+   */
+  getStoredPort(remiSessionId: UUID): number | null {
+    return this.store.findByRemiSessionId(remiSessionId)?.port ?? null;
+  }
+
+  /**
    * Update the durable binding on rotation / first discovery. Delegates to
    * SessionStore.updateClaudeSessionId (a no-op when the record is absent, matching
    * today). Together with preAssign, the ONLY claudeSessionId writer.
@@ -85,20 +98,20 @@ export class SessionBindingStore {
    * responsibility to populate correctly — the accessor does not own them.
    */
   preAssign(session: StoredSession): void {
-    this.store.save(session);
+    // Mirror from save()'s returned (normalized) record, not the raw input —
+    // otherwise a caller passing an unnormalized projectPath would seed
+    // TranscriptIndex with a value that silently diverges from what
+    // SessionStore actually persisted (#680 review).
+    const saved = this.store.save(session);
     // Seed the durable mirror at spawn so the binding is recoverable even if the
     // session never rotates and is later purged from sessions.json (#577).
-    if (session.claudeSessionId) {
-      this.transcriptIndex?.record(
-        session.remiSessionId,
-        session.claudeSessionId,
-        session.projectPath,
-      );
+    if (saved.claudeSessionId) {
+      this.transcriptIndex?.record(saved.remiSessionId, saved.claudeSessionId, saved.projectPath);
     } else if (this.transcriptIndex) {
       // No claude id yet (deferred to the first update() on hook adopt/rotation).
       // Log so the deferred index seed is traceable rather than silently skipped.
       log(
-        `[transcript-index] preAssign for ${session.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
+        `[transcript-index] preAssign for ${saved.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
       );
     }
   }

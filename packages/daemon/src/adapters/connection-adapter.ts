@@ -34,6 +34,14 @@ export interface WebSocketPlatformData {
    * session exists.
    */
   readonly mode?: 'query' | 'attach' | undefined;
+  /** Stable per-device identifier from the client's hello (#662). */
+  readonly deviceId?: string | null;
+  /**
+   * Authenticated client fingerprint from the Ed25519 challenge-response
+   * (#671), null when this connection has no authenticated identity (auth
+   * disabled daemon-wide, or this peer was loopback-exempted from auth).
+   */
+  readonly clientFingerprint?: string | null;
 }
 
 export interface TelegramPlatformData {
@@ -70,13 +78,16 @@ export interface AdapterEvents {
   /** Connection closed */
   onDisconnect: (connectionId: UUID, reason: string) => void;
 
-  /** User input received */
+  /** User input received. `messageId` is the wire message's own id (#681),
+   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
+   *  specific bubble that was dropped. */
   onUserInput: (
     connectionId: UUID,
     sessionId: UUID,
     content: string,
     raw?: boolean,
     claudeSessionId?: UUID,
+    messageId?: UUID,
   ) => void;
 
   /** Answer to question received. `extra` carries structured AskUserQuestion
@@ -141,6 +152,9 @@ export interface AdapterEvents {
 
   /** Device token registered for push notifications */
   onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
+
+  /** Device token unregistered — explicit user removal of this server (#690) */
+  onUnregisterDeviceToken: (connectionId: UUID, token: string) => void;
 
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;
@@ -214,6 +228,13 @@ export interface ConnectionAdapter {
    * Check if a connection exists and is active.
    */
   hasConnection(connectionId: UUID): boolean;
+
+  /**
+   * Force-close a specific connection (#662: same-device lock reclaim evicts
+   * a stale connection this way). Optional: adapters with no meaningful
+   * "close a single connection" concept (e.g. Telegram) can omit it.
+   */
+  closeConnection?(connectionId: UUID, reason: string): boolean;
 }
 
 /**

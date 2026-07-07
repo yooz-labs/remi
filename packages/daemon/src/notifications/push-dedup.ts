@@ -11,8 +11,8 @@
  * `packages/web/src/lib/question-merge.ts`. Within
  * `QUESTION_DEDUP_WINDOW_MS`:
  *
- *   - new is default-3-set AND last was non-default → suppress
- *   - new is non-default AND last was default → fire (upgrade)
+ *   - new is the fallback shape AND last was non-default → suppress
+ *   - new is non-default AND last was the fallback shape → fire (upgrade)
  *   - new has strictly more options than last → fire (upgrade)
  *   - otherwise → suppress
  *
@@ -33,6 +33,10 @@ interface LastPush {
 export interface PushDedupQuestion {
   readonly options: ReadonlyArray<{ label: string }>;
   readonly allowsFreeText: boolean;
+  /** #718: authoritative fallback signal, threaded through to
+   *  `looksLikeDefaultPermissionQuestion` so it does not have to guess from
+   *  labels alone when the caller already knows the answer. */
+  readonly optionsAreFallback?: boolean | undefined;
 }
 
 export class PushDedup {

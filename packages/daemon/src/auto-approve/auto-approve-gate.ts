@@ -23,6 +23,28 @@
  * Both are read LIVE at each branch (never captured): the LLM eval is async, so the
  * subagent/Task context can open or close between the hook firing and the
  * `.then()`/`.catch()` running. Capturing would TOCTOU.
+ *
+ * #673: the gate also owns EXTERNAL-RESOLUTION cancellation. Every escalation
+ * this gate creates (held OR passthrough) is tracked in `openQuestionSignatures`
+ * by its (tool_name, tool_input) signature. Two triggers prove an open
+ * escalation was resolved WITHOUT going through Remi's own answer path:
+ *   - `cancelExternallyResolved`, called from PreToolUse/PostToolUse in
+ *     `hook-bridge-setup.ts` when the observed tool signature matches an open
+ *     escalation — the tool is now running, so the user must have answered it
+ *     directly in the terminal (a passthrough escalation was never held, so
+ *     Remi's own answer path never ran) or "the other process's own
+ *     permission mode" resolved it independently.
+ *   - a duplicate re-request: `escalateToUser` checks for an already-open
+ *     entry with the SAME signature before registering a new one — Claude
+ *     re-issuing the identical PermissionRequest proves the earlier one can
+ *     never be answered through its own hook response again.
+ * Both ALWAYS degrade to `releaseHeld(qid, 'passthrough')` — never a
+ * fabricated allow/deny — mirroring the existing fail-open philosophy: we
+ * cannot know what the user actually decided, so the safest response is "no
+ * decision from us," identical to a hold timing out. Own-session scope only:
+ * a foreign session's PermissionRequest never creates an entry here in the
+ * first place (post-#672 that stays entirely with ForeignSessionEscalator's
+ * informational-only push), so there is nothing for this gate to cancel for it.
  */
 
 import type { UUID } from '@remi/shared';
@@ -34,6 +56,55 @@ import { type DeliveryOutcome, isDelivered } from '../notifications/notification
 import type { SessionRegistry } from '../session/index.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { AutoApproveResult } from './types.ts';
+
+/** The (tool_name, tool_input) signature of an OPEN escalation (#673),
+ *  tracked so an external-resolution signal can find and cancel it. */
+interface ToolSignature {
+  readonly toolName: string;
+  readonly toolInputKey: string;
+  readonly toolUseId: string | undefined;
+  /** #711: true when this signature's escalation was for a subagent/team-member
+   *  event (`input.agent_id` present). A mainOnly `cancelStale` (Stop) deletes
+   *  only main-tagged entries here, so a teammate's still-open escalation is
+   *  not wiped out just because the lead agent idled. */
+  readonly isSubagent: boolean;
+}
+
+/** An observed tool call to correlate against `openQuestionSignatures`. Same
+ *  shape whether it came from a PreToolUse/PostToolUse hook or (for the
+ *  duplicate-re-request path) a fresh PermissionRequest. */
+export interface ObservedToolCall {
+  readonly toolName: string;
+  readonly toolInput: Record<string, unknown>;
+  readonly toolUseId?: string | undefined;
+}
+
+/**
+ * A stable, key-order-independent JSON key for `tool_input` (#673). Two
+ * logically identical tool_input objects with keys in a different order must
+ * compare equal, so the signature match is not order-fragile.
+ */
+function stableToolInputKey(toolInput: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(canonicalize(toolInput));
+  } catch {
+    // Non-serializable input should not happen (tool_input comes from a
+    // parsed JSON hook payload); degrade to a key that can never match
+    // anything rather than throwing into the escalation path.
+    return `__unserializable__:${Math.random()}`;
+  }
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === 'object') {
+    const sortedEntries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => [key, canonicalize((value as Record<string, unknown>)[key])] as const);
+    return Object.fromEntries(sortedEntries);
+  }
+  return value;
+}
 
 /**
  * Minimal seam the gate consumes. The real `AutoApproveService` satisfies it
@@ -55,15 +126,40 @@ export interface AutoApproveEvaluator {
     permissionSuggestions?: readonly unknown[],
     modelOverride?: string,
     evalId?: number,
+    /** #730: this gate's own sessionId, so the shared daemon-wide service can
+     *  isolate concurrent sessions' evals — a queued/running eval belonging
+     *  to one session must never be cancelled or drained by another
+     *  session's `cancelStale` / `cancelEvalForQuestion`. Omitted only by
+     *  test doubles / direct-service unit tests that never mix scopes. */
+    scope?: string,
+    /** #730: tags a queued waiter so `drainScope(scope, {mainOnly: true})` can
+     *  spare it the same way `cancelStale`'s running-eval cancel already
+     *  spares a subagent eval via `evalIsSubagentById`. */
+    isSubagent?: boolean,
   ): Promise<AutoApproveResult>;
-  /** Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
-   *  eval currently running (#617 per-eval scoping); without it, aborts whatever
-   *  is in flight. Returns true if an abort was issued, false otherwise (idempotent). */
-  cancel(reason: string, evalId?: number): boolean;
+  /**
+   * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
+   * eval currently running (#617 per-eval scoping); without it, aborts whatever
+   * is in flight. `scope` (#730) additionally requires the target belong to that
+   * scope, so two sessions can never cancel each other's work by accident.
+   * Omitting BOTH `evalId` and `scope` is a fully untargeted cancel — reserved
+   * for `forceRelease` (the documented `remi unstick` global escape hatch);
+   * every per-session caller here (`cancelStale`, `cancelEvalForQuestion`) passes
+   * its own scope. Returns true if an abort was issued, false otherwise
+   * (idempotent).
+   */
+  cancel(reason: string, evalId?: number, scope?: string): boolean;
   /** Drain queued evals so they escalate gracefully instead of seizing the freed
-   *  GPU (#617 force-release). Returns the number drained. Optional: a minimal
-   *  evaluator under test may omit it. */
+   *  GPU (#617 force-release). GLOBAL — every session's queue, not just this
+   *  gate's own. Returns the number drained. Optional: a minimal evaluator
+   *  under test may omit it. */
   drainQueue?(): number;
+  /** #730: drain only THIS scope's queued evals (optionally main-tagged only),
+   *  so `cancelStale` can drop a session's own moot queued work without
+   *  touching a sibling session's queue or (mainOnly) a teammate's still-
+   *  legitimate wait. Returns the number drained. Optional: a minimal
+   *  evaluator under test may omit it. */
+  drainScope?(scope: string, opts?: { mainOnly?: boolean }): number;
 }
 
 export interface AutoApproveGateDeps {
@@ -73,6 +169,16 @@ export interface AutoApproveGateDeps {
   tracker: QuestionPresenceTracker;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per branch (async TOCTOU). */
   isInSubagentContext: () => boolean;
+  /**
+   * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
+   * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
+   * stuck true — proof of a tracker leak (a dropped PostToolUse(Task/Agent)
+   * completion), never a real subagent prompt (those carry `agent_id` and
+   * default-deny instead). Optional so tests that don't wire it degrade to a
+   * no-op; the escalate-as-main recovery still happens without it, just
+   * without clearing the leaked state.
+   */
+  resetSubagentContext?: () => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -82,8 +188,11 @@ export interface AutoApproveGateDeps {
    *  logged and absorbed (treated as `undefined`) rather than propagated. */
   escalate: (input: PermissionRequestHookInput, summary?: string) => UUID | undefined;
   /** Called right before the LLM eval starts, so the tracker can BUFFER the PTY
-   *  prompt until the verdict (don't push an auto-approved permission). #484. */
-  onEvalStart?: () => void;
+   *  prompt until the verdict (don't push an auto-approved permission). #484.
+   *  `ctx.isSubagent` (#711) tells the setup layer whether this eval belongs to
+   *  a subagent/team-member permission, so it can skip the client status-pill
+   *  broadcast for it (the #484 buffering itself is unaffected). */
+  onEvalStart?: (ctx: { isSubagent: boolean }) => void;
   /** Called when the verdict is escalate (the user must answer), so the tracker
    *  releases the buffered PTY prompt. #484. */
   onEscalate?: () => void;
@@ -101,9 +210,20 @@ export interface AutoApproveGateDeps {
    *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
    *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
+  /** Called when a HELD question's hold-timeout expires unanswered, JUST BEFORE
+   *  it fails open to passthrough (#733). Fired only on the TIMEOUT path — never
+   *  on the undeliverable fail-open (#603 delivery gate), where the push channel
+   *  is already known broken and a handoff push would be pointless. The question
+   *  is still registered in sessionRegistry when this fires, so the callback can
+   *  read its text to build a "moved to the terminal" handoff notification.
+   *  Without it, the timeout is SILENT on the phone: the card is dismissed and
+   *  nothing says the prompt now waits in the terminal. Throw-safe (safeCue). */
+  onHoldTimeout?: (questionId: UUID) => void;
   /** Called when the permission was auto-approved/denied silently (inject
-   *  succeeded; the user never sees it). Drives the terminal "done" cue. #513. */
-  onHandled?: () => void;
+   *  succeeded; the user never sees it). Drives the terminal "done" cue. #513.
+   *  `ctx.isSubagent` (#711): same client-broadcast-only skip as `onEvalStart`
+   *  -- the terminal cue above still fires either way. */
+  onHandled?: (ctx: { isSubagent: boolean }) => void;
   /** Called when the eval ended without a verdict (cancelled — the user already
    *  advanced past the prompt). Drives the terminal cue back to idle. #513. */
   onCancelled?: () => void;
@@ -163,6 +283,18 @@ export interface AutoApproveGateDeps {
 interface PendingHold {
   resolve: (decision: PermissionDecision) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** #711: true for a subagent/team-member escalation (`input.agent_id`
+   *  present at hold-creation time). A lead's `Stop` fires while teammates
+   *  keep working, so `cancelStale('Stop', { mainOnly: true })` releases only
+   *  MAIN holds and leaves this one intact -- its pushed card stays
+   *  answerable via `resolveHeld`. */
+  isSubagent: boolean;
+  /** The escalated input's own `permission_suggestions`, stashed so a later
+   *  `resolveHeld(..., suggestionIndex)` can echo the EXACT original entry
+   *  back as `updatedPermissions` (#718) -- Claude Code's hooks docs: echoing
+   *  a received suggestion "is equivalent to the user selecting that 'always
+   *  allow' option in the dialog." Undefined when the input carried none. */
+  suggestions: readonly unknown[] | undefined;
 }
 
 export class AutoApproveGate {
@@ -177,6 +309,15 @@ export class AutoApproveGate {
    * path clears the timer and deletes the entry, so it never leaks.
    */
   private readonly pendingHolds = new Map<UUID, PendingHold>();
+  /**
+   * Held question ids whose notification was CONFIRMED delivered (#603 probe
+   * resolved in_app/pushed). The #733 hold-timeout handoff cue fires only for
+   * these (or when delivery gating is disabled entirely): "timed out waiting
+   * for you" is only meaningful if the user was actually notified — a hold
+   * whose delivery was never confirmed is the undeliverable machinery's
+   * problem, not a handoff. Entries are dropped in `releaseHeld`.
+   */
+  private readonly confirmedDeliveries = new Set<UUID>();
 
   /** Monotonic id stamped on each primary eval (#617), so a held question can be
    *  tied to the exact eval running for it and a manual answer cancels only that
@@ -193,6 +334,43 @@ export class AutoApproveGate {
    * longer the running one).
    */
   private readonly evalIdByQuestion = new Map<UUID, number>();
+
+  /**
+   * Subagent-ness of every primary eval currently in flight, keyed by its
+   * `evalId` (#711). Populated in `resolvePermission` right after the eval is
+   * stamped/started, deleted when that eval's own promise settles (evaluate()
+   * is documented never to throw, so its `.finally` always runs exactly once).
+   * Lets `cancelStale('Stop', { mainOnly: true })` cancel ONLY main-context
+   * evals: under synchronous decisions a main eval cannot be in flight at Stop
+   * (Claude blocks on the hook while the gate evaluates), so any eval still
+   * tracked here at lead-Stop is a teammate's and must survive.
+   */
+  private readonly evalIsSubagentById = new Map<number, boolean>();
+
+  /**
+   * Every OPEN escalation this gate has created (held OR passthrough), keyed
+   * by `Question.id`, by its (tool_name, tool_input) signature (#673). Entry
+   * lifecycle: created in `escalateToUser` on a successful escalation; removed
+   * by exactly TWO owners, unconditionally (regardless of whether a hold
+   * existed), so no exit path can leak an entry:
+   *   - the public `resolveHeld` (a separate, non-delegating path — it owns
+   *     its own delete);
+   *   - the private `releaseHeld`, which EVERY other resolution path funnels
+   *     through: `releaseHeldAsPassthrough` (normal answer), `failOpenHeld`
+   *     (hold-timeout / undelivered-notification fail-open),
+   *     `reconcileLateVerdict`'s cancelled branch (Part B), and
+   *     `resolveSupersededQuestion` (#673's own external-resolution / stale
+   *     -duplicate cleanup).
+   * `cancelStale` and `forceRelease` additionally wholesale-clear the whole
+   * map (session end / force-release — nothing tracked is relevant after
+   * either). A stale entry is harmless (a signature match just triggers a
+   * redundant, idempotent cleanup), but MUST NOT be able to accumulate
+   * indefinitely: an un-deleted entry from a timed-out/cancelled hold would
+   * sit for the rest of the process lifetime and could fire a spurious
+   * `notifyResolved` for a question dead for hours on a much-later,
+   * unrelated duplicate of the same command.
+   */
+  private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
   constructor(
     private readonly deps: AutoApproveGateDeps,
@@ -211,16 +389,77 @@ export class AutoApproveGate {
    * permission eval is still legitimately in flight, and auth_success /
    * elicitation_dialog don't carry "user answered" semantics either. No-op when no
    * service is configured.
+   *
+   * `opts.mainOnly` (#711) scopes the release/cancel to MAIN-context state
+   * only. `Stop` fires whenever the LEAD agent idles, even while teammates
+   * (subagent/`agent_id`-tagged escalations) are still running -- releasing/
+   * cancelling EVERYTHING on a lead Stop turned every teammate's already-
+   * pushed card phantom (answering it resolved nothing) and killed their
+   * in-flight evals. `SessionEnd` and `forceRelease` are real teardown and
+   * always release/cancel everything (mainOnly absent/false) -- there is no
+   * "the rest of the team is still going" case once the session has ended.
+   *
+   * Accepted tradeoff: if a teammate is killed WITHOUT Claude ever emitting
+   * its own `SessionEnd` for that team member (e.g. the whole process is
+   * torn down externally), its spared held card has no further release
+   * trigger and sits until the pre-existing `hold_timeout` (default 1800s)
+   * fails it open on its own timer -- bounded, not indefinite.
    */
-  cancelStale(reason: string): void {
-    // Release any held hooks first (#573): a Stop/SessionEnd means the session
-    // is going away, so a hook blocked on a human answer must fail open to
-    // passthrough rather than hang. A held hook cannot normally co-occur with
-    // Stop (Claude is blocked on the permission), but this is defensive.
-    this.releaseAllHolds('passthrough', reason);
+  cancelStale(reason: string, opts?: { mainOnly?: boolean }): void {
+    const mainOnly = opts?.mainOnly ?? false;
+    // Release held hooks first (#573): a teardown means the session is going
+    // away, so a hook blocked on a human answer must fail open to passthrough
+    // rather than hang. mainOnly (#711) keeps subagent/team-member holds alive
+    // -- their hooks are still blocked in a still-running teammate and remain
+    // answerable via `resolveHeld`.
+    this.releaseAllHolds('passthrough', reason, mainOnly);
+    // #673 / #711: every OPEN escalation this gate has tracked (held above, or
+    // a passthrough one with no hold) is moot on a full teardown -- wholesale
+    // clear, as before. On a mainOnly Stop, only the MAIN-tagged entries are
+    // moot; a teammate's is not (its hold, if any, was just spared above, and
+    // its signature must stay trackable for external-resolution cancellation).
+    if (mainOnly) {
+      for (const [qid, sig] of this.openQuestionSignatures) {
+        if (!sig.isSubagent) this.openQuestionSignatures.delete(qid);
+      }
+    } else {
+      this.openQuestionSignatures.clear();
+    }
     if (this.deps.service === null) return;
-    if (this.deps.service.cancel(reason)) {
-      log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
+    // #730 (BUG 1 fix): drop THIS session's own QUEUED evals first -- work a
+    // teardown or a mainOnly Stop has already decided is moot must never
+    // survive in the shared FIFO to be promoted onto the GPU later just
+    // because the eval ahead of it happens to release around the same time.
+    // Scoped to this gate's own sessionId, so a sibling session's queue is
+    // untouched; mainOnly additionally spares a queued subagent/team-member
+    // eval, mirroring the running-eval loop below.
+    const drainedCount = this.deps.service.drainScope?.(this.sessionId, { mainOnly }) ?? 0;
+    if (drainedCount > 0) {
+      log(`[AutoApprove ${this.sessionTag}] Drained ${drainedCount} queued eval(s) (${reason})`);
+    }
+    if (!mainOnly) {
+      // #730 (BUG 3 fix): scoped to this session, so a SessionEnd here can
+      // never abort a DIFFERENT session's running eval just because it
+      // happens to be the one holding the shared (daemon-wide) slot.
+      if (this.deps.service.cancel(reason, undefined, this.sessionId)) {
+        log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
+      }
+      return;
+    }
+    // #711: cancel ONLY the in-flight evals tagged main. Under synchronous
+    // decisions a main eval cannot be in flight at Stop anyway (Claude blocks
+    // on the hook while the gate evaluates it), so this is defensive; any eval
+    // that IS running/queued at lead-Stop is a teammate's and must keep going.
+    // #730 (BUG 2 fix): scoped, so an identically-numbered evalId belonging to
+    // a DIFFERENT session (evalId is only unique per-gate) can never be hit
+    // by mistake.
+    let cancelledCount = 0;
+    for (const [evalId, isSubagent] of this.evalIsSubagentById) {
+      if (isSubagent) continue;
+      if (this.deps.service.cancel(reason, evalId, this.sessionId)) cancelledCount += 1;
+    }
+    if (cancelledCount > 0) {
+      log(`[AutoApprove] Cancelled ${cancelledCount} stale MAIN-context LLM eval(s): ${reason}`);
     }
   }
 
@@ -238,7 +477,10 @@ export class AutoApproveGate {
     const evalId = this.evalIdByQuestion.get(questionId);
     if (evalId === undefined) return;
     this.evalIdByQuestion.delete(questionId);
-    if (this.deps.service?.cancel(reason, evalId)) {
+    // #730: scoped to this session's own sessionId, so this evalId can never
+    // collide with an identically-numbered eval belonging to a different
+    // session (evalId is only unique per-gate).
+    if (this.deps.service?.cancel(reason, evalId, this.sessionId)) {
       log(
         `[AutoApprove ${this.sessionTag}] Answer freed the eval for ${questionId.slice(0, 8)} (${reason})`,
       );
@@ -257,6 +499,9 @@ export class AutoApproveGate {
     const holds = this.pendingHolds.size;
     this.releaseAllHolds('passthrough', reason);
     this.evalIdByQuestion.clear();
+    // #673: mirrors cancelStale's wholesale clear -- a force-release is at
+    // least as final as a session end for bookkeeping purposes.
+    this.openQuestionSignatures.clear();
     const service = this.deps.service;
     if (service === null) return { holds, cancelled: false, drained: 0 };
     const cancelled = service.cancel(reason);
@@ -276,8 +521,24 @@ export class AutoApproveGate {
    * a multi-choice pick or a non-auto-approve session, takes the PTY path).
    * Clears the hold's timer and marks the permission handled so the #484 buffer
    * + #513 cue close exactly as for a silent auto-decision.
+   *
+   * `suggestionIndex` (#718): present when the user picked a suggestion-derived
+   * "Yes, always allow: ..." option. `decision` is still `'allow'` in that case
+   * (the caller maps isNo -> deny, everything else it can express -> allow);
+   * this resolves the hook with the RICHER `{behavior:'allow',
+   * updatedPermissions:[suggestions[suggestionIndex]]}` instead, echoing the
+   * exact original entry back to Claude Code so it actually persists the
+   * choice — the real "Yes, always" the bare `allow` could never express. A
+   * stale/out-of-range index (the hold's stashed suggestions no longer have
+   * that entry) degrades to a plain `allow` with a loud warning rather than
+   * silently dropping the escalation.
    */
-  resolveHeld(questionId: UUID, decision: 'allow' | 'deny'): boolean {
+  resolveHeld(questionId: UUID, decision: 'allow' | 'deny', suggestionIndex?: number): boolean {
+    // #673: this is the NORMAL answer path (input-events.ts), so an open
+    // escalation this question tracked is resolved now regardless of which
+    // branch below runs -- clear it unconditionally, not just on the hit path.
+    this.openQuestionSignatures.delete(questionId);
+    this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -288,10 +549,23 @@ export class AutoApproveGate {
     // handleAnswer find it "live" and misroute. The user-answer path also
     // removes it in handleAnswer's finally; a double-remove is idempotent.
     this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
-    this.markHandled();
-    hold.resolve(decision);
+    this.markHandled(hold.isSubagent);
+    let resolvedDecision: PermissionDecision = decision;
+    let logSuffix: string = decision;
+    if (decision === 'allow' && suggestionIndex !== undefined) {
+      const suggestion = hold.suggestions?.[suggestionIndex];
+      if (suggestion !== undefined) {
+        resolvedDecision = { behavior: 'allow', updatedPermissions: [suggestion] };
+        logSuffix = 'allow (updatedPermissions echoed)';
+      } else {
+        logError(
+          `[AutoApprove ${this.sessionTag}] Held hook ${questionId.slice(0, 8)}: suggestionIndex ${suggestionIndex} missing from stashed permission_suggestions; falling back to plain allow`,
+        );
+      }
+    }
+    hold.resolve(resolvedDecision);
     log(
-      `[AutoApprove ${this.sessionTag}] Held hook ${questionId.slice(0, 8)} resolved: ${decision}`,
+      `[AutoApprove ${this.sessionTag}] Held hook ${questionId.slice(0, 8)} resolved: ${logSuffix}`,
     );
     return true;
   }
@@ -306,17 +580,26 @@ export class AutoApproveGate {
    * about to answer the native prompt, not a silent auto-decision).
    */
   releaseHeldAsPassthrough(questionId: UUID): boolean {
+    // #673: openQuestionSignatures cleanup lives in the private releaseHeld
+    // itself (the single owner every internal caller funnels through), so
+    // there is nothing extra to do here.
     return this.releaseHeld(questionId, 'passthrough');
   }
 
-  /** Resolve every pending hold with one decision + reason, clearing timers and
-   *  emptying the map. Used by `cancelStale` (session teardown). */
-  private releaseAllHolds(decision: PermissionDecision, reason: string): void {
-    if (this.pendingHolds.size === 0) return;
+  /** Resolve pending holds with one decision + reason, clearing timers and
+   *  removing each released entry. Used by `cancelStale` (session teardown, or
+   *  a mainOnly-scoped Stop, #711) -- `mainOnly` releases only holds NOT
+   *  tagged subagent, leaving a teammate's hold (and its timer) intact so it
+   *  stays answerable via `resolveHeld`. */
+  private releaseAllHolds(decision: PermissionDecision, reason: string, mainOnly = false): void {
+    const targets = mainOnly
+      ? [...this.pendingHolds].filter(([, hold]) => !hold.isSubagent)
+      : [...this.pendingHolds];
+    if (targets.length === 0) return;
     log(
-      `[AutoApprove ${this.sessionTag}] Releasing ${this.pendingHolds.size} held hook(s) as ${decision} (${reason})`,
+      `[AutoApprove ${this.sessionTag}] Releasing ${targets.length} held hook(s) as ${decision} (${reason}${mainOnly ? ', main-only' : ''})`,
     );
-    for (const [qid, hold] of this.pendingHolds) {
+    for (const [qid, hold] of targets) {
       clearTimeout(hold.timer);
       // The session is going away (Stop/SessionEnd); dismiss the pushed card on
       // every client BEFORE resolving so it does not linger after the prompt is
@@ -324,8 +607,8 @@ export class AutoApproveGate {
       this.notifyResolved(qid, 'cancelled');
       this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
       hold.resolve(decision);
+      this.pendingHolds.delete(qid);
     }
-    this.pendingHolds.clear();
   }
 
   /**
@@ -376,12 +659,34 @@ export class AutoApproveGate {
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
+        // #733: tell the phone the prompt is MOVING to the terminal before the
+        // card is dismissed — while the question is still in sessionRegistry so
+        // the handoff push can carry its text. Guarded on the hold still being
+        // live (an answered/cancelled hold never fires a stale handoff;
+        // failOpenHeld below no-ops the same way) AND on the user having been
+        // reachable: either delivery was CONFIRMED (in_app/pushed), or delivery
+        // gating is disabled so there is no confirmation signal at all (legacy
+        // hold — assume the push went out). A hold whose delivery was pending/
+        // failed is the #603 undeliverable machinery's territory — pushing
+        // "timed out waiting for you" at someone who was never notified would
+        // be noise on a channel that is likely broken anyway.
+        const gatingDisabled = (this.deps.deliveryConfirmMs ?? 0) <= 0;
+        if (this.pendingHolds.has(qid) && (gatingDisabled || this.confirmedDeliveries.has(qid))) {
+          this.safeCueWithArg('onHoldTimeout', this.deps.onHoldTimeout, qid);
+        }
         this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} timed out -> passthrough`);
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;
       // unref so a held hook never blocks daemon shutdown.
       timer.unref?.();
-      this.pendingHolds.set(qid, { resolve, timer });
+      this.pendingHolds.set(qid, {
+        resolve,
+        timer,
+        isSubagent: this.isSubagentEvent(input),
+        // #718: stashed so a later resolveHeld(..., suggestionIndex) can echo
+        // back the exact original entry the user picked.
+        suggestions: input.permission_suggestions,
+      });
     });
     // Phase 1 (#603, R1/R2): gate the hold on CONFIRMED delivery. A held hook is
     // only worth blocking Claude for if the user can actually be notified; if
@@ -440,7 +745,13 @@ export class AutoApproveGate {
         // The hold may already be resolved (user answered, Part-B verdict, or a
         // cancel) — then there is nothing to gate.
         if (!this.pendingHolds.has(qid)) return;
-        if (result !== 'timeout' && isDelivered(result)) return; // confirmed: keep holding
+        if (result !== 'timeout' && isDelivered(result)) {
+          // Confirmed: keep holding — and remember it, so a later hold-timeout
+          // knows the user really WAS notified and a #733 handoff notice is
+          // meaningful (see the cue gate in createHold).
+          this.confirmedDeliveries.add(qid);
+          return;
+        }
         this.onDeliveryUnconfirmed(qid, result);
       })
       .catch((err) => {
@@ -475,7 +786,12 @@ export class AutoApproveGate {
         );
       }, holdUnconfirmedMs);
       timer.unref?.();
-      this.pendingHolds.set(qid, { resolve: hold.resolve, timer });
+      this.pendingHolds.set(qid, {
+        resolve: hold.resolve,
+        timer,
+        isSubagent: hold.isSubagent,
+        suggestions: hold.suggestions,
+      });
       logError(
         `[AutoApprove ${this.sessionTag}] Held hook ${qid.slice(0, 8)} notification UNCONFIRMED (${reason}); holding ${Math.round(holdUnconfirmedMs / 1000)}s (hold_unconfirmed_timeout) with retry before fail-open`,
       );
@@ -564,18 +880,30 @@ export class AutoApproveGate {
    *   - approve -> 'allow', deny -> 'deny' (Claude proceeds; NO PTY inject).
    *   - escalate (main) -> escalateToUser + 'passthrough' (Claude renders the
    *     prompt; the user answers).
-   *   - escalate / no-service in a SUBAGENT context -> 'deny' via the hook
-   *     response. This is the core fix: the old PTY-inject default-deny couldn't
-   *     tell whose prompt was on the PTY for parallel subagents and leaked; the
-   *     synchronous deny needs no PTY at all.
+   *   - escalate / no-service / eval-error in a SUBAGENT-TAGGED context
+   *     (`agent_id` present) -> 'deny' via the hook response. This is the core
+   *     fix: the old PTY-inject default-deny couldn't tell whose prompt was on
+   *     the PTY for parallel subagents and leaked; the synchronous deny needs
+   *     no PTY at all.
+   *   - the SAME three branches with `isInSubagentContext()` true but NO
+   *     `agent_id` on the input -> this is the #710 tracker-leak signature
+   *     (a PostToolUse(Task/Agent) completion tagged with the spawned agent's
+   *     own agent_id was dropped before popping the tracker), NOT a real
+   *     subagent prompt. Reset the tracker and escalate as main instead of
+   *     silently denying the main agent forever.
    *   - pick (multi-choice) -> inject the index + 'passthrough' (the hook
    *     response can't express "pick option N"; keep the PTY for this rare case).
    *   - cancelled -> 'passthrough' (the user already advanced).
    */
   async resolvePermission(input: PermissionRequestHookInput): Promise<PermissionDecision> {
     const { service, isInSubagentContext } = this.deps;
+    // #711: computed once and threaded through every markHandled/onEvalStart
+    // call below, so a held hold, an openQuestionSignatures entry, and the
+    // client status-pill cue all agree on whether THIS permission belongs to a
+    // subagent/team-member (`agent_id` present) or the main agent.
+    const isSubagent = this.isSubagentEvent(input);
 
-    if (this.isSubagentEvent(input)) {
+    if (isSubagent) {
       log(
         `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
@@ -585,16 +913,37 @@ export class AutoApproveGate {
     // leak); main escalates to the user (holding the hook when binary, #573).
     if (!service) {
       if (isInSubagentContext()) {
-        log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
-        return 'deny';
+        if (this.isSubagentEvent(input)) {
+          log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
+          return 'deny';
+        }
+        // #710: a MAIN-tagged event (no agent_id) reaching here means the
+        // tracker leaked, not a real subagent prompt. Reset and fall through
+        // to escalateMain below instead of denying the main agent.
+        //
+        // #716 (blanket-reset tradeoff): resetSubagentContext() clears ALL
+        // tracked use_ids, not just the leaked one -- it cannot tell which
+        // entry is stale. If a genuinely-running concurrent synchronous Task
+        // is ALSO open right now, its own later agent_id-tagged permission
+        // requests will see isInSubagentContext() false and escalate as main
+        // instead of default-denying. Accepted: (a) that escalation is
+        // held/answerable (Model B), the same way async/background subagents
+        // and team members already behave; (b) the alternative -- silently
+        // denying the MAIN agent -- is the #710 bug this reset exists to fix.
+        logError(
+          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, no-service path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+        );
+        this.deps.resetSubagentContext?.();
       }
       return this.escalateMain(input);
     }
 
     // Open the buffer/cue window (#484/#513). With synchronous decisions Claude
     // does not render the prompt during the eval, so the buffer rarely holds a
-    // PTY prompt now; the cue lifecycle still rides these signals.
-    this.safeCue('onEvalStart', this.deps.onEvalStart);
+    // PTY prompt now; the cue lifecycle still rides these signals. #711: ctx
+    // lets the setup layer skip the client status-pill broadcast for a
+    // subagent/team-member eval the user never saw asked.
+    this.safeCueWithArg('onEvalStart', this.deps.onEvalStart, { isSubagent });
 
     // Raw suggestions: the service does its own strict-string filtering; we
     // forward the raw shape so the multi-choice classifier can route a
@@ -602,14 +951,26 @@ export class AutoApproveGate {
     // Stamp a unique id so a held question (Part B) can be tied to THIS eval and
     // a manual answer cancels exactly it (#617).
     const evalId = ++this.evalSeq;
-    const evalPromise = service.evaluate(
-      input.tool_name,
-      input.tool_input,
-      this.sessionTag,
-      input.permission_suggestions as readonly unknown[] | undefined,
-      undefined,
-      evalId,
-    );
+    // #711: tag this eval's subagent-ness so a Stop can cancel ONLY main-context
+    // evals (`cancelStale('Stop', { mainOnly: true })`); the .finally always
+    // removes it once (evaluate() never rejects).
+    this.evalIsSubagentById.set(evalId, isSubagent);
+    const evalPromise = service
+      .evaluate(
+        input.tool_name,
+        input.tool_input,
+        this.sessionTag,
+        input.permission_suggestions as readonly unknown[] | undefined,
+        undefined,
+        evalId,
+        // #730: this gate's own sessionId, so the shared daemon-wide service
+        // can isolate this eval from every other session's.
+        this.sessionId,
+        isSubagent,
+      )
+      .finally(() => {
+        this.evalIsSubagentById.delete(evalId);
+      });
 
     // Part B (#573, ISOLATED behind push_hold_timeout): if the eval is still
     // running after push_hold_timeout AND this is a binary main-context
@@ -627,8 +988,19 @@ export class AutoApproveGate {
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
       if (isInSubagentContext()) {
-        this.markHandled();
-        return 'deny';
+        if (isSubagent) {
+          // #711: a genuine subagent deny must not flap the client pill.
+          this.markHandled(true);
+          return 'deny';
+        }
+        // #710: MAIN-tagged + stuck tracker == leak, not a real subagent
+        // prompt. Reset and fall through to escalateMain below. Blanket-reset
+        // tradeoff (clears ALL tracked use_ids, not just the leaked one):
+        // see the no-service branch above (#716).
+        logError(
+          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, eval-error path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+        );
+        this.deps.resetSubagentContext?.();
       }
       return this.escalateMain(input);
     }
@@ -642,11 +1014,11 @@ export class AutoApproveGate {
       return 'passthrough';
     }
     if (result.decision === 'approve') {
-      this.markHandled();
+      this.markHandled(isSubagent);
       return 'allow';
     }
     if (result.decision === 'deny') {
-      this.markHandled();
+      this.markHandled(isSubagent);
       return 'deny';
     }
     if (result.decision === 'pick') {
@@ -662,25 +1034,36 @@ export class AutoApproveGate {
       if (
         await this.inject(input, String(result.pickIndex), `multichoice-pick-${result.pickIndex}`)
       ) {
-        this.markHandled();
+        this.markHandled(isSubagent);
         return 'passthrough';
       }
       return this.escalatePassthrough(input);
     }
     // escalate: a subagent prompt the user cannot answer is default-denied via
-    // the response (no hang, no PTY).
+    // the response (no hang, no PTY). A MAIN-tagged event (agent_id absent)
+    // reaching here with isInSubagentContext() true is NOT a real subagent
+    // prompt: it is the #710 tracker-leak signature (a PostToolUse(Task/Agent)
+    // completion stamped with the SPAWNED agent's own agent_id never popped
+    // the use_id an earlier untagged PreToolUse tracked). Denying it would
+    // silently drop the main agent's own prompts (including AskUserQuestion)
+    // forever, so reset the tracker and fall through to escalate as main
+    // instead. Tradeoff (#710): on a legacy Claude Code version that predates
+    // agent_id, a genuine synchronous subagent prompt would now escalate+hold
+    // instead of deny — still answerable via the Model B hook response
+    // (below), strictly better than a silent main-agent deny.
     if (isInSubagentContext()) {
-      if (!this.isSubagentEvent(input)) {
-        // A MAIN-agent event reaching here means the subagent-context tracker
-        // leaked (a PostToolUse(Task) was dropped). Surface it loudly — otherwise
-        // the main session silently denies every permission.
-        logError(
-          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}); denying. Possible subagent-context tracker leak.`,
-        );
+      if (isSubagent) {
+        log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
+        // #711: a genuine subagent deny must not flap the client pill.
+        this.markHandled(true);
+        return 'deny';
       }
-      log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
-      this.markHandled();
-      return 'deny';
+      // Blanket-reset tradeoff (clears ALL tracked use_ids, not just the
+      // leaked one): see the no-service branch above (#716).
+      logError(
+        `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, escalate path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+      );
+      this.deps.resetSubagentContext?.();
     }
     // Second opinion (#522): the fast model would escalate, but a heavier
     // escalate_model may resolve it (honoring a broad approve policy) before we
@@ -690,12 +1073,24 @@ export class AutoApproveGate {
     if (escalateModel) {
       let second: AutoApproveResult;
       try {
+        // #711: deliberately NOT tagged in evalIsSubagentById (no evalId passed) --
+        // the same "Claude blocks on the hook while the gate evaluates" invariant
+        // that keeps a MAIN primary eval from ever being in flight at Stop applies
+        // here too, since Claude is still blocked on this same hook response
+        // while the second opinion runs. A mainOnly Stop therefore has nothing to
+        // cancel for this call by construction; leaving it untracked is correct,
+        // not a gap. #730: scope IS passed (unlike evalId) so a full teardown's
+        // scoped, untargeted-by-evalId cancel can still abort this call if it is
+        // somehow still running.
         second = await service.evaluate(
           input.tool_name,
           input.tool_input,
           this.sessionTag,
           input.permission_suggestions as readonly unknown[] | undefined,
           escalateModel,
+          undefined,
+          this.sessionId,
+          isSubagent,
         );
       } catch (err) {
         logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
@@ -708,12 +1103,12 @@ export class AutoApproveGate {
       }
       if (second.decision === 'approve') {
         log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) approved`);
-        this.markHandled();
+        this.markHandled(isSubagent);
         return 'allow';
       }
       if (second.decision === 'deny') {
         log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) denied`);
-        this.markHandled();
+        this.markHandled(isSubagent);
         return 'deny';
       }
       if (second.decision === 'cancelled') {
@@ -862,10 +1257,25 @@ export class AutoApproveGate {
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
 
-  /** Resolve a held hook with an arbitrary decision (incl. passthrough) WITHOUT
-   *  markHandled (used by Part B's cancelled reconciliation, where the verdict
-   *  was not a silent auto-decision). Returns true when a hold existed. */
+  /**
+   * Resolve a held hook with an arbitrary decision (incl. passthrough) WITHOUT
+   * markHandled (used by Part B's cancelled reconciliation, where the verdict
+   * was not a silent auto-decision). Returns true when a hold existed.
+   *
+   * #673: the SINGLE owner of `openQuestionSignatures` cleanup for every
+   * internal caller of this method -- `releaseHeldAsPassthrough`,
+   * `failOpenHeld` (hold-timeout / undelivered-notification fail-open),
+   * `reconcileLateVerdict`'s cancelled branch, and `resolveSupersededQuestion`
+   * (#673's own external-resolution cleanup) all funnel through here, so the
+   * delete must be UNCONDITIONAL (not gated on `hold` existing) or every one
+   * of those exit paths leaks an entry for the rest of the process lifetime.
+   * (`resolveHeld` is a separate, non-delegating path and owns its own delete.)
+   */
   private releaseHeld(questionId: UUID, decision: PermissionDecision): boolean {
+    this.openQuestionSignatures.delete(questionId);
+    // #733: unconditional for the same leak reason as the signature delete
+    // above — every hold exit path funnels through here.
+    this.confirmedDeliveries.delete(questionId);
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -883,10 +1293,13 @@ export class AutoApproveGate {
    * silently (inject succeeded), so the user never sees it. Notifies the
    * tracker (closes the #484 buffer window) AND the terminal cue (#513). Every
    * silent-handle site routes through here so neither signal can be missed.
+   * `isSubagent` (#711) is forwarded to `onHandled` so the setup layer can skip
+   * the client status-pill broadcast for a subagent/team-member permission the
+   * user never saw asked -- the tracker + terminal cue still fire either way.
    */
-  private markHandled(): void {
+  private markHandled(isSubagent: boolean): void {
     this.deps.tracker.onAutoApproveHandled();
-    this.safeCue('onHandled', this.deps.onHandled);
+    this.safeCueWithArg('onHandled', this.deps.onHandled, { isSubagent });
   }
 
   /**
@@ -1018,6 +1431,130 @@ export class AutoApproveGate {
       // terminal cue (#513, cosmetic); a cue throw must not break the finally.
       this.safeCue('onEscalate', this.deps.onEscalate);
     }
+    if (questionId) {
+      const observed: ObservedToolCall = {
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+      };
+      // #673 duplicate re-request: Claude re-issuing the IDENTICAL
+      // PermissionRequest (same tool signature) proves any earlier OPEN
+      // escalation for it can never be answered through its own hook response
+      // again -- that response already went to a stale hook call. Clean it up
+      // BEFORE tracking the new one (the new questionId is not registered yet,
+      // so this can never find/cancel itself).
+      //
+      // Baked-in assumption: Claude Code processes a turn's tool-permission
+      // hooks SEQUENTIALLY (verified against the cc-ref reference source,
+      // conversation.rs:370's sequential for-loop), so two identical-signature
+      // MAIN-context escalations can never be genuinely concurrent/live at
+      // once -- an incoming duplicate always means the earlier one is dead. If
+      // Claude Code ever parallelizes main-context tool-permission dispatch,
+      // this invariant breaks and this check would need a stronger key (e.g.
+      // requiring tool_use_id) before it could keep firing safely.
+      this.cancelExternallyResolved(observed, 'duplicate-re-request');
+      this.openQuestionSignatures.set(questionId, {
+        toolName: observed.toolName,
+        toolInputKey: stableToolInputKey(observed.toolInput),
+        toolUseId: observed.toolUseId,
+        // #711: tags this OPEN escalation main vs subagent/team-member, so a
+        // mainOnly Stop (cancelStale) clears only main-tagged entries here.
+        isSubagent: this.isSubagentEvent(input),
+      });
+    }
     return questionId;
+  }
+
+  /**
+   * #673: called when an external signal proves a currently-OPEN escalation
+   * (held or passthrough) was already resolved without going through Remi's
+   * own answer path. Two callers:
+   *   - `hook-bridge-setup.ts`'s PreToolUse/PostToolUse listeners, when the
+   *     observed tool signature matches an open escalation — the tool is now
+   *     running, so the permission was answered directly in the terminal (a
+   *     passthrough escalation is never held, so Remi's own answer path never
+   *     ran) or by the other process's own permission mode.
+   *   - `escalateToUser`, for a duplicate re-request of the SAME signature.
+   * Signature-scoped (exact tool_name + tool_input match, or exact
+   * tool_use_id match when both sides carry one) so it can only ever touch
+   * the ONE question it matches — never a DIFFERENT permission's still-running
+   * eval (#537's concern for why PreToolUse/PostToolUse don't cancel broadly).
+   * A no-op when no open escalation matches.
+   */
+  cancelExternallyResolved(observed: ObservedToolCall, reason: string): void {
+    const qid = this.findOpenQuestionMatching(observed);
+    if (!qid) return;
+    this.resolveSupersededQuestion(qid, reason);
+  }
+
+  /** Find an open escalation matching `observed`, preferring an exact
+   *  tool_use_id match (future-proofing: not sent by Claude Code today) over
+   *  the tool_name + tool_input signature fallback. */
+  private findOpenQuestionMatching(observed: ObservedToolCall): UUID | undefined {
+    // Fast path: called on EVERY admitted PreToolUse/PostToolUse, so the
+    // near-universal "no open escalation at all" case must not pay for a
+    // stableToolInputKey stringify it can never use.
+    if (this.openQuestionSignatures.size === 0) return undefined;
+    const observedKey = stableToolInputKey(observed.toolInput);
+    for (const [qid, sig] of this.openQuestionSignatures) {
+      if (sig.toolName !== observed.toolName || sig.toolInputKey !== observedKey) continue;
+      // Signature agrees. Two DIFFERENT tool calls can legitimately share an
+      // identical (tool_name, tool_input) (e.g. two `ls` calls in a row) --
+      // if BOTH sides carry a tool_use_id, it must ALSO agree, or this is a
+      // known-different call and must NOT be treated as a match. When at
+      // least one side has no id, the signature alone is the best available
+      // proof.
+      if (observed.toolUseId !== undefined && sig.toolUseId !== undefined) {
+        if (observed.toolUseId === sig.toolUseId) return qid;
+        continue;
+      }
+      return qid;
+    }
+    return undefined;
+  }
+
+  /**
+   * Guarded cleanup for a question proven stale by an external signal (#673).
+   * ALWAYS degrades to `releaseHeld(qid, 'passthrough')` — never a fabricated
+   * allow/deny, matching the hold-timeout fail-open philosophy: we cannot know
+   * what the user actually decided, so "no decision from us" is the only safe
+   * response. Mirrors input-events.ts's own answer-cleanup sequence: each step
+   * independently try/catch'd so one failure can never skip the rest —
+   * `removeQuestion` in particular must always run even if the eval was
+   * already gone or the hold release throws, or the pushed card lingers.
+   */
+  private resolveSupersededQuestion(qid: UUID, reason: string): void {
+    log(
+      `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
+    );
+    try {
+      this.releaseHeld(qid, 'passthrough');
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] releaseHeld during external-resolve cleanup threw:`,
+        err,
+      );
+    }
+    try {
+      this.cancelEvalForQuestion(qid, reason);
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] cancelEvalForQuestion during external-resolve cleanup threw:`,
+        err,
+      );
+    }
+    try {
+      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,
+        err,
+      );
+    }
+    // notifyResolved is already throw-safe internally; no extra wrap needed.
+    // openQuestionSignatures cleanup already happened inside releaseHeld
+    // above (the single owner, unconditional even if no hold existed) --
+    // nothing further to delete here.
+    this.notifyResolved(qid, 'cancelled');
   }
 }

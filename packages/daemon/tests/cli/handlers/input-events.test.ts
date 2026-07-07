@@ -132,6 +132,81 @@ describe('createInputHandlers', () => {
       expect(logs.some((m) => m.includes('No session found for connection'))).toBe(true);
     });
 
+    test('sends SESSION_NOT_FOUND when the session does not exist at all (#662)', async () => {
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const missingSessionId = 'nosn0000-0000-0000-0000-000000000000' as UUID;
+
+      await handlers.onUserInput(CID, missingSessionId, 'ignored', false);
+
+      // Previously this input vanished with only a server-side log line; the
+      // sender's UI showed it as "sent" with no error. Now an error is sent
+      // back so the client can surface a failure instead of a silent drop.
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as { type: string; code?: string };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('SESSION_NOT_FOUND');
+    });
+
+    test('sends NOT_ACTIVE_CONNECTION when the session exists but this connection is queued (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY({ writes: [], submits: [] }),
+        fakeMessageAPI(new Map()),
+      );
+      const activeConn = generateId();
+      sessionRegistry.attachConnection(sessionId, activeConn);
+      // CID is a different connection queued behind the active one.
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onUserInput(CID, sessionId, 'ignored', false);
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        code?: string;
+        details?: { sessionId?: string; messageId?: string };
+      };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
+      expect(msg.details?.sessionId).toBe(sessionId);
+      // No messageId was passed in -- details must not carry a stray key.
+      expect(msg.details?.messageId).toBeUndefined();
+    });
+
+    test('NOT_ACTIVE_CONNECTION details carry the rejected input message id (#681)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY({ writes: [], submits: [] }),
+        fakeMessageAPI(new Map()),
+      );
+      const activeConn = generateId();
+      sessionRegistry.attachConnection(sessionId, activeConn);
+      // CID is a different connection queued behind the active one.
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const droppedMessageId = generateId();
+      await handlers.onUserInput(CID, sessionId, 'ignored', false, undefined, droppedMessageId);
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        code?: string;
+        details?: { sessionId?: string; messageId?: string };
+      };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
+      expect(msg.details?.sessionId).toBe(sessionId);
+      // The specific dropped message's id, so the client can flip that ONE
+      // bubble to 'failed' instead of only refreshing the read-only banner.
+      expect(msg.details?.messageId).toBe(droppedMessageId);
+    });
+
     test('swallows pty.write errors and logs them (raw path)', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
@@ -304,15 +379,16 @@ describe('createInputHandlers', () => {
         'Review your answers● Q1? → Green● Q2? → Apple, CherryReady to submit your answers?❯ 1. Submit answers 2. Cancel';
       const CLOSED = "⏺ User answered Claude's questions:  ⎿ ·…";
       let writes = 0;
-      // After the 7 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,TAB) the review
-      // appears; the runner verifies it then sends ENTER, which closes the tool.
+      // After the 9 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,DOWN,DOWN,ENTER
+      // — Q2 has optionCount=3, so "Submit" sits at row 4) the review appears; the
+      // runner verifies it then sends ENTER, which closes the tool.
       const pty = {
         id: generateId(),
         write: (content: string) => {
           ptyCapture.writes.push(content);
           writes += 1;
-          if (writes === 7) appendPtyOutput(sessionId, REVIEW);
-          else if (writes >= 8 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
+          if (writes === 9) appendPtyOutput(sessionId, REVIEW);
+          else if (writes >= 10 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
         },
         submitInput: async () => {},
         close: async () => {},
@@ -364,10 +440,70 @@ describe('createInputHandlers', () => {
         AUQ_KEYS.SPACE, // toggle Apple
         AUQ_KEYS.DOWN,
         AUQ_KEYS.DOWN,
-        AUQ_KEYS.SPACE, // toggle Cherry
-        AUQ_KEYS.TAB, // leave Q2
+        AUQ_KEYS.SPACE, // toggle Cherry (cursor now at row 2, optionCount=3)
+        AUQ_KEYS.DOWN,
+        AUQ_KEYS.DOWN, // past "Type something" to "Submit" (row optionCount+1=4)
+        AUQ_KEYS.ENTER, // leave Q2 (-> review)
         AUQ_KEYS.ENTER, // submit (after review verified)
       ]);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      clearPtyOutput(sessionId);
+    });
+
+    // Regression for #661: the AUQ success branch (outcome closed/submitted) must
+    // consume the question exactly once EVEN IF cancelAutoApproveForQuestion
+    // throws, mirroring the plain-answer path's try/finally below.
+    test('a throwing cancelAutoApproveForQuestion still consumes the AUQ question and propagates', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      const pty = {
+        id: generateId(),
+        write: (content: string) => {
+          if (content === AUQ_KEYS.ENTER) {
+            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Green");
+          }
+        },
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession;
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Color: What is your favorite color?',
+        options: [
+          { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        kind: 'multi_question',
+        questions: [
+          {
+            header: 'Color',
+            text: 'What is your favorite color?',
+            multiSelect: false,
+            options: [
+              { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
+              { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
+            ],
+          },
+        ],
+      });
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        cancelAutoApproveForQuestion: () => {
+          throw new Error('eval-cancel gone');
+        },
+      });
+      await expect(
+        handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+          selections: [{ questionIndex: 0, optionIndices: [1] }],
+        }),
+      ).rejects.toThrow('eval-cancel gone');
+
+      // No zombie question left behind despite the throw.
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
       clearPtyOutput(sessionId);
     });
@@ -674,6 +810,55 @@ describe('createInputHandlers', () => {
       // #617: still cancels this question's eval (frees the GPU).
       expect(cancels).toEqual([{ sessionId, questionId: QID, reason: 'user-answered' }]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a suggestion-derived "Yes, always allow" option threads suggestionIndex to resolveHeldPermission (#718)', async () => {
+      // Unlike the legacy "Yes, always" string-suggestion label (FIX 1 above),
+      // a #718 structured-suggestion-derived option carries a suggestionIndex,
+      // so it CAN resolve the held hook (with a real updatedPermissions echo)
+      // instead of falling back to the native PTY prompt.
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: rm -rf /tmp/foo',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          {
+            value: '2',
+            label: 'Yes, always allow: rm -rf /tmp/foo',
+            isRecommended: false,
+            isYes: true,
+            isNo: false,
+            suggestionIndex: 0,
+          },
+          { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      const held: Array<{ decision: 'allow' | 'deny'; suggestionIndex: number | undefined }> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d, suggestionIndex) => {
+          held.push({ decision: d, suggestionIndex });
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '2'); // the suggestion-derived option
+
+      expect(held).toEqual([{ decision: 'allow', suggestionIndex: 0 }]);
+      expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
     });
 
     test('a non-held answer still scoped-cancels its own question and submits to the PTY (#617)', async () => {

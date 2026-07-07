@@ -327,6 +327,129 @@ describe('createConnectionHandlers', () => {
       expect(trackedConnections).toEqual([{ id: CID, type: 'telegram' }]);
       expect(connectionAddedCount).toBe(1);
     });
+
+    test('helloAck reports attachState "attached" for a fresh attach (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.attachState).toBe('attached');
+    });
+
+    test('helloAck reports attachState "queued" for a second connection without a matching deviceId (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      const firstConn = generateId();
+      sessionRegistry.attachConnection(sessionId, firstConn, 'device-A');
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-B' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.attachState).toBe('queued');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
+    });
+
+    test('same deviceId reclaims the lock instead of queuing behind its own stale connection (#662)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // First connection from this device takes the active slot.
+      const staleConn = generateId();
+      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A');
+
+      // Same device reconnects (e.g. after a dead-socket blip) as a new
+      // connection carrying the SAME deviceId.
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.type).toBe('hello_ack');
+      expect(ack.attachState).toBe('attached');
+      // The lock moved to the new connection; nothing is queued.
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.waitingConnectionCount).toBe(0);
+      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
+
+    test('same deviceId + matching clientFingerprint reclaims (#671, auth on)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      const staleConn = generateId();
+      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A', 'fp-alice');
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A', clientFingerprint: 'fp-alice' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.attachState).toBe('attached');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.waitingConnectionCount).toBe(0);
+      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
+
+    test('same deviceId + DIFFERENT clientFingerprint is refused: queues, does not evict (#671)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // Legitimate device holds the lock after authenticating.
+      const activeConn = generateId();
+      sessionRegistry.attachConnection(sessionId, activeConn, 'device-A', 'fp-alice');
+
+      // A different authenticated peer replays the same deviceId but cannot
+      // produce the matching fingerprint (it authenticated with its OWN key).
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A', clientFingerprint: 'fp-mallory' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.attachState).toBe('queued');
+      // Legitimate device keeps the lock; nothing was evicted.
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
+      expect(sessionRegistry.getSessionForConnection(activeConn)?.sessionId).toBe(sessionId);
+    });
+
+    test('same deviceId with no clientFingerprint on either side still reclaims (#671, auth off)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // Localhost daemon / loopback-exempt peer: no authenticator, so no
+      // clientFingerprint is ever produced on either side.
+      const staleConn = generateId();
+      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A');
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket', deviceId: 'device-A' },
+      });
+
+      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
+      expect(ack.attachState).toBe('attached');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+    });
   });
 
   describe('onDisconnect', () => {

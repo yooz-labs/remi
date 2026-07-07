@@ -41,6 +41,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import { log, logError } from '../cli/logger.ts';
+import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { startTranscriptFallback } from '../cli/transcript-fallback.ts';
 import { startTranscriptWatcher } from '../cli/transcript-watcher-setup.ts';
 import { classifySessionEvent } from '../hooks/session-lock-classifier.ts';
@@ -52,7 +53,7 @@ import type {
   SessionRegistryFile,
 } from '../session/index.ts';
 import type { TranscriptDiscovery } from './transcript-discovery.ts';
-import { readTranscriptOwnerPort } from './transcript-owner.ts';
+import { MARKER_SETTLE_MS, readTranscriptOwnerPort } from './transcript-owner.ts';
 import type { TranscriptWatcher } from './transcript-watcher.ts';
 
 /**
@@ -62,19 +63,6 @@ import type { TranscriptWatcher } from './transcript-watcher.ts';
  * readdir+stat on a ~tens-of-files dir is negligible CPU.
  */
 const ROTATION_POLL_INTERVAL_MS = 1500;
-/**
- * How long a NEW `.jsonl` may sit with an unreadable `remi:<port>` head marker
- * before we stop re-polling it. The marker-ready guard: an empty/unflushed file
- * reads `null` and is re-polled (it may still be flushing), never classified on
- * the empty edge. We discriminate "still flushing" from "settled non-remi file"
- * by the file's mtime AGE, not a tick count — so a slow-flushing OWN transcript
- * (or a transient EMFILE read) is NEVER permanently dropped within this window
- * (that permanent drop would be the exact #452 wedge: the kept fallback poll
- * only ever waits for the INITIAL transcript, not a rotated id). Only a file
- * settled-and-markerless for longer than this is recorded as seen. 10s is far
- * beyond Claude's synchronous create-to-marker gap.
- */
-const MARKER_SETTLE_MS = 10_000;
 /**
  * Freshness window for a dir-poll rotation candidate that already owns our port
  * marker (#518 follow-up). A real no-hooks rotation produces a FRESHLY-written
@@ -187,6 +175,9 @@ export class TranscriptBinder {
    *  yet readable is re-polled until its file has been settled-and-markerless for
    *  this long (by mtime), then recorded as seen. Test-overridable. */
   private markerSettleMs: number = MARKER_SETTLE_MS;
+  /** Set by `close()`; a torn-down binder must never re-arm the dir-poll it just
+   *  cancelled, even if a stray hook event reaches it after teardown (#676). */
+  private closed = false;
 
   private readonly deps: TranscriptBinderDeps;
   private readonly sessionId: UUID;
@@ -516,7 +507,20 @@ export class TranscriptBinder {
   admits(event: BinderHookEvent): boolean {
     this.adoptLockFromStore();
     if (!this.currentBoundId) return !this.hasSiblingInDir();
-    if (event.session_id === this.currentBoundId) return true;
+    // #672: a bare session_id match is not, by itself, conclusive proof of
+    // ownership — when the event ALSO carries a transcript_path and we already
+    // have one bound (lastTranscriptPath), the two must agree. Without this, a
+    // stale/raced id collision (two daemons momentarily adopting the same
+    // claude session id) would admit an event whose transcript is provably a
+    // DIFFERENT file than the one we are bound to. A mismatch falls through to
+    // the subagent + marker checks below rather than failing outright, so a
+    // marker-proven rotation we have not caught up to yet still reclaims.
+    if (
+      event.session_id === this.currentBoundId &&
+      this.transcriptConsistentWithBinding(event.transcript_path)
+    ) {
+      return true;
+    }
     // #593: a SUBAGENT of our session (agent_id present) can carry a session_id
     // that differs from our lock — parallel/team subagents, or an empty
     // 00000000 id — while still sharing OUR main transcript. Admit it when its
@@ -538,6 +542,28 @@ export class TranscriptBinder {
     // stays genuinely foreign (a real sibling), where the 8KB head read is
     // bounded and acceptable.
     return this.incomingReclaimsViaMarker(event);
+  }
+
+  /**
+   * #672: whether an event's transcript_path agrees with the transcript we are
+   * ALREADY bound to. Deliberately permissive when either side is unknown: no
+   * event path (many hook types omit it), or no bound path yet (lock adopted
+   * from the store without ever seeing a binding event) both return true, so
+   * a bare id match still stands exactly as it did before this check existed.
+   * Only a REAL disagreement between two known paths counts as a mismatch.
+   */
+  private transcriptConsistentWithBinding(transcriptPath: string | undefined): boolean {
+    if (!transcriptPath || !this.lastTranscriptPath) return true;
+    try {
+      return path.resolve(transcriptPath) === path.resolve(this.lastTranscriptPath);
+    } catch (err) {
+      // Fail closed: an unresolvable path is treated as a mismatch, not a match,
+      // so the caller falls through to the stricter marker-based checks.
+      logError(
+        `[Binder] transcriptConsistentWithBinding failed (fail-closed): ${errorToString(err)}`,
+      );
+      return false;
+    }
   }
 
   /**
@@ -762,6 +788,18 @@ export class TranscriptBinder {
   private adoptLockFromStore(): void {
     try {
       const storedId = this.deps.bindingStore.get(this.sessionId)?.claudeSessionId ?? null;
+      // #676: `setupHookBridge`'s pre-assigned-id read (which arms the #452
+      // dir-poll via `start()`) is wrapped in try/catch to survive a transient
+      // bindingStore/SessionStore throw. A throw there routes into the same
+      // "no pre-assigned id" branch as a legitimate null and `start()` is never
+      // called, permanently disarming the dir-poll for the session's whole
+      // lifetime. This read runs on every hook event (via `onHookEvent`/
+      // `admits`/`decide`) and already re-adopts a stored id the constructor
+      // missed, so it is the natural point to re-arm the dir-poll it missed —
+      // no restart required. Runs BEFORE the early-return below so it fires
+      // even when storedId already equals currentBoundId (the common
+      // steady-state adopt).
+      this.maybeRearmRotationPoll(storedId);
       if (storedId === null || storedId === this.currentBoundId) return;
       const previous = this.currentBoundId;
       this.currentBoundId = storedId;
@@ -790,9 +828,12 @@ export class TranscriptBinder {
       );
       return true;
     }
+    // Normalize both sides: a legacy on-disk entry (or a sibling running an
+    // older binary) may still carry an unexpanded `~` (#674).
+    const ourDir = normalizeProjectPath(this.workingDirectory);
     return this.deps.liveSessionsRegistry.listLive().some(
       (e) =>
-        e.projectPath === this.workingDirectory &&
+        normalizeProjectPath(e.projectPath) === ourDir &&
         e.sessionId !== this.sessionId &&
         e.wsPort !== this.deps.currentPort() &&
         // A zombie (daemon alive, Claude dead) must not count as a sibling
@@ -803,14 +844,79 @@ export class TranscriptBinder {
 
   /**
    * Whether the transcript named by an event was written by OUR Claude (the
-   * remi:<port> head marker matches our port). Ported verbatim from
-   * `hook-bridge-setup.ts:ownsTranscript`.
+   * remi:<port> head marker matches our port). Originally ported verbatim from
+   * `hook-bridge-setup.ts:ownsTranscript`; extended for #672 with a port-drift
+   * fallback (see below).
    */
   private ownsTranscript(transcriptPath: string | undefined): boolean {
-    return (
-      typeof transcriptPath === 'string' &&
-      readTranscriptOwnerPort(transcriptPath) === this.deps.currentPort()
-    );
+    if (typeof transcriptPath !== 'string') return false;
+    const ownerPort = readTranscriptOwnerPort(transcriptPath);
+    if (ownerPort === null) return false;
+    if (ownerPort === this.deps.currentPort()) return true;
+    // #672: currentPort() can drift to a different port after a daemon restart
+    // (port-selection #146). A transcript whose remi:<port> marker was baked
+    // under the PRE-restart port would then never match again even though it
+    // is genuinely ours. Fall back to the port durably recorded for THIS remi
+    // session at spawn time (SessionBindingStore.getStoredPort) — fixed at
+    // whatever port was live when this session was created, so it survives a
+    // later restart that moves currentPort() elsewhere.
+    //
+    // HARDENED (post-review): a bare storedPort match is NOT enough on its own.
+    // findAvailableTcpPort reuses a dead session's port, so our own stale
+    // storedPort can later be handed to a completely different, LIVE sibling —
+    // trusting the match then would let that sibling's own fresh transcript
+    // hijack our binding (rebind us onto ITS session, gate then answering ITS
+    // permissions). Two gates close that, both required:
+    //   (1) no CURRENTLY LIVE session may hold ownerPort right now — if one
+    //       does, that daemon is the port's true current owner, so this
+    //       transcript is provably NOT a stale replay of our own old port;
+    //   (2) the transcript itself must be RECENT (MARKER_SETTLE_MS-scale
+    //       staleness, mirroring the dir-poll's ROTATION_FRESHNESS_MS
+    //       stale-vs-live distinction) — a genuine reclaim is always
+    //       accompanied by live hook activity, so freshness never penalizes
+    //       the legitimate case; it only rejects a truly dead, unrelated
+    //       historical file (e.g. a sibling whose Claude child has since
+    //       exited) that happens to share our old port.
+    // `ownsTranscript` is called from paths with no surrounding try/catch (the
+    // #451 sibling-defer gate in onHookEvent/decide), so a disk read failure
+    // anywhere in this fallback must be swallowed, not propagate into the hook
+    // dispatch loop.
+    try {
+      const storedPort = this.deps.bindingStore.getStoredPort(this.sessionId);
+      if (storedPort === null || ownerPort !== storedPort) return false;
+      if (this.portClaimedByLiveSibling(ownerPort)) return false;
+      return !this.transcriptIsStale(transcriptPath);
+    } catch (err) {
+      logError(`[Binder] getStoredPort failed (fail-closed): ${errorToString(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a currently-live OTHER remi session (per liveSessionsRegistry) is
+   * bound to `port` right now (#672 review). Stops a stale, drifted
+   * storedPort match from hijacking a live sibling that has since been handed
+   * the SAME port by findAvailableTcpPort's dead-port reuse.
+   */
+  private portClaimedByLiveSibling(port: number): boolean {
+    return this.deps.liveSessionsRegistry
+      .listLive()
+      .some((e) => e.sessionId !== this.sessionId && e.wsPort === port && claudeChildLooksAlive(e));
+  }
+
+  /**
+   * Whether `transcriptPath`'s mtime is older than ROTATION_FRESHNESS_MS — the
+   * same stale-vs-live distinction the #518 dir-poll freshness gate makes
+   * (#672 review, applied here for the storedPort reclaim fallback). A stat
+   * failure (raced delete/rename) is treated as fresh: fail toward the
+   * narrower, already-marker-verified reclaim rather than toward rejecting it.
+   */
+  private transcriptIsStale(transcriptPath: string): boolean {
+    try {
+      return Date.now() - fs.statSync(transcriptPath).mtimeMs > ROTATION_FRESHNESS_MS;
+    } catch {
+      return false;
+    }
   }
 
   /** Subagent/team events carry agent_id. */
@@ -856,6 +962,7 @@ export class TranscriptBinder {
    * cli.ts:822-829 and ensures the dir-poll never outlives the binder).
    */
   close(): void {
+    this.closed = true;
     this.teardownWatcher('close');
     this.cancelFallbackTimer();
     this.cancelRotationPoll();
@@ -893,6 +1000,28 @@ export class TranscriptBinder {
       () => this.rotationPollTick(),
       this.rotationPollIntervalMs,
     );
+  }
+
+  /**
+   * Re-arm path (#676). `armRotationPoll` is only ever called from `start()`
+   * (construction time) today; if that call was skipped — the pre-assigned-id
+   * read threw, or genuinely found no id yet — the dir-poll stays unarmed
+   * forever, even once a later read succeeds. Called from `adoptLockFromStore`
+   * on every hook event so a later successful read arms it instead. Idempotent
+   * (delegates to `armRotationPoll`'s own already-armed guard) and inert in
+   * shadow mode or after `close()`.
+   */
+  private maybeRearmRotationPoll(storedId: string | null): void {
+    if (storedId === null || this.mode === 'shadow' || this.closed) return;
+    // Not just a fast-path: armRotationPoll() below is ALREADY idempotent on
+    // this same check, but without it here the log line would fire on every
+    // hook event once armed, not just on the actual re-arm. This check exists
+    // to gate the log, not to prevent a double-arm.
+    if (this.rotationPollTimer !== null) return; // already armed
+    log(
+      `[Binder] Re-arming rotation dir-poll from a later bindingStore read (missed at construction, #676): claude=${storedId.slice(0, 8)}`,
+    );
+    this.armRotationPoll(storedId);
   }
 
   private cancelRotationPoll(): void {

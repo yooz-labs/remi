@@ -40,9 +40,16 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
 
       <div className="space-y-1">
         {visibleDirs.map((dir) => (
-          <div
+          // The WHOLE row is the tap target (#656): the start affordance used to
+          // be a Play button hidden behind `group-hover:visible`, which never
+          // reveals on touch — so the recents were dead on the phone. The Play
+          // icon is now an always-visible cue, brighter on hover for mouse users.
+          <button
             key={dir.directory}
-            className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--color-surface-light)]"
+            type="button"
+            onClick={() => onStartSession(dir.directory)}
+            className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-light)] active:bg-[var(--color-surface-light)]"
+            aria-label={`Start session in ${dir.displayName}`}
           >
             <FolderOpen className="size-4 shrink-0 text-[var(--color-text-muted)]" />
             <div className="min-w-0 flex-1">
@@ -54,14 +61,8 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
                 {dir.sessionCount !== 1 ? 's' : ''}
               </div>
             </div>
-            <button
-              onClick={() => onStartSession(dir.directory)}
-              className="invisible rounded p-1 text-[var(--color-primary)] transition-colors hover:bg-[var(--color-primary)]/10 group-hover:visible"
-              aria-label={`Start session in ${dir.displayName}`}
-            >
-              <Play className="size-4" />
-            </button>
-          </div>
+            <Play className="size-4 shrink-0 text-[var(--color-primary)] opacity-60 transition-opacity group-hover:opacity-100" />
+          </button>
         ))}
       </div>
 

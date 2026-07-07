@@ -226,7 +226,7 @@ export class RelayAdapter implements ConnectionAdapter {
       return;
     }
 
-    const result = await this.config.authenticator.verifyResponse(
+    const { result } = await this.config.authenticator.verifyResponse(
       this.clientConnectionId,
       response,
     );
@@ -337,12 +337,14 @@ export class RelayAdapter implements ConnectionAdapter {
         }
         const claudeId =
           typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
+        const messageId = typeof msg['id'] === 'string' ? msg['id'] : undefined;
         this.events.onUserInput?.(
           connectionId,
           msg['sessionId'],
           msg['content'],
           msg['raw'] === true,
           claudeId,
+          messageId,
         );
         break;
       }
@@ -454,6 +456,13 @@ export class RelayAdapter implements ConnectionAdapter {
           return;
         }
         this.events.onRegisterDeviceToken?.(connectionId, msg['token'], msg['platform']);
+        break;
+      case 'unregister_device_token':
+        if (typeof msg['token'] !== 'string') {
+          console.warn('Invalid unregister_device_token payload: missing token');
+          return;
+        }
+        this.events.onUnregisterDeviceToken?.(connectionId, msg['token']);
         break;
       case 'ping':
         // Liveness ping needs no reply over relay.

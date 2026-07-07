@@ -97,6 +97,26 @@ describe('log-file session', () => {
     expect(getLogFd()).toBe(result.fd);
   });
 
+  test('rotates an oversized primary log before opening a fresh one', () => {
+    const primary = path.join(sandbox, 'remi.log');
+    // Genuinely exceed the default 10MB rotation threshold so the real
+    // startLogFileSession -> rotateIfNeeded call (no override) fires.
+    fs.writeFileSync(primary, Buffer.alloc(10 * 1024 * 1024 + 1, 'x'));
+
+    const result = startLogFileSession(primary);
+    expect(result.fd).not.toBeNull();
+    expect(result.path).toBe(primary);
+
+    // Old oversized content moved to the .1 backup.
+    expect(fs.existsSync(`${primary}.1`)).toBe(true);
+    expect(fs.statSync(`${primary}.1`).size).toBe(10 * 1024 * 1024 + 1);
+
+    // Fresh primary only has the new session header, not the old bulk.
+    const freshContent = fs.readFileSync(primary, 'utf-8');
+    expect(freshContent).toMatch(/^\n--- Remi session started at /);
+    expect(freshContent.length).toBeLessThan(1024);
+  });
+
   test('startLogFileSession without fallback returns null fd on failure', () => {
     const blocker = path.join(sandbox, 'blocker2');
     fs.writeFileSync(blocker, 'not a dir');

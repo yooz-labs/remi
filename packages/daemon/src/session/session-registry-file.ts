@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
+import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { findAvailableTcpPort } from './port-utils.ts';
 import { isProcessAlive } from './process-alive.ts';
 
@@ -103,12 +104,25 @@ export class SessionRegistryFile {
     }
   }
 
-  /** Register a live session (atomic write). */
+  /**
+   * Register a live session (atomic write). Normalizes `projectPath` (expands
+   * `~`, resolves to absolute) before persisting so a caller passing a raw,
+   * unexpanded path never writes a malformed entry (#674). Since `patchEntry`
+   * round-trips through this method, an on-disk entry that still carries a raw
+   * `~` also gets normalized the next time it's patched — but a value already
+   * mangled into an unrecoverable shape (e.g. a `~` concatenated mid-string
+   * onto another absolute path) cannot be un-concatenated after the fact; only
+   * preventing the write in the first place fixes that case.
+   */
   register(entry: LiveSessionEntry): void {
     this.ensureDir();
+    const normalized: LiveSessionEntry = {
+      ...entry,
+      projectPath: normalizeProjectPath(entry.projectPath),
+    };
     const filePath = path.join(this.dir, `${entry.sessionId}.json`);
     const tmpPath = `${filePath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
+    fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2), 'utf-8');
     fs.renameSync(tmpPath, filePath);
   }
 

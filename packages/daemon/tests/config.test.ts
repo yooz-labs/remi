@@ -158,10 +158,10 @@ describe('applyEnvOverrides', () => {
     expect(config.display.max_bullet_length).toBe(100);
   });
 
-  test('transcript-binder drives by default; shadow off (#499/#503)', () => {
-    expect(DEFAULT_CONFIG.features.transcript_binder_shadow).toBe(false);
-    // The binder is now the default session-binding driver (kill-switch:
-    // REMI_TRANSCRIPT_BINDER_ENABLED=false).
+  test('transcript-binder drives by default (#499/#503)', () => {
+    // The binder is the unconditional session-binding driver. The flag is a
+    // deprecated kill-switch (#470): REMI_TRANSCRIPT_BINDER_ENABLED=false no
+    // longer restores an alternate path, it only logs a deprecation warning.
     expect(DEFAULT_CONFIG.features.transcript_binder_enabled).toBe(true);
   });
 
@@ -177,25 +177,10 @@ describe('applyEnvOverrides', () => {
     expect(DEFAULT_CONFIG.auto_approve.allow.some((p) => p.includes(' '))).toBe(false);
   });
 
-  test('shadow-only (compare without driving) needs SHADOW=true + ENABLED=false', () => {
-    // Drive is the default now, so shadow-only must explicitly opt out of drive.
-    process.env['REMI_TRANSCRIPT_BINDER_SHADOW'] = 'true';
-    process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'false';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.features.transcript_binder_shadow).toBe(true);
-    expect(config.features.transcript_binder_enabled).toBe(false);
-  });
-
-  test('REMI_TRANSCRIPT_BINDER_ENABLED=false is the kill-switch back to the old path', () => {
+  test('REMI_TRANSCRIPT_BINDER_ENABLED=false is read but no longer changes behavior (#470)', () => {
     process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'false';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
     expect(config.features.transcript_binder_enabled).toBe(false);
-  });
-
-  test('REMI_TRANSCRIPT_BINDER_SHADOW=false keeps shadow off', () => {
-    process.env['REMI_TRANSCRIPT_BINDER_SHADOW'] = 'false';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.features.transcript_binder_shadow).toBe(false);
   });
 
   test('TELEGRAM_BOT_TOKEN enables telegram', () => {

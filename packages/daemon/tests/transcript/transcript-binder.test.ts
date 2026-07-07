@@ -302,13 +302,21 @@ describe('TranscriptBinder', () => {
           transcript_path: writeMarkedTranscript('sibling.jsonl', 9999),
         }),
       ).toBe(false);
-      // Lock match -> admitted (no marker needed).
+      // Lock match with the SAME bound transcript -> admitted (no marker needed).
+      expect(
+        binder.admits({
+          session_id: 'claude-STALE',
+          transcript_path: path.join(tmpDir, 'stale.jsonl'),
+        }),
+      ).toBe(true);
+      // #672: lock match but a DIFFERENT, unmarked transcript_path -> the bare
+      // id match is no longer sufficient proof of ownership; rejected.
       expect(
         binder.admits({
           session_id: 'claude-STALE',
           transcript_path: path.join(tmpDir, 's.jsonl'),
         }),
-      ).toBe(true);
+      ).toBe(false);
     });
 
     test('restart: a different session_id after PTY exited classifies restart', () => {
@@ -350,6 +358,71 @@ describe('TranscriptBinder', () => {
       binder.onHookEvent(ev);
       expect(binder.snapshot().claudeSessionId).toBeNull();
       expect(transcriptWatchers.has(SID)).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // hasSiblingInDir tilde/absolute normalization (#674)
+  // -------------------------------------------------------------------------
+
+  describe('hasSiblingInDir projectPath normalization (#674)', () => {
+    test('sibling with a tilde-form projectPath is still detected against an absolute workingDirectory', () => {
+      registerSession();
+      const ourDir = path.join(os.homedir(), 'remi-674-test-nemar-cli');
+      // The sibling's live-sessions entry carries an unexpanded `~` form of
+      // the same directory -- the exact shape a pre-fix daemon persisted
+      // live (#674). Before normalizing both sides, the plain string
+      // equality in hasSiblingInDir() would miss this match entirely.
+      fs.writeFileSync(
+        path.join(liveSessionsRegistry.dirPath, 'sib.json'),
+        JSON.stringify({
+          sessionId: 'sib-1',
+          pid: process.pid,
+          wsPort: 18999,
+          hookPort: 18001,
+          projectPath: '~/remi-674-test-nemar-cli',
+          name: 'sib',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      const binder = new TranscriptBinder(
+        deps(),
+        { sessionId: SID, workingDirectory: ourDir },
+        'drive',
+      );
+      // No ownership marker -> with the sibling detected, this must defer.
+      const ev: BinderHookEvent = {
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+      };
+      expect(binder.decide(ev).classification).toBe('defer');
+    });
+
+    test('sibling with an absolute projectPath is still detected against a tilde-equivalent workingDirectory', () => {
+      registerSession();
+      const absoluteSiblingDir = path.join(os.homedir(), 'remi-674-test-nemar-cli-2');
+      fs.writeFileSync(
+        path.join(liveSessionsRegistry.dirPath, 'sib.json'),
+        JSON.stringify({
+          sessionId: 'sib-1',
+          pid: process.pid,
+          wsPort: 18999,
+          hookPort: 18001,
+          projectPath: absoluteSiblingDir,
+          name: 'sib',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      const binder = new TranscriptBinder(
+        deps(),
+        { sessionId: SID, workingDirectory: '~/remi-674-test-nemar-cli-2' },
+        'drive',
+      );
+      const ev: BinderHookEvent = {
+        session_id: 'claude-A',
+        transcript_path: path.join(tmpDir, 'a.jsonl'),
+      };
+      expect(binder.decide(ev).classification).toBe('defer');
     });
   });
 
@@ -622,6 +695,77 @@ describe('TranscriptBinder', () => {
         transcript_path: path.join(tmpDir, 'b.jsonl'),
       });
       expect(d.classification).toBe('foreign');
+    });
+
+    // The two tests above only exercise decide() (read-only) after
+    // onSessionEnd. Neither drives the REAL bind/rotate path (onHookEvent),
+    // so neither proves SessionEnd actually triggers a rotation end to end
+    // (#470 review gap).
+    test('SessionEnd(A) then a real hook event for a new id drives rotate(): emits + rebinds + swaps the watcher (#438)', () => {
+      registerSession();
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-A',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+      const binder = makeBinder();
+      const aPath = path.join(tmpDir, 'a.jsonl');
+      const bPath = path.join(tmpDir, 'b.jsonl');
+      binder.onHookEvent({ session_id: 'claude-A', transcript_path: aPath });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+      expect(transcriptWatchers.get(SID)?.filePath).toBe(aPath);
+
+      // Clean exit: SessionEnd for our locked id sets mainSessionEnded, WITHOUT
+      // the PTY ever exiting (ptyState.running stays true for this whole test) —
+      // unlike the "rotation ordering" suite above, which forces restart via
+      // ptyState.running = false. This is the OTHER real trigger for a restart
+      // classification, and it must drive the same rotate() path end to end.
+      binder.onSessionEnd({ session_id: 'claude-A' });
+      expect(ptyState.running).toBe(true);
+
+      // The REAL bind/rotate path — not decide() — for a genuinely new Claude
+      // session under the same PTY.
+      binder.onHookEvent({ session_id: 'claude-B', transcript_path: bPath });
+
+      expect(rotations()).toEqual([
+        { old: 'claude-A', new: 'claude-B', path: bPath, reason: 'restart' },
+      ]);
+      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      expect(transcriptWatchers.get(SID)?.filePath).toBe(bPath);
+    });
+
+    test('rotate() resets mainSessionEnded: a foreign id right after a rotation is dropped, not re-adopted as restart (#470 regression guard)', () => {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({ session_id: 'claude-A', transcript_path: path.join(tmpDir, 'a.jsonl') });
+      binder.onSessionEnd({ session_id: 'claude-A' });
+      binder.onHookEvent({ session_id: 'claude-B', transcript_path: path.join(tmpDir, 'b.jsonl') });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      const rotationsBefore = rotations().length;
+
+      // A THIRD, DISTINCT id arrives right after the rotation, PTY still
+      // running. rotate() (transcript-binder.ts) must reset mainSessionEnded
+      // to false when it rebinds to B; if it did not, the stale `true` left
+      // over from SessionEnd(A) would still be set and this event would wrongly
+      // classify 'restart', hijacking the lock instead of being dropped. A
+      // same-id replay of B would NOT catch this regression — it short-circuits
+      // to 'match' before mainSessionEnded is ever consulted — so the id here
+      // must be distinct from both A and B.
+      const d = binder.decide({
+        session_id: 'claude-C',
+        transcript_path: path.join(tmpDir, 'c.jsonl'),
+      });
+      expect(d.classification).toBe('foreign');
+
+      binder.onHookEvent({ session_id: 'claude-C', transcript_path: path.join(tmpDir, 'c.jsonl') });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B'); // unchanged
+      expect(rotations()).toHaveLength(rotationsBefore); // no new rotation
     });
   });
 
@@ -1006,6 +1150,169 @@ describe('TranscriptBinder', () => {
       binder.rotationPollTick();
       expect(rotations()).toHaveLength(0);
     });
+
+    // -----------------------------------------------------------------------
+    // Re-arm on a later bind (#676)
+    // -----------------------------------------------------------------------
+    describe('re-arm on later bind (#676)', () => {
+      /** Pre-assign a durable binding, mirroring cli.ts writing it before
+       *  Bun.spawn (#427). Construction's `start()` is intentionally NEVER
+       *  called by these tests — simulating the transient bindingStore/
+       *  SessionStore throw that routes into the same "no pre-assigned id"
+       *  branch as a legitimate null (#676), so the dir-poll is unarmed until
+       *  a later hook event's `adoptLockFromStore` re-adopts it. */
+      function preAssign(claudeSessionId: string | null): void {
+        bindingStore.preAssign({
+          remiSessionId: SID,
+          claudeSessionId,
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+      }
+
+      test('start() skipped at construction; the next hook event arms the dir-poll from the store read', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = makeDriveBinder(); // NOT started
+
+        // The first hook event re-adopts the pre-assigned id from the store.
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+        expect(binder.snapshot().claudeSessionId).toBe('claude-A');
+
+        // Proof the dir-poll is now armed: a later no-hooks rotation the
+        // poll alone can catch (no further hook event feeds it) is detected.
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+
+        expect(rotations()).toEqual([
+          {
+            old: 'claude-A',
+            new: 'claude-B',
+            path: path.join(rotationDir(), 'claude-B.jsonl'),
+            reason: 'restart',
+          },
+        ]);
+        expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+        binder.close();
+      });
+
+      test('re-arm is idempotent: a second hook event does not double-arm', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = makeDriveBinder(); // NOT started
+
+        // First event arms the poll (as above).
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+
+        // A second, already-bound ('match') event re-reads the store again —
+        // adoptLockFromStore runs on every event — and must be a no-op re-arm
+        // attempt rather than creating a second poll interval/seed-set.
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: path.join(rotationDir(), 'claude-A.jsonl'),
+        });
+
+        // A single rotation candidate must cross the wire exactly once even
+        // across repeated ticks; a double-arm would risk double-processing.
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        binder.rotationPollTick();
+
+        expect(rotations()).toHaveLength(1);
+        expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+        binder.close();
+      });
+
+      test('no binding in the store yet: the dir-poll stays unarmed until one actually lands', () => {
+        registerSession();
+        // No preAssign: the store has no record for this session at all, so
+        // `bindingStore.update()` in the first-adopt path below also no-ops
+        // (SessionStore.updateClaudeSessionId is a no-op on an absent record) —
+        // the binding genuinely does not exist yet, unlike the primary #676
+        // scenario where cli.ts already wrote it and only the READ failed.
+        const binder = makeDriveBinder(); // NOT started
+
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(0); // still unarmed: no binding exists yet
+
+        // The binding now genuinely lands in the store (e.g. a delayed sibling
+        // write). The next hook event's adoptLockFromStore re-reads it and
+        // arms the dir-poll from there.
+        sessionStore.save({
+          remiSessionId: SID,
+          claudeSessionId: 'claude-A',
+          projectPath: tmpDir,
+          port: 8765,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: path.join(rotationDir(), 'claude-A.jsonl'),
+        });
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(1);
+        binder.close();
+      });
+
+      test('closed binder does not re-arm on a stray post-close event', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = makeDriveBinder(); // NOT started
+        binder.close(); // torn down before any event ever arrives
+
+        binder.onHookEvent({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(0);
+      });
+
+      test('shadow mode never re-arms via the store-read path', () => {
+        registerSession();
+        preAssign('claude-A');
+        const binder = new TranscriptBinder(
+          deps(),
+          { sessionId: SID, workingDirectory: tmpDir },
+          'shadow',
+          { rotationPollIntervalMs: 20 },
+        );
+
+        binder.decide({
+          session_id: 'claude-A',
+          transcript_path: writeTranscript('claude-A', 8765),
+        });
+
+        writeTranscript('claude-B', 8765);
+        ptyState.running = false;
+        binder.rotationPollTick();
+        expect(rotations()).toHaveLength(0);
+      });
+    });
   });
 
   describe('ensureWatching', () => {
@@ -1160,6 +1467,282 @@ describe('TranscriptBinder', () => {
         hook_event_name: 'PermissionRequest',
       });
       expect(admitted).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #672 (b): admission path 1 hardening — exact session_id match must ALSO
+  // agree on transcript_path when both are known.
+  // -------------------------------------------------------------------------
+
+  describe('#672 admission hardening: transcript_path must agree with an exact session_id match', () => {
+    function bindMain(mainPath: string): TranscriptBinder {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'main-claude',
+        transcript_path: mainPath,
+        hook_event_name: 'SessionStart',
+      });
+      return binder;
+    }
+
+    test('rejects an exact session_id match when the event transcript diverges (id-collision guard)', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const otherPath = path.join(tmpDir, 'other-unmarked.jsonl');
+      fs.writeFileSync(otherPath, '');
+      const admitted = binder.admits({
+        session_id: 'main-claude',
+        transcript_path: otherPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('still admits an exact session_id match when the event carries no transcript_path', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const admitted = binder.admits({
+        session_id: 'main-claude',
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('a divergent path that carries OUR OWN port marker still reclaims (not a leak)', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const rotatedPath = writeMarkedTranscript('rotated.jsonl', 8765);
+      const admitted = binder.admits({
+        session_id: 'main-claude',
+        transcript_path: rotatedPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('unchanged: an exact session_id match with the SAME transcript_path still admits', () => {
+      const mainPath = path.join(tmpDir, 'main.jsonl');
+      const binder = bindMain(mainPath);
+      const admitted = binder.admits({
+        session_id: 'main-claude',
+        transcript_path: mainPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #672 (c): stale-marker reclaim defeated by port churn — fall back to the
+  // port durably recorded for THIS remi session (SessionBindingStore) when
+  // currentPort() has drifted since the transcript's marker was baked.
+  // -------------------------------------------------------------------------
+
+  describe('#672 stale-marker port-drift reclaim (fallback to bindingStore stored port)', () => {
+    /** deps().currentPort() is fixed at 8765 in this suite; simulate a remi
+     *  session that was ORIGINALLY created on a different port (18775) before a
+     *  daemon restart moved it to the live 8765 — the stored `port` field is
+     *  never refreshed after preAssign, so it stays at the pre-restart value. */
+    function recordStoredPort(port: number): void {
+      bindingStore.preAssign({
+        remiSessionId: SID,
+        claudeSessionId: null,
+        projectPath: tmpDir,
+        port,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+    }
+
+    function bindOld(): TranscriptBinder {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'claude-OLD',
+        transcript_path: path.join(tmpDir, 'old.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+      return binder;
+    }
+
+    test('reclaims a foreign event whose marker matches our STORED (pre-drift) port via admits()', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      const stalePath = writeMarkedTranscript('stale.jsonl', 18775);
+      const admitted = binder.admits({
+        session_id: 'claude-STALE',
+        transcript_path: stalePath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
+    });
+
+    test('reclaims via the onHookEvent drive path too (restart binds the new id)', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      const stalePath = writeMarkedTranscript('stale2.jsonl', 18775);
+      binder.onHookEvent({
+        session_id: 'claude-STALE-2',
+        transcript_path: stalePath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(binder.snapshot().claudeSessionId).toBe('claude-STALE-2');
+    });
+
+    test('does NOT reclaim when the marker matches neither the live port nor our stored port', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      const foreignPath = writeMarkedTranscript('foreign.jsonl', 9999);
+      const admitted = binder.admits({
+        session_id: 'claude-STRANGER',
+        transcript_path: foreignPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('does NOT reclaim when no stored port is on record at all (no regression)', () => {
+      // No preAssign call: bindingStore has no row for SID at all.
+      const binder = bindOld();
+      const stalePath = writeMarkedTranscript('unrecorded.jsonl', 18775);
+      const admitted = binder.admits({
+        session_id: 'claude-UNRECORDED',
+        transcript_path: stalePath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #672 review (critical 1): port-reuse hijack. A storedPort match ALONE is
+  // not proof of ownership -- findAvailableTcpPort can hand our old,
+  // drifted-away port to a completely different LIVE sibling. Reproduces the
+  // reviewer's end-to-end repro: daemon X (SID) recorded storedPort 18775,
+  // drifted to live port 8765; a live sibling Y later legitimately gets
+  // assigned 18775 and writes remi:18775 to ITS OWN transcript. X must NOT
+  // treat Y's live transcript as its own and rebind onto Y's session.
+  // -------------------------------------------------------------------------
+
+  describe('#672 review: port-reuse hijack guard (live-sibling cross-check + freshness gate)', () => {
+    function recordStoredPort(port: number): void {
+      bindingStore.preAssign({
+        remiSessionId: SID,
+        claudeSessionId: null,
+        projectPath: tmpDir,
+        port,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+    }
+
+    function bindOld(): TranscriptBinder {
+      registerSession();
+      const binder = makeBinder();
+      binder.onHookEvent({
+        session_id: 'claude-OLD',
+        transcript_path: path.join(tmpDir, 'old.jsonl'),
+        hook_event_name: 'SessionStart',
+      });
+      return binder;
+    }
+
+    function registerLiveSibling(sessionId: string, wsPort: number): void {
+      liveSessionsRegistry.register({
+        sessionId,
+        pid: process.pid,
+        wsPort,
+        hookPort: wsPort + 1000,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      });
+    }
+
+    test('does NOT reclaim (admits stays false) when a LIVE sibling currently holds the recycled stored port', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      // A live sibling now legitimately runs on port 18775 (our old, drifted
+      // storedPort, recycled by findAvailableTcpPort) and writes ITS OWN
+      // remi:18775 transcript.
+      registerLiveSibling('sibling-remi-session', 18775);
+      const siblingPath = writeMarkedTranscript('sibling-live.jsonl', 18775);
+
+      const admitted = binder.admits({
+        session_id: 'claude-SIBLING-LIVE',
+        transcript_path: siblingPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('does NOT rebind via onHookEvent when a live sibling holds the recycled stored port', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      registerLiveSibling('sibling-remi-session-2', 18775);
+      const siblingPath = writeMarkedTranscript('sibling-live-2.jsonl', 18775);
+
+      binder.onHookEvent({
+        session_id: 'claude-SIBLING-LIVE-2',
+        transcript_path: siblingPath,
+        hook_event_name: 'PermissionRequest',
+      });
+
+      // The binder must still be bound to its ORIGINAL claude id -- no
+      // hijack, no watcher swap, no bindingStore rewrite onto the sibling.
+      expect(binder.snapshot().claudeSessionId).toBe('claude-OLD');
+    });
+
+    test('a zombie sibling (claude child exited) does not by itself block reclaim, but staleness does', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      // The sibling's Claude child has exited (a zombie daemon entry) --
+      // claudeChildLooksAlive() is false for it, so the live-sibling gate
+      // alone would NOT block this reclaim. The freshness gate is the second,
+      // independent layer: a transcript that hasn't been touched in a long
+      // time is rejected regardless of what the live registry says.
+      liveSessionsRegistry.register({
+        sessionId: 'zombie-sibling',
+        pid: process.pid,
+        wsPort: 18775,
+        hookPort: 19775,
+        projectPath: tmpDir,
+        name: 'zombie',
+        startedAt: new Date().toISOString(),
+        claudeChildPid: 999999,
+        claudeChildExited: true,
+      });
+      const oldPath = writeMarkedTranscript('zombie-old.jsonl', 18775);
+      const longAgo = new Date(Date.now() - 10 * 60_000); // 10 min, past ROTATION_FRESHNESS_MS
+      fs.utimesSync(oldPath, longAgo, longAgo);
+
+      const admitted = binder.admits({
+        session_id: 'claude-ZOMBIE-OLD',
+        transcript_path: oldPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(false);
+    });
+
+    test('a FRESH stored-port transcript with no live sibling still reclaims (legitimate case unaffected)', () => {
+      recordStoredPort(18775);
+      const binder = bindOld();
+      // No live sibling registered anywhere; the transcript is freshly
+      // written (as it would be for a genuine, currently-active reclaim).
+      const freshPath = writeMarkedTranscript('fresh-legit.jsonl', 18775);
+
+      const admitted = binder.admits({
+        session_id: 'claude-LEGIT-FRESH',
+        transcript_path: freshPath,
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(admitted).toBe(true);
     });
   });
 });

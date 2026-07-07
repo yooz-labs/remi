@@ -92,6 +92,58 @@ describe('relay-adapter routeMessage forwards claudeSessionId (#429)', () => {
     expect(calls[0]?.claudeSessionId).toBeUndefined();
   });
 
+  test('user_input with id forwards it as messageId, the 6th arg (#681)', () => {
+    const calls: Array<{ messageId: string | undefined }> = [];
+    const adapter = makeAdapter({
+      onUserInput: (
+        _connectionId: UUID,
+        _sessionId: UUID,
+        _content: string,
+        _raw?: boolean,
+        _claudeSessionId?: string,
+        messageId?: string,
+      ) => {
+        calls.push({ messageId });
+      },
+    });
+
+    const msgId = 'aaaa1111-2222-3333-4444-555555555555';
+    callRoute(adapter, {
+      type: 'user_input',
+      sessionId: SID,
+      content: 'ls',
+      id: msgId,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.messageId).toBe(msgId);
+  });
+
+  test('user_input without id forwards messageId undefined', () => {
+    const calls: Array<{ messageId: string | undefined }> = [];
+    const adapter = makeAdapter({
+      onUserInput: (
+        _connectionId: UUID,
+        _sessionId: UUID,
+        _content: string,
+        _raw?: boolean,
+        _claudeSessionId?: string,
+        messageId?: string,
+      ) => {
+        calls.push({ messageId });
+      },
+    });
+
+    callRoute(adapter, {
+      type: 'user_input',
+      sessionId: SID,
+      content: 'ls',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.messageId).toBeUndefined();
+  });
+
   test('answer with claudeSessionId is forwarded as the 5th arg', () => {
     const calls: Array<{ claudeSessionId: string | undefined }> = [];
     const adapter = makeAdapter({
@@ -235,6 +287,34 @@ describe('relay-adapter routeMessage no-longer-silently-drops requests (#453 pha
     });
 
     callRoute(adapter, { type: 'register_device_token', token: 'abc123', platform: 'windows' });
+
+    expect(calls).toHaveLength(0);
+  });
+
+  test('unregister_device_token dispatches onUnregisterDeviceToken (#690)', () => {
+    const calls: Array<{ connectionId: UUID; token: string }> = [];
+    const adapter = makeAdapter({
+      onUnregisterDeviceToken: (connectionId: UUID, token: string) => {
+        calls.push({ connectionId, token });
+      },
+    });
+
+    callRoute(adapter, { type: 'unregister_device_token', token: 'abc123' });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.connectionId).toBe(CID);
+    expect(calls[0]?.token).toBe('abc123');
+  });
+
+  test('unregister_device_token with missing token is NOT dispatched', () => {
+    const calls: Array<{ token: string }> = [];
+    const adapter = makeAdapter({
+      onUnregisterDeviceToken: (_c: UUID, token: string) => {
+        calls.push({ token });
+      },
+    });
+
+    callRoute(adapter, { type: 'unregister_device_token' });
 
     expect(calls).toHaveLength(0);
   });

@@ -99,6 +99,7 @@ export type ProtocolMessage =
   | DetachSessionMessage
   | DetachSessionAckMessage
   | RegisterDeviceTokenMessage
+  | UnregisterDeviceTokenMessage
   | DaemonUpdateAvailableMessage
   | SessionRotatedMessage
   | SessionViewsMessage
@@ -119,6 +120,16 @@ export interface HelloMessage {
   readonly lastReceivedIndex?: number | undefined;
   /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach */
   readonly mode?: 'query' | undefined;
+  /**
+   * Stable per-device identifier, persisted client-side across app restarts
+   * (#662). When a reconnecting hello carries the SAME deviceId as the
+   * connection currently holding the session's exclusive write lock, the
+   * daemon treats it as the same physical client reconnecting after a
+   * transport blip (dead socket, iOS background, NAT drop) and reclaims the
+   * lock instead of FIFO-queuing behind the stale connection. Omitted by
+   * older clients, which keep today's queuing behavior.
+   */
+  readonly deviceId?: string | undefined;
 }
 
 /** Server hello ack - confirms connection */
@@ -149,6 +160,15 @@ export interface HelloAckMessage {
   readonly replayCount?: number | undefined;
   /** Next bullet ID for continuation (if resume) */
   readonly nextBulletId?: number | undefined;
+  /**
+   * Whether this connection holds the session's exclusive write lock
+   * ('attached') or is read-only, waiting for the current holder to
+   * disconnect ('queued') (#662). Omitted for hello_acks sent outside the
+   * attach flow (e.g. query-mode clients, NO_SESSION). Older clients that
+   * don't read this field keep behaving as if every hello_ack meant
+   * 'attached', which was the pre-#662 (buggy) assumption.
+   */
+  readonly attachState?: 'attached' | 'queued' | undefined;
 }
 
 /** Agent output - message from Claude */
@@ -700,6 +720,20 @@ export interface RegisterDeviceTokenMessage {
 }
 
 /**
+ * Unregister a device token (#690). Sent only on explicit user removal of a
+ * server/machine from the app — NOT on ordinary disconnect or app suspension,
+ * both of which must keep pushing to a suspended device. See handleDisconnect
+ * / handleDisconnectAll in the web client.
+ */
+export interface UnregisterDeviceTokenMessage {
+  readonly type: 'unregister_device_token';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** APNS or FCM device token to remove */
+  readonly token: string;
+}
+
+/**
  * Daemon notifies attached clients that a newer remi binary is on disk.
  *
  * The running wrapper is locked to its startup-time code and cannot be
@@ -831,6 +865,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'detach_session',
     'detach_session_ack',
     'register_device_token',
+    'unregister_device_token',
     'daemon_update_available',
     'session_rotated',
     'session_views',
@@ -850,6 +885,8 @@ export interface CreateHelloOptions {
   readonly lastReceivedIndex?: number | undefined;
   /** Connection mode: 'query' for utility clients (ls, kill) that should not auto-attach. */
   readonly mode?: 'query' | undefined;
+  /** Stable per-device identifier for same-device lock reclaim (#662). */
+  readonly deviceId?: string | undefined;
 }
 
 /**
@@ -863,7 +900,7 @@ export function createHello(
   clientVersion: string,
   options: CreateHelloOptions = {},
 ): HelloMessage {
-  const { directory, resumeSessionId, lastReceivedIndex, mode } = options;
+  const { directory, resumeSessionId, lastReceivedIndex, mode, deviceId } = options;
   return {
     type: 'hello',
     id: generateId(),
@@ -874,6 +911,7 @@ export function createHello(
     ...(resumeSessionId !== undefined && { resumeSessionId }),
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
     ...(mode !== undefined && { mode }),
+    ...(deviceId !== undefined && { deviceId }),
   };
 }
 
@@ -885,6 +923,7 @@ export function createHelloAck(
   sessionId: UUID,
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
   binding?: { claudeSessionId: UUID | null; transcriptPath: string | null },
+  attachState?: 'attached' | 'queued',
 ): HelloAckMessage {
   return {
     type: 'hello_ack',
@@ -901,6 +940,7 @@ export function createHelloAck(
       claudeSessionId: binding.claudeSessionId,
       transcriptPath: binding.transcriptPath,
     }),
+    ...(attachState !== undefined && { attachState }),
   };
 }
 
@@ -936,16 +976,22 @@ export function createStructuredAgentOutput(
 
 /**
  * Create a user input message.
+ *
+ * `id` is optional and defaults to a fresh `generateId()`. Callers that need
+ * the ack/retry state machine (#663) pass the SAME id back in on a retry so
+ * the daemon's `MessageIdTracker` dedups a resend that already landed,
+ * making the retry idempotent instead of double-submitting to the PTY.
  */
 export function createUserInput(
   sessionId: UUID,
   content: string,
   raw?: boolean,
   claudeSessionId?: UUID,
+  id?: UUID,
 ): UserInputMessage {
   return {
     type: 'user_input',
-    id: generateId(),
+    id: id ?? generateId(),
     timestamp: now(),
     sessionId,
     content,
@@ -1543,6 +1589,16 @@ export function createRegisterDeviceToken(
     timestamp: now(),
     token,
     platform,
+  };
+}
+
+/** Create a device token unregistration message (#690) */
+export function createUnregisterDeviceToken(token: string): UnregisterDeviceTokenMessage {
+  return {
+    type: 'unregister_device_token',
+    id: generateId(),
+    timestamp: now(),
+    token,
   };
 }
 

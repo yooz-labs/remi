@@ -9,25 +9,43 @@ import { AppLayout } from '@/components/layout';
 import { ConnectModal, NewSessionModal, SessionList } from '@/components/session';
 import { SettingsPanel } from '@/components/settings';
 import { parseConnectionId, useConnectionManager } from '@/hooks';
+import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
+import { deriveConnectionBannerError } from '@/lib/connection-banner';
+import { dedupeConnectionUrls } from '@/lib/connection-id';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
+import {
+  acknowledgeSend,
+  EMPTY_PENDING_SENDS,
+  type PendingSendMap,
+  rejectSend,
+  sweepTimeouts,
+  trackSend,
+} from '@/lib/message-ack-tracker';
 import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
+import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resync';
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { setSoundEnabled } from '@/lib/notifications';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
+  RESOLVED_TRACE_LINGER_MS,
+  clearMainQuestionOnStatus,
   clearSessionQuestions,
   getSessionQuestions,
+  isQuestionPending,
   questionKey,
   removeQuestionById,
-  statusClearsMainQuestion,
+  removeQuestionByKeyIfId,
+  resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
+import { mapQuestionToUIQuestion } from '@/lib/question-mapping';
 import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
+import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import type {
@@ -37,7 +55,6 @@ import type {
   UIBullet,
   UIMessage,
   UIQuestion,
-  UIQuestionOption,
   UISession,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
@@ -49,6 +66,7 @@ import {
   createDetachSession,
   createKillSessionRequest,
   createRegisterDeviceToken,
+  createUnregisterDeviceToken,
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
@@ -61,6 +79,22 @@ const LOCALSTORAGE_SETTINGS_KEY = 'remi-settings';
 // cold-start push answers so multi-daemon users do not silently answer the
 // wrong daemon. Issue #389 review.
 const LOCALSTORAGE_SESSION_DAEMONS_KEY = 'remi-session-daemons';
+// A resync wipe (clearSessionForRebind) stashes unconfirmed messages instead
+// of dropping them, then waits this long with no further transcript_content
+// for the session before flushing them back in (#687). A one-shot
+// transcript_load_complete flushes immediately instead of waiting out this
+// window; this is the fallback for the live-watcher reload path, which has
+// no equivalent "done" signal. Local disk reads finish well under a second,
+// so this comfortably covers a real catch-up burst without mistaking a much
+// later, genuinely new turn for part of the same resync.
+const RESYNC_FLUSH_DEBOUNCE_MS = 1500;
+// Hard ceiling on how long survivors can sit stashed (armed once, at the
+// first stash for a session -- not reset by the debounce). Without this, a
+// session that keeps streaming transcript_content (e.g. a long mid-turn
+// response arriving as a live-watcher reload, which never sends
+// transcript_load_complete) re-arms RESYNC_FLUSH_DEBOUNCE_MS forever and the
+// failed bubble + Retry stay invisible for the whole turn (#687 review).
+const RESYNC_MAX_STASH_AGE_MS = 10000;
 
 /**
  * Narrow an unknown JSON value to a non-empty string. Used at the
@@ -233,6 +267,12 @@ function App() {
   const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
+  // Outstanding user_input sends awaiting their `ack`, keyed by message id
+  // (#663). Mutated by handleSend (track), the 'ack' case (acknowledge), and
+  // the sweep effect below (retry/fail on timeout). A ref, not state --
+  // updated every send/ack/tick and read by an interval, none of which
+  // should trigger a re-render on their own.
+  const pendingSendsRef = useRef<PendingSendMap>(EMPTY_PENDING_SENDS);
   // Fallback timer so the new-session sheet leaves its loading state even if the
   // daemon never answers session_history_request (#638 review).
   const historyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -242,6 +282,33 @@ function App() {
   const pendingKillsRef = useRef<
     Map<UUID, { sessionId: UUID; timeoutId: ReturnType<typeof setTimeout> }>
   >(new Map());
+  // Unconfirmed messages stashed by clearSessionForRebind, keyed by session
+  // id, awaiting re-merge into the freshly reloaded transcript (#687).
+  const resyncSurvivorsRef = useRef<Map<UUID, readonly UIMessage[]>>(new Map());
+  // Debounced flush: re-armed on every transcript_content for the session.
+  const resyncFlushTimersRef = useRef<Map<UUID, ReturnType<typeof setTimeout>>>(new Map());
+  // Hard-ceiling flush: armed once, at the first stash, never reset. Whichever
+  // of transcript_load_complete / debounce-quiet / this cap fires first wins
+  // (flushResyncSurvivors' delete-first guard makes the other two safe no-ops).
+  const resyncMaxAgeTimersRef = useRef<Map<UUID, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Flush timers must not outlive the component (React 18 StrictMode
+  // double-invokes effects in dev, which would otherwise leak a duplicate
+  // set of timers).
+  useEffect(() => {
+    const flushTimers = resyncFlushTimersRef.current;
+    const maxAgeTimers = resyncMaxAgeTimersRef.current;
+    return () => {
+      for (const timer of flushTimers.values()) {
+        clearTimeout(timer);
+      }
+      flushTimers.clear();
+      for (const timer of maxAgeTimers.values()) {
+        clearTimeout(timer);
+      }
+      maxAgeTimers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     applyTheme(settings.theme);
@@ -263,14 +330,102 @@ function App() {
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
+    // Cancel and forget both resync timers for `sid`, if any -- shared by
+    // flushResyncSurvivors (a trigger just fired) and discardResyncStash (the
+    // session is gone, no trigger will ever fire).
+    const clearResyncTimers = (sid: UUID) => {
+      const flushTimer = resyncFlushTimersRef.current.get(sid);
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        resyncFlushTimersRef.current.delete(sid);
+      }
+      const maxAgeTimer = resyncMaxAgeTimersRef.current.get(sid);
+      if (maxAgeTimer) {
+        clearTimeout(maxAgeTimer);
+        resyncMaxAgeTimersRef.current.delete(sid);
+      }
+    };
+
+    // Re-attach any unconfirmed messages stashed for `sid` by
+    // clearSessionForRebind, now that a fresh reload has landed (#687).
+    // Cancels both resync timers since this call already IS the flush;
+    // idempotent no-op if nothing is pending (safe to call from more than
+    // one trigger -- see clearSessionForRebind).
+    const flushResyncSurvivors = (sid: UUID) => {
+      const survivors = resyncSurvivorsRef.current.get(sid);
+      if (!survivors) return;
+      resyncSurvivorsRef.current.delete(sid);
+      clearResyncTimers(sid);
+      setMessages((prev) => {
+        const reloaded = prev.filter((m) => m.sessionId === sid);
+        const others = prev.filter((m) => m.sessionId !== sid);
+        return [...others, ...mergeResyncSurvivors(reloaded, survivors)];
+      });
+    };
+
+    // The session is gone (kill_session_response success): drop any stashed
+    // survivors and their timers without flushing -- there is no message
+    // slice left to re-insert them into (#687 review finding 3).
+    const discardResyncStash = (sid: UUID) => {
+      resyncSurvivorsRef.current.delete(sid);
+      clearResyncTimers(sid);
+    };
+
+    // (Re)arm the fallback flush: if no further transcript_content for `sid`
+    // arrives within the debounce window, flush whatever reloaded so far.
+    // The live-watcher reload path (session_rotated / reconnect-mid-rotation)
+    // has no explicit "done" signal the way the one-shot transcript_load
+    // request/complete pair does, so this is what guarantees survivors are
+    // never stuck in the ref forever (#687).
+    const scheduleResyncFlush = (sid: UUID) => {
+      const existing = resyncFlushTimersRef.current.get(sid);
+      if (existing) clearTimeout(existing);
+      resyncFlushTimersRef.current.set(
+        sid,
+        setTimeout(() => flushResyncSurvivors(sid), RESYNC_FLUSH_DEBOUNCE_MS),
+      );
+    };
+
     // Drop a session's now-orphaned chat so its (new) transcript re-fetches.
     // Shared by session_rotated (live rotation) and hello_ack
     // (reconnect-mid-rotation, #439): both clear stale messages + questions and
     // forget the loaded-transcript marker so the load gate re-pulls history.
+    // Unconfirmed client-only messages (still-sending, unacked, or failed
+    // sends and their failure notes) are stashed rather than dropped, so a
+    // resync never silently loses what the user typed (#687). Three
+    // independent triggers can flush the stash back in (flushResyncSurvivors'
+    // delete-first guard makes any of them safe to fire after another already
+    // has): transcript_load_complete (explicit "reload done" signal, the
+    // one-shot transcript_load_request path), the debounce below (no further
+    // transcript_content for a quiet period -- the fallback for the
+    // live-watcher reload path, which has no completion signal), and a hard
+    // RESYNC_MAX_STASH_AGE_MS cap armed once, here, so an actively-streaming
+    // session that keeps re-arming the debounce can't starve the flush
+    // indefinitely.
     const clearSessionForRebind = (sid: string) => {
+      // Read messagesRef (not a setMessages updater) so the ref mutation +
+      // schedule-flush decision below run synchronously against a value we
+      // control -- a setState updater's execution is deferred by React (and
+      // can run twice under StrictMode), which would make an immediate
+      // `resyncSurvivorsRef.current.has(sid)` check after `setMessages(...)`
+      // see stale (pre-update) ref state.
+      const freshSurvivors = selectResyncSurvivors(messagesRef.current, sid);
+      if (freshSurvivors.length > 0) {
+        const existing = resyncSurvivorsRef.current.get(sid as UUID) ?? [];
+        resyncSurvivorsRef.current.set(sid as UUID, [...existing, ...freshSurvivors]);
+      }
       setMessages((prev) => prev.filter((m) => m.sessionId !== sid));
       setQuestions((prev) => clearSessionQuestions(prev, sid));
       loadedTranscriptsRef.current.delete(sid);
+      if (resyncSurvivorsRef.current.has(sid as UUID)) {
+        scheduleResyncFlush(sid as UUID);
+        if (!resyncMaxAgeTimersRef.current.has(sid as UUID)) {
+          resyncMaxAgeTimersRef.current.set(
+            sid as UUID,
+            setTimeout(() => flushResyncSurvivors(sid as UUID), RESYNC_MAX_STASH_AGE_MS),
+          );
+        }
+      }
     };
 
     // Fetch a session's transcript if we haven't already, so that FOLLOWING the
@@ -339,6 +494,11 @@ function App() {
                     connectionId,
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+                    // #662/#663: refresh on EVERY hello_ack, not just the
+                    // first -- this also fires when a queued connection is
+                    // promoted (fresh hello_ack with attachState: 'attached'),
+                    // which is how the read-only banner clears.
+                    ...(message.attachState !== undefined && { attachState: message.attachState }),
                   }
                 : s,
             );
@@ -358,6 +518,7 @@ function App() {
               preview: 'Connected',
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
+              ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
         });
@@ -379,25 +540,25 @@ function App() {
           void syncNativeIdentity();
         }
 
-        // Reconnect-mid-rotation only: if the chat the user is CURRENTLY
-        // viewing belongs to this connection and the daemon came back with a
-        // new session id, follow it into the new session. A fresh connect (no
-        // chat open) must NOT bypass the session list -- land on the list so
-        // the user picks a session. Notification deep-links navigate via their
-        // own `push-notification-tap` handler, not here.
+        // If the chat the user is CURRENTLY viewing belongs to this
+        // connection and the daemon came back with a different session id,
+        // the `cleaned` filter above already dropped that old session from
+        // `sessions` for this connection -- it no longer resolves to
+        // anything. Fall back to the session list rather than silently
+        // follow into a session the user never picked (#688): a stray
+        // reconnect must never swap the user into a different live
+        // session's input box. `evictIfActive` is a no-op if the user has
+        // since navigated away from `oldActive` on their own. A fresh
+        // connect (no chat open) stays on the list either way. Notification
+        // deep-links navigate via their own `push-notification-tap` handler,
+        // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive !== message.sessionId) {
+        if (oldActive && oldActive !== message.sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
-          // `oldActive &&` both gates on a chat being open (so a fresh connect
-          // stays on the list) and narrows oldActive to non-null for the
-          // cleanup below.
-          if (oldActive && oldSession?.connectionId === connectionId) {
-            setActiveSessionId(message.sessionId);
+          if (oldSession?.connectionId === connectionId) {
+            setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));
             setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
             setQuestions((prev) => clearSessionQuestions(prev, oldActive));
-            // Load the followed session's transcript so the chat isn't left
-            // empty after a reconnect-mid-rotation adopt (#499).
-            ensureTranscriptLoaded(connectionId, message.sessionId);
           }
         }
         break;
@@ -496,6 +657,12 @@ function App() {
         setSessions((prev) =>
           updateSessionActivity(prev, sessionId, activeSessionIdRef.current, structuredMsg.content),
         );
+        // A resync wipe is stashing survivors for this session (#687): each
+        // arrival re-arms the debounce so the flush waits for the reload
+        // burst to actually quiet down instead of firing mid-burst.
+        if (resyncSurvivorsRef.current.has(sessionId as UUID)) {
+          scheduleResyncFlush(sessionId as UUID);
+        }
         break;
       }
 
@@ -522,16 +689,10 @@ function App() {
         // change it), so clear just the main-agent slot; a concurrent subagent
         // prompt must survive. The transient auto-approve broadcasts
         // ('evaluating'/'approved', #576) must NOT clear a pending card; see
-        // statusClearsMainQuestion for the rationale.
-        if (statusClearsMainQuestion(sessionData.status)) {
-          setQuestions((prev) => {
-            const key = questionKey(sessionData.id);
-            if (!prev.has(key)) return prev;
-            const next = new Map(prev);
-            next.delete(key);
-            return next;
-          });
-        }
+        // statusClearsMainQuestion for the rationale. A freshness gate (#652)
+        // additionally protects a just-arrived card from a status update racing
+        // it in the same burst (the cause of the "flash and vanish" flicker).
+        setQuestions((prev) => clearMainQuestionOnStatus(prev, sessionData.id, sessionData.status));
         break;
       }
 
@@ -616,48 +777,6 @@ function App() {
           break;
         }
         lastQuestionIdRef.current = q.id;
-        // Map daemon Question to UIQuestion.
-        // Use yes_no ONLY for exactly 2 options with clear yes+no.
-        // Use multi_option for 3+ options (even if they include yes/no).
-        // Use numbered for options without yes/no semantics.
-        let questionType: UIQuestion['type'] = 'free_text';
-        if (q.options.length > 0) {
-          if (q.options.length === 2) {
-            const hasYes = q.options.some((o) => o.isYes);
-            const hasNo = q.options.some((o) => o.isNo);
-            questionType = hasYes && hasNo ? 'yes_no' : 'multi_option';
-          } else {
-            // 3+ options: always show all of them
-            const hasYesNo = q.options.some((o) => o.isYes || o.isNo);
-            questionType = hasYesNo ? 'multi_option' : 'numbered';
-          }
-        }
-
-        // Build structured options with full metadata
-        const structuredOptions: UIQuestionOption[] = q.options.map((o) => ({
-          label: o.label,
-          value: o.value,
-          isYes: o.isYes || undefined,
-          isNo: o.isNo || undefined,
-          isRecommended: o.isRecommended || undefined,
-          description: o.description || undefined,
-        }));
-
-        // #626: carry the full AskUserQuestion structure (headers, per-option
-        // descriptions, multiSelect) so the card can render it properly.
-        const uiQuestions: UIQuestion['questions'] = q.questions?.map((step) => ({
-          ...(step.header ? { header: step.header } : {}),
-          text: step.text,
-          multiSelect: step.multiSelect,
-          options: step.options.map((o) => ({
-            label: o.label,
-            value: o.value,
-            isYes: o.isYes || undefined,
-            isNo: o.isNo || undefined,
-            isRecommended: o.isRecommended || undefined,
-            description: o.description || undefined,
-          })),
-        }));
 
         // sessionId is mandatory on the wire now (#437); never fall back to
         // the active session (that cross-contaminated when another session or
@@ -667,20 +786,10 @@ function App() {
           console.warn('[App] Dropping question with no sessionId');
           break;
         }
+        // Map daemon Question to UIQuestion (pure function, unit-tested in
+        // lib/question-mapping.test.ts).
+        const uiQuestion = mapQuestionToUIQuestion(q, questionSessionId);
         const questionAgentId = q.agentId;
-        const uiQuestion: UIQuestion = {
-          id: q.id,
-          sessionId: questionSessionId,
-          type: questionType,
-          prompt: q.text,
-          options: q.options.length > 0 ? q.options.map((o) => o.label) : undefined,
-          structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
-          timestamp: new Date().toISOString(),
-          agentId: questionAgentId,
-          ...(q.kind ? { kind: q.kind } : {}),
-          ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
-          ...(q.submitLabel ? { submitLabel: q.submitLabel } : {}),
-        };
         const key = questionKey(questionSessionId, questionAgentId);
         setQuestions((prev) => {
           // Richer-wins guard (#396), scoped to this agent's slot. The daemon
@@ -709,34 +818,46 @@ function App() {
 
       case 'question_resolved': {
         // Cross-client dismissal (#585, P7): the question resolved on some
-        // channel (answered elsewhere, auto-approved/denied, or cancelled), so
-        // drop its card and clear any lock-screen notification for it here.
-        // Idempotent — if we never held it (or already dropped it), this is a
-        // no-op. The message carries no agentId, so locate the card by question
-        // id within the session.
+        // channel (answered elsewhere, auto-approved/denied, or cancelled). The
+        // message carries no agentId, so locate the card by question id within
+        // the session. Rather than vanish instantly (#652 — left a lock-screen
+        // answer with no in-app confirmation), flip a still-pending card to a
+        // brief "resolved elsewhere" trace, then fade it after the linger window.
+        // resolveQuestionCard decides per card: pending => trace+fade, submitting
+        // (#627) => removed here, answered-locally => left to its own timer.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
-        // Compute the post-removal map from the CURRENT committed ref, then drive
-        // both setters from that one value (#585, P7 FIX 3). Reading the updated
-        // map (not the pre-removal ref) is what prevents two concurrent
-        // resolutions from leaving the badge stuck `questionPending: true`. The
-        // ref is the latest committed map (kept in sync by the effect below), so
-        // the second resolution sees the first's removal.
-        const updatedQuestions = removeQuestionById(
+        // Compute the next map from the CURRENT committed ref, then drive both
+        // setters from that one value (#585, P7 FIX 3): reading the updated map
+        // (not the pre-mutation ref) keeps two concurrent resolutions from
+        // leaving the badge stuck `questionPending: true`. The ref is the latest
+        // committed map (kept in sync by the effect below).
+        const { questions: nextQuestions, fade } = resolveQuestionCard(
           questionsRef.current,
           resolvedSessionId,
           resolvedQuestionId,
+          message.reason,
         );
-        const stillPending = getSessionQuestions(updatedQuestions, resolvedSessionId).some(
-          (q) => q.answeredWith === undefined,
+        const stillPending = getSessionQuestions(nextQuestions, resolvedSessionId).some(
+          isQuestionPending,
         );
-        questionsRef.current = updatedQuestions;
-        setQuestions(updatedQuestions);
+        questionsRef.current = nextQuestions;
+        setQuestions(nextQuestions);
         setSessions((prev) =>
           prev.map((s) => (s.id === resolvedSessionId ? { ...s, questionPending: stillPending } : s)),
         );
         // Clear the matching delivered lock-screen / in-app notification (native).
         dismissDeliveredNotification(resolvedQuestionId);
+        // Fade the trace card we just flipped; remove by id so a newer prompt
+        // that took the same slot meanwhile is never wiped. A submitting card was
+        // already removed above, and an answered/absent card owns its own removal.
+        if (fade) {
+          setTimeout(() => {
+            setQuestions((prev) =>
+              removeQuestionById(prev, resolvedSessionId, resolvedQuestionId),
+            );
+          }, RESOLVED_TRACE_LINGER_MS);
+        }
         break;
       }
 
@@ -855,11 +976,12 @@ function App() {
           const evictedIds = [...evictedSet];
           forgetEvictedSessions(evictedIds);
           for (const id of evictedIds) loadedTranscriptsRef.current.delete(id);
-          // If the active session was evicted, clear it so the UI doesn't sit on
-          // a dead session and re-request its (gone) transcript.
-          if (activeSessionIdRef.current && evictedSet.has(activeSessionIdRef.current)) {
-            setActiveSessionId(null);
-          }
+          // If the active session was evicted, clear it so the UI doesn't sit
+          // on a dead session and re-request its (gone) transcript. Routed
+          // through the same #688 rule as every other selection-changing
+          // path: a phantom sweep can only clear the active session, never
+          // swap it for a different live one.
+          setActiveSessionId(evictManyIfActive(activeSessionIdRef.current, evictedSet));
           console.warn('[App] Evicted stale phantom sessions (#577):', evictedIds);
         }
 
@@ -939,6 +1061,12 @@ function App() {
         }
         const killedSessionId = pending?.sessionId ?? activeSessionIdRef.current ?? ('' as UUID);
         if (message.success) {
+          // Session torn down: drop any resync stash + timers for it rather
+          // than let a pending flush re-insert messages into a dead session's
+          // slice later (#687 review finding 3).
+          if (killedSessionId) {
+            discardResyncStash(killedSessionId);
+          }
           // Session torn down; refresh the list so the dead session drops off.
           const reqList = requestSessionListRef.current;
           if (reqList) {
@@ -988,6 +1116,12 @@ function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === message.sessionId ? { ...s, isLoadingTranscript: false } : s)),
         );
+        // Explicit "reload finished" signal (the one-shot transcript_load_request
+        // path): flush any stashed survivors now rather than waiting out the
+        // debounce (#687).
+        if (resyncSurvivorsRef.current.has(message.sessionId as UUID)) {
+          flushResyncSurvivors(message.sessionId as UUID);
+        }
         break;
       }
 
@@ -1125,9 +1259,14 @@ function App() {
           break;
         }
         // NOT_FOUND with a current-session redirect (#499): the requested
-        // session is stale (the daemon restarted or rotated past it). Follow the
-        // daemon to its current session and load it, instead of dead-ending on a
-        // "Transcript for session X not found" bubble the user can't escape.
+        // session is stale (the daemon restarted or rotated past it). The
+        // daemon's error carries no id for which request this was, so it
+        // cannot be correlated to a specific in-flight load (#688) -- only
+        // auto-follow when nothing is currently selected (matches the
+        // fresh-connect gate above); otherwise this would risk silently
+        // swapping whatever live session the user is looking at for the
+        // daemon's current one. The upsert below still makes the daemon's
+        // current session visible/tappable in the list either way.
         if (errorCode === 'NOT_FOUND') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const currentSessionId = asNonEmptyString(details?.['currentSessionId']) as
@@ -1175,14 +1314,69 @@ function App() {
             // session's already-rendered messages. ensureTranscriptLoaded gates
             // on the loaded marker, so it fetches only if not already loaded
             // (no wipe, no duplicate append) (#499 review).
-            setActiveSessionId(currentSessionId);
+            //
+            // Refresh and navigate are separate concerns (#688 review): the
+            // refresh must happen whenever currentSessionId is present --
+            // including when it's already the active session (e.g. a
+            // bindingRotated hello_ack cleared its loaded marker without a
+            // re-fetch) -- while navigation is gated on autoSelectIfNone so a
+            // stale/racy redirect never steals focus from a different
+            // explicit selection.
             ensureTranscriptLoaded(connectionId, currentSessionId);
-            console.warn(
-              '[App] Stale transcript request; following daemon to current session',
-              currentSessionId,
-            );
+            const nextActive = autoSelectIfNone(activeSessionIdRef.current, currentSessionId);
+            if (nextActive !== activeSessionIdRef.current) {
+              setActiveSessionId(nextActive);
+              console.warn(
+                '[App] Stale transcript request; following daemon to current session',
+                currentSessionId,
+              );
+            } else {
+              console.warn(
+                '[App] Stale transcript request; daemon current session available but not followed (active selection present)',
+                currentSessionId,
+              );
+            }
             break;
           }
+        }
+        // NOT_ACTIVE_CONNECTION (#662/#663): this connection is read-only --
+        // another client holds the session's exclusive write lock -- and the
+        // input that triggered this error was never delivered to the PTY
+        // (the daemon still sent an `ack` for it separately; `ack` only means
+        // "the daemon received the frame", not "Claude saw it"). Refresh the
+        // persistent read-only banner (ChatView) AND, since #681, the error
+        // now carries the rejected input's own messageId -- flip that
+        // specific bubble to 'failed' so the user can tell which queued-era
+        // message(s) actually landed instead of relying on the banner alone.
+        if (errorCode === 'NOT_ACTIVE_CONNECTION') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const queuedSessionId = asNonEmptyString(details?.['sessionId']);
+          if (queuedSessionId) {
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id === queuedSessionId && s.connectionId === connectionId
+                  ? { ...s, attachState: 'queued' }
+                  : s,
+              ),
+            );
+          }
+          // The ack for this same input usually lands first (bubble already
+          // at 'delivered') since the daemon acks unconditionally before the
+          // async read-only check runs -- this rejection is authoritative
+          // and must win over that.
+          const rejectedMessageId = asNonEmptyString(details?.['messageId']);
+          if (rejectedMessageId) {
+            pendingSendsRef.current = rejectSend(pendingSendsRef.current, rejectedMessageId);
+            setMessages((prev) =>
+              prev.map((m) => (m.id === rejectedMessageId ? { ...m, state: 'failed' as const } : m)),
+            );
+          }
+          console.warn(
+            '[App] NOT_ACTIVE_CONNECTION: input not delivered, session is read-only',
+            queuedSessionId,
+            rejectedMessageId,
+          );
+          break;
         }
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
@@ -1250,6 +1444,27 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, errorMsg]);
+        break;
+      }
+
+      // #663: only `user_input` sends are tracked in pendingSendsRef (see
+      // handleSend), so an ack for anything else (hello, answer, ...) simply
+      // finds no match and no-ops here -- expected, not an error.
+      case 'ack': {
+        const { pending, matched } = acknowledgeSend(pendingSendsRef.current, message.ack.messageId);
+        pendingSendsRef.current = pending;
+        if (matched) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === message.ack.messageId && m.sender === 'user'
+                ? { ...m, state: 'delivered' as const }
+                : m,
+            ),
+          );
+        }
+        // #690: resolves handleDisconnect's await on the unregister_device_token
+        // ack, if one is pending for this id. No-op otherwise (see ack-waiter.ts).
+        resolveAckWaiter(ackWaitersRef.current, message.ack.messageId);
         break;
       }
 
@@ -1403,7 +1618,16 @@ function App() {
       const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
       if (stored) {
         const urls: string[] = JSON.parse(stored);
-        for (const url of urls) {
+        // Reconcile aliases persisted under different host spellings (e.g. a
+        // 'localhost' URL saved before a later 'ws://127.0.0.1:.../ws'
+        // connect) to one entry per daemon (#682): connecting to both would
+        // leave a stale duplicate manager entry that can drive a stale error
+        // banner even while the deduped survivor is healthy and attached.
+        const deduped = dedupeConnectionUrls(urls, parseConnectionId);
+        if (deduped.length !== urls.length) {
+          localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
+        }
+        for (const url of deduped) {
           connectDirectRef.current(url);
         }
       }
@@ -1625,6 +1849,10 @@ function App() {
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
+  // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
+  // used only by handleDisconnect's unregister_device_token wait; see the
+  // 'ack' case in handleMessage for the resolving side.
+  const ackWaitersRef = useRef<AckWaiters>(new Map());
   useEffect(() => {
     const handleToken = (e: Event) => {
       const token = (e as CustomEvent<string>).detail;
@@ -1747,6 +1975,7 @@ function App() {
         return;
       }
       const key = questionKey(sid, question.agentId);
+      const answeredId = question.id;
       // Mark this question answered (card shows collapsed state briefly), then
       // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {
@@ -1756,19 +1985,18 @@ function App() {
         next.set(key, { ...existing, answeredWith: content });
         return next;
       });
+      // Remove by (key, id), not key alone: a newer prompt may have taken this
+      // session/agent slot before the timer fires (back-to-back escalations);
+      // deleting it would make the new card "flash and vanish" (#652).
       setTimeout(() => {
-        setQuestions((prev) => {
-          if (!prev.has(key)) return prev;
-          const next = new Map(prev);
-          next.delete(key);
-          return next;
-        });
-      }, 1500);
+        setQuestions((prev) => removeQuestionByKeyIfId(prev, key, answeredId));
+      }, RESOLVED_TRACE_LINGER_MS);
       // Keep the session flagged while OTHER prompts remain unanswered. Read
       // the ref (latest committed map) rather than the closure so the badge
-      // can't get stuck after the dep snapshot goes stale.
+      // can't get stuck after the dep snapshot goes stale. The ref still holds
+      // the pre-answer card for this id, so exclude it explicitly.
       const stillPending = getSessionQuestions(questionsRef.current, sid).some(
-        (q) => q.id !== question.id && q.answeredWith === undefined,
+        (q) => q.id !== question.id && isQuestionPending(q),
       );
       setSessions((prev) =>
         prev.map((s) => (s.id === sid ? { ...s, questionPending: stillPending } : s)),
@@ -1875,9 +2103,14 @@ function App() {
 
       const reply = replyContextsRef.current.get(activeSessionId);
       const wireContent = reply ? formatReplyMessage(reply, content) : content;
+      // Same id for the UI bubble AND the wire message (#663): the daemon's
+      // `ack.messageId` echoes back whatever id we send, so this is what
+      // lets an inbound ack find its bubble. Also what a retry reuses so
+      // the daemon's MessageIdTracker dedups it.
+      const messageId = generateId();
 
       const newMessage: UIMessage = {
-        id: generateId(),
+        id: messageId,
         sessionId: activeSessionId,
         sender: 'user',
         content: wireContent,
@@ -1895,11 +2128,18 @@ function App() {
         activeSessionId,
         wireContent,
         activeBinding as UUID | undefined,
+        messageId,
       );
       if (success) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'sent' } : m)),
-        );
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, state: 'sent' } : m)));
+        pendingSendsRef.current = trackSend(pendingSendsRef.current, {
+          messageId,
+          connectionId: connId,
+          sessionId: activeSessionId,
+          content: wireContent,
+          claudeSessionId: activeBinding,
+          sentAt: Date.now(),
+        });
         // Reply context is consumed on send; the next message starts clean
         // unless the user explicitly long-presses another message.
         if (reply) {
@@ -1912,7 +2152,7 @@ function App() {
         }
       } else {
         setMessages((prev) =>
-          prev.map((m) => (m.id === newMessage.id ? { ...m, state: 'delivered' as const } : m)),
+          prev.map((m) => (m.id === messageId ? { ...m, state: 'failed' as const } : m)),
         );
         const errorMsg: UIMessage = {
           id: generateId(),
@@ -1922,12 +2162,106 @@ function App() {
           timestamp: new Date().toISOString(),
           state: 'delivered',
           isEditing: false,
+          // Ties this note to the failed send so a resync merge (#687) keeps
+          // them together -- both survive, or neither does.
+          relatedMessageId: messageId,
         };
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
     [activeSessionId, getActiveConnectionId, sendInput, sessions],
   );
+
+  // Tap-to-retry a 'failed' bubble (#663). Reuses the SAME message id so the
+  // daemon's MessageIdTracker dedups it if the original somehow did land.
+  // Re-enters the pending-sends tracker so the automatic retry/timeout sweep
+  // resumes watching it.
+  const handleRetryMessage = useCallback(
+    (message: UIMessage) => {
+      const sid = message.sessionId;
+      const connId =
+        sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
+      if (!connId) return;
+      const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === message.id ? { ...m, state: 'sending' as const } : m)),
+      );
+
+      const success = sendInput(
+        connId,
+        sid,
+        message.content,
+        binding as UUID | undefined,
+        message.id,
+      );
+      if (success) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === message.id ? { ...m, state: 'sent' as const } : m)),
+        );
+        pendingSendsRef.current = trackSend(pendingSendsRef.current, {
+          messageId: message.id,
+          connectionId: connId,
+          sessionId: sid,
+          content: message.content,
+          claudeSessionId: binding,
+          sentAt: Date.now(),
+        });
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === message.id ? { ...m, state: 'failed' as const } : m)),
+        );
+      }
+    },
+    [getActiveConnectionId, sendInput],
+  );
+
+  // Ack-timeout sweep (#663): messages sent via handleSend/handleRetryMessage
+  // that don't get an `ack` within ACK_TIMEOUT_MS get one automatic retry
+  // (same message id), then flip to 'failed' if that also times out. Runs
+  // more frequently than the timeout itself so the UI transition lands
+  // close to the deadline rather than up to a full tick late.
+  useEffect(() => {
+    const ACK_SWEEP_INTERVAL_MS = 1000;
+    const interval = setInterval(() => {
+      const { pending, outcomes } = sweepTimeouts(pendingSendsRef.current, Date.now());
+      if (outcomes.length === 0) return;
+      pendingSendsRef.current = pending;
+
+      for (const outcome of outcomes) {
+        if (outcome.kind === 'failed') {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === outcome.entry.messageId ? { ...m, state: 'failed' as const } : m,
+            ),
+          );
+          continue;
+        }
+
+        // 'retry': resend with the SAME id. If the transport itself refuses
+        // (e.g. disconnected by now), don't wait for a second timeout to
+        // say so -- fail immediately, the outcome is already known.
+        const { entry } = outcome;
+        const resent = sendInput(
+          entry.connectionId as ConnectionId,
+          entry.sessionId as UUID,
+          entry.content,
+          entry.claudeSessionId as UUID | undefined,
+          entry.messageId as UUID,
+        );
+        if (!resent) {
+          pendingSendsRef.current = acknowledgeSend(
+            pendingSendsRef.current,
+            entry.messageId,
+          ).pending;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === entry.messageId ? { ...m, state: 'failed' as const } : m)),
+          );
+        }
+      }
+    }, ACK_SWEEP_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [sendInput]);
 
   // Set the reply context for the current session: long-press on a
   // MessageBubble routes here. The InputArea shows a banner + clear
@@ -1976,14 +2310,16 @@ function App() {
   const handleConnectDirect = useCallback(
     (url: string, directory?: string) => {
       connectDirect(url, directory);
-      // Persist connected URLs
+      // Persist connected URLs. Dedupe by normalized connectionId (#682) so
+      // reconnecting to the same daemon through a different host alias
+      // (e.g. '127.0.0.1' after a previously-stored 'localhost' URL) replaces
+      // the old entry instead of accumulating a second string that resolves
+      // to the same daemon.
       try {
         const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
         const urls: string[] = stored ? JSON.parse(stored) : [];
-        if (!urls.includes(url)) {
-          urls.push(url);
-        }
-        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(urls));
+        const deduped = dedupeConnectionUrls([...urls, url], parseConnectionId);
+        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
       } catch (err) {
         console.warn('[App] Failed to persist connection URL:', err);
       }
@@ -1991,24 +2327,138 @@ function App() {
     [connectDirect],
   );
 
-  // Disconnect a connection and remove from persisted localStorage
+  // Bounded wait for the unregister ack before re-registering siblings (see
+  // handleDisconnect). Must stay well under anything a user would notice as
+  // "hung" -- a timeout is a normal, self-healing outcome, not a failure.
+  const UNREGISTER_ACK_TIMEOUT_MS = 2000;
+
+  // Disconnect a connection and remove from persisted localStorage.
+  //
+  // Device tokens otherwise persist across disconnect ON PURPOSE (push must
+  // keep working while the app is suspended, see the onDisconnect comment in
+  // the daemon's connection-events handler). This is the one explicit
+  // user-removal path where the token really should stop pushing (#690):
+  // best-effort unregister BEFORE closing the socket, tolerating a dead
+  // socket — local removal must proceed either way.
+  //
+  // The shared ~/.remi/device-tokens.json keys entries by TOKEN, not by
+  // connection, so several servers running on the SAME machine share one
+  // entry. Unregistering with just the removed connection would tombstone
+  // that shared entry for every OTHER server on that machine too. So after
+  // the unregister, re-send register_device_token to every OTHER
+  // still-connected daemon: its fresh `registeredAt` outraces the tombstone
+  // the removed daemon just wrote, which is what keeps the token alive for
+  // the servers the user did NOT remove (see DeviceTokenStore's reconcile
+  // rule).
+  //
+  // Ordering guarantee: the two sends are two synchronous ws.send()s on
+  // SEPARATE connections to SEPARATE daemon processes -- there is no
+  // happens-before between them on the wire. If the re-register reached its
+  // daemon and committed BEFORE the removed daemon committed its tombstone,
+  // the later-but-numerically-newer tombstone would silently win the race
+  // and defeat a re-registration the user never asked for. So this AWAITS
+  // the unregister's `ack` -- which the daemon deliberately sends only AFTER
+  // the tombstone is written to disk (see Connection
+  // .handleUnregisterDeviceToken) -- before firing the re-register loop,
+  // making "tombstone committed" a real happens-before in the common case.
+  // Bounded to UNREGISTER_ACK_TIMEOUT_MS so a slow/unresponsive daemon can
+  // never hang this UI action: on timeout (or an immediate send failure),
+  // proceed with the re-registers anyway -- the same race as before this
+  // fix, which self-heals on the sibling's next connection cycle either way.
+  // Known gap: the relay (WebRTC) transport does not send acks for this
+  // message type at all (packages/daemon/src/remote/relay-adapter.ts never
+  // calls sendAck), so removing a relay-connected server always takes the
+  // full timeout before re-registering siblings -- same bounded, self-healing
+  // fallback, just always on that path rather than only when the daemon is
+  // slow.
   const handleDisconnect = useCallback(
     (connectionId: ConnectionId) => {
-      disconnectConnection(connectionId);
-      try {
-        const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
-        const urls: string[] = stored ? JSON.parse(stored) : [];
-        const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
-        localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
-      } catch (err) {
-        console.warn('[App] Failed to update persisted connections:', err);
+      const finish = (): void => {
+        disconnectConnection(connectionId);
+        try {
+          const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
+          const urls: string[] = stored ? JSON.parse(stored) : [];
+          const filtered = urls.filter((u) => parseConnectionId(u) !== connectionId);
+          localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(filtered));
+        } catch (err) {
+          console.warn('[App] Failed to update persisted connections:', err);
+        }
+      };
+
+      const token = deviceTokenRef.current;
+      if (!token) {
+        finish();
+        return;
       }
+
+      const reregisterSiblings = (): void => {
+        for (const id of connectedIds) {
+          if (id === connectionId) continue;
+          try {
+            const ok = cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+            if (!ok) {
+              console.warn(`[App] Could not re-register device token with ${id}`);
+            }
+          } catch (err) {
+            console.warn('[App] Failed to re-register device token:', err);
+          }
+        }
+      };
+
+      const unregisterMsg = createUnregisterDeviceToken(token);
+      let sent = false;
+      try {
+        sent = cmSendMessage(connectionId, unregisterMsg);
+      } catch (err) {
+        console.warn('[App] Failed to send unregister_device_token:', err);
+      }
+
+      if (!sent) {
+        // Nothing to await -- the connection is already unreachable, so
+        // there is no ack race to guard against.
+        console.warn(
+          `[App] Could not notify ${connectionId} (unreachable); it may resume pushing if it comes back`,
+        );
+        reregisterSiblings();
+        finish();
+        return;
+      }
+
+      void awaitAck(ackWaitersRef.current, unregisterMsg.id, UNREGISTER_ACK_TIMEOUT_MS).then((acked) => {
+        if (!acked) {
+          console.warn(
+            `[App] No unregister ack from ${connectionId} within ${UNREGISTER_ACK_TIMEOUT_MS}ms; re-registering siblings anyway (self-heals on next connection cycle)`,
+          );
+        }
+        reregisterSiblings();
+        finish();
+      });
     },
-    [disconnectConnection],
+    [disconnectConnection, cmSendMessage, connectedIds],
   );
 
-  // Disconnect ALL connections and clear everything (back to connect screen)
+  // Disconnect ALL connections and clear everything (back to connect screen).
+  // Same explicit-removal unregister as handleDisconnect, sent to every
+  // connection best-effort before disconnectAll() closes the sockets. No
+  // re-register here — every server is being removed, so the whole machine's
+  // token is meant to go quiet (an accepted limitation: an unreachable
+  // connection cannot be notified and may resume pushing if it comes back).
   const handleDisconnectAll = useCallback(() => {
+    const token = deviceTokenRef.current;
+    if (token) {
+      for (const conn of connectionsRef.current) {
+        try {
+          const sent = cmSendMessage(conn.connectionId, createUnregisterDeviceToken(token));
+          if (!sent) {
+            console.warn(
+              `[App] Could not notify ${conn.connectionId} (unreachable); it may resume pushing if it comes back`,
+            );
+          }
+        } catch (err) {
+          console.warn('[App] Failed to send unregister_device_token:', err);
+        }
+      }
+    }
     disconnectAll();
     setSessions([]);
     setMessages([]);
@@ -2020,7 +2470,7 @@ function App() {
     } catch (err) {
       console.warn('[App] Failed to clear persisted connections:', err);
     }
-  }, [disconnectAll]);
+  }, [disconnectAll, cmSendMessage]);
 
   const handleBulletExpand = useCallback(
     (bulletId: number) => {
@@ -2213,11 +2663,21 @@ function App() {
     URL.revokeObjectURL(url);
   }, [sessionMessages, activeSessionId]);
 
-  // Derive error from the most recently errored connection (if any)
+  // Derive error from the most recently errored connection (if any). Used
+  // for the ConnectModal's own connect-attempt feedback, which is
+  // deliberately global -- it's about the connection the user just tried,
+  // not about any particular chat session.
   const errorConnection = connections.find((c) => c.status === 'error');
   const error: string | null = errorConnection
     ? (errorConnection.error ?? `Connection error: ${errorConnection.connectionId}`)
     : null;
+
+  // Chat-view banner (#682): scoped to the connection serving the ACTIVE
+  // session, so an unrelated errored/duplicate connection can't pin a
+  // "Connection error" banner (and, via the same session.connectionStatus
+  // path the InputArea reads, disable the chat input) while the session on
+  // screen is healthy and attached.
+  const chatError = deriveConnectionBannerError(connections, activeSession?.connectionId ?? null);
 
   // Compute effective status for ConnectModal: show the latest connection's status
   const effectiveStatus = (() => {
@@ -2263,13 +2723,14 @@ function App() {
       session={activeSession}
       messages={sessionMessages}
       questions={sessionQuestions}
-      error={error}
+      error={chatError}
       onSend={handleSend}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}
       onCancelQuestion={handleCancelQuestion}
       onCancel={handleEscape}
       onReply={handleReply}
+      onRetryMessage={handleRetryMessage}
       replyContext={sessionReplyContext}
       onClearReply={handleClearReply}
       onBack={handleBack}

@@ -247,4 +247,19 @@ export class AdapterRegistry {
   hasConnection(connectionId: UUID): boolean {
     return this.connectionToAdapter.has(connectionId);
   }
+
+  /**
+   * Force-close a specific connection (#662: same-device lock reclaim evicts
+   * a stale connection this way). Routes to the correct adapter; false if the
+   * connection is unknown or its adapter doesn't implement closeConnection.
+   */
+  closeConnection(connectionId: UUID, reason: string): boolean {
+    const adapterType = this.connectionToAdapter.get(connectionId);
+    if (!adapterType) {
+      return false;
+    }
+
+    const adapter = this.adapters.get(adapterType);
+    return adapter?.closeConnection?.(connectionId, reason) ?? false;
+  }
 }
