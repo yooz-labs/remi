@@ -25,7 +25,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { deserialize, serialize } from '@remi/shared/protocol.ts';
 import { createHello, createSessionListRequest } from '@remi/shared/protocol.ts';
-import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage, SessionListResponseMessage } from '@remi/shared/protocol.ts';
 import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
 
 const CLI_TS = path.resolve(import.meta.dir, '../../src/cli.ts');
@@ -162,10 +162,10 @@ describe('remi serve hub (integration, #542)', () => {
       5000,
       'session_list_response',
     );
-    const list = received.find((m) => m.type === 'session_list_response') as {
-      sessions: unknown[];
-    };
-    expect(list.sessions).toEqual([]);
+    const list = received.find(
+      (m): m is SessionListResponseMessage => m.type === 'session_list_response',
+    );
+    expect(list?.sessions).toEqual([]);
 
     // The hub must NOT have touched its cwd's Claude hook config, and must
     // NOT appear in live-sessions as a phantom session.
@@ -209,10 +209,7 @@ describe('remi serve hub (integration, #542)', () => {
     await pollUntil(
       () =>
         received.some(
-          (m) =>
-            m.type === 'session_list_response' &&
-            Array.isArray((m as { daemonPorts?: number[] }).daemonPorts) &&
-            ((m as { daemonPorts?: number[] }).daemonPorts ?? []).includes(siblingPort),
+          (m) => m.type === 'session_list_response' && (m.daemonPorts ?? []).includes(siblingPort),
         ),
       10000,
       'watcher broadcast with sibling port',
