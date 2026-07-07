@@ -72,6 +72,31 @@ describe('rotateIfNeeded', () => {
     expect(fs.existsSync(`${target}.2`)).toBe(false);
   });
 
+  test('rotates a file exactly at the threshold (boundary is inclusive)', () => {
+    fs.writeFileSync(target, Buffer.alloc(1024));
+    const result = rotateIfNeeded(target, { maxBytes: 1024 });
+    expect(result).toBe(true);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.existsSync(`${target}.1`)).toBe(true);
+  });
+
+  test('a failed rename is swallowed: target is left in place, still returns true', () => {
+    if (process.getuid?.() === 0) {
+      // Root bypasses directory write-permission checks; nothing to assert.
+      return;
+    }
+    fs.writeFileSync(target, Buffer.alloc(2048, 'a'));
+    fs.chmodSync(sandbox, 0o555); // read/execute only: rename inside it fails
+    try {
+      const result = rotateIfNeeded(target, { maxBytes: 1024 });
+      expect(result).toBe(true);
+      expect(fs.existsSync(target)).toBe(true);
+      expect(fs.existsSync(`${target}.1`)).toBe(false);
+    } finally {
+      fs.chmodSync(sandbox, 0o755); // restore so afterEach's rmSync can clean up
+    }
+  });
+
   test('respects a custom maxBytes override', () => {
     fs.writeFileSync(target, Buffer.alloc(100));
     expect(rotateIfNeeded(target, { maxBytes: 1000 })).toBe(false);

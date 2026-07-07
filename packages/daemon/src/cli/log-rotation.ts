@@ -13,9 +13,16 @@
  * inode. Growth stays bounded in practice because opens are frequent (every
  * wrapper start, every daemon spawn), so the live file rarely has a chance
  * to grow far past the threshold before the next rotation check.
+ *
+ * No cross-process locking: two processes racing a rotation of the same
+ * file (e.g. concurrent `spawnRemiDaemon` calls) could interleave renames.
+ * Accepted for now — same tradeoff the port-selection code already makes
+ * elsewhere in this package, and worst case is a lost backup generation,
+ * not data loss or a crash.
  */
 
 import * as fs from 'node:fs';
+import { errorToString } from '@remi/shared';
 
 /** Default rotation threshold: 10MB. */
 export const LOG_MAX_BYTES = 10 * 1024 * 1024;
@@ -57,24 +64,42 @@ export function rotateIfNeeded(filePath: string, opts?: RotateOptions): boolean 
 
   try {
     fs.unlinkSync(`${filePath}.${keep}`);
-  } catch {
-    // No existing oldest backup to drop; nothing to do.
+  } catch (err) {
+    warnUnlessMissing(err, `drop oldest backup ${filePath}.${keep}`);
   }
 
   for (let n = keep - 1; n >= 1; n--) {
     try {
       fs.renameSync(`${filePath}.${n}`, `${filePath}.${n + 1}`);
-    } catch {
-      // No backup at this slot yet; nothing to shift.
+    } catch (err) {
+      warnUnlessMissing(err, `shift backup ${filePath}.${n} -> .${n + 1}`);
     }
   }
 
   try {
     fs.renameSync(filePath, `${filePath}.1`);
-  } catch {
-    // Best effort: if this fails, filePath stays in place and the next
-    // rotateIfNeeded call will retry.
+  } catch (err) {
+    // filePath was just confirmed to exist via statSync above, so any
+    // failure here (permissions, disk full, cross-device) is unexpected —
+    // surface it. filePath stays in place and the next rotateIfNeeded call
+    // will retry.
+    warn(`rotate ${filePath} -> .1`, err);
   }
 
   return true;
+}
+
+/** Logs unexpected fs errors; ENOENT ("nothing there yet") is expected and silent. */
+function warnUnlessMissing(err: unknown, op: string): void {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+  warn(op, err);
+}
+
+/** Best-effort stderr notice. Never throws — a rotation failure must never break logging. */
+function warn(op: string, err: unknown): void {
+  try {
+    console.error(`[remi] log rotation failed (${op}): ${errorToString(err)}`);
+  } catch {
+    // stderr may be unavailable; nothing more to do.
+  }
 }
