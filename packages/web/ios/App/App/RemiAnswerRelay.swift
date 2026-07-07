@@ -48,6 +48,23 @@ final class RemiAnswerRelay: NSObject, NotificationHandlerProtocol {
     // MARK: NotificationHandlerProtocol
 
     func willPresent(notification: UNNotification) -> UNNotificationPresentationOptions {
+        // #734: while the app is FOREGROUNDED, iOS presents a push only with
+        // the options returned here — and the previous `wrapped ?? []` meant
+        // question pushes showed NOTHING (no banner, no sound) whenever the
+        // app happened to be open (session list, another session, or the phone
+        // driven via iPhone Mirroring). The daemon-side card arrives over the
+        // WebSocket, but nothing ALERTS the user, so escalations sat unanswered
+        // until the #733 hold timeout. Present question-carrying pushes
+        // (userInfo.questionId — permission cards AND the #733 timeout-handoff
+        // notice) with a real banner; everything else keeps deferring to the
+        // wrapped Capacitor handler.
+        let userInfo = notification.request.content.userInfo
+        if userInfo["questionId"] != nil {
+            if #available(iOS 14.0, *) {
+                return [.banner, .list, .sound]
+            }
+            return [.alert, .sound]
+        }
         return wrapped?.willPresent(notification: notification) ?? []
     }
 
