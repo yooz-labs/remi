@@ -109,4 +109,25 @@ describe('rotateIfNeeded', () => {
     fs.mkdirSync(dirTarget);
     expect(() => rotateIfNeeded(dirTarget, { maxBytes: 0 })).not.toThrow();
   });
+
+  test('an unexpected stat failure (not ENOENT) is logged, not silently ignored', () => {
+    if (process.getuid?.() === 0) {
+      // Root bypasses directory execute-permission checks; nothing to assert.
+      return;
+    }
+    fs.writeFileSync(target, Buffer.alloc(2048, 'a'));
+    fs.chmodSync(sandbox, 0o000); // no execute: statSync throws EACCES, not ENOENT
+    const originalError = console.error;
+    const logged: string[] = [];
+    console.error = (msg: string) => logged.push(msg);
+    try {
+      expect(rotateIfNeeded(target, { maxBytes: 1024 })).toBe(false);
+      expect(
+        logged.some((msg) => msg.includes('log rotation failed') && msg.includes('stat')),
+      ).toBe(true);
+    } finally {
+      console.error = originalError;
+      fs.chmodSync(sandbox, 0o755); // restore so afterEach's rmSync can clean up
+    }
+  });
 });

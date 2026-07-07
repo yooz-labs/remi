@@ -25,6 +25,94 @@ All notable changes to Remi are documented here.
   visible to `remi stop`/`status`), and hub-spawned session children write
   per-port status files instead of overwriting the hub's `daemon-status.json`.
 
+## [0.6.18] - 2026-07-07
+
+A hardening release: no new surface area, but a long soak (agent-team sessions,
+live push delivery, multi-daemon reconnects) turned up a cluster of real bugs in
+the 0.6.16/0.6.17 machinery, all fixed here.
+
+### Added
+- **Dynamic lock-screen action titles** (#719): a 2-4 option question push now
+  shows its REAL option labels as lock-screen action buttons (e.g. "Yes, always
+  allow: git push"), not generic Yes/No, via a Notification Service Extension
+  that registers a category per notification.
+- **Structured permission-suggestion handling** (#718): Claude Code's structured
+  `permission_suggestions` (addRules/setMode/etc., current CC versions) are now
+  parsed into real option buttons instead of being dropped into a fabricated
+  3-option Yes/"Yes, always"/No card. Two-option prompts show an honest Yes/No;
+  "Yes, always allow: ..." echoes the real permission-update entry back to
+  Claude, so it actually persists the rule.
+- **Message ack + queued indicator** (#663): the client now tracks per-message
+  delivery (sending -> sent -> delivered -> failed with tap-to-retry) instead of
+  assuming every send lands; a queued/read-only banner reflects `hello_ack`
+  attach state.
+- **Apple Watch can actually answer** (#665): mirrored lock-screen actions
+  no longer require an unlock the Watch can't satisfy — auth is now required
+  only on standing-grant actions ("Yes, always"), not one-shot Yes/No/option
+  picks. A cold background launch (Watch tap with the app never opened) now
+  installs the native answer relay instead of silently dropping the tap, and
+  a failed relay leaves a visible "Answer not delivered" notification instead
+  of failing invisibly.
+- **iOS TestFlight via local upload** (#659): `scripts/testflight-ios.sh` mirrors
+  yooz-Whisper's local archive/export/upload path; own app version line synced
+  via `sync-app-version.mjs`.
+- **Process-level error guards** (#534 minimal slice): unhandled rejections are
+  logged and the daemon keeps serving; uncaught exceptions run cleanup then
+  exit(1) so a supervisor (launchd/systemd) restarts it, instead of the process
+  silently going dark.
+- **Log rotation** for `remi.log` / `daemon.log` at 10MB (rotate-before-open,
+  2 generations kept).
+
+### Changed
+- **Auto-approve eval queue is scoped per session** (#730): a session ending or
+  answering no longer drains or cancels a DIFFERENT session's queued
+  evaluations; team bursts across sessions stop competing for one shared slot.
+- **Stop spares live teammates** (#711): a lead agent's `Stop` no longer
+  releases every held permission hook as passthrough — only the lead's own
+  holds/evals are cancelled, so a still-working teammate's pending "needs you"
+  card stays honest instead of flipping to a phantom auto-release.
+- **Foreign-session admission is fail-safe** (#672): a Claude session Remi
+  doesn't recognize now gets a proper auto-approve/escalation path (sibling
+  daemon check, then evaluate-or-escalate) instead of being silently dropped.
+- **Same-device lock reclaim is bound to a client fingerprint** (#671):
+  closes a spoofable-`deviceId` gap in the #662 reconnect-eviction path.
+- **Sticky active session selection** (#688): the web client no longer
+  silently swaps the active session to an unrelated one on a racing
+  `hello_ack` or reconnect.
+- Heartbeat margin widened and reconnects staggered (#664, #685) so multiple
+  daemon connections going stale at the same tick don't thunder-herd.
+- APNS device tokens are unregistered when a server is removed from the app
+  (#690), instead of continuing to push forever.
+
+### Fixed
+- Subagent-context tracker leak that could silently deny the MAIN agent's own
+  escalations (including `AskUserQuestion`) during team runs (#710).
+- PTY-only prompts (native team-permission UI, MCP elicitation) that reached
+  no hook were dropped instead of pushed (#712).
+- In-app question cards flickering (vanish/reappear) and giving no trace of a
+  lock-screen answer (#652).
+- `AskUserQuestion` auto-answer rejecting a valid answer when an option label
+  contained a comma (#654); multi-select's keystroke plan not matching the
+  real TUI, leaving forms stuck mid-submit (#661); auto-answer failing on any
+  review screen that partial-repaints instead of redrawing (#677).
+- Dismiss-push 429s under multi-session bursts, from a too-low shared rate
+  limit (#723); dismissals now retry with backoff and prune dead tokens.
+- A held escalation that times out unanswered now sends a delivery-aware
+  "answer in the terminal" handoff push instead of silently falling through
+  to a passthrough terminal prompt with nothing on the phone (#733).
+- Question pushes showing no banner or sound when the app was foregrounded,
+  including via iPhone Mirroring (#734).
+- A dead connection (no clean close) holding a session's write lock forever,
+  silently dropping every subsequent input (#662).
+- Recent-projects list not tappable on touch (#656); unnormalized tilde
+  paths and inconsistent `projectPath` values breaking `--resume` (#674,
+  #680); rotation dir-poll staying disarmed after a transient read failure
+  (#676); duplicate `localhost`/`127.0.0.1` connection entries confusing the
+  error banner (#682); unconfirmed/failed sends dropped on a rebind instead
+  of staying retryable (#687); ack sent before the read-only check could
+  reject it, leaving no error trace (#681); an auto-approve verdict racing
+  ahead of a permission already resolved elsewhere (#673).
+
 ## [0.6.17] - 2026-06-28
 
 Remote sessions now outlive the connection: disconnecting no longer kills the

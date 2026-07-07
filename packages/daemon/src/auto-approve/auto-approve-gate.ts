@@ -126,15 +126,40 @@ export interface AutoApproveEvaluator {
     permissionSuggestions?: readonly unknown[],
     modelOverride?: string,
     evalId?: number,
+    /** #730: this gate's own sessionId, so the shared daemon-wide service can
+     *  isolate concurrent sessions' evals — a queued/running eval belonging
+     *  to one session must never be cancelled or drained by another
+     *  session's `cancelStale` / `cancelEvalForQuestion`. Omitted only by
+     *  test doubles / direct-service unit tests that never mix scopes. */
+    scope?: string,
+    /** #730: tags a queued waiter so `drainScope(scope, {mainOnly: true})` can
+     *  spare it the same way `cancelStale`'s running-eval cancel already
+     *  spares a subagent eval via `evalIsSubagentById`. */
+    isSubagent?: boolean,
   ): Promise<AutoApproveResult>;
-  /** Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
-   *  eval currently running (#617 per-eval scoping); without it, aborts whatever
-   *  is in flight. Returns true if an abort was issued, false otherwise (idempotent). */
-  cancel(reason: string, evalId?: number): boolean;
+  /**
+   * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
+   * eval currently running (#617 per-eval scoping); without it, aborts whatever
+   * is in flight. `scope` (#730) additionally requires the target belong to that
+   * scope, so two sessions can never cancel each other's work by accident.
+   * Omitting BOTH `evalId` and `scope` is a fully untargeted cancel — reserved
+   * for `forceRelease` (the documented `remi unstick` global escape hatch);
+   * every per-session caller here (`cancelStale`, `cancelEvalForQuestion`) passes
+   * its own scope. Returns true if an abort was issued, false otherwise
+   * (idempotent).
+   */
+  cancel(reason: string, evalId?: number, scope?: string): boolean;
   /** Drain queued evals so they escalate gracefully instead of seizing the freed
-   *  GPU (#617 force-release). Returns the number drained. Optional: a minimal
-   *  evaluator under test may omit it. */
+   *  GPU (#617 force-release). GLOBAL — every session's queue, not just this
+   *  gate's own. Returns the number drained. Optional: a minimal evaluator
+   *  under test may omit it. */
   drainQueue?(): number;
+  /** #730: drain only THIS scope's queued evals (optionally main-tagged only),
+   *  so `cancelStale` can drop a session's own moot queued work without
+   *  touching a sibling session's queue or (mainOnly) a teammate's still-
+   *  legitimate wait. Returns the number drained. Optional: a minimal
+   *  evaluator under test may omit it. */
+  drainScope?(scope: string, opts?: { mainOnly?: boolean }): number;
 }
 
 export interface AutoApproveGateDeps {
@@ -185,6 +210,15 @@ export interface AutoApproveGateDeps {
    *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
    *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
+  /** Called when a HELD question's hold-timeout expires unanswered, JUST BEFORE
+   *  it fails open to passthrough (#733). Fired only on the TIMEOUT path — never
+   *  on the undeliverable fail-open (#603 delivery gate), where the push channel
+   *  is already known broken and a handoff push would be pointless. The question
+   *  is still registered in sessionRegistry when this fires, so the callback can
+   *  read its text to build a "moved to the terminal" handoff notification.
+   *  Without it, the timeout is SILENT on the phone: the card is dismissed and
+   *  nothing says the prompt now waits in the terminal. Throw-safe (safeCue). */
+  onHoldTimeout?: (questionId: UUID) => void;
   /** Called when the permission was auto-approved/denied silently (inject
    *  succeeded; the user never sees it). Drives the terminal "done" cue. #513.
    *  `ctx.isSubagent` (#711): same client-broadcast-only skip as `onEvalStart`
@@ -275,6 +309,15 @@ export class AutoApproveGate {
    * path clears the timer and deletes the entry, so it never leaks.
    */
   private readonly pendingHolds = new Map<UUID, PendingHold>();
+  /**
+   * Held question ids whose notification was CONFIRMED delivered (#603 probe
+   * resolved in_app/pushed). The #733 hold-timeout handoff cue fires only for
+   * these (or when delivery gating is disabled entirely): "timed out waiting
+   * for you" is only meaningful if the user was actually notified — a hold
+   * whose delivery was never confirmed is the undeliverable machinery's
+   * problem, not a handoff. Entries are dropped in `releaseHeld`.
+   */
+  private readonly confirmedDeliveries = new Set<UUID>();
 
   /** Monotonic id stamped on each primary eval (#617), so a held question can be
    *  tied to the exact eval running for it and a manual answer cancels only that
@@ -383,8 +426,22 @@ export class AutoApproveGate {
       this.openQuestionSignatures.clear();
     }
     if (this.deps.service === null) return;
+    // #730 (BUG 1 fix): drop THIS session's own QUEUED evals first -- work a
+    // teardown or a mainOnly Stop has already decided is moot must never
+    // survive in the shared FIFO to be promoted onto the GPU later just
+    // because the eval ahead of it happens to release around the same time.
+    // Scoped to this gate's own sessionId, so a sibling session's queue is
+    // untouched; mainOnly additionally spares a queued subagent/team-member
+    // eval, mirroring the running-eval loop below.
+    const drainedCount = this.deps.service.drainScope?.(this.sessionId, { mainOnly }) ?? 0;
+    if (drainedCount > 0) {
+      log(`[AutoApprove ${this.sessionTag}] Drained ${drainedCount} queued eval(s) (${reason})`);
+    }
     if (!mainOnly) {
-      if (this.deps.service.cancel(reason)) {
+      // #730 (BUG 3 fix): scoped to this session, so a SessionEnd here can
+      // never abort a DIFFERENT session's running eval just because it
+      // happens to be the one holding the shared (daemon-wide) slot.
+      if (this.deps.service.cancel(reason, undefined, this.sessionId)) {
         log(`[AutoApprove] Cancelled stale LLM eval: ${reason}`);
       }
       return;
@@ -393,10 +450,13 @@ export class AutoApproveGate {
     // decisions a main eval cannot be in flight at Stop anyway (Claude blocks
     // on the hook while the gate evaluates it), so this is defensive; any eval
     // that IS running/queued at lead-Stop is a teammate's and must keep going.
+    // #730 (BUG 2 fix): scoped, so an identically-numbered evalId belonging to
+    // a DIFFERENT session (evalId is only unique per-gate) can never be hit
+    // by mistake.
     let cancelledCount = 0;
     for (const [evalId, isSubagent] of this.evalIsSubagentById) {
       if (isSubagent) continue;
-      if (this.deps.service.cancel(reason, evalId)) cancelledCount += 1;
+      if (this.deps.service.cancel(reason, evalId, this.sessionId)) cancelledCount += 1;
     }
     if (cancelledCount > 0) {
       log(`[AutoApprove] Cancelled ${cancelledCount} stale MAIN-context LLM eval(s): ${reason}`);
@@ -417,7 +477,10 @@ export class AutoApproveGate {
     const evalId = this.evalIdByQuestion.get(questionId);
     if (evalId === undefined) return;
     this.evalIdByQuestion.delete(questionId);
-    if (this.deps.service?.cancel(reason, evalId)) {
+    // #730: scoped to this session's own sessionId, so this evalId can never
+    // collide with an identically-numbered eval belonging to a different
+    // session (evalId is only unique per-gate).
+    if (this.deps.service?.cancel(reason, evalId, this.sessionId)) {
       log(
         `[AutoApprove ${this.sessionTag}] Answer freed the eval for ${questionId.slice(0, 8)} (${reason})`,
       );
@@ -475,6 +538,7 @@ export class AutoApproveGate {
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
     this.openQuestionSignatures.delete(questionId);
+    this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -595,6 +659,21 @@ export class AutoApproveGate {
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
+        // #733: tell the phone the prompt is MOVING to the terminal before the
+        // card is dismissed — while the question is still in sessionRegistry so
+        // the handoff push can carry its text. Guarded on the hold still being
+        // live (an answered/cancelled hold never fires a stale handoff;
+        // failOpenHeld below no-ops the same way) AND on the user having been
+        // reachable: either delivery was CONFIRMED (in_app/pushed), or delivery
+        // gating is disabled so there is no confirmation signal at all (legacy
+        // hold — assume the push went out). A hold whose delivery was pending/
+        // failed is the #603 undeliverable machinery's territory — pushing
+        // "timed out waiting for you" at someone who was never notified would
+        // be noise on a channel that is likely broken anyway.
+        const gatingDisabled = (this.deps.deliveryConfirmMs ?? 0) <= 0;
+        if (this.pendingHolds.has(qid) && (gatingDisabled || this.confirmedDeliveries.has(qid))) {
+          this.safeCueWithArg('onHoldTimeout', this.deps.onHoldTimeout, qid);
+        }
         this.failOpenHeld(qid, `Held hook ${qid.slice(0, 8)} timed out -> passthrough`);
       }, holdMs);
       // setTimeout keeps the event loop alive for the whole human-paced hold;
@@ -666,7 +745,13 @@ export class AutoApproveGate {
         // The hold may already be resolved (user answered, Part-B verdict, or a
         // cancel) — then there is nothing to gate.
         if (!this.pendingHolds.has(qid)) return;
-        if (result !== 'timeout' && isDelivered(result)) return; // confirmed: keep holding
+        if (result !== 'timeout' && isDelivered(result)) {
+          // Confirmed: keep holding — and remember it, so a later hold-timeout
+          // knows the user really WAS notified and a #733 handoff notice is
+          // meaningful (see the cue gate in createHold).
+          this.confirmedDeliveries.add(qid);
+          return;
+        }
         this.onDeliveryUnconfirmed(qid, result);
       })
       .catch((err) => {
@@ -878,6 +963,10 @@ export class AutoApproveGate {
         input.permission_suggestions as readonly unknown[] | undefined,
         undefined,
         evalId,
+        // #730: this gate's own sessionId, so the shared daemon-wide service
+        // can isolate this eval from every other session's.
+        this.sessionId,
+        isSubagent,
       )
       .finally(() => {
         this.evalIsSubagentById.delete(evalId);
@@ -990,13 +1079,18 @@ export class AutoApproveGate {
         // here too, since Claude is still blocked on this same hook response
         // while the second opinion runs. A mainOnly Stop therefore has nothing to
         // cancel for this call by construction; leaving it untracked is correct,
-        // not a gap.
+        // not a gap. #730: scope IS passed (unlike evalId) so a full teardown's
+        // scoped, untargeted-by-evalId cancel can still abort this call if it is
+        // somehow still running.
         second = await service.evaluate(
           input.tool_name,
           input.tool_input,
           this.sessionTag,
           input.permission_suggestions as readonly unknown[] | undefined,
           escalateModel,
+          undefined,
+          this.sessionId,
+          isSubagent,
         );
       } catch (err) {
         logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
@@ -1179,6 +1273,9 @@ export class AutoApproveGate {
    */
   private releaseHeld(questionId: UUID, decision: PermissionDecision): boolean {
     this.openQuestionSignatures.delete(questionId);
+    // #733: unconditional for the same leak reason as the signature delete
+    // above — every hold exit path funnels through here.
+    this.confirmedDeliveries.delete(questionId);
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);

@@ -122,6 +122,13 @@ export interface HookBridgeDeps {
    */
   awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
   /**
+   * Hold-timeout handoff notice (#733). Wired from this session's
+   * `NotificationDispatcher.pushHoldTimeoutHandoff`: when a held escalation
+   * expires unanswered and moves to the native terminal prompt, tell the phone
+   * so the timeout is not silent. Absent => no handoff push (tests).
+   */
+  onHoldTimeout?: (questionId: UUID) => void;
+  /**
    * Seconds to wait for a held escalation's delivery to be confirmed before
    * treating it as undeliverable (epic #603 Phase 1). From
    * `config.auto_approve.delivery_confirm_timeout`. 0 / absent => no gating.
@@ -432,6 +439,9 @@ export function setupHookBridge(
       // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
       // dead push channel fails open fast instead of stalling for holdMs.
       ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),
+      // #733: hold-timeout handoff notice — the phone learns the prompt moved
+      // to the terminal instead of the card just silently vanishing.
+      ...(deps.onHoldTimeout ? { onHoldTimeout: deps.onHoldTimeout } : {}),
       deliveryConfirmMs: (deps.deliveryConfirmSec ?? 0) * 1000,
       holdUnconfirmedMs: (deps.holdUnconfirmedSec ?? 0) * 1000,
     },

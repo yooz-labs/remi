@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.18-dev.33'; // REMI_COMPILED_VERSION
+      return '0.6.19-dev.1'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.18-dev.33'; // REMI_COMPILED_VERSION
+    return '0.6.19-dev.1'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1386,6 +1386,9 @@ async function createNewSession(
         // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
         // gate can hold. The dispatcher records the per-question delivery outcome.
         awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
+        // #733: when a held escalation times out unanswered, tell the phone the
+        // prompt moved to the terminal instead of silently dismissing the card.
+        onHoldTimeout: (questionId) => notifications.pushHoldTimeoutHandoff(sessionId, questionId),
         deliveryConfirmSec: autoApproveService
           ? remiConfig.auto_approve.delivery_confirm_timeout
           : 0,

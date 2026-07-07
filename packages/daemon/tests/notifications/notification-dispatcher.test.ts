@@ -579,6 +579,83 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
   });
 });
 
+describe('NotificationDispatcher.pushHoldTimeoutHandoff (#733)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  let pushed: Array<{ token: string; opts: Record<string, unknown> }>;
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+  const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
+
+  const pushFn: PushFn = async (_url, token, opts) => {
+    pushed.push({ token, opts: opts as unknown as Record<string, unknown> });
+  };
+
+  function make(): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn,
+      },
+      SID,
+    );
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    pushed = [];
+    configureLogger({ writeLog: () => {} });
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('carries the ask, a handoff collapse key, and NO answer category', async () => {
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    registry.addQuestion(SID, question(QID, [yesOpt, noOpt], 'Allow Bash: rm -rf .venv?'));
+
+    make().pushHoldTimeoutHandoff(SID, QID);
+    // pushOnceWithRetry resolves on a microtask; flush it.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(pushed).toHaveLength(1);
+    const opts = pushed[0]?.opts as Record<string, unknown>;
+    expect(String(opts['title'])).toContain('answer in the terminal');
+    expect(String(opts['body'])).toContain('Allow Bash: rm -rf .venv?');
+    // Distinct collapse key: the original card's quiet dismissal (collapse-id
+    // = the question id) must NOT collapse this handoff notice away.
+    expect(opts['questionId']).toBe(`handoff-${QID}`);
+    expect(opts['category']).toBeUndefined();
+    expect(opts['options']).toBeUndefined();
+    expect(opts['dynOptions']).toBeUndefined();
+  });
+
+  test('question already gone from the registry: still pushes with a generic ask', async () => {
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    make().pushHoldTimeoutHandoff(SID, QID);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(pushed).toHaveLength(1);
+    expect(String(pushed[0]?.opts['body'])).toContain('a permission request');
+  });
+
+  test('no device tokens: no-op', () => {
+    make().pushHoldTimeoutHandoff(SID, QID);
+    expect(pushed).toHaveLength(0);
+  });
+});
+
 describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
   let registry: SessionRegistry;
   let deviceTokens: Map<string, DeviceTokenEntry>;

@@ -14,6 +14,7 @@ import {
   createPing,
   createPong,
   createUserInput,
+  generateId,
   serialize,
   sign,
   unlockIdentity,
@@ -795,6 +796,73 @@ describe('WebSocketServer', () => {
       if (trafficTimer) clearInterval(trafficTimer);
       ws.close();
       await server.stop();
+    });
+  });
+
+  describe('closeConnection() (#662 same-device reclaim eviction)', () => {
+    test('force-closes the real socket of a connected client and fires onClientDisconnect with the given reason', async () => {
+      let connectionId: UUID | undefined;
+      const disconnectPromise = new Promise<string>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 25 },
+          {
+            onClientConnect: (connection) => {
+              connectionId = connection.id;
+            },
+            onClientDisconnect: (_id, reason) => resolve(reason),
+          },
+        );
+      });
+
+      await server.start();
+
+      const ws = new WebSocket(`ws://localhost:${testPort + 25}/ws`);
+      const clientClosePromise = new Promise<void>((resolve) => {
+        ws.onclose = () => resolve();
+      });
+      ws.onopen = () => {
+        ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      };
+
+      // Wait until the server has recorded the connection before evicting it.
+      await new Promise<void>((resolve, reject) => {
+        const start = Date.now();
+        const check = () => {
+          if (connectionId !== undefined) return resolve();
+          if (Date.now() - start > 5000) return reject(new Error('Connection never registered'));
+          setTimeout(check, 5);
+        };
+        check();
+      });
+
+      const closed = server.closeConnection(
+        connectionId as UUID,
+        'Reclaimed by the same device reconnecting',
+      );
+      expect(closed).toBe(true);
+
+      const reason = await Promise.race([
+        disconnectPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('onClientDisconnect did not fire')), 5000),
+        ),
+      ]);
+
+      expect(reason).toBe('Reclaimed by the same device reconnecting');
+
+      await Promise.race([
+        clientClosePromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('client socket never closed')), 5000),
+        ),
+      ]);
+
+      await server.stop();
+    });
+
+    test('returns false for an unknown connection id, without throwing', async () => {
+      await server.start();
+      expect(server.closeConnection(generateId(), 'no such connection')).toBe(false);
     });
   });
 
