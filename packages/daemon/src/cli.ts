@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.18-dev.31'; // REMI_COMPILED_VERSION
+      return '0.6.18-dev.33'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.18-dev.31'; // REMI_COMPILED_VERSION
+    return '0.6.18-dev.33'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -140,6 +140,7 @@ import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/triv
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { installProcessGuards } from './cli/process-guards.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -1902,6 +1903,11 @@ async function cleanup(): Promise<void> {
     }
   }
 }
+
+// Guard against unhandled rejections / uncaught exceptions killing the whole
+// daemon unsupervised (#534). Covers wrapper mode + daemon mode; short-lived
+// subcommands process.exit() earlier and never reach this line.
+installProcessGuards({ logError, onFatal: cleanup });
 
 // ---------------------------------------------------------------------------
 // Main: Start in wrapper or daemon mode
