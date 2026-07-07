@@ -326,13 +326,24 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
 if (cliInstall || cliUninstall) {
   const platform = process.platform;
   const home = os.homedir();
-  const binaryPath = process.execPath;
+  // Prefer the PATH-resolved `remi` (a symlink like /opt/homebrew/bin/remi
+  // survives a brew upgrade) over process.execPath (a versioned Cellar path
+  // baked at install time breaks when the old keg is removed, #542).
+  const pathResolved = Bun.which('remi');
+  const binaryPath = pathResolved ?? process.execPath;
 
   if (platform === 'darwin') {
     const plistName = 'com.yooz.remi.plist';
     const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
 
     if (cliInstall) {
+      // The service runs `remi serve` (session-less hub, #542) — never a
+      // session daemon: under launchd cwd is `/`, and the old `--daemon`
+      // form spawned a junk Claude session there at every login.
+      // KeepAlive.SuccessfulExit=false (not a bare `true`): a clean exit
+      // (`remi stop`, SIGTERM) must STAY stopped; only a crash exit(1)
+      // (process guards, #534) gets restarted. A bare `true` resurrects a
+      // deliberately stopped hub.
       const template = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -342,12 +353,15 @@ if (cliInstall || cliUninstall) {
     <key>ProgramArguments</key>
     <array>
         <string>__REMI_BINARY__</string>
-        <string>--daemon</string>
+        <string>serve</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>StandardOutPath</key>
     <string>__HOME__/.remi/remi-stdout.log</string>
     <key>StandardErrorPath</key>
@@ -357,12 +371,22 @@ if (cliInstall || cliUninstall) {
       const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
-      fs.writeFileSync(dest, content);
       const uid = process.getuid?.() ?? 501;
+      // Idempotent reinstall: bootstrap fails if the label is already
+      // loaded, so boot out any prior install first (best-effort).
+      if (fs.existsSync(dest)) {
+        Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+      }
+      fs.writeFileSync(dest, content);
       const result = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${uid}`, dest]);
       if (result.exitCode === 0) {
         console.log(`Installed LaunchAgent: ${dest}`);
-        console.log('Remi will start automatically on login.');
+        console.log(`Hub binary: ${binaryPath}${pathResolved ? ' (PATH-resolved)' : ''}`);
+        if (!pathResolved) {
+          console.log('note: no `remi` on PATH; the absolute binary path was baked into the');
+          console.log('LaunchAgent. Re-run `remi --install` after upgrading remi.');
+        }
+        console.log('The Remi hub will start automatically on login.');
       } else {
         console.error(`Failed to load LaunchAgent: ${result.stderr.toString()}`);
         process.exit(1);
@@ -382,13 +406,15 @@ if (cliInstall || cliUninstall) {
     const dest = path.join(serviceDir, 'remi.service');
 
     if (cliInstall) {
+      // `serve` (session-less hub), same rationale as the darwin branch.
+      // Restart=on-failure already matches the crash-only restart policy.
       const template = `[Unit]
 Description=Remi - Claude Code Monitor
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${binaryPath} --daemon
+ExecStart=${binaryPath} serve
 Restart=on-failure
 RestartSec=5
 
