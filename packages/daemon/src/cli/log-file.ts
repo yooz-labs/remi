@@ -20,6 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { rotateIfNeeded } from './log-rotation.ts';
 
 let logFd: number | null = null;
 
@@ -60,6 +61,7 @@ export function startLogFileSession(
 ): LogSessionResult {
   try {
     fs.mkdirSync(path.dirname(primary), { recursive: true });
+    rotateIfNeeded(primary);
     const fd = fs.openSync(primary, 'a');
     fs.writeSync(fd, `\n--- Remi session started at ${new Date().toISOString()} ---\n`);
     logFd = fd;
