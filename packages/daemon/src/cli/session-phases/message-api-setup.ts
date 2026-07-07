@@ -152,8 +152,15 @@ export function createMessageApiForSession(
       // client sees it in-app). A HELD escalation (#603 Phase 3) always also
       // pushes to the lock screen — the attached client may be backgrounded.
       // maybePush records the delivery outcome (#603 Phase 1) for the gate to
-      // probe; the regular question path does not await it.
-      void notifications.maybePush(questionSessionId, question, { held: opts?.held === true });
+      // probe; the regular question path does not await it. Fire-and-forget
+      // from this synchronous hook callback, so guard against a future
+      // pushConfig/refreshDeviceTokens contract change surfacing as an
+      // unhandled rejection (matches the escalator's #672 push guard).
+      void notifications
+        .maybePush(questionSessionId, question, { held: opts?.held === true })
+        .catch((err) => {
+          logError(`[Session ${sessionId}] Question push threw:`, err);
+        });
     },
     onStatusChange: (status: AgentStatus, context?: string) => {
       log(`Status: ${status}${context ? ` (${context})` : ''}`);
