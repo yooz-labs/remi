@@ -56,7 +56,8 @@ export function rotateIfNeeded(filePath: string, opts?: RotateOptions): boolean 
   let size: number;
   try {
     size = fs.statSync(filePath).size;
-  } catch {
+  } catch (err) {
+    warnUnlessMissing(err, `stat ${filePath}`);
     return false;
   }
 
