@@ -98,9 +98,7 @@ import {
   createHelloAck,
   createQuestionResolved,
   createReplayBatch,
-  createSessionListResponse,
   createSessionUpdate,
-  generateId,
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
@@ -133,6 +131,8 @@ import {
   createTranscriptHandlers,
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
+import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
@@ -1136,9 +1136,34 @@ function startBinaryUpdateWatcher(): void {
   });
 }
 
-// Watcher for live-sessions directory (pushes session list updates on new daemon startup)
-let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
-let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+// Watcher for live-sessions directory (pushes session list updates when a
+// sibling daemon registers). Closer assigned once started (wrapper mode, and
+// daemon mode since #542); cleanup() calls it unconditionally (no-op if null).
+let liveSessionsWatcherCloser: (() => void) | null = null;
+
+/**
+ * Build the payload for the live-sessions watcher's `collect()` (#542): the
+ * daemon's currently known sessions plus any newly-seen sibling ports. Shared
+ * by both daemon and wrapper mode so a new sibling starting up is broadcast
+ * to connected clients either way -- daemon mode never did this before #542.
+ * Reads `PORT`, `sessionRegistry`, `bindingStore`, `transcriptDiscovery`, and
+ * `liveSessionsRegistry` at CALL time (not closure-capture time), so it always
+ * reflects the finalized port and current session state.
+ */
+function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
+  const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+  if (newPorts.length === 0) return null;
+  const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+  for (const remiId of [...managedIds]) {
+    const binding = bindingStore.get(remiId as UUID);
+    if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
+  }
+  const sessions = [
+    ...sessionRegistry.listSessions(),
+    ...transcriptDiscovery.discoverSessions(managedIds),
+  ];
+  return { sessions, newPorts };
+}
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
 // daemon mode. Module-level so cleanup() (defined outside the wrapper block)
@@ -1811,14 +1836,8 @@ async function cleanup(): Promise<void> {
     clearInterval(timer);
   }
   transcriptFallbackTimers.clear();
-  if (liveWatchDebounce) {
-    clearTimeout(liveWatchDebounce);
-    liveWatchDebounce = null;
-  }
-  if (liveSessionsWatcher) {
-    liveSessionsWatcher.close();
-    liveSessionsWatcher = null;
-  }
+  liveSessionsWatcherCloser?.();
+  liveSessionsWatcherCloser = null;
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
@@ -1952,6 +1971,17 @@ if (cliDaemonMode) {
   // Notify attached clients when a new dist/remi build replaces this binary
   // on disk so they know to restart their session (#287).
   startBinaryUpdateWatcher();
+
+  // Watch for sibling daemons registering in live-sessions and push updates
+  // to clients (#542). Daemon mode never did this before; only wrapper mode
+  // did, so a client sitting on a spawned session daemon never learned about
+  // a new sibling starting up alongside it.
+  liveSessionsWatcherCloser = startLiveSessionsWatcher({
+    dirPath: liveSessionsRegistry.dirPath,
+    collect: collectLiveSessionsUpdate,
+    broadcast: (message) => registry.broadcast(message),
+    logError,
+  });
 
   // Create the PTY session
   try {
@@ -2155,43 +2185,15 @@ if (cliDaemonMode) {
     // on disk so they know to restart their session (#287).
     startBinaryUpdateWatcher();
 
-    // Watch for new daemons registering in live-sessions and push updates to clients.
-    // This lets clients auto-connect when a sibling session starts in the same directory.
-    try {
-      liveSessionsWatcher = fs.watch(
-        liveSessionsRegistry.dirPath,
-        { persistent: false },
-        (_event) => {
-          // Debounce: macOS FSEvents fires multiple events per rename (tmp → final).
-          if (liveWatchDebounce) clearTimeout(liveWatchDebounce);
-          liveWatchDebounce = setTimeout(() => {
-            liveWatchDebounce = null;
-            try {
-              const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
-              if (newPorts.length === 0) return;
-              // Include external sessions so the broadcast doesn't wipe transcript sessions
-              // that are already visible on the client (session_list_response replaces all
-              // sessions for this connection).
-              const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-              for (const remiId of [...managedIds]) {
-                const binding = bindingStore.get(remiId as UUID);
-                if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
-              }
-              const allSessions = [
-                ...sessionRegistry.listSessions(),
-                ...transcriptDiscovery.discoverSessions(managedIds),
-              ];
-              const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
-              registry.broadcast(msg);
-            } catch (err) {
-              logError(`[LiveSessions] Error pushing session update: ${errorToString(err)}`);
-            }
-          }, 300);
-        },
-      );
-    } catch (err) {
-      logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
-    }
+    // Watch for new daemons registering in live-sessions and push updates to
+    // clients. This lets clients auto-connect when a sibling session starts
+    // in the same directory (extracted to live-sessions-watcher.ts, #542).
+    liveSessionsWatcherCloser = startLiveSessionsWatcher({
+      dirPath: liveSessionsRegistry.dirPath,
+      collect: collectLiveSessionsUpdate,
+      broadcast: (message) => registry.broadcast(message),
+      logError,
+    });
   }
 
   // Reserved-row status bar (#565). Only in wrapper mode with a real TTY, and
