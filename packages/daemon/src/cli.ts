@@ -248,7 +248,6 @@ if (parsedArgs.subcommand === 'unstick') {
 const cliPort = parsedArgs.port;
 const cliNoTelegram = parsedArgs.noTelegram;
 const cliMaxBulletLength = parsedArgs.maxBulletLength;
-const cliDaemonMode = parsedArgs.daemonMode;
 const cliSignalingUrl = parsedArgs.signalingUrl;
 const cliNoRelay = parsedArgs.noRelay;
 const cliResume = parsedArgs.resume;
@@ -257,6 +256,12 @@ const cliInstall = parsedArgs.install;
 const cliUninstall = parsedArgs.uninstall;
 const cliSubcommand = parsedArgs.subcommand;
 const cliSubcommandArg = parsedArgs.subcommandArg;
+// `remi serve` (#542) boots the session-less hub: same boot sequence as
+// `--daemon`, minus the single-session tail (see the `serveMode` branches
+// further down). It is deliberately NOT among the start/stop/status/logs
+// dispatch below, so it falls through to the shared daemon/wrapper boot path.
+const serveMode = cliSubcommand === 'serve';
+const cliDaemonMode = parsedArgs.daemonMode || serveMode;
 const cliCodeRefresh = parsedArgs.codeRefresh;
 const cliPermanentCode = parsedArgs.permanentCode;
 const cliForce = parsedArgs.force;
@@ -1860,7 +1865,7 @@ async function cleanup(): Promise<void> {
 resolveShellPath({ log, error: logError });
 
 if (cliDaemonMode) {
-  console.log('Starting Remi daemon...');
+  console.log(serveMode ? 'Starting Remi hub...' : 'Starting Remi daemon...');
 
   // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {
@@ -1909,71 +1914,14 @@ if (cliDaemonMode) {
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Create the daemon's single session (one session per daemon).
-  // NOTE: when --dir/--recent was passed, we already `process.chdir()`'d to
-  // the tilde-expanded, validated directory above (see the `resolveDirectory`
-  // calls near the top of this file). Re-resolving the raw `cliDir` string
-  // here (which may still contain a literal `~`) against that NEW cwd used to
-  // produce a malformed concatenated path (#674); process.cwd() is always the
-  // correct value by this point.
-  const workingDirectory = process.cwd();
-  const sessionId = sessionRegistry.createSessionId();
-  setPrimarySessionId(sessionId);
-
-  updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
-  installStatusLine(REMI_DIR);
-
-  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
-  try {
-    hookServer = new HookServer(
-      { port: 0 },
-      {
-        onError: (err) => console.error(`[HookServer] ${err.message}`),
-      },
-    );
-    hookServer.start();
-    HOOK_PORT = hookServer.port;
-    console.log(`  Hook server listening on port ${HOOK_PORT}`);
-  } catch (err) {
-    const msg = errorToString(err);
-    console.error(
-      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
-    );
-    hookServer = null;
-  }
-
-  if (hookServer) {
-    try {
-      hookConfigManager = new HookConfigManager(
-        workingDirectory,
-        hookServer.url,
-        permissionHookHoldTimeoutSec(),
-      );
-      await hookConfigManager.install();
-    } catch (err) {
-      const msg = errorToString(err);
-      console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
-      hookConfigManager = null;
-    }
-  }
-
-  // Register in live-sessions so remi ls can discover this daemon
-  liveSessionsRegistry.register({
-    sessionId,
-    pid: process.pid,
-    wsPort: PORT,
-    hookPort: HOOK_PORT,
-    projectPath: workingDirectory,
-    name: path.basename(workingDirectory),
-    startedAt: new Date().toISOString(),
-  });
-
   // Notify attached clients when a new dist/remi build replaces this binary
-  // on disk so they know to restart their session (#287).
+  // on disk so they know to restart their session (#287). Shared: a hub
+  // needs this exactly as much as a single-session daemon does.
   startBinaryUpdateWatcher();
 
-  // Watch for sibling daemons registering in live-sessions and push updates
-  // to clients (#542). Daemon mode never did this before; only wrapper mode
+  // Watch for sibling daemons (child session-daemons under a hub, or another
+  // co-located daemon) registering in live-sessions and push updates to
+  // clients (#542). Daemon mode never did this before; only wrapper mode
   // did, so a client sitting on a spawned session daemon never learned about
   // a new sibling starting up alongside it.
   liveSessionsWatcherCloser = startLiveSessionsWatcher({
@@ -1983,45 +1931,129 @@ if (cliDaemonMode) {
     logError,
   });
 
-  // Create the PTY session
-  try {
-    await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-      const session = sessionRegistry.getSession(sid);
-      if (session?.activeConnectionId) {
-        sendToConnection(session.activeConnectionId, msg);
+  installStatusLine(REMI_DIR);
+
+  if (serveMode) {
+    // Hub mode (#542): a session-less supervisor. It binds the well-known
+    // port and shares services (relay, telegram, mDNS, device tokens) but
+    // spawns no session of its own -- sessions are created via
+    // create_session_request (the app) or `remi new`, each spawning its own
+    // `remi --daemon` child (spawnRemiDaemon / onCreateSessionRequest,
+    // machinery unchanged). The hub must NEVER: spawn Claude, install
+    // Claude-Code hook config for its own cwd, or register itself in
+    // ~/.remi/live-sessions (it would read as a phantom session).
+    updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
+
+    console.log('');
+    console.log('Remi hub ready!');
+    console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
+    console.log(`  Port: ${PORT} (use --port to change)`);
+    console.log('  Sessions: create from the app or `remi new`');
+    if (mdnsPublisher?.isRunning) {
+      console.log('  mDNS: Advertising on local network');
+    }
+    console.log('');
+    console.log('Press Ctrl+C to stop');
+    console.log('');
+  } else {
+    // Create the daemon's single session (one session per daemon).
+    // NOTE: when --dir/--recent was passed, we already `process.chdir()`'d to
+    // the tilde-expanded, validated directory above (see the `resolveDirectory`
+    // calls near the top of this file). Re-resolving the raw `cliDir` string
+    // here (which may still contain a literal `~`) against that NEW cwd used to
+    // produce a malformed concatenated path (#674); process.cwd() is always the
+    // correct value by this point.
+    const workingDirectory = process.cwd();
+    const sessionId = sessionRegistry.createSessionId();
+    setPrimarySessionId(sessionId);
+
+    updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting', mode: 'session' });
+
+    // Start hook server for Claude Code event detection (port 0 = OS-assigned)
+    try {
+      hookServer = new HookServer(
+        { port: 0 },
+        {
+          onError: (err) => console.error(`[HookServer] ${err.message}`),
+        },
+      );
+      hookServer.start();
+      HOOK_PORT = hookServer.port;
+      console.log(`  Hook server listening on port ${HOOK_PORT}`);
+    } catch (err) {
+      const msg = errorToString(err);
+      console.error(
+        `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+      );
+      hookServer = null;
+    }
+
+    if (hookServer) {
+      try {
+        hookConfigManager = new HookConfigManager(
+          workingDirectory,
+          hookServer.url,
+          permissionHookHoldTimeoutSec(),
+        );
+        await hookConfigManager.install();
+      } catch (err) {
+        const msg = errorToString(err);
+        console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
+        hookConfigManager = null;
       }
-      if (msg.type !== 'raw_pty_output') {
-        registry.broadcast(msg);
-      }
+    }
+
+    // Register in live-sessions so remi ls can discover this daemon
+    liveSessionsRegistry.register({
+      sessionId,
+      pid: process.pid,
+      wsPort: PORT,
+      hookPort: HOOK_PORT,
+      projectPath: workingDirectory,
+      name: path.basename(workingDirectory),
+      startedAt: new Date().toISOString(),
     });
-  } catch (err) {
-    const msg = errorToString(err);
-    console.error(`Failed to create session: ${msg}`);
-    liveSessionsRegistry.unregister(sessionId);
-    await registry.stopAll();
-    process.exit(1);
-  }
 
-  const managedSession = sessionRegistry.getSession(sessionId);
+    // Create the PTY session
+    try {
+      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
+        const session = sessionRegistry.getSession(sid);
+        if (session?.activeConnectionId) {
+          sendToConnection(session.activeConnectionId, msg);
+        }
+        if (msg.type !== 'raw_pty_output') {
+          registry.broadcast(msg);
+        }
+      });
+    } catch (err) {
+      const msg = errorToString(err);
+      console.error(`Failed to create session: ${msg}`);
+      liveSessionsRegistry.unregister(sessionId);
+      await registry.stopAll();
+      process.exit(1);
+    }
 
-  console.log('');
-  console.log('Remi daemon ready!');
-  console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
-  console.log(`  Port: ${PORT} (use --port to change)`);
-  console.log(`  Session: ${managedSession?.name ?? sessionId}`);
-  console.log(`  Directory: ${workingDirectory}`);
-  console.log(
-    `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
-  );
-  if (mdnsPublisher?.isRunning) {
-    console.log('  mDNS: Advertising on local network');
+    const managedSession = sessionRegistry.getSession(sessionId);
+
+    console.log('');
+    console.log('Remi daemon ready!');
+    console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
+    console.log(`  Port: ${PORT} (use --port to change)`);
+    console.log(`  Session: ${managedSession?.name ?? sessionId}`);
+    console.log(`  Directory: ${workingDirectory}`);
+    console.log(
+      `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
+    );
+    if (mdnsPublisher?.isRunning) {
+      console.log('  mDNS: Advertising on local network');
+    }
+    if (TELEGRAM_ENABLED) {
+      console.log('  Telegram: Bot is running');
+    }
+    console.log('');
+    console.log('Press Ctrl+C to stop');
+    console.log('');
   }
-  if (TELEGRAM_ENABLED) {
-    console.log('  Telegram: Bot is running');
-  }
-  console.log('');
-  console.log('Press Ctrl+C to stop');
-  console.log('');
 
   process.on('SIGINT', async () => {
     console.log('\nShutting down gracefully...');

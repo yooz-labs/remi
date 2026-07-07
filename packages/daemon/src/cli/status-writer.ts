@@ -70,6 +70,13 @@ export interface RemiStatus {
   repo: string;
   branch: string;
   autoApprove: AutoApproveState;
+  /**
+   * Distinguishes a session-less hub daemon (`remi serve`, #542) from an
+   * ordinary single-session daemon/wrapper process. Optional so an older
+   * writer/reader pair (mixed-version upgrade window) degrades gracefully
+   * rather than failing a strict shape check.
+   */
+  mode?: 'hub' | 'session';
 }
 
 export interface StatusWriterDeps {

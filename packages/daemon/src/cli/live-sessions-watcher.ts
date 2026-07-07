@@ -62,6 +62,10 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
   };
 
   try {
+    // On a fresh install (no session has ever registered), the directory may
+    // not exist yet. A long-running hub that hits ENOENT here would never
+    // re-arm the watcher for its entire lifetime, so ensure it up front.
+    fs.mkdirSync(deps.dirPath, { recursive: true });
     watcher = fs.watch(deps.dirPath, { persistent: false }, () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(flush, debounceMs);
