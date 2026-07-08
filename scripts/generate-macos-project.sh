@@ -16,3 +16,7 @@ xcodegen generate
 PBXPROJ="Remi.xcodeproj/project.pbxproj"
 sed -i '' 's/objectVersion = [0-9]*;/objectVersion = 56;/' "$PBXPROJ"
 echo "Pinned $(grep -m1 objectVersion "$PBXPROJ" | tr -d '\t')"
+
+# Regeneration resets MARKETING_VERSION/CURRENT_PROJECT_VERSION to the
+# project.yml literals; re-stamp from the app's real version line (#658).
+bun "$ROOT_DIR/scripts/sync-app-version.mjs"

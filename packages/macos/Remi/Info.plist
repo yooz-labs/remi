@@ -29,6 +29,9 @@
     <!-- Same declaration as the iOS app: standard encryption only. -->
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <!-- App Store requires a category (archive warned without it). -->
+    <key>LSApplicationCategoryName</key>
+    <string>public.app-category.developer-tools</string>
     <!-- The WKWebView talks ws://127.0.0.1 and the scanner probes
          http://127.0.0.1; ATS treats loopback as local networking. -->
     <key>NSAppTransportSecurity</key>

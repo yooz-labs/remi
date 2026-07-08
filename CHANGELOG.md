@@ -5,6 +5,12 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **macOS TestFlight pipeline** (#658 phase 2, epic #648):
+  `bun run testflight:macos [-- --upload]` mirrors the iOS local path —
+  stages the web UI, archives, exports a signed Mac App Store `.pkg`, and
+  uploads via `altool -t macos`. Shared `config/app-release.json` version
+  line now stamps BOTH Xcode projects (project regeneration re-stamps
+  automatically), and the app gains its icon.
 - **macOS app lifecycle polish** (#651, epic #648): "Open Remi at Login"
   menu toggle (SMAppService; independent of the hub's LaunchAgent), a
   copy-install-command menu item when no hub is running, and

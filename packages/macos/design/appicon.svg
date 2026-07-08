@@ -1,0 +1,17 @@
+<!-- Remi macOS app icon source (#658). macOS convention: the tile occupies
+     ~80% of the canvas with transparent margins (the OS adds the shadow).
+     Palette: warm-neutral dark tile + lime "r" (iOS redesign palette).
+     Render all sizes: scripts/generate-macos-appicon.sh -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c19"/>
+      <stop offset="1" stop-color="#0e0e0c"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <g fill="none" stroke="#c9f158" stroke-width="118" stroke-linecap="round">
+    <path d="M400 340 V 684"/>
+    <path d="M400 540 Q 400 380 622 392"/>
+  </g>
+</svg>
