@@ -1654,6 +1654,8 @@ function App() {
     }
     // Native-shell handoff (#649): the macOS menu-bar app injects the hub
     // URL it discovered; connect unless the restored set already covers it.
+    // If the localStorage read above threw, `restored` stays [] and the
+    // handoff always fires — the right fallback (the hub is the seed).
     const nativeUrl = nativeHubUrlToConnect(restored, window.__REMI_NATIVE__, parseConnectionId);
     if (nativeUrl) {
       connectDirectRef.current(nativeUrl);
