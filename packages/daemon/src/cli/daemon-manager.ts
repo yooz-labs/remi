@@ -230,8 +230,14 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
         if (Number.parseInt(content, 10) === pid) {
           fs.unlinkSync(PID_FILE);
         }
-      } catch {
-        // PID file may never have been written or already cleaned up
+      } catch (err) {
+        // ENOENT expected: the PID file may never have been written or is
+        // already cleaned up. Anything else is worth a trace (we're exiting
+        // 1 anyway; a stale file self-heals via readPidFileLive next start).
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          console.error(`Warning: could not clean up PID file: ${code ?? err}`);
+        }
       }
       process.exit(1);
     }

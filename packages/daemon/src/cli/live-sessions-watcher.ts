@@ -70,6 +70,22 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(flush, debounceMs);
     });
+    // An FSWatcher emitting 'error' with no listener throws out of the event
+    // loop as an uncaughtException, which the process guards treat as fatal —
+    // killing the whole (possibly launchd-managed, unattended) hub over a
+    // recoverable fs hiccup in a peripheral notify-siblings feature. Degrade
+    // to "watcher dead, logged" instead.
+    watcher.on('error', (err) => {
+      deps.logError(
+        `[LiveSessions] Watcher error; sibling-daemon broadcasts disabled: ${errorToString(err)}`,
+      );
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      watcher?.close();
+      watcher = null;
+    });
   } catch (err) {
     deps.logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
   }

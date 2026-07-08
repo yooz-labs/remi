@@ -401,7 +401,17 @@ if (cliInstall || cliUninstall) {
     } else {
       if (fs.existsSync(dest)) {
         const uid = process.getuid?.() ?? 501;
-        Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+        // Deleting the plist does NOT unload a loaded job — bootout does. A
+        // non-zero exit is benign when the job simply wasn't loaded, but on
+        // any other failure the hub would keep running while we report
+        // "Removed", so surface it instead of claiming success silently.
+        const bootout = Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+        if (bootout.exitCode !== 0) {
+          const detail = bootout.stderr.toString().trim();
+          console.log(
+            `note: launchctl bootout exited ${bootout.exitCode}${detail ? ` (${detail})` : ''} — fine if the agent was not loaded; if the hub is still running, stop it with \`remi stop\`.`,
+          );
+        }
         fs.unlinkSync(dest);
         console.log(`Removed LaunchAgent: ${dest}`);
       } else {
@@ -440,7 +450,15 @@ WantedBy=default.target`;
       }
     } else {
       if (fs.existsSync(dest)) {
-        Bun.spawnSync(['systemctl', '--user', 'disable', '--now', 'remi.service']);
+        // Same rationale as the darwin branch: `disable --now` is what stops
+        // the running unit; deleting the file alone leaves it running.
+        const disable = Bun.spawnSync(['systemctl', '--user', 'disable', '--now', 'remi.service']);
+        if (disable.exitCode !== 0) {
+          const detail = disable.stderr.toString().trim();
+          console.log(
+            `note: systemctl disable --now exited ${disable.exitCode}${detail ? ` (${detail})` : ''} — fine if the unit was not active; if the hub is still running, stop it with \`remi stop\`.`,
+          );
+        }
         fs.unlinkSync(dest);
         Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
         console.log(`Removed systemd user service: ${dest}`);
