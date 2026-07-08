@@ -90,3 +90,8 @@ playwright-report/
 
 # epic-dev local state (never committed)
 .claude/*.local.md
+
+# macOS app (packages/macos): staged web bundle + Xcode build artifacts
+packages/macos/Remi/Resources/web/*
+!packages/macos/Remi/Resources/web/.gitkeep
+packages/macos/DerivedData/

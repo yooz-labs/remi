@@ -13,6 +13,7 @@ import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
 import { dedupeConnectionUrls } from '@/lib/connection-id';
+import { nativeHubUrlToConnect } from '@/lib/native-host';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
@@ -1629,6 +1630,7 @@ function App() {
   }, [connectDirect]);
 
   useEffect(() => {
+    let restored: string[] = [];
     try {
       const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
       if (stored) {
@@ -1642,12 +1644,19 @@ function App() {
         if (deduped.length !== urls.length) {
           localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
         }
+        restored = deduped;
         for (const url of deduped) {
           connectDirectRef.current(url);
         }
       }
     } catch (err) {
       console.warn('[App] Failed to restore connections from localStorage:', err);
+    }
+    // Native-shell handoff (#649): the macOS menu-bar app injects the hub
+    // URL it discovered; connect unless the restored set already covers it.
+    const nativeUrl = nativeHubUrlToConnect(restored, window.__REMI_NATIVE__, parseConnectionId);
+    if (nativeUrl) {
+      connectDirectRef.current(nativeUrl);
     }
   }, []);
 

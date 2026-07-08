@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox is mandatory for TestFlight/App Store validation. The
+         app is an attach-only client: network.client (localhost WS + HTTP
+         probes) is the ONLY capability it needs. It can never spawn remi,
+         read ~/.remi, or signal processes - by design (#649/#651). -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>
