@@ -1,9 +1,10 @@
 /**
  * Background daemon lifecycle management for remi start/stop/status.
  *
- * Uses child_process.spawn with detached:true to launch remi --daemon
- * in the background. Tracks the daemon via a PID file (~/.remi/daemon.pid).
- * The daemon-status.json file provides additional runtime info.
+ * Uses child_process.spawn with detached:true to launch the session-less
+ * `remi serve` hub in the background (#542). The hub self-writes the PID
+ * file (~/.remi/daemon.pid) at boot; stop/status resolve the hub via that
+ * file, falling back to daemon-status.json for hubs whose PID file is gone.
  */
 
 import { execSync, spawn } from 'node:child_process';
@@ -25,8 +26,8 @@ function ensureRemiDir(): void {
 /**
  * Read the PID file and check whether the process it names is alive.
  * Returns null (and unlinks the file) if the file is missing, malformed, or
- * names a dead process. Used by `remi stop`/`status` and by a booting hub
- * process can also probe/clean up the PID file it is about to self-write.
+ * names a dead process. Used by `remi stop`/`status`, and by a booting hub
+ * process to probe/clean up the PID file it is about to self-write.
  */
 export function readPidFileLive(): number | null {
   let content: string;
@@ -61,11 +62,11 @@ export function readPidFileLive(): number | null {
 }
 
 /**
- * Fallback for `remi status`/`remi stop` when the PID file is missing (#542):
- * a hub launched outside `startDaemon()` (e.g. directly via `remi serve`, or
- * a future LaunchAgent path that no longer pre-writes the PID file) still
- * self-writes the PID file on boot, so this should be rare in practice, but
- * covers the window before that write lands and any other split-brain edge
+ * Fallback for `remi status`/`remi stop` when the PID file is missing (#542).
+ * Hubs launched outside `startDaemon()` are the NORM, not the exception: the
+ * LaunchAgent/systemd unit runs `remi serve` directly, as can the user. Every
+ * hub self-writes the PID file at boot, so this fallback should rarely fire;
+ * it covers the window before that write lands and any other split-brain edge
  * case. Reads the PID out of the self-written status file instead and
  * confirms it names a live process.
  */
@@ -379,9 +380,11 @@ export async function spawnRemiDaemon(
   const childEnv = { ...process.env };
   // biome-ignore lint/performance/noDelete: must truly remove env var from child process
   delete childEnv['REMI_PORT'];
-  // Marks this process as a hub-spawned session child (#542): its
-  // StatusWriter then writes the per-port status-<PORT>.json a wrapper would,
-  // instead of clobbering the hub's own ~/.remi/daemon-status.json.
+  // Marks this process as a spawned session child (#542). Any parent daemon
+  // (hub or single-session) handling create_session_request spawns children
+  // through here; the child's StatusWriter then writes the per-port
+  // status-<PORT>.json a wrapper would, instead of clobbering the parent's
+  // own ~/.remi/daemon-status.json.
   childEnv['REMI_SPAWNED_CHILD'] = '1';
 
   let child: ReturnType<typeof spawn>;

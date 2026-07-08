@@ -79,10 +79,11 @@ const statusWriter = new StatusWriter(
     autoApprove: { ...IDLE_AUTO_APPROVE },
   },
   {
-    // A hub-spawned session child (#542, REMI_SPAWNED_CHILD) writes its
-    // per-port status file exactly like a wrapper does, instead of
-    // clobbering the hub's own daemon-status.json with its single-session
-    // state.
+    // A spawned session child (#542, REMI_SPAWNED_CHILD — set by
+    // spawnRemiDaemon for ANY parent daemon handling create_session_request,
+    // hub or not) writes its per-port status file exactly like a wrapper
+    // does, instead of clobbering the parent's own daemon-status.json with
+    // its single-session state.
     getTargetFile: () =>
       cliDaemonMode && process.env['REMI_SPAWNED_CHILD'] !== '1' ? DAEMON_STATUS_FILE : STATUS_FILE,
     isEnabled: () => isWrapperMode() || cliDaemonMode,

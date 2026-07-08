@@ -74,8 +74,9 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
     // loop as an uncaughtException, which the process guards treat as fatal —
     // killing the whole (possibly launchd-managed, unattended) hub over a
     // recoverable fs hiccup in a peripheral notify-siblings feature. Degrade
-    // to "watcher dead, logged" instead.
-    watcher.on('error', (err) => {
+    // to "watcher dead, logged" instead. (Cast: bun-types' FSWatcher omits
+    // the EventEmitter surface the runtime object actually has.)
+    (watcher as unknown as import('node:events').EventEmitter).on('error', (err: unknown) => {
       deps.logError(
         `[LiveSessions] Watcher error; sibling-daemon broadcasts disabled: ${errorToString(err)}`,
       );

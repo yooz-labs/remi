@@ -6,7 +6,8 @@ All notable changes to Remi are documented here.
 
 ### Added
 - **Session-less hub: `remi serve`** (#542, epic #648 phase 1): a supervisor
-  daemon that binds port 18765, serves the machine's session list, and spawns
+  daemon that binds a port (18765 preferred, 20-port probe, `--port` to
+  override), serves the machine's session list, and spawns
   child session daemons on demand — without ever launching Claude itself. A
   session-less daemon now answers `hello` with `hello_ack{sessionId: null}`
   instead of a `NO_SESSION` error, and the live-sessions watcher (previously
