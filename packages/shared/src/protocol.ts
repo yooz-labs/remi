@@ -180,8 +180,8 @@ export interface HelloAckMessage {
    * `serverVersion`, which is the protocol version. Lets clients flag a
    * daemon running older code than the installed binary (#539: daemons hold
    * their binary for life; upgrades only affect new daemons). Sent on
-   * connection-time acks; may be absent on later acks (resume/promotion)
-   * and from pre-#539 daemons.
+   * connection-time and promotion acks; absent on resume acks and from
+   * pre-#539 daemons.
    */
   readonly daemonVersion?: string;
 }
