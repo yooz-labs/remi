@@ -52,21 +52,22 @@ struct WebViewWindow: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // The web app manages its own connection lifecycle after mount; a
-        // late hub discovery is handled by reloading once when the hub URL
-        // first becomes known and the page loaded without one.
-        guard let hubUrl = hubClient.hubURL else { return }
-        if context.coordinator.lastInjectedHubUrl == nil {
-            context.coordinator.lastInjectedHubUrl = hubUrl
-            let configuration = webView.configuration
-            configuration.userContentController.removeAllUserScripts()
-            configuration.userContentController.addUserScript(
-                WKUserScript(
-                    source: Self.nativeBootstrapScript(hubUrl: hubUrl),
-                    injectionTime: .atDocumentStart,
-                    forMainFrameOnly: true))
-            webView.reload()
-        }
+        // Re-inject + reload on EVERY hub URL change (#745 review; design
+        // doc: "a moved hub port never leaves stale state behind") — late
+        // first discovery, hub restart on a new port, or session-daemon ->
+        // hub promotion. The inequality guard keeps the frequent SwiftUI
+        // update passes from looping reloads.
+        guard let hubUrl = hubClient.hubURL, hubUrl != context.coordinator.lastInjectedHubUrl
+        else { return }
+        context.coordinator.lastInjectedHubUrl = hubUrl
+        let configuration = webView.configuration
+        configuration.userContentController.removeAllUserScripts()
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.nativeBootstrapScript(hubUrl: hubUrl),
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true))
+        webView.reload()
     }
 
     func makeCoordinator() -> Coordinator {

@@ -13,22 +13,31 @@ import WebKit
 import XCTest
 
 /// Captures the scheme handler's responses. WKWebView never renders here;
-/// this is the protocol seam WebKit itself defines.
+/// this is the protocol seam WebKit itself defines. Serving completes
+/// off-main (#745 review), so completion fulfills an expectation.
 private final class RecordingSchemeTask: NSObject, WKURLSchemeTask {
     let request: URLRequest
+    let done: XCTestExpectation
     private(set) var response: URLResponse?
     private(set) var body = Data()
     private(set) var finished = false
     private(set) var error: Error?
 
-    init(url: String) {
+    init(url: String, done: XCTestExpectation) {
         self.request = URLRequest(url: URL(string: url)!)
+        self.done = done
     }
 
     func didReceive(_ response: URLResponse) { self.response = response }
     func didReceive(_ data: Data) { body.append(data) }
-    func didFinish() { finished = true }
-    func didFailWithError(_ error: Error) { self.error = error }
+    func didFinish() {
+        finished = true
+        done.fulfill()
+    }
+    func didFailWithError(_ error: Error) {
+        self.error = error
+        done.fulfill()
+    }
 }
 
 final class DistSchemeHandlerServingTests: XCTestCase {
@@ -53,8 +62,10 @@ final class DistSchemeHandlerServingTests: XCTestCase {
     }
 
     func testServesRealFileWithMimeAndBody() {
-        let task = RecordingSchemeTask(url: "remi-app://localhost/assets/app.js")
+        let task = RecordingSchemeTask(
+            url: "remi-app://localhost/assets/app.js", done: expectation(description: "served"))
         handler.webView(webView, start: task)
+        wait(for: [task.done], timeout: 5)
         XCTAssertTrue(task.finished)
         XCTAssertNil(task.error)
         XCTAssertEqual(task.response?.mimeType, "text/javascript")
@@ -62,8 +73,10 @@ final class DistSchemeHandlerServingTests: XCTestCase {
     }
 
     func testSPARouteServesIndexHtmlWithTextEncoding() {
-        let task = RecordingSchemeTask(url: "remi-app://localhost/sessions/abc123")
+        let task = RecordingSchemeTask(
+            url: "remi-app://localhost/sessions/abc123", done: expectation(description: "served"))
         handler.webView(webView, start: task)
+        wait(for: [task.done], timeout: 5)
         XCTAssertTrue(task.finished)
         XCTAssertEqual(task.response?.mimeType, "text/html")
         XCTAssertEqual(task.response?.textEncodingName, "utf-8")
@@ -71,10 +84,26 @@ final class DistSchemeHandlerServingTests: XCTestCase {
     }
 
     func testMissingFileFailsInsteadOfHanging() {
-        let task = RecordingSchemeTask(url: "remi-app://localhost/assets/missing.js")
+        let task = RecordingSchemeTask(
+            url: "remi-app://localhost/assets/missing.js", done: expectation(description: "failed"))
         handler.webView(webView, start: task)
+        wait(for: [task.done], timeout: 5)
         XCTAssertFalse(task.finished)
         XCTAssertNotNil(task.error)
+    }
+
+    func testStoppedTaskIsNeverTouchedAfterStop() {
+        // WebKit throws if didReceive/didFinish land on a stopped task; the
+        // off-main read must drop delivery for stopped tasks (#745 review).
+        let done = expectation(description: "silently dropped")
+        done.isInverted = true
+        let task = RecordingSchemeTask(url: "remi-app://localhost/assets/app.js", done: done)
+        handler.webView(webView, start: task)
+        handler.webView(webView, stop: task)
+        wait(for: [done], timeout: 1)
+        XCTAssertFalse(task.finished)
+        XCTAssertNil(task.error)
+        XCTAssertNil(task.response)
     }
 
     func testReconnectPolicyHelpers() {

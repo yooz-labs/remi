@@ -19,10 +19,16 @@ import Foundation
 enum HubProtocol {
     static let protocolVersion = "1.0.0"
 
-    static func isoTimestamp(_ date: Date = Date()) -> String {
+    /// Shared formatter (thread-safe per Foundation docs); allocating one
+    /// per call was wasteful (#745 review).
+    private static let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    static func isoTimestamp(_ date: Date = Date()) -> String {
+        isoFormatter.string(from: date)
     }
 
     static func newId() -> String {

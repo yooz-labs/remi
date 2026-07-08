@@ -32,8 +32,28 @@ final class DistSchemeHandlerTests: XCTestCase {
 
     func testPathTraversalStaysInWebRoot() {
         let resolved = DistSchemeHandler.resolve(path: "/../../etc/passwd", webRoot: root)
-        XCTAssertTrue(resolved.standardizedFileURL.path.hasPrefix(root.path))
+        XCTAssertTrue(resolved.standardizedFileURL.path.hasPrefix(root.path + "/"))
         XCTAssertEqual(resolved.lastPathComponent, "index.html")
+    }
+
+    func testSiblingPrefixCollisionCannotEscape() {
+        // #745 review (critical): "/bundle/Resources/web-evil/…" shares the
+        // raw string prefix of a root ending in ".../web"; the guard must be
+        // path-boundary aware, not substring-based.
+        let resolved = DistSchemeHandler.resolve(path: "/../web-evil/secret.txt", webRoot: root)
+        XCTAssertEqual(resolved, root.appendingPathComponent("index.html"))
+
+        let dotted = DistSchemeHandler.resolve(path: "/../web.bak/secret.txt", webRoot: root)
+        XCTAssertEqual(dotted, root.appendingPathComponent("index.html"))
+    }
+
+    func testChoosePortPrefersLiveHint() {
+        // #745 review: probe() returns ascending responders, so the
+        // last-known-hub preference must be applied at selection time.
+        XCTAssertEqual(HubClient.choosePort(responders: [18765, 18771], hint: 18771), 18771)
+        XCTAssertEqual(HubClient.choosePort(responders: [18765, 18771], hint: nil), 18765)
+        XCTAssertEqual(HubClient.choosePort(responders: [18765], hint: 18771), 18765)
+        XCTAssertNil(HubClient.choosePort(responders: [], hint: 18771))
     }
 
     func testMimeTypes() {

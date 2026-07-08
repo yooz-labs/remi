@@ -86,6 +86,12 @@ final class HubClient: ObservableObject {
     private var consecutiveFailures = 0
     private var reconnectDelay: TimeInterval = 1
     private var started = false
+    /// Port of the most recent successful connection. Survives the phase
+    /// flip to .unreachable (#745 review: deriving the hint from `phase`
+    /// inside scheduleReconnect always read nil, making hint-first reconnect
+    /// dead code). Never cleared — a stale hint is harmless, it just gets
+    /// probed first.
+    private var lastConnectedPort: Int?
 
     /// Stable client id, persisted so the daemon sees one device (#662).
     private let clientId: String = {
@@ -113,12 +119,21 @@ final class HubClient: ObservableObject {
         phase = .scanning
         let ports = Self.scanOrder(hintPort: hintPort, ports: scanPorts)
         let responders = await Self.probe(ports: ports)
-        guard let port = responders.first else {
+        guard let port = Self.choosePort(responders: responders, hint: hintPort) else {
             phase = .unreachable
             scheduleReconnect()
             return
         }
         connect(to: port)
+    }
+
+    /// The hint (last known hub) wins when it still answers; otherwise the
+    /// lowest responder. Pure — probe() returns responders in ascending
+    /// order regardless of scan order, so honoring the hint must happen
+    /// here, not in the scan ordering (#745 review).
+    nonisolated static func choosePort(responders: [Int], hint: Int?) -> Int? {
+        if let hint, responders.contains(hint) { return hint }
+        return responders.first
     }
 
     /// Hint port (last known hub) first, then the rest of the range.
@@ -208,6 +223,7 @@ final class HubClient: ObservableObject {
             // hangs on exactly that (#542). Absent => treat as session peer.
             let isHub = Self.helloAckHasNullSessionId(data)
             phase = .connected(port: port, isHub: isHub)
+            lastConnectedPort = port
             consecutiveFailures = 0
             reconnectDelay = 1
             startPingTimer()
@@ -263,6 +279,10 @@ final class HubClient: ObservableObject {
         task = nil
         pingTimer?.invalidate()
         pingTimer = nil
+        // The rescan timer must die with the connection (#745 review): left
+        // running, its in-flight probe could race the backoff reconnect and
+        // leave an orphaned socket behind.
+        stopBackgroundRescan()
         localClients = 0
         remoteClients = 0
         sessions = 0
@@ -277,16 +297,11 @@ final class HubClient: ObservableObject {
         // After 3 straight failures do a full range rescan; before that,
         // retry with the last known port first.
         let hint: Int? = Self.shouldUseHint(consecutiveFailures: consecutiveFailures)
-            ? lastKnownPort : nil
+            ? lastConnectedPort : nil
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             await self?.scanAndConnect(preferring: hint)
         }
-    }
-
-    private var lastKnownPort: Int? {
-        if case let .connected(port, _) = phase { return port }
-        return nil
     }
 
     private func startBackgroundRescan() {
@@ -301,12 +316,17 @@ final class HubClient: ObservableObject {
                 }
                 let responders = await Self.probe(
                     ports: Self.scanOrder(hintPort: nil, ports: self.scanPorts))
+                // Re-check AFTER the ~1.5s probe await (#745 review): the
+                // connection can drop mid-probe, and racing the backoff
+                // reconnect from handleDisconnect would orphan a socket.
+                guard case let .connected(currentPort, isHub: false) = self.phase else { return }
                 // Reconnect from scratch if anything else responds; the
                 // hello_ack will tell us whether we found a real hub.
-                if let candidate = responders.first, candidate != self.lastKnownPort {
+                if let candidate = responders.first(where: { $0 != currentPort }) {
                     self.task?.cancel(with: .goingAway, reason: nil)
                     self.task = nil
                     self.pingTimer?.invalidate()
+                    self.pingTimer = nil
                     self.connect(to: candidate)
                 }
             }

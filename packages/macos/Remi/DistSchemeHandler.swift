@@ -19,6 +19,11 @@ final class DistSchemeHandler: NSObject, WKURLSchemeHandler {
     /// Root of the staged web bundle inside the app bundle.
     private let webRoot: URL
 
+    /// Tasks WebKit has stopped. Calling didReceive/didFinish on a stopped
+    /// task throws an NSException, and reads complete off-main (#745
+    /// review), so completion must check membership on the main thread.
+    private var stoppedTasks = Set<ObjectIdentifier>()
+
     init(webRoot: URL? = nil) {
         self.webRoot =
             webRoot
@@ -35,8 +40,13 @@ final class DistSchemeHandler: NSObject, WKURLSchemeHandler {
 
         let candidate = webRoot.appendingPathComponent(relative)
         // Path traversal guard: the resolved file must stay inside webRoot.
+        // Boundary-aware comparison (#745 review): a raw hasPrefix check let
+        // "/../web-evil/x" pass against a root ending in ".../web", because
+        // "web-evil" shares the "web" prefix. Require the root itself or a
+        // path-separator boundary.
         let normalized = candidate.standardizedFileURL.path
-        guard normalized.hasPrefix(webRoot.standardizedFileURL.path) else {
+        let rootPath = webRoot.standardizedFileURL.path
+        guard normalized == rootPath || normalized.hasPrefix(rootPath + "/") else {
             return webRoot.appendingPathComponent("index.html")
         }
         if (relative as NSString).pathExtension.isEmpty {
@@ -71,20 +81,35 @@ final class DistSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         let fileURL = Self.resolve(path: url.path, webRoot: webRoot)
-        guard let data = try? Data(contentsOf: fileURL) else {
-            urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
-            return
+        // Read off-main (#745 review): scheme-handler callbacks arrive on
+        // the main thread, and a full-bundle reload would otherwise stack
+        // synchronous disk reads into UI hitches. Deliver back on main,
+        // skipping tasks WebKit stopped mid-read.
+        let taskId = ObjectIdentifier(urlSchemeTask)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let data = try? Data(contentsOf: fileURL)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard !self.stoppedTasks.contains(taskId) else {
+                    self.stoppedTasks.remove(taskId)
+                    return
+                }
+                guard let data else {
+                    urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+                    return
+                }
+                let mime = Self.mimeType(forExtension: fileURL.pathExtension)
+                let response = URLResponse(
+                    url: url, mimeType: mime, expectedContentLength: data.count,
+                    textEncodingName: mime.hasPrefix("text/") ? "utf-8" : nil)
+                urlSchemeTask.didReceive(response)
+                urlSchemeTask.didReceive(data)
+                urlSchemeTask.didFinish()
+            }
         }
-        let mime = Self.mimeType(forExtension: fileURL.pathExtension)
-        let response = URLResponse(
-            url: url, mimeType: mime, expectedContentLength: data.count,
-            textEncodingName: mime.hasPrefix("text/") ? "utf-8" : nil)
-        urlSchemeTask.didReceive(response)
-        urlSchemeTask.didReceive(data)
-        urlSchemeTask.didFinish()
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        // Reads are synchronous and small; nothing to cancel.
+        stoppedTasks.insert(ObjectIdentifier(urlSchemeTask))
     }
 }
