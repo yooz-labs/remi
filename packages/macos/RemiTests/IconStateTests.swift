@@ -34,4 +34,13 @@ final class IconStateTests: XCTestCase {
         XCTAssertEqual(IconState.idle.opacity, 1.0)
         XCTAssertEqual(IconState.remoteConnected.opacity, 1.0)
     }
+
+    func testAssetNamesMapToCatalogEntries() {
+        // Names must match the imagesets in Assets.xcassets (#650); the
+        // unreachable state reuses the idle glyph, dimmed.
+        XCTAssertEqual(IconState.idle.assetName, "menubar-idle")
+        XCTAssertEqual(IconState.unreachable.assetName, "menubar-idle")
+        XCTAssertEqual(IconState.localAttached.assetName, "menubar-local")
+        XCTAssertEqual(IconState.remoteConnected.assetName, "menubar-remote")
+    }
 }
