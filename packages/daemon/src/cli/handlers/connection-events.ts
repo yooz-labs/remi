@@ -43,6 +43,13 @@ export interface ConnectionHandlerDeps {
    *  so clients can flag a daemon running older code than the installed
    *  binary (#539). */
   remiVersion: string;
+  /**
+   * Hub client census hooks (#650): fired after a connection's hello_ack
+   * (with the connect metadata for peer classification) and on disconnect.
+   * Wired only by hub-mode daemons; undefined everywhere else.
+   */
+  onPeerConnect?: ((connectionId: UUID, metadata: AdapterMetadata) => void) | undefined;
+  onPeerDisconnect?: ((connectionId: UUID) => void) | undefined;
 }
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
@@ -58,6 +65,8 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     cancelOrphanTimeout,
     send,
     remiVersion,
+    onPeerConnect,
+    onPeerDisconnect,
   } = deps;
 
   /** The current binding for hello_ack: {claudeSessionId, transcriptPath}. */
@@ -135,6 +144,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
                 daemonVersion: remiVersion,
               }),
             );
+            onPeerConnect?.(connectionId, metadata);
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
             }
@@ -156,6 +166,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
             daemonVersion: remiVersion,
           }),
         );
+        onPeerConnect?.(connectionId, metadata);
         log(
           `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
         );
@@ -167,6 +178,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // session-less hub daemon (#542) and also covers the brief startup
       // window on an ordinary daemon before its primary session is created.
       send(connectionId, createHelloAck('1.0.0', null, { daemonVersion: remiVersion }));
+      onPeerConnect?.(connectionId, metadata);
       log(`Connection ${connectionId} connected session-less (no active session)`);
     },
 
@@ -188,6 +200,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       sessionRegistry.detachConnection(connectionId);
       untrackConnection(connectionId);
       onConnectionRemoved();
+      onPeerDisconnect?.(connectionId);
     },
   };
 }

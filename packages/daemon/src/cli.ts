@@ -141,6 +141,7 @@ import {
   createTranscriptHandlers,
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import { HubClientTracker } from './cli/hub-client-tracker.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
@@ -1620,6 +1621,21 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   send: sendToConnection,
 });
 
+// Hub client census (#650): hub-mode only. The tracker classifies every
+// protocol connection (local/remote/excluded) and drives the `hub_status`
+// broadcast behind the menu-bar icon. Session daemons and wrappers leave it
+// null, so the connection hooks below are no-ops outside `remi serve`.
+const hubClientTracker: HubClientTracker | null = serveMode
+  ? new HubClientTracker({
+      send: (connectionId, message) => {
+        sendToConnection(connectionId, message);
+      },
+      broadcast: (message) => registry.broadcast(message),
+      getSessions: () => liveSessionsRegistry.listLive().length,
+      hubVersion: REMI_VERSION,
+    })
+  : null;
+
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
   currentOwnedSession,
@@ -1631,6 +1647,12 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   cancelOrphanTimeout,
   send: sendToConnection,
   remiVersion: REMI_VERSION,
+  onPeerConnect: hubClientTracker
+    ? (connectionId, metadata) => hubClientTracker.onConnect(connectionId, metadata)
+    : undefined,
+  onPeerDisconnect: hubClientTracker
+    ? (connectionId) => hubClientTracker.onDisconnect(connectionId)
+    : undefined,
 });
 
 const sharedEvents = {
@@ -1976,6 +1998,10 @@ if (cliDaemonMode) {
     collect: collectLiveSessionsUpdate,
     broadcast: (message) => registry.broadcast(message),
     logError,
+    // Session registrations AND removals change the hub census (#650);
+    // collect() only broadcasts on new ports, so the tracker hooks the raw
+    // flush. No-op outside hub mode (tracker is null).
+    onDirChange: hubClientTracker ? () => hubClientTracker.refresh() : undefined,
   });
 
   // Statusline install mutates the GLOBAL ~/.claude/settings.json; a
