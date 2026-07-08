@@ -12,4 +12,6 @@ extend-exclude = [
   # Xcode project files are machine-format: 24-hex object IDs (e.g.
   # "719E75D1BA17...") tokenize into false-positive "words" like BA (#719).
   "*.pbxproj",
+  # Same 24-hex BlueprintIdentifier issue in generated scheme files (#649).
+  "*.xcscheme",
 ]

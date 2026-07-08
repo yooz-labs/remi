@@ -29,6 +29,15 @@ final class HubClient: ObservableObject {
     nonisolated static let basePort = 18765
     nonisolated static let portRange = 20
 
+    /// Ports this client scans. Injectable so tests can point a REAL
+    /// HubClient at an isolated test hub without the scan latching onto
+    /// whatever daemons happen to live on the standard range.
+    private let scanPorts: [Int]
+
+    init(scanPorts: [Int] = Array(basePort..<(basePort + portRange))) {
+        self.scanPorts = scanPorts
+    }
+
     enum Phase: Equatable {
         case scanning
         case connected(port: Int, isHub: Bool)
@@ -102,7 +111,7 @@ final class HubClient: ObservableObject {
     /// responders win over session daemons; lowest port breaks ties.
     private func scanAndConnect(preferring hintPort: Int? = nil) async {
         phase = .scanning
-        let ports = Self.scanOrder(hintPort: hintPort)
+        let ports = Self.scanOrder(hintPort: hintPort, ports: scanPorts)
         let responders = await Self.probe(ports: ports)
         guard let port = responders.first else {
             phase = .unreachable
@@ -113,10 +122,22 @@ final class HubClient: ObservableObject {
     }
 
     /// Hint port (last known hub) first, then the rest of the range.
-    nonisolated static func scanOrder(hintPort: Int?) -> [Int] {
-        let range = Array(basePort..<(basePort + portRange))
-        guard let hint = hintPort, range.contains(hint) else { return range }
-        return [hint] + range.filter { $0 != hint }
+    nonisolated static func scanOrder(
+        hintPort: Int?, ports: [Int] = Array(basePort..<(basePort + portRange))
+    ) -> [Int] {
+        guard let hint = hintPort, ports.contains(hint) else { return ports }
+        return [hint] + ports.filter { $0 != hint }
+    }
+
+    /// Exponential backoff, capped (pure; exported for tests).
+    nonisolated static func nextReconnectDelay(after current: TimeInterval) -> TimeInterval {
+        min(current * 2, 30)
+    }
+
+    /// Retry the last known port until 3 straight failures, then rescan the
+    /// whole range (pure; exported for tests).
+    nonisolated static func shouldUseHint(consecutiveFailures: Int) -> Bool {
+        consecutiveFailures < 3
     }
 
     /// HTTP-probe `/auth-info` on each port (1.5 s timeout, mirroring the web
@@ -252,10 +273,11 @@ final class HubClient: ObservableObject {
 
     private func scheduleReconnect() {
         let delay = reconnectDelay
-        reconnectDelay = min(reconnectDelay * 2, 30)
+        reconnectDelay = Self.nextReconnectDelay(after: reconnectDelay)
         // After 3 straight failures do a full range rescan; before that,
         // retry with the last known port first.
-        let hint: Int? = consecutiveFailures < 3 ? lastKnownPort : nil
+        let hint: Int? = Self.shouldUseHint(consecutiveFailures: consecutiveFailures)
+            ? lastKnownPort : nil
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             await self?.scanAndConnect(preferring: hint)
@@ -277,7 +299,8 @@ final class HubClient: ObservableObject {
                     self.stopBackgroundRescan()
                     return
                 }
-                let responders = await Self.probe(ports: Self.scanOrder(hintPort: nil))
+                let responders = await Self.probe(
+                    ports: Self.scanOrder(hintPort: nil, ports: self.scanPorts))
                 // Reconnect from scratch if anything else responds; the
                 // hello_ack will tell us whether we found a real hub.
                 if let candidate = responders.first, candidate != self.lastKnownPort {

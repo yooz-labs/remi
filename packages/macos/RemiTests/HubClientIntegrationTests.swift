@@ -103,5 +103,41 @@ final class HubClientIntegrationTests: XCTestCase {
         XCTAssertTrue(sawHubAck, "never received a session-less hello_ack")
         XCTAssertTrue(sawHubStatus, "never received the hub_status census")
         ws.cancel(with: .goingAway, reason: nil)
+
+        // 3. End-to-end through the REAL HubClient (#745 review): scan ->
+        //    connect -> handshake -> hub_status all the way to the published
+        //    state the menu bar reads. scanPorts injected so the client
+        //    cannot latch onto unrelated daemons on the standard range.
+        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        await MainActor.run { client.start() }
+        var connectedAsHub = false
+        for _ in 0..<60 {  // up to ~15 s
+            let phase = await MainActor.run { client.phase }
+            if case .connected(let p, let isHub) = phase, isHub {
+                XCTAssertEqual(p, port)
+                connectedAsHub = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(connectedAsHub, "HubClient never reached connected(isHub: true)")
+        // hub_status published: a fresh hub has no sessions and this
+        // query-mode client never counts itself.
+        var censusSeen = false
+        for _ in 0..<20 {
+            let (sessions, local, version) = await MainActor.run {
+                (client.sessions, client.localClients, client.hubVersion)
+            }
+            if version != nil {
+                XCTAssertEqual(sessions, 0)
+                XCTAssertEqual(local, 0)
+                censusSeen = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(censusSeen, "hub_status never reached the published state")
+        let statusLine = await MainActor.run { client.menuStatusLine }
+        XCTAssertTrue(statusLine.contains("running on \(port)"), statusLine)
     }
 }
