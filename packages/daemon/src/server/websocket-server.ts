@@ -622,6 +622,7 @@ export class WebSocketServer {
       connectionEvents,
       perConnectionConfig,
       ws.data.connectionId,
+      ws.data.peerAddress,
     );
 
     this.connections.set(ws.data.connectionId, connection);

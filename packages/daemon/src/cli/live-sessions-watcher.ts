@@ -34,6 +34,12 @@ export interface LiveSessionsWatcherDeps {
   readonly logError: (message: string) => void;
   /** Debounce window in ms. Default 300 (tests override to a small value). */
   readonly debounceMs?: number;
+  /**
+   * Fired on EVERY debounced flush, regardless of whether `collect()`
+   * produced a broadcast (#650): session REMOVALS change the hub census but
+   * never yield `newPorts`, so the hub's client tracker hooks here.
+   */
+  readonly onDirChange?: (() => void) | undefined;
 }
 
 /**
@@ -48,6 +54,7 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
   const flush = (): void => {
     debounceTimer = null;
     try {
+      deps.onDirChange?.();
       const result = deps.collect();
       if (!result || result.newPorts.length === 0) return;
       const message = createSessionListResponse(

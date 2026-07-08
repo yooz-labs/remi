@@ -60,6 +60,47 @@ describe('startLiveSessionsWatcher (#542)', () => {
     }
   });
 
+  test('onDirChange fires on every flush, including removals that broadcast nothing (#650)', async () => {
+    const broadcasts: ProtocolMessage[] = [];
+    let dirChanges = 0;
+    const closer = startLiveSessionsWatcher({
+      dirPath: tmpDir,
+      // Removal shape: nothing new to broadcast, ever.
+      collect: (): LiveSessionsCollectResult | null => null,
+      broadcast: (message) => broadcasts.push(message),
+      logError: () => {},
+      debounceMs: 20,
+      onDirChange: () => {
+        dirChanges += 1;
+      },
+    });
+
+    try {
+      const entry = {
+        sessionId: '22222222-2222-2222-2222-222222222222',
+        pid: process.pid,
+        wsPort: 20051,
+        hookPort: 0,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      };
+      registry.register(entry);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const afterRegister = dirChanges;
+      expect(afterRegister).toBeGreaterThanOrEqual(1);
+
+      registry.unregister(entry.sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(dirChanges).toBeGreaterThan(afterRegister);
+      // The whole point: the census hook fired even though no
+      // session_list_response was broadcast.
+      expect(broadcasts).toHaveLength(0);
+    } finally {
+      closer();
+    }
+  });
+
   test('closer stops further broadcasts', async () => {
     const broadcasts: ProtocolMessage[] = [];
     const closer = startLiveSessionsWatcher({

@@ -170,6 +170,7 @@ export class Connection {
   private resumeSessionId: UUID | null = null;
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
+  private readonly _peerAddress: string | null;
   /** Authenticated client fingerprint from the Ed25519 challenge-response
    *  (#671), null until `handleAuthResponse` succeeds. Stays null for the
    *  lifetime of the connection when no authenticator is configured (auth
@@ -194,9 +195,11 @@ export class Connection {
     events: Partial<ConnectionEvents> = {},
     config: Partial<ConnectionConfig> = {},
     id?: UUID,
+    peerAddress?: string | null,
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
+    this._peerAddress = peerAddress ?? null;
     this.events = events;
     this.messageTracker = new MessageIdTracker();
 
@@ -259,6 +262,13 @@ export class Connection {
    *  Ed25519 challenge-response (#671). Null when unauthenticated. */
   get connectionClientFingerprint(): string | null {
     return this.authenticatedFingerprint;
+  }
+
+  /** TCP peer address captured at upgrade time (server.requestIP), for
+   *  local-vs-remote client classification (#650). Null when the transport
+   *  did not provide one. */
+  get connectionPeerAddress(): string | null {
+    return this._peerAddress;
   }
 
   /** Check if connection is active */

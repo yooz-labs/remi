@@ -1204,6 +1204,13 @@ function App() {
         break;
       }
 
+      case 'hub_status':
+        // Hub connection/session census (#650): consumed by the macOS
+        // menu-bar app for its icon state. The web UI has no use for it yet
+        // (a "N clients" affordance is a possible follow-up); the explicit
+        // case keeps it out of the unhandled-type debug log.
+        break;
+
       case 'daemon_update_available': {
         // Daemon binary updated on disk but the running wrapper still hosts
         // the user's PTY. Surface a system message in every active session so

@@ -5,6 +5,12 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **`hub_status` census broadcast** (#650, epic #648): hub-mode daemons now
+  tell every client how many local and remote (non-query) clients are
+  connected and how many child session daemons are live — the data source
+  for the upcoming macOS menu-bar icon state. Sent to each connection right
+  after its `hello_ack` and broadcast on every change; query clients
+  (`remi ls`, the menu-bar app) receive it but are never counted.
 - **Stale-daemon version drift surfaced** (#539, epic #648 phase 2): daemons
   hold their binary for life, so an upgrade silently leaves running daemons
   on old code. Every daemon now stamps its binary version into its

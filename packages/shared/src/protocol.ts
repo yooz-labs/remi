@@ -101,6 +101,7 @@ export type ProtocolMessage =
   | RegisterDeviceTokenMessage
   | UnregisterDeviceTokenMessage
   | DaemonUpdateAvailableMessage
+  | HubStatusMessage
   | SessionRotatedMessage
   | SessionViewsMessage
   | QuestionResolvedMessage;
@@ -772,6 +773,28 @@ export interface DaemonUpdateAvailableMessage {
   readonly binaryPath: string;
 }
 
+/**
+ * Hub connection/session census (#650, epic #648): the daemon half of the
+ * menu-bar icon state. Sent by HUB-MODE daemons only — to a connection right
+ * after its hello_ack, and broadcast to all connections whenever the counts
+ * change (client connect/disconnect, child session registered/removed).
+ * Query-mode clients (remi ls, the menu-bar app itself) receive it but are
+ * never counted. Pre-#650 clients drop it via isValidMessage.
+ */
+export interface HubStatusMessage {
+  readonly type: 'hub_status';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Non-query clients whose transport peer is a loopback address. */
+  readonly localClients: number;
+  /** Non-query clients on non-loopback peers, plus relay-attached clients. */
+  readonly remoteClients: number;
+  /** Live child session daemons (live-sessions registry census). */
+  readonly sessions: number;
+  /** REMI_VERSION of the hub process. */
+  readonly hubVersion: string;
+}
+
 /** A recent project directory aggregated from session history */
 export interface RecentDirectory {
   /** Absolute path */
@@ -882,6 +905,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'register_device_token',
     'unregister_device_token',
     'daemon_update_available',
+    'hub_status',
     'session_rotated',
     'session_views',
     'question_resolved',
@@ -1643,6 +1667,27 @@ export function createDaemonUpdateAvailable(
     timestamp: now(),
     currentVersion,
     binaryPath,
+  };
+}
+
+/**
+ * Create a hub connection/session census message (#650). See
+ * {@link HubStatusMessage} for emit rules and counting semantics.
+ */
+export function createHubStatus(counts: {
+  localClients: number;
+  remoteClients: number;
+  sessions: number;
+  hubVersion: string;
+}): HubStatusMessage {
+  return {
+    type: 'hub_status',
+    id: generateId(),
+    timestamp: now(),
+    localClients: counts.localClients,
+    remoteClients: counts.remoteClients,
+    sessions: counts.sessions,
+    hubVersion: counts.hubVersion,
   };
 }
 
