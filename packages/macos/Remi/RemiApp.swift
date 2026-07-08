@@ -13,6 +13,7 @@ import SwiftUI
 struct RemiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var hubClient = HubClient()
+    @StateObject private var launchAtLogin = LaunchAtLogin()
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
@@ -22,7 +23,13 @@ struct RemiApp: App {
                 Text(hubClient.clientsLine)
             }
             if case .unreachable = hubClient.phase {
-                Text("Start it with: remi serve").font(.caption)
+                // The sandboxed app cannot start the hub itself (#651);
+                // point at the terminal commands and make them one copy away.
+                Text("Start it with: remi start").font(.caption)
+                Button("Copy Install Command (remi --install)") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("remi --install", forType: .string)
+                }
             }
             Divider()
             Button("Open Remi") {
@@ -31,11 +38,23 @@ struct RemiApp: App {
                 NSApp.activate(ignoringOtherApps: true)
             }
             .keyboardShortcut("o")
+            // The APP at login — independent of the HUB's autostart (the
+            // LaunchAgent installed by `remi --install`); the two must not
+            // be conflated (#651). `.requiresApproval` gets its own state:
+            // rendering it as an off toggle would look like a silent
+            // failure with no path to resolution (#749 review).
+            if launchAtLogin.needsApproval {
+                Button("Login Item Pending Approval — Open System Settings") {
+                    launchAtLogin.openSystemSettings()
+                }
+            } else {
+                Toggle("Open Remi at Login", isOn: $launchAtLogin.isEnabled)
+            }
             Divider()
             Button("Quit Remi") {
                 // Quits the APP only. The hub is not ours to stop: the app is
                 // sandboxed (no process control) and a protocol-level stop is
-                // blocked on #535. Use `remi stop` in a terminal.
+                // blocked on #535 (tracked in #747). Use `remi stop`.
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q")
@@ -47,6 +66,7 @@ struct RemiApp: App {
                 .opacity(hubClient.iconState.opacity)
                 .task { hubClient.start() }
         }
+        .menuBarExtraStyle(.menu)
 
         Window("Remi", id: "main") {
             WebViewWindow(hubClient: hubClient)

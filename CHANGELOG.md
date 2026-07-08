@@ -5,6 +5,12 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **macOS app lifecycle polish** (#651, epic #648): "Open Remi at Login"
+  menu toggle (SMAppService; independent of the hub's LaunchAgent), a
+  copy-install-command menu item when no hub is running, and
+  `docs/MACOS_APP.md` documenting the attach-only design — window close and
+  app quit never touch the hub daemon; stopping it stays `remi stop` (a
+  protocol-level stop is #747, blocked on #535).
 - **Menu-bar icon states** (#650, epic #648): the rounded-square "r" now
   encodes live hub state from the `hub_status` census — thin outline (idle),
   bold "r" (local client attached), filled square with knocked-out "r"
