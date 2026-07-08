@@ -79,7 +79,15 @@ const statusWriter = new StatusWriter(
     autoApprove: { ...IDLE_AUTO_APPROVE },
   },
   {
-    getTargetFile: () => (cliDaemonMode ? DAEMON_STATUS_FILE : STATUS_FILE),
+    // daemon-status.json belongs EXCLUSIVELY to the hub (#542, #740 review):
+    // every session daemon — hub-spawned (REMI_SPAWNED_CHILD, set by
+    // spawnRemiDaemon for ANY parent handling create_session_request) or a
+    // manually run `remi --daemon` — writes the per-port status-<PORT>.json
+    // a wrapper does. Two writers on daemon-status.json would race, and
+    // `remi stop`/`status` resolve the hub through that file; per-port is
+    // also what the Claude statusline script reads ($REMI_PORT-keyed).
+    getTargetFile: () =>
+      serveMode && process.env['REMI_SPAWNED_CHILD'] !== '1' ? DAEMON_STATUS_FILE : STATUS_FILE,
     isEnabled: () => isWrapperMode() || cliDaemonMode,
     writeLog: writeToLog,
   },
@@ -98,9 +106,7 @@ import {
   createHelloAck,
   createQuestionResolved,
   createReplayBatch,
-  createSessionListResponse,
   createSessionUpdate,
-  generateId,
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
@@ -113,6 +119,7 @@ import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
+import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
@@ -133,6 +140,8 @@ import {
   createTranscriptHandlers,
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
+import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -249,7 +258,6 @@ if (parsedArgs.subcommand === 'unstick') {
 const cliPort = parsedArgs.port;
 const cliNoTelegram = parsedArgs.noTelegram;
 const cliMaxBulletLength = parsedArgs.maxBulletLength;
-const cliDaemonMode = parsedArgs.daemonMode;
 const cliSignalingUrl = parsedArgs.signalingUrl;
 const cliNoRelay = parsedArgs.noRelay;
 const cliResume = parsedArgs.resume;
@@ -258,6 +266,12 @@ const cliInstall = parsedArgs.install;
 const cliUninstall = parsedArgs.uninstall;
 const cliSubcommand = parsedArgs.subcommand;
 const cliSubcommandArg = parsedArgs.subcommandArg;
+// `remi serve` (#542) boots the session-less hub: same boot sequence as
+// `--daemon`, minus the single-session tail (see the `serveMode` branches
+// further down). It is deliberately NOT among the start/stop/status/logs
+// dispatch below, so it falls through to the shared daemon/wrapper boot path.
+const serveMode = cliSubcommand === 'serve';
+const cliDaemonMode = parsedArgs.daemonMode || serveMode;
 const cliCodeRefresh = parsedArgs.codeRefresh;
 const cliPermanentCode = parsedArgs.permanentCode;
 const cliForce = parsedArgs.force;
@@ -316,43 +330,45 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
 if (cliInstall || cliUninstall) {
   const platform = process.platform;
   const home = os.homedir();
-  const binaryPath = process.execPath;
+  // Prefer the PATH-resolved `remi` (a symlink like /opt/homebrew/bin/remi
+  // survives a brew upgrade) over process.execPath (a versioned Cellar path
+  // baked at install time breaks when the old keg is removed, #542).
+  const pathResolved = Bun.which('remi');
+  const binaryPath = pathResolved ?? process.execPath;
 
   if (platform === 'darwin') {
     const plistName = 'com.yooz.remi.plist';
     const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
 
     if (cliInstall) {
-      const template = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.yooz.remi</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>__REMI_BINARY__</string>
-        <string>--daemon</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>__HOME__/.remi/remi-stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>__HOME__/.remi/remi-stderr.log</string>
-</dict>
-</plist>`;
-      const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
+      // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
+      // the builder in service-templates.ts.
+      const { buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
+      const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
-      fs.writeFileSync(dest, content);
       const uid = process.getuid?.() ?? 501;
+      // Idempotent reinstall: bootstrap fails if the label is already
+      // loaded, so boot out any prior install first (best-effort).
+      if (fs.existsSync(dest)) {
+        Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+      }
+      fs.writeFileSync(dest, content);
       const result = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${uid}`, dest]);
       if (result.exitCode === 0) {
         console.log(`Installed LaunchAgent: ${dest}`);
-        console.log('Remi will start automatically on login.');
+        console.log(`Hub binary: ${binaryPath}${pathResolved ? ' (PATH-resolved)' : ''}`);
+        if (!pathResolved) {
+          console.log('note: no `remi` on PATH; the absolute binary path was baked into the');
+          console.log('LaunchAgent. Re-run `remi --install` after upgrading remi.');
+        } else if (fs.realpathSync(pathResolved) !== fs.realpathSync(process.execPath)) {
+          // A dev running --install from a local dist/remi while a different
+          // remi sits on PATH would otherwise silently bake the OTHER binary.
+          console.log('note: PATH remi differs from the binary running --install');
+          console.log(`  LaunchAgent will run: ${fs.realpathSync(pathResolved)}`);
+          console.log(`  You are running:      ${fs.realpathSync(process.execPath)}`);
+        }
+        console.log('The Remi hub will start automatically on login.');
       } else {
         console.error(`Failed to load LaunchAgent: ${result.stderr.toString()}`);
         process.exit(1);
@@ -360,7 +376,17 @@ if (cliInstall || cliUninstall) {
     } else {
       if (fs.existsSync(dest)) {
         const uid = process.getuid?.() ?? 501;
-        Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+        // Deleting the plist does NOT unload a loaded job — bootout does. A
+        // non-zero exit is benign when the job simply wasn't loaded, but on
+        // any other failure the hub would keep running while we report
+        // "Removed", so surface it instead of claiming success silently.
+        const bootout = Bun.spawnSync(['launchctl', 'bootout', `gui/${uid}`, dest]);
+        if (bootout.exitCode !== 0) {
+          const detail = bootout.stderr.toString().trim();
+          console.log(
+            `note: launchctl bootout exited ${bootout.exitCode}${detail ? ` (${detail})` : ''} — fine if the agent was not loaded; if the hub is still running, stop it with \`remi stop\`.`,
+          );
+        }
         fs.unlinkSync(dest);
         console.log(`Removed LaunchAgent: ${dest}`);
       } else {
@@ -372,20 +398,9 @@ if (cliInstall || cliUninstall) {
     const dest = path.join(serviceDir, 'remi.service');
 
     if (cliInstall) {
-      const template = `[Unit]
-Description=Remi - Claude Code Monitor
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=${binaryPath} --daemon
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target`;
+      const { buildSystemdUnit } = await import('./cli/service-templates.ts');
       fs.mkdirSync(serviceDir, { recursive: true });
-      fs.writeFileSync(dest, template);
+      fs.writeFileSync(dest, buildSystemdUnit(binaryPath));
       Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
       const result = Bun.spawnSync(['systemctl', '--user', 'enable', '--now', 'remi.service']);
       if (result.exitCode === 0) {
@@ -397,7 +412,15 @@ WantedBy=default.target`;
       }
     } else {
       if (fs.existsSync(dest)) {
-        Bun.spawnSync(['systemctl', '--user', 'disable', '--now', 'remi.service']);
+        // Same rationale as the darwin branch: `disable --now` is what stops
+        // the running unit; deleting the file alone leaves it running.
+        const disable = Bun.spawnSync(['systemctl', '--user', 'disable', '--now', 'remi.service']);
+        if (disable.exitCode !== 0) {
+          const detail = disable.stderr.toString().trim();
+          console.log(
+            `note: systemctl disable --now exited ${disable.exitCode}${detail ? ` (${detail})` : ''} — fine if the unit was not active; if the hub is still running, stop it with \`remi stop\`.`,
+          );
+        }
         fs.unlinkSync(dest);
         Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
         console.log(`Removed systemd user service: ${dest}`);
@@ -1137,9 +1160,34 @@ function startBinaryUpdateWatcher(): void {
   });
 }
 
-// Watcher for live-sessions directory (pushes session list updates on new daemon startup)
-let liveSessionsWatcher: import('node:fs').FSWatcher | null = null;
-let liveWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+// Watcher for live-sessions directory (pushes session list updates when a
+// sibling daemon registers). Closer assigned once started (wrapper mode, and
+// daemon mode since #542); cleanup() calls it unconditionally (no-op if null).
+let liveSessionsWatcherCloser: (() => void) | null = null;
+
+/**
+ * Build the payload for the live-sessions watcher's `collect()` (#542): the
+ * daemon's currently known sessions plus any newly-seen sibling ports. Shared
+ * by both daemon and wrapper mode so a new sibling starting up is broadcast
+ * to connected clients either way -- daemon mode never did this before #542.
+ * Reads `PORT`, `sessionRegistry`, `bindingStore`, `transcriptDiscovery`, and
+ * `liveSessionsRegistry` at CALL time (not closure-capture time), so it always
+ * reflects the finalized port and current session state.
+ */
+function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
+  const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+  if (newPorts.length === 0) return null;
+  const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
+  for (const remiId of [...managedIds]) {
+    const binding = bindingStore.get(remiId as UUID);
+    if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
+  }
+  const sessions = [
+    ...sessionRegistry.listSessions(),
+    ...transcriptDiscovery.discoverSessions(managedIds),
+  ];
+  return { sessions, newPorts };
+}
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
 // daemon mode. Module-level so cleanup() (defined outside the wrapper block)
@@ -1815,14 +1863,8 @@ async function cleanup(): Promise<void> {
     clearInterval(timer);
   }
   transcriptFallbackTimers.clear();
-  if (liveWatchDebounce) {
-    clearTimeout(liveWatchDebounce);
-    liveWatchDebounce = null;
-  }
-  if (liveSessionsWatcher) {
-    liveSessionsWatcher.close();
-    liveSessionsWatcher = null;
-  }
+  liveSessionsWatcherCloser?.();
+  liveSessionsWatcherCloser = null;
   await registry.stopAll();
   await sessionRegistry.shutdown();
   cleanupStatusFile();
@@ -1831,6 +1873,23 @@ async function cleanup(): Promise<void> {
   const primary = getPrimarySessionId();
   if (primary) {
     liveSessionsRegistry.unregister(primary);
+  }
+
+  // Remove the hub PID file (#542), but only if it still names THIS process
+  // -- a foreign hub that won the write race (or that started after a stale
+  // entry was cleaned up) must keep its own entry intact.
+  if (serveMode) {
+    try {
+      const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+      if (Number.parseInt(content, 10) === process.pid) {
+        fs.unlinkSync(PID_FILE);
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        logError(`[Hub] Failed to clean up PID file: ${errorToString(err)}`);
+      }
+    }
   }
 }
 
@@ -1850,7 +1909,7 @@ installProcessGuards({ logError, onFatal: cleanup });
 resolveShellPath({ log, error: logError });
 
 if (cliDaemonMode) {
-  console.log('Starting Remi daemon...');
+  console.log(serveMode ? 'Starting Remi hub...' : 'Starting Remi daemon...');
 
   // Phase 1: Start non-port-binding adapters (Relay, Telegram) once
   try {
@@ -1899,108 +1958,209 @@ if (cliDaemonMode) {
 
   mdnsPublisher = await startMdnsIfNeeded(console.log);
 
-  // Create the daemon's single session (one session per daemon).
-  // NOTE: when --dir/--recent was passed, we already `process.chdir()`'d to
-  // the tilde-expanded, validated directory above (see the `resolveDirectory`
-  // calls near the top of this file). Re-resolving the raw `cliDir` string
-  // here (which may still contain a literal `~`) against that NEW cwd used to
-  // produce a malformed concatenated path (#674); process.cwd() is always the
-  // correct value by this point.
-  const workingDirectory = process.cwd();
-  const sessionId = sessionRegistry.createSessionId();
-  setPrimarySessionId(sessionId);
-
-  updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
-  installStatusLine(REMI_DIR);
-
-  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
-  try {
-    hookServer = new HookServer(
-      { port: 0 },
-      {
-        onError: (err) => console.error(`[HookServer] ${err.message}`),
-      },
-    );
-    hookServer.start();
-    HOOK_PORT = hookServer.port;
-    console.log(`  Hook server listening on port ${HOOK_PORT}`);
-  } catch (err) {
-    const msg = errorToString(err);
-    console.error(
-      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
-    );
-    hookServer = null;
-  }
-
-  if (hookServer) {
-    try {
-      hookConfigManager = new HookConfigManager(
-        workingDirectory,
-        hookServer.url,
-        permissionHookHoldTimeoutSec(),
-      );
-      await hookConfigManager.install();
-    } catch (err) {
-      const msg = errorToString(err);
-      console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
-      hookConfigManager = null;
-    }
-  }
-
-  // Register in live-sessions so remi ls can discover this daemon
-  liveSessionsRegistry.register({
-    sessionId,
-    pid: process.pid,
-    wsPort: PORT,
-    hookPort: HOOK_PORT,
-    projectPath: workingDirectory,
-    name: path.basename(workingDirectory),
-    startedAt: new Date().toISOString(),
-  });
-
   // Notify attached clients when a new dist/remi build replaces this binary
-  // on disk so they know to restart their session (#287).
+  // on disk so they know to restart their session (#287). Shared: a hub
+  // needs this exactly as much as a single-session daemon does.
   startBinaryUpdateWatcher();
 
-  // Create the PTY session
-  try {
-    await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-      const session = sessionRegistry.getSession(sid);
-      if (session?.activeConnectionId) {
-        sendToConnection(session.activeConnectionId, msg);
+  // Watch for sibling daemons (child session-daemons under a hub, or another
+  // co-located daemon) registering in live-sessions and push updates to
+  // clients (#542). Daemon mode never did this before; only wrapper mode
+  // did, so a client sitting on a spawned session daemon never learned about
+  // a new sibling starting up alongside it.
+  liveSessionsWatcherCloser = startLiveSessionsWatcher({
+    dirPath: liveSessionsRegistry.dirPath,
+    collect: collectLiveSessionsUpdate,
+    broadcast: (message) => registry.broadcast(message),
+    logError,
+  });
+
+  // Statusline install mutates the GLOBAL ~/.claude/settings.json; a
+  // session-less hub never runs Claude, so it has no business touching it
+  // (the first session child installs it anyway). Session daemons keep the
+  // existing behavior.
+  if (!serveMode) {
+    installStatusLine(REMI_DIR);
+  }
+
+  if (serveMode) {
+    // Hub mode (#542): a session-less supervisor. It binds the well-known
+    // port and shares services (relay, telegram, mDNS, device tokens) but
+    // spawns no session of its own -- sessions are created via
+    // create_session_request (the app) or `remi new`, each spawning its own
+    // `remi --daemon` child (spawnRemiDaemon / onCreateSessionRequest,
+    // machinery unchanged). The hub must NEVER: spawn Claude, install
+    // Claude-Code hook config for its own cwd, or register itself in
+    // ~/.remi/live-sessions (it would read as a phantom session).
+
+    // Self-write the PID file so `remi stop`/`remi status` can find this hub
+    // regardless of how it was launched (a bare `remi serve`, `remi start`,
+    // or a LaunchAgent) -- closing the split-brain where only the CLI parent
+    // process (the old `startDaemon()`) ever wrote it.
+    //
+    // Explicit dir creation: without it the 'wx' open only works on a fresh
+    // $HOME because startLiveSessionsWatcher() happens to mkdir ~/.remi as a
+    // side effect earlier in boot — an ordering dependency a refactor would
+    // silently break (#740 review).
+    fs.mkdirSync(REMI_DIR, { recursive: true });
+    // Tri-state so a real I/O error (EACCES, ENOSPC) exits with its own
+    // message instead of being misdiagnosed as a lost hub-boot race (#740
+    // review); only EEXIST takes the stale-entry/race path.
+    const writeHubPidFile = (): 'ok' | 'exists' | 'error' => {
+      try {
+        const fd = fs.openSync(PID_FILE, 'wx');
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+        return 'ok';
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'exists';
+        console.error(`Failed to write hub PID file: ${errorToString(err)}`);
+        return 'error';
       }
-      if (msg.type !== 'raw_pty_output') {
-        registry.broadcast(msg);
+    };
+    const firstWrite = writeHubPidFile();
+    if (firstWrite === 'error') {
+      await registry.stopAll();
+      process.exit(1);
+    }
+    if (firstWrite === 'exists') {
+      const foreignPid = readPidFileLive();
+      if (foreignPid !== null) {
+        console.error(`Hub already running (PID ${foreignPid}). Use \`remi status\`.`);
+        await registry.stopAll();
+        process.exit(1);
       }
+      // readPidFileLive() already unlinked the stale entry; retry once. If a
+      // concurrent boot wins the race in this gap, exit too — continuing
+      // would leave a live hub whose PID is recorded nowhere, invisible to
+      // `remi stop`/`status` forever (review finding on #731).
+      const retryWrite = writeHubPidFile();
+      if (retryWrite === 'error') {
+        await registry.stopAll();
+        process.exit(1);
+      }
+      if (retryWrite === 'exists') {
+        const winnerPid = readPidFileLive();
+        console.error(
+          `Another hub claimed the PID file${winnerPid !== null ? ` (PID ${winnerPid})` : ''}; exiting.`,
+        );
+        await registry.stopAll();
+        process.exit(1);
+      }
+    }
+
+    updateRemiStatus({ wsPort: PORT, sessionId: null, sessionStatus: 'idle', mode: 'hub' });
+
+    console.log('');
+    console.log('Remi hub ready!');
+    console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
+    console.log(`  Port: ${PORT} (use --port to change)`);
+    console.log('  Sessions: create from the app or `remi new`');
+    if (mdnsPublisher?.isRunning) {
+      console.log('  mDNS: Advertising on local network');
+    }
+    console.log('');
+    console.log('Press Ctrl+C to stop');
+    console.log('');
+  } else {
+    // Create the daemon's single session (one session per daemon).
+    // NOTE: when --dir/--recent was passed, we already `process.chdir()`'d to
+    // the tilde-expanded, validated directory above (see the `resolveDirectory`
+    // calls near the top of this file). Re-resolving the raw `cliDir` string
+    // here (which may still contain a literal `~`) against that NEW cwd used to
+    // produce a malformed concatenated path (#674); process.cwd() is always the
+    // correct value by this point.
+    const workingDirectory = process.cwd();
+    const sessionId = sessionRegistry.createSessionId();
+    setPrimarySessionId(sessionId);
+
+    updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting', mode: 'session' });
+
+    // Start hook server for Claude Code event detection (port 0 = OS-assigned)
+    try {
+      hookServer = new HookServer(
+        { port: 0 },
+        {
+          onError: (err) => console.error(`[HookServer] ${err.message}`),
+        },
+      );
+      hookServer.start();
+      HOOK_PORT = hookServer.port;
+      console.log(`  Hook server listening on port ${HOOK_PORT}`);
+    } catch (err) {
+      const msg = errorToString(err);
+      console.error(
+        `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+      );
+      hookServer = null;
+    }
+
+    if (hookServer) {
+      try {
+        hookConfigManager = new HookConfigManager(
+          workingDirectory,
+          hookServer.url,
+          permissionHookHoldTimeoutSec(),
+        );
+        await hookConfigManager.install();
+      } catch (err) {
+        const msg = errorToString(err);
+        console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
+        hookConfigManager = null;
+      }
+    }
+
+    // Register in live-sessions so remi ls can discover this daemon
+    liveSessionsRegistry.register({
+      sessionId,
+      pid: process.pid,
+      wsPort: PORT,
+      hookPort: HOOK_PORT,
+      projectPath: workingDirectory,
+      name: path.basename(workingDirectory),
+      startedAt: new Date().toISOString(),
     });
-  } catch (err) {
-    const msg = errorToString(err);
-    console.error(`Failed to create session: ${msg}`);
-    liveSessionsRegistry.unregister(sessionId);
-    await registry.stopAll();
-    process.exit(1);
-  }
 
-  const managedSession = sessionRegistry.getSession(sessionId);
+    // Create the PTY session
+    try {
+      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
+        const session = sessionRegistry.getSession(sid);
+        if (session?.activeConnectionId) {
+          sendToConnection(session.activeConnectionId, msg);
+        }
+        if (msg.type !== 'raw_pty_output') {
+          registry.broadcast(msg);
+        }
+      });
+    } catch (err) {
+      const msg = errorToString(err);
+      console.error(`Failed to create session: ${msg}`);
+      liveSessionsRegistry.unregister(sessionId);
+      await registry.stopAll();
+      process.exit(1);
+    }
 
-  console.log('');
-  console.log('Remi daemon ready!');
-  console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
-  console.log(`  Port: ${PORT} (use --port to change)`);
-  console.log(`  Session: ${managedSession?.name ?? sessionId}`);
-  console.log(`  Directory: ${workingDirectory}`);
-  console.log(
-    `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
-  );
-  if (mdnsPublisher?.isRunning) {
-    console.log('  mDNS: Advertising on local network');
+    const managedSession = sessionRegistry.getSession(sessionId);
+
+    console.log('');
+    console.log('Remi daemon ready!');
+    console.log(`  WebSocket: ws://${bindHost}:${PORT}/ws`);
+    console.log(`  Port: ${PORT} (use --port to change)`);
+    console.log(`  Session: ${managedSession?.name ?? sessionId}`);
+    console.log(`  Directory: ${workingDirectory}`);
+    console.log(
+      `  Bullet truncation: ${MAX_BULLET_LENGTH > 0 ? `${MAX_BULLET_LENGTH} chars` : 'disabled'}`,
+    );
+    if (mdnsPublisher?.isRunning) {
+      console.log('  mDNS: Advertising on local network');
+    }
+    if (TELEGRAM_ENABLED) {
+      console.log('  Telegram: Bot is running');
+    }
+    console.log('');
+    console.log('Press Ctrl+C to stop');
+    console.log('');
   }
-  if (TELEGRAM_ENABLED) {
-    console.log('  Telegram: Bot is running');
-  }
-  console.log('');
-  console.log('Press Ctrl+C to stop');
-  console.log('');
 
   process.on('SIGINT', async () => {
     console.log('\nShutting down gracefully...');
@@ -2164,43 +2324,15 @@ if (cliDaemonMode) {
     // on disk so they know to restart their session (#287).
     startBinaryUpdateWatcher();
 
-    // Watch for new daemons registering in live-sessions and push updates to clients.
-    // This lets clients auto-connect when a sibling session starts in the same directory.
-    try {
-      liveSessionsWatcher = fs.watch(
-        liveSessionsRegistry.dirPath,
-        { persistent: false },
-        (_event) => {
-          // Debounce: macOS FSEvents fires multiple events per rename (tmp → final).
-          if (liveWatchDebounce) clearTimeout(liveWatchDebounce);
-          liveWatchDebounce = setTimeout(() => {
-            liveWatchDebounce = null;
-            try {
-              const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
-              if (newPorts.length === 0) return;
-              // Include external sessions so the broadcast doesn't wipe transcript sessions
-              // that are already visible on the client (session_list_response replaces all
-              // sessions for this connection).
-              const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-              for (const remiId of [...managedIds]) {
-                const binding = bindingStore.get(remiId as UUID);
-                if (binding?.claudeSessionId) managedIds.add(binding.claudeSessionId);
-              }
-              const allSessions = [
-                ...sessionRegistry.listSessions(),
-                ...transcriptDiscovery.discoverSessions(managedIds),
-              ];
-              const msg = createSessionListResponse(allSessions, generateId() as UUID, newPorts);
-              registry.broadcast(msg);
-            } catch (err) {
-              logError(`[LiveSessions] Error pushing session update: ${errorToString(err)}`);
-            }
-          }, 300);
-        },
-      );
-    } catch (err) {
-      logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
-    }
+    // Watch for new daemons registering in live-sessions and push updates to
+    // clients. This lets clients auto-connect when a sibling session starts
+    // in the same directory (extracted to live-sessions-watcher.ts, #542).
+    liveSessionsWatcherCloser = startLiveSessionsWatcher({
+      dirPath: liveSessionsRegistry.dirPath,
+      collect: collectLiveSessionsUpdate,
+      broadcast: (message) => registry.broadcast(message),
+      logError,
+    });
   }
 
   // Reserved-row status bar (#565). Only in wrapper mode with a real TTY, and

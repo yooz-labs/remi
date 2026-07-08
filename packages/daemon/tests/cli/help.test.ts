@@ -102,6 +102,12 @@ describe('formatCommandHelp', () => {
     expect(output).toContain('--bind');
   });
 
+  test('serve help includes port and session-less hint', () => {
+    const output = formatCommandHelp('serve');
+    expect(output).toContain('--port');
+    expect(output).toContain('remi new');
+  });
+
   test('keygen help includes force and passphrase', () => {
     const output = formatCommandHelp('keygen');
     expect(output).toContain('--force');
@@ -120,6 +126,7 @@ describe('formatCommandHelp', () => {
       'stop',
       'status',
       'logs',
+      'serve',
       'keygen',
       'authorize',
       'keys',

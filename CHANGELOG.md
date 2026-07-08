@@ -4,6 +4,30 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Session-less hub: `remi serve`** (#542, epic #648 phase 1): a supervisor
+  daemon that binds a port (18765 preferred, 20-port probe, `--port` to
+  override), serves the machine's session list, and spawns
+  child session daemons on demand — without ever launching Claude itself. A
+  session-less daemon now answers `hello` with `hello_ack{sessionId: null}`
+  instead of a `NO_SESSION` error, and the live-sessions watcher (previously
+  wrapper-mode-only) broadcasts newly spawned sibling daemons in all modes.
+
+### Changed
+- **`remi start` now launches the hub** instead of a one-session daemon: no
+  more junk conversation in the app from starting a daemon. Sessions are
+  created from the app or `remi new`. `remi stop` stops only the hub; running
+  session daemons keep serving.
+- **`--install` LaunchAgent/systemd runs `remi serve`** via the PATH-resolved
+  `remi` binary (survives brew upgrades), with `KeepAlive.SuccessfulExit=false`
+  so `remi stop` is not resurrected by launchd while crashes still restart.
+  Existing installs keep the old behavior until `remi --install` is re-run.
+- The hub self-writes `~/.remi/daemon.pid` (launchd-started hubs are now
+  visible to `remi stop`/`status`), and `daemon-status.json` now belongs
+  exclusively to the hub: every session daemon (hub-spawned or a manually
+  run `remi --daemon`) writes a per-port `status-<port>.json` instead of
+  racing the hub for the shared file.
+
 ## [0.6.18] - 2026-07-07
 
 A hardening release: no new surface area, but a long soak (agent-team sessions,
