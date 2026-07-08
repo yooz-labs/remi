@@ -3,6 +3,8 @@
 # Requires rsvg-convert (brew install librsvg).
 set -euo pipefail
 
+command -v rsvg-convert >/dev/null 2>&1 || { echo "ERROR: rsvg-convert not found (brew install librsvg)" >&2; exit 1; }
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT_DIR/packages/macos/design/appicon.svg"
 DEST="$ROOT_DIR/packages/macos/Remi/Assets.xcassets/AppIcon.appiconset"

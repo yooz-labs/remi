@@ -82,6 +82,12 @@ if (!/^\d+$/.test(build)) {
   process.exit(1);
 }
 
+// Two-phase stamp (#750 review): validate EVERY project before writing ANY.
+// A single-pass loop could stamp the iOS pbxproj and then die on a macOS
+// format drift, leaving the two projects silently out of sync on disk —
+// and every caller touches both files (the platform scripts share one
+// version line), so a macOS-only run must never half-mutate iOS.
+const staged = [];
 for (const { label, path } of PBXPROJS) {
   const before = readFileSync(path, 'utf8');
   const after = before
@@ -97,11 +103,14 @@ for (const { label, path } of PBXPROJS) {
     !after.includes(`CURRENT_PROJECT_VERSION = ${build};`)
   ) {
     console.error(
-      `sync-app-version: could not stamp ${marketing}/${build} into the ${label} pbxproj (MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format)`,
+      `sync-app-version: could not stamp ${marketing}/${build} into the ${label} pbxproj (MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format); nothing written`,
     );
     process.exit(1);
   }
+  staged.push({ label, path, before, after });
+}
 
+for (const { label, path, before, after } of staged) {
   if (after !== before) {
     writeFileSync(path, after);
     console.log(`sync-app-version: stamped ${label} -> ${marketing} (build ${build})`);

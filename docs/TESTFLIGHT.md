@@ -115,6 +115,9 @@ bun run app:version --bump-build     # shared version line with iOS; commit it
 bun run testflight:macos -- --upload
 ```
 
+One-off unique build without touching the config (same override as iOS):
+`REMI_BUILD_NUMBER=$(date +%y%m%d%H%M) bun run testflight:macos -- --upload`.
+
 The script stages the web UI into the app, archives, exports a signed Mac App
 Store **.pkg** (macOS's .ipa equivalent), and uploads with `altool -t macos`.
 Same `.env` / ASC API key as iOS.

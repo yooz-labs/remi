@@ -11,6 +11,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR/packages/macos"
 
+command -v xcodegen >/dev/null 2>&1 || { echo "ERROR: xcodegen not found (brew install xcodegen)" >&2; exit 1; }
+command -v bun >/dev/null 2>&1 || { echo "ERROR: bun not found (needed for the version re-stamp)" >&2; exit 1; }
+
 xcodegen generate
 
 PBXPROJ="Remi.xcodeproj/project.pbxproj"
