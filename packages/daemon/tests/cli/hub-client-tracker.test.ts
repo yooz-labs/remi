@@ -67,31 +67,41 @@ describe('HubClientTracker (#650)', () => {
 
   const asStatus = (m: ProtocolMessage): HubStatusMessage => m as HubStatusMessage;
 
-  test('connect sends the initial frame to that connection and broadcasts the change', () => {
+  test('a counting connect delivers exactly once, via the broadcast', () => {
     const { tracker, sent, broadcasts } = makeTracker();
     tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.connectionId).toBe('c1');
-    const initial = asStatus(sent[0]!.message);
-    expect(initial.type).toBe('hub_status');
-    expect(initial.localClients).toBe(1);
-    expect(initial.remoteClients).toBe(0);
-    expect(initial.hubVersion).toBe('9.9.9-test');
-
+    // Single delivery (#744 review): the broadcast already reaches the
+    // connecting client on every transport, so no direct send happens.
+    expect(sent).toHaveLength(0);
     expect(broadcasts).toHaveLength(1);
-    expect(asStatus(broadcasts[0]!).localClients).toBe(1);
+    const frame = asStatus(broadcasts[0]!);
+    expect(frame.type).toBe('hub_status');
+    expect(frame.localClients).toBe(1);
+    expect(frame.remoteClients).toBe(0);
+    expect(frame.hubVersion).toBe('9.9.9-test');
   });
 
-  test('a query client gets the frame but never changes the counts', () => {
+  test('a non-counting connect delivers exactly once, via the direct send', () => {
     const { tracker, sent, broadcasts } = makeTracker();
     tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
     broadcasts.length = 0;
 
     tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
-    expect(sent).toHaveLength(2); // initial frame still delivered
-    expect(asStatus(sent[1]!.message).localClients).toBe(1);
+    expect(sent).toHaveLength(1); // the query client's own frame only
+    expect(sent[0]?.connectionId).toBe('q1');
+    expect(asStatus(sent[0]!.message).localClients).toBe(1);
     expect(broadcasts).toHaveLength(0); // counts unchanged -> no broadcast
+  });
+
+  test('cold start: a first excluded connect does not force a broadcast', () => {
+    // lastEmitted is seeded with the real census at construction; a null
+    // sentinel here used to make the very first connect always broadcast.
+    const { tracker, sent, broadcasts } = makeTracker();
+    tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
+    expect(broadcasts).toHaveLength(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.connectionId).toBe('q1');
   });
 
   test('disconnect broadcasts the decrement; unknown ids are no-ops', () => {
@@ -105,6 +115,22 @@ describe('HubClientTracker (#650)', () => {
     tracker.onDisconnect('c1' as UUID);
     expect(broadcasts).toHaveLength(1);
     expect(asStatus(broadcasts[0]!).remoteClients).toBe(0);
+  });
+
+  test('simultaneous clients aggregate across classes', () => {
+    const { tracker, broadcasts } = makeTracker();
+    tracker.onConnect('l1' as UUID, wsMeta('127.0.0.1'));
+    tracker.onConnect('l2' as UUID, wsMeta('::1'));
+    tracker.onConnect('r1' as UUID, wsMeta('192.168.1.20'));
+    tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
+
+    expect(tracker.counts()).toEqual({ localClients: 2, remoteClients: 1, sessions: 0 });
+    const last = asStatus(broadcasts.at(-1) as ProtocolMessage);
+    expect(last.localClients).toBe(2);
+    expect(last.remoteClients).toBe(1);
+
+    tracker.onDisconnect('l1' as UUID);
+    expect(tracker.counts()).toEqual({ localClients: 1, remoteClients: 1, sessions: 0 });
   });
 
   test('refresh broadcasts only when the session census changed', () => {

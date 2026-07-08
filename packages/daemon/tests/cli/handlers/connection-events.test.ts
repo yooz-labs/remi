@@ -4,6 +4,7 @@ import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
+import { HubClientTracker } from '../../../src/cli/hub-client-tracker.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import {
   __resetSessionStateForTests,
@@ -510,5 +511,79 @@ describe('createConnectionHandlers', () => {
       const source = fs.readFileSync(handlerPath, 'utf8');
       expect(source).not.toMatch(/deviceTokens/);
     });
+  });
+});
+
+/**
+ * Hub census wiring (#650): the REAL createConnectionHandlers feeding a REAL
+ * HubClientTracker via onPeerConnect/onPeerDisconnect — exactly how cli.ts
+ * wires a hub. The relay metadata literal matches what RelayAdapter actually
+ * emits on peer-connected/auth-success (remote/relay-adapter.ts).
+ */
+describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
+  const RELAY_CID = 'conn0000-relay-0000-0000-000000000001' as UUID;
+
+  beforeEach(() => {
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    __resetSessionStateForTests();
+  });
+
+  test('a relay client counts remote through the real handler; disconnect decrements', async () => {
+    const sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
+    try {
+      const sent: Array<{ connectionId: UUID; message: ProtocolMessage }> = [];
+      const broadcasts: ProtocolMessage[] = [];
+      const tracker = new HubClientTracker({
+        send: (connectionId, message) => {
+          sent.push({ connectionId, message });
+        },
+        broadcast: (message) => broadcasts.push(message),
+        getSessions: () => 0,
+        hubVersion: '9.9.9-test',
+      });
+      const handlers = createConnectionHandlers({
+        sessionRegistry,
+        currentOwnedSession: () => null,
+        trackConnection: () => {},
+        untrackConnection: () => {},
+        onConnectionAdded: () => {},
+        onConnectionRemoved: () => {},
+        cancelOrphanTimeout: () => {},
+        send: (connectionId, message) => {
+          sent.push({ connectionId, message });
+          return true;
+        },
+        remiVersion: '9.9.9-test',
+        onPeerConnect: (connectionId, metadata) => tracker.onConnect(connectionId, metadata),
+        onPeerDisconnect: (connectionId) => tracker.onDisconnect(connectionId),
+      });
+
+      await handlers.onConnect(RELAY_CID, {
+        adapterType: 'relay',
+        displayName: 'Remote Client',
+        platformData: { kind: 'relay', code: 'ABC123' },
+      });
+
+      // The hello_ack is sent directly; the census (a count CHANGE, so it
+      // travels as a broadcast, which reaches the new connection too) tags
+      // the relay client remote. onPeerConnect runs synchronously after the
+      // ack send, so wire order is hello_ack then hub_status.
+      const ackFrames = sent.filter((s) => s.connectionId === RELAY_CID).map((s) => s.message.type);
+      expect(ackFrames).toContain('hello_ack');
+      expect(broadcasts).toHaveLength(1);
+      const census = broadcasts.at(-1) as { remoteClients: number; localClients: number };
+      expect(census.remoteClients).toBe(1);
+      expect(census.localClients).toBe(0);
+
+      await handlers.onDisconnect(RELAY_CID, 'peer closed');
+      const after = broadcasts.at(-1) as { remoteClients: number };
+      expect(after.remoteClients).toBe(0);
+    } finally {
+      await sessionRegistry.shutdown();
+    }
   });
 });

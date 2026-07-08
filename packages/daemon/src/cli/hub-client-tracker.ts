@@ -37,6 +37,11 @@ export function classifyClient(metadata: AdapterMetadata): PeerClass {
     case 'telegram':
       return 'excluded';
     case 'relay':
+      // Unconditionally remote: RelayPlatformData carries no `mode`, so a
+      // hypothetical relay-borne query client cannot be excluded. Currently
+      // unreachable (all query utilities connect over plain ws://), noted in
+      // the #744 review; fixing properly needs a mode field on the relay
+      // platform data.
       return 'remote';
     case 'websocket': {
       if (platformData.mode === 'query') return 'excluded';
@@ -59,11 +64,17 @@ export interface HubClientTrackerDeps {
 export class HubClientTracker {
   private readonly clients = new Map<UUID, PeerClass>();
   private readonly deps: HubClientTrackerDeps;
-  /** Last counts broadcast, for change detection (sessions included). */
-  private lastEmitted: { local: number; remote: number; sessions: number } | null = null;
+  /**
+   * Last counts broadcast, for change detection (sessions included). Seeded
+   * with the real census at construction — a null sentinel would force a
+   * spurious broadcast on the first connect even when nothing changed
+   * (#744 review).
+   */
+  private lastEmitted: { local: number; remote: number; sessions: number };
 
   constructor(deps: HubClientTrackerDeps) {
     this.deps = deps;
+    this.lastEmitted = { local: 0, remote: 0, sessions: deps.getSessions() };
   }
 
   counts(): { localClients: number; remoteClients: number; sessions: number } {
@@ -77,14 +88,19 @@ export class HubClientTracker {
   }
 
   /**
-   * Track a newly connected client. Sends the current census to that
-   * connection (every client gets the initial frame, counted or not) and
-   * broadcasts if the counts changed.
+   * Track a newly connected client. Every client receives the census exactly
+   * ONCE per connect (#744 review): by the time this runs (post-hello_ack),
+   * the new connection is already reachable by `broadcast` on every
+   * transport (WS server inserts connections at open; relay sets its
+   * clientConnectionId before firing onConnect) — so when the counts changed,
+   * the broadcast alone covers it, and the direct send is only for connects
+   * that changed nothing (e.g. a query-mode monitor).
    */
   onConnect(connectionId: UUID, metadata: AdapterMetadata): void {
     this.clients.set(connectionId, classifyClient(metadata));
-    this.deps.send(connectionId, this.statusMessage());
-    this.broadcastIfChanged();
+    if (!this.broadcastIfChanged()) {
+      this.deps.send(connectionId, this.statusMessage());
+    }
   }
 
   onDisconnect(connectionId: UUID): void {
@@ -103,18 +119,19 @@ export class HubClientTracker {
     return createHubStatus({ ...this.counts(), hubVersion: this.deps.hubVersion });
   }
 
-  private broadcastIfChanged(): void {
+  /** Returns true when a broadcast actually went out. */
+  private broadcastIfChanged(): boolean {
     const { localClients, remoteClients, sessions } = this.counts();
     const prev = this.lastEmitted;
     if (
-      prev &&
       prev.local === localClients &&
       prev.remote === remoteClients &&
       prev.sessions === sessions
     ) {
-      return;
+      return false;
     }
     this.lastEmitted = { local: localClients, remote: remoteClients, sessions };
     this.deps.broadcast(this.statusMessage());
+    return true;
   }
 }
