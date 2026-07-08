@@ -40,8 +40,16 @@ struct RemiApp: App {
             .keyboardShortcut("o")
             // The APP at login — independent of the HUB's autostart (the
             // LaunchAgent installed by `remi --install`); the two must not
-            // be conflated (#651).
-            Toggle("Open Remi at Login", isOn: $launchAtLogin.isEnabled)
+            // be conflated (#651). `.requiresApproval` gets its own state:
+            // rendering it as an off toggle would look like a silent
+            // failure with no path to resolution (#749 review).
+            if launchAtLogin.needsApproval {
+                Button("Login Item Pending Approval — Open System Settings") {
+                    launchAtLogin.openSystemSettings()
+                }
+            } else {
+                Toggle("Open Remi at Login", isOn: $launchAtLogin.isEnabled)
+            }
             Divider()
             Button("Quit Remi") {
                 // Quits the APP only. The hub is not ours to stop: the app is
@@ -58,6 +66,7 @@ struct RemiApp: App {
                 .opacity(hubClient.iconState.opacity)
                 .task { hubClient.start() }
         }
+        .menuBarExtraStyle(.menu)
 
         Window("Remi", id: "main") {
             WebViewWindow(hubClient: hubClient)

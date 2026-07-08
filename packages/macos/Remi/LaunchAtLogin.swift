@@ -11,8 +11,19 @@
 import ServiceManagement
 import SwiftUI
 
+/// No unit tests on purpose: register()/unregister() mutate the REAL login
+/// items of whoever runs the suite (including CI runners), and the status
+/// getter is a one-line system read. Do not bolt tests onto this type.
 @MainActor
 final class LaunchAtLogin: ObservableObject {
+    /// Registered but awaiting user approval in System Settings > Login
+    /// Items (#749 review): a normal post-register() state — register()
+    /// does NOT throw for it — that must render as its own menu state, not
+    /// as a toggle that silently snaps back off.
+    var needsApproval: Bool {
+        SMAppService.mainApp.status == .requiresApproval
+    }
+
     /// Two-way binding surface for the menu toggle. Reads the live
     /// SMAppService status; writes register/unregister and re-reads, so a
     /// user denial in System Settings snaps the toggle back to reality
@@ -33,5 +44,11 @@ final class LaunchAtLogin: ObservableObject {
             }
             objectWillChange.send()
         }
+    }
+
+    /// Route the user to the exact System Settings pane that resolves
+    /// `.requiresApproval` (per Apple's login-items guidance).
+    func openSystemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }
