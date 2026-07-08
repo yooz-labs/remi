@@ -70,6 +70,10 @@ describe('remi serve hub (integration, #542)', () => {
     const ack = received.find((m) => m.type === 'hello_ack');
     expect(ack).toBeDefined();
     expect((ack as { sessionId: unknown }).sessionId).toBeNull();
+    // The real subprocess stamps its binary version on the wire (#539).
+    const daemonVersion = (ack as { daemonVersion?: unknown }).daemonVersion;
+    expect(typeof daemonVersion).toBe('string');
+    expect((daemonVersion as string).length).toBeGreaterThan(0);
     expect(received.some((m) => m.type === 'error')).toBe(false);
 
     // Session list: empty sessions from a hub with no children.
