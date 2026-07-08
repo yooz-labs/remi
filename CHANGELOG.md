@@ -5,6 +5,16 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **macOS menu-bar app shell** (#649, epic #648): `packages/macos/` — a
+  sandboxed, attach-only SwiftUI accessory app (`MenuBarExtra` + window)
+  hosting the existing web UI in a WKWebView over a bundled
+  `remi-app://localhost` origin. Discovers the local hub by port scan,
+  connects query-mode (never counted as a client), and injects the hub URL
+  into the web app via `window.__REMI_NATIVE__`. Closing the window or
+  quitting the app never touches the hub daemon (#651 groundwork); the app
+  cannot stop the hub by design (sandbox; use `remi stop`). Build via
+  `bun run build:macos-web` then Xcode; tests in `RemiTests` (real-hub
+  integration gated on `TEST_RUNNER_REMI_TEST_BINARY`).
 - **`hub_status` census broadcast** (#650, epic #648): hub-mode daemons now
   tell every client how many local and remote (non-query) clients are
   connected and how many child session daemons are live — the data source

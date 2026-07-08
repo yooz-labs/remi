@@ -24,6 +24,7 @@
     "build:all": "bun run build:darwin-arm64 && bun run build:darwin-x64 && bun run build:linux-x64 && bun run build:linux-arm64",
     "install:local": "mkdir -p ~/.local/bin && cp dist/remi ~/.local/bin/remi",
     "app:version": "bun scripts/sync-app-version.mjs",
+    "build:macos-web": "bash scripts/stage-macos-web.sh",
     "testflight:ios": "bash scripts/testflight-ios.sh",
     "prepare": "lefthook install"
   },

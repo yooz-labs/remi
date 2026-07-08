@@ -1,0 +1,73 @@
+# xcodegen source for Remi.xcodeproj (#649). The GENERATED project is
+# checked in — xcodegen is NOT a build dependency; this file exists so the
+# project can be regenerated deterministically (`xcodegen generate` in this
+# directory) when targets/files change.
+name: Remi
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: 9DQ459HAZB
+targets:
+  Remi:
+    type: application
+    platform: macOS
+    sources:
+      - path: Remi
+        excludes:
+          - "Resources/web/**"
+      # Staged web bundle (scripts/stage-macos-web.sh). Folder reference so
+      # the whole dist tree lands in Resources/web verbatim.
+      - path: Remi/Resources/web
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.yooz.remi
+        PRODUCT_NAME: Remi
+        INFOPLIST_FILE: Remi/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Remi/Remi.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 4
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+    preBuildScripts:
+      - name: Verify staged web bundle
+        script: |
+          if [ ! -f "${SRCROOT}/Remi/Resources/web/index.html" ]; then
+            echo "error: web bundle not staged. Run: bun run build:macos-web (repo root)"
+            exit 1
+          fi
+        basedOnDependencyAnalysis: false
+  RemiTests:
+    type: bundle.unit-test
+    platform: macOS
+    # UN-hosted tests: app sources compile INTO the test bundle (excluding
+    # the @main entry) instead of using the app as TEST_HOST. A hosted-app
+    # failure deadlocks XCTest's issue recording inside the accessory app's
+    # run loop (observed live: a failed assert hung xcodebuild forever) —
+    # unacceptable for CI. Plain xctest bundles fail fast.
+    sources:
+      - path: RemiTests
+      - path: Remi
+        excludes:
+          - "RemiApp.swift"
+          - "AppDelegate.swift"
+          - "Resources/web/**"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.yooz.remi.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Remi:
+    build:
+      targets:
+        Remi: all
+        RemiTests: [test]
+    test:
+      targets:
+        - RemiTests
