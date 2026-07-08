@@ -20,6 +20,8 @@ export interface StartDaemonOptions {
   readonly signalingUrl?: string;
   readonly pushSecret?: string;
   readonly orphanTimeout?: number;
+  /** This binary's remi version, for the `status` drift warning (#539). */
+  readonly remiVersion?: string;
 }
 
 /** Subcommands this handler owns. */
@@ -67,7 +69,7 @@ export async function runDaemonLifecycleCommand(
     return 0;
   }
   if (sub === 'status') {
-    dm.showDaemonStatus();
+    dm.showDaemonStatus(opts.remiVersion);
     return 0;
   }
   if (sub === 'logs') {

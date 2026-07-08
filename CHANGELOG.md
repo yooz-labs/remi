@@ -5,6 +5,13 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **Stale-daemon version drift surfaced** (#539, epic #648 phase 2): daemons
+  hold their binary for life, so an upgrade silently leaves running daemons
+  on old code. Every daemon now stamps its binary version into its
+  live-sessions entry, status file, and connection-time `hello_ack`
+  (`daemonVersion`); `remi ls` prints a per-daemon "runs remi vX; installed
+  binary is vY — restart to apply" warning and `remi status` shows the hub's
+  version with the same drift warning.
 - **Session-less hub: `remi serve`** (#542, epic #648 phase 1): a supervisor
   daemon that binds a port (18765 preferred, 20-port probe, `--port` to
   override), serves the machine's session list, and spawns

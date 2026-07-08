@@ -175,6 +175,15 @@ export interface HelloAckMessage {
    * 'attached', which was the pre-#662 (buggy) assumption.
    */
   readonly attachState?: 'attached' | 'queued' | undefined;
+  /**
+   * The daemon's remi BINARY version (e.g. "0.6.19-dev.2") — distinct from
+   * `serverVersion`, which is the protocol version. Lets clients flag a
+   * daemon running older code than the installed binary (#539: daemons hold
+   * their binary for life; upgrades only affect new daemons). Sent on
+   * connection-time acks; may be absent on later acks (resume/promotion)
+   * and from pre-#539 daemons.
+   */
+  readonly daemonVersion?: string;
 }
 
 /** Agent output - message from Claude */
@@ -921,16 +930,26 @@ export function createHello(
   };
 }
 
+/** Optional fields for {@link createHelloAck} — an options object so adding
+ *  new optionals never requires threading `undefined` through positional
+ *  callsites (same rationale as {@link CreateHelloOptions}). */
+export interface CreateHelloAckOptions {
+  resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
+  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null } | undefined;
+  attachState?: 'attached' | 'queued' | undefined;
+  /** The daemon's remi binary version (#539). */
+  daemonVersion?: string | undefined;
+}
+
 /**
  * Create a hello ack message.
  */
 export function createHelloAck(
   serverVersion: string,
   sessionId: UUID | null,
-  resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
-  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null },
-  attachState?: 'attached' | 'queued',
+  options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
+  const { resumeInfo, binding, attachState, daemonVersion } = options;
   return {
     type: 'hello_ack',
     id: generateId(),
@@ -947,6 +966,7 @@ export function createHelloAck(
       transcriptPath: binding.transcriptPath,
     }),
     ...(attachState !== undefined && { attachState }),
+    ...(daemonVersion !== undefined && { daemonVersion }),
   };
 }
 

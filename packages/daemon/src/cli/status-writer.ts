@@ -77,6 +77,13 @@ export interface RemiStatus {
    * rather than failing a strict shape check.
    */
   mode?: 'hub' | 'session';
+  /**
+   * The remi binary version this process runs (#539). A daemon holds its
+   * binary for life; `remi status`/`ls` compare this against the installed
+   * binary to flag stale daemons. Optional for the same mixed-version
+   * reasons as `mode`.
+   */
+  version?: string;
 }
 
 export interface StatusWriterDeps {

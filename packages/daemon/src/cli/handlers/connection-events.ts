@@ -39,6 +39,10 @@ export interface ConnectionHandlerDeps {
   /** Cancel the SIGHUP orphan-shutdown timer after a remote client attaches. */
   cancelOrphanTimeout: () => void;
   send: SendToConnection;
+  /** The daemon's remi binary version, stamped on connection-time hello_acks
+   *  so clients can flag a daemon running older code than the installed
+   *  binary (#539). */
+  remiVersion: string;
 }
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
@@ -53,6 +57,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     onConnectionRemoved,
     cancelOrphanTimeout,
     send,
+    remiVersion,
   } = deps;
 
   /** The current binding for hello_ack: {claudeSessionId, transcriptPath}. */
@@ -119,17 +124,16 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
           if (result.success) {
             send(
               connectionId,
-              createHelloAck(
-                '1.0.0',
-                currentPrimary,
-                {
+              createHelloAck('1.0.0', currentPrimary, {
+                resumeInfo: {
                   isResume: result.replayMessages.length > 0,
                   replayCount: result.replayMessages.length,
                   nextBulletId: result.nextBulletId,
                 },
-                currentBinding(),
-                result.attachState,
-              ),
+                binding: currentBinding(),
+                attachState: result.attachState,
+                daemonVersion: remiVersion,
+              }),
             );
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
@@ -145,7 +149,13 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         // Query mode or attach failed (session busy); send hello_ack without
         // attach so utility clients (ls, kill) can still send requests. Still
         // carry the binding so the client follows the current session (#499).
-        send(connectionId, createHelloAck('1.0.0', currentPrimary, undefined, currentBinding()));
+        send(
+          connectionId,
+          createHelloAck('1.0.0', currentPrimary, {
+            binding: currentBinding(),
+            daemonVersion: remiVersion,
+          }),
+        );
         log(
           `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
         );
@@ -156,7 +166,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // rather than erroring out. This is the normal steady state for a
       // session-less hub daemon (#542) and also covers the brief startup
       // window on an ordinary daemon before its primary session is created.
-      send(connectionId, createHelloAck('1.0.0', null));
+      send(connectionId, createHelloAck('1.0.0', null, { daemonVersion: remiVersion }));
       log(`Connection ${connectionId} connected session-less (no active session)`);
     },
 

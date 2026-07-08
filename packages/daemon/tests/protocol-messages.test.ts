@@ -78,9 +78,7 @@ describe('Protocol factory functions', () => {
 
     test('includes resume info', () => {
       const msg = createHelloAck('1.0.0', 'session-1' as UUID, {
-        isResume: true,
-        replayCount: 5,
-        nextBulletId: 10,
+        resumeInfo: { isResume: true, replayCount: 5, nextBulletId: 10 },
       });
       expect(msg.isResume).toBe(true);
       expect(msg.replayCount).toBe(5);
@@ -89,9 +87,7 @@ describe('Protocol factory functions', () => {
 
     test('round-trips through serialize/deserialize', () => {
       const original = createHelloAck('1.0.0', 'session-1' as UUID, {
-        isResume: true,
-        replayCount: 3,
-        nextBulletId: 7,
+        resumeInfo: { isResume: true, replayCount: 3, nextBulletId: 7 },
       });
       const deserialized = deserialize(serialize(original));
       expect(deserialized).not.toBeNull();

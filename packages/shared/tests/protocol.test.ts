@@ -1287,9 +1287,7 @@ describe('Message factory functions', () => {
   describe('createHelloAck() with resume info', () => {
     test('includes resume info when provided', () => {
       const msg = createHelloAck('1.0.0', 'session-1', {
-        isResume: true,
-        replayCount: 5,
-        nextBulletId: 10,
+        resumeInfo: { isResume: true, replayCount: 5, nextBulletId: 10 },
       });
 
       expect(msg.isResume).toBe(true);
@@ -1305,12 +1303,26 @@ describe('Message factory functions', () => {
     });
   });
 
+  describe('createHelloAck() with daemonVersion (#539)', () => {
+    test('includes daemonVersion and round-trips', () => {
+      const msg = createHelloAck('1.0.0', 'session-1', { daemonVersion: '0.6.19-dev.2' });
+      expect(msg.daemonVersion).toBe('0.6.19-dev.2');
+      const round = deserialize(serialize(msg));
+      expect((round as typeof msg).daemonVersion).toBe('0.6.19-dev.2');
+    });
+
+    test('omits daemonVersion when not provided (pre-#539 wire shape)', () => {
+      const msg = createHelloAck('1.0.0', 'session-1');
+      expect('daemonVersion' in msg).toBe(false);
+    });
+  });
+
   describe('createHelloAck() with attachState (#662)', () => {
     test('includes attachState when provided', () => {
-      const attached = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'attached');
+      const attached = createHelloAck('1.0.0', 'session-1', { attachState: 'attached' });
       expect(attached.attachState).toBe('attached');
 
-      const queued = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'queued');
+      const queued = createHelloAck('1.0.0', 'session-1', { attachState: 'queued' });
       expect(queued.attachState).toBe('queued');
     });
 
@@ -1321,7 +1333,7 @@ describe('Message factory functions', () => {
     });
 
     test('attachState survives serialize/deserialize round-trip', () => {
-      const msg = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'queued');
+      const msg = createHelloAck('1.0.0', 'session-1', { attachState: 'queued' });
       const serialized = serialize(msg);
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();

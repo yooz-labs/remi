@@ -77,6 +77,7 @@ const statusWriter = new StatusWriter(
     repo: gitInfo.repo,
     branch: gitInfo.branch,
     autoApprove: { ...IDLE_AUTO_APPROVE },
+    version: REMI_VERSION,
   },
   {
     // daemon-status.json belongs EXCLUSIVELY to the hub (#542, #740 review):
@@ -481,6 +482,7 @@ if (
       ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
       ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
       ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
+      remiVersion: REMI_VERSION,
     }),
   );
 }
@@ -498,6 +500,7 @@ if (cliSubcommand === 'ls') {
         ...(cliPort !== undefined && { port: cliPort }),
         ...(cliHost !== undefined && { host: cliHost }),
         network: cliNetwork,
+        remiVersion: REMI_VERSION,
       },
       liveSessionsRegistry,
     ),
@@ -1029,17 +1032,16 @@ const sessionRegistry = new SessionRegistry(
           : null;
       const sent = registry.sendRaw(
         connectionId,
-        createHelloAck(
-          '1.0.0',
-          sessionId,
-          {
+        createHelloAck('1.0.0', sessionId, {
+          resumeInfo: {
             isResume: result.replayMessages.length > 0,
             replayCount: result.replayMessages.length,
             nextBulletId: result.nextBulletId,
           },
-          { claudeSessionId: claudeId, transcriptPath: tpath },
-          result.attachState,
-        ),
+          binding: { claudeSessionId: claudeId, transcriptPath: tpath },
+          attachState: result.attachState,
+          daemonVersion: REMI_VERSION,
+        }),
       );
       if (!sent) {
         log(`Promoted connection ${connectionId} is unreachable; detaching`);
@@ -1628,6 +1630,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   cancelOrphanTimeout,
   send: sendToConnection,
+  remiVersion: REMI_VERSION,
 });
 
 const sharedEvents = {
@@ -2119,6 +2122,7 @@ if (cliDaemonMode) {
       projectPath: workingDirectory,
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
+      version: REMI_VERSION,
     });
 
     // Create the PTY session
@@ -2318,6 +2322,7 @@ if (cliDaemonMode) {
       projectPath: workingDirectory,
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
+      version: REMI_VERSION,
     });
 
     // Notify attached clients when a new dist/remi build replaces this binary

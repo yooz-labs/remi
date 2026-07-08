@@ -42,6 +42,12 @@ export interface LiveSessionEntry {
    * as live, the fail-safe for legacy entries).
    */
   readonly claudeChildExited?: boolean;
+  /**
+   * The remi binary version the registering daemon runs (#539). Absent on
+   * entries written by pre-#539 daemons. `remi ls` compares it against the
+   * installed binary to flag stale daemons.
+   */
+  readonly version?: string;
 }
 
 /**

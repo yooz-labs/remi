@@ -130,6 +130,9 @@ export interface ConnectionConfig {
   /** Server version to report */
   readonly serverVersion: string;
 
+  /** The daemon's remi binary version, stamped on hello_acks (#539). */
+  readonly daemonVersion?: string | undefined;
+
   /** Ping interval in ms */
   readonly pingInterval?: number;
 
@@ -180,6 +183,7 @@ export class Connection {
   private readonly config: Required<ConnectionConfig> & {
     skipHelloAck: boolean;
     authenticator: Authenticator | undefined;
+    daemonVersion: string | undefined;
   };
   private readonly events: Partial<ConnectionEvents>;
   private readonly messageTracker: MessageIdTracker;
@@ -208,6 +212,7 @@ export class Connection {
         (config.authenticator ? DEFAULT_AUTH_CONNECTION_TIMEOUT : DEFAULT_CONNECTION_TIMEOUT),
       skipHelloAck: config.skipHelloAck ?? false,
       authenticator: config.authenticator,
+      daemonVersion: config.daemonVersion,
     };
 
     // Set connection timeout (applies to both auth and hello phases)
@@ -462,7 +467,13 @@ export class Connection {
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
     if (!this.config.skipHelloAck) {
-      this.send(createHelloAck(this.config.serverVersion, this.sessionId));
+      this.send(
+        createHelloAck(this.config.serverVersion, this.sessionId, {
+          ...(this.config.daemonVersion !== undefined && {
+            daemonVersion: this.config.daemonVersion,
+          }),
+        }),
+      );
     }
 
     // Acknowledge the hello
