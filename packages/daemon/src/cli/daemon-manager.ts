@@ -282,7 +282,7 @@ export function stopDaemon(): void {
       process.kill(pid, 0);
       Bun.sleepSync(200);
     } catch {
-      cleanupFiles();
+      cleanupFiles(pid);
       console.log('Daemon stopped.');
       return;
     }
@@ -300,7 +300,7 @@ export function stopDaemon(): void {
     }
   }
   Bun.sleepSync(200);
-  cleanupFiles();
+  cleanupFiles(pid);
   console.log('Daemon killed.');
 }
 
@@ -431,9 +431,39 @@ export async function spawnRemiDaemon(
   throw new Error(`Daemon did not register within ${timeoutMs / 1000}s. Check logs: ${LOG_FILE}`);
 }
 
-function cleanupFiles(): void {
-  for (const file of [PID_FILE, STATUS_FILE]) {
+/**
+ * Remove the hub's PID and status files after `stopDaemon()` confirmed
+ * `stoppedPid` died — but only the ones still naming that process. A new hub
+ * (LaunchAgent restart, concurrent `remi start`) may have already claimed
+ * either file in the stop window; unlinking unconditionally would erase the
+ * live hub's record and leave it invisible to `remi stop`/`status` (#740
+ * review — same race class as the hub's guarded self-cleanup in cli.ts).
+ * Exported for tests.
+ */
+export function cleanupFiles(stoppedPid: number): void {
+  const owners: Array<{ file: string; readOwner: () => number | null }> = [
+    {
+      file: PID_FILE,
+      readOwner: () => {
+        const pid = Number.parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
+        return Number.isNaN(pid) ? null : pid;
+      },
+    },
+    {
+      file: STATUS_FILE,
+      readOwner: () => {
+        const pid = readStatus()?.['pid'];
+        return typeof pid === 'number' ? pid : null;
+      },
+    },
+  ];
+  for (const { file, readOwner } of owners) {
     try {
+      const owner = readOwner();
+      if (owner !== null && owner !== stoppedPid) {
+        console.log(`Note: ${path.basename(file)} now names PID ${owner} (a new hub); leaving it.`);
+        continue;
+      }
       fs.unlinkSync(file);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;

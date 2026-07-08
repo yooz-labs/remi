@@ -324,7 +324,7 @@ export function formatHelp(version: string): string {
     entry('remi reload', 'Hot-reload config on running daemons'),
     '',
     bold('Service:'),
-    entry('remi start', 'Start daemon in background'),
+    entry('remi start', 'Start the hub in the background'),
     entry('remi stop', 'Stop background daemon'),
     entry('remi status', 'Show daemon status'),
     entry('remi logs', 'Show daemon logs'),

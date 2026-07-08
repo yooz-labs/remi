@@ -86,8 +86,9 @@ registers itself in live-sessions.
   `remi start` no longer creates a Claude session in the cwd.
 - The hub self-writes `~/.remi/daemon.pid`; `remi status`/`stop` fall back to
   `daemon-status.json` (`mode: "hub"`) when the PID file is missing.
-- Hub-spawned children get `REMI_SPAWNED_CHILD=1` and write per-port
-  `status-<PORT>.json` instead of clobbering the hub's `daemon-status.json`.
+- `daemon-status.json` belongs exclusively to the hub. Every session daemon
+  (hub-spawned children, which get `REMI_SPAWNED_CHILD=1`, and manually run
+  `remi --daemon`) writes a per-port `status-<PORT>.json` instead.
 - A session-less daemon answers `hello` with `hello_ack{sessionId: null}`;
   clients then discover children via the session-list `daemonPorts` broadcast
   (live-sessions watcher, all modes).

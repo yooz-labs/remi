@@ -23,8 +23,10 @@ All notable changes to Remi are documented here.
   so `remi stop` is not resurrected by launchd while crashes still restart.
   Existing installs keep the old behavior until `remi --install` is re-run.
 - The hub self-writes `~/.remi/daemon.pid` (launchd-started hubs are now
-  visible to `remi stop`/`status`), and hub-spawned session children write
-  per-port status files instead of overwriting the hub's `daemon-status.json`.
+  visible to `remi stop`/`status`), and `daemon-status.json` now belongs
+  exclusively to the hub: every session daemon (hub-spawned or a manually
+  run `remi --daemon`) writes a per-port `status-<port>.json` instead of
+  racing the hub for the shared file.
 
 ## [0.6.18] - 2026-07-07
 

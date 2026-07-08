@@ -80,6 +80,31 @@ describe('hub PID-file races (#542 split-brain fix)', () => {
     expect(hub.proc.exitCode).toBeNull();
   }, 30000);
 
+  test('unwritable ~/.remi surfaces the real I/O error, not a bogus race message', async () => {
+    const { home, work } = makeIsolatedDirs();
+    extraDirs.push(home, work);
+    const remiDir = path.join(home, '.remi');
+    // Pre-create everything boot appends to, then make the DIR read-only:
+    // existing files stay writable, but creating daemon.pid ('wx') fails
+    // with EACCES — which must surface as an I/O error, not fall into the
+    // "Another hub claimed the PID file" race diagnosis (#740 review).
+    fs.mkdirSync(path.join(remiDir, 'live-sessions'), { recursive: true });
+    fs.writeFileSync(path.join(remiDir, 'remi.log'), '');
+    fs.writeFileSync(path.join(remiDir, 'daemon.log'), '');
+    fs.chmodSync(remiDir, 0o555);
+    try {
+      const port = await findTestPort();
+      const proc = spawnServeRaw(home, work, port);
+      const code = await proc.exited;
+      const stderr = await new Response(proc.stderr).text();
+      expect(code).toBe(1);
+      expect(stderr).toContain('Failed to write hub PID file');
+      expect(stderr).not.toContain('Another hub claimed');
+    } finally {
+      fs.chmodSync(remiDir, 0o755);
+    }
+  }, 30000);
+
   test('stale PID file (dead process) is cleaned up and the hub boots', async () => {
     const { home, work } = makeIsolatedDirs();
     extraDirs.push(home, work);
@@ -156,6 +181,51 @@ describe('remi start / remi stop round-trip (real CLI)', () => {
     await pollUntil(() => !isAlive(hubPid), 10000, 'hub process to exit after remi stop');
     await pollUntil(() => !fs.existsSync(pidFile), 10000, 'PID file removal after remi stop');
   }, 45000);
+});
+
+describe('cleanupFiles ownership guard (#740 review)', () => {
+  /** Run cleanupFiles(stoppedPid) in a subprocess whose $HOME is `home`, so
+   *  the module-level ~/.remi paths in daemon-manager.ts resolve into the
+   *  sandbox instead of the developer's real ~/.remi. */
+  async function runCleanupFiles(home: string, stoppedPid: number): Promise<void> {
+    const dmPath = path.resolve(import.meta.dir, '../../src/cli/daemon-manager.ts');
+    const proc = Bun.spawn(
+      [
+        'bun',
+        '-e',
+        `const { cleanupFiles } = await import(${JSON.stringify(dmPath)}); cleanupFiles(Number(process.argv[1]));`,
+        String(stoppedPid),
+      ],
+      { env: isolatedEnv(home), stdout: 'pipe', stderr: 'pipe' },
+    );
+    const code = await proc.exited;
+    if (code !== 0) {
+      throw new Error(`cleanupFiles subprocess failed: ${await new Response(proc.stderr).text()}`);
+    }
+  }
+
+  test('removes files naming the stopped pid; spares files a new hub claimed', async () => {
+    const { home, work } = makeIsolatedDirs();
+    extraDirs.push(home, work);
+    const remiDir = path.join(home, '.remi');
+    fs.mkdirSync(remiDir, { recursive: true });
+    const pidFile = path.join(remiDir, 'daemon.pid');
+    const statusFile = path.join(remiDir, 'daemon-status.json');
+
+    // Case A: both files name the stopped pid -> removed.
+    fs.writeFileSync(pidFile, '4242');
+    fs.writeFileSync(statusFile, JSON.stringify({ pid: 4242, wsPort: 1 }));
+    await runCleanupFiles(home, 4242);
+    expect(fs.existsSync(pidFile)).toBe(false);
+    expect(fs.existsSync(statusFile)).toBe(false);
+
+    // Case B: a new hub already claimed both files -> left intact.
+    fs.writeFileSync(pidFile, '5555');
+    fs.writeFileSync(statusFile, JSON.stringify({ pid: 5555, wsPort: 1 }));
+    await runCleanupFiles(home, 4242);
+    expect(fs.readFileSync(pidFile, 'utf-8')).toBe('5555');
+    expect(JSON.parse(fs.readFileSync(statusFile, 'utf-8')).pid).toBe(5555);
+  }, 30000);
 });
 
 describe('REMI_SPAWNED_CHILD status routing (#542)', () => {

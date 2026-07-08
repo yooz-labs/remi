@@ -79,13 +79,15 @@ const statusWriter = new StatusWriter(
     autoApprove: { ...IDLE_AUTO_APPROVE },
   },
   {
-    // A spawned session child (#542, REMI_SPAWNED_CHILD — set by
-    // spawnRemiDaemon for ANY parent daemon handling create_session_request,
-    // hub or not) writes its per-port status file exactly like a wrapper
-    // does, instead of clobbering the parent's own daemon-status.json with
-    // its single-session state.
+    // daemon-status.json belongs EXCLUSIVELY to the hub (#542, #740 review):
+    // every session daemon — hub-spawned (REMI_SPAWNED_CHILD, set by
+    // spawnRemiDaemon for ANY parent handling create_session_request) or a
+    // manually run `remi --daemon` — writes the per-port status-<PORT>.json
+    // a wrapper does. Two writers on daemon-status.json would race, and
+    // `remi stop`/`status` resolve the hub through that file; per-port is
+    // also what the Claude statusline script reads ($REMI_PORT-keyed).
     getTargetFile: () =>
-      cliDaemonMode && process.env['REMI_SPAWNED_CHILD'] !== '1' ? DAEMON_STATUS_FILE : STATUS_FILE,
+      serveMode && process.env['REMI_SPAWNED_CHILD'] !== '1' ? DAEMON_STATUS_FILE : STATUS_FILE,
     isEnabled: () => isWrapperMode() || cliDaemonMode,
     writeLog: writeToLog,
   },
@@ -1995,21 +1997,33 @@ if (cliDaemonMode) {
     // regardless of how it was launched (a bare `remi serve`, `remi start`,
     // or a LaunchAgent) -- closing the split-brain where only the CLI parent
     // process (the old `startDaemon()`) ever wrote it.
-    const writeHubPidFile = (): boolean => {
+    //
+    // Explicit dir creation: without it the 'wx' open only works on a fresh
+    // $HOME because startLiveSessionsWatcher() happens to mkdir ~/.remi as a
+    // side effect earlier in boot — an ordering dependency a refactor would
+    // silently break (#740 review).
+    fs.mkdirSync(REMI_DIR, { recursive: true });
+    // Tri-state so a real I/O error (EACCES, ENOSPC) exits with its own
+    // message instead of being misdiagnosed as a lost hub-boot race (#740
+    // review); only EEXIST takes the stale-entry/race path.
+    const writeHubPidFile = (): 'ok' | 'exists' | 'error' => {
       try {
         const fd = fs.openSync(PID_FILE, 'wx');
         fs.writeSync(fd, String(process.pid));
         fs.closeSync(fd);
-        return true;
+        return 'ok';
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
-          console.error(`Failed to write hub PID file: ${errorToString(err)}`);
-          return false;
-        }
-        return false;
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'exists';
+        console.error(`Failed to write hub PID file: ${errorToString(err)}`);
+        return 'error';
       }
     };
-    if (!writeHubPidFile()) {
+    const firstWrite = writeHubPidFile();
+    if (firstWrite === 'error') {
+      await registry.stopAll();
+      process.exit(1);
+    }
+    if (firstWrite === 'exists') {
       const foreignPid = readPidFileLive();
       if (foreignPid !== null) {
         console.error(`Hub already running (PID ${foreignPid}). Use \`remi status\`.`);
@@ -2020,7 +2034,12 @@ if (cliDaemonMode) {
       // concurrent boot wins the race in this gap, exit too — continuing
       // would leave a live hub whose PID is recorded nowhere, invisible to
       // `remi stop`/`status` forever (review finding on #731).
-      if (!writeHubPidFile()) {
+      const retryWrite = writeHubPidFile();
+      if (retryWrite === 'error') {
+        await registry.stopAll();
+        process.exit(1);
+      }
+      if (retryWrite === 'exists') {
         const winnerPid = readPidFileLive();
         console.error(
           `Another hub claimed the PID file${winnerPid !== null ? ` (PID ${winnerPid})` : ''}; exiting.`,
