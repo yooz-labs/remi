@@ -82,6 +82,7 @@ describe('createConnectionHandlers', () => {
         cancelOrphanCalls += 1;
       },
       send,
+      remiVersion: '9.9.9-test',
     });
   }
 
@@ -98,9 +99,15 @@ describe('createConnectionHandlers', () => {
       // acks the connection with sessionId: null instead of erroring, so a
       // client can sit connected until a session is created (#542).
       expect(sendCalls).toHaveLength(1);
-      const msg = sendCalls[0]?.message as { type: string; sessionId?: unknown };
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        sessionId?: unknown;
+        daemonVersion?: unknown;
+      };
       expect(msg.type).toBe('hello_ack');
       expect(msg.sessionId).toBeNull();
+      // Connection-time acks carry the daemon's binary version (#539).
+      expect(msg.daemonVersion).toBe('9.9.9-test');
     });
 
     test('a primary session set still attaches normally (regression, #542)', async () => {

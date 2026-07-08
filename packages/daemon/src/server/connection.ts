@@ -462,6 +462,9 @@ export class Connection {
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
     if (!this.config.skipHelloAck) {
+      // No daemonVersion here (#539): the production daemon always sets
+      // skipHelloAck and acks via connection-events.ts, which stamps it.
+      // This branch only serves library consumers of WebSocketServer.
       this.send(createHelloAck(this.config.serverVersion, this.sessionId));
     }
 

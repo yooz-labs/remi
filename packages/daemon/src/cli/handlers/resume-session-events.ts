@@ -87,9 +87,11 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', targetSessionId as UUID, {
-              isResume: true,
-              replayCount: result.replayMessages.length,
-              nextBulletId: result.nextBulletId,
+              resumeInfo: {
+                isResume: true,
+                replayCount: result.replayMessages.length,
+                nextBulletId: result.nextBulletId,
+              },
             }),
           );
           if (result.replayMessages.length > 0) {
@@ -216,9 +218,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
-              isResume: false,
-              replayCount: 0,
-              nextBulletId: 1,
+              resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
             }),
           );
           log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);

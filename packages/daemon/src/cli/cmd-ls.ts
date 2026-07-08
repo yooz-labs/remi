@@ -24,6 +24,8 @@ export interface LsCommandOptions {
   readonly port?: number;
   readonly host?: string;
   readonly network?: boolean;
+  /** This binary's remi version, for the stale-daemon warning (#539). */
+  readonly remiVersion?: string;
 }
 
 /** Injectable ls-client helpers; the default loader lazy-imports the real ones. */
@@ -32,7 +34,10 @@ export interface LsClientHelpers {
   runLsClient: (args: { host: string; port: number }) => Promise<void>;
   runHostLs: (args: { host: string; ports: number[] }) => Promise<void>;
   getDefaultPortRange: () => number[];
-  runMultiPortLs: (args: { registry: SessionRegistryFile }) => Promise<void>;
+  runMultiPortLs: (args: {
+    registry: SessionRegistryFile;
+    installedVersion?: string;
+  }) => Promise<void>;
 }
 
 const defaultLoader = async (): Promise<LsClientHelpers> => import('./ls-client.ts');
@@ -66,7 +71,10 @@ export async function runLsCommand(
       return 0;
     }
     // No explicit port: discover all local remi sessions via live registry
-    await helpers.runMultiPortLs({ registry });
+    await helpers.runMultiPortLs({
+      registry,
+      ...(opts.remiVersion !== undefined && { installedVersion: opts.remiVersion }),
+    });
     return 0;
   } catch (err) {
     io.err(errorToString(err));

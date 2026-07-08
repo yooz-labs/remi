@@ -96,6 +96,7 @@ export type {
   SessionViewsMessage,
   SessionViewMeta,
   QuestionResolvedMessage,
+  CreateHelloAckOptions,
   CreateHelloOptions,
 } from './protocol.ts';
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readPidFileLive } from '../../src/cli/daemon-manager.ts';
+import { formatVersionDrift, readPidFileLive } from '../../src/cli/daemon-manager.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
@@ -114,5 +114,21 @@ describe('readPidFileLive (#542)', () => {
         }
       }
     }
+  });
+});
+
+describe('formatVersionDrift (#539)', () => {
+  test('flags a running/installed mismatch', () => {
+    const note = formatVersionDrift('0.6.18', '0.6.19-dev.2');
+    expect(note).toContain('0.6.18');
+    expect(note).toContain('0.6.19-dev.2');
+    expect(note).toContain('restart to apply');
+  });
+
+  test('silent on match or unknown versions', () => {
+    expect(formatVersionDrift('0.6.19', '0.6.19')).toBeNull();
+    expect(formatVersionDrift(undefined, '0.6.19')).toBeNull();
+    expect(formatVersionDrift('0.6.19', undefined)).toBeNull();
+    expect(formatVersionDrift('', '0.6.19')).toBeNull();
   });
 });

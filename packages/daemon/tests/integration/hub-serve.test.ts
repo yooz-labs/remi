@@ -61,6 +61,9 @@ describe('remi serve hub (integration, #542)', () => {
     expect(status.sessionId).toBeNull();
     expect(status.mode).toBe('hub');
     expect(status.pid).toBe(hub.proc.pid);
+    // The daemon stamps its binary version for the stale-daemon check (#539).
+    expect(typeof status.version).toBe('string');
+    expect(status.version.length).toBeGreaterThan(0);
 
     // Protocol: session-less hello_ack, not a NO_SESSION error.
     const { ws, received } = await connectAndHello(hub.port);

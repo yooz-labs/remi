@@ -304,7 +304,22 @@ export function stopDaemon(): void {
   console.log('Daemon killed.');
 }
 
-export function showDaemonStatus(): void {
+/**
+ * One-line drift note when a running daemon's binary version differs from
+ * the installed binary (#539: a daemon holds its binary for life; upgrades
+ * only affect newly started daemons). Null when either side is unknown or
+ * they match. Exported for tests and shared by `remi status`/`remi ls`.
+ */
+export function formatVersionDrift(
+  runningVersion: string | undefined,
+  installedVersion: string | undefined,
+): string | null {
+  if (!runningVersion || !installedVersion) return null;
+  if (runningVersion === installedVersion) return null;
+  return `running remi ${runningVersion}; installed binary is ${installedVersion} — restart to apply`;
+}
+
+export function showDaemonStatus(installedVersion?: string): void {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (!pid) {
     console.log('Daemon is not running.');
@@ -323,6 +338,14 @@ export function showDaemonStatus(): void {
     const adapters = status['adapters'];
     if (Array.isArray(adapters) && adapters.length > 0) {
       console.log(`  Adapters: ${adapters.join(', ')}`);
+    }
+    const version = status['version'];
+    if (typeof version === 'string' && version.length > 0) {
+      console.log(`  Version: ${version}`);
+      const drift = formatVersionDrift(version, installedVersion);
+      if (drift) {
+        console.log(`  WARNING: ${drift}`);
+      }
     }
   } else {
     console.log(`Daemon running (PID ${pid}), no status info available.`);
