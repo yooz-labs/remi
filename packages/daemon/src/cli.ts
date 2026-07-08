@@ -339,38 +339,10 @@ if (cliInstall || cliUninstall) {
     const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
 
     if (cliInstall) {
-      // The service runs `remi serve` (session-less hub, #542) — never a
-      // session daemon: under launchd cwd is `/`, and the old `--daemon`
-      // form spawned a junk Claude session there at every login.
-      // KeepAlive.SuccessfulExit=false (not a bare `true`): a clean exit
-      // (`remi stop`, SIGTERM) must STAY stopped; only a crash exit(1)
-      // (process guards, #534) gets restarted. A bare `true` resurrects a
-      // deliberately stopped hub.
-      const template = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.yooz.remi</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>__REMI_BINARY__</string>
-        <string>serve</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>__HOME__/.remi/remi-stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>__HOME__/.remi/remi-stderr.log</string>
-</dict>
-</plist>`;
-      const content = template.replace(/__REMI_BINARY__/g, binaryPath).replace(/__HOME__/g, home);
+      // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
+      // the builder in service-templates.ts.
+      const { buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
+      const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
       const uid = process.getuid?.() ?? 501;
@@ -424,22 +396,9 @@ if (cliInstall || cliUninstall) {
     const dest = path.join(serviceDir, 'remi.service');
 
     if (cliInstall) {
-      // `serve` (session-less hub), same rationale as the darwin branch.
-      // Restart=on-failure already matches the crash-only restart policy.
-      const template = `[Unit]
-Description=Remi - Claude Code Monitor
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=${binaryPath} serve
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target`;
+      const { buildSystemdUnit } = await import('./cli/service-templates.ts');
       fs.mkdirSync(serviceDir, { recursive: true });
-      fs.writeFileSync(dest, template);
+      fs.writeFileSync(dest, buildSystemdUnit(binaryPath));
       Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
       const result = Bun.spawnSync(['systemctl', '--user', 'enable', '--now', 'remi.service']);
       if (result.exitCode === 0) {

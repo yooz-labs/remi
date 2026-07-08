@@ -21,116 +21,30 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import { deserialize, serialize } from '@remi/shared/protocol.ts';
-import { createHello, createSessionListRequest } from '@remi/shared/protocol.ts';
-import type { ProtocolMessage, SessionListResponseMessage } from '@remi/shared/protocol.ts';
-import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
-
-const CLI_TS = path.resolve(import.meta.dir, '../../src/cli.ts');
-
-interface HubHandle {
-  proc: ReturnType<typeof Bun.spawn>;
-  home: string;
-  work: string;
-  port: number;
-}
+import { createSessionListRequest, serialize } from '@remi/shared/protocol.ts';
+import type { SessionListResponseMessage } from '@remi/shared/protocol.ts';
+import {
+  CLI_TS,
+  type HubHandle,
+  cleanupHub,
+  connectAndHello,
+  pollUntil,
+  spawnHub as spawnHubShared,
+} from './hub-test-utils.ts';
 
 const hubs: HubHandle[] = [];
 
 afterEach(async () => {
   for (const hub of hubs.splice(0)) {
-    try {
-      hub.proc.kill('SIGKILL');
-      await hub.proc.exited;
-    } catch {
-      // already dead
-    }
-    fs.rmSync(hub.home, { recursive: true, force: true });
-    fs.rmSync(hub.work, { recursive: true, force: true });
+    await cleanupHub(hub);
   }
 });
 
-async function pollUntil(cond: () => boolean, timeoutMs: number, what: string): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) throw new Error(`Timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
-
 async function spawnHub(): Promise<HubHandle> {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hub-home-'));
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hub-work-'));
-  const port = await findAvailableTcpPort(19200, 200);
-  if (port === null) throw new Error('No free test port');
-
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    HOME: home,
-  };
-  // A stray inherited port/child marker would defeat the isolation.
-  // biome-ignore lint/performance/noDelete: must truly remove env var from child process
-  delete env['REMI_PORT'];
-  // biome-ignore lint/performance/noDelete: must truly remove env var from child process
-  delete env['REMI_SPAWNED_CHILD'];
-
-  const proc = Bun.spawn(
-    [
-      'bun',
-      CLI_TS,
-      'serve',
-      '--port',
-      String(port),
-      '--no-relay',
-      '--no-telegram',
-      '--no-mdns',
-      '--no-auth',
-    ],
-    { cwd: work, env, stdout: 'pipe', stderr: 'pipe' },
-  );
-
-  const hub: HubHandle = { proc, home, work, port };
+  const hub = await spawnHubShared();
   hubs.push(hub);
-
-  const statusFile = path.join(home, '.remi', 'daemon-status.json');
-  await pollUntil(
-    () => {
-      if (proc.exitCode !== null) {
-        throw new Error(`Hub exited early with code ${proc.exitCode}`);
-      }
-      try {
-        const status = JSON.parse(fs.readFileSync(statusFile, 'utf-8'));
-        return status.wsPort === port;
-      } catch {
-        return false;
-      }
-    },
-    15000,
-    'hub status file',
-  );
   return hub;
-}
-
-/** Open a WS to the hub, send hello, resolve once hello_ack arrives. Returns
- *  the socket plus a growing message log the test can keep asserting on. */
-async function connectAndHello(
-  port: number,
-): Promise<{ ws: WebSocket; received: ProtocolMessage[] }> {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-  const received: ProtocolMessage[] = [];
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => ws.send(serialize(createHello('hub-test-client', '1.0.0')));
-    ws.onmessage = (e) => {
-      const msg = deserialize(e.data.toString());
-      if (msg) received.push(msg);
-      if (msg?.type === 'hello_ack') resolve();
-    };
-    ws.onerror = () => reject(new Error('WebSocket error'));
-    setTimeout(() => reject(new Error('Timeout waiting for hello_ack')), 5000);
-  });
-  return { ws, received };
 }
 
 describe('remi serve hub (integration, #542)', () => {
@@ -167,9 +81,12 @@ describe('remi serve hub (integration, #542)', () => {
     );
     expect(list?.sessions).toEqual([]);
 
-    // The hub must NOT have touched its cwd's Claude hook config, and must
-    // NOT appear in live-sessions as a phantom session.
+    // The hub must NOT have touched its cwd's Claude hook config, must NOT
+    // have installed the statusline into the global ~/.claude/settings.json
+    // (a session-less hub never runs Claude), and must NOT appear in
+    // live-sessions as a phantom session.
     expect(fs.existsSync(path.join(hub.work, '.claude'))).toBe(false);
+    expect(fs.existsSync(path.join(hub.home, '.claude', 'settings.json'))).toBe(false);
     const liveDir = path.join(remiDir, 'live-sessions');
     const liveEntries = fs.existsSync(liveDir) ? fs.readdirSync(liveDir) : [];
     expect(liveEntries).toEqual([]);
