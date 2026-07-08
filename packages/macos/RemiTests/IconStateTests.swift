@@ -35,12 +35,28 @@ final class IconStateTests: XCTestCase {
         XCTAssertEqual(IconState.remoteConnected.opacity, 1.0)
     }
 
-    func testAssetNamesMapToCatalogEntries() {
-        // Names must match the imagesets in Assets.xcassets (#650); the
-        // unreachable state reuses the idle glyph, dimmed.
-        XCTAssertEqual(IconState.idle.assetName, "menubar-idle")
-        XCTAssertEqual(IconState.unreachable.assetName, "menubar-idle")
-        XCTAssertEqual(IconState.localAttached.assetName, "menubar-local")
-        XCTAssertEqual(IconState.remoteConnected.assetName, "menubar-remote")
+    func testAssetNamesMapToCatalogEntries() throws {
+        // Verify against the ACTUAL asset catalog on disk, not string
+        // literals mirroring IconState.swift (#746 review: the literal
+        // version was tautological — a renamed/deleted imageset could never
+        // fail it). #filePath navigation reaches the source tree in both
+        // local and CI runs.
+        let catalogURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // RemiTests/
+            .deletingLastPathComponent()  // packages/macos/
+            .appendingPathComponent("Remi/Assets.xcassets")
+        let imagesets = try Set(
+            FileManager.default.contentsOfDirectory(atPath: catalogURL.path)
+                .filter { $0.hasSuffix(".imageset") }
+                .map { $0.replacingOccurrences(of: ".imageset", with: "") })
+
+        let states: [IconState] = [.idle, .unreachable, .localAttached, .remoteConnected]
+        for state in states {
+            XCTAssertTrue(
+                imagesets.contains(state.assetName),
+                "\(state) -> '\(state.assetName)' has no imageset in Assets.xcassets")
+        }
+        // The unreachable state reuses the idle glyph, dimmed.
+        XCTAssertEqual(IconState.unreachable.assetName, IconState.idle.assetName)
     }
 }
