@@ -18,6 +18,9 @@ struct RemiApp: App {
     var body: some Scene {
         MenuBarExtra {
             Text(hubClient.menuStatusLine)
+            if case .connected(_, isHub: true) = hubClient.phase {
+                Text(hubClient.clientsLine)
+            }
             if case .unreachable = hubClient.phase {
                 Text("Start it with: remi serve").font(.caption)
             }
@@ -40,7 +43,7 @@ struct RemiApp: App {
             // The label renders at launch (unlike the lazily-built menu
             // content), so this is the reliable startup hook for an
             // accessory app with no initial window.
-            Image(systemName: hubClient.iconState.systemImageName)
+            Image(hubClient.iconState.assetName)
                 .opacity(hubClient.iconState.opacity)
                 .task { hubClient.start() }
         }

@@ -10,12 +10,14 @@
 		0C46ABF54A97FA1F17BE04B0 /* WebViewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355697014B8A803D93F9E3EA /* WebViewWindow.swift */; };
 		477C35A4907835166E4AECF6 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81CA6F64B5FFA6B90233A956 /* HubClient.swift */; };
 		5470D493544A6D03CE17E9B3 /* IconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7875E7E74CA980AD4B502F /* IconState.swift */; };
+		56A2EE338C23F3064E056B31 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4DD72A5787EF3FFBF772C89F /* Assets.xcassets */; };
 		5B9DAFE87B904A39428B55B0 /* DistSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */; };
 		61C341D2ECBBE9C35A242AF0 /* HubProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385800B7F484F9E71DADBC28 /* HubProtocolTests.swift */; };
 		7366DDF55B2871EA5704D8B8 /* HubClientIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B5AB7DE462E44924AFDC25 /* HubClientIntegrationTests.swift */; };
 		779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81CA6F64B5FFA6B90233A956 /* HubClient.swift */; };
 		787301FFD777594190359E77 /* DistSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */; };
 		868C031D66195475FDA1A60E /* IconStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */; };
+		89CA0A413FB87001E796F276 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4DD72A5787EF3FFBF772C89F /* Assets.xcassets */; };
 		8A7968BC43F4E4D7069E3FD9 /* RemiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F4E747A3D65101EAE2331D4 /* RemiApp.swift */; };
 		954D114FF37A81A590B7D7B4 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */; };
 		A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */; };
@@ -33,6 +35,7 @@
 		355697014B8A803D93F9E3EA /* WebViewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewWindow.swift; sourceTree = "<group>"; };
 		385800B7F484F9E71DADBC28 /* HubProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubProtocolTests.swift; sourceTree = "<group>"; };
 		3C92562123ECC39FB269FB4A /* Remi.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Remi.entitlements; sourceTree = "<group>"; };
+		4DD72A5787EF3FFBF772C89F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandlerTests.swift; sourceTree = "<group>"; };
 		5012C3ED6BF23506A3E5406C /* Remi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Remi.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5A7875E7E74CA980AD4B502F /* IconState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconState.swift; sourceTree = "<group>"; };
@@ -61,6 +64,7 @@
 			isa = PBXGroup;
 			children = (
 				C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */,
+				4DD72A5787EF3FFBF772C89F /* Assets.xcassets */,
 				B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */,
 				81CA6F64B5FFA6B90233A956 /* HubClient.swift */,
 				C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */,
@@ -130,6 +134,7 @@
 			buildConfigurationList = EF7C876D99FF1D3D15C35063 /* Build configuration list for PBXNativeTarget "RemiTests" */;
 			buildPhases = (
 				FDC3E244B25455445874C428 /* Sources */,
+				B94024599CE9473DDDAA8E11 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -180,10 +185,19 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B94024599CE9473DDDAA8E11 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				89CA0A413FB87001E796F276 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F528F22A827CA73C9AC50A7D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				56A2EE338C23F3064E056B31 /* Assets.xcassets in Resources */,
 				B380134DB301B91E8FB492B1 /* web in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

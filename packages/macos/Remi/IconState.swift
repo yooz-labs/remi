@@ -26,16 +26,17 @@ enum IconState: Equatable {
         return .idle
     }
 
-    /// SF Symbol placeholder per state (Phase B). Phase C replaces these
-    /// with the custom template assets (menubar-idle/-local/-remote).
-    var systemImageName: String {
+    /// Template asset per state (#650, Phase C). Sources live in
+    /// packages/macos/design/*.svg; regenerate the PDFs with
+    /// scripts/generate-menubar-icons.sh.
+    var assetName: String {
         switch self {
         case .unreachable, .idle:
-            return "r.square"
+            return "menubar-idle"
         case .localAttached:
-            return "r.square.on.square"
+            return "menubar-local"
         case .remoteConnected:
-            return "r.square.fill"
+            return "menubar-remote"
         }
     }
 

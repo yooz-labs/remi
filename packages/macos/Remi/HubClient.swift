@@ -66,6 +66,17 @@ final class HubClient: ObservableObject {
         return "ws://127.0.0.1:\(port)"
     }
 
+    /// Client census line for the menu ("Clients: 2 local, 1 remote"), #650.
+    /// Label-first format sidesteps the pluralization mismatch a trailing
+    /// noun creates ("1 local, 1 remote clients", #746 review).
+    var clientsLine: String {
+        guard localClients + remoteClients > 0 else { return "No clients connected" }
+        var parts: [String] = []
+        if localClients > 0 { parts.append("\(localClients) local") }
+        if remoteClients > 0 { parts.append("\(remoteClients) remote") }
+        return "Clients: \(parts.joined(separator: ", "))"
+    }
+
     var menuStatusLine: String {
         switch phase {
         case .scanning:

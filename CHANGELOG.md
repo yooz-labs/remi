@@ -5,6 +5,12 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **Menu-bar icon states** (#650, epic #648): the rounded-square "r" now
+  encodes live hub state from the `hub_status` census — thin outline (idle),
+  bold "r" (local client attached), filled square with knocked-out "r"
+  (remote client connected), dimmed when the hub is unreachable. Vector
+  template assets (light/dark tinting) generated from SVG sources in
+  `packages/macos/design/`; the menu shows a client-count line.
 - **macOS menu-bar app shell** (#649, epic #648): `packages/macos/` — a
   sandboxed, attach-only SwiftUI accessory app (`MenuBarExtra` + window)
   hosting the existing web UI in a WKWebView over a bundled
