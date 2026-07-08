@@ -94,6 +94,12 @@ describe('createResumeSessionHandlers', () => {
     const types = sendCalls.map((c) => c.message.type);
     expect(types).toContain('resume_session_response');
     expect(types).toContain('hello_ack');
+    // Documented contract (#539): resume acks OMIT daemonVersion — only
+    // connection-time and promotion acks carry it.
+    const resumeAck = sendCalls.find((c) => c.message.type === 'hello_ack')?.message as {
+      daemonVersion?: unknown;
+    };
+    expect('daemonVersion' in resumeAck).toBe(false);
     expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
   });
 

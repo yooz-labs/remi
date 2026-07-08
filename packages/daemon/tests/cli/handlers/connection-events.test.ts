@@ -122,9 +122,15 @@ describe('createConnectionHandlers', () => {
       });
 
       expect(sendCalls).toHaveLength(1);
-      const msg = sendCalls[0]?.message as { type: string; sessionId?: unknown };
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        sessionId?: unknown;
+        daemonVersion?: unknown;
+      };
       expect(msg.type).toBe('hello_ack');
       expect(msg.sessionId).toBe(sessionId);
+      // Every connection-time ack path stamps the binary version (#539).
+      expect(msg.daemonVersion).toBe('9.9.9-test');
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
     });
 
@@ -181,7 +187,10 @@ describe('createConnectionHandlers', () => {
       });
 
       expect(sendCalls).toHaveLength(1);
-      expect((sendCalls[0]?.message as { type: string }).type).toBe('hello_ack');
+      const queryAck = sendCalls[0]?.message as { type: string; daemonVersion?: unknown };
+      expect(queryAck.type).toBe('hello_ack');
+      // The query-mode/no-attach ack path also stamps the version (#539).
+      expect(queryAck.daemonVersion).toBe('9.9.9-test');
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
       expect(cancelOrphanCalls).toBe(0);
     });
