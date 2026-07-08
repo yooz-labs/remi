@@ -25,7 +25,9 @@
 		B2EF1C7D36471D46EACF2DD6 /* DistSchemeHandlerServingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */; };
 		B380134DB301B91E8FB492B1 /* web in Resources */ = {isa = PBXBuildFile; fileRef = 5DB62EAF2230D75844C2E431 /* web */; };
 		B624FF6190079DE8CEC1ED90 /* HubProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */; };
+		C06956DFD17992CEB0E8F1F7 /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */; };
 		D5175153D73E308F27F71B07 /* HubProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */; };
+		FDB4E6B066502FF40FE283A5 /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */; };
 		FDD33CD09342E7459B3AD7E1 /* WebViewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355697014B8A803D93F9E3EA /* WebViewWindow.swift */; };
 /* End PBXBuildFile section */
 
@@ -48,6 +50,7 @@
 		B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandler.swift; sourceTree = "<group>"; };
 		C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubProtocol.swift; sourceTree = "<group>"; };
+		E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLogin.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -70,6 +73,7 @@
 				C34698EE36B7B59AEAF65A27 /* HubProtocol.swift */,
 				5A7875E7E74CA980AD4B502F /* IconState.swift */,
 				03E03C1A89AE93F94D40EA16 /* Info.plist */,
+				E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */,
 				3C92562123ECC39FB269FB4A /* Remi.entitlements */,
 				1F4E747A3D65101EAE2331D4 /* RemiApp.swift */,
 				355697014B8A803D93F9E3EA /* WebViewWindow.swift */,
@@ -236,6 +240,7 @@
 				779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */,
 				D5175153D73E308F27F71B07 /* HubProtocol.swift in Sources */,
 				AACDBAC70B24E6FD163F22C8 /* IconState.swift in Sources */,
+				FDB4E6B066502FF40FE283A5 /* LaunchAtLogin.swift in Sources */,
 				8A7968BC43F4E4D7069E3FD9 /* RemiApp.swift in Sources */,
 				0C46ABF54A97FA1F17BE04B0 /* WebViewWindow.swift in Sources */,
 			);
@@ -254,6 +259,7 @@
 				61C341D2ECBBE9C35A242AF0 /* HubProtocolTests.swift in Sources */,
 				5470D493544A6D03CE17E9B3 /* IconState.swift in Sources */,
 				868C031D66195475FDA1A60E /* IconStateTests.swift in Sources */,
+				C06956DFD17992CEB0E8F1F7 /* LaunchAtLogin.swift in Sources */,
 				FDD33CD09342E7459B3AD7E1 /* WebViewWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
