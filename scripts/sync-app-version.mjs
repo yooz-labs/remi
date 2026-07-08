@@ -1,13 +1,20 @@
 #!/usr/bin/env bun
 /**
- * Sync the iOS app's version into the Xcode project from the app's OWN version
- * line (config/app-release.json), decoupled from the daemon/npm version (#658).
+ * Sync the app suite's version into the Xcode projects from the app's OWN
+ * version line (config/app-release.json), decoupled from the daemon/npm
+ * version (#658). ONE shared marketingVersion/buildNumber for iOS + macOS:
+ * App Store Connect build trains are per-platform, so burning a number on
+ * the other platform's train is harmless, and one line is simpler.
  *
- * The iOS Info.plist reads $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION), so
- * only the pbxproj build settings need writing (both Debug + Release configs).
+ * Both Info.plists read $(MARKETING_VERSION) / $(CURRENT_PROJECT_VERSION), so
+ * only pbxproj build settings need writing (both Debug + Release configs).
+ *
+ * NOTE (macOS): `scripts/generate-macos-project.sh` regenerates the macOS
+ * pbxproj from project.yml, which resets these settings to the yml literals —
+ * that script re-runs this one afterwards, so always regenerate through it.
  *
  * Usage:
- *   bun scripts/sync-app-version.mjs                  # stamp pbxproj from config
+ *   bun scripts/sync-app-version.mjs                  # stamp pbxprojs from config
  *   bun scripts/sync-app-version.mjs --bump-build     # buildNumber++ in config, then stamp
  *   bun scripts/sync-app-version.mjs --build 42       # one-off build-number override
  *   bun scripts/sync-app-version.mjs --marketing 0.2.0
@@ -18,15 +25,16 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_PATH = join(ROOT, 'config', 'app-release.json');
-const PBXPROJ_PATH = join(
-  ROOT,
-  'packages',
-  'web',
-  'ios',
-  'App',
-  'App.xcodeproj',
-  'project.pbxproj',
-);
+const PBXPROJS = [
+  {
+    label: 'iOS app',
+    path: join(ROOT, 'packages', 'web', 'ios', 'App', 'App.xcodeproj', 'project.pbxproj'),
+  },
+  {
+    label: 'macOS app',
+    path: join(ROOT, 'packages', 'macos', 'Remi.xcodeproj', 'project.pbxproj'),
+  },
+];
 
 function parseArgs(argv) {
   const out = {};
@@ -74,28 +82,39 @@ if (!/^\d+$/.test(build)) {
   process.exit(1);
 }
 
-const before = readFileSync(PBXPROJ_PATH, 'utf8');
-const after = before
-  .replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${marketing};`)
-  .replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${build};`);
+// Two-phase stamp (#750 review): validate EVERY project before writing ANY.
+// A single-pass loop could stamp the iOS pbxproj and then die on a macOS
+// format drift, leaving the two projects silently out of sync on disk —
+// and every caller touches both files (the platform scripts share one
+// version line), so a macOS-only run must never half-mutate iOS.
+const staged = [];
+for (const { label, path } of PBXPROJS) {
+  const before = readFileSync(path, 'utf8');
+  const after = before
+    .replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${marketing};`)
+    .replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${build};`);
 
-// Verify the target values actually landed, not just that the keys exist: if the
-// pbxproj format ever drifts the replace could match nothing while a key-presence
-// check still passes, silently shipping the wrong version. Idempotent (an
-// already-stamped file still contains the targets).
-if (
-  !after.includes(`MARKETING_VERSION = ${marketing};`) ||
-  !after.includes(`CURRENT_PROJECT_VERSION = ${build};`)
-) {
-  console.error(
-    `sync-app-version: could not stamp ${marketing}/${build} into the pbxproj (MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format)`,
-  );
-  process.exit(1);
+  // Verify the target values actually landed, not just that the keys exist: if
+  // the pbxproj format ever drifts the replace could match nothing while a
+  // key-presence check still passes, silently shipping the wrong version.
+  // Idempotent (an already-stamped file still contains the targets).
+  if (
+    !after.includes(`MARKETING_VERSION = ${marketing};`) ||
+    !after.includes(`CURRENT_PROJECT_VERSION = ${build};`)
+  ) {
+    console.error(
+      `sync-app-version: could not stamp ${marketing}/${build} into the ${label} pbxproj (MARKETING_VERSION/CURRENT_PROJECT_VERSION missing or unexpected format); nothing written`,
+    );
+    process.exit(1);
+  }
+  staged.push({ label, path, before, after });
 }
 
-if (after !== before) {
-  writeFileSync(PBXPROJ_PATH, after);
-  console.log(`sync-app-version: stamped iOS app -> ${marketing} (build ${build})`);
-} else {
-  console.log(`sync-app-version: iOS app already at ${marketing} (build ${build}), no change`);
+for (const { label, path, before, after } of staged) {
+  if (after !== before) {
+    writeFileSync(path, after);
+    console.log(`sync-app-version: stamped ${label} -> ${marketing} (build ${build})`);
+  } else {
+    console.log(`sync-app-version: ${label} already at ${marketing} (build ${build}), no change`);
+  }
 }

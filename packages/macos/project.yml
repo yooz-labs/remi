@@ -32,9 +32,12 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: Remi/Remi.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+        # Placeholder values: generate-macos-project.sh re-stamps both from
+        # config/app-release.json after every regeneration (#658).
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 4
         ENABLE_USER_SCRIPT_SANDBOXING: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     preBuildScripts:
       - name: Verify staged web bundle
         script: |

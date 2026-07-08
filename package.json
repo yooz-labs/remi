@@ -26,6 +26,7 @@
     "app:version": "bun scripts/sync-app-version.mjs",
     "build:macos-web": "bash scripts/stage-macos-web.sh",
     "testflight:ios": "bash scripts/testflight-ios.sh",
+    "testflight:macos": "bash scripts/testflight-macos.sh",
     "prepare": "lefthook install"
   },
   "devDependencies": {

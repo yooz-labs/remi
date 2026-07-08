@@ -107,5 +107,41 @@ Store distribution profile headlessly — no signed-in Xcode account needed.
 
 ## macOS
 
-Deferred (Phase 2, #658). When we add it, decide between a yooz-notes-style
-WKWebView client shell and folding the client into the menu-bar hub app (#648).
+The macOS client IS the menu-bar hub app (`packages/macos/`, epic #648 — see
+`docs/MACOS_APP.md`). Same local path as iOS:
+
+```bash
+bun run app:version --bump-build     # shared version line with iOS; commit it
+bun run testflight:macos -- --upload
+```
+
+One-off unique build without touching the config (same override as iOS):
+`REMI_BUILD_NUMBER=$(date +%y%m%d%H%M) bun run testflight:macos -- --upload`.
+
+The script stages the web UI into the app, archives, exports a signed Mac App
+Store **.pkg** (macOS's .ipa equivalent), and uploads with `altool -t macos`.
+Same `.env` / ASC API key as iOS.
+
+One-time setup (beyond the iOS list):
+
+- App Store Connect > My Apps > Remi (`live.yooz.remi`) > **+ Add Platform >
+  macOS**. Same bundle id = universal purchase; macOS gets its own version
+  line and build train (which is why sharing `config/app-release.json`'s
+  build counter with iOS is safe).
+- A **Mac Installer Distribution** certificate in the login keychain (shows
+  as "3rd Party Mac Developer Installer" for older-generation certs — either
+  works). It signs the .pkg and is the one credential iOS never needed. A
+  missing one fails the export step with "no .pkg produced". Already present
+  on the primary dev machine (verified 2026-07-07; export produced a signed
+  .pkg end-to-end).
+
+Preflight (macOS-specific):
+
+- [ ] App Sandbox + network-client entitlements only (TestFlight validation
+      rejects unsandboxed executables — the app never bundles the remi binary).
+- [ ] `ITSAppUsesNonExemptEncryption=false` in the macOS Info.plist (set).
+- [ ] AppIcon present (`packages/macos/Remi/Assets.xcassets/AppIcon.appiconset`).
+- [ ] On-machine smoke: menu-bar icon states + web UI against a live hub
+      (`remi serve`), kill-matrix from `docs/MACOS_APP.md`.
+
+Testers install via the TestFlight app on macOS (App Store > TestFlight).
