@@ -72,8 +72,9 @@ describe('AutoApproveGate', () => {
   // genuine subagent-tagged one.
   let resets: number;
   // #751: records parkForPTY() calls (subagent escalations parked for PTY
-  // arbitration instead of held/denied).
+  // arbitration instead of held/denied). #763: the summary passed with each.
   let parks: PermissionRequestHookInput[];
+  let parkSummaries: (string | undefined)[];
 
   function evaluator(
     result: AutoApproveResult,
@@ -111,8 +112,9 @@ describe('AutoApproveGate', () => {
           escalations.push(i);
           return generateId();
         },
-        parkForPTY: (i) => {
+        parkForPTY: (i, summary) => {
           parks.push(i);
+          parkSummaries.push(summary);
         },
       },
       SID,
@@ -145,8 +147,9 @@ describe('AutoApproveGate', () => {
           escalations.push(i);
           return generateId();
         },
-        parkForPTY: (i) => {
+        parkForPTY: (i, summary) => {
           parks.push(i);
+          parkSummaries.push(summary);
         },
         escalateModel: 'big-model',
       },
@@ -175,6 +178,7 @@ describe('AutoApproveGate', () => {
     subagent = false;
     resets = 0;
     parks = [];
+    parkSummaries = [];
     tracker = new QuestionPresenceTracker(() => {});
     configureLogger({ writeLog: () => {} });
   });
@@ -485,6 +489,15 @@ describe('AutoApproveGate', () => {
     expect(submits).toHaveLength(0); // never types into the main PTY
     expect(escalations).toHaveLength(0);
     expect(parks).toHaveLength(1);
+  });
+
+  test('#763: the escalate verdict summary is threaded into the park', async () => {
+    subagent = false;
+    const d = await gateWith(evaluator(escalateWithSummary)).resolvePermission(
+      pr({ agent_id: 'agent-1' }),
+    );
+    expect(d).toBe('passthrough');
+    expect(parkSummaries).toEqual(['Force-push to main?']);
   });
 
   test('#751: a parkForPTY throw is absorbed; the passthrough still stands', async () => {

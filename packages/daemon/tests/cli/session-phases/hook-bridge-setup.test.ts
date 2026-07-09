@@ -1634,7 +1634,9 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(true);
     expect(pushed.length).toBe(0);
 
-    // Subagent finished without the user seeing the prompt (background).
+    // #763: a MAIN-tagged PostToolUse (routine status churn from another
+    // agent's work) must NOT wipe the still-live parked record — the prompt
+    // may not have had a chance to render yet.
     hookServer.fire('PostToolUse', {
       session_id: 'claude-sub-B',
       hook_event_name: 'PostToolUse',
@@ -1642,7 +1644,21 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
       tool_response: { exit_code: 0 },
     });
+    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(pushed.length).toBe(0);
 
+    // The subagent's OWN next tagged PreToolUse proves its permission
+    // resolved without a render (allowlist absorbed / answered): the parked
+    // record expires so it cannot stale-merge later. No push ever fired.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-sub-B',
+      agent_id: 'subagent-B',
+      agent_type: 'task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_use_id: 'tu_sub_b_next',
+    });
     expect(tracker.hasPendingForTest()).toBe(false);
     expect(pushed.length).toBe(0);
   });

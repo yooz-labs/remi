@@ -386,7 +386,8 @@ export function setupHookBridge(
       // parks its rich question (same builder as a real escalation, minus the
       // push/registration side effects) and answers 'passthrough'; the tracker
       // pushes it only if Claude's native prompt actually renders on the PTY.
-      parkForPTY: (i) => tracker.parkAwaitingPTY(hookBridge.buildPermissionQuestion(i)),
+      parkForPTY: (i, summary) =>
+        tracker.parkAwaitingPTY(hookBridge.buildPermissionQuestion(i, summary)),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
@@ -405,9 +406,14 @@ export function setupHookBridge(
       onEscalate: () => {
         tracker.onAutoApproveEscalate();
         deps.statusWriter?.autoApproveEnd('escalated', Date.now());
-        // No status broadcast here: escalate already routes through
+        // No status broadcast here: a MAIN escalate routes through
         // handlePermissionRequest -> onStatusChange('waiting'), which broadcasts
-        // the 'waiting' session_update. Re-emitting would double-emit.
+        // the 'waiting' session_update; re-emitting would double-emit. A PARKED
+        // subagent escalation (#751) bypasses handlePermissionRequest, so no
+        // 'waiting' fires here either — deliberately: the prompt may never
+        // render (allowlist absorption). When it does render, the PTY parser
+        // flips the status, and the web pill prioritizes the pushed question
+        // over raw status anyway (#763 finding 3).
       },
       // #573: a binary escalation that HOLDS its hook blocks Claude's response,
       // so Claude never renders the native prompt and the tracker's PTY-render
@@ -549,7 +555,15 @@ export function setupHookBridge(
   hookServer.on('PreToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
-    if (isSubagentEvent(input)) return;
+    if (isSubagentEvent(input)) {
+      // #763: an agent-tagged PreToolUse means that agent's pending
+      // permission resolved without a PTY render we could pair (the
+      // allowlist absorbed it post-passthrough, or it was answered
+      // out-of-band) — expire its parked record so it cannot stale-merge
+      // onto a later unrelated prompt.
+      tracker.noteAgentAdvanced(input.agent_id);
+      return;
+    }
     // NB: do NOT cancel the in-flight auto-approve eval here (#537). Under
     // synchronous decisions (#496) Claude BLOCKS on the PermissionRequest until
     // the daemon answers, so a running eval is never stale — it is the verdict

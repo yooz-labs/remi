@@ -69,6 +69,15 @@ function agentKey(question: Question): string {
  *  long enough to matter to the user. */
 const DEFAULT_ORPHAN_DEBOUNCE_MS = 1500;
 
+/** How long a parked awaiting-PTY record (#751) survives other agents'
+ *  status churn (#763). A prompt that will render does so within
+ *  milliseconds of the hook's passthrough answer; one that never renders is
+ *  normally expired by its own agent's next PreToolUse (`noteAgentAdvanced`).
+ *  The TTL is the backstop for an agent that stalls without either signal,
+ *  so a stale parked record cannot merge onto an unrelated prompt minutes
+ *  later. */
+const PARKED_RECORD_TTL_MS = 120_000;
+
 export interface QuestionPresenceTrackerDeps {
   /** True iff the session currently has at least one registered, unanswered
    *  question (`sessionRegistry.getSession(id)?.currentQuestions.size > 0`).
@@ -87,6 +96,8 @@ export interface QuestionPresenceTrackerDeps {
   /** Override for `DEFAULT_ORPHAN_DEBOUNCE_MS`. Exists so tests can use a
    *  short real timer instead of faking time. */
   orphanDebounceMs?: number;
+  /** Clock override for the parked-record TTL (#763). Defaults to Date.now. */
+  nowMs?: () => number;
 }
 
 export class QuestionPresenceTracker {
@@ -99,13 +110,21 @@ export class QuestionPresenceTracker {
   private pending = new Map<string, Question>();
 
   /** Keys of `pending` records PARKED by the gate awaiting PTY arbitration
-   *  (#751): a subagent-tagged escalation the gate answered 'passthrough'
-   *  instead of holding or denying. Unlike a normal pending record (an
-   *  in-flight gate escalation whose own push is imminent), a parked record
-   *  must NOT count as gate-owned in the #712 orphan check — the PTY render
-   *  IS its push trigger. Always a subset of `pending`'s keys; every
-   *  `pending` delete/clear site mirrors onto this set. */
-  private awaitingPTY = new Set<string>();
+   *  (#751), mapped to the epoch-ms they were parked. Unlike a normal pending
+   *  record (an in-flight gate escalation whose own push is imminent), a
+   *  parked record must NOT count as gate-owned in the #712 orphan check —
+   *  the PTY render IS its push trigger — and it must SURVIVE the unscoped
+   *  status-change clear (#763): in an agent-team session every other
+   *  agent's hook activity flips status constantly, and wiping a still-live
+   *  parked record loses the merged push (or the whole prompt, when an
+   *  unrelated live question makes `hasLiveQuestions` suppress the orphan).
+   *  A parked entry expires when its OWN agent advances
+   *  (`noteAgentAdvanced` — the permission was allowlist-absorbed or
+   *  answered), on consume (render pairing), on `clearPending`
+   *  (restart/rotation), or after `PARKED_RECORD_TTL_MS`. Always a subset of
+   *  `pending`'s keys; every `pending` delete/clear site mirrors onto this
+   *  map. */
+  private awaitingPTY = new Map<string, number>();
 
   /** True while a permission prompt is on the main PTY. Set by
    *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
@@ -220,7 +239,22 @@ export class QuestionPresenceTracker {
     // recordPendingHook may have kept a richer existing record instead of
     // this one; the parked flag applies to whatever record now owns the key
     // (both are hook-derived for the same agent's prompt cycle).
-    this.awaitingPTY.add(agentKey(question));
+    this.awaitingPTY.set(agentKey(question), this.deps.nowMs?.() ?? Date.now());
+  }
+
+  /**
+   * An agent-tagged PreToolUse arrived (#763): that agent's pending
+   * permission resolved WITHOUT a PTY render for us to pair (the session
+   * allowlist absorbed it after the gate's passthrough, or it was answered
+   * out-of-band). Its parked record is dead — expire it so it cannot
+   * stale-merge onto a later unrelated prompt. Scoped strictly to that
+   * agent's key; other agents' parked records are untouched.
+   */
+  noteAgentAdvanced(agentId: string | undefined): void {
+    if (agentId === undefined) return;
+    if (this.awaitingPTY.delete(agentId)) {
+      this.pending.delete(agentId);
+    }
   }
 
   /**
@@ -519,8 +553,19 @@ export class QuestionPresenceTracker {
    */
   onStatusChange(status: AgentStatus): void {
     if (status !== 'waiting') {
-      this.pending.clear();
-      this.awaitingPTY.clear();
+      // #763: spare still-fresh PARKED records — the main status pipeline
+      // flips on every agent's hook activity, and a teammate's routine
+      // PreToolUse must not wipe another agent's parked question before its
+      // prompt had a chance to render. Parked entries have their own
+      // lifecycle (own-agent advance / render consume / TTL / clearPending);
+      // everything else clears exactly as before.
+      const now = this.deps.nowMs?.() ?? Date.now();
+      for (const key of [...this.pending.keys()]) {
+        const parkedAt = this.awaitingPTY.get(key);
+        if (parkedAt !== undefined && now - parkedAt <= PARKED_RECORD_TTL_MS) continue;
+        this.pending.delete(key);
+        this.awaitingPTY.delete(key);
+      }
       this.ptyShowingQuestion = false;
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
@@ -598,7 +643,14 @@ export class QuestionPresenceTracker {
    *  pending record and it is parked — PTY prompts rarely name their agent,
    *  mirroring `onPTYPromptVisible`'s own pairing heuristic). With 2+ pending
    *  records and no exact match, no guess is made here; the prompt falls to
-   *  the normal owned/orphan logic. */
+   *  the normal owned/orphan logic.
+   *
+   *  ACCEPTED tradeoff (#763 finding 2): the sole-candidate fallback can pair
+   *  an unrelated render (e.g. a hook-less agent-team prompt) with the single
+   *  parked record, same as the pre-existing #483/#717 pairing heuristic.
+   *  Parking's longer lifetime widens the window, but own-agent-advance
+   *  expiry (`noteAgentAdvanced`) + the TTL bound it; revisit only if soaks
+   *  show real misattribution. */
   private matchAwaitingPTYKey(ptyQuestion: Question): string | undefined {
     const key = agentKey(ptyQuestion);
     if (this.awaitingPTY.has(key) && this.pending.has(key)) return key;

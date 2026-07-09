@@ -906,23 +906,105 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes[0]?.text).toBe('agent · Edit: config.toml');
     });
 
-    it("status leaving 'waiting' expires a parked record (allowlist absorbed the request)", async () => {
+    it("#763: a fresh parked record SURVIVES another agent's status churn and still merges on render", () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
         hasLiveQuestions: () => false,
         orphanDebounceMs: DEBOUNCE_MS,
       });
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('agent · Bash: ls'),
+        agentId: 'agent-A',
+      });
+
+      // Main / teammate hook activity flips status constantly in team runs;
+      // that must NOT wipe A's still-live parked record.
+      tracker.onStatusChange('executing');
+      tracker.onStatusChange('thinking');
+      expect(tracker.awaitingPTYCountForTest()).toBe(1);
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('agent · Bash: ls'); // merged, not bare
+    });
+
+    it("#763: noteAgentAdvanced expires exactly that agent's parked record (allowlist absorbed)", async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('A · Bash: ls'),
+        agentId: 'agent-A',
+      });
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('B · Edit: x.md'),
+        agentId: 'agent-B',
+      });
+
+      tracker.noteAgentAdvanced('agent-A'); // A's PreToolUse: permission resolved silently
+      tracker.noteAgentAdvanced(undefined); // main-tagged: no-op
+      expect(tracker.awaitingPTYCountForTest()).toBe(1);
+
+      // B's prompt renders and still pairs by exact key.
+      tracker.onOrphanPTYPrompt({ ...makePTYQuestion('proceed?'), agentId: 'agent-B' });
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('B · Edit: x.md');
+      // A later unnamed prompt is a plain orphan again (A's record is gone).
+      tracker.onOrphanPTYPrompt(makePTYQuestion('unrelated later prompt'));
+      expect(pushes.length).toBe(1);
+      await wait(DEBOUNCE_MS * 2);
+      expect(pushes.length).toBe(2);
+      expect(pushes[1]?.text).toBe('unrelated later prompt');
+    });
+
+    it('#763: a parked record past the TTL is dropped by the next status change', () => {
+      let now = 1_000_000;
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+        nowMs: () => now,
+      });
       tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
 
-      tracker.onStatusChange('executing'); // Claude proceeded; prompt never rendered
-      expect(tracker.awaitingPTYCountForTest()).toBe(0);
+      now += 119_000;
+      tracker.onStatusChange('executing');
+      expect(tracker.awaitingPTYCountForTest()).toBe(1); // inside TTL: spared
 
-      // A later prompt is a plain orphan again: debounced, pushed bare.
-      tracker.onOrphanPTYPrompt(makePTYQuestion('unrelated later prompt'));
-      expect(pushes.length).toBe(0);
-      await wait(DEBOUNCE_MS * 2);
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('unrelated later prompt');
+      now += 2_000; // 121s parked: past the 120s TTL
+      tracker.onStatusChange('executing');
+      expect(tracker.awaitingPTYCountForTest()).toBe(0);
+      expect(tracker.hasPendingForTest()).toBe(false);
+    });
+
+    it("#763: NORMAL pending records still clear when status leaves 'waiting'", () => {
+      const tracker = new QuestionPresenceTracker(() => {}, {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?')); // not parked
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('agent · Bash: ls'),
+        agentId: 'agent-A',
+      });
+
+      tracker.onStatusChange('executing');
+
+      expect(tracker.pendingCountForTest()).toBe(1); // only the parked one survives
+      expect(tracker.awaitingPTYCountForTest()).toBe(1);
+    });
+
+    it('#763: clearPending (restart/rotation) still wipes parked records', () => {
+      const tracker = new QuestionPresenceTracker(() => {}, {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.clearPending();
+      expect(tracker.awaitingPTYCountForTest()).toBe(0);
+      expect(tracker.hasPendingForTest()).toBe(false);
     });
 
     it('a NORMAL pending record for the prompt agent still suppresses (echo protection intact)', async () => {
