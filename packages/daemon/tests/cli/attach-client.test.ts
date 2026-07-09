@@ -9,6 +9,7 @@ import {
   createPing,
   createQuestion,
   createQuestionResolved,
+  createRemiStatus,
   createReplayBatch,
   deserialize,
   generateId,
@@ -478,5 +479,73 @@ describe('runAttachClient', () => {
     const output = readOutput();
     expect(output).toContain('[remi] pending question: Allow push?');
     expect(output.split('[remi] question answered').length).toBe(2); // exactly once
+  });
+
+  // #754: remi_status is display state for the reserved-row bar; on a non-TTY
+  // output (piped/tests) the bar never starts and nothing is printed.
+  test('consumes remi_status without printing when stdout is not a TTY', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 7,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(targetSessionId as UUID, {
+                    pid: 1,
+                    connections: 1,
+                    sessionStatus: 'thinking',
+                    adapters: ['ws'],
+                    wsPort: 19924,
+                    sessionId: targetSessionId as UUID,
+                    repo: 'remi',
+                    branch: 'develop',
+                    autoApprove: {
+                      inFlight: 0,
+                      sinceS: 0,
+                      lastVerdict: 'none',
+                      lastVerdictAtS: 0,
+                    },
+                    attached: true,
+                    queuedCount: 0,
+                  }),
+                ),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 7,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    // No bar escapes (reverse video / DECSTBM) and no bar label leaked. (The
+    // "[attached to session ...]" header is unrelated and expected.)
+    expect(output).not.toContain('| attached');
+    expect(output).not.toContain('\x1b[7m');
+    expect(output).not.toContain('\x1b[1;');
   });
 });

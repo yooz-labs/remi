@@ -16,6 +16,7 @@ import type {
   DiscoverableSession,
   Message,
   Question,
+  RemiStatus,
   Session,
   StructuredMessage,
   Timestamp,
@@ -104,7 +105,8 @@ export type ProtocolMessage =
   | HubStatusMessage
   | SessionRotatedMessage
   | SessionViewsMessage
-  | QuestionResolvedMessage;
+  | QuestionResolvedMessage
+  | RemiStatusMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -334,6 +336,22 @@ export interface QuestionResolvedMessage {
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
   readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+}
+
+/**
+ * Daemon status snapshot broadcast (#754). Fired on the StatusWriter's
+ * debounced flush (and once to each newly attached connection), never
+ * recorded into replay history — it is ephemeral display state. The terminal
+ * attach client renders it on the same reserved-row status bar the wrapper
+ * draws; other clients may ignore it.
+ */
+export interface RemiStatusMessage {
+  readonly type: 'remi_status';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** The daemon's primary session the snapshot describes. */
+  readonly sessionId: UUID;
+  readonly status: RemiStatus;
 }
 
 /** Session state update */
@@ -909,6 +927,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'session_rotated',
     'session_views',
     'question_resolved',
+    'remi_status',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1217,6 +1236,22 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+  };
+}
+
+/**
+ * Create a daemon status snapshot broadcast (#754). The status object is
+ * copied shallowly (plus autoApprove one level deep) so a later in-place
+ * mutation of the daemon's live status cannot retroactively change a message
+ * already queued for serialization.
+ */
+export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatusMessage {
+  return {
+    type: 'remi_status',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    status: { ...status, autoApprove: { ...status.autoApprove } },
   };
 }
 

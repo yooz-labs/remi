@@ -1484,6 +1484,12 @@ function App() {
         break;
       }
 
+      case 'remi_status':
+        // #754: terminal status-bar snapshot; the web app renders session
+        // state from session_update/transcript flows instead. Explicitly
+        // ignored so the debounced broadcast doesn't spam the debug log.
+        break;
+
       default:
         console.debug(`[App] Unhandled message type: ${(message as { type: string }).type}`);
         break;

@@ -447,3 +447,69 @@ export interface DiscoverableSession {
   /** Hostname of the daemon hosting this session */
   readonly daemonHost?: string;
 }
+
+/**
+ * Auto-approve eval state surfaced in status displays (#560). Driven by a
+ * COUNT (inc on eval start, dec on every end path), not a boolean spinner —
+ * a count cannot get "stuck" when concurrent evals interleave start/stop.
+ * Times are epoch SECONDS so the statusline shell script can compute elapsed
+ * with `date +%s`.
+ *
+ * Lives in shared (#754) because the daemon broadcasts the full status
+ * snapshot to clients (`remi_status`), and the terminal attach client renders
+ * the same reserved-row bar the wrapper does.
+ */
+export interface AutoApproveState {
+  /** Evals in flight on this daemon. 0 = idle. */
+  inFlight: number;
+  /** Epoch seconds the current in-flight batch began (set on 0->1, cleared on
+   *  1->0). Status displays show `evaluating <now-sinceS>s`. */
+  sinceS: number;
+  /** Last settled verdict, for a post-eval cue. */
+  lastVerdict: 'approved' | 'escalated' | 'none';
+  /** Epoch seconds of the last verdict; displays fade 'approved' after a few
+   *  seconds and keep 'escalated' (needs-you) until the next eval. */
+  lastVerdictAtS: number;
+}
+
+/**
+ * The daemon's status snapshot: written (debounced) to the per-port status
+ * file the Claude statusline script reads, rendered on the wrapper's
+ * reserved-row status bar, and broadcast to clients as `remi_status` (#754)
+ * so an attach client can render the same bar.
+ */
+export interface RemiStatus {
+  pid: number;
+  connections: number;
+  sessionStatus: AgentStatus;
+  adapters: string[];
+  wsPort: number;
+  sessionId: UUID | null;
+  repo: string;
+  branch: string;
+  autoApprove: AutoApproveState;
+  /**
+   * #755: true when a client holds the session's exclusive PTY slot
+   * (`activeConnectionId !== null`) — the status label reads "attached".
+   * Unlike `connections`, this never counts query-mode utility clients
+   * (`remi ls` / `remi kill` / phone session-list polls). Optional so an
+   * older writer/reader pair degrades gracefully.
+   */
+  attached?: boolean;
+  /** #755: clients queued behind the active one (read-only viewers). */
+  queuedCount?: number;
+  /**
+   * Distinguishes a session-less hub daemon (`remi serve`, #542) from an
+   * ordinary single-session daemon/wrapper process. Optional so an older
+   * writer/reader pair (mixed-version upgrade window) degrades gracefully
+   * rather than failing a strict shape check.
+   */
+  mode?: 'hub' | 'session';
+  /**
+   * The remi binary version this process runs (#539). A daemon holds its
+   * binary for life; `remi status`/`ls` compare this against the installed
+   * binary to flag stale daemons. Optional for the same mixed-version
+   * reasons as `mode`.
+   */
+  version?: string;
+}
