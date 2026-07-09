@@ -42,6 +42,17 @@ describe('buildStatuslineScript', () => {
     expect(script).toContain('STATE="evaluating');
     expect(script).toContain('STATE="needs you"');
   });
+
+  test('labels the real attach state, keeping the counter label as legacy fallback (#755)', () => {
+    const script = buildStatuslineScript('/x');
+    // reads the attach fields; "unset" marks an older daemon's status file
+    expect(script).toContain('.attached');
+    expect(script).toContain('.queuedCount');
+    expect(script).toContain('CLIENT_INFO="attached"');
+    expect(script).toContain('waiting');
+    // legacy fallback stays for pre-#755 status files
+    expect(script).toContain('client(s)');
+  });
 });
 
 describe('installStatusLine', () => {

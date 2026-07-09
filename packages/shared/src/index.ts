@@ -16,6 +16,8 @@ export type {
   MessageState,
   MessageSender,
   AgentStatus,
+  AutoApproveState,
+  RemiStatus,
   Message,
   BulletType,
   Bullet,
@@ -97,6 +99,7 @@ export type {
   SessionViewsMessage,
   SessionViewMeta,
   QuestionResolvedMessage,
+  RemiStatusMessage,
   CreateHelloAckOptions,
   CreateHelloOptions,
 } from './protocol.ts';
@@ -151,6 +154,7 @@ export {
   createSessionRotated,
   createSessionViews,
   createQuestionResolved,
+  createRemiStatus,
   MessageIdTracker,
 } from './protocol.ts';
 

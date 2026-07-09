@@ -10,9 +10,10 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, RemiStatus, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
 import { DetachScanner } from './detach-scanner.ts';
+import { StatusBar, childRows } from './status-bar.ts';
 
 export interface AttachClientOptions {
   host: string;
@@ -46,6 +47,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   let rawPtyTimer: ReturnType<typeof setTimeout> | null = null;
   let detachPending = false;
   let detachAckTimer: ReturnType<typeof setTimeout> | null = null;
+  // #754: latest daemon status snapshot (remi_status broadcast) + the
+  // reserved-row bar rendering it — the same StatusBar the wrapper draws.
+  // Only on a real TTY: piped/test output must never receive bar escapes.
+  const statusBarEligible = process.stdout.isTTY === true;
+  let latestStatus: RemiStatus | null = null;
+  let statusBar: StatusBar | null = null;
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -61,6 +68,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   }
 
   function restoreTerminal(): void {
+    // #754: halt the bar loop and clear its reserved row before anything else
+    // writes to the terminal, so the returned shell starts clean.
+    if (statusBar) {
+      statusBar.stop();
+      statusBar = null;
+    }
     if (detachAckTimer) {
       clearTimeout(detachAckTimer);
       detachAckTimer = null;
@@ -135,11 +148,42 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     }
   }
 
+  /**
+   * #754: start the reserved-row status bar once the first `remi_status`
+   * snapshot arrives (an older daemon never sends one, so no row is wasted).
+   * Reserving the row = reporting `rows - 1` to the daemon's PTY, exactly like
+   * wrapper mode; the StatusBar itself is the same class, drawing on this
+   * terminal's bottom row from the broadcast snapshots.
+   */
+  function startStatusBar(): void {
+    if (!statusBarEligible || statusBar !== null || resolved) return;
+    statusBar = new StatusBar({
+      getStdoutFd: () => (outputBroken ? null : outputFd),
+      getStatus: () => latestStatus as RemiStatus,
+      getSize: () => ({
+        cols: process.stdout.columns || 120,
+        rows: process.stdout.rows || 40,
+      }),
+      isEnabled: () => latestStatus !== null,
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    });
+    statusBar.start();
+    const cols = process.stdout.columns || 120;
+    const rows = process.stdout.rows || 40;
+    sendMessage(createTerminalResize(cols, childRows(rows, true)));
+  }
+
   function renderMessage(msg: ProtocolMessage): void {
     switch (msg.type) {
       case 'raw_pty_output':
         receivedRawPty = true;
         writeRawBytes(msg.data);
+        break;
+      case 'remi_status':
+        // #754: display state only — never printed as text. The bar's own
+        // 250ms repaint loop reads the latest snapshot.
+        latestStatus = msg.status;
+        if (attachedSessionId) startStatusBar();
         break;
       case 'agent_output':
       case 'structured_agent_output':
@@ -235,11 +279,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         };
         process.stdin.on('data', stdinListener);
 
-        // Forward terminal resize
+        // Forward terminal resize. #754: while the status bar is up, its row
+        // stays reserved (report rows-1, mirroring wrapper mode's childRows).
         resizeListener = () => {
           const cols = process.stdout.columns || 120;
           const rows = process.stdout.rows || 40;
-          sendMessage(createTerminalResize(cols, rows));
+          sendMessage(createTerminalResize(cols, childRows(rows, statusBar !== null)));
         };
         process.stdout.on('resize', resizeListener);
 
@@ -253,9 +298,13 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
           sendMessage(createTerminalResize(cols - 1, rows));
           resizeNudgeTimer = setTimeout(() => {
             resizeNudgeTimer = null;
-            sendMessage(createTerminalResize(cols, rows));
+            sendMessage(createTerminalResize(cols, childRows(rows, statusBar !== null)));
           }, 50);
         }
+
+        // #754: a remi_status broadcast may have raced ahead of the (real)
+        // hello_ack; start the bar from the stored snapshot now.
+        if (latestStatus !== null) startStatusBar();
 
         // Warn if no raw PTY data arrives within a few seconds
         rawPtyTimer = setTimeout(() => {

@@ -81,7 +81,24 @@ export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): st
     state = 'approved';
   }
 
-  const clients = status.connections > 0 ? `${status.connections} client(s)` : 'no clients';
+  // #755: label from the REAL attach state (exclusive PTY slot + FIFO queue),
+  // not the raw connection counter — `connections` also counts query-mode
+  // utility clients (remi ls / kill / phone list polls), which is how the bar
+  // used to read "1 client(s)" with nobody attached. Fall back to the old
+  // counter label only when the attach fields are absent (older writer).
+  const queued = status.queuedCount ?? 0;
+  const clients =
+    status.attached === undefined
+      ? status.connections > 0
+        ? `${status.connections} client(s)`
+        : 'no clients'
+      : status.attached
+        ? queued > 0
+          ? `attached (+${queued} waiting)`
+          : 'attached'
+        : queued > 0
+          ? `${queued} waiting`
+          : 'no clients';
   const repoBranch = status.repo ? `${status.repo}:${status.branch}` : status.branch;
   const head = repoBranch ? `remi:${status.wsPort} ${repoBranch}` : `remi:${status.wsPort}`;
   return `${head} | ${clients} | ${state}`;

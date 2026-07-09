@@ -34,10 +34,20 @@ REMI=""
 # avoid duplicating the remi fields just above the bar.
 REMI_STATUS_FILE="${remiDir}/status-\$REMI_PORT.json"
 if [ "\$REMI_STATUS_BAR" != "1" ] && [ -n "\$REMI_PORT" ] && [ -f "\$REMI_STATUS_FILE" ]; then
-  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH AA_INFLIGHT AA_SINCE AA_LASTV AA_LASTAT < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", .autoApprove.inFlight // 0, .autoApprove.sinceS // 0, .autoApprove.lastVerdict // "none", .autoApprove.lastVerdictAtS // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
+  IFS=\$'\\t' read -r S_PID S_CONNS S_STATUS S_REPO S_BRANCH AA_INFLIGHT AA_SINCE AA_LASTV AA_LASTAT S_ATTACHED S_QUEUED < <(jq -r '[.pid // 0, .connections // 0, .sessionStatus // "unknown", .repo // "", .branch // "", .autoApprove.inFlight // 0, .autoApprove.sinceS // 0, .autoApprove.lastVerdict // "none", .autoApprove.lastVerdictAtS // 0, (.attached | if . == null then "unset" else tostring end), .queuedCount // 0] | @tsv' "\$REMI_STATUS_FILE" 2>/dev/null)
   if [ -n "\$S_PID" ] && kill -0 "\$S_PID" 2>/dev/null; then
+    # #755: label from the real attach state (exclusive PTY slot + queue), not
+    # the raw connection counter (which also counts remi ls / kill / phone
+    # list polls). "unset" = status file from an older daemon -> old label.
     CLIENT_INFO="no clients"
-    [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
+    if [ "\$S_ATTACHED" = "unset" ]; then
+      [ "\$S_CONNS" != "0" ] && CLIENT_INFO="\${S_CONNS} client(s)"
+    elif [ "\$S_ATTACHED" = "true" ]; then
+      CLIENT_INFO="attached"
+      [ "\${S_QUEUED:-0}" != "0" ] && CLIENT_INFO="attached (+\${S_QUEUED} waiting)"
+    else
+      [ "\${S_QUEUED:-0}" != "0" ] && CLIENT_INFO="\${S_QUEUED} waiting"
+    fi
     # The status segment reflects auto-approve state when a permission is being
     # decided, otherwise Claude's agent status (#560). All arithmetic is guarded
     # (:-0) so a status file from an older daemon (no autoApprove key) renders

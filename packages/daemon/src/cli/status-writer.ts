@@ -18,34 +18,17 @@
  */
 
 import * as fs from 'node:fs';
-import type { AgentStatus, UUID } from '@remi/shared';
+import type { AgentStatus, AutoApproveState, RemiStatus } from '@remi/shared';
 
 /** Session status surfaced in the status file. `starting` now lives in the
  *  shared `AgentStatus` (#576), so this is just an alias kept for callers. */
 export type RemiSessionStatus = AgentStatus;
 
-/**
- * Auto-approve eval state surfaced in Claude's native status line (#560).
- *
- * Driven by a COUNT (inc on eval start, dec on every end path), not a boolean
- * spinner — a count cannot get "stuck" the way the old shared TerminalIndicator
- * did when concurrent evals (parallel subagents / multiple sessions) interleaved
- * its start/stop. `inFlight > 0` => a permission is being decided right now.
- * Times are epoch SECONDS so the statusline shell script can compute elapsed
- * with `date +%s` (macOS `date` has no millisecond format).
- */
-export interface AutoApproveState {
-  /** Evals in flight on this daemon. 0 = idle. */
-  inFlight: number;
-  /** Epoch seconds the current in-flight batch began (set on 0->1, cleared on
-   *  1->0). The statusline shows `evaluating <now-sinceS>s`. */
-  sinceS: number;
-  /** Last settled verdict, for a post-eval cue. */
-  lastVerdict: 'approved' | 'escalated' | 'none';
-  /** Epoch seconds of the last verdict; the statusline fades 'approved' after a
-   *  few seconds and keeps 'escalated' (needs-you) until the next eval. */
-  lastVerdictAtS: number;
-}
+/** `AutoApproveState` and `RemiStatus` moved to @remi/shared (#754) so the
+ *  daemon can broadcast the snapshot to clients (`remi_status`) and the attach
+ *  client can render the same reserved-row bar. Re-exported for existing
+ *  daemon-side importers. */
+export type { AutoApproveState, RemiStatus };
 
 export const IDLE_AUTO_APPROVE: AutoApproveState = {
   inFlight: 0,
@@ -60,32 +43,6 @@ export const IDLE_AUTO_APPROVE: AutoApproveState = {
  *  the render in statusline-installer.ts). */
 export const ESCALATE_FRESH_S = 60;
 
-export interface RemiStatus {
-  pid: number;
-  connections: number;
-  sessionStatus: RemiSessionStatus;
-  adapters: string[];
-  wsPort: number;
-  sessionId: UUID | null;
-  repo: string;
-  branch: string;
-  autoApprove: AutoApproveState;
-  /**
-   * Distinguishes a session-less hub daemon (`remi serve`, #542) from an
-   * ordinary single-session daemon/wrapper process. Optional so an older
-   * writer/reader pair (mixed-version upgrade window) degrades gracefully
-   * rather than failing a strict shape check.
-   */
-  mode?: 'hub' | 'session';
-  /**
-   * The remi binary version this process runs (#539). A daemon holds its
-   * binary for life; `remi status`/`ls` compare this against the installed
-   * binary to flag stale daemons. Optional for the same mixed-version
-   * reasons as `mode`.
-   */
-  version?: string;
-}
-
 export interface StatusWriterDeps {
   /** Returns the path to write to. Called on every flush so caller can swap files at runtime. */
   readonly getTargetFile: () => string;
@@ -95,12 +52,29 @@ export interface StatusWriterDeps {
   readonly writeLog: (msg: string) => void;
   /** Debounce window in ms. Default 300. Tests override to 0. */
   readonly debounceMs?: number;
+  /**
+   * #755: live attach state, stamped into the status on every flush so the
+   * "attached / N waiting" label tracks the session registry (the source of
+   * truth: `activeConnectionId` / `waitingConnections`) rather than the blunt
+   * `connections` counter, which also counts query-mode utility clients.
+   * Pull-based because attach transitions happen in several places (attach,
+   * disconnect, FIFO auto-promotion) that don't all flow through cli.ts.
+   * Optional: tests and the earliest boot phase run without it.
+   */
+  readonly getAttachState?: () => { attached: boolean; queuedCount: number } | null;
+  /**
+   * #754: broadcast the freshly-flushed snapshot to connected clients
+   * (`remi_status`), on the same debounce as the disk write. Optional and
+   * throw-guarded: display state must never break the writer.
+   */
+  readonly broadcast?: (status: Readonly<RemiStatus>) => void;
 }
 
 export class StatusWriter {
   private readonly status: RemiStatus;
-  private readonly deps: Required<StatusWriterDeps>;
+  private readonly deps: StatusWriterDeps & { debounceMs: number };
   private errorLogged = false;
+  private broadcastErrorLogged = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(initial: RemiStatus, deps: StatusWriterDeps) {
@@ -199,6 +173,32 @@ export class StatusWriter {
   }
 
   private write(): void {
+    // #755: refresh the attach-state fields from the registry at flush time so
+    // every scheduled write (status changes, evals, connection churn) carries
+    // current values; a pull here beats scattering updates over every attach /
+    // disconnect / auto-promotion site.
+    try {
+      const attach = this.deps.getAttachState?.();
+      if (attach) {
+        this.status.attached = attach.attached;
+        this.status.queuedCount = attach.queuedCount;
+      }
+    } catch (err) {
+      if (!this.broadcastErrorLogged) {
+        this.deps.writeLog(`[error] Status attach-state read failed: ${err}`);
+        this.broadcastErrorLogged = true;
+      }
+    }
+    // #754: clients get the same debounced snapshot the disk gets, regardless
+    // of whether the file write itself is enabled.
+    try {
+      this.deps.broadcast?.(this.status);
+    } catch (err) {
+      if (!this.broadcastErrorLogged) {
+        this.deps.writeLog(`[error] Status broadcast failed: ${err}`);
+        this.broadcastErrorLogged = true;
+      }
+    }
     if (!this.deps.isEnabled()) return;
     const targetFile = this.deps.getTargetFile();
     const tmpFile = `${targetFile}.tmp`;
