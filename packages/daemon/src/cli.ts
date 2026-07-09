@@ -66,6 +66,12 @@ import { IDLE_AUTO_APPROVE, type RemiStatus, StatusWriter } from './cli/status-w
 
 const gitInfo = detectGitInfo();
 
+// #754/#755: the StatusWriter is constructed before the AdapterRegistry and
+// SessionRegistry exist, so its broadcast + attach-state deps are late-bound
+// through these slots (assigned right after the AdapterRegistry below).
+let remiStatusBroadcast: ((status: Readonly<RemiStatus>) => void) | null = null;
+let remiAttachState: (() => { attached: boolean; queuedCount: number } | null) | null = null;
+
 const statusWriter = new StatusWriter(
   {
     pid: process.pid,
@@ -91,6 +97,8 @@ const statusWriter = new StatusWriter(
       serveMode && process.env['REMI_SPAWNED_CHILD'] !== '1' ? DAEMON_STATUS_FILE : STATUS_FILE,
     isEnabled: () => isWrapperMode() || cliDaemonMode,
     writeLog: writeToLog,
+    getAttachState: () => remiAttachState?.() ?? null,
+    broadcast: (status) => remiStatusBroadcast?.(status),
   },
 );
 
@@ -106,6 +114,7 @@ import {
   createError,
   createHelloAck,
   createQuestionResolved,
+  createRemiStatus,
   createReplayBatch,
   createSessionUpdate,
 } from '@remi/shared';
@@ -1058,6 +1067,18 @@ const sessionRegistry = new SessionRegistry(
           log(`Failed to send replay batch to promoted connection ${connectionId}`);
         }
       }
+      // #753 (#760 review finding 2): a promoted connection was queued
+      // (read-only) while live questions may have arrived — those broadcasts
+      // only reach the active connection, so re-send the pending set now.
+      const resent = resendPendingQuestions(
+        (m) => registry.sendRaw(connectionId, m),
+        sessionId,
+        result.currentQuestions,
+        claudeId ?? undefined,
+      );
+      if (resent > 0) {
+        log(`Re-sent ${resent} pending question(s) to promoted connection ${connectionId}`);
+      }
       cancelOrphanTimeout();
     },
   },
@@ -1489,6 +1510,25 @@ const registry = new AdapterRegistry({
   },
 });
 
+// #754: every debounced status flush also reaches connected clients, so the
+// terminal attach client can draw the same reserved-row bar the wrapper does.
+remiStatusBroadcast = (status) => {
+  const primary = getPrimarySessionId();
+  if (!primary) return;
+  registry.broadcast(createRemiStatus(primary, status as RemiStatus));
+};
+// #755: attach state pulled from the session registry at flush time — the
+// exclusive PTY slot + FIFO queue, never the blunt connection counter.
+remiAttachState = () => {
+  const primary = getPrimarySessionId();
+  if (!primary) return { attached: false, queuedCount: 0 };
+  const session = sessionRegistry.getSession(primary);
+  return {
+    attached: (session?.activeConnectionId ?? null) !== null,
+    queuedCount: sessionRegistry.waitingConnectionCount,
+  };
+};
+
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
  * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
@@ -1520,6 +1560,7 @@ const onQuestionResolved = (
   }
 };
 
+import { resendPendingQuestions } from './cli/handlers/pending-question-resend.ts';
 import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {

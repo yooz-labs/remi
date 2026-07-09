@@ -98,6 +98,15 @@ export class QuestionPresenceTracker {
    *  candidate; with 2+ different-agent entries it pushes bare (no guessing). */
   private pending = new Map<string, Question>();
 
+  /** Keys of `pending` records PARKED by the gate awaiting PTY arbitration
+   *  (#751): a subagent-tagged escalation the gate answered 'passthrough'
+   *  instead of holding or denying. Unlike a normal pending record (an
+   *  in-flight gate escalation whose own push is imminent), a parked record
+   *  must NOT count as gate-owned in the #712 orphan check — the PTY render
+   *  IS its push trigger. Always a subset of `pending`'s keys; every
+   *  `pending` delete/clear site mirrors onto this set. */
+  private awaitingPTY = new Set<string>();
+
   /** True while a permission prompt is on the main PTY. Set by
    *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
    *  AND by `clearPending` (the auto-approve cancelled branch confirms
@@ -189,6 +198,29 @@ export class QuestionPresenceTracker {
     // PTY-pairing fallback below).
     this.pending.delete(key);
     this.pending.set(key, question);
+    // A normal (gate-owned) record replaces any parked one for this agent;
+    // parkAwaitingPTY re-adds the flag after routing through here (#751).
+    this.awaitingPTY.delete(key);
+  }
+
+  /**
+   * Park a subagent-tagged permission question awaiting PTY arbitration
+   * (#751). The gate answered the hook 'passthrough' (no hold, no deny, no
+   * push): Claude runs its normal permission flow, so either the session
+   * allowlist absorbs the request silently (the record then expires on the
+   * next status transition, like any pending record) or the native prompt
+   * renders on the main PTY — `onOrphanPTYPrompt` recognizes the parked
+   * record, merges its rich labels onto the parsed prompt, and pushes
+   * immediately (no orphan debounce: hook + render is positive
+   * double-confirmation). The PTY is the arbiter of whether the user is
+   * asked.
+   */
+  parkAwaitingPTY(question: Question): void {
+    this.recordPendingHook(question);
+    // recordPendingHook may have kept a richer existing record instead of
+    // this one; the parked flag applies to whatever record now owns the key
+    // (both are hook-derived for the same agent's prompt cycle).
+    this.awaitingPTY.add(agentKey(question));
   }
 
   /**
@@ -231,6 +263,7 @@ export class QuestionPresenceTracker {
     // Consume BEFORE the push so a re-entrant call cannot re-push the same
     // record, and so a later onPTYPromptVisible has no record to merge.
     this.pending.delete(recordKey);
+    this.awaitingPTY.delete(recordKey);
     this.pushedHeldIds.add(questionId);
     try {
       // held: bypass the cosmetic dedup + deliver regardless of an attached
@@ -305,10 +338,12 @@ export class QuestionPresenceTracker {
       // can't stale-merge onto a later unrelated prompt (recordKey stays
       // undefined here, so the delete below would otherwise skip them).
       this.pending.clear();
+      this.awaitingPTY.clear();
     }
     const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;
     if (recordKey !== undefined) {
       this.pending.delete(recordKey);
+      this.awaitingPTY.delete(recordKey);
     }
 
     // #718: a fallback hook record must not overwrite the PTY's own options
@@ -390,6 +425,16 @@ export class QuestionPresenceTracker {
       this.bufferedDuringEval = ptyQuestion;
       return;
     }
+    // #751 PTY-arbiter: a parked subagent escalation whose prompt has now
+    // rendered. Merge + push IMMEDIATELY through the normal pair path — no
+    // orphan debounce (hook + render is positive double-confirmation) and no
+    // gate-owned / live-question suppression (an unrelated live card must not
+    // eat the one prompt class this parking exists to surface).
+    const parkedKey = this.matchAwaitingPTYKey(ptyQuestion);
+    if (parkedKey !== undefined) {
+      this.onPTYPromptVisible(ptyQuestion);
+      return;
+    }
     if (this.isGateOwnedCycle(ptyQuestion)) {
       console.debug(
         `[QuestionPresenceTracker] Orphan PTY prompt suppressed (gate owns this cycle): "${ptyQuestion.text.slice(0, 60)}"`,
@@ -412,7 +457,10 @@ export class QuestionPresenceTracker {
    *  as "no live questions" (fail-open: a possibly-redundant push is far
    *  better than crashing the daemon or silently swallowing a real orphan). */
   private isGateOwnedCycle(ptyQuestion: Question): boolean {
-    if (this.pending.has(agentKey(ptyQuestion))) return true;
+    // A parked record (#751) never claims ownership: its push TRIGGER is the
+    // PTY render this check would otherwise suppress.
+    const key = agentKey(ptyQuestion);
+    if (this.pending.has(key) && !this.awaitingPTY.has(key)) return true;
     try {
       return this.deps.hasLiveQuestions?.() ?? false;
     } catch (err) {
@@ -472,6 +520,7 @@ export class QuestionPresenceTracker {
   onStatusChange(status: AgentStatus): void {
     if (status !== 'waiting') {
       this.pending.clear();
+      this.awaitingPTY.clear();
       this.ptyShowingQuestion = false;
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
@@ -534,6 +583,7 @@ export class QuestionPresenceTracker {
    */
   clearPending(): void {
     this.pending.clear();
+    this.awaitingPTY.clear();
     this.ptyShowingQuestion = false;
     this.autoApproveInFlight = false;
     this.bufferedDuringEval = null;
@@ -541,6 +591,22 @@ export class QuestionPresenceTracker {
     // #712: the prompt was answered in-terminal or the session is rotating —
     // either way an armed orphan timer for it must not fire a stale push.
     this.cancelOrphanTimer();
+  }
+
+  /** Match a rendered PTY prompt to a PARKED (#751 awaiting-PTY) record: an
+   *  exact agent-key match, or the sole-candidate fallback (exactly one
+   *  pending record and it is parked — PTY prompts rarely name their agent,
+   *  mirroring `onPTYPromptVisible`'s own pairing heuristic). With 2+ pending
+   *  records and no exact match, no guess is made here; the prompt falls to
+   *  the normal owned/orphan logic. */
+  private matchAwaitingPTYKey(ptyQuestion: Question): string | undefined {
+    const key = agentKey(ptyQuestion);
+    if (this.awaitingPTY.has(key) && this.pending.has(key)) return key;
+    if (this.pending.size === 1) {
+      const sole = [...this.pending.keys()][0] as string;
+      if (this.awaitingPTY.has(sole)) return sole;
+    }
+    return undefined;
   }
 
   /** Cancel any armed orphan-prompt debounce timer and discard its candidate. */
@@ -575,6 +641,11 @@ export class QuestionPresenceTracker {
   /** Test-only: number of distinct agents with a pending hook record. */
   pendingCountForTest(): number {
     return this.pending.size;
+  }
+
+  /** Test-only: number of pending records parked awaiting PTY arbitration (#751). */
+  awaitingPTYCountForTest(): number {
+    return this.awaitingPTY.size;
   }
 
   /** Test-only: whether an orphan-prompt debounce timer is currently armed. */

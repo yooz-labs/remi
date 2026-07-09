@@ -51,9 +51,38 @@ describe('formatStatusBar', () => {
     expect(out).toBe('remi:19924 remi:develop | no clients | thinking');
   });
 
-  test('client count pluralizes', () => {
+  test('client count pluralizes (legacy fallback: no attach fields on the status)', () => {
     expect(formatStatusBar(mkStatus({ connections: 2 }), NOW_MS)).toContain('| 2 client(s) |');
     expect(formatStatusBar(mkStatus({ connections: 0 }), NOW_MS)).toContain('| no clients |');
+  });
+
+  // #755: with attach fields present, the label reads the REAL attach state
+  // (exclusive PTY slot + FIFO queue), never the raw connection counter,
+  // which also counts query-mode utility clients (remi ls / kill / polls).
+  test('attached session reads "attached", not a connection count', () => {
+    const out = formatStatusBar(
+      mkStatus({ connections: 3, attached: true, queuedCount: 0 }),
+      NOW_MS,
+    );
+    expect(out).toContain('| attached |');
+    expect(out).not.toContain('client(s)');
+  });
+
+  test('attached with queued viewers reads "attached (+N waiting)"', () => {
+    expect(
+      formatStatusBar(mkStatus({ connections: 3, attached: true, queuedCount: 2 }), NOW_MS),
+    ).toContain('| attached (+2 waiting) |');
+  });
+
+  test('not attached: queued-only shows "N waiting"; none shows "no clients" even with query connections', () => {
+    expect(
+      formatStatusBar(mkStatus({ connections: 2, attached: false, queuedCount: 1 }), NOW_MS),
+    ).toContain('| 1 waiting |');
+    // A `remi ls` poll bumped connections but nothing is attached or queued:
+    // the pre-#755 bar showed "1 client(s)" here.
+    expect(
+      formatStatusBar(mkStatus({ connections: 1, attached: false, queuedCount: 0 }), NOW_MS),
+    ).toContain('| no clients |');
   });
 
   test('in-flight eval shows evaluating with elapsed seconds', () => {
