@@ -8,6 +8,7 @@ import {
   createHelloAck,
   createPing,
   createQuestion,
+  createQuestionResolved,
   createReplayBatch,
   deserialize,
   generateId,
@@ -265,12 +266,10 @@ describe('runAttachClient', () => {
     expect(pongMsg).toBeTruthy();
   });
 
-  test('suppresses question messages (raw PTY provides the interactive prompt)', async () => {
-    setupOutput();
-    const targetSessionId = generateId();
-    const question: Question = {
+  function makeQuestion(text: string): Question {
+    return {
       id: generateId() as UUID,
-      text: 'Allow file edit?',
+      text,
       options: [
         { label: 'Yes', value: 'yes', isRecommended: true, isYes: true, isNo: false },
         { label: 'No', value: 'no', isRecommended: false, isYes: false, isNo: true },
@@ -278,6 +277,15 @@ describe('runAttachClient', () => {
       allowsFreeText: false,
       isAnswered: false,
     };
+  }
+
+  // #753: a HELD permission (Model B) blocks Claude inside the hook, so no
+  // raw PTY bytes for the prompt ever exist — the LIVE question message is
+  // the only signal an attached terminal gets, and it must render.
+  test('renders a banner for a LIVE question (held prompts never paint the PTY)', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const question = makeQuestion('Allow file edit?');
 
     server = Bun.serve({
       port: TEST_PORT + 4,
@@ -295,6 +303,8 @@ describe('runAttachClient', () => {
           if (msg.type === 'hello') {
             ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
             setTimeout(() => {
+              // Duplicate delivery (daemon re-send + broadcast): renders once.
+              ws.send(serialize(createQuestion(question, targetSessionId as UUID)));
               ws.send(serialize(createQuestion(question, targetSessionId as UUID)));
             }, 50);
             setTimeout(() => ws.close(), 200);
@@ -313,8 +323,113 @@ describe('runAttachClient', () => {
     });
 
     const output = readOutput();
-    // Question messages are suppressed in terminal attach mode;
-    // the raw PTY output already contains the interactive prompt
-    expect(output).not.toContain('Allow file edit?');
+    expect(output).toContain('[remi] pending question: Allow file edit?');
+    expect(output).toContain('1) Yes  2) No');
+    expect(output).toContain("run 'remi unstick'");
+    // Bannered exactly once despite the duplicate delivery.
+    expect(output.split('pending question: Allow file edit?').length).toBe(2);
+  });
+
+  test('suppresses questions inside a replay batch (history cannot prove pendingness)', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const question = makeQuestion('Old replayed question?');
+
+    server = Bun.serve({
+      port: TEST_PORT + 5,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            ws.send(
+              serialize(
+                createReplayBatch(
+                  targetSessionId as UUID,
+                  [createQuestion(question, targetSessionId as UUID)],
+                  true,
+                ),
+              ),
+            );
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 5,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    // A replayed question may have been answered long ago (question_resolved
+    // is never recorded into history), so no banner.
+    expect(output).not.toContain('Old replayed question?');
+  });
+
+  test('acknowledges question_resolved only for questions it bannered', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const question = makeQuestion('Allow push?');
+    const unrelatedQuestionId = generateId() as UUID;
+
+    server = Bun.serve({
+      port: TEST_PORT + 6,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              // A resolved broadcast for a question never bannered: silent.
+              ws.send(
+                serialize(
+                  createQuestionResolved(targetSessionId as UUID, unrelatedQuestionId, 'answered'),
+                ),
+              );
+              ws.send(serialize(createQuestion(question, targetSessionId as UUID)));
+              ws.send(
+                serialize(createQuestionResolved(targetSessionId as UUID, question.id, 'answered')),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 250);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 6,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('[remi] pending question: Allow push?');
+    expect(output.split('[remi] question answered').length).toBe(2); // exactly once
   });
 });
