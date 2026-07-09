@@ -174,11 +174,21 @@ export interface AutoApproveGateDeps {
    * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
    * stuck true — proof of a tracker leak (a dropped PostToolUse(Task/Agent)
    * completion), never a real subagent prompt (those carry `agent_id` and
-   * default-deny instead). Optional so tests that don't wire it degrade to a
-   * no-op; the escalate-as-main recovery still happens without it, just
-   * without clearing the leaked state.
+   * park for PTY arbitration instead, #751). Optional so tests that don't
+   * wire it degrade to a no-op; the escalate-as-main recovery still happens
+   * without it, just without clearing the leaked state.
    */
   resetSubagentContext?: () => void;
+  /**
+   * Park a subagent-tagged escalation for PTY arbitration (#751): stash its
+   * rich question in the `QuestionPresenceTracker` (via
+   * `parkAwaitingPTY(hookBridge.buildPermissionQuestion(input))`) WITHOUT
+   * pushing or registering it. The gate answers the hook 'passthrough'; the
+   * question only surfaces if Claude's native prompt actually renders on the
+   * PTY. Optional so tests that don't wire it degrade to a plain passthrough
+   * (the rendered prompt then pushes bare via the #712 orphan path).
+   */
+  parkForPTY?: (input: PermissionRequestHookInput) => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -880,11 +890,19 @@ export class AutoApproveGate {
    *   - approve -> 'allow', deny -> 'deny' (Claude proceeds; NO PTY inject).
    *   - escalate (main) -> escalateToUser + 'passthrough' (Claude renders the
    *     prompt; the user answers).
-   *   - escalate / no-service / eval-error in a SUBAGENT-TAGGED context
-   *     (`agent_id` present) -> 'deny' via the hook response. This is the core
-   *     fix: the old PTY-inject default-deny couldn't tell whose prompt was on
-   *     the PTY for parallel subagents and leaked; the synchronous deny needs
-   *     no PTY at all.
+   *   - escalate / no-service / eval-error / pick on a SUBAGENT-TAGGED event
+   *     (`agent_id` present) -> park the rich question in the presence
+   *     tracker + 'passthrough' (#751 PTY-arbiter), REGARDLESS of
+   *     `isInSubagentContext()` (the tracker only brackets synchronous
+   *     Task/Agent spawns, so team members and async/background subagents
+   *     always observe it false — the tag on the event itself is the truth).
+   *     Claude then runs its NORMAL permission flow: the session allowlist
+   *     may absorb the request silently, or the native prompt renders on the
+   *     main PTY and the tracker merges the parked labels onto it and pushes
+   *     (answers inject; nothing is held). Replaces both prior behaviors:
+   *     silent default-deny (sync-Task shape, broke teammates with no trace)
+   *     and hold+push-as-main (async/team shape, pushed cards for prompts
+   *     the user never saw asked).
    *   - the SAME three branches with `isInSubagentContext()` true but NO
    *     `agent_id` on the input -> this is the #710 tracker-leak signature
    *     (a PostToolUse(Task/Agent) completion tagged with the spawned agent's
@@ -909,29 +927,28 @@ export class AutoApproveGate {
       );
     }
 
-    // No auto-approve: subagent default-denies via the response (no PTY, no
-    // leak); main escalates to the user (holding the hook when binary, #573).
+    // No auto-approve: main escalates to the user (holding the hook when
+    // binary, #573); a subagent-tagged event parks for PTY arbitration (#751).
     if (!service) {
+      if (isSubagent) {
+        log(
+          `[AutoApprove ${this.sessionTag}] Subagent PermissionRequest without auto-approve; parking for PTY arbitration`,
+        );
+        this.parkSubagentForPTY(input);
+        return 'passthrough';
+      }
       if (isInSubagentContext()) {
-        if (this.isSubagentEvent(input)) {
-          log(`[${this.sessionTag}] Subagent context without auto-approve; default-deny`);
-          return 'deny';
-        }
-        // #710: a MAIN-tagged event (no agent_id) reaching here means the
-        // tracker leaked, not a real subagent prompt. Reset and fall through
-        // to escalateMain below instead of denying the main agent.
+        // #710: a MAIN-tagged event (no agent_id) with the tracker stuck true
+        // means the tracker leaked, not a real subagent prompt. Reset it so
+        // the leak cannot linger (a genuine sync-Task bracket pops on its own
+        // PostToolUse; only a leak survives to be observed here).
         //
         // #716 (blanket-reset tradeoff): resetSubagentContext() clears ALL
         // tracked use_ids, not just the leaked one -- it cannot tell which
-        // entry is stale. If a genuinely-running concurrent synchronous Task
-        // is ALSO open right now, its own later agent_id-tagged permission
-        // requests will see isInSubagentContext() false and escalate as main
-        // instead of default-denying. Accepted: (a) that escalation is
-        // held/answerable (Model B), the same way async/background subagents
-        // and team members already behave; (b) the alternative -- silently
-        // denying the MAIN agent -- is the #710 bug this reset exists to fix.
+        // entry is stale. Post-#751 that is harmless for routing: subagent
+        // routing keys on the event's own agent_id, never on the tracker.
         logError(
-          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, no-service path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
+          `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, no-service path); resetting tracker. Possible subagent-context tracker leak.`,
         );
         this.deps.resetSubagentContext?.();
       }
@@ -987,12 +1004,14 @@ export class AutoApproveGate {
       result = await evalPromise;
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
+      // #751: a subagent-tagged event the eval could not decide parks for
+      // PTY arbitration (keys on the event's own agent_id alone; the
+      // tracker is sync-Task-only -- see resolvePermission's doc).
+      if (isSubagent) {
+        this.parkSubagentForPTY(input);
+        return 'passthrough';
+      }
       if (isInSubagentContext()) {
-        if (isSubagent) {
-          // #711: a genuine subagent deny must not flap the client pill.
-          this.markHandled(true);
-          return 'deny';
-        }
         // #710: MAIN-tagged + stuck tracker == leak, not a real subagent
         // prompt. Reset and fall through to escalateMain below. Blanket-reset
         // tradeoff (clears ALL tracked use_ids, not just the leaked one):
@@ -1023,10 +1042,21 @@ export class AutoApproveGate {
     }
     if (result.decision === 'pick') {
       // Multi-choice pick (#399): the response can't express it, so render the
-      // prompt (passthrough) and inject the 1-based index into the PTY. The
-      // index was validated against options length upstream. The discriminated
-      // union guarantees pickIndex, but guard defensively: a malformed result
-      // must escalate, not silently fall through to the subagent-deny below.
+      // prompt (passthrough) and inject the 1-based index into the PTY.
+      //
+      // #751: a subagent's prompt is never on the main PTY at decision time
+      // (the hook is blocked on this very response), so the inject below
+      // would either be dropped or -- worse, when an unrelated MAIN prompt is
+      // visible -- type into the wrong prompt. Park for PTY arbitration
+      // instead: the pick verdict is forfeited and the user answers the
+      // rendered prompt (terminal or merged push card).
+      if (isSubagent) {
+        this.parkSubagentForPTY(input);
+        return 'passthrough';
+      }
+      // The index was validated against options length upstream. The
+      // discriminated union guarantees pickIndex, but guard defensively: a
+      // malformed result must escalate, not silently fall through.
       if (result.pickIndex === undefined) {
         logError(`[AutoApprove ${this.sessionTag}] pick result missing pickIndex; escalating`);
         return this.escalatePassthrough(input);
@@ -1039,27 +1069,30 @@ export class AutoApproveGate {
       }
       return this.escalatePassthrough(input);
     }
-    // escalate: a subagent prompt the user cannot answer is default-denied via
-    // the response (no hang, no PTY). A MAIN-tagged event (agent_id absent)
-    // reaching here with isInSubagentContext() true is NOT a real subagent
-    // prompt: it is the #710 tracker-leak signature (a PostToolUse(Task/Agent)
-    // completion stamped with the SPAWNED agent's own agent_id never popped
-    // the use_id an earlier untagged PreToolUse tracked). Denying it would
-    // silently drop the main agent's own prompts (including AskUserQuestion)
-    // forever, so reset the tracker and fall through to escalate as main
-    // instead. Tradeoff (#710): on a legacy Claude Code version that predates
-    // agent_id, a genuine synchronous subagent prompt would now escalate+hold
-    // instead of deny — still answerable via the Model B hook response
-    // (below), strictly better than a silent main-agent deny.
+    // escalate on a subagent-tagged event: park for PTY arbitration (#751).
+    // Keys on the event's own agent_id alone -- the SubagentContextTracker
+    // only brackets SYNCHRONOUS Task/Agent spawns, so team members and
+    // async/background subagents always observe isInSubagentContext() false;
+    // the old AND-gate escalated their prompts to the phone as if they were
+    // the main agent's, while the sync-Task shape silently default-denied.
+    // The second opinion below is skipped deliberately: the hook answer is
+    // 'passthrough' either way, so a heavier model buys nothing here.
+    if (isSubagent) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Subagent escalate; parking for PTY arbitration (agent=${input.agent_id?.slice(0, 8)})`,
+      );
+      this.parkSubagentForPTY(input);
+      return 'passthrough';
+    }
+    // A MAIN-tagged event (agent_id absent) with isInSubagentContext() true is
+    // NOT a real subagent prompt: it is the #710 tracker-leak signature (a
+    // PostToolUse(Task/Agent) completion stamped with the SPAWNED agent's own
+    // agent_id never popped the use_id an earlier untagged PreToolUse tracked).
+    // Denying it would silently drop the main agent's own prompts (including
+    // AskUserQuestion) forever, so reset the tracker and fall through to
+    // escalate as main instead. Blanket-reset tradeoff (clears ALL tracked
+    // use_ids, not just the leaked one): see the no-service branch above (#716).
     if (isInSubagentContext()) {
-      if (isSubagent) {
-        log(`[AutoApprove ${this.sessionTag}] Subagent context; escalate->deny to prevent hang`);
-        // #711: a genuine subagent deny must not flap the client pill.
-        this.markHandled(true);
-        return 'deny';
-      }
-      // Blanket-reset tradeoff (clears ALL tracked use_ids, not just the
-      // leaked one): see the no-service branch above (#716).
       logError(
         `[AutoApprove ${this.sessionTag}] isInSubagentContext() true for a MAIN-agent PermissionRequest (tool=${input.tool_name}, escalate path); resetting tracker and escalating. Possible subagent-context tracker leak.`,
       );
@@ -1159,10 +1192,17 @@ export class AutoApproveGate {
     const pushHoldMs = this.deps.pushHoldMs ?? 0;
     // Disabled, or this escalation could not be answered via the hook response
     // anyway (multi-choice/design), or a subagent prompt the user can't answer:
-    // do not arm the race. Subagent context is read live (it may close before
-    // the verdict), but arming an early USER push for a subagent prompt would be
-    // wrong, so gate on the current value here.
-    if (pushHoldMs <= 0 || !this.isBinaryEscalation(input) || this.deps.isInSubagentContext()) {
+    // do not arm the race. #751: the subagent check keys on the event's own
+    // agent_id (the tracker misses async/team spawns); the tracker is ALSO
+    // consulted live (it may close before the verdict) to cover legacy events
+    // without agent_id, since arming an early USER push for a subagent prompt
+    // would be wrong either way.
+    if (
+      pushHoldMs <= 0 ||
+      !this.isBinaryEscalation(input) ||
+      this.isSubagentEvent(input) ||
+      this.deps.isInSubagentContext()
+    ) {
       return null;
     }
 
@@ -1300,6 +1340,35 @@ export class AutoApproveGate {
   private markHandled(isSubagent: boolean): void {
     this.deps.tracker.onAutoApproveHandled();
     this.safeCueWithArg('onHandled', this.deps.onHandled, { isSubagent });
+  }
+
+  /**
+   * #751 PTY-arbiter routing for a subagent-tagged permission the gate cannot
+   * decide (escalate verdict, eval error, forfeited pick, or no auto-approve):
+   * park the rich question in the presence tracker, then close the #484
+   * buffer window via the onEscalate cue (semantically this IS an escalation,
+   * just PTY-mediated; the terminal statusline reads 'escalated'). The caller
+   * answers the hook 'passthrough': Claude runs its normal permission flow,
+   * so the session allowlist may absorb the request silently, or the native
+   * prompt renders on the main PTY and the tracker pairs the parked record
+   * with it and pushes the merged card (answers inject; nothing is held).
+   * Park FIRST, cue SECOND — the cue may release a buffered PTY prompt whose
+   * pair+push must be able to find the record (mirrors escalateToUser).
+   *
+   * A parkForPTY throw is absorbed: the passthrough still stands, and the
+   * rendered prompt degrades to a bare #712 orphan push instead of a merged
+   * one.
+   */
+  private parkSubagentForPTY(input: PermissionRequestHookInput): void {
+    try {
+      this.deps.parkForPTY?.(input);
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] parkForPTY threw (prompt will fall to the orphan push path):`,
+        err,
+      );
+    }
+    this.safeCue('onEscalate', this.deps.onEscalate);
   }
 
   /**
