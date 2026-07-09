@@ -275,6 +275,46 @@ describe('createConnectionHandlers', () => {
       expect(replay.messages?.length).toBe(2);
     });
 
+    test('#753: pending questions are re-sent as LIVE question messages after attach', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // One question answered before this attach (must NOT be re-sent), one
+      // still pending (must arrive as a live `question` message).
+      const answeredId = generateId();
+      sessionRegistry.addQuestion(sessionId, {
+        id: answeredId,
+        text: 'old, already answered?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      sessionRegistry.removeQuestion(sessionId, answeredId);
+      const pendingId = generateId();
+      sessionRegistry.addQuestion(sessionId, {
+        id: pendingId,
+        text: 'Allow Bash: git push',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      const questionMsgs = sendCalls.filter((c) => c.message.type === 'question');
+      expect(questionMsgs).toHaveLength(1);
+      const q = questionMsgs[0]?.message as { question: { id: UUID; text: string } };
+      expect(q.question.id).toBe(pendingId);
+      expect(q.question.text).toBe('Allow Bash: git push');
+      // Ordering: hello_ack first, live questions after (and after any replay).
+      expect(sendCalls[0]?.message.type).toBe('hello_ack');
+      expect(sendCalls[sendCalls.length - 1]?.message.type).toBe('question');
+    });
+
     test('second concurrent connection is queued and still receives helloAck + replay', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI(2));
