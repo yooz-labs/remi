@@ -188,7 +188,7 @@ export interface AutoApproveGateDeps {
    * PTY. Optional so tests that don't wire it degrade to a plain passthrough
    * (the rendered prompt then pushes bare via the #712 orphan path).
    */
-  parkForPTY?: (input: PermissionRequestHookInput) => void;
+  parkForPTY?: (input: PermissionRequestHookInput, summary?: string) => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -1081,7 +1081,7 @@ export class AutoApproveGate {
       log(
         `[AutoApprove ${this.sessionTag}] Subagent escalate; parking for PTY arbitration (agent=${input.agent_id?.slice(0, 8)})`,
       );
-      this.parkSubagentForPTY(input);
+      this.parkSubagentForPTY(input, result.summary);
       return 'passthrough';
     }
     // A MAIN-tagged event (agent_id absent) with isInSubagentContext() true is
@@ -1359,9 +1359,9 @@ export class AutoApproveGate {
    * rendered prompt degrades to a bare #712 orphan push instead of a merged
    * one.
    */
-  private parkSubagentForPTY(input: PermissionRequestHookInput): void {
+  private parkSubagentForPTY(input: PermissionRequestHookInput, summary?: string): void {
     try {
-      this.deps.parkForPTY?.(input);
+      this.deps.parkForPTY?.(input, summary);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] parkForPTY threw (prompt will fall to the orphan push path):`,
