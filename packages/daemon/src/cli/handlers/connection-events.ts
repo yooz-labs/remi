@@ -21,6 +21,7 @@ import type { SessionRegistry } from '../../session/index.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
+import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
@@ -147,6 +148,18 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
             onPeerConnect?.(connectionId, metadata);
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
+            }
+            // #753: re-send the authoritative pending set as LIVE question
+            // messages after the replay (see pending-question-resend.ts for
+            // why replayed history cannot be trusted for pendingness).
+            const resent = resendPendingQuestions(
+              (m) => send(connectionId, m),
+              currentPrimary,
+              result.currentQuestions,
+              currentBinding().claudeSessionId ?? undefined,
+            );
+            if (resent > 0) {
+              log(`Re-sent ${resent} pending question(s) to connection ${connectionId}`);
             }
             cancelOrphanTimeout();
             log(

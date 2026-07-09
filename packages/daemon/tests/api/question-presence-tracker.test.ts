@@ -865,4 +865,102 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes.length).toBe(1);
     });
   });
+
+  describe('awaiting-PTY parking (#751)', () => {
+    const DEBOUNCE_MS = 20;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it('a parked record + rendered prompt pushes IMMEDIATELY, merged, no debounce', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+      expect(tracker.awaitingPTYCountForTest()).toBe(1);
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+      // Hook + render is positive double-confirmation: no orphan debounce.
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('reviewer · Bash: git push'); // merged rich label
+      expect(tracker.hasPendingForTest()).toBe(false); // record consumed
+      expect(tracker.awaitingPTYCountForTest()).toBe(0);
+    });
+
+    it('an unrelated LIVE question does not suppress a parked prompt (bypasses gate-owned check)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => true, // e.g. a held main card is open
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('agent · Edit: config.toml'),
+        agentId: 'agent-1',
+      });
+
+      // The PTY prompt does not name the agent: sole-candidate pairing applies.
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to make this edit?'));
+
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('agent · Edit: config.toml');
+    });
+
+    it("status leaving 'waiting' expires a parked record (allowlist absorbed the request)", async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+
+      tracker.onStatusChange('executing'); // Claude proceeded; prompt never rendered
+      expect(tracker.awaitingPTYCountForTest()).toBe(0);
+
+      // A later prompt is a plain orphan again: debounced, pushed bare.
+      tracker.onOrphanPTYPrompt(makePTYQuestion('unrelated later prompt'));
+      expect(pushes.length).toBe(0);
+      await wait(DEBOUNCE_MS * 2);
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('unrelated later prompt');
+    });
+
+    it('a NORMAL pending record for the prompt agent still suppresses (echo protection intact)', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      // A normal gate escalation is mid-flight for main; a parked record
+      // exists for a different agent. The unnamed PTY prompt matches main's
+      // normal record -> gate-owned -> suppressed (not stolen by the parked one).
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('agent · Write: notes.md'),
+        agentId: 'agent-1',
+      });
+
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      await wait(DEBOUNCE_MS * 2);
+
+      expect(pushes.length).toBe(0);
+    });
+
+    it('a normal recordPendingHook for the same agent clears the parked flag', async () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      // A real gate escalation for the same agent takes over the prompt cycle.
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+      expect(tracker.awaitingPTYCountForTest()).toBe(0);
+
+      // Its render echo is suppressed like any gate-owned cycle.
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      await wait(DEBOUNCE_MS * 2);
+      expect(pushes.length).toBe(0);
+    });
+  });
 });

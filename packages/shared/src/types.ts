@@ -229,6 +229,18 @@ export interface Question {
    * plain-string suggestion path.
    */
   readonly optionsAreFallback?: boolean | undefined;
+
+  /**
+   * #753: true when the auto-approve gate is HOLDING this question's
+   * PermissionRequest hook (Model B) — Claude is blocked inside the hook call
+   * and never renders the prompt, so no PTY bytes for it exist. The terminal
+   * attach client banners exactly these (they are otherwise invisible in a
+   * terminal); non-held questions render natively and need no banner.
+   * Stamped once at question emission (message-api-setup) from the push
+   * options, so live messages, registry entries, and attach-time re-sends all
+   * carry it.
+   */
+  readonly held?: boolean | undefined;
 }
 
 /**

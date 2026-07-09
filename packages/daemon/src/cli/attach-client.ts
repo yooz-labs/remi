@@ -10,7 +10,7 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
-import type { ProtocolMessage, RemiStatus, UUID } from '@remi/shared';
+import type { ProtocolMessage, Question, RemiStatus, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
 import { DetachScanner } from './detach-scanner.ts';
 import { StatusBar, childRows } from './status-bar.ts';
@@ -173,7 +173,41 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     sendMessage(createTerminalResize(cols, childRows(rows, true)));
   }
 
-  function renderMessage(msg: ProtocolMessage): void {
+  // #753: question ids already shown as a banner, so a repeat delivery (the
+  // daemon re-sends the authoritative pending set after the replay batch; a
+  // reconnect could deliver it again) never double-prints, and a later
+  // question_resolved can acknowledge exactly the banners the user saw.
+  const banneredQuestionIds = new Set<string>();
+
+  /**
+   * #753: print a pending HELD question into the attached terminal. A held
+   * permission (Model B) blocks Claude inside the hook call, so no raw PTY
+   * bytes for the prompt exist and the resize-nudge redraw has nothing to
+   * repaint — without this banner an attach shows only "waiting". ONLY held
+   * questions banner (#760 review finding 1): every other question class
+   * renders natively in the raw PTY stream, and the daemon emits multiple
+   * `question` messages per visible prompt cycle (hook bridge + PTY parser,
+   * different ids), so bannering those would double- or triple-print around
+   * the native prompt — the exact noise the old blanket suppression avoided.
+   * Held questions also guarantee an idle PTY, so the banner can never
+   * interleave mid-ANSI-sequence with streaming output. Plain text through
+   * writeOutput (raw mode: \r\n), cyan so it stands apart from Claude's own
+   * output.
+   */
+  function renderQuestionBanner(question: Question): void {
+    if (question.held !== true) return;
+    if (banneredQuestionIds.has(question.id)) return;
+    banneredQuestionIds.add(question.id);
+    const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
+    const lines = [`\r\n\x1b[36m[remi] pending question: ${question.text}\x1b[0m\r\n`];
+    if (options) lines.push(`\x1b[36m[remi] options: ${options}\x1b[0m\r\n`);
+    lines.push(
+      `\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n`,
+    );
+    writeOutput(lines.join(''));
+  }
+
+  function renderMessage(msg: ProtocolMessage, inReplay = false): void {
     switch (msg.type) {
       case 'raw_pty_output':
         receivedRawPty = true;
@@ -185,16 +219,30 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         latestStatus = msg.status;
         if (attachedSessionId) startStatusBar();
         break;
+      case 'question':
+        // #753: LIVE questions only. Replayed history is not trustworthy for
+        // pendingness — question_resolved is broadcast-only (never recorded),
+        // so an already-answered question replays indistinguishably from a
+        // pending one. The daemon re-sends the authoritative pending set as
+        // live messages right after the replay batch, which is what lands here.
+        if (!inReplay) renderQuestionBanner(msg.question);
+        break;
+      case 'question_resolved':
+        // Only acknowledge questions this client actually bannered; resolved
+        // broadcasts for questions answered before attach are noise.
+        if (banneredQuestionIds.delete(msg.questionId)) {
+          writeOutput('\r\n\x1b[2m[remi] question answered\x1b[0m\r\n');
+        }
+        break;
       case 'agent_output':
       case 'structured_agent_output':
-      case 'question':
       case 'session_update':
       case 'transcript_content':
         // Suppressed; raw PTY output already provides the full terminal view
         break;
       case 'replay_batch':
         for (const m of msg.messages) {
-          renderMessage(m);
+          renderMessage(m, true);
         }
         break;
       case 'error':

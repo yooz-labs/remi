@@ -382,6 +382,11 @@ export function setupHookBridge(
       // the hook keyed by it (#573). The bridge still does the onQuestion +
       // status side effects exactly as before.
       escalate: (i, summary) => hookBridge.handlePermissionRequest(i, summary),
+      // #751 PTY-arbiter: a subagent-tagged escalation the gate cannot decide
+      // parks its rich question (same builder as a real escalation, minus the
+      // push/registration side effects) and answers 'passthrough'; the tracker
+      // pushes it only if Claude's native prompt actually renders on the PTY.
+      parkForPTY: (i) => tracker.parkAwaitingPTY(hookBridge.buildPermissionQuestion(i)),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native

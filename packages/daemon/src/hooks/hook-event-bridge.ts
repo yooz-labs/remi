@@ -411,6 +411,20 @@ export class HookEventBridge {
     // prompt that does not render on the user's PTY does not push, and
     // one that does is genuinely answerable. The tracker handles both
     // cases; this method now only builds the question payload.
+    const question = this.buildPermissionQuestion(input, summary);
+    this.events.onQuestion(question);
+    this.events.onStatusChange('waiting');
+    return question.id;
+  }
+
+  /**
+   * Build the rich Question payload for a PermissionRequest WITHOUT firing the
+   * onQuestion/onStatusChange side effects. Used by `handlePermissionRequest`
+   * (escalation: push + register) and by the gate's #751 PTY-arbiter parking
+   * (`QuestionPresenceTracker.parkAwaitingPTY`), where the question must only
+   * surface if Claude's native prompt actually renders on the PTY.
+   */
+  buildPermissionQuestion(input: PermissionRequestHookInput, summary?: string): Question {
     const toolName = input.tool_name || 'unknown tool';
 
     // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
@@ -443,9 +457,8 @@ export class HookEventBridge {
       optionsAreFallback = built.isFallback;
     }
 
-    const questionId = generateId();
-    this.events.onQuestion({
-      id: questionId,
+    return {
+      id: generateId(),
       text: promptText,
       options,
       allowsFreeText: false,
@@ -471,9 +484,7 @@ export class HookEventBridge {
       // (e.g. "Force-push to main?"). AskUserQuestion carries authored content, so a
       // summary is only threaded for non-AUQ permission escalations.
       ...(summary ? { summary } : {}),
-    });
-    this.events.onStatusChange('waiting');
-    return questionId;
+    };
   }
 
   handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {

@@ -1067,6 +1067,18 @@ const sessionRegistry = new SessionRegistry(
           log(`Failed to send replay batch to promoted connection ${connectionId}`);
         }
       }
+      // #753 (#760 review finding 2): a promoted connection was queued
+      // (read-only) while live questions may have arrived — those broadcasts
+      // only reach the active connection, so re-send the pending set now.
+      const resent = resendPendingQuestions(
+        (m) => registry.sendRaw(connectionId, m),
+        sessionId,
+        result.currentQuestions,
+        claudeId ?? undefined,
+      );
+      if (resent > 0) {
+        log(`Re-sent ${resent} pending question(s) to promoted connection ${connectionId}`);
+      }
       cancelOrphanTimeout();
     },
   },
@@ -1548,6 +1560,7 @@ const onQuestionResolved = (
   }
 };
 
+import { resendPendingQuestions } from './cli/handlers/pending-question-resend.ts';
 import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
