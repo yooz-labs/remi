@@ -18,6 +18,7 @@ import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
 import { readPtyOutput, resetPtyOutput } from '../../pty/output-buffer.ts';
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
+import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
@@ -231,6 +232,12 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   const auqRuns = new Map<string, AbortController>();
   const auqRunKey = (sessionId: UUID, questionId: UUID): string => `${sessionId}:${questionId}`;
 
+  // #752: same-value duplicate deliveries of a successful answer (native POST +
+  // Capacitor JS path + signaling relay all fire per tap) report 'delivered'
+  // instead of 'stale', so the losing channel stops showing a false "Answer
+  // not delivered" notification.
+  const resolvedAnswers = new ResolvedAnswerCache();
+
   /**
    * Answer a structured AskUserQuestion (#627) by driving its interactive TUI.
    * The prompt is already on screen (Phase 1 escalates AUQ as passthrough), so the
@@ -305,6 +312,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     }
 
     if (outcome === 'closed' || outcome === 'submitted') {
+      // #752: the selections were applied; a duplicate delivery of this same
+      // tap must report 'delivered', not 'stale'.
+      resolvedAnswers.record(questionId, [answerCacheKey('', selections)]);
       // Wrapped like the plain-answer path (below): if cancelAutoApproveForQuestion
       // throws, the question must still be consumed exactly once — removeQuestion +
       // the resolved broadcast run in `finally` so a throw here can never leave a
@@ -445,9 +455,23 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // (not equality with a single slot) is the check, so answering one of
     // several concurrent prompts (main + subagent, #419) never invalidates
     // the others. Surface the drop so the iOS user gets a "not delivered"
-    // signal instead of silent failure.
+    // signal instead of silent failure — EXCEPT for a same-value duplicate of
+    // an answer that already applied (#752), which reports 'delivered'.
     const active = sessionRegistry.getQuestion(session.sessionId, questionId);
     if (active === null) {
+      // #752: a same-value duplicate of an answer that already applied is a
+      // SUCCESS, not a failure — the tap worked; this is just the losing
+      // delivery channel (native POST vs JS path vs signaling relay). Report
+      // 'delivered' so the client does not fire a false "Answer not
+      // delivered" notification. A different value (a genuine conflicting
+      // late answer) or an unknown/expired question still falls through to
+      // 'stale' below.
+      if (resolvedAnswers.matches(questionId, answerCacheKey(answer, extra?.selections))) {
+        log(
+          `[Answer] duplicate delivery for resolved question ${questionId.slice(0, 8)}; reporting delivered`,
+        );
+        return 'delivered';
+      }
       const pendingIds = [...session.currentQuestions.keys()];
       // #603 Phase 3: the question is gone from the registry (evicted under the
       // pending-question cap, or already removed), but its PermissionRequest hook
@@ -545,6 +569,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           `Resolved held permission ${questionId.slice(0, 8)} via hook response: ${decision} (no PTY submit)`,
         );
       }
+
+      // #752: the answer applied (hold resolved or PTY submit succeeded) —
+      // recorded inside the try, directly after application, so a throwing
+      // submit is never recorded (its duplicate must keep reporting 'stale')
+      // and a later throw from the eval-cancel below cannot skip it. Recorded
+      // under every spelling of the same decision: the in-app tap sends the
+      // option VALUE while a push action sends the LABEL, and the duplicate
+      // may arrive on the other surface (review #759 finding 1). The options
+      // are unavailable by the time the duplicate hits the stale check, so the
+      // equivalence is captured here.
+      const answeredOption = resolveOption(active.options, answer);
+      resolvedAnswers.record(questionId, [
+        answerCacheKey(answer),
+        ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
+      ]);
 
       // Free the GPU on EVERY answer (#617): cancel the eval for THIS question
       // unconditionally. Per-eval scoping (the eval id captured when the question
