@@ -570,7 +570,9 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
         isInSubagentContext: () => subagent,
         escalate: () => undefined,
         onEvalStart: () => events.push('start'),
-        onEscalate: () => events.push('escalate'),
+        // #767: the cue carries whose verdict this is, so the setup layer can
+        // keep a subagent park from touching the main-eval buffer window.
+        onEscalate: (ctx) => events.push(ctx.isSubagent ? 'escalate:subagent' : 'escalate'),
         onHandled: () => events.push('handled'),
         onCancelled: () => events.push('cancelled'),
       },
@@ -639,10 +641,11 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
       'passthrough',
     );
     // Parking is semantically an escalation (PTY-mediated): the onEscalate cue
-    // must close the #484 buffer window opened by onEvalStart, or every later
-    // prompt in the session would buffer forever.
+    // still fires for the statusline, but tagged subagent (#767) — a subagent
+    // eval never opens the #484 buffer window, so its cue must not release or
+    // discard a prompt buffered by a concurrent MAIN eval.
     expect(submits).toHaveLength(0);
-    expect(events).toEqual(['start', 'escalate']);
+    expect(events).toEqual(['start', 'escalate:subagent']);
   });
 
   test('a throwing cue callback is absorbed: decision not re-run, no re-escalation', async () => {

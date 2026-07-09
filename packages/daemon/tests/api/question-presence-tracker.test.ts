@@ -653,6 +653,110 @@ describe('QuestionPresenceTracker', () => {
     });
   });
 
+  describe('buffer window is main-eval-scoped (#767)', () => {
+    const DEBOUNCE_MS = 20;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it('a subagent eval does not open the buffer window — renders flow during it', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart(true); // subagent WebFetch eval in flight
+      tracker.onPTYPromptVisible(makePTYQuestion('Teammate permission prompt'));
+      expect(pushes.length).toBe(1); // NOT buffered
+    });
+
+    it('orphan render routes during a continuous subagent eval stream (2026-07-09 soak)', async () => {
+      // The live failure: back-to-back subagent evals kept the old boolean
+      // window open, every hook-less teammate prompt was buffered, and each
+      // unrelated approve discarded it — questions never routed at all.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE_MS,
+      });
+      tracker.onAutoApproveStart(true);
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Agent-team permission prompt'));
+      tracker.onAutoApproveHandled(true); // unrelated approve lands
+      tracker.onAutoApproveStart(true); // next eval begins immediately
+      await wait(DEBOUNCE_MS + 10);
+      expect(pushes.length).toBe(1);
+    });
+
+    it('a subagent approve does not discard a MAIN-buffered prompt', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart(); // main eval opens the window
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0);
+      tracker.onAutoApproveHandled(true); // unrelated subagent approve — no-op
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate(); // the main verdict still owns the release
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    });
+
+    it('a subagent escalate (park path) does not release a MAIN-buffered prompt early', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate(true); // a teammate's park fires the cue
+      expect(pushes.length).toBe(0); // still buffered: the main eval owns it
+      tracker.onAutoApproveHandled(); // main verdict: auto-handled -> discard
+      expect(pushes.length).toBe(0);
+    });
+
+    it('a parked render pushes immediately while an unrelated subagent eval is in flight', () => {
+      // The #751 push trigger must survive the eval storm: park -> render ->
+      // push, regardless of whichever other agent is being evaluated.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+      });
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('researcher · WebFetch: example.com'),
+        agentId: 'subagent-A',
+      });
+      tracker.onAutoApproveStart(true); // another agent's eval running
+      tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+      expect(pushes.length).toBe(1); // immediate, merged, not buffered
+      expect(pushes[0]?.text).toBe('researcher · WebFetch: example.com');
+    });
+
+    it('a parked render wins over the main-eval buffer (parked check runs first)', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+        hasLiveQuestions: () => false,
+      });
+      tracker.parkAwaitingPTY({
+        ...makePermissionRequestHook('researcher · Edit: notes.md'),
+        agentId: 'subagent-A',
+      });
+      tracker.onAutoApproveStart(); // a MAIN eval is in flight
+      tracker.onOrphanPTYPrompt({
+        ...makePTYQuestion('Do you want to make this edit?'),
+        agentId: 'subagent-A',
+      });
+      expect(pushes.length).toBe(1); // pushed, not captured by the buffer
+      // The buffer stays empty: the main verdict has nothing to discard.
+      tracker.onAutoApproveHandled();
+      expect(pushes.length).toBe(1);
+    });
+
+    it('concurrent main evals: the first verdict does not close the window the second owns', () => {
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => pushes.push(q));
+      tracker.onAutoApproveStart();
+      tracker.onAutoApproveStart();
+      tracker.onAutoApproveHandled(); // first settles; window must stay open
+      tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
+      expect(pushes.length).toBe(0); // still buffered under the second eval
+      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      tracker.onAutoApproveEscalate();
+      expect(pushes.length).toBe(1);
+    });
+  });
+
   describe('orphan PTY prompt fallback (#712)', () => {
     // Short real timer (no fake-timer precedent in this suite) — see
     // auto-approve-gate.test.ts's `holdMs: 30` pattern.

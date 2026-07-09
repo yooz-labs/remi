@@ -90,6 +90,15 @@ lock-screen answer notices, and what a terminal attach can see.
   racing the hub for the shared file.
 
 ### Fixed
+- **Orphan prompt routing survives subagent eval streams** (#767): the
+  eval-in-flight buffer (#484) treated ANY auto-approve eval as owning the
+  prompt cycle, so on sessions with back-to-back subagent evals every
+  hook-less rendered prompt (agent-team teammate permissions, MCP dialogs,
+  #751 parked renders) was captured and silently discarded by the next
+  unrelated approve — questions never reached the phone. The buffer window is
+  now opened only by main-context evals (counted, so concurrent evals cannot
+  close each other's window), parked renders are matched before any buffering,
+  and the previously invisible park/buffer/expiry decisions are logged.
 - **Subagent permission questions are PTY-arbitered** (#751, #763): the
   auto-approve gate no longer holds-and-pushes subagent-tagged escalations
   blindly — it parks the question and passes the hook through, and the push
