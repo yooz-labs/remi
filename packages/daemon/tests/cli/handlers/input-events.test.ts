@@ -1669,6 +1669,87 @@ describe('createInputHandlers', () => {
       const other = 'cccccccc-0000-0000-0000-000000000000' as UUID;
       expect(await handlers.relayAnswer(sessionId, other, 'Yes')).toBe('stale');
     });
+
+    test('cross-surface: in-app answers with the VALUE, the push duplicate arrives as the LABEL', async () => {
+      // The in-app card sends the option value ("1"); the push action sends
+      // the label ("Yes"). Same tap, different spelling — the cache records
+      // both at application time (#759 review finding 1).
+      const { sessionId, ptyCapture } = registerYesNo();
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1'); // in-app value
+      expect(ptyCapture.submits).toEqual(['1']);
+
+      expect(await handlers.relayAnswer(sessionId, QID, 'Yes')).toBe('delivered'); // push label
+      expect(await handlers.relayAnswer(sessionId, QID, 'No')).toBe('stale'); // conflict stays loud
+    });
+
+    test('a duplicate of a HELD-hook-resolved answer reports delivered', async () => {
+      const { sessionId, ptyCapture } = registerYesNo();
+      const held: Array<'allow' | 'deny'> = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, d) => {
+          held.push(d);
+          return true;
+        },
+      });
+
+      expect(await handlers.relayAnswer(sessionId, QID, 'Yes')).toBe('delivered');
+      expect(held).toEqual(['allow']); // resolved via the hook, no PTY submit
+      expect(ptyCapture.submits).toEqual([]);
+
+      expect(await handlers.relayAnswer(sessionId, QID, 'Yes')).toBe('delivered'); // duplicate
+      expect(held).toEqual(['allow']); // hook not touched again
+    });
+
+    test('a duplicate AUQ selections delivery reports delivered', async () => {
+      // Mirror the structured-AUQ harness: the PTY echoes the closure marker
+      // on ENTER so the runner treats the answer as accepted.
+      const sessionId = sessionRegistry.createSessionId();
+      const writes: string[] = [];
+      const pty = {
+        id: generateId(),
+        write: (content: string) => {
+          writes.push(content);
+          if (content === AUQ_KEYS.ENTER) {
+            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Red");
+          }
+        },
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession;
+      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Color: pick one',
+        options: [{ value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false }],
+        allowsFreeText: false,
+        isAnswered: false,
+        kind: 'multi_question',
+        questions: [
+          {
+            header: 'Color',
+            text: 'pick one',
+            multiSelect: false,
+            options: [{ value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false }],
+          },
+        ],
+      });
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const selections = [{ questionIndex: 0, optionIndices: [0] }];
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+
+      // The losing channel re-delivers the same selections (WS path; the HTTP
+      // relay never carries selections). A duplicate of an applied AUQ answer
+      // must not produce a STALE_ANSWER / AUQ error frame.
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
+      expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+    });
   });
 
   describe('onQuestionResolved cross-client dismissal (#585 P7)', () => {

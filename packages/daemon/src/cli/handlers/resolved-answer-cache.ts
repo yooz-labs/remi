@@ -30,9 +30,7 @@ const DEFAULT_MAX_ENTRIES = 500;
 
 /** Canonical cache key for an answer payload: the raw answer string, or a
  *  stable serialization of structured AskUserQuestion selections (#627),
- *  which carry the answer in `extra.selections` instead of `answer`.
- *  Duplicate deliveries of one tap carry byte-identical payloads on every
- *  channel, so exact matching suffices (no label/value normalization). */
+ *  which carry the answer in `extra.selections` instead of `answer`. */
 export function answerCacheKey(
   answer: string,
   selections?: readonly { questionIndex: number; optionIndices: readonly number[] }[],
@@ -44,7 +42,7 @@ export function answerCacheKey(
 }
 
 export class ResolvedAnswerCache {
-  private readonly entries = new Map<string, { key: string; atMs: number }>();
+  private readonly entries = new Map<string, { keys: ReadonlySet<string>; atMs: number }>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly nowMs: () => number;
@@ -55,21 +53,33 @@ export class ResolvedAnswerCache {
     this.nowMs = opts.nowMs ?? Date.now;
   }
 
-  /** Record a successfully-applied answer for `questionId`. */
-  record(questionId: string, key: string): void {
+  /**
+   * Record a successfully-applied answer for `questionId` under EVERY key the
+   * same logical decision can arrive as. The channels are not byte-identical:
+   * an in-app tap sends the option VALUE ("1") while a push action sends the
+   * LABEL ("Yes") — both resolve to the same option when applied
+   * (`resolveOption` matches either field), so the dedup must accept either
+   * spelling too. Callers pass the raw answer plus the resolved option's
+   * value/label (review #759 finding 1); the question is gone by the time a
+   * duplicate arrives, so the equivalence must be captured at record time.
+   */
+  record(questionId: string, keys: readonly string[]): void {
     this.prune();
+    const set = new Set(keys.filter((k) => k.length > 0));
+    if (set.size === 0) return;
     // Delete-then-set keeps insertion order meaningful for eviction even if a
     // question were somehow re-recorded.
     this.entries.delete(questionId);
-    this.entries.set(questionId, { key, atMs: this.nowMs() });
+    this.entries.set(questionId, { keys: set, atMs: this.nowMs() });
     if (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next().value;
       if (oldest !== undefined) this.entries.delete(oldest);
     }
   }
 
-  /** True iff `questionId` was resolved with exactly this answer key within
-   *  the TTL — i.e. the incoming answer is a duplicate delivery of a success. */
+  /** True iff `questionId` was resolved with this answer (under any recorded
+   *  spelling) within the TTL — i.e. the incoming answer is a duplicate
+   *  delivery of a success. */
   matches(questionId: string, key: string): boolean {
     const entry = this.entries.get(questionId);
     if (!entry) return false;
@@ -77,7 +87,7 @@ export class ResolvedAnswerCache {
       this.entries.delete(questionId);
       return false;
     }
-    return entry.key === key;
+    return entry.keys.has(key);
   }
 
   private prune(): void {

@@ -7,16 +7,31 @@ import {
 describe('ResolvedAnswerCache (#752)', () => {
   test('a recorded answer matches the same value and rejects a different one', () => {
     const cache = new ResolvedAnswerCache();
-    cache.record('q1', 'Yes');
+    cache.record('q1', ['Yes']);
     expect(cache.matches('q1', 'Yes')).toBe(true);
     expect(cache.matches('q1', 'No')).toBe(false); // conflicting late answer stays stale
     expect(cache.matches('q2', 'Yes')).toBe(false); // unknown question
   });
 
+  test('multiple keys record every spelling of one decision (value vs label)', () => {
+    const cache = new ResolvedAnswerCache();
+    cache.record('q1', ['Yes', '1']);
+    expect(cache.matches('q1', 'Yes')).toBe(true); // push-action label
+    expect(cache.matches('q1', '1')).toBe(true); // in-app value
+    expect(cache.matches('q1', 'No')).toBe(false);
+  });
+
+  test('empty key lists record nothing', () => {
+    const cache = new ResolvedAnswerCache();
+    cache.record('q1', ['']);
+    expect(cache.sizeForTest()).toBe(0);
+    expect(cache.matches('q1', '')).toBe(false);
+  });
+
   test('entries expire after the TTL', () => {
     let now = 1_000;
     const cache = new ResolvedAnswerCache({ ttlMs: 100, nowMs: () => now });
-    cache.record('q1', 'Yes');
+    cache.record('q1', ['Yes']);
     now += 99;
     expect(cache.matches('q1', 'Yes')).toBe(true);
     now += 2;
@@ -27,11 +42,11 @@ describe('ResolvedAnswerCache (#752)', () => {
   test('the cache is bounded: the oldest entry is evicted past maxEntries', () => {
     let now = 1_000;
     const cache = new ResolvedAnswerCache({ maxEntries: 2, nowMs: () => now });
-    cache.record('q1', 'a');
+    cache.record('q1', ['a']);
     now += 1;
-    cache.record('q2', 'b');
+    cache.record('q2', ['b']);
     now += 1;
-    cache.record('q3', 'c');
+    cache.record('q3', ['c']);
     expect(cache.sizeForTest()).toBe(2);
     expect(cache.matches('q1', 'a')).toBe(false); // evicted (oldest)
     expect(cache.matches('q2', 'b')).toBe(true);
@@ -41,9 +56,9 @@ describe('ResolvedAnswerCache (#752)', () => {
   test('record prunes expired entries so dead questions never count toward the cap', () => {
     let now = 1_000;
     const cache = new ResolvedAnswerCache({ ttlMs: 100, maxEntries: 10, nowMs: () => now });
-    cache.record('q1', 'a');
+    cache.record('q1', ['a']);
     now += 200; // q1 expired
-    cache.record('q2', 'b');
+    cache.record('q2', ['b']);
     expect(cache.sizeForTest()).toBe(1);
   });
 

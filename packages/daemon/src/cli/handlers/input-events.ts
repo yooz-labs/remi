@@ -314,7 +314,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     if (outcome === 'closed' || outcome === 'submitted') {
       // #752: the selections were applied; a duplicate delivery of this same
       // tap must report 'delivered', not 'stale'.
-      resolvedAnswers.record(questionId, answerCacheKey('', selections));
+      resolvedAnswers.record(questionId, [answerCacheKey('', selections)]);
       // Wrapped like the plain-answer path (below): if cancelAutoApproveForQuestion
       // throws, the question must still be consumed exactly once — removeQuestion +
       // the resolved broadcast run in `finally` so a throw here can never leave a
@@ -573,8 +573,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // #752: the answer applied (hold resolved or PTY submit succeeded) —
       // recorded inside the try, directly after application, so a throwing
       // submit is never recorded (its duplicate must keep reporting 'stale')
-      // and a later throw from the eval-cancel below cannot skip it.
-      resolvedAnswers.record(questionId, answerCacheKey(answer));
+      // and a later throw from the eval-cancel below cannot skip it. Recorded
+      // under every spelling of the same decision: the in-app tap sends the
+      // option VALUE while a push action sends the LABEL, and the duplicate
+      // may arrive on the other surface (review #759 finding 1). The options
+      // are unavailable by the time the duplicate hits the stale check, so the
+      // equivalence is captured here.
+      const answeredOption = resolveOption(active.options, answer);
+      resolvedAnswers.record(questionId, [
+        answerCacheKey(answer),
+        ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
+      ]);
 
       // Free the GPU on EVERY answer (#617): cancel the eval for THIS question
       // unconditionally. Per-eval scoping (the eval id captured when the question
