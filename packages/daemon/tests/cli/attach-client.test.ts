@@ -266,7 +266,7 @@ describe('runAttachClient', () => {
     expect(pongMsg).toBeTruthy();
   });
 
-  function makeQuestion(text: string): Question {
+  function makeQuestion(text: string, held = true): Question {
     return {
       id: generateId() as UUID,
       text,
@@ -276,13 +276,14 @@ describe('runAttachClient', () => {
       ],
       allowsFreeText: false,
       isAnswered: false,
+      ...(held ? { held: true } : {}),
     };
   }
 
   // #753: a HELD permission (Model B) blocks Claude inside the hook, so no
   // raw PTY bytes for the prompt ever exist — the LIVE question message is
   // the only signal an attached terminal gets, and it must render.
-  test('renders a banner for a LIVE question (held prompts never paint the PTY)', async () => {
+  test('renders a banner for a LIVE held question (held prompts never paint the PTY)', async () => {
     setupOutput();
     const targetSessionId = generateId();
     const question = makeQuestion('Allow file edit?');
@@ -328,6 +329,52 @@ describe('runAttachClient', () => {
     expect(output).toContain("run 'remi unstick'");
     // Bannered exactly once despite the duplicate delivery.
     expect(output.split('pending question: Allow file edit?').length).toBe(2);
+  });
+
+  // #760 review finding 1: the daemon emits multiple `question` messages per
+  // VISIBLE prompt cycle (hook bridge + PTY parser, different ids); only held
+  // questions — which never render natively — may banner.
+  test('does NOT banner a non-held live question (its prompt renders natively in raw PTY)', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const question = makeQuestion('Allow Bash: ls?', /* held */ false);
+
+    server = Bun.serve({
+      port: TEST_PORT + 8,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createQuestion(question, targetSessionId as UUID)));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 8,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).not.toContain('Allow Bash: ls?');
+    expect(output).not.toContain('pending question');
   });
 
   test('suppresses questions inside a replay batch (history cannot prove pendingness)', async () => {

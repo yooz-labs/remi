@@ -13,7 +13,7 @@
  * consistent.
  */
 
-import { createError, createHelloAck, createQuestion, createReplayBatch } from '@remi/shared';
+import { createError, createHelloAck, createReplayBatch } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
@@ -21,6 +21,7 @@ import type { SessionRegistry } from '../../session/index.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
+import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
@@ -148,23 +149,17 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
             }
-            // #753: replayed history cannot distinguish answered questions
-            // (question_resolved is broadcast-only, never recorded into
-            // messageHistory), so a client cannot trust replayed `question`
-            // messages for pendingness. Re-send the authoritative pending set
-            // as LIVE question messages after the replay; clients dedupe by
-            // question.id, and the terminal attach client renders these (and
-            // only these) as pending-question banners — the one signal that
-            // exists for a HELD hook, whose prompt never paints the PTY.
-            const pendingQuestions = sessionRegistry.getSession(currentPrimary)?.currentQuestions;
-            if (pendingQuestions !== undefined && pendingQuestions.size > 0) {
-              const claudeSessionId = currentBinding().claudeSessionId ?? undefined;
-              for (const question of pendingQuestions.values()) {
-                send(connectionId, createQuestion(question, currentPrimary, claudeSessionId));
-              }
-              log(
-                `Re-sent ${pendingQuestions.size} pending question(s) to connection ${connectionId}`,
-              );
+            // #753: re-send the authoritative pending set as LIVE question
+            // messages after the replay (see pending-question-resend.ts for
+            // why replayed history cannot be trusted for pendingness).
+            const resent = resendPendingQuestions(
+              (m) => send(connectionId, m),
+              currentPrimary,
+              result.currentQuestions,
+              currentBinding().claudeSessionId ?? undefined,
+            );
+            if (resent > 0) {
+              log(`Re-sent ${resent} pending question(s) to connection ${connectionId}`);
             }
             cancelOrphanTimeout();
             log(

@@ -137,16 +137,21 @@ export function createMessageApiForSession(
       log(`Question detected: ${question.text.substring(0, 50)}...`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
+      // #753: stamp held-ness onto the question itself so every downstream
+      // copy (live message, registry entry, attach-time re-send) carries it —
+      // the terminal attach client banners ONLY held questions, the one class
+      // that never renders on the PTY.
+      const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
       const msg: ProtocolMessage = {
         type: 'question',
         id: generateId(),
         timestamp: now(),
-        question,
+        question: stamped,
         sessionId: questionSessionId,
         ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
       };
       sendAndRecord(msg);
-      sessionRegistry.addQuestion(questionSessionId, question);
+      sessionRegistry.addQuestion(questionSessionId, stamped);
 
       // Push: a non-held question only pushes when no client is attached (the
       // client sees it in-app). A HELD escalation (#603 Phase 3) always also
@@ -157,7 +162,7 @@ export function createMessageApiForSession(
       // pushConfig/refreshDeviceTokens contract change surfacing as an
       // unhandled rejection (matches the escalator's #672 push guard).
       void notifications
-        .maybePush(questionSessionId, question, { held: opts?.held === true })
+        .maybePush(questionSessionId, stamped, { held: opts?.held === true })
         .catch((err) => {
           logError(`[Session ${sessionId}] Question push threw:`, err);
         });

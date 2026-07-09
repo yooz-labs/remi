@@ -142,14 +142,22 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   const banneredQuestionIds = new Set<string>();
 
   /**
-   * #753: print a pending question into the attached terminal. A HELD
+   * #753: print a pending HELD question into the attached terminal. A held
    * permission (Model B) blocks Claude inside the hook call, so no raw PTY
    * bytes for the prompt exist and the resize-nudge redraw has nothing to
-   * repaint — without this banner an attach shows only "waiting". Plain
-   * text through writeOutput (raw mode: \r\n), cyan so it stands apart from
-   * Claude's own output.
+   * repaint — without this banner an attach shows only "waiting". ONLY held
+   * questions banner (#760 review finding 1): every other question class
+   * renders natively in the raw PTY stream, and the daemon emits multiple
+   * `question` messages per visible prompt cycle (hook bridge + PTY parser,
+   * different ids), so bannering those would double- or triple-print around
+   * the native prompt — the exact noise the old blanket suppression avoided.
+   * Held questions also guarantee an idle PTY, so the banner can never
+   * interleave mid-ANSI-sequence with streaming output. Plain text through
+   * writeOutput (raw mode: \r\n), cyan so it stands apart from Claude's own
+   * output.
    */
   function renderQuestionBanner(question: Question): void {
+    if (question.held !== true) return;
     if (banneredQuestionIds.has(question.id)) return;
     banneredQuestionIds.add(question.id);
     const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
