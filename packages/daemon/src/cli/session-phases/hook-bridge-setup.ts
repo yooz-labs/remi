@@ -394,7 +394,11 @@ export function setupHookBridge(
       // status line via the StatusWriter. A COUNT (start/end) replaces the old
       // shared title spinner, which raced under concurrent evals.
       onEvalStart: (ctx) => {
-        tracker.onAutoApproveStart();
+        // #767: only a MAIN-context eval opens the tracker's #484 buffer
+        // window. A subagent eval holds only its own subagent's hook, so a
+        // prompt rendering during it is some OTHER question (teammate
+        // permission, parked #751 render) that must flow, not buffer.
+        tracker.onAutoApproveStart(ctx.isSubagent);
         deps.statusWriter?.autoApproveStart(Date.now());
         // #576: surface the in-flight eval on the client pill ('working').
         // #711: skip the CLIENT broadcast for a subagent/team-member eval --
@@ -403,8 +407,10 @@ export function setupHookBridge(
         // StatusWriter terminal cue above still fire unconditionally.
         if (!ctx.isSubagent) broadcastAutoApproveStatus('evaluating');
       },
-      onEscalate: () => {
-        tracker.onAutoApproveEscalate();
+      onEscalate: (ctx) => {
+        // #767: a subagent escalate (the #751 park path) never opened the
+        // buffer window; it must not release/discard a MAIN eval's buffer.
+        tracker.onAutoApproveEscalate(ctx.isSubagent);
         deps.statusWriter?.autoApproveEnd('escalated', Date.now());
         // No status broadcast here: a MAIN escalate routes through
         // handlePermissionRequest -> onStatusChange('waiting'), which broadcasts

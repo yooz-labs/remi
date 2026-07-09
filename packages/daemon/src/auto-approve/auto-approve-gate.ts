@@ -204,8 +204,11 @@ export interface AutoApproveGateDeps {
    *  broadcast for it (the #484 buffering itself is unaffected). */
   onEvalStart?: (ctx: { isSubagent: boolean }) => void;
   /** Called when the verdict is escalate (the user must answer), so the tracker
-   *  releases the buffered PTY prompt. #484. */
-  onEscalate?: () => void;
+   *  releases the buffered PTY prompt. #484. `ctx.isSubagent` (#767): a
+   *  subagent verdict (the #751 park path) never opened the tracker's buffer
+   *  window, so the setup layer must not let it release — or discard — a
+   *  prompt buffered by a MAIN eval still in flight. */
+  onEscalate?: (ctx: { isSubagent: boolean }) => void;
   /** The gate's push trigger: called with a `Question.id` so the tracker pushes
    *  that question IMMEDIATELY (-> sessionRegistry.addQuestion + APNS), making it
    *  answerable. Called for BOTH escalation shapes (#625):
@@ -1338,7 +1341,7 @@ export class AutoApproveGate {
    * user never saw asked -- the tracker + terminal cue still fire either way.
    */
   private markHandled(isSubagent: boolean): void {
-    this.deps.tracker.onAutoApproveHandled();
+    this.deps.tracker.onAutoApproveHandled(isSubagent);
     this.safeCueWithArg('onHandled', this.deps.onHandled, { isSubagent });
   }
 
@@ -1368,7 +1371,7 @@ export class AutoApproveGate {
         err,
       );
     }
-    this.safeCue('onEscalate', this.deps.onEscalate);
+    this.safeCueWithArg('onEscalate', this.deps.onEscalate, { isSubagent: true });
   }
 
   /**
@@ -1498,7 +1501,9 @@ export class AutoApproveGate {
       // locked, or every later prompt in this session would buffer forever. #484.
       // safeCue: the wired callback releases the buffer (critical) then fires the
       // terminal cue (#513, cosmetic); a cue throw must not break the finally.
-      this.safeCue('onEscalate', this.deps.onEscalate);
+      this.safeCueWithArg('onEscalate', this.deps.onEscalate, {
+        isSubagent: this.isSubagentEvent(input),
+      });
     }
     if (questionId) {
       const observed: ObservedToolCall = {
