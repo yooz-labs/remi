@@ -2,9 +2,29 @@
 
 All notable changes to Remi are documented here.
 
-## [Unreleased]
+## [0.6.19] - 2026-07-09
+
+The hub release: `remi serve` / `remi start` become a session-less supervisor
+and macOS gets a native menu-bar app (epic #648). Alongside it, a second
+agent-team soak round (epic #757) fixes subagent question routing, duplicate
+lock-screen answer notices, and what a terminal attach can see.
 
 ### Added
+- **Terminal attach shows the status strip** (#754, #755): the daemon now
+  broadcasts its status snapshot (`remi_status`) to connected clients on every
+  flush, and `remi attach` draws the same reserved-row bar the wrapper shows
+  (`repo:branch | attached | executing`). Both the bar and the Claude
+  statusline replace the blunt "1 client" with `attached` /
+  `attached (+N waiting)`, read from the exclusive PTY slot and its FIFO
+  queue. The bar is drawn client-side: the attaching `remi` must also run
+  this version.
+- **Pending questions visible in `remi attach`** (#753): attaching to a
+  session with a held question now prints a banner (question, options, and
+  "answer on your phone, or run `remi unstick`") instead of a silently stuck
+  terminal, and the daemon re-sends the authoritative pending set on attach,
+  resume, and queue promotion so no surface misses it. Only held questions
+  banner (the native prompt covers the rest), and an "answered" line confirms
+  resolution.
 - **macOS TestFlight pipeline** (#658 phase 2, epic #648):
   `bun run testflight:macos [-- --upload]` mirrors the iOS local path —
   stages the web UI, archives, exports a signed Mac App Store `.pkg`, and
@@ -68,6 +88,23 @@ All notable changes to Remi are documented here.
   exclusively to the hub: every session daemon (hub-spawned or a manually
   run `remi --daemon`) writes a per-port `status-<port>.json` instead of
   racing the hub for the shared file.
+
+### Fixed
+- **Subagent permission questions are PTY-arbitered** (#751, #763): the
+  auto-approve gate no longer holds-and-pushes subagent-tagged escalations
+  blindly — it parks the question and passes the hook through, and the push
+  fires only if Claude actually renders the prompt on the PTY. This kills
+  both agent-team failure modes from the soak: background/subagent questions
+  phantom-routed to the phone (the lead was going to answer them anyway) and
+  real prompts never surfaced. Parked records are scoped to their owning
+  agent (#763) — another agent's status churn can't expire them; they clear
+  on the owner's own progress, a render, or a 120s TTL.
+- **Duplicate lock-screen answer deliveries deduped** (#752): one tap can
+  reach the daemon up to three times (native POST, in-app WebSocket,
+  signaling relay). A TTL idempotency cache now recognizes replays across
+  every spelling of the same answer (option value, label, AUQ selections),
+  so a successfully applied answer no longer triggers a follow-up "couldn't
+  deliver" push, and a replay can never inject into the live PTY.
 
 ## [0.6.18] - 2026-07-07
 
