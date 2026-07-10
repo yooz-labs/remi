@@ -300,6 +300,7 @@ final class HubClient: ObservableObject {
         localClients = 0
         remoteClients = 0
         sessions = 0
+        hubVersion = nil
         phase = .unreachable
         consecutiveFailures += 1
         scheduleReconnect()
