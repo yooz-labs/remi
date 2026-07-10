@@ -2,6 +2,40 @@
 
 All notable changes to Remi are documented here.
 
+## [0.6.20] - 2026-07-10
+
+App-polish follow-ups from the first TestFlight round: the macOS app learns
+to onboard users onto a hub, and every client finally follows the system
+light/dark appearance live.
+
+### Added
+- **macOS hub setup onboarding + Settings** (#773): when no hub is found, the
+  main window now shows a native setup panel (install remi, `remi start`,
+  `remi --install` as the hub's login item — each with a copy button and a
+  "Check Again" rescan) instead of a bare copy-command menu item, and a
+  "Set Up Hub…" menu entry opens it. A new Settings window (Cmd-,) keeps the
+  two login-item concepts side by side but distinct: the APP at login
+  (SMAppService toggle) and the HUB at login (the `remi --install`
+  LaunchAgent, which the sandboxed app cannot install itself). Once a hub has
+  been seen, the web view stays mounted across transient disconnects instead
+  of being torn down; manual rescans cancel the pending backoff instead of
+  stacking probe timers.
+
+### Fixed
+- **System theme changes now apply live** (#778): the web client sampled
+  `prefers-color-scheme` once and never listened for changes, so a running
+  app (especially the macOS/iOS shells, which stay open for days) kept the
+  stale theme after the OS flipped appearance. A `matchMedia` change listener
+  now re-applies the effective theme while the setting is "system", the iOS
+  status-bar style re-syncs on every theme change, and the theme value is
+  validated at the localStorage boundary. Fixing this also removed a latent
+  bug where a dark OS preference could override an explicitly chosen Light
+  theme's status-bar style.
+- **npm publish pinned to npm 11** (#775/#776): npm 12.0.0 (released
+  2026-07-09) ships without the `sigstore` module its own provenance path
+  requires, which broke the v0.6.19 npm publish twice; the release workflow
+  now pins `npm@11`.
+
 ## [0.6.19] - 2026-07-09
 
 The hub release: `remi serve` / `remi start` become a session-less supervisor
