@@ -23,12 +23,11 @@ struct RemiApp: App {
                 Text(hubClient.clientsLine)
             }
             if case .unreachable = hubClient.phase {
-                // The sandboxed app cannot start the hub itself (#651);
-                // point at the terminal commands and make them one copy away.
-                Text("Start it with: remi start").font(.caption)
-                Button("Copy Install Command (remi --install)") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("remi --install", forType: .string)
+                // The sandboxed app cannot start the hub itself (#651); the
+                // onboarding panel (#773) carries the actual setup steps.
+                Button("Set Up Hub…") {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
             Divider()
@@ -50,6 +49,8 @@ struct RemiApp: App {
             } else {
                 Toggle("Open Remi at Login", isOn: $launchAtLogin.isEnabled)
             }
+            SettingsLink { Text("Settings…") }
+                .keyboardShortcut(",")
             Divider()
             Button("Quit Remi") {
                 // Quits the APP only. The hub is not ours to stop: the app is
@@ -69,9 +70,22 @@ struct RemiApp: App {
         .menuBarExtraStyle(.menu)
 
         Window("Remi", id: "main") {
-            WebViewWindow(hubClient: hubClient)
-                .frame(minWidth: 720, minHeight: 480)
+            Group {
+                // .connected(isHub: false) — a session daemon with no hub —
+                // still has a non-nil hubURL and keeps showing the web UI;
+                // that seeds the web client and is intentional (#773 plan).
+                if hubClient.hubURL != nil {
+                    WebViewWindow(hubClient: hubClient)
+                } else {
+                    HubSetupView(hubClient: hubClient)
+                }
+            }
+            .frame(minWidth: 720, minHeight: 480)
         }
         .defaultSize(width: 1100, height: 760)
+
+        Settings {
+            SettingsView(hubClient: hubClient, launchAtLogin: launchAtLogin)
+        }
     }
 }
