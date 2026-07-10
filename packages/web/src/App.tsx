@@ -320,7 +320,7 @@ function App() {
 
   useEffect(() => {
     applyTheme(settings.theme);
-    syncNativeStatusBarTheme();
+    void syncNativeStatusBarTheme();
 
     const fontSizeMap = { small: '14px', medium: '16px', large: '18px' } as const;
     document.documentElement.style.setProperty(
@@ -333,18 +333,18 @@ function App() {
     localStorage.setItem(LOCALSTORAGE_SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
-  // Follow OS theme changes while the user has picked 'system' (#778):
-  // applyTheme('system') otherwise only samples matchMedia once, at the
-  // point settings.theme last changed, so a running app never notices an
-  // OS light/dark flip. Separate from the effect above (keyed on the whole
-  // settings object) so this listener isn't torn down/rebuilt on unrelated
-  // settings changes (font size, sound, etc).
+  // Follow OS theme changes while the user has picked 'system' (#778): the
+  // effect above only resamples matchMedia when the SETTINGS change (font
+  // size, sound, an explicit theme pick, ...), not on an actual OS-level
+  // light/dark flip, so a running app never notices one on its own. Kept
+  // as its own effect (rather than folded into the one above) so this
+  // listener isn't torn down/rebuilt on those unrelated settings changes.
   useEffect(() => {
     if (settings.theme !== 'system') return;
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = () => {
       applyTheme('system');
-      syncNativeStatusBarTheme();
+      void syncNativeStatusBarTheme();
     };
     mq.addEventListener('change', handleChange);
     return () => mq.removeEventListener('change', handleChange);

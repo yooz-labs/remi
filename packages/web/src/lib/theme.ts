@@ -1,8 +1,10 @@
 /**
- * Pure theme-resolution helper, extracted so the system-theme-follow logic
- * (#778) is unit-testable without a DOM or MediaQueryList. The DOM/Capacitor
- * side (reading matchMedia, stamping data-theme, syncing the native status
- * bar) lives in App.tsx / main.tsx and calls this for the actual decision.
+ * Pure theme value-resolution/narrowing helpers (#778), extracted so this
+ * logic is unit-testable without a DOM or MediaQueryList. Consumed by
+ * App.tsx's applyTheme()/loadSettings() (resolveEffectiveTheme,
+ * parseThemeSetting) and by native-theme.ts's status-bar sync
+ * (parseEffectiveTheme); the matchMedia sampling and data-theme
+ * reading/writing themselves stay in those callers, not here.
  */
 
 import type { AppSettings } from '../types';
