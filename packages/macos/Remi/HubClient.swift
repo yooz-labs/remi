@@ -60,10 +60,13 @@ final class HubClient: ObservableObject {
         }
     }
 
-    /// The URL the embedded web UI should connect to, e.g. ws://127.0.0.1:18765.
+    /// The URL the embedded web UI should connect to, e.g.
+    /// ws://127.0.0.1:18765/ws. Must include the path: the daemon's upgrade
+    /// handler only matches the exact configured path (default `/ws`), no
+    /// fallback (#766 review).
     var hubURL: String? {
         guard case let .connected(port, _) = phase else { return nil }
-        return "ws://127.0.0.1:\(port)"
+        return "ws://127.0.0.1:\(port)/ws"
     }
 
     /// Client census line for the menu ("Clients: 2 local, 1 remote"), #650.
