@@ -49,8 +49,17 @@ struct RemiApp: App {
             } else {
                 Toggle("Open Remi at Login", isOn: $launchAtLogin.isEnabled)
             }
-            SettingsLink { Text("Settings…") }
-                .keyboardShortcut(",")
+            Button("Settings…") {
+                // SettingsLink drives the same underlying mechanism as
+                // openWindow, so it is subject to the same accessory-app
+                // quirk as "Open Remi" / "Set Up Hub…" above: it does not
+                // bring the app forward on its own (#777 review, finding
+                // 2). Using the responder-chain action directly lets us
+                // pair it with the same activate() call.
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut(",")
             Divider()
             Button("Quit Remi") {
                 // Quits the APP only. The hub is not ours to stop: the app is
