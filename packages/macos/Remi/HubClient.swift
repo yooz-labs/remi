@@ -69,6 +69,14 @@ final class HubClient: ObservableObject {
         return "ws://127.0.0.1:\(port)/ws"
     }
 
+    /// True once the client has connected to any peer at least once.
+    /// Derived from lastConnectedPort, which is never cleared, so this
+    /// never resets either (#777 review, finding 1): RemiApp keeps
+    /// WebViewWindow mounted once this flips true, so a transient
+    /// disconnect (missed pong, brief network blip, hub restart) never
+    /// tears down and reloads the WKWebView.
+    var hasEverConnected: Bool { lastConnectedPort != nil }
+
     /// Client census line for the menu ("Clients: 2 local, 1 remote"), #650.
     /// Label-first format sidesteps the pluralization mismatch a trailing
     /// noun creates ("1 local, 1 remote clients", #746 review).

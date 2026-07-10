@@ -71,10 +71,19 @@ struct RemiApp: App {
 
         Window("Remi", id: "main") {
             Group {
-                // .connected(isHub: false) — a session daemon with no hub —
-                // still has a non-nil hubURL and keeps showing the web UI;
-                // that seeds the web client and is intentional (#773 plan).
-                if hubClient.hubURL != nil {
+                // Once the client has EVER connected, keep WebViewWindow
+                // mounted for the app's lifetime (#777 review, finding 1):
+                // phase flips away from .connected on every transient
+                // disconnect (missed pong, brief network blip, hub
+                // restart mid-upgrade), and gating purely on hubURL != nil
+                // tore down and recreated the WKWebView — full reload,
+                // lost client-side state — on each one. hasEverConnected
+                // never resets, so HubSetupView is reserved for the true
+                // first-run/never-connected case it was designed for.
+                // WebViewWindow's own hubURL-change path (WebViewWindow.swift)
+                // already handles re-injecting/reloading once a NEW hub
+                // URL appears; no extra reload logic needed here.
+                if hubClient.hubURL != nil || hubClient.hasEverConnected {
                     WebViewWindow(hubClient: hubClient)
                 } else {
                     HubSetupView(hubClient: hubClient)
