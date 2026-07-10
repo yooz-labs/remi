@@ -89,6 +89,11 @@ struct CommandRow: View {
     let command: String
 
     @State private var copied = false
+    /// Bumped on every click; a pending reset Task only applies if it's
+    /// still the latest one when it wakes (#777 review, finding 5), so
+    /// rapid re-clicks extend the "Copied" window instead of an earlier
+    /// click's reset firing right after a later click.
+    @State private var copyGeneration = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -110,12 +115,16 @@ struct CommandRow: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(command, forType: .string)
                     copied = true
+                    copyGeneration += 1
+                    let generation = copyGeneration
                     // Fire-and-forget label reset instead of a Timer: no
                     // invalidation to worry about, and a view teardown
                     // mid-flight just drops the Task.
                     Task {
                         try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        copied = false
+                        if generation == copyGeneration {
+                            copied = false
+                        }
                     }
                 }
             }
