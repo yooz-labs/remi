@@ -9,7 +9,6 @@
 
 import XCTest
 
-
 final class HubSetupCommandsTests: XCTestCase {
     func testCommandStrings() {
         XCTAssertEqual(HubSetupCommands.install, "brew install yooz-labs/tap/remi")
