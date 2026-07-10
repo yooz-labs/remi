@@ -20,6 +20,9 @@ async function initNative(): Promise<void> {
   try {
     // #778: shared with the theme-change listener in App.tsx so the status
     // bar stays in sync after startup too, not just at this one-shot sample.
+    // App.tsx's settings effect calls this again on mount, ahead of or behind
+    // this one depending on effect-flush timing -- harmless (idempotent,
+    // no-op on web), not worth ordering around.
     await syncNativeStatusBarTheme();
     await StatusBar.setOverlaysWebView({ overlay: true });
   } catch (err) {
