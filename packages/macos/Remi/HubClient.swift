@@ -232,9 +232,15 @@ final class HubClient: ObservableObject {
 
         switch envelope.type {
         case "hello_ack":
-            // Explicit-null detection: JSONDecoder cannot distinguish absent
-            // from null through `String?`, and the hub/session distinction
-            // hangs on exactly that (#542). Absent => treat as session peer.
+            // Validate the frame shape via HelloAckFrame; a malformed ack
+            // (missing serverVersion) is dropped rather than treated as a
+            // handshake. Its `sessionId: String?` still can't tell null from
+            // absent through JSONDecoder's decodeIfPresent, so the hub/session
+            // distinction (#542) is recovered separately below, from the raw
+            // JSON, where that distinction survives.
+            guard (try? JSONDecoder().decode(HelloAckFrame.self, from: data)) != nil else {
+                return
+            }
             let isHub = Self.helloAckHasNullSessionId(data)
             phase = .connected(port: port, isHub: isHub)
             lastConnectedPort = port

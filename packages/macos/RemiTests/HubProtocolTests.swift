@@ -26,6 +26,12 @@ final class HubProtocolTests: XCTestCase {
 
     func testDecodesRealHelloAckWithNullSessionId() throws {
         let data = Data(helloAckFixture.utf8)
+        // HelloAckFrame is production-wired (#766 review): handleFrame
+        // decodes it to validate the frame shape before accepting a
+        // handshake. A JSON `null` for sessionId MUST decode cleanly here,
+        // not throw — decodeIfPresent collapses it to Swift `nil` same as an
+        // absent key would, which is exactly why the hub/session distinction
+        // is recovered separately below, from the raw JSON.
         let ack = try JSONDecoder().decode(HelloAckFrame.self, from: data)
         XCTAssertEqual(ack.type, "hello_ack")
         XCTAssertNil(ack.sessionId)
