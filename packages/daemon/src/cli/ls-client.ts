@@ -21,6 +21,7 @@ import {
   discoverNetworkDaemons,
   queryMultiplePorts,
 } from './session-resolver.ts';
+import { formatVersionDrift } from './version-drift.ts';
 
 /** Return the terminal width, defaulting to 100 when stdout is not a TTY (e.g. piped). */
 function getTerminalWidth(): number {
@@ -648,13 +649,11 @@ export function formatVersionDriftWarnings(
   entries: ReadonlyArray<{ name: string; wsPort: number; version?: string | undefined }>,
   installedVersion: string | undefined,
 ): string[] {
-  if (!installedVersion) return [];
   const lines: string[] = [];
   for (const entry of entries) {
-    if (entry.version && entry.version !== installedVersion) {
-      lines.push(
-        `  ! ${entry.name} (port ${entry.wsPort}) runs remi ${entry.version}; installed binary is ${installedVersion} — restart to apply`,
-      );
+    const drift = formatVersionDrift(entry.version, installedVersion);
+    if (drift) {
+      lines.push(`  ! ${entry.name} (port ${entry.wsPort}) ${drift}`);
     }
   }
   return lines;

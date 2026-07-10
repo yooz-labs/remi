@@ -13,6 +13,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import { rotateIfNeeded } from './log-rotation.ts';
+import { formatVersionDrift } from './version-drift.ts';
+
+// Re-exported for existing importers/tests; the definition moved to
+// version-drift.ts so `remi ls` shares the exact wording (#766 review).
+export { formatVersionDrift };
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 export const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
@@ -304,21 +309,6 @@ export function stopDaemon(): void {
   console.log('Daemon killed.');
 }
 
-/**
- * One-line drift note when a running daemon's binary version differs from
- * the installed binary (#539: a daemon holds its binary for life; upgrades
- * only affect newly started daemons). Null when either side is unknown or
- * they match. Exported for tests and shared by `remi status`/`remi ls`.
- */
-export function formatVersionDrift(
-  runningVersion: string | undefined,
-  installedVersion: string | undefined,
-): string | null {
-  if (!runningVersion || !installedVersion) return null;
-  if (runningVersion === installedVersion) return null;
-  return `running remi ${runningVersion}; installed binary is ${installedVersion} — restart to apply`;
-}
-
 export function showDaemonStatus(installedVersion?: string): void {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (!pid) {
@@ -344,7 +334,7 @@ export function showDaemonStatus(installedVersion?: string): void {
       console.log(`  Version: ${version}`);
       const drift = formatVersionDrift(version, installedVersion);
       if (drift) {
-        console.log(`  WARNING: ${drift}`);
+        console.log(`  WARNING: daemon ${drift}`);
       }
     }
   } else {
