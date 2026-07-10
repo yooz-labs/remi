@@ -100,6 +100,9 @@ final class HubClient: ObservableObject {
     private var consecutiveFailures = 0
     private var reconnectDelay: TimeInterval = 1
     private var started = false
+    /// Guards scanAndConnect against overlap: a manual rescanNow() call
+    /// racing the scheduled backoff rescan into two sockets (#773).
+    private var isScanning = false
     /// Port of the most recent successful connection. Survives the phase
     /// flip to .unreachable (#745 review: deriving the hint from `phase`
     /// inside scheduleReconnect always read nil, making hint-first reconnect
@@ -125,11 +128,26 @@ final class HubClient: ObservableObject {
         Task { await scanAndConnect() }
     }
 
+    /// Manual re-check from the onboarding panel's "Check Again" button
+    /// (#773). Only meaningful while unreachable; the isScanning/phase
+    /// guards inside scanAndConnect make this safe to call at any time
+    /// without racing the scheduled backoff rescan into two sockets. We do
+    /// NOT cancel the pending backoff Task — those same guards make its
+    /// eventual firing a no-op once a scan is underway or connected.
+    func rescanNow() {
+        guard case .unreachable = phase else { return }
+        Task { await scanAndConnect(preferring: lastConnectedPort) }
+    }
+
     // MARK: - Discovery
 
     /// Probe every port in the daemon range in parallel; hub (session-less)
     /// responders win over session daemons; lowest port breaks ties.
     private func scanAndConnect(preferring hintPort: Int? = nil) async {
+        guard !isScanning else { return }
+        if case .connected = phase { return }
+        isScanning = true
+        defer { isScanning = false }
         phase = .scanning
         let ports = Self.scanOrder(hintPort: hintPort, ports: scanPorts)
         let responders = await Self.probe(ports: ports)
