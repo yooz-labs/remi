@@ -37,11 +37,9 @@ final class HubClientIntegrationTests: XCTestCase {
         return binary
     }
 
-    func testDiscoversRealHubAndDetectsSessionlessAck() async throws {
-        let binary = try requireBinary()
-        // Port inside the app's scan range but above the common live ones.
-        let port = 18781
-
+    /// Spawns a real hub (session-less `serve`) on `port` with an isolated
+    /// $HOME, stored on `process`/`homeDir` for tearDown to clean up.
+    private func spawnHub(binary: String, port: Int) throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("remi-macos-it-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -62,6 +60,13 @@ final class HubClientIntegrationTests: XCTestCase {
         proc.standardError = Pipe()
         try proc.run()
         process = proc
+    }
+
+    func testDiscoversRealHubAndDetectsSessionlessAck() async throws {
+        let binary = try requireBinary()
+        // Port inside the app's scan range but above the common live ones.
+        let port = 18781
+        try spawnHub(binary: binary, port: port)
 
         // 1. The scanner finds the hub via the real HTTP probe.
         var responders: [Int] = []
@@ -139,5 +144,82 @@ final class HubClientIntegrationTests: XCTestCase {
         XCTAssertTrue(censusSeen, "hub_status never reached the published state")
         let statusLine = await MainActor.run { client.menuStatusLine }
         XCTAssertTrue(statusLine.contains("running on \(port)"), statusLine)
+    }
+
+    /// #773: the onboarding panel's "Check Again" button calls rescanNow();
+    /// it should connect promptly once a hub appears, not wait out the
+    /// scheduled backoff (which caps at 30 s).
+    ///
+    /// The client is deliberately never start()ed (#777 review, finding
+    /// 4): start() would run the real scan-failure path, which schedules
+    /// its own natural backoff chain — a later natural retry could then
+    /// land the connection on its own, making the rescanNow() assertions
+    /// below pass vacuously (or, on a slow natural-retry cycle, flake).
+    /// forceUnreachableForTesting() drives phase to .unreachable directly
+    /// so rescanNow() is the ONLY thing that can possibly connect here.
+    func testRescanNowConnectsPromptly() async throws {
+        let binary = try requireBinary()
+        let port = 18782
+
+        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        await MainActor.run { client.forceUnreachableForTesting() }
+
+        // Start the real hub on that port, and wait for it to actually
+        // bind before rescanning — rescanNow() fires one scan pass, not
+        // a retry loop.
+        try spawnHub(binary: binary, port: port)
+        for _ in 0..<40 {  // up to ~10 s
+            let responders = await HubClient.probe(ports: [port])
+            if responders.contains(port) { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        // Manual rescan connects well under the ~30 s backoff cap — and
+        // with no backoff chain running, it's the only thing that could.
+        let rescanStart = Date()
+        await MainActor.run { client.rescanNow() }
+        var connectedAsHub = false
+        for _ in 0..<40 {  // up to ~10 s
+            let phase = await MainActor.run { client.phase }
+            if case .connected(let p, let isHub) = phase, isHub {
+                XCTAssertEqual(p, port)
+                connectedAsHub = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(connectedAsHub, "rescanNow never reached connected(isHub: true)")
+        XCTAssertLessThan(
+            Date().timeIntervalSince(rescanStart), 15,
+            "rescanNow took long enough to suggest it fell back to the backoff timer")
+    }
+
+    /// #773: a manual rescan while already connected must be a no-op —
+    /// otherwise it would race the scheduled backoff rescan into two
+    /// sockets (the isScanning/phase guards in scanAndConnect exist for
+    /// exactly this).
+    func testRescanNowIsNoOpWhileConnected() async throws {
+        let binary = try requireBinary()
+        let port = 18783
+        try spawnHub(binary: binary, port: port)
+
+        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        await MainActor.run { client.start() }
+        var connectedAsHub = false
+        for _ in 0..<60 {  // up to ~15 s
+            let phase = await MainActor.run { client.phase }
+            if case .connected(let p, let isHub) = phase, isHub {
+                XCTAssertEqual(p, port)
+                connectedAsHub = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(connectedAsHub, "client never connected to the real hub")
+
+        await MainActor.run { client.rescanNow() }
+        try await Task.sleep(nanoseconds: 2_000_000_000)  // short settle window
+        let phaseAfter = await MainActor.run { client.phase }
+        XCTAssertEqual(phaseAfter, .connected(port: port, isHub: true))
     }
 }

@@ -23,12 +23,11 @@ struct RemiApp: App {
                 Text(hubClient.clientsLine)
             }
             if case .unreachable = hubClient.phase {
-                // The sandboxed app cannot start the hub itself (#651);
-                // point at the terminal commands and make them one copy away.
-                Text("Start it with: remi start").font(.caption)
-                Button("Copy Install Command (remi --install)") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("remi --install", forType: .string)
+                // The sandboxed app cannot start the hub itself (#651); the
+                // onboarding panel (#773) carries the actual setup steps.
+                Button("Set Up Hub…") {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
             Divider()
@@ -50,6 +49,17 @@ struct RemiApp: App {
             } else {
                 Toggle("Open Remi at Login", isOn: $launchAtLogin.isEnabled)
             }
+            Button("Settings…") {
+                // SettingsLink drives the same underlying mechanism as
+                // openWindow, so it is subject to the same accessory-app
+                // quirk as "Open Remi" / "Set Up Hub…" above: it does not
+                // bring the app forward on its own (#777 review, finding
+                // 2). Using the responder-chain action directly lets us
+                // pair it with the same activate() call.
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut(",")
             Divider()
             Button("Quit Remi") {
                 // Quits the APP only. The hub is not ours to stop: the app is
@@ -69,9 +79,31 @@ struct RemiApp: App {
         .menuBarExtraStyle(.menu)
 
         Window("Remi", id: "main") {
-            WebViewWindow(hubClient: hubClient)
-                .frame(minWidth: 720, minHeight: 480)
+            Group {
+                // Once the client has EVER connected, keep WebViewWindow
+                // mounted for the app's lifetime (#777 review, finding 1):
+                // phase flips away from .connected on every transient
+                // disconnect (missed pong, brief network blip, hub
+                // restart mid-upgrade), and gating purely on hubURL != nil
+                // tore down and recreated the WKWebView — full reload,
+                // lost client-side state — on each one. hasEverConnected
+                // never resets, so HubSetupView is reserved for the true
+                // first-run/never-connected case it was designed for.
+                // WebViewWindow's own hubURL-change path (WebViewWindow.swift)
+                // already handles re-injecting/reloading once a NEW hub
+                // URL appears; no extra reload logic needed here.
+                if hubClient.hubURL != nil || hubClient.hasEverConnected {
+                    WebViewWindow(hubClient: hubClient)
+                } else {
+                    HubSetupView(hubClient: hubClient)
+                }
+            }
+            .frame(minWidth: 720, minHeight: 480)
         }
         .defaultSize(width: 1100, height: 760)
+
+        Settings {
+            SettingsView(hubClient: hubClient, launchAtLogin: launchAtLogin)
+        }
     }
 }
