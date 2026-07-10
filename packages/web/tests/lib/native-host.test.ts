@@ -19,17 +19,17 @@ describe('nativeHubUrlToConnect (#649)', () => {
     expect(
       nativeHubUrlToConnect(
         ['ws://127.0.0.1:18766/ws'],
-        { platform: 'macos-menubar', hubUrl: 'ws://127.0.0.1:18765' },
+        { platform: 'macos-menubar', hubUrl: 'ws://127.0.0.1:18765/ws' },
         toId,
       ),
-    ).toBe('ws://127.0.0.1:18765');
+    ).toBe('ws://127.0.0.1:18765/ws');
   });
 
   test('no-op when already restored, including alias spellings', () => {
     expect(
       nativeHubUrlToConnect(
         ['ws://localhost:18765/ws'],
-        { platform: 'macos-menubar', hubUrl: 'ws://127.0.0.1:18765' },
+        { platform: 'macos-menubar', hubUrl: 'ws://127.0.0.1:18765/ws' },
         toId,
       ),
     ).toBeNull();
@@ -46,9 +46,9 @@ describe('nativeHubUrlToConnect (#649)', () => {
     expect(
       nativeHubUrlToConnect(
         [],
-        { platform: 'macos-menubar', hubUrl: 'ws://127.0.0.1:18770' },
+        { platform: 'macos-menubar', hubUrl: 'ws://127.0.0.1:18770/ws' },
         toId,
       ),
-    ).toBe('ws://127.0.0.1:18770');
+    ).toBe('ws://127.0.0.1:18770/ws');
   });
 });

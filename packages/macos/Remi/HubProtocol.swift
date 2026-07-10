@@ -92,8 +92,3 @@ struct HubStatusFrame: Decodable {
     let sessions: Int
     let hubVersion: String
 }
-
-/// Incoming `pong`.
-struct PongFrame: Decodable {
-    let type: String
-}

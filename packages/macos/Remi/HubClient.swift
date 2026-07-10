@@ -60,10 +60,13 @@ final class HubClient: ObservableObject {
         }
     }
 
-    /// The URL the embedded web UI should connect to, e.g. ws://127.0.0.1:18765.
+    /// The URL the embedded web UI should connect to, e.g.
+    /// ws://127.0.0.1:18765/ws. Must include the path: the daemon's upgrade
+    /// handler only matches the exact configured path (default `/ws`), no
+    /// fallback (#766 review).
     var hubURL: String? {
         guard case let .connected(port, _) = phase else { return nil }
-        return "ws://127.0.0.1:\(port)"
+        return "ws://127.0.0.1:\(port)/ws"
     }
 
     /// Client census line for the menu ("Clients: 2 local, 1 remote"), #650.
@@ -229,9 +232,15 @@ final class HubClient: ObservableObject {
 
         switch envelope.type {
         case "hello_ack":
-            // Explicit-null detection: JSONDecoder cannot distinguish absent
-            // from null through `String?`, and the hub/session distinction
-            // hangs on exactly that (#542). Absent => treat as session peer.
+            // Validate the frame shape via HelloAckFrame; a malformed ack
+            // (missing serverVersion) is dropped rather than treated as a
+            // handshake. Its `sessionId: String?` still can't tell null from
+            // absent through JSONDecoder's decodeIfPresent, so the hub/session
+            // distinction (#542) is recovered separately below, from the raw
+            // JSON, where that distinction survives.
+            guard (try? JSONDecoder().decode(HelloAckFrame.self, from: data)) != nil else {
+                return
+            }
             let isHub = Self.helloAckHasNullSessionId(data)
             phase = .connected(port: port, isHub: isHub)
             lastConnectedPort = port
@@ -297,6 +306,7 @@ final class HubClient: ObservableObject {
         localClients = 0
         remoteClients = 0
         sessions = 0
+        hubVersion = nil
         phase = .unreachable
         consecutiveFailures += 1
         scheduleReconnect()

@@ -13,7 +13,7 @@
 export interface RemiNativeHost {
   /** e.g. 'macos-menubar' */
   readonly platform: string;
-  /** ws://127.0.0.1:<port> of the discovered hub; null while undiscovered. */
+  /** ws://127.0.0.1:<port>/ws of the discovered hub; null while undiscovered. */
   readonly hubUrl: string | null;
 }
 

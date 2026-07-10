@@ -67,10 +67,13 @@ final class DistSchemeHandlerTests: XCTestCase {
     }
 
     func testNativeBootstrapScript() {
-        let with = WebViewWindow.nativeBootstrapScript(hubUrl: "ws://127.0.0.1:18765")
+        // hubUrl carries the /ws path (#766 review, finding 1): the daemon's
+        // WebSocket upgrade only matches the exact configured path, no
+        // fallback for a bare "ws://host:port".
+        let with = WebViewWindow.nativeBootstrapScript(hubUrl: "ws://127.0.0.1:18765/ws")
         XCTAssertTrue(with.contains("window.__REMI_NATIVE__"))
         XCTAssertTrue(with.contains("'macos-menubar'"))
-        XCTAssertTrue(with.contains("ws://127.0.0.1:18765"))
+        XCTAssertTrue(with.contains("ws://127.0.0.1:18765/ws"))
 
         let without = WebViewWindow.nativeBootstrapScript(hubUrl: nil)
         XCTAssertTrue(without.contains("hubUrl: null"))
