@@ -1,6 +1,6 @@
 import { App as CapApp } from '@capacitor/app';
 import { Network } from '@capacitor/network';
-import { StatusBar, Style } from '@capacitor/status-bar';
+import { StatusBar } from '@capacitor/status-bar';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 // Bundled variable fonts (offline-first; no CDN). Inter Tight for UI/display,
@@ -9,6 +9,7 @@ import '@fontsource-variable/inter-tight';
 import '@fontsource-variable/jetbrains-mono';
 import './index.css';
 import App from './App.tsx';
+import { syncNativeStatusBarTheme } from './lib/native-theme';
 import { initNotifications } from './lib/notifications';
 import { isNative } from './lib/platform';
 
@@ -17,10 +18,12 @@ async function initNative(): Promise<void> {
   if (!isNative()) return;
 
   try {
-    const prefersDark =
-      document.documentElement.getAttribute('data-theme') === 'dark' ||
-      window.matchMedia('(prefers-color-scheme: dark)').matches;
-    await StatusBar.setStyle({ style: prefersDark ? Style.Dark : Style.Light });
+    // #778: shared with the theme-change listener in App.tsx so the status
+    // bar stays in sync after startup too, not just at this one-shot sample.
+    // App.tsx's settings effect calls this again on mount, ahead of or behind
+    // this one depending on effect-flush timing -- harmless (idempotent,
+    // no-op on web), not worth ordering around.
+    await syncNativeStatusBarTheme();
     await StatusBar.setOverlaysWebView({ overlay: true });
   } catch (err) {
     console.warn('[initNative] StatusBar setup failed:', err);

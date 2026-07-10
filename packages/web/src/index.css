@@ -247,7 +247,10 @@
   }
 }
 
-/* Light mode -- warm paper whites, same lime accent */
+/* Light mode -- warm paper whites, same lime accent.
+   data-theme is stamped by applyTheme() in App.tsx from the values of
+   EffectiveTheme (src/lib/theme.ts) -- keep this selector's value in sync
+   with that type if it ever changes. */
 html[data-theme="light"] {
   --color-primary: #c9eb4a;
   --color-primary-dark: #b9db3a;
