@@ -22,9 +22,11 @@ const QID = 'ques0000-0000-0000-0000-000000000003' as UUID;
 
 describe('binding fields on the wire (#429)', () => {
   test('hello_ack carries claudeSessionId + transcriptPath when binding present', () => {
-    const msg = createHelloAck('1.0.0', RID, undefined, {
-      claudeSessionId: CID,
-      transcriptPath: '/home/u/.claude/projects/-x/abc.jsonl',
+    const msg = createHelloAck('1.0.0', RID, {
+      binding: {
+        claudeSessionId: CID,
+        transcriptPath: '/home/u/.claude/projects/-x/abc.jsonl',
+      },
     });
     const round = deserialize(serialize(msg));
     if (round?.type !== 'hello_ack') throw new Error('wrong type');
@@ -33,9 +35,8 @@ describe('binding fields on the wire (#429)', () => {
   });
 
   test('hello_ack with null binding (no resolved id yet)', () => {
-    const msg = createHelloAck('1.0.0', RID, undefined, {
-      claudeSessionId: null,
-      transcriptPath: null,
+    const msg = createHelloAck('1.0.0', RID, {
+      binding: { claudeSessionId: null, transcriptPath: null },
     });
     const round = deserialize(serialize(msg));
     if (round?.type !== 'hello_ack') throw new Error('wrong type');

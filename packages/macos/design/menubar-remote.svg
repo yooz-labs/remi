@@ -1,0 +1,14 @@
+<!-- Menu-bar "r" mark, REMOTE-CLIENT state (#650): filled rounded square
+     with the r knocked out (negative space via alpha mask). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+  <defs>
+    <mask id="knockout">
+      <rect width="18" height="18" fill="#fff"/>
+      <g fill="none" stroke="#000" stroke-width="2" stroke-linecap="round">
+        <path d="M7 6.2 V 12.3"/>
+        <path d="M7 9.9 Q 7 6.9 11.1 7.2"/>
+      </g>
+    </mask>
+  </defs>
+  <rect x="1.5" y="1.5" width="15" height="15" rx="3.75" fill="#000" mask="url(#knockout)"/>
+</svg>

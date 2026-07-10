@@ -13,6 +13,7 @@ import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
 import { dedupeConnectionUrls } from '@/lib/connection-id';
+import { nativeHubUrlToConnect } from '@/lib/native-host';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
@@ -446,9 +447,17 @@ function App() {
       case 'hello_ack': {
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
-          console.warn('[App] Received hello_ack without sessionId from connection:', connectionId);
+          // Normal for a session-less hub (#542): its ack carries null and
+          // the session list arrives next with the children's daemonPorts.
+          console.debug('[App] Session-less hello_ack (hub) from connection:', connectionId);
           break;
         }
+        // Narrowed local: `message.sessionId` is `string | null` on the type
+        // (a session-less hub ack carries null, #542), but TypeScript does not
+        // carry the guard above's narrowing into the closures below. Capture
+        // the checked, non-null value once so every use downstream (including
+        // inside setSessions/setMessages callbacks) stays a plain string.
+        const sessionId = message.sessionId;
         // Phase 2 daemons attach the binding here so the client knows
         // which transcript it's talking to before the first session_list
         // round-trip (#430). Older daemons omit; the field stays undefined.
@@ -467,27 +476,27 @@ function App() {
         // This read must precede the setSessions enqueue below, which is what
         // overwrites the binding.
         const prevClaudeSessionId = sessionsRef.current.find(
-          (s) => s.id === message.sessionId && s.connectionId === connectionId,
+          (s) => s.id === sessionId && s.connectionId === connectionId,
         )?.claudeSessionId;
         // Reconnect-mid-rotation: the binding changed while we were away, so the
         // chat on screen belongs to the OLD Claude session. Clear it first, then
         // let the setSessions below swap the binding. Same effect as a live
         // session_rotated, which also clears before swapping (#439).
         if (bindingRotated(prevClaudeSessionId, ackClaudeSessionId)) {
-          clearSessionForRebind(message.sessionId);
+          clearSessionForRebind(sessionId);
         }
         setSessions((prev) => {
           // On reconnect, remove stale sessions from this connection that have a different
           // session ID (the daemon may have assigned a new session). Keep sessions from
           // other connections and sessions matching the new ID untouched.
           const cleaned = prev.filter(
-            (s) => s.connectionId !== connectionId || s.id === message.sessionId,
+            (s) => s.connectionId !== connectionId || s.id === sessionId,
           );
 
-          const exists = cleaned.some((s) => s.id === message.sessionId);
+          const exists = cleaned.some((s) => s.id === sessionId);
           if (exists) {
             return cleaned.map((s) =>
-              s.id === message.sessionId
+              s.id === sessionId
                 ? {
                     ...s,
                     connectionStatus: 'connected',
@@ -507,7 +516,7 @@ function App() {
           return [
             ...cleaned,
             {
-              id: message.sessionId,
+              id: sessionId,
               name: 'Claude Code Session',
               createdAt: new Date().toISOString(),
               lastActiveAt: new Date().toISOString(),
@@ -522,18 +531,18 @@ function App() {
             } satisfies UISession,
           ];
         });
-        localStorage.setItem(LOCALSTORAGE_SESSION_KEY, message.sessionId);
+        localStorage.setItem(LOCALSTORAGE_SESSION_KEY, sessionId);
 
         // Pin sessionId -> daemon URL so cold-start push answers route to the
         // right daemon when multiple are paired. Look up the connection's URL
         // synchronously from the latest snapshot.
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
         if (conn?.url) {
-          rememberSessionDaemon(message.sessionId, conn.url);
+          rememberSessionDaemon(sessionId, conn.url);
           // Mirror the daemon URL + signer to native storage (#591 P2) so a
           // lock-screen answer can sign + POST to the daemon's /answer endpoint
           // without opening the app. No-ops off-native; never throws.
-          void setNativeRoute(message.sessionId, {
+          void setNativeRoute(sessionId, {
             wsUrl: conn.url,
             ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
           });
@@ -553,7 +562,7 @@ function App() {
         // deep-links navigate via their own `push-notification-tap` handler,
         // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive && oldActive !== message.sessionId) {
+        if (oldActive && oldActive !== sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
           if (oldSession?.connectionId === connectionId) {
             setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));
@@ -1196,6 +1205,13 @@ function App() {
         break;
       }
 
+      case 'hub_status':
+        // Hub connection/session census (#650): consumed by the macOS
+        // menu-bar app for its icon state. The web UI has no use for it yet
+        // (a "N clients" affordance is a possible follow-up); the explicit
+        // case keeps it out of the unhandled-type debug log.
+        break;
+
       case 'daemon_update_available': {
         // Daemon binary updated on disk but the running wrapper still hosts
         // the user's PTY. Surface a system message in every active session so
@@ -1468,6 +1484,12 @@ function App() {
         break;
       }
 
+      case 'remi_status':
+        // #754: terminal status-bar snapshot; the web app renders session
+        // state from session_update/transcript flows instead. Explicitly
+        // ignored so the debounced broadcast doesn't spam the debug log.
+        break;
+
       default:
         console.debug(`[App] Unhandled message type: ${(message as { type: string }).type}`);
         break;
@@ -1614,6 +1636,7 @@ function App() {
   }, [connectDirect]);
 
   useEffect(() => {
+    let restored: string[] = [];
     try {
       const stored = localStorage.getItem(LOCALSTORAGE_CONNECTIONS_KEY);
       if (stored) {
@@ -1627,12 +1650,21 @@ function App() {
         if (deduped.length !== urls.length) {
           localStorage.setItem(LOCALSTORAGE_CONNECTIONS_KEY, JSON.stringify(deduped));
         }
+        restored = deduped;
         for (const url of deduped) {
           connectDirectRef.current(url);
         }
       }
     } catch (err) {
       console.warn('[App] Failed to restore connections from localStorage:', err);
+    }
+    // Native-shell handoff (#649): the macOS menu-bar app injects the hub
+    // URL it discovered; connect unless the restored set already covers it.
+    // If the localStorage read above threw, `restored` stays [] and the
+    // handoff always fires — the right fallback (the hub is the seed).
+    const nativeUrl = nativeHubUrlToConnect(restored, window.__REMI_NATIVE__, parseConnectionId);
+    if (nativeUrl) {
+      connectDirectRef.current(nativeUrl);
     }
   }, []);
 

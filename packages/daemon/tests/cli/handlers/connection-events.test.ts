@@ -4,6 +4,7 @@ import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
+import { HubClientTracker } from '../../../src/cli/hub-client-tracker.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import {
   __resetSessionStateForTests,
@@ -82,11 +83,12 @@ describe('createConnectionHandlers', () => {
         cancelOrphanCalls += 1;
       },
       send,
+      remiVersion: '9.9.9-test',
     });
   }
 
   describe('onConnect', () => {
-    test('tracks connection and sends NO_SESSION when no primary session exists', async () => {
+    test('tracks connection and sends a session-less hello_ack when no primary session exists (#542)', async () => {
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
         platformData: { kind: 'websocket' },
@@ -94,10 +96,42 @@ describe('createConnectionHandlers', () => {
 
       expect(trackedConnections).toEqual([{ id: CID, type: 'websocket' }]);
       expect(connectionAddedCount).toBe(1);
+      // A hub daemon (or an ordinary daemon in the brief pre-session window)
+      // acks the connection with sessionId: null instead of erroring, so a
+      // client can sit connected until a session is created (#542).
       expect(sendCalls).toHaveLength(1);
-      const msg = sendCalls[0]?.message as { type: string; code?: string };
-      expect(msg.type).toBe('error');
-      expect(msg.code).toBe('NO_SESSION');
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        sessionId?: unknown;
+        daemonVersion?: unknown;
+      };
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBeNull();
+      // Connection-time acks carry the daemon's binary version (#539).
+      expect(msg.daemonVersion).toBe('9.9.9-test');
+    });
+
+    test('a primary session set still attaches normally (regression, #542)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        sessionId?: unknown;
+        daemonVersion?: unknown;
+      };
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBe(sessionId);
+      // Every connection-time ack path stamps the binary version (#539).
+      expect(msg.daemonVersion).toBe('9.9.9-test');
+      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
     });
 
     test('auto-attaches and sends helloAck when a primary session exists (non-query)', async () => {
@@ -153,7 +187,10 @@ describe('createConnectionHandlers', () => {
       });
 
       expect(sendCalls).toHaveLength(1);
-      expect((sendCalls[0]?.message as { type: string }).type).toBe('hello_ack');
+      const queryAck = sendCalls[0]?.message as { type: string; daemonVersion?: unknown };
+      expect(queryAck.type).toBe('hello_ack');
+      // The query-mode/no-attach ack path also stamps the version (#539).
+      expect(queryAck.daemonVersion).toBe('9.9.9-test');
       expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
       expect(cancelOrphanCalls).toBe(0);
     });
@@ -236,6 +273,46 @@ describe('createConnectionHandlers', () => {
       };
       expect(replay.type).toBe('replay_batch');
       expect(replay.messages?.length).toBe(2);
+    });
+
+    test('#753: pending questions are re-sent as LIVE question messages after attach', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // One question answered before this attach (must NOT be re-sent), one
+      // still pending (must arrive as a live `question` message).
+      const answeredId = generateId();
+      sessionRegistry.addQuestion(sessionId, {
+        id: answeredId,
+        text: 'old, already answered?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      sessionRegistry.removeQuestion(sessionId, answeredId);
+      const pendingId = generateId();
+      sessionRegistry.addQuestion(sessionId, {
+        id: pendingId,
+        text: 'Allow Bash: git push',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      const questionMsgs = sendCalls.filter((c) => c.message.type === 'question');
+      expect(questionMsgs).toHaveLength(1);
+      const q = questionMsgs[0]?.message as { question: { id: UUID; text: string } };
+      expect(q.question.id).toBe(pendingId);
+      expect(q.question.text).toBe('Allow Bash: git push');
+      // Ordering: hello_ack first, live questions after (and after any replay).
+      expect(sendCalls[0]?.message.type).toBe('hello_ack');
+      expect(sendCalls[sendCalls.length - 1]?.message.type).toBe('question');
     });
 
     test('second concurrent connection is queued and still receives helloAck + replay', async () => {
@@ -483,5 +560,79 @@ describe('createConnectionHandlers', () => {
       const source = fs.readFileSync(handlerPath, 'utf8');
       expect(source).not.toMatch(/deviceTokens/);
     });
+  });
+});
+
+/**
+ * Hub census wiring (#650): the REAL createConnectionHandlers feeding a REAL
+ * HubClientTracker via onPeerConnect/onPeerDisconnect — exactly how cli.ts
+ * wires a hub. The relay metadata literal matches what RelayAdapter actually
+ * emits on peer-connected/auth-success (remote/relay-adapter.ts).
+ */
+describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
+  const RELAY_CID = 'conn0000-relay-0000-0000-000000000001' as UUID;
+
+  beforeEach(() => {
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    __resetSessionStateForTests();
+  });
+
+  test('a relay client counts remote through the real handler; disconnect decrements', async () => {
+    const sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
+    try {
+      const sent: Array<{ connectionId: UUID; message: ProtocolMessage }> = [];
+      const broadcasts: ProtocolMessage[] = [];
+      const tracker = new HubClientTracker({
+        send: (connectionId, message) => {
+          sent.push({ connectionId, message });
+        },
+        broadcast: (message) => broadcasts.push(message),
+        getSessions: () => 0,
+        hubVersion: '9.9.9-test',
+      });
+      const handlers = createConnectionHandlers({
+        sessionRegistry,
+        currentOwnedSession: () => null,
+        trackConnection: () => {},
+        untrackConnection: () => {},
+        onConnectionAdded: () => {},
+        onConnectionRemoved: () => {},
+        cancelOrphanTimeout: () => {},
+        send: (connectionId, message) => {
+          sent.push({ connectionId, message });
+          return true;
+        },
+        remiVersion: '9.9.9-test',
+        onPeerConnect: (connectionId, metadata) => tracker.onConnect(connectionId, metadata),
+        onPeerDisconnect: (connectionId) => tracker.onDisconnect(connectionId),
+      });
+
+      await handlers.onConnect(RELAY_CID, {
+        adapterType: 'relay',
+        displayName: 'Remote Client',
+        platformData: { kind: 'relay', code: 'ABC123' },
+      });
+
+      // The hello_ack is sent directly; the census (a count CHANGE, so it
+      // travels as a broadcast, which reaches the new connection too) tags
+      // the relay client remote. onPeerConnect runs synchronously after the
+      // ack send, so wire order is hello_ack then hub_status.
+      const ackFrames = sent.filter((s) => s.connectionId === RELAY_CID).map((s) => s.message.type);
+      expect(ackFrames).toContain('hello_ack');
+      expect(broadcasts).toHaveLength(1);
+      const census = broadcasts.at(-1) as { remoteClients: number; localClients: number };
+      expect(census.remoteClients).toBe(1);
+      expect(census.localClients).toBe(0);
+
+      await handlers.onDisconnect(RELAY_CID, 'peer closed');
+      const after = broadcasts.at(-1) as { remoteClients: number };
+      expect(after.remoteClients).toBe(0);
+    } finally {
+      await sessionRegistry.shutdown();
+    }
   });
 });

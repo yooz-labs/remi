@@ -21,6 +21,7 @@ import {
   discoverNetworkDaemons,
   queryMultiplePorts,
 } from './session-resolver.ts';
+import { formatVersionDrift } from './version-drift.ts';
 
 /** Return the terminal width, defaulting to 100 when stdout is not a TTY (e.g. piped). */
 function getTerminalWidth(): number {
@@ -634,6 +635,28 @@ export function formatAge(timestamp: Timestamp): string {
 export interface MultiPortLsOptions {
   readonly registry: SessionRegistryFile;
   readonly timeout?: number;
+  /** This binary's remi version; enables the stale-daemon warning (#539). */
+  readonly installedVersion?: string;
+}
+
+/**
+ * Warning lines for daemons whose recorded binary version differs from the
+ * installed binary (#539). One line per drifted daemon; empty when nothing
+ * drifted or versions are unknown (pre-#539 entries carry none). Exported
+ * for tests.
+ */
+export function formatVersionDriftWarnings(
+  entries: ReadonlyArray<{ name: string; wsPort: number; version?: string | undefined }>,
+  installedVersion: string | undefined,
+): string[] {
+  const lines: string[] = [];
+  for (const entry of entries) {
+    const drift = formatVersionDrift(entry.version, installedVersion);
+    if (drift) {
+      lines.push(`  ! ${entry.name} (port ${entry.wsPort}) ${drift}`);
+    }
+  }
+  return lines;
 }
 
 /**
@@ -683,6 +706,16 @@ export async function runMultiPortLs(opts: MultiPortLsOptions): Promise<void> {
     r.sessions.map((session) => ({ session, port: r.port })),
   );
   renderSessionList(allEntries);
+
+  // Stale-daemon warning (#539): compare each live entry's recorded binary
+  // version against the binary running this `remi ls`.
+  const driftLines = formatVersionDriftWarnings(registry.listLive(), opts.installedVersion);
+  if (driftLines.length > 0) {
+    console.log('');
+    for (const line of driftLines) {
+      console.log(line);
+    }
+  }
 }
 
 /**

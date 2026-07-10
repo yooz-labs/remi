@@ -1634,7 +1634,9 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(true);
     expect(pushed.length).toBe(0);
 
-    // Subagent finished without the user seeing the prompt (background).
+    // #763: a MAIN-tagged PostToolUse (routine status churn from another
+    // agent's work) must NOT wipe the still-live parked record — the prompt
+    // may not have had a chance to render yet.
     hookServer.fire('PostToolUse', {
       session_id: 'claude-sub-B',
       hook_event_name: 'PostToolUse',
@@ -1642,7 +1644,21 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
       tool_response: { exit_code: 0 },
     });
+    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(pushed.length).toBe(0);
 
+    // The subagent's OWN next tagged PreToolUse proves its permission
+    // resolved without a render (allowlist absorbed / answered): the parked
+    // record expires so it cannot stale-merge later. No push ever fired.
+    hookServer.fire('PreToolUse', {
+      session_id: 'claude-sub-B',
+      agent_id: 'subagent-B',
+      agent_type: 'task',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_use_id: 'tu_sub_b_next',
+    });
     expect(tracker.hasPendingForTest()).toBe(false);
     expect(pushed.length).toBe(0);
   });
@@ -1920,9 +1936,12 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.questionCalls).toBe(1); // escalated to the user, not silently denied
   });
 
-  test('#710: a genuinely subagent-TAGGED PermissionRequest (agent_id set) during an active Task context still default-denies', async () => {
-    // The still-valid case: agent_id present proves this really is a subagent
-    // prompt (not a leak), so it must keep default-denying via the response.
+  test('#751: a genuinely subagent-TAGGED PermissionRequest (agent_id set) during an active Task context parks + passthrough', async () => {
+    // agent_id present proves this really is a subagent prompt (not a leak).
+    // #751 PTY-arbiter: instead of the old default-deny (silent teammate
+    // breakage), the gate parks the rich question and answers 'passthrough' --
+    // no PTY inject, no immediate push/registration; the question surfaces
+    // only if Claude's native prompt renders on the PTY.
     build({ autoApprove: true, autoApproveDecision: 'escalate' });
 
     hookServer.fire('SessionStart', {
@@ -1950,9 +1969,14 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    expect(decision).toBe('deny');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
-    expect(messageApiLog.questionCalls).toBe(0);
+    // The park routes through recordPendingHook, which this harness's
+    // PassthroughTracker collapses into an immediate PTY-visible push — i.e.
+    // the simulated terminal rendered the prompt, so the parked question
+    // surfaced. True park-until-render semantics are covered in
+    // tests/api/question-presence-tracker.test.ts ("awaiting-PTY parking").
+    expect(messageApiLog.questionCalls).toBe(1);
   });
 
   // -------------------------------------------------------------------------

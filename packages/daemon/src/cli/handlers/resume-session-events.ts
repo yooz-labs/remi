@@ -31,6 +31,7 @@ import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../s
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import { resolveDirectory } from '../path-resolver.ts';
+import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 /**
@@ -87,9 +88,11 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', targetSessionId as UUID, {
-              isResume: true,
-              replayCount: result.replayMessages.length,
-              nextBulletId: result.nextBulletId,
+              resumeInfo: {
+                isResume: true,
+                replayCount: result.replayMessages.length,
+                nextBulletId: result.nextBulletId,
+              },
             }),
           );
           if (result.replayMessages.length > 0) {
@@ -97,6 +100,17 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
               connectionId,
               createReplayBatch(targetSessionId as UUID, result.replayMessages, true),
             );
+          }
+          // #753 (#760 review finding 2): this attach surface needs the same
+          // live re-send as the hello attach path, or a session switched-to
+          // mid-held-question shows nothing.
+          const resent = resendPendingQuestions(
+            (m) => send(connectionId, m),
+            targetSessionId as UUID,
+            result.currentQuestions,
+          );
+          if (resent > 0) {
+            log(`Re-sent ${resent} pending question(s) to resumed connection ${connectionId}`);
           }
           log(`Session ${targetSessionId} still alive; attached connection`);
           return;
@@ -216,9 +230,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
-              isResume: false,
-              replayCount: 0,
-              nextBulletId: 1,
+              resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
             }),
           );
           log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);

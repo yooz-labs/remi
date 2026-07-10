@@ -69,6 +69,15 @@ function agentKey(question: Question): string {
  *  long enough to matter to the user. */
 const DEFAULT_ORPHAN_DEBOUNCE_MS = 1500;
 
+/** How long a parked awaiting-PTY record (#751) survives other agents'
+ *  status churn (#763). A prompt that will render does so within
+ *  milliseconds of the hook's passthrough answer; one that never renders is
+ *  normally expired by its own agent's next PreToolUse (`noteAgentAdvanced`).
+ *  The TTL is the backstop for an agent that stalls without either signal,
+ *  so a stale parked record cannot merge onto an unrelated prompt minutes
+ *  later. */
+const PARKED_RECORD_TTL_MS = 120_000;
+
 export interface QuestionPresenceTrackerDeps {
   /** True iff the session currently has at least one registered, unanswered
    *  question (`sessionRegistry.getSession(id)?.currentQuestions.size > 0`).
@@ -87,6 +96,8 @@ export interface QuestionPresenceTrackerDeps {
   /** Override for `DEFAULT_ORPHAN_DEBOUNCE_MS`. Exists so tests can use a
    *  short real timer instead of faking time. */
   orphanDebounceMs?: number;
+  /** Clock override for the parked-record TTL (#763). Defaults to Date.now. */
+  nowMs?: () => number;
 }
 
 export class QuestionPresenceTracker {
@@ -98,6 +109,23 @@ export class QuestionPresenceTracker {
    *  candidate; with 2+ different-agent entries it pushes bare (no guessing). */
   private pending = new Map<string, Question>();
 
+  /** Keys of `pending` records PARKED by the gate awaiting PTY arbitration
+   *  (#751), mapped to the epoch-ms they were parked. Unlike a normal pending
+   *  record (an in-flight gate escalation whose own push is imminent), a
+   *  parked record must NOT count as gate-owned in the #712 orphan check —
+   *  the PTY render IS its push trigger — and it must SURVIVE the unscoped
+   *  status-change clear (#763): in an agent-team session every other
+   *  agent's hook activity flips status constantly, and wiping a still-live
+   *  parked record loses the merged push (or the whole prompt, when an
+   *  unrelated live question makes `hasLiveQuestions` suppress the orphan).
+   *  A parked entry expires when its OWN agent advances
+   *  (`noteAgentAdvanced` — the permission was allowlist-absorbed or
+   *  answered), on consume (render pairing), on `clearPending`
+   *  (restart/rotation), or after `PARKED_RECORD_TTL_MS`. Always a subset of
+   *  `pending`'s keys; every `pending` delete/clear site mirrors onto this
+   *  map. */
+  private awaitingPTY = new Map<string, number>();
+
   /** True while a permission prompt is on the main PTY. Set by
    *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
    *  AND by `clearPending` (the auto-approve cancelled branch confirms
@@ -108,14 +136,23 @@ export class QuestionPresenceTracker {
    *  dropped instead of typing into the main agent's input. */
   private ptyShowingQuestion = false;
 
-  /** True while the auto-approve LLM is deciding a permission. A PTY prompt
-   *  that appears during this window is BUFFERED (not pushed): if the verdict
-   *  is approve/deny/pick the prompt is auto-handled and must never reach the
+  /** Count of MAIN-context auto-approve evals in flight. A PTY prompt that
+   *  appears while this is > 0 is BUFFERED (not pushed): if the verdict is
+   *  approve/deny/pick the prompt is auto-handled and must never reach the
    *  user; only an escalate verdict releases the buffered prompt. This is the
    *  fix for "every auto-approved permission still pushed APNS" (#484) — and it
    *  must buffer (not suppress-and-replay) because the rising-edge PTY emit
-   *  (#486) fires only once, so a suppressed prompt would never re-emit. */
-  private autoApproveInFlight = false;
+   *  (#486) fires only once, so a suppressed prompt would never re-emit.
+   *
+   *  SUBAGENT evals never open this window (#767): a held subagent hook blocks
+   *  only that subagent, so a render arriving during its eval is some OTHER
+   *  prompt (an agent-team teammate permission, an MCP dialog, a #751 parked
+   *  render) — buffering it pairs the render with an unrelated verdict, and
+   *  the next unrelated approve discards a real question. On sessions with a
+   *  continuous subagent eval stream that ate every orphan render. A COUNTER
+   *  (not the old boolean) because concurrent evals exist; the first verdict
+   *  must not close a window another main eval still owns. */
+  private mainEvalsInFlight = 0;
   /** The PTY prompt held while an auto-approve eval is in flight. Released by
    *  `onAutoApproveEscalate` (verdict = escalate), discarded by the
    *  status/clearPending resets (verdict = handled, or the prompt is gone). */
@@ -189,6 +226,50 @@ export class QuestionPresenceTracker {
     // PTY-pairing fallback below).
     this.pending.delete(key);
     this.pending.set(key, question);
+    // A normal (gate-owned) record replaces any parked one for this agent;
+    // parkAwaitingPTY re-adds the flag after routing through here (#751).
+    this.awaitingPTY.delete(key);
+  }
+
+  /**
+   * Park a subagent-tagged permission question awaiting PTY arbitration
+   * (#751). The gate answered the hook 'passthrough' (no hold, no deny, no
+   * push): Claude runs its normal permission flow, so either the session
+   * allowlist absorbs the request silently (the record then expires on the
+   * next status transition, like any pending record) or the native prompt
+   * renders on the main PTY — `onOrphanPTYPrompt` recognizes the parked
+   * record, merges its rich labels onto the parsed prompt, and pushes
+   * immediately (no orphan debounce: hook + render is positive
+   * double-confirmation). The PTY is the arbiter of whether the user is
+   * asked.
+   */
+  parkAwaitingPTY(question: Question): void {
+    this.recordPendingHook(question);
+    // recordPendingHook may have kept a richer existing record instead of
+    // this one; the parked flag applies to whatever record now owns the key
+    // (both are hook-derived for the same agent's prompt cycle).
+    this.awaitingPTY.set(agentKey(question), this.deps.nowMs?.() ?? Date.now());
+    console.debug(
+      `[QuestionPresenceTracker] Parked question awaiting PTY render (agent "${agentKey(question)}"): "${question.text.slice(0, 60)}"`,
+    );
+  }
+
+  /**
+   * An agent-tagged PreToolUse arrived (#763): that agent's pending
+   * permission resolved WITHOUT a PTY render for us to pair (the session
+   * allowlist absorbed it after the gate's passthrough, or it was answered
+   * out-of-band). Its parked record is dead — expire it so it cannot
+   * stale-merge onto a later unrelated prompt. Scoped strictly to that
+   * agent's key; other agents' parked records are untouched.
+   */
+  noteAgentAdvanced(agentId: string | undefined): void {
+    if (agentId === undefined) return;
+    if (this.awaitingPTY.delete(agentId)) {
+      this.pending.delete(agentId);
+      console.debug(
+        `[QuestionPresenceTracker] Parked question expired (agent "${agentId}" advanced without a render)`,
+      );
+    }
   }
 
   /**
@@ -231,6 +312,7 @@ export class QuestionPresenceTracker {
     // Consume BEFORE the push so a re-entrant call cannot re-push the same
     // record, and so a later onPTYPromptVisible has no record to merge.
     this.pending.delete(recordKey);
+    this.awaitingPTY.delete(recordKey);
     this.pushedHeldIds.add(questionId);
     try {
       // held: bypass the cosmetic dedup + deliver regardless of an attached
@@ -271,21 +353,34 @@ export class QuestionPresenceTracker {
    * numbered options), which beats crashing on a network blip during APNS.
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
-    if (this.autoApproveInFlight) {
-      // A permission eval owns this prompt: buffer it, do not push yet. The
-      // verdict decides — onAutoApproveEscalate releases it; a status-leaves-
-      // waiting / clearPending reset (auto-handled, or prompt gone) discards it.
+    if (this.mainEvalsInFlight > 0) {
+      // A MAIN permission eval owns this prompt: buffer it, do not push yet.
+      // The verdict decides — onAutoApproveEscalate releases it; a status-
+      // leaves-waiting / clearPending reset (auto-handled, or prompt gone)
+      // discards it.
       //
-      // DORMANT under synchronous decisions (#496): Claude now BLOCKS on the
-      // hook response and does not render the permission prompt during the eval,
-      // so this branch is effectively never taken (the verdict is returned before
-      // any prompt renders; escalate clears the flag before the passthrough
-      // prompt appears). Retained as defense-in-depth — it is the #484
-      // APNS-flood guard for any future async/parallel eval path, and removing it
-      // buys nothing while risking the flood it prevents.
+      // Near-dormant under synchronous MAIN decisions (#496): Claude BLOCKS on
+      // the hook response and does not render that permission's prompt during
+      // the eval — the #484 APNS-flood guard for any async/parallel eval path.
+      // Scoped to MAIN evals only (#767): a subagent eval blocks only its own
+      // subagent, so renders arriving during one are other prompts entirely
+      // and must flow, not buffer.
+      console.debug(
+        `[QuestionPresenceTracker] Buffering PTY prompt during main eval: "${ptyQuestion.text.slice(0, 60)}"`,
+      );
       this.bufferedDuringEval = ptyQuestion;
       return;
     }
+    this.pairAndPush(ptyQuestion);
+  }
+
+  /**
+   * Pair-and-push core shared by every push trigger (#767): the buffer-window
+   * check lives only in `onPTYPromptVisible`; the #751 parked-render path and
+   * the escalate-release path call this directly so an in-flight eval cannot
+   * re-capture a prompt that has already won its arbitration.
+   */
+  private pairAndPush(ptyQuestion: Question): void {
     const key = agentKey(ptyQuestion);
     let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
     if (recordKey === undefined && this.pending.size === 1) {
@@ -305,10 +400,12 @@ export class QuestionPresenceTracker {
       // can't stale-merge onto a later unrelated prompt (recordKey stays
       // undefined here, so the delete below would otherwise skip them).
       this.pending.clear();
+      this.awaitingPTY.clear();
     }
     const hookRecord = recordKey !== undefined ? this.pending.get(recordKey) : undefined;
     if (recordKey !== undefined) {
       this.pending.delete(recordKey);
+      this.awaitingPTY.delete(recordKey);
     }
 
     // #718: a fallback hook record must not overwrite the PTY's own options
@@ -384,9 +481,29 @@ export class QuestionPresenceTracker {
    * `onPTYPromptVisible` merge/push path.
    */
   onOrphanPTYPrompt(ptyQuestion: Question): void {
-    if (this.autoApproveInFlight) {
-      // Same #484 semantics as onPTYPromptVisible: the eval owns this prompt
-      // cycle; only its own escalate verdict may release it.
+    // #751 PTY-arbiter: a parked subagent escalation whose prompt has now
+    // rendered. Merge + push IMMEDIATELY through the pair core — no orphan
+    // debounce (hook + render is positive double-confirmation), no gate-owned
+    // / live-question suppression (an unrelated live card must not eat the one
+    // prompt class this parking exists to surface), and CHECKED BEFORE the
+    // eval buffer (#767): the parked record's own eval already settled, so an
+    // in-flight eval here is some other agent's and must not capture — let
+    // alone discard — a prompt that already won its arbitration.
+    const parkedKey = this.matchAwaitingPTYKey(ptyQuestion);
+    if (parkedKey !== undefined) {
+      console.debug(
+        `[QuestionPresenceTracker] Parked question's prompt rendered; pushing (agent "${parkedKey}"): "${ptyQuestion.text.slice(0, 60)}"`,
+      );
+      this.pairAndPush(ptyQuestion);
+      return;
+    }
+    if (this.mainEvalsInFlight > 0) {
+      // Same #484 semantics as onPTYPromptVisible: a MAIN eval owns this
+      // prompt cycle; only its own escalate verdict may release it. Subagent
+      // evals never open this window (#767).
+      console.debug(
+        `[QuestionPresenceTracker] Buffering orphan PTY prompt during main eval: "${ptyQuestion.text.slice(0, 60)}"`,
+      );
       this.bufferedDuringEval = ptyQuestion;
       return;
     }
@@ -412,7 +529,10 @@ export class QuestionPresenceTracker {
    *  as "no live questions" (fail-open: a possibly-redundant push is far
    *  better than crashing the daemon or silently swallowing a real orphan). */
   private isGateOwnedCycle(ptyQuestion: Question): boolean {
-    if (this.pending.has(agentKey(ptyQuestion))) return true;
+    // A parked record (#751) never claims ownership: its push TRIGGER is the
+    // PTY render this check would otherwise suppress.
+    const key = agentKey(ptyQuestion);
+    if (this.pending.has(key) && !this.awaitingPTY.has(key)) return true;
     try {
       return this.deps.hasLiveQuestions?.() ?? false;
     } catch (err) {
@@ -436,10 +556,13 @@ export class QuestionPresenceTracker {
       const armed = this.armedOrphanQuestion;
       this.armedOrphanQuestion = null;
       if (armed === null) return;
-      // Re-check ownership: an eval could have started, or the gate could
+      // Re-check ownership: a main eval could have started, or the gate could
       // have taken the prompt (registered / stashed a same-agent hook
       // record), during the debounce window.
-      if (this.autoApproveInFlight) {
+      if (this.mainEvalsInFlight > 0) {
+        console.debug(
+          `[QuestionPresenceTracker] Buffering orphan PTY prompt at debounce fire (main eval started): "${armed.text.slice(0, 60)}"`,
+        );
         this.bufferedDuringEval = armed;
         return;
       }
@@ -449,14 +572,15 @@ export class QuestionPresenceTracker {
         );
         return;
       }
-      // Still orphaned: push through the SAME merge/push path a non-orphan
-      // PTY prompt uses, per spec, rather than a bespoke bare push — that
-      // keeps ptyShowingQuestion / pairing semantics identical. A pending
-      // record for a DIFFERENT agent (already ruled out as THIS agent's
-      // owner above) can still attach via onPTYPromptVisible's own sole-
-      // candidate heuristic (#483); that is pre-existing, general-purpose
-      // pairing behavior, not something this fallback adds.
-      this.onPTYPromptVisible(armed);
+      // Still orphaned: push through the SAME pair core a non-orphan PTY
+      // prompt uses, per spec, rather than a bespoke bare push — that keeps
+      // ptyShowingQuestion / pairing semantics identical (the buffer re-check
+      // just ran above, so the core is called directly). A pending record for
+      // a DIFFERENT agent (already ruled out as THIS agent's owner above) can
+      // still attach via the core's own sole-candidate heuristic (#483); that
+      // is pre-existing, general-purpose pairing behavior, not something this
+      // fallback adds.
+      this.pairAndPush(armed);
     }, ms);
     // Never let an armed 1.5s debounce block a graceful daemon shutdown
     // (mirrors the sibling hold/delivery timers in auto-approve-gate.ts).
@@ -471,11 +595,28 @@ export class QuestionPresenceTracker {
    */
   onStatusChange(status: AgentStatus): void {
     if (status !== 'waiting') {
-      this.pending.clear();
+      // #763: spare still-fresh PARKED records — the main status pipeline
+      // flips on every agent's hook activity, and a teammate's routine
+      // PreToolUse must not wipe another agent's parked question before its
+      // prompt had a chance to render. Parked entries have their own
+      // lifecycle (own-agent advance / render consume / TTL / clearPending);
+      // everything else clears exactly as before.
+      const now = this.deps.nowMs?.() ?? Date.now();
+      for (const key of [...this.pending.keys()]) {
+        const parkedAt = this.awaitingPTY.get(key);
+        if (parkedAt !== undefined && now - parkedAt <= PARKED_RECORD_TTL_MS) continue;
+        if (parkedAt !== undefined) {
+          console.debug(
+            `[QuestionPresenceTracker] Parked question expired (agent "${key}", TTL ${PARKED_RECORD_TTL_MS}ms elapsed without a render)`,
+          );
+        }
+        this.pending.delete(key);
+        this.awaitingPTY.delete(key);
+      }
       this.ptyShowingQuestion = false;
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
-      this.autoApproveInFlight = false;
+      this.mainEvalsInFlight = 0;
       this.bufferedDuringEval = null;
       // New prompt cycle starts fresh: a held push from the prior cycle must not
       // suppress an identical id in a future one (ids are unique, so this is
@@ -489,40 +630,57 @@ export class QuestionPresenceTracker {
   }
 
   /**
-   * An auto-approve LLM eval has STARTED for a permission. Until it resolves,
-   * a PTY prompt for it is buffered, not pushed (so a silently auto-approved
-   * permission never reaches the user). Paired with `onAutoApproveEscalate`
-   * (release) and the status/clearPending resets (discard).
+   * An auto-approve LLM eval has STARTED for a permission. Until a MAIN-context
+   * eval resolves, a PTY prompt is buffered, not pushed (so a silently
+   * auto-approved permission never reaches the user). Paired with
+   * `onAutoApproveEscalate` (release) and the status/clearPending resets
+   * (discard). A SUBAGENT eval (#767) never opens the buffer window: its held
+   * hook blocks only that subagent, so it cannot be the prompt now rendering —
+   * see `mainEvalsInFlight`.
    */
-  onAutoApproveStart(): void {
-    this.autoApproveInFlight = true;
+  onAutoApproveStart(isSubagent = false): void {
+    if (isSubagent) return;
+    this.mainEvalsInFlight += 1;
   }
 
   /**
    * The auto-approve verdict was ESCALATE: the user must answer. End the buffer
-   * window and release the held PTY prompt (re-running the normal pair+push
-   * path, which now finds the hook record the escalation just stashed). If no
-   * prompt was buffered yet, the next `onPTYPromptVisible` pushes normally.
+   * window and release the held PTY prompt (re-running the pair+push core,
+   * which now finds the hook record the escalation just stashed — NOT the
+   * buffer-checking entry point, since a sibling main eval may still be in
+   * flight and the escalate verdict owns the release). If no prompt was
+   * buffered yet, the next `onPTYPromptVisible` pushes normally. A subagent
+   * verdict (#767, the #751 park path) never opened the window, so it must not
+   * release or discard another eval's buffered prompt.
    */
-  onAutoApproveEscalate(): void {
-    this.autoApproveInFlight = false;
+  onAutoApproveEscalate(isSubagent = false): void {
+    if (isSubagent) return;
+    this.mainEvalsInFlight = Math.max(0, this.mainEvalsInFlight - 1);
     const buffered = this.bufferedDuringEval;
     this.bufferedDuringEval = null;
     if (buffered !== null) {
-      this.onPTYPromptVisible(buffered);
+      this.pairAndPush(buffered);
     }
   }
 
   /**
    * The auto-approve verdict was HANDLED automatically (approve/deny/pick
-   * injected, or a subagent default-deny): the user must NOT see this prompt.
-   * Close the buffer window and discard any buffered prompt. Surgical (does not
-   * touch pending hook records of OTHER agents). EVERY `onAutoApproveStart` must
-   * be matched by exactly one of escalate / handled / a status-or-clear reset,
-   * or the buffer would stick true and silently drop later prompts.
+   * injected): the user must NOT see this prompt. Close the buffer window and
+   * discard any buffered prompt. Surgical (does not touch pending hook records
+   * of OTHER agents). EVERY main `onAutoApproveStart` must be matched by
+   * exactly one of escalate / handled / a status-or-clear reset, or the buffer
+   * would stick open and silently drop later prompts. A subagent verdict
+   * (#767) is a no-op here: discarding on it was exactly how an unrelated
+   * subagent approve destroyed a buffered teammate/parked prompt.
    */
-  onAutoApproveHandled(): void {
-    this.autoApproveInFlight = false;
+  onAutoApproveHandled(isSubagent = false): void {
+    if (isSubagent) return;
+    this.mainEvalsInFlight = Math.max(0, this.mainEvalsInFlight - 1);
+    if (this.bufferedDuringEval !== null) {
+      console.debug(
+        `[QuestionPresenceTracker] Discarding buffered PTY prompt (main eval auto-handled): "${this.bufferedDuringEval.text.slice(0, 60)}"`,
+      );
+    }
     this.bufferedDuringEval = null;
   }
 
@@ -534,13 +692,37 @@ export class QuestionPresenceTracker {
    */
   clearPending(): void {
     this.pending.clear();
+    this.awaitingPTY.clear();
     this.ptyShowingQuestion = false;
-    this.autoApproveInFlight = false;
+    this.mainEvalsInFlight = 0;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();
     // #712: the prompt was answered in-terminal or the session is rotating —
     // either way an armed orphan timer for it must not fire a stale push.
     this.cancelOrphanTimer();
+  }
+
+  /** Match a rendered PTY prompt to a PARKED (#751 awaiting-PTY) record: an
+   *  exact agent-key match, or the sole-candidate fallback (exactly one
+   *  pending record and it is parked — PTY prompts rarely name their agent,
+   *  mirroring `onPTYPromptVisible`'s own pairing heuristic). With 2+ pending
+   *  records and no exact match, no guess is made here; the prompt falls to
+   *  the normal owned/orphan logic.
+   *
+   *  ACCEPTED tradeoff (#763 finding 2): the sole-candidate fallback can pair
+   *  an unrelated render (e.g. a hook-less agent-team prompt) with the single
+   *  parked record, same as the pre-existing #483/#717 pairing heuristic.
+   *  Parking's longer lifetime widens the window, but own-agent-advance
+   *  expiry (`noteAgentAdvanced`) + the TTL bound it; revisit only if soaks
+   *  show real misattribution. */
+  private matchAwaitingPTYKey(ptyQuestion: Question): string | undefined {
+    const key = agentKey(ptyQuestion);
+    if (this.awaitingPTY.has(key) && this.pending.has(key)) return key;
+    if (this.pending.size === 1) {
+      const sole = [...this.pending.keys()][0] as string;
+      if (this.awaitingPTY.has(sole)) return sole;
+    }
+    return undefined;
   }
 
   /** Cancel any armed orphan-prompt debounce timer and discard its candidate. */
@@ -575,6 +757,11 @@ export class QuestionPresenceTracker {
   /** Test-only: number of distinct agents with a pending hook record. */
   pendingCountForTest(): number {
     return this.pending.size;
+  }
+
+  /** Test-only: number of pending records parked awaiting PTY arbitration (#751). */
+  awaitingPTYCountForTest(): number {
+    return this.awaitingPTY.size;
   }
 
   /** Test-only: whether an orphan-prompt debounce timer is currently armed. */

@@ -21,6 +21,7 @@ import type { SessionRegistry } from '../../session/index.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
+import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
@@ -39,6 +40,17 @@ export interface ConnectionHandlerDeps {
   /** Cancel the SIGHUP orphan-shutdown timer after a remote client attaches. */
   cancelOrphanTimeout: () => void;
   send: SendToConnection;
+  /** The daemon's remi binary version, stamped on connection-time hello_acks
+   *  so clients can flag a daemon running older code than the installed
+   *  binary (#539). */
+  remiVersion: string;
+  /**
+   * Hub client census hooks (#650): fired after a connection's hello_ack
+   * (with the connect metadata for peer classification) and on disconnect.
+   * Wired only by hub-mode daemons; undefined everywhere else.
+   */
+  onPeerConnect?: ((connectionId: UUID, metadata: AdapterMetadata) => void) | undefined;
+  onPeerDisconnect?: ((connectionId: UUID) => void) | undefined;
 }
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
@@ -53,6 +65,9 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     onConnectionRemoved,
     cancelOrphanTimeout,
     send,
+    remiVersion,
+    onPeerConnect,
+    onPeerDisconnect,
   } = deps;
 
   /** The current binding for hello_ack: {claudeSessionId, transcriptPath}. */
@@ -119,20 +134,32 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
           if (result.success) {
             send(
               connectionId,
-              createHelloAck(
-                '1.0.0',
-                currentPrimary,
-                {
+              createHelloAck('1.0.0', currentPrimary, {
+                resumeInfo: {
                   isResume: result.replayMessages.length > 0,
                   replayCount: result.replayMessages.length,
                   nextBulletId: result.nextBulletId,
                 },
-                currentBinding(),
-                result.attachState,
-              ),
+                binding: currentBinding(),
+                attachState: result.attachState,
+                daemonVersion: remiVersion,
+              }),
             );
+            onPeerConnect?.(connectionId, metadata);
             if (result.replayMessages.length > 0) {
               send(connectionId, createReplayBatch(currentPrimary, result.replayMessages, true));
+            }
+            // #753: re-send the authoritative pending set as LIVE question
+            // messages after the replay (see pending-question-resend.ts for
+            // why replayed history cannot be trusted for pendingness).
+            const resent = resendPendingQuestions(
+              (m) => send(connectionId, m),
+              currentPrimary,
+              result.currentQuestions,
+              currentBinding().claudeSessionId ?? undefined,
+            );
+            if (resent > 0) {
+              log(`Re-sent ${resent} pending question(s) to connection ${connectionId}`);
             }
             cancelOrphanTimeout();
             log(
@@ -145,15 +172,27 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         // Query mode or attach failed (session busy); send hello_ack without
         // attach so utility clients (ls, kill) can still send requests. Still
         // carry the binding so the client follows the current session (#499).
-        send(connectionId, createHelloAck('1.0.0', currentPrimary, undefined, currentBinding()));
+        send(
+          connectionId,
+          createHelloAck('1.0.0', currentPrimary, {
+            binding: currentBinding(),
+            daemonVersion: remiVersion,
+          }),
+        );
+        onPeerConnect?.(connectionId, metadata);
         log(
           `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
         );
         return;
       }
 
-      // No session available.
-      send(connectionId, createError('NO_SESSION', 'No active session available'));
+      // No session available: still ack the connection with a null sessionId
+      // rather than erroring out. This is the normal steady state for a
+      // session-less hub daemon (#542) and also covers the brief startup
+      // window on an ordinary daemon before its primary session is created.
+      send(connectionId, createHelloAck('1.0.0', null, { daemonVersion: remiVersion }));
+      onPeerConnect?.(connectionId, metadata);
+      log(`Connection ${connectionId} connected session-less (no active session)`);
     },
 
     onDisconnect: async (connectionId: UUID, reason: string): Promise<void> => {
@@ -174,6 +213,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       sessionRegistry.detachConnection(connectionId);
       untrackConnection(connectionId);
       onConnectionRemoved();
+      onPeerDisconnect?.(connectionId);
     },
   };
 }

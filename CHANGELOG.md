@@ -2,7 +2,118 @@
 
 All notable changes to Remi are documented here.
 
-## [Unreleased]
+## [0.6.19] - 2026-07-09
+
+The hub release: `remi serve` / `remi start` become a session-less supervisor
+and macOS gets a native menu-bar app (epic #648). Alongside it, a second
+agent-team soak round (epic #757) fixes subagent question routing, duplicate
+lock-screen answer notices, and what a terminal attach can see.
+
+### Added
+- **Terminal attach shows the status strip** (#754, #755): the daemon now
+  broadcasts its status snapshot (`remi_status`) to connected clients on every
+  flush, and `remi attach` draws the same reserved-row bar the wrapper shows
+  (`repo:branch | attached | executing`). Both the bar and the Claude
+  statusline replace the blunt "1 client" with `attached` /
+  `attached (+N waiting)`, read from the exclusive PTY slot and its FIFO
+  queue. The bar is drawn client-side: the attaching `remi` must also run
+  this version.
+- **Pending questions visible in `remi attach`** (#753): attaching to a
+  session with a held question now prints a banner (question, options, and
+  "answer on your phone, or run `remi unstick`") instead of a silently stuck
+  terminal, and the daemon re-sends the authoritative pending set on attach,
+  resume, and queue promotion so no surface misses it. Only held questions
+  banner (the native prompt covers the rest), and an "answered" line confirms
+  resolution.
+- **macOS TestFlight pipeline** (#658 phase 2, epic #648):
+  `bun run testflight:macos [-- --upload]` mirrors the iOS local path —
+  stages the web UI, archives, exports a signed Mac App Store `.pkg`, and
+  uploads via `altool -t macos`. Shared `config/app-release.json` version
+  line now stamps BOTH Xcode projects (project regeneration re-stamps
+  automatically), and the app gains its icon.
+- **macOS app lifecycle polish** (#651, epic #648): "Open Remi at Login"
+  menu toggle (SMAppService; independent of the hub's LaunchAgent), a
+  copy-install-command menu item when no hub is running, and
+  `docs/MACOS_APP.md` documenting the attach-only design — window close and
+  app quit never touch the hub daemon; stopping it stays `remi stop` (a
+  protocol-level stop is #747, blocked on #535).
+- **Menu-bar icon states** (#650, epic #648): the rounded-square "r" now
+  encodes live hub state from the `hub_status` census — thin outline (idle),
+  bold "r" (local client attached), filled square with knocked-out "r"
+  (remote client connected), dimmed when the hub is unreachable. Vector
+  template assets (light/dark tinting) generated from SVG sources in
+  `packages/macos/design/`; the menu shows a client-count line.
+- **macOS menu-bar app shell** (#649, epic #648): `packages/macos/` — a
+  sandboxed, attach-only SwiftUI accessory app (`MenuBarExtra` + window)
+  hosting the existing web UI in a WKWebView over a bundled
+  `remi-app://localhost` origin. Discovers the local hub by port scan,
+  connects query-mode (never counted as a client), and injects the hub URL
+  into the web app via `window.__REMI_NATIVE__`. Closing the window or
+  quitting the app never touches the hub daemon (#651 groundwork); the app
+  cannot stop the hub by design (sandbox; use `remi stop`). Build via
+  `bun run build:macos-web` then Xcode; tests in `RemiTests` (real-hub
+  integration gated on `TEST_RUNNER_REMI_TEST_BINARY`).
+- **`hub_status` census broadcast** (#650, epic #648): hub-mode daemons now
+  tell every client how many local and remote (non-query) clients are
+  connected and how many child session daemons are live — the data source
+  for the upcoming macOS menu-bar icon state. Sent to each connection right
+  after its `hello_ack` and broadcast on every change; query clients
+  (`remi ls`, the menu-bar app) receive it but are never counted.
+- **Stale-daemon version drift surfaced** (#539, epic #648 phase 2): daemons
+  hold their binary for life, so an upgrade silently leaves running daemons
+  on old code. Every daemon now stamps its binary version into its
+  live-sessions entry, status file, and connection-time `hello_ack`
+  (`daemonVersion`); `remi ls` prints a per-daemon "runs remi vX; installed
+  binary is vY — restart to apply" warning and `remi status` shows the hub's
+  version with the same drift warning.
+- **Session-less hub: `remi serve`** (#542, epic #648 phase 1): a supervisor
+  daemon that binds a port (18765 preferred, 20-port probe, `--port` to
+  override), serves the machine's session list, and spawns
+  child session daemons on demand — without ever launching Claude itself. A
+  session-less daemon now answers `hello` with `hello_ack{sessionId: null}`
+  instead of a `NO_SESSION` error, and the live-sessions watcher (previously
+  wrapper-mode-only) broadcasts newly spawned sibling daemons in all modes.
+
+### Changed
+- **`remi start` now launches the hub** instead of a one-session daemon: no
+  more junk conversation in the app from starting a daemon. Sessions are
+  created from the app or `remi new`. `remi stop` stops only the hub; running
+  session daemons keep serving.
+- **`--install` LaunchAgent/systemd runs `remi serve`** via the PATH-resolved
+  `remi` binary (survives brew upgrades), with `KeepAlive.SuccessfulExit=false`
+  so `remi stop` is not resurrected by launchd while crashes still restart.
+  Existing installs keep the old behavior until `remi --install` is re-run.
+- The hub self-writes `~/.remi/daemon.pid` (launchd-started hubs are now
+  visible to `remi stop`/`status`), and `daemon-status.json` now belongs
+  exclusively to the hub: every session daemon (hub-spawned or a manually
+  run `remi --daemon`) writes a per-port `status-<port>.json` instead of
+  racing the hub for the shared file.
+
+### Fixed
+- **Orphan prompt routing survives subagent eval streams** (#767): the
+  eval-in-flight buffer (#484) treated ANY auto-approve eval as owning the
+  prompt cycle, so on sessions with back-to-back subagent evals every
+  hook-less rendered prompt (agent-team teammate permissions, MCP dialogs,
+  #751 parked renders) was captured and silently discarded by the next
+  unrelated approve — questions never reached the phone. The buffer window is
+  now opened only by main-context evals (counted, so concurrent evals cannot
+  close each other's window), parked renders are matched before any buffering,
+  and the previously invisible park/buffer/expiry decisions are logged.
+- **Subagent permission questions are PTY-arbitered** (#751, #763): the
+  auto-approve gate no longer holds-and-pushes subagent-tagged escalations
+  blindly — it parks the question and passes the hook through, and the push
+  fires only if Claude actually renders the prompt on the PTY. This kills
+  both agent-team failure modes from the soak: background/subagent questions
+  phantom-routed to the phone (the lead was going to answer them anyway) and
+  real prompts never surfaced. Parked records are scoped to their owning
+  agent (#763) — another agent's status churn can't expire them; they clear
+  on the owner's own progress, a render, or a 120s TTL.
+- **Duplicate lock-screen answer deliveries deduped** (#752): one tap can
+  reach the daemon up to three times (native POST, in-app WebSocket,
+  signaling relay). A TTL idempotency cache now recognizes replays across
+  every spelling of the same answer (option value, label, AUQ selections),
+  so a successfully applied answer no longer triggers a follow-up "couldn't
+  deliver" push, and a replay can never inject into the live PTY.
 
 ## [0.6.18] - 2026-07-07
 

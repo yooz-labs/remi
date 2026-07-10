@@ -344,6 +344,10 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       case 'hello_ack': {
         const ack = message as HelloAckMessage;
+        // A session-less hub ack (#542) carries sessionId: null; Telegram
+        // topics are only ever bound once a real session exists, so skip
+        // rather than clobber the binding with null.
+        if (ack.sessionId === null) return true;
         const sessionKey = this.connectionToSession.get(connectionId);
         if (sessionKey) {
           const session = this.sessions.get(sessionKey);
@@ -536,6 +540,9 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       // Messages that don't need Telegram rendering.
       // N/A on Telegram: no PTY/attach/wire-auth; content surfaces via other branches.
+      // hub_status / remi_status are display-state broadcasts (menu-bar icon,
+      // attach status bar) fired on every census change / status flush — without
+      // an explicit no-op they would console.warn continuously (#766 review).
       case 'create_session_response':
       case 'ping':
       case 'pong':
@@ -545,6 +552,8 @@ export class TelegramAdapter implements ConnectionAdapter {
       case 'raw_pty_output':
       case 'auth_challenge':
       case 'auth_result':
+      case 'hub_status':
+      case 'remi_status':
         return true;
 
       default:

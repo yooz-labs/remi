@@ -16,6 +16,8 @@ export type {
   MessageState,
   MessageSender,
   AgentStatus,
+  AutoApproveState,
+  RemiStatus,
   Message,
   BulletType,
   Bullet,
@@ -92,10 +94,13 @@ export type {
   RegisterDeviceTokenMessage,
   UnregisterDeviceTokenMessage,
   DaemonUpdateAvailableMessage,
+  HubStatusMessage,
   SessionRotatedMessage,
   SessionViewsMessage,
   SessionViewMeta,
   QuestionResolvedMessage,
+  RemiStatusMessage,
+  CreateHelloAckOptions,
   CreateHelloOptions,
 } from './protocol.ts';
 
@@ -145,9 +150,11 @@ export {
   createRegisterDeviceToken,
   createUnregisterDeviceToken,
   createDaemonUpdateAvailable,
+  createHubStatus,
   createSessionRotated,
   createSessionViews,
   createQuestionResolved,
+  createRemiStatus,
   MessageIdTracker,
 } from './protocol.ts';
 

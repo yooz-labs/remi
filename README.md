@@ -58,6 +58,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 - **Chat view** - Clean conversation interface without terminal noise
 - **Live updates** - Agent messages stream in real-time as work progresses
 - **Cross-platform** - iOS, Android, Web, macOS, Windows, Linux
+- **macOS menu-bar app** - a status "r" tracking live connections plus the full web UI in a native window; see [docs/MACOS_APP.md](docs/MACOS_APP.md)
 - **Notifications** - Push alerts when Claude needs your input
 - **Encrypted** - TLS/DTLS transport encryption on all connections
 - **No cloud dependency** - All data stays on your machines; relay only forwards encrypted blobs

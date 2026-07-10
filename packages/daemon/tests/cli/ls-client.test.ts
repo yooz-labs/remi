@@ -13,6 +13,7 @@ import {
   fetchSessions,
   formatAge,
   formatDuration,
+  formatVersionDriftWarnings,
   getDefaultPortRange,
   getLocalAddresses,
   groupEndpointsByHost,
@@ -512,5 +513,32 @@ describe('groupEndpointsByHost', () => {
     ];
     const result = groupEndpointsByHost(endpoints);
     expect(result.size).toBe(2);
+  });
+});
+
+describe('formatVersionDriftWarnings (#539)', () => {
+  const entries = [
+    { name: 'proj-a', wsPort: 18765, version: '0.6.18' },
+    { name: 'proj-b', wsPort: 18766, version: '0.6.19-dev.2' },
+    { name: 'proj-c', wsPort: 18767 }, // pre-#539 entry, no version recorded
+  ];
+
+  test('one warning line per drifted daemon, matching entries silent', () => {
+    const lines = formatVersionDriftWarnings(entries, '0.6.19-dev.2');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('proj-a');
+    expect(lines[0]).toContain('18765');
+    expect(lines[0]).toContain('0.6.18');
+    expect(lines[0]).toContain('restart to apply');
+  });
+
+  test('silent when installed version is unknown', () => {
+    expect(formatVersionDriftWarnings(entries, undefined)).toEqual([]);
+  });
+
+  test('silent when everything matches', () => {
+    expect(
+      formatVersionDriftWarnings([{ name: 'x', wsPort: 1, version: '1.0.0' }], '1.0.0'),
+    ).toEqual([]);
   });
 });

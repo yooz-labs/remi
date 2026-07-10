@@ -94,7 +94,36 @@ describe('createResumeSessionHandlers', () => {
     const types = sendCalls.map((c) => c.message.type);
     expect(types).toContain('resume_session_response');
     expect(types).toContain('hello_ack');
+    // Documented contract (#539): resume acks OMIT daemonVersion — only
+    // connection-time and promotion acks carry it.
+    const resumeAck = sendCalls.find((c) => c.message.type === 'hello_ack')?.message as {
+      daemonVersion?: unknown;
+    };
+    expect('daemonVersion' in resumeAck).toBe(false);
     expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+  });
+
+  test('#753: re-sends pending questions as live messages on the still-alive attach path', async () => {
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+    const pendingId = 'aaaaaaaa-1111-2222-3333-444444444444' as UUID;
+    sessionRegistry.addQuestion(sessionId, {
+      id: pendingId,
+      text: 'Allow Bash: git push',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      held: true,
+    });
+
+    const handlers = makeHandlers();
+    await handlers.onResumeSessionRequest(CID, sessionId, REQ);
+
+    const questionMsgs = sendCalls.filter((c) => c.message.type === 'question');
+    expect(questionMsgs).toHaveLength(1);
+    const q = questionMsgs[0]?.message as { question: { id: UUID; held?: boolean } };
+    expect(q.question.id).toBe(pendingId);
+    expect(q.question.held).toBe(true); // held flag survives the re-send
   });
 
   test('rejects when another session is active and the target does not match', async () => {

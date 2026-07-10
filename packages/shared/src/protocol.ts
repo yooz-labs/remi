@@ -16,6 +16,7 @@ import type {
   DiscoverableSession,
   Message,
   Question,
+  RemiStatus,
   Session,
   StructuredMessage,
   Timestamp,
@@ -101,9 +102,11 @@ export type ProtocolMessage =
   | RegisterDeviceTokenMessage
   | UnregisterDeviceTokenMessage
   | DaemonUpdateAvailableMessage
+  | HubStatusMessage
   | SessionRotatedMessage
   | SessionViewsMessage
-  | QuestionResolvedMessage;
+  | QuestionResolvedMessage
+  | RemiStatusMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -138,7 +141,13 @@ export interface HelloAckMessage {
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly serverVersion: string;
-  readonly sessionId: UUID;
+  /**
+   * The daemon's primary session (null on a session-less hub daemon, #542):
+   * a hub boots with no session of its own, so a connecting client still
+   * gets an ack (rather than a NO_SESSION error) while it waits for one to
+   * be created via `create_session_request` or `remi new`.
+   */
+  readonly sessionId: UUID | null;
   /**
    * Claude Code session UUID this daemon's PTY is bound to (#427/#429).
    * Always populated post-phase-1 because the daemon pre-assigns the id
@@ -169,6 +178,15 @@ export interface HelloAckMessage {
    * 'attached', which was the pre-#662 (buggy) assumption.
    */
   readonly attachState?: 'attached' | 'queued' | undefined;
+  /**
+   * The daemon's remi BINARY version (e.g. "0.6.19-dev.2") — distinct from
+   * `serverVersion`, which is the protocol version. Lets clients flag a
+   * daemon running older code than the installed binary (#539: daemons hold
+   * their binary for life; upgrades only affect new daemons). Sent on
+   * connection-time and promotion acks; absent on resume acks and from
+   * pre-#539 daemons.
+   */
+  readonly daemonVersion?: string;
 }
 
 /** Agent output - message from Claude */
@@ -318,6 +336,22 @@ export interface QuestionResolvedMessage {
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
   readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+}
+
+/**
+ * Daemon status snapshot broadcast (#754). Fired on the StatusWriter's
+ * debounced flush (and once to each newly attached connection), never
+ * recorded into replay history — it is ephemeral display state. The terminal
+ * attach client renders it on the same reserved-row status bar the wrapper
+ * draws; other clients may ignore it.
+ */
+export interface RemiStatusMessage {
+  readonly type: 'remi_status';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** The daemon's primary session the snapshot describes. */
+  readonly sessionId: UUID;
+  readonly status: RemiStatus;
 }
 
 /** Session state update */
@@ -757,6 +791,28 @@ export interface DaemonUpdateAvailableMessage {
   readonly binaryPath: string;
 }
 
+/**
+ * Hub connection/session census (#650, epic #648): the daemon half of the
+ * menu-bar icon state. Sent by HUB-MODE daemons only — to a connection right
+ * after its hello_ack, and broadcast to all connections whenever the counts
+ * change (client connect/disconnect, child session registered/removed).
+ * Query-mode clients (remi ls, the menu-bar app itself) receive it but are
+ * never counted. Pre-#650 clients drop it via isValidMessage.
+ */
+export interface HubStatusMessage {
+  readonly type: 'hub_status';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Non-query clients whose transport peer is a loopback address. */
+  readonly localClients: number;
+  /** Non-query clients on non-loopback peers, plus relay-attached clients. */
+  readonly remoteClients: number;
+  /** Live child session daemons (live-sessions registry census). */
+  readonly sessions: number;
+  /** REMI_VERSION of the hub process. */
+  readonly hubVersion: string;
+}
+
 /** A recent project directory aggregated from session history */
 export interface RecentDirectory {
   /** Absolute path */
@@ -867,9 +923,11 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'register_device_token',
     'unregister_device_token',
     'daemon_update_available',
+    'hub_status',
     'session_rotated',
     'session_views',
     'question_resolved',
+    'remi_status',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -915,16 +973,26 @@ export function createHello(
   };
 }
 
+/** Optional fields for {@link createHelloAck} — an options object so adding
+ *  new optionals never requires threading `undefined` through positional
+ *  callsites (same rationale as {@link CreateHelloOptions}). */
+export interface CreateHelloAckOptions {
+  resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
+  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null } | undefined;
+  attachState?: 'attached' | 'queued' | undefined;
+  /** The daemon's remi binary version (#539). */
+  daemonVersion?: string | undefined;
+}
+
 /**
  * Create a hello ack message.
  */
 export function createHelloAck(
   serverVersion: string,
-  sessionId: UUID,
-  resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number },
-  binding?: { claudeSessionId: UUID | null; transcriptPath: string | null },
-  attachState?: 'attached' | 'queued',
+  sessionId: UUID | null,
+  options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
+  const { resumeInfo, binding, attachState, daemonVersion } = options;
   return {
     type: 'hello_ack',
     id: generateId(),
@@ -941,6 +1009,7 @@ export function createHelloAck(
       transcriptPath: binding.transcriptPath,
     }),
     ...(attachState !== undefined && { attachState }),
+    ...(daemonVersion !== undefined && { daemonVersion }),
   };
 }
 
@@ -1167,6 +1236,22 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+  };
+}
+
+/**
+ * Create a daemon status snapshot broadcast (#754). The status object is
+ * copied shallowly (plus autoApprove one level deep) so a later in-place
+ * mutation of the daemon's live status cannot retroactively change a message
+ * already queued for serialization.
+ */
+export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatusMessage {
+  return {
+    type: 'remi_status',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    status: { ...status, autoApprove: { ...status.autoApprove } },
   };
 }
 
@@ -1617,6 +1702,27 @@ export function createDaemonUpdateAvailable(
     timestamp: now(),
     currentVersion,
     binaryPath,
+  };
+}
+
+/**
+ * Create a hub connection/session census message (#650). See
+ * {@link HubStatusMessage} for emit rules and counting semantics.
+ */
+export function createHubStatus(counts: {
+  localClients: number;
+  remoteClients: number;
+  sessions: number;
+  hubVersion: string;
+}): HubStatusMessage {
+  return {
+    type: 'hub_status',
+    id: generateId(),
+    timestamp: now(),
+    localClients: counts.localClients,
+    remoteClients: counts.remoteClients,
+    sessions: counts.sessions,
+    hubVersion: counts.hubVersion,
   };
 }
 

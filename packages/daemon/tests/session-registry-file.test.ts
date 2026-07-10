@@ -56,6 +56,19 @@ describe('SessionRegistryFile', () => {
     expect(live[0]!.wsPort).toBe(entry.wsPort);
   });
 
+  test('version field persists through register/listLive (#539)', () => {
+    const versioned = makeEntry({ sessionId: 'versioned-entry', version: '0.6.19-dev.2' });
+    registry.register(versioned);
+    expect(registry.listLive()[0]!.version).toBe('0.6.19-dev.2');
+    registry.unregister(versioned.sessionId);
+
+    // Pre-#539 entries carry no version; the field stays absent, not junk.
+    registry.register(makeEntry({ sessionId: 'legacy-entry' }));
+    const live = registry.listLive();
+    expect(live).toHaveLength(1);
+    expect(live[0]!.version).toBeUndefined();
+  });
+
   test('register multiple sessions', () => {
     const e1 = makeEntry({ sessionId: 'sess-1', wsPort: 18765 });
     const e2 = makeEntry({ sessionId: 'sess-2', wsPort: 18766 });

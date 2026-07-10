@@ -257,4 +257,79 @@ describe('StatusWriter', () => {
     expect(w.state.autoApprove.inFlight).toBe(0); // back to idle, not stuck
     expect(w.state.autoApprove.sinceS).toBe(0);
   });
+
+  // #754/#755: every flush stamps live attach state and broadcasts the
+  // snapshot to clients on the same debounce as the disk write.
+  describe('broadcast + attach-state stamping (#754/#755)', () => {
+    test('flush stamps getAttachState fields and fires broadcast with them', () => {
+      const broadcasts: Array<{
+        attached: boolean | undefined;
+        queuedCount: number | undefined;
+      }> = [];
+      const writer = new StatusWriter(baseStatus(), {
+        getTargetFile: () => target,
+        isEnabled: () => true,
+        writeLog: (m) => logs.push(m),
+        debounceMs: 0,
+        getAttachState: () => ({ attached: true, queuedCount: 2 }),
+        broadcast: (s) => broadcasts.push({ attached: s.attached, queuedCount: s.queuedCount }),
+      });
+      writer.flush();
+      expect(broadcasts).toEqual([{ attached: true, queuedCount: 2 }]);
+      const onDisk = JSON.parse(fs.readFileSync(target, 'utf-8'));
+      expect(onDisk.attached).toBe(true);
+      expect(onDisk.queuedCount).toBe(2);
+    });
+
+    test('broadcast fires even when the file write is disabled', () => {
+      let broadcastCount = 0;
+      const writer = new StatusWriter(baseStatus(), {
+        getTargetFile: () => target,
+        isEnabled: () => false,
+        writeLog: (m) => logs.push(m),
+        debounceMs: 0,
+        broadcast: () => {
+          broadcastCount += 1;
+        },
+      });
+      writer.flush();
+      expect(broadcastCount).toBe(1);
+      expect(fs.existsSync(target)).toBe(false);
+    });
+
+    test('a throwing broadcast is logged once and never breaks the file write', () => {
+      const writer = new StatusWriter(baseStatus({ connections: 1 }), {
+        getTargetFile: () => target,
+        isEnabled: () => true,
+        writeLog: (m) => logs.push(m),
+        debounceMs: 0,
+        broadcast: () => {
+          throw new Error('registry down');
+        },
+      });
+      writer.flush();
+      writer.flush();
+      const onDisk = JSON.parse(fs.readFileSync(target, 'utf-8'));
+      expect(onDisk.connections).toBe(1); // file write survived
+      expect(logs.filter((l) => l.includes('Status broadcast failed'))).toHaveLength(1);
+    });
+
+    test('debounce collapses bursts into a single broadcast', async () => {
+      let broadcastCount = 0;
+      const writer = new StatusWriter(baseStatus(), {
+        getTargetFile: () => target,
+        isEnabled: () => true,
+        writeLog: (m) => logs.push(m),
+        debounceMs: 10,
+        broadcast: () => {
+          broadcastCount += 1;
+        },
+      });
+      writer.update({ connections: 1 });
+      writer.update({ connections: 2 });
+      writer.update({ connections: 3 });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(broadcastCount).toBe(1);
+    });
+  });
 });

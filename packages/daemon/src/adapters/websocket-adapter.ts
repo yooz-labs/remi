@@ -103,6 +103,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
             mode: connection.connectionMode,
             deviceId: connection.connectionDeviceId,
             clientFingerprint: connection.connectionClientFingerprint,
+            peerAddress: connection.connectionPeerAddress,
           },
         };
         this.events.onConnect?.(connection.id, metadata);

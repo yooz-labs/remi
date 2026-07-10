@@ -71,6 +71,10 @@ describe('AutoApproveGate', () => {
   // resets the leaked tracker ONLY for a MAIN-tagged event, never for a
   // genuine subagent-tagged one.
   let resets: number;
+  // #751: records parkForPTY() calls (subagent escalations parked for PTY
+  // arbitration instead of held/denied). #763: the summary passed with each.
+  let parks: PermissionRequestHookInput[];
+  let parkSummaries: (string | undefined)[];
 
   function evaluator(
     result: AutoApproveResult,
@@ -108,6 +112,10 @@ describe('AutoApproveGate', () => {
           escalations.push(i);
           return generateId();
         },
+        parkForPTY: (i, summary) => {
+          parks.push(i);
+          parkSummaries.push(summary);
+        },
       },
       SID,
     );
@@ -139,6 +147,10 @@ describe('AutoApproveGate', () => {
           escalations.push(i);
           return generateId();
         },
+        parkForPTY: (i, summary) => {
+          parks.push(i);
+          parkSummaries.push(summary);
+        },
         escalateModel: 'big-model',
       },
       SID,
@@ -165,6 +177,8 @@ describe('AutoApproveGate', () => {
     cancels = [];
     subagent = false;
     resets = 0;
+    parks = [];
+    parkSummaries = [];
     tracker = new QuestionPresenceTracker(() => {});
     configureLogger({ writeLog: () => {} });
   });
@@ -248,15 +262,18 @@ describe('AutoApproveGate', () => {
     expect(onEscalateCalls).toBe(1);
   });
 
-  test('escalate in subagent context default-denies via the response, no inject (#496)', async () => {
+  test('#751: subagent-tagged escalate parks for PTY arbitration (sync-Task shape, tracker true)', async () => {
     subagent = true;
-    // #710: default-deny requires a genuinely subagent-TAGGED event
-    // (agent_id present), not just isInSubagentContext() true — otherwise a
-    // leaked tracker would deny the main agent forever.
+    // A subagent-tagged escalate no longer denies (silent teammate breakage)
+    // nor holds/pushes (cards for prompts the user never saw): it parks the
+    // rich question and answers 'passthrough', so Claude's normal permission
+    // flow decides whether the prompt renders — the PTY is the arbiter.
     const d = await gateWith(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('deny');
-    expect(submits).toHaveLength(0); // the core fix: deny without touching the PTY
-    expect(escalations).toHaveLength(0);
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0); // nothing injected
+    expect(escalations).toHaveLength(0); // no immediate push
+    expect(parks).toHaveLength(1); // parked awaiting PTY render
+    expect(parks[0]?.agent_id).toBe('agent-1');
     expect(resets).toBe(0); // a real subagent event never resets the tracker
   });
 
@@ -354,25 +371,25 @@ describe('AutoApproveGate', () => {
     expect(escalations).toHaveLength(1);
   });
 
-  test('eval rejection in subagent context default-denies via the response', async () => {
+  test('#751: eval rejection on a subagent-tagged event parks + passthrough', async () => {
     subagent = true;
-    // #710: requires agent_id (a real subagent-tagged event); see the
-    // escalate-branch test above for the rationale.
     const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(
       pr({ agent_id: 'agent-1' }),
     );
-    expect(d).toBe('deny');
+    expect(d).toBe('passthrough');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
+    expect(parks).toHaveLength(1);
     expect(resets).toBe(0);
   });
 
-  test('no service + subagent: default-deny via the response', async () => {
+  test('#751: no service + subagent-tagged event parks + passthrough', async () => {
     subagent = true;
     const d = await gateWith(null).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('deny');
+    expect(d).toBe('passthrough');
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
+    expect(parks).toHaveLength(1);
     expect(resets).toBe(0);
   });
 
@@ -417,13 +434,97 @@ describe('AutoApproveGate', () => {
     expect(tracker.hasPendingForTest()).toBe(false); // pending cleared
   });
 
-  test('escalate_model is NOT consulted in a subagent context (denies via response) (#522)', async () => {
+  test('escalate_model is NOT consulted for a subagent-tagged event (parks instead) (#522/#751)', async () => {
     subagent = true;
-    // #710: a real subagent-tagged event (agent_id present).
     const d = await gateWithSecondOpinion(approve).resolvePermission(pr({ agent_id: 'agent-1' }));
-    // Subagent escalate denies directly; the second opinion (which would allow)
-    // must not run, since the user could not answer a subagent prompt anyway.
-    expect(d).toBe('deny');
+    // Subagent escalate parks + passthrough; the second opinion (which would
+    // allow) must not run — the hook answer is passthrough either way.
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(0);
+    expect(parks).toHaveLength(1);
+  });
+
+  // #751 regression: routing keys on the event's own agent_id ALONE. The
+  // SubagentContextTracker only brackets SYNCHRONOUS Task/Agent spawns, so
+  // team members and async/background subagents always observe
+  // isInSubagentContext() false (the production shape of the 2026-07-08
+  // soak). AND-gating on the tracker escalated their prompts to the phone
+  // as if they were the main agent's (hold + push).
+  test('#751: subagent-tagged escalate with tracker FALSE parks + passthrough (team/async shape)', async () => {
+    subagent = false; // async/team spawn: the tracker never bracketed it
+    const d = await gateWith(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }));
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(0); // never pushed as a main-agent card
+    expect(parks).toHaveLength(1);
+    expect(resets).toBe(0); // no leak: nothing to reset
+  });
+
+  test('#751: subagent-tagged eval-error with tracker FALSE parks + passthrough', async () => {
+    subagent = false;
+    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(
+      pr({ agent_id: 'agent-1' }),
+    );
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
+    expect(parks).toHaveLength(1);
+    expect(resets).toBe(0);
+  });
+
+  test('#751: subagent-tagged no-service with tracker FALSE parks + passthrough', async () => {
+    subagent = false;
+    const d = await gateWith(null).resolvePermission(pr({ agent_id: 'agent-1' }));
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
+    expect(parks).toHaveLength(1);
+    expect(resets).toBe(0);
+  });
+
+  test('#751: subagent-tagged pick forfeits the inject and parks + passthrough', async () => {
+    subagent = false;
+    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr({ agent_id: 'agent-1' }));
+    expect(d).toBe('passthrough');
+    expect(submits).toHaveLength(0); // never types into the main PTY
+    expect(escalations).toHaveLength(0);
+    expect(parks).toHaveLength(1);
+  });
+
+  test('#763: the escalate verdict summary is threaded into the park', async () => {
+    subagent = false;
+    const d = await gateWith(evaluator(escalateWithSummary)).resolvePermission(
+      pr({ agent_id: 'agent-1' }),
+    );
+    expect(d).toBe('passthrough');
+    expect(parkSummaries).toEqual(['Force-push to main?']);
+  });
+
+  test('#751: a parkForPTY throw is absorbed; the passthrough still stands', async () => {
+    subagent = false;
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(escalate),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          return generateId();
+        },
+        parkForPTY: () => {
+          throw new Error('test: tracker down');
+        },
+      },
+      SID,
+    );
+    const d = await g.resolvePermission(pr({ agent_id: 'agent-1' }));
+    expect(d).toBe('passthrough');
     expect(escalations).toHaveLength(0);
   });
 
@@ -469,7 +570,9 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
         isInSubagentContext: () => subagent,
         escalate: () => undefined,
         onEvalStart: () => events.push('start'),
-        onEscalate: () => events.push('escalate'),
+        // #767: the cue carries whose verdict this is, so the setup layer can
+        // keep a subagent park from touching the main-eval buffer window.
+        onEscalate: (ctx) => events.push(ctx.isSubagent ? 'escalate:subagent' : 'escalate'),
         onHandled: () => events.push('handled'),
         onCancelled: () => events.push('cancelled'),
       },
@@ -532,15 +635,17 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     expect(events).toEqual(['start', 'escalate']);
   });
 
-  test('subagent escalate->deny still fires handled (buffer + cue close), no inject', async () => {
+  test('#751: subagent escalate parks -> fires start then escalate (buffer closes), no inject', async () => {
     subagent = true;
-    // #710: default-deny requires a real subagent-tagged event (agent_id set).
     expect(await gate(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }))).toBe(
-      'deny',
+      'passthrough',
     );
-    // Subagent escalate default-denies via the RESPONSE (no inject) -> markHandled.
+    // Parking is semantically an escalation (PTY-mediated): the onEscalate cue
+    // still fires for the statusline, but tagged subagent (#767) — a subagent
+    // eval never opens the #484 buffer window, so its cue must not release or
+    // discard a prompt buffered by a concurrent MAIN eval.
     expect(submits).toHaveLength(0);
-    expect(events).toEqual(['start', 'handled']);
+    expect(events).toEqual(['start', 'escalate:subagent']);
   });
 
   test('a throwing cue callback is absorbed: decision not re-run, no re-escalation', async () => {
@@ -1069,23 +1174,16 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
     await registry.shutdown();
   });
 
-  test('(a) a SUBAGENT-tagged hold survives cancelStale(Stop, mainOnly) and stays resolvable', async () => {
+  test('(a) #751: a SUBAGENT-tagged escalate never holds -- parks + passthrough immediately', async () => {
+    // Pre-#751 this shape (agent_id present, tracker false) created a held
+    // teammate card that (#711) had to survive a mainOnly Stop. Post-#751 no
+    // subagent hold exists at all: the question parks for PTY arbitration and
+    // the hook resolves passthrough at once, so there is nothing for Stop to
+    // spare or for the user to answer until the prompt renders.
     const g = gate(evaluator(escalate));
-    const pending = g.resolvePermission(pr(teammate));
-    await new Promise((r) => setTimeout(r, 20));
-    const qid = lastQuestionId as UUID;
-
-    g.cancelStale('Stop', { mainOnly: true });
-
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(settled).toBe(false); // still held -- mainOnly spared it
-
-    expect(g.resolveHeld(qid, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
+    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
+    expect(lastQuestionId).toBeUndefined(); // no escalate() call, no card
+    g.cancelStale('Stop', { mainOnly: true }); // nothing to release; must not throw
   });
 
   test('(b) a MAIN hold IS released on cancelStale(Stop, mainOnly), with notifyResolved(cancelled)', async () => {
@@ -1104,38 +1202,32 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
     expect(g.resolveHeld(qid, 'allow')).toBe(false); // the hold is gone
   });
 
-  test('(c) SessionEnd (cancelStale with no opts) releases BOTH main and subagent holds', async () => {
+  test('(c) SessionEnd (cancelStale with no opts) releases a main hold; a concurrent subagent event parked (#751)', async () => {
     const g = gate(evaluator(escalate));
     const pendingMain = g.resolvePermission(pr());
     await new Promise((r) => setTimeout(r, 20));
     const qidMain = lastQuestionId as UUID;
-    const pendingSub = g.resolvePermission(pr(teammate));
-    await new Promise((r) => setTimeout(r, 20));
-    const qidSub = lastQuestionId as UUID;
+    // #751: the subagent event resolves passthrough immediately (parked), so
+    // teardown only ever has the main hold to release.
+    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
 
     g.cancelStale('SessionEnd');
 
     expect(await pendingMain).toBe('passthrough');
-    expect(await pendingSub).toBe('passthrough');
     expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
-    expect(g.resolveHeld(qidSub, 'allow')).toBe(false);
   });
 
-  test('(e) forceRelease still releases BOTH main and subagent holds', async () => {
+  test('(e) forceRelease still releases a main hold; a concurrent subagent event parked (#751)', async () => {
     const g = gate(evaluator(escalate));
     const pendingMain = g.resolvePermission(pr());
     await new Promise((r) => setTimeout(r, 20));
     const qidMain = lastQuestionId as UUID;
-    const pendingSub = g.resolvePermission(pr(teammate));
-    await new Promise((r) => setTimeout(r, 20));
-    const qidSub = lastQuestionId as UUID;
+    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
 
     g.forceRelease('remi unstick');
 
     expect(await pendingMain).toBe('passthrough');
-    expect(await pendingSub).toBe('passthrough');
     expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
-    expect(g.resolveHeld(qidSub, 'allow')).toBe(false);
   });
 
   test('cancelStale(Stop, mainOnly) cancels only the in-flight MAIN eval; a concurrent SUBAGENT eval keeps running and its late verdict still reconciles', async () => {
@@ -1377,6 +1469,22 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
     expect(escalations).toHaveLength(1);
     g.resolveHeld(lastQuestionId as UUID, 'allow');
     expect(await pending).toBe('allow');
+  });
+
+  test('#751: a subagent-tagged slow eval never arms the early push (tracker FALSE)', async () => {
+    // The gate() harness pins isInSubagentContext() false, which is exactly
+    // the async/team-spawn shape: the tag on the event itself must veto the
+    // early USER push+hold, and the late escalate verdict then parks.
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, { pushHoldMs: 20 });
+    const pending = g.resolvePermission({ ...pr(), agent_id: 'agent-1' });
+
+    await new Promise((r) => setTimeout(r, 40)); // past the push-hold timer
+    expect(escalations).toHaveLength(0); // no early push for a subagent prompt
+
+    release(escalate);
+    expect(await pending).toBe('passthrough'); // #751 parks + passthrough, still no push
+    expect(escalations).toHaveLength(0);
   });
 });
 
@@ -1840,36 +1948,24 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
     expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
   });
 
-  // #711 review follow-up: onDeliveryUnconfirmed's short-window RE-ARM rebuilds
-  // the PendingHold entry (new timer, same resolve) -- prove that rebuild
-  // preserves `isSubagent`, not just the initial `createHold` tagging.
-  test('#711 a SUBAGENT hold re-armed via onDeliveryUnconfirmed keeps isSubagent tagged (survives mainOnly Stop)', async () => {
+  // #751: a subagent-tagged escalation never enters the hold/delivery-gating
+  // machinery at all -- it parks for PTY arbitration and resolves passthrough
+  // before any delivery probe or hold timer can arm. (Pre-#751 this shape
+  // created a re-armable subagent hold whose isSubagent tag had to survive
+  // the onDeliveryUnconfirmed rebuild.)
+  test('#751 a SUBAGENT-tagged escalation bypasses delivery gating entirely (parks, no hold)', async () => {
     const gate = deliveryGate({
       delivery: Promise.resolve('failed'),
       deliveryConfirmMs: 20,
-      holdUnconfirmedMs: 500, // long enough to land cancelStale inside the re-armed window
+      holdUnconfirmedMs: 500,
       holdMs: 60_000,
     });
     const pending = gate.resolvePermission(
       pr({ agent_id: 'teammate-1', agent_type: 'general-purpose' }),
     );
-    // Past deliveryConfirmMs: onDeliveryUnconfirmed has fired and re-armed the
-    // hold via `this.pendingHolds.set(qid, { resolve: hold.resolve, timer, isSubagent: hold.isSubagent })`.
-    await new Promise((r) => setTimeout(r, 60));
-
-    // If the re-arm dropped the isSubagent tag, mainOnly would wrongly treat
-    // this as a main hold and release it here.
-    gate.cancelStale('Stop', { mainOnly: true });
-
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 20));
-    expect(settled).toBe(false); // still held -- re-armed hold correctly tagged subagent
-
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
+    expect(await pending).toBe('passthrough'); // immediate: no hold, no delivery probe
+    expect(lastQuestionId).toBeUndefined(); // no escalate() call, no pushed card
+    gate.cancelStale('Stop', { mainOnly: true }); // nothing held; must not throw
   });
 });
 

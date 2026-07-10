@@ -27,6 +27,7 @@ const SUBCOMMAND_LIST = [
   'stop',
   'status',
   'logs',
+  'serve',
 ] as const;
 
 export type Subcommand = (typeof SUBCOMMAND_LIST)[number];

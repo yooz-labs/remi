@@ -111,9 +111,13 @@ describe('runLsCommand', () => {
     const { io } = makeIO();
     const { helpers, calls } = makeHelpers();
     const registry = makeRegistry([18765]);
-    await runLsCommand({}, registry, io, async () => helpers);
+    await runLsCommand({ remiVersion: '9.9.9-test' }, registry, io, async () => helpers);
     expect(calls[0]?.fn).toBe('runMultiPortLs');
-    expect((calls[0]?.args as { registry: SessionRegistryFile }).registry).toBe(registry);
+    const args = calls[0]?.args as { registry: SessionRegistryFile; installedVersion?: string };
+    expect(args.registry).toBe(registry);
+    // The installed-binary version threads through for the stale-daemon
+    // warning (#539); dropping it would silently disable drift detection.
+    expect(args.installedVersion).toBe('9.9.9-test');
   });
 
   test('REMI_PORT env acts as explicit port when --port is absent', async () => {

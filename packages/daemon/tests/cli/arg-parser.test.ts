@@ -137,6 +137,20 @@ describe('parseArgs', () => {
       expect(r.subcommand).toBe('unstick');
       expect(r.subcommandArg).toBe('18767');
     });
+
+    test('remi serve --port 9000 parses port, no positional arg', () => {
+      const r = parseArgs(['serve', '--port', '9000']);
+      expect(r.subcommand).toBe('serve');
+      expect(r.port).toBe(9000);
+      expect(r.subcommandArg).toBeUndefined();
+    });
+
+    test('remi serve has no positional arg (unlike unstick)', () => {
+      const r = parseArgs(['serve', 'something']);
+      expect(r.subcommand).toBe('serve');
+      expect(r.subcommandArg).toBeUndefined();
+      expect(r.claudeArgs).toEqual(['something']);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -211,6 +225,7 @@ describe('parseArgs', () => {
       'stop',
       'status',
       'logs',
+      'serve',
     ] as const) {
       test(`${cmd} is detected as subcommand`, () => {
         const r = parseArgs([cmd]);

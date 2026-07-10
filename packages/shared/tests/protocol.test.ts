@@ -21,6 +21,7 @@ import {
   createPong,
   createQuestion,
   createQuestionResolved,
+  createRemiStatus,
   createReplayBatch,
   createResumeSessionRequest,
   createResumeSessionResponse,
@@ -409,6 +410,47 @@ describe('createQuestionResolved() (#585 P7)', () => {
   });
 });
 
+describe('createRemiStatus() (#754)', () => {
+  function mkRemiStatus() {
+    return {
+      pid: 1,
+      connections: 2,
+      sessionStatus: 'thinking' as const,
+      adapters: ['ws'],
+      wsPort: 19924,
+      sessionId: null,
+      repo: 'remi',
+      branch: 'develop',
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
+      attached: true,
+      queuedCount: 1,
+    };
+  }
+
+  test('builds a well-formed remi_status message that round-trips', () => {
+    const sessionId = generateId();
+    const msg = createRemiStatus(sessionId, mkRemiStatus());
+    expect(msg.type).toBe('remi_status');
+    expect(msg.sessionId).toBe(sessionId);
+    const parsed = deserialize(serialize(msg));
+    expect(parsed?.type).toBe('remi_status');
+    if (parsed?.type === 'remi_status') {
+      expect(parsed.status.attached).toBe(true);
+      expect(parsed.status.queuedCount).toBe(1);
+      expect(parsed.status.autoApprove.lastVerdict).toBe('none');
+    }
+  });
+
+  test('snapshots the status: later mutation of the source does not leak into the message', () => {
+    const status = mkRemiStatus();
+    const msg = createRemiStatus(generateId(), status);
+    status.attached = false;
+    status.autoApprove.inFlight = 5;
+    expect(msg.status.attached).toBe(true);
+    expect(msg.status.autoApprove.inFlight).toBe(0);
+  });
+});
+
 describe('Message factory functions', () => {
   describe('createHello()', () => {
     test('creates hello message with required fields', () => {
@@ -436,6 +478,22 @@ describe('Message factory functions', () => {
       expect(msg.type).toBe('hello_ack');
       expect(msg.serverVersion).toBe('1.0.0');
       expect(msg.sessionId).toBe('session-456');
+    });
+
+    test('creates a session-less hello ack (null sessionId, #542 hub)', () => {
+      const msg = createHelloAck('1.0.0', null);
+
+      expect(msg.type).toBe('hello_ack');
+      expect(msg.sessionId).toBeNull();
+    });
+
+    test('a session-less hello ack round-trips through serialize/deserialize', () => {
+      const msg = createHelloAck('1.0.0', null);
+      const parsed = deserialize(serialize(msg));
+
+      expect(parsed).not.toBeNull();
+      expect(parsed?.type).toBe('hello_ack');
+      expect((parsed as { sessionId?: unknown } | null)?.sessionId).toBeNull();
     });
   });
 
@@ -1271,9 +1329,7 @@ describe('Message factory functions', () => {
   describe('createHelloAck() with resume info', () => {
     test('includes resume info when provided', () => {
       const msg = createHelloAck('1.0.0', 'session-1', {
-        isResume: true,
-        replayCount: 5,
-        nextBulletId: 10,
+        resumeInfo: { isResume: true, replayCount: 5, nextBulletId: 10 },
       });
 
       expect(msg.isResume).toBe(true);
@@ -1289,12 +1345,26 @@ describe('Message factory functions', () => {
     });
   });
 
+  describe('createHelloAck() with daemonVersion (#539)', () => {
+    test('includes daemonVersion and round-trips', () => {
+      const msg = createHelloAck('1.0.0', 'session-1', { daemonVersion: '0.6.19-dev.2' });
+      expect(msg.daemonVersion).toBe('0.6.19-dev.2');
+      const round = deserialize(serialize(msg));
+      expect((round as typeof msg).daemonVersion).toBe('0.6.19-dev.2');
+    });
+
+    test('omits daemonVersion when not provided (pre-#539 wire shape)', () => {
+      const msg = createHelloAck('1.0.0', 'session-1');
+      expect('daemonVersion' in msg).toBe(false);
+    });
+  });
+
   describe('createHelloAck() with attachState (#662)', () => {
     test('includes attachState when provided', () => {
-      const attached = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'attached');
+      const attached = createHelloAck('1.0.0', 'session-1', { attachState: 'attached' });
       expect(attached.attachState).toBe('attached');
 
-      const queued = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'queued');
+      const queued = createHelloAck('1.0.0', 'session-1', { attachState: 'queued' });
       expect(queued.attachState).toBe('queued');
     });
 
@@ -1305,7 +1375,7 @@ describe('Message factory functions', () => {
     });
 
     test('attachState survives serialize/deserialize round-trip', () => {
-      const msg = createHelloAck('1.0.0', 'session-1', undefined, undefined, 'queued');
+      const msg = createHelloAck('1.0.0', 'session-1', { attachState: 'queued' });
       const serialized = serialize(msg);
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();

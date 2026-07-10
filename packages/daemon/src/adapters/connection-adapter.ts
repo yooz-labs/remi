@@ -37,6 +37,11 @@ export interface WebSocketPlatformData {
   /** Stable per-device identifier from the client's hello (#662). */
   readonly deviceId?: string | null;
   /**
+   * TCP peer address captured at upgrade time via `server.requestIP` (#650),
+   * for local-vs-remote client classification. Null when unavailable.
+   */
+  readonly peerAddress?: string | null;
+  /**
    * Authenticated client fingerprint from the Ed25519 challenge-response
    * (#671), null when this connection has no authenticated identity (auth
    * disabled daemon-wide, or this peer was loopback-exempted from auth).
