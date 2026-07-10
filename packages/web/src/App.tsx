@@ -50,7 +50,7 @@ import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
-import { resolveEffectiveTheme } from '@/lib/theme';
+import { parseThemeSetting, resolveEffectiveTheme } from '@/lib/theme';
 import type {
   AppSettings,
   ConnectionId,
@@ -157,7 +157,17 @@ function forgetEvictedSessions(evictedIds: readonly string[]): void {
 function loadSettings(): AppSettings {
   try {
     const stored = localStorage.getItem(LOCALSTORAGE_SETTINGS_KEY);
-    if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // theme flows into resolveEffectiveTheme's AppSettings['theme'] param, so a
+      // hand-edited/corrupted stored value must be rejected here rather than
+      // trusted through (#778 review).
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        theme: parseThemeSetting(parsed?.theme) ?? DEFAULT_SETTINGS.theme,
+      };
+    }
   } catch (err) {
     console.warn('Failed to load settings, using defaults:', err);
   }
