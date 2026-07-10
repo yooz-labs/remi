@@ -133,7 +133,11 @@ jobs:
       - name: Upgrade npm for OIDC support
         run: |
           npm install -g promise-retry
-          npm install -g npm@latest
+          # Pin the npm 11 line: OIDC trusted publishing needs >=11.5, but
+          # npm@latest resolved to 12.0.0 on 2026-07-09, which ships without
+          # sigstore in its tree -> MODULE_NOT_FOUND in libnpmpublish
+          # provenance at publish time (broke the v0.6.19 publish twice).
+          npm install -g npm@11
           echo "npm version: $(npm --version)"
 
       - name: Download all artifacts
