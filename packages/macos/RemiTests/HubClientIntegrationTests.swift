@@ -149,27 +149,24 @@ final class HubClientIntegrationTests: XCTestCase {
     /// #773: the onboarding panel's "Check Again" button calls rescanNow();
     /// it should connect promptly once a hub appears, not wait out the
     /// scheduled backoff (which caps at 30 s).
+    ///
+    /// The client is deliberately never start()ed (#777 review, finding
+    /// 4): start() would run the real scan-failure path, which schedules
+    /// its own natural backoff chain — a later natural retry could then
+    /// land the connection on its own, making the rescanNow() assertions
+    /// below pass vacuously (or, on a slow natural-retry cycle, flake).
+    /// forceUnreachableForTesting() drives phase to .unreachable directly
+    /// so rescanNow() is the ONLY thing that can possibly connect here.
     func testRescanNowConnectsPromptly() async throws {
         let binary = try requireBinary()
         let port = 18782
 
-        // 1. Start the client scanning a port where nothing listens yet.
         let client = await MainActor.run { HubClient(scanPorts: [port]) }
-        await MainActor.run { client.start() }
-        var reachedUnreachable = false
-        for _ in 0..<20 {  // up to ~5 s
-            let phase = await MainActor.run { client.phase }
-            if phase == .unreachable {
-                reachedUnreachable = true
-                break
-            }
-            try await Task.sleep(nanoseconds: 250_000_000)
-        }
-        XCTAssertTrue(reachedUnreachable, "client never reached .unreachable before the hub started")
+        await MainActor.run { client.forceUnreachableForTesting() }
 
-        // 2. Start the real hub on that port, and wait for it to actually
-        //    bind before rescanning — rescanNow() fires one scan pass, not
-        //    a retry loop.
+        // Start the real hub on that port, and wait for it to actually
+        // bind before rescanning — rescanNow() fires one scan pass, not
+        // a retry loop.
         try spawnHub(binary: binary, port: port)
         for _ in 0..<40 {  // up to ~10 s
             let responders = await HubClient.probe(ports: [port])
@@ -177,7 +174,8 @@ final class HubClientIntegrationTests: XCTestCase {
             try await Task.sleep(nanoseconds: 250_000_000)
         }
 
-        // 3. Manual rescan connects well under the ~30 s backoff cap.
+        // Manual rescan connects well under the ~30 s backoff cap — and
+        // with no backoff chain running, it's the only thing that could.
         let rescanStart = Date()
         await MainActor.run { client.rescanNow() }
         var connectedAsHub = false
