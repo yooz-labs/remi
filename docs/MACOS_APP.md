@@ -19,6 +19,12 @@ in query mode (it never counts as a "client" in the icon state), and embeds
 the web UI pointed at it. Session daemons spawned by the hub are discovered
 through the hub's session list, exactly like the iPhone app does it.
 
+Reconnects back off exponentially (1 s doubling to a 30 s cap) after a hub
+disconnects. The onboarding panel's "Check Again" button (`HubClient.rescanNow()`,
+#773) triggers an immediate scan instead of waiting out that backoff; it is a
+no-op while already scanning or connected, so it can never race the scheduled
+reconnect into a duplicate socket.
+
 ## What the app deliberately cannot do
 
 The app runs in the App Sandbox (required for TestFlight/App Store) with the
@@ -26,8 +32,11 @@ network-client capability only. It **cannot**:
 
 - **Start the hub.** Install the hub's LaunchAgent once with `remi --install`
   (starts at login, crash-restarts), or run `remi start` for the current
-  session. The menu offers a copy button for the install command when no hub
-  is running.
+  session. When no hub is found, the main window shows an onboarding panel
+  (#773) walking through installing `remi`, starting the hub, and setting up
+  its login item, each with a one-click Copy button for the terminal
+  command. The Settings scene (⌘,) repeats the login-item command alongside
+  the current hub status for later reference.
 - **Stop the hub.** "Quit Remi" quits the app; the hub and every session it
   supervises keep running. Stop the hub with `remi stop` (running session
   daemons keep serving even then). A protocol-level stop from the app is
