@@ -23,7 +23,16 @@ Reconnects back off exponentially (1 s doubling to a 30 s cap) after a hub
 disconnects. The onboarding panel's "Check Again" button (`HubClient.rescanNow()`,
 #773) triggers an immediate scan instead of waiting out that backoff; it is a
 no-op while already scanning or connected, so it can never race the scheduled
-reconnect into a duplicate socket.
+reconnect into a duplicate socket. A failed manual rescan also cancels
+whatever backoff timer was already pending before scheduling the next one, so
+repeated "Check Again" clicks can't stack independent reconnect chains.
+
+The main window only shows the onboarding panel before the client has EVER
+connected to a peer. Once it has, the window keeps showing the web UI for the
+rest of the app's lifetime, even through transient disconnects (a missed
+ping, a brief network blip, a hub restart mid-upgrade) — those are the web
+app's own problem to surface, not a reason to tear down and reload the
+embedded WKWebView and lose client-side state.
 
 ## What the app deliberately cannot do
 
@@ -32,11 +41,11 @@ network-client capability only. It **cannot**:
 
 - **Start the hub.** Install the hub's LaunchAgent once with `remi --install`
   (starts at login, crash-restarts), or run `remi start` for the current
-  session. When no hub is found, the main window shows an onboarding panel
-  (#773) walking through installing `remi`, starting the hub, and setting up
-  its login item, each with a one-click Copy button for the terminal
-  command. The Settings scene (⌘,) repeats the login-item command alongside
-  the current hub status for later reference.
+  session. Before the app has ever found a hub, the main window shows an
+  onboarding panel (#773) walking through installing `remi`, starting the
+  hub, and setting up its login item, each with a one-click Copy button for
+  the terminal command. The Settings scene (⌘,) repeats the login-item
+  command alongside the current hub status for later reference.
 - **Stop the hub.** "Quit Remi" quits the app; the hub and every session it
   supervises keep running. Stop the hub with `remi stop` (running session
   daemons keep serving even then). A protocol-level stop from the app is
@@ -51,6 +60,9 @@ network-client capability only. It **cannot**:
 - "Open Remi at Login" registers the APP as a login item (SMAppService).
   This is independent of the HUB's autostart — the LaunchAgent from
   `remi --install`. For the full always-on setup, enable both.
+- The main window never tears down its WKWebView once a hub has ever been
+  seen (see "Relationship to the hub" above) — only the true first-run,
+  never-connected case shows the onboarding panel instead.
 
 ## Building from source
 
