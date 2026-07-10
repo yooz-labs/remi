@@ -14,19 +14,20 @@
 
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { isNative } from './platform';
+import { type EffectiveTheme, parseEffectiveTheme } from './theme';
 
-function currentEffectiveThemeIsDark(): boolean {
-  const stamped = document.documentElement.getAttribute('data-theme');
-  if (stamped === 'dark') return true;
-  if (stamped === 'light') return false;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+function readCurrentEffectiveTheme(): EffectiveTheme {
+  const stamped = parseEffectiveTheme(document.documentElement.getAttribute('data-theme'));
+  if (stamped) return stamped;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 /** Sync the native status bar style to the root element's current effective theme. */
 export async function syncNativeStatusBarTheme(): Promise<void> {
   if (!isNative()) return;
   try {
-    await StatusBar.setStyle({ style: currentEffectiveThemeIsDark() ? Style.Dark : Style.Light });
+    const style = readCurrentEffectiveTheme() === 'dark' ? Style.Dark : Style.Light;
+    await StatusBar.setStyle({ style });
   } catch (err) {
     console.warn('[syncNativeStatusBarTheme] StatusBar setStyle failed:', err);
   }
