@@ -111,6 +111,13 @@ final class HubClient: ObservableObject {
     /// Guards scanAndConnect against overlap: a manual rescanNow() call
     /// racing the scheduled backoff rescan into two sockets (#773).
     private var isScanning = false
+    /// The currently-pending backoff Task, if any. scheduleReconnect()
+    /// cancels this before scheduling a new one, so a failed manual
+    /// rescan can't leave the old timer running alongside the new one
+    /// (#777 review, finding 3: repeated failed rescans were stacking
+    /// independent reconnect chains instead of superseding the pending
+    /// one).
+    private var reconnectTask: Task<Void, Never>?
     /// Port of the most recent successful connection. Survives the phase
     /// flip to .unreachable (#745 review: deriving the hint from `phase`
     /// inside scheduleReconnect always read nil, making hint-first reconnect
@@ -139,13 +146,26 @@ final class HubClient: ObservableObject {
     /// Manual re-check from the onboarding panel's "Check Again" button
     /// (#773). Only meaningful while unreachable; the isScanning/phase
     /// guards inside scanAndConnect make this safe to call at any time
-    /// without racing the scheduled backoff rescan into two sockets. We do
-    /// NOT cancel the pending backoff Task — those same guards make its
-    /// eventual firing a no-op once a scan is underway or connected.
+    /// without racing the scheduled backoff rescan into two sockets. If
+    /// this rescan itself fails, scheduleReconnect() cancels whatever
+    /// backoff Task was already pending before scheduling the next one
+    /// (#777 review, finding 3), so repeated manual rescans can't stack
+    /// independent reconnect timers.
     func rescanNow() {
         guard case .unreachable = phase else { return }
         Task { await scanAndConnect(preferring: lastConnectedPort) }
     }
+
+    #if DEBUG
+    /// Test-only seam (#777 review, finding 4): drives `phase` straight to
+    /// .unreachable without going through scanAndConnect's real failure
+    /// path, which would itself call scheduleReconnect() and start an
+    /// unrelated backoff chain — exactly the ambiguity a rescanNow() test
+    /// needs to avoid racing against. Compiled out of Release builds.
+    func forceUnreachableForTesting() {
+        phase = .unreachable
+    }
+    #endif
 
     // MARK: - Discovery
 
@@ -339,14 +359,19 @@ final class HubClient: ObservableObject {
     }
 
     private func scheduleReconnect() {
+        // Supersede, don't stack: a previously-scheduled backoff sleep
+        // that hasn't fired yet gets cancelled here (#777 review, finding
+        // 3), so at most one reconnect chain is ever pending.
+        reconnectTask?.cancel()
         let delay = reconnectDelay
         reconnectDelay = Self.nextReconnectDelay(after: reconnectDelay)
         // After 3 straight failures do a full range rescan; before that,
         // retry with the last known port first.
         let hint: Int? = Self.shouldUseHint(consecutiveFailures: consecutiveFailures)
             ? lastConnectedPort : nil
-        Task { [weak self] in
+        reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
             await self?.scanAndConnect(preferring: hint)
         }
     }
