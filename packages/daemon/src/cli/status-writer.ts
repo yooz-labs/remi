@@ -74,6 +74,10 @@ export class StatusWriter {
   private readonly status: RemiStatus;
   private readonly deps: StatusWriterDeps & { debounceMs: number };
   private errorLogged = false;
+  // Separate once-per-streak flags per failure source: a latched attach-state
+  // read failure must not mute the first report of a broken remi_status
+  // broadcast (which the #754 attach status bar depends on), or vice versa.
+  private attachStateErrorLogged = false;
   private broadcastErrorLogged = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -184,9 +188,9 @@ export class StatusWriter {
         this.status.queuedCount = attach.queuedCount;
       }
     } catch (err) {
-      if (!this.broadcastErrorLogged) {
+      if (!this.attachStateErrorLogged) {
         this.deps.writeLog(`[error] Status attach-state read failed: ${err}`);
-        this.broadcastErrorLogged = true;
+        this.attachStateErrorLogged = true;
       }
     }
     // #754: clients get the same debounced snapshot the disk gets, regardless
