@@ -27,6 +27,7 @@ import { deduplicateMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resync';
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
+import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
@@ -49,6 +50,7 @@ import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
+import { resolveEffectiveTheme } from '@/lib/theme';
 import type {
   AppSettings,
   ConnectionId,
@@ -163,13 +165,8 @@ function loadSettings(): AppSettings {
 }
 
 function applyTheme(theme: AppSettings['theme']) {
-  const root = document.documentElement;
-  if (theme === 'system') {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    root.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-  } else {
-    root.setAttribute('data-theme', theme);
-  }
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', resolveEffectiveTheme(theme, prefersDark));
 }
 
 /** Convert shared Bullet[] to UIBullet[] */
@@ -313,6 +310,7 @@ function App() {
 
   useEffect(() => {
     applyTheme(settings.theme);
+    syncNativeStatusBarTheme();
 
     const fontSizeMap = { small: '14px', medium: '16px', large: '18px' } as const;
     document.documentElement.style.setProperty(
@@ -324,6 +322,23 @@ function App() {
 
     localStorage.setItem(LOCALSTORAGE_SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
+
+  // Follow OS theme changes while the user has picked 'system' (#778):
+  // applyTheme('system') otherwise only samples matchMedia once, at the
+  // point settings.theme last changed, so a running app never notices an
+  // OS light/dark flip. Separate from the effect above (keyed on the whole
+  // settings object) so this listener isn't torn down/rebuilt on unrelated
+  // settings changes (font size, sound, etc).
+  useEffect(() => {
+    if (settings.theme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      applyTheme('system');
+      syncNativeStatusBarTheme();
+    };
+    mq.addEventListener('change', handleChange);
+    return () => mq.removeEventListener('change', handleChange);
+  }, [settings.theme]);
 
   const handleSettingsChange = useCallback((newSettings: AppSettings) => {
     setSettings(newSettings);
