@@ -49,15 +49,36 @@ final class HubClient: ObservableObject {
     @Published private(set) var remoteClients = 0
     @Published private(set) var sessions = 0
     @Published private(set) var hubVersion: String?
+    /// Pending-question census (#786/#787), from the same `hub_status` frame
+    /// as the client counts. `pendingQuestions` is the total; `questions` is
+    /// the full list (session-qualified) for the menu-bar notification diff.
+    @Published private(set) var pendingQuestions = 0
+    @Published private(set) var questions: [HubPendingQuestionFrame] = []
+
+    /// Owns UNUserNotificationCenter (#786). Driven directly from
+    /// `handleFrame`'s hub_status case below, since that is where the fresh
+    /// question list already lands -- no separate SwiftUI observation needed.
+    /// RemiApp sets `onNotificationActivated` once at startup.
+    let notificationManager = NotificationManager()
 
     var iconState: IconState {
         switch phase {
         case .connected(_, isHub: true):
             return IconState.derive(
-                reachable: true, localClients: localClients, remoteClients: remoteClients)
+                reachable: true, localClients: localClients, remoteClients: remoteClients,
+                pendingQuestions: pendingQuestions)
         default:
             return .unreachable
         }
+    }
+
+    /// Pending-question summary line for the menu ("1 question waiting" /
+    /// "N questions waiting"), #786/#787. nil when nothing is pending so
+    /// RemiApp can skip the row entirely instead of showing a "0 questions"
+    /// line.
+    var questionsLine: String? {
+        guard pendingQuestions > 0 else { return nil }
+        return pendingQuestions == 1 ? "1 question waiting" : "\(pendingQuestions) questions waiting"
     }
 
     /// The URL the embedded web UI should connect to, e.g.
@@ -306,6 +327,13 @@ final class HubClient: ObservableObject {
                 remoteClients = status.remoteClients
                 sessions = status.sessions
                 hubVersion = status.hubVersion
+                pendingQuestions = status.pendingQuestions ?? 0
+                questions = status.questions ?? []
+                notificationManager.sync(
+                    current: questions.map {
+                        PendingQuestionNotice(
+                            id: $0.id, sessionName: $0.sessionName, label: $0.label)
+                    })
             }
         case "pong":
             missedPongs = 0
@@ -353,6 +381,14 @@ final class HubClient: ObservableObject {
         remoteClients = 0
         sessions = 0
         hubVersion = nil
+        // pendingQuestions/questions and the notificationManager's seen-ids
+        // are DELIBERATELY left alone here (#786/#787): a transient
+        // disconnect (missed pong, network blip, hub restart) does not mean
+        // the questions went away, just that we can't see the hub for a
+        // moment. Clearing them would withdraw live notifications for
+        // still-pending questions and re-alert on every reconnect. The next
+        // hub_status frame after reconnecting re-syncs both from the real
+        // census.
         phase = .unreachable
         consecutiveFailures += 1
         scheduleReconnect()
