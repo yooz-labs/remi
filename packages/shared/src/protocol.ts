@@ -792,6 +792,29 @@ export interface DaemonUpdateAvailableMessage {
 }
 
 /**
+ * One unanswered question surfaced in the hub census (#786/#787): one entry
+ * per pending question across every live child session daemon, sourced from
+ * each session's live-sessions registry entry (`LiveSessionEntry.pendingQuestions`,
+ * packages/daemon/src/session/session-registry-file.ts). Drives the macOS
+ * menu-bar app's native notifications (#786) and needs-attention icon state
+ * (#787) — the app is a query-mode client with no other way to learn a
+ * question is pending.
+ */
+export interface HubPendingQuestion {
+  /** Question id, matching the owning session's `Question.id`. */
+  readonly id: UUID;
+  /** Session the question belongs to. */
+  readonly sessionId: UUID;
+  /** The owning session's human-readable name (registry entry's `name`). */
+  readonly sessionName: string;
+  /** Short human label, e.g. "Permission: Bash" or a truncated question text
+   *  (see `buildPendingQuestionLabel` in the daemon package). */
+  readonly label: string;
+  /** When the question first became pending (ISO8601). */
+  readonly createdAt: Timestamp;
+}
+
+/**
  * Hub connection/session census (#650, epic #648): the daemon half of the
  * menu-bar icon state. Sent by HUB-MODE daemons only — to a connection right
  * after its hello_ack, and broadcast to all connections whenever the counts
@@ -811,6 +834,18 @@ export interface HubStatusMessage {
   readonly sessions: number;
   /** REMI_VERSION of the hub process. */
   readonly hubVersion: string;
+  /**
+   * Total pending questions across every live child session (#786/#787).
+   * Optional: absent on a hub predating this field, and safely ignored by a
+   * pre-#786 client (isValidMessage only checks `type`).
+   */
+  readonly pendingQuestions?: number;
+  /**
+   * The pending questions themselves (#786/#787). #787's icon state only
+   * needs `pendingQuestions`' count; #786's native notifications need this
+   * list to diff by id (new question -> post, disappeared id -> withdraw).
+   */
+  readonly questions?: readonly HubPendingQuestion[];
 }
 
 /** A recent project directory aggregated from session history */
@@ -1714,6 +1749,8 @@ export function createHubStatus(counts: {
   remoteClients: number;
   sessions: number;
   hubVersion: string;
+  pendingQuestions?: number;
+  questions?: readonly HubPendingQuestion[];
 }): HubStatusMessage {
   return {
     type: 'hub_status',
@@ -1723,6 +1760,8 @@ export function createHubStatus(counts: {
     remoteClients: counts.remoteClients,
     sessions: counts.sessions,
     hubVersion: counts.hubVersion,
+    ...(counts.pendingQuestions !== undefined && { pendingQuestions: counts.pendingQuestions }),
+    ...(counts.questions !== undefined && { questions: counts.questions }),
   };
 }
 
