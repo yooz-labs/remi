@@ -2150,6 +2150,111 @@ describe('setupHookBridge', () => {
     expect(messageApiLog.questionCalls).toBe(0); // no escalate
   });
 
+  // ---------------------------------------------------------------------------
+  // #799: a subagent/teammate permission question answered IN THE TERMINAL had
+  // no removal path from sessionRegistry.currentQuestions. Fix: the gate now
+  // registers a signature for a parked subagent escalation too, and the
+  // subagent branches of PreToolUse/PostToolUse (which used to early-return
+  // before ever reaching the gate) now call cancelExternallyResolved; a
+  // SubagentStop resolves anything still open for that agent (the
+  // rejected-in-the-terminal case no tool call ever announces).
+  // ---------------------------------------------------------------------------
+  describe('#799: subagent question purge', () => {
+    function lock(id: string): void {
+      hookServer.fire('SessionStart', {
+        session_id: id,
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('a matching subagent PreToolUse resolves a parked permission (question_resolved fires)', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-pre');
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-799-pre',
+        agent_id: 'agent-799-1',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      expect(decision).toBe('passthrough');
+      expect(broadcastResolvedLog).toHaveLength(0); // parked, not resolved yet
+
+      // The user answered directly in the terminal: Claude now runs the tool.
+      hookServer.fire('PreToolUse', {
+        session_id: 'claude-799-pre',
+        agent_id: 'agent-799-1',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('a matching subagent PostToolUse also resolves it', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-post');
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-799-post',
+        agent_id: 'agent-799-2',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls -la' },
+      });
+      expect(decision).toBe('passthrough');
+      expect(broadcastResolvedLog).toHaveLength(0);
+
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-799-post',
+        agent_id: 'agent-799-2',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls -la' },
+        tool_response: 'ok',
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('(b) a non-matching subagent PreToolUse leaves the parked permission open', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-nomatch');
+
+      await hookServer.firePermission({
+        session_id: 'claude-799-nomatch',
+        agent_id: 'agent-799-3',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+
+      hookServer.fire('PreToolUse', {
+        session_id: 'claude-799-nomatch',
+        agent_id: 'agent-799-3',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /tmp/x' }, // different command -> no signature match
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(0);
+    });
+  });
+
   describe('session_rotated emission on rotation (#430 #438)', () => {
     /**
      * Set up a hook bridge that captures every protocol message it tries

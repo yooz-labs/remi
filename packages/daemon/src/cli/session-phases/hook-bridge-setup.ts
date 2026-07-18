@@ -386,8 +386,15 @@ export function setupHookBridge(
       // parks its rich question (same builder as a real escalation, minus the
       // push/registration side effects) and answers 'passthrough'; the tracker
       // pushes it only if Claude's native prompt actually renders on the PTY.
-      parkForPTY: (i, summary) =>
-        tracker.parkAwaitingPTY(hookBridge.buildPermissionQuestion(i, summary)),
+      // #799: return the parked question's id so the gate can register its
+      // signature in `openQuestionSignatures` -- without it, a subagent
+      // permission answered in the terminal has no removal path at all (see
+      // the PreToolUse/PostToolUse/SubagentStop wiring below).
+      parkForPTY: (i, summary) => {
+        const question = hookBridge.buildPermissionQuestion(i, summary);
+        tracker.parkAwaitingPTY(question);
+        return question.id;
+      },
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
@@ -470,9 +477,14 @@ export function setupHookBridge(
   // transcript, so session-id filtering cannot distinguish them.
   //
   // Split policy:
-  //   - `PreToolUse` / `PostToolUse` / `SessionStart`: dropped here so
-  //     status updates and Task-tool tracking stay scoped to the main
-  //     interactive session.
+  //   - `PreToolUse` / `PostToolUse` / `SessionStart`: STATUS updates and
+  //     Task-tool tracking are dropped here so they stay scoped to the main
+  //     interactive session. #799: Pre/PostToolUse additionally call
+  //     `autoApproveGate.cancelExternallyResolved` (agent-scoped) before
+  //     returning — a tool call now running for this exact agent proves any
+  //     permission the gate parked/pushed for it was answered outside Remi's
+  //     own path, so its card must still be resolved even though the rest of
+  //     the event is dropped.
   //   - `PermissionRequest` / `Notification(permission_prompt)`: forwarded
   //     (phase 4, #419). Push is gated by PTY presence in the tracker,
   //     not by agent_id. A hot-switched subagent view that renders a
@@ -568,6 +580,21 @@ export function setupHookBridge(
       // out-of-band) — expire its parked record so it cannot stale-merge
       // onto a later unrelated prompt.
       tracker.noteAgentAdvanced(input.agent_id);
+      // #799: mirrors the main-context external-resolution cancel below —
+      // this agent's tool is now running, so any parked/pushed permission
+      // question the gate is still tracking FOR THIS AGENT with a matching
+      // (tool_name, tool_input) signature was answered outside Remi's own
+      // path (most commonly directly in the terminal). Funnel it through the
+      // same removeQuestion + question_resolved cleanup a main match uses.
+      autoApproveGate.cancelExternallyResolved(
+        {
+          toolName: input.tool_name,
+          toolInput: input.tool_input,
+          toolUseId: input.tool_use_id,
+          agentId: input.agent_id,
+        },
+        'PreToolUse-subagent',
+      );
       return;
     }
     // NB: do NOT cancel the in-flight auto-approve eval here (#537). Under
@@ -616,6 +643,18 @@ export function setupHookBridge(
       // in hook-event-bridge.ts and by the gate's #710 leak-recovery
       // escalate (reset + escalate as main instead of denying).
       hookBridge.noteSubagentToolEnd(input.tool_name, input.tool_use_id);
+      // #799: same external-resolution cancel as the PreToolUse branch above
+      // — a tool that has already FINISHED is at least as strong a signal
+      // that its permission was resolved elsewhere as one that just started.
+      autoApproveGate.cancelExternallyResolved(
+        {
+          toolName: input.tool_name,
+          toolInput: input.tool_input,
+          toolUseId: input.tool_use_id,
+          agentId: input.agent_id,
+        },
+        'PostToolUse-subagent',
+      );
       return;
     }
     // See the PreToolUse note above: no cancelStale here (#537). The previous

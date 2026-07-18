@@ -45,6 +45,18 @@
  * a foreign session's PermissionRequest never creates an entry here in the
  * first place (post-#672 that stays entirely with ForeignSessionEscalator's
  * informational-only push), so there is nothing for this gate to cancel for it.
+ *
+ * #799: `parkSubagentForPTY` registers a signature too (tagged `isSubagent`
+ * + the event's own `agent_id`), closing the gap where a subagent/teammate
+ * permission answered in the terminal had NO removal path at all (only
+ * `escalateToUser`, main-context-only, ever populated the map pre-#799).
+ * Subagent PreToolUse/PostToolUse in `hook-bridge-setup.ts` now also call
+ * `cancelExternallyResolved` (with the event's own `agent_id`, scoped so it
+ * can never cross-resolve a different agent's or main's still-open
+ * escalation) before their early return — the same signature match main
+ * gets, so a subagent permission answered directly in the terminal (the
+ * matching tool then runs) is resolved through the normal `removeQuestion`
+ * + `onResolved` funnel instead of leaking forever.
  */
 
 import type { UUID } from '@remi/shared';
@@ -68,6 +80,12 @@ interface ToolSignature {
    *  only main-tagged entries here, so a teammate's still-open escalation is
    *  not wiped out just because the lead agent idled. */
   readonly isSubagent: boolean;
+  /** #799: the escalating event's own `input.agent_id` (undefined for a MAIN
+   *  event). Lets `findOpenQuestionMatching` scope a match to the EXACT
+   *  agent that opened it -- without this, two different agents (or a
+   *  subagent and main) issuing an identical (tool_name, tool_input) could
+   *  cross-resolve each other's unrelated escalation. */
+  readonly agentId: string | undefined;
 }
 
 /** An observed tool call to correlate against `openQuestionSignatures`. Same
@@ -77,6 +95,10 @@ export interface ObservedToolCall {
   readonly toolName: string;
   readonly toolInput: Record<string, unknown>;
   readonly toolUseId?: string | undefined;
+  /** #799: the observing event's own `input.agent_id` (undefined for a MAIN
+   *  PreToolUse/PostToolUse). Must match the tracked signature's `agentId`
+   *  exactly -- see `ToolSignature.agentId`. */
+  readonly agentId?: string | undefined;
 }
 
 /**
@@ -187,8 +209,15 @@ export interface AutoApproveGateDeps {
    * question only surfaces if Claude's native prompt actually renders on the
    * PTY. Optional so tests that don't wire it degrade to a plain passthrough
    * (the rendered prompt then pushes bare via the #712 orphan path).
+   *
+   * Returns the parked `Question.id` (#799) so `parkSubagentForPTY` can
+   * register it in `openQuestionSignatures` the same way `escalateToUser`
+   * does for a main escalation -- without an id there is nothing for a later
+   * matching subagent tool event or `SubagentStop` to resolve, which was the
+   * root cause of #799 (a subagent question answered in the terminal never
+   * left the pending store). `undefined` when the dep is unwired or throws.
    */
-  parkForPTY?: (input: PermissionRequestHookInput, summary?: string) => void;
+  parkForPTY?: (input: PermissionRequestHookInput, summary?: string) => UUID | undefined;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -361,11 +390,12 @@ export class AutoApproveGate {
   private readonly evalIsSubagentById = new Map<number, boolean>();
 
   /**
-   * Every OPEN escalation this gate has created (held OR passthrough), keyed
-   * by `Question.id`, by its (tool_name, tool_input) signature (#673). Entry
-   * lifecycle: created in `escalateToUser` on a successful escalation; removed
-   * by exactly TWO owners, unconditionally (regardless of whether a hold
-   * existed), so no exit path can leak an entry:
+   * Every OPEN escalation this gate has created (held OR passthrough, MAIN or
+   * subagent), keyed by `Question.id`, by its (tool_name, tool_input, agentId)
+   * signature (#673, #799). Entry lifecycle: created in `escalateToUser` on a
+   * successful MAIN escalation, or in `parkSubagentForPTY` (#799) on a parked
+   * subagent one; removed by exactly TWO owners, unconditionally (regardless
+   * of whether a hold existed), so no exit path can leak an entry:
    *   - the public `resolveHeld` (a separate, non-delegating path — it owns
    *     its own delete);
    *   - the private `releaseHeld`, which EVERY other resolution path funnels
@@ -1361,15 +1391,46 @@ export class AutoApproveGate {
    * A parkForPTY throw is absorbed: the passthrough still stands, and the
    * rendered prompt degrades to a bare #712 orphan push instead of a merged
    * one.
+   *
+   * #799: also registers the parked question's signature in
+   * `openQuestionSignatures`, tagged `isSubagent: true` + this event's own
+   * `agent_id` -- the SAME bookkeeping `escalateToUser` does for a main
+   * escalation. Without this, a subagent permission answered directly in the
+   * terminal (approved -> the matching tool runs, or the allowlist absorbs
+   * it) had no way to ever leave `sessionRegistry.currentQuestions`: neither
+   * `cancelExternallyResolved` (no signature to match) nor `cancelStale`
+   * (subagent holds never exist) could reach it. A later matching subagent
+   * PreToolUse/PostToolUse (`cancelExternallyResolved`, wired in
+   * `hook-bridge-setup.ts`) can now find and resolve it through the normal
+   * `removeQuestion` + `onResolved` funnel. Mirrors `escalateToUser`'s own
+   * duplicate-re-request cleanup: a re-park for the identical signature (the
+   * SAME agent re-asking) proves the earlier parked/pushed record is dead.
    */
   private parkSubagentForPTY(input: PermissionRequestHookInput, summary?: string): void {
+    let questionId: UUID | undefined;
     try {
-      this.deps.parkForPTY?.(input, summary);
+      questionId = this.deps.parkForPTY?.(input, summary);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] parkForPTY threw (prompt will fall to the orphan push path):`,
         err,
       );
+    }
+    if (questionId) {
+      const observed: ObservedToolCall = {
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
+      };
+      this.cancelExternallyResolved(observed, 'duplicate-re-park-subagent');
+      this.openQuestionSignatures.set(questionId, {
+        toolName: observed.toolName,
+        toolInputKey: stableToolInputKey(observed.toolInput),
+        toolUseId: observed.toolUseId,
+        isSubagent: true,
+        agentId: observed.agentId,
+      });
     }
     this.safeCueWithArg('onEscalate', this.deps.onEscalate, { isSubagent: true });
   }
@@ -1510,6 +1571,7 @@ export class AutoApproveGate {
         toolName: input.tool_name,
         toolInput: input.tool_input,
         toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
       };
       // #673 duplicate re-request: Claude re-issuing the IDENTICAL
       // PermissionRequest (same tool signature) proves any earlier OPEN
@@ -1534,6 +1596,10 @@ export class AutoApproveGate {
         // #711: tags this OPEN escalation main vs subagent/team-member, so a
         // mainOnly Stop (cancelStale) clears only main-tagged entries here.
         isSubagent: this.isSubagentEvent(input),
+        // #799: always undefined here -- escalateToUser is main-context only
+        // (see the class doc); kept for ToolSignature's shape symmetry with
+        // parkSubagentForPTY's own registration.
+        agentId: observed.agentId,
       });
     }
     return questionId;
@@ -1572,6 +1638,12 @@ export class AutoApproveGate {
     const observedKey = stableToolInputKey(observed.toolInput);
     for (const [qid, sig] of this.openQuestionSignatures) {
       if (sig.toolName !== observed.toolName || sig.toolInputKey !== observedKey) continue;
+      // #799: never cross agents. A MAIN observation (agentId undefined) can
+      // only match a MAIN-registered signature, and a subagent observation
+      // only its OWN agent's signature -- otherwise two different agents (or
+      // a subagent and main) issuing the identical (tool_name, tool_input)
+      // could resolve each other's unrelated escalation.
+      if (sig.agentId !== observed.agentId) continue;
       // Signature agrees. Two DIFFERENT tool calls can legitimately share an
       // identical (tool_name, tool_input) (e.g. two `ls` calls in a row) --
       // if BOTH sides carry a tool_use_id, it must ALSO agree, or this is a
