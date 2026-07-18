@@ -7,9 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */; };
 		0624CA493FEF2D140B88CFF7 /* HubSetupCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CBF3CF5E347134A46BF0076 /* HubSetupCommands.swift */; };
 		0C46ABF54A97FA1F17BE04B0 /* WebViewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355697014B8A803D93F9E3EA /* WebViewWindow.swift */; };
 		2626DA9FECF5CE594406FCF2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA99F3FC4BB5441E52829DA8 /* SettingsView.swift */; };
+		2FB66887F1ABC6C53CA40C06 /* ActivationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */; };
+		465626B53BA0E06EC5B555C0 /* ActivationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */; };
 		477C35A4907835166E4AECF6 /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81CA6F64B5FFA6B90233A956 /* HubClient.swift */; };
 		4DDC81BB89C55D2F2E819002 /* HubSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 286C0F48CEB5BC01CC53529D /* HubSetupView.swift */; };
 		5470D493544A6D03CE17E9B3 /* IconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7875E7E74CA980AD4B502F /* IconState.swift */; };
@@ -58,7 +61,9 @@
 		6AEF3BCD8B2F7017165A715A /* NotificationDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiffTests.swift; sourceTree = "<group>"; };
 		6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconStateTests.swift; sourceTree = "<group>"; };
 		734962FBB7BBAF23FEFB57BC /* RemiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RemiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivationPolicy.swift; sourceTree = "<group>"; };
 		7A55AC9AACFAC1CAC46522A8 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivationPolicyTests.swift; sourceTree = "<group>"; };
 		7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandlerServingTests.swift; sourceTree = "<group>"; };
 		81CA6F64B5FFA6B90233A956 /* HubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClient.swift; sourceTree = "<group>"; };
 		B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistSchemeHandler.swift; sourceTree = "<group>"; };
@@ -82,6 +87,7 @@
 		AB3D9F531B6A4A622EDC05D1 /* Remi */ = {
 			isa = PBXGroup;
 			children = (
+				76E4FCE03EBFC0154443A767 /* ActivationPolicy.swift */,
 				C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */,
 				4DD72A5787EF3FFBF772C89F /* Assets.xcassets */,
 				B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */,
@@ -105,6 +111,7 @@
 		C7F38A4D8AF6DC703EE13673 /* RemiTests */ = {
 			isa = PBXGroup;
 			children = (
+				7A5E9CBEBA9AB7A3E199177A /* ActivationPolicyTests.swift */,
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
 				69B5AB7DE462E44924AFDC25 /* HubClientIntegrationTests.swift */,
@@ -257,6 +264,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				465626B53BA0E06EC5B555C0 /* ActivationPolicy.swift in Sources */,
 				954D114FF37A81A590B7D7B4 /* AppDelegate.swift in Sources */,
 				A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */,
 				779250B73CFF5A291C21A9A6 /* HubClient.swift in Sources */,
@@ -276,6 +284,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2FB66887F1ABC6C53CA40C06 /* ActivationPolicy.swift in Sources */,
+				0282FAB49B260E7A3ABC043A /* ActivationPolicyTests.swift in Sources */,
 				5B9DAFE87B904A39428B55B0 /* DistSchemeHandler.swift in Sources */,
 				B2EF1C7D36471D46EACF2DD6 /* DistSchemeHandlerServingTests.swift in Sources */,
 				787301FFD777594190359E77 /* DistSchemeHandlerTests.swift in Sources */,
