@@ -139,4 +139,30 @@ describe('mapQuestionToUIQuestion', () => {
     expect(ui.questions).toBeUndefined();
     expect(ui.submitLabel).toBeUndefined();
   });
+
+  describe('timestamp (#798 part 4)', () => {
+    test('prefers the wire message timestamp over local receipt time', () => {
+      const wireTs = '2026-01-01T00:00:00.000Z';
+      const ui = mapQuestionToUIQuestion(question(), SID, wireTs);
+      expect(ui.timestamp).toBe(wireTs);
+    });
+
+    test('falls back to the current time when no wire timestamp is given', () => {
+      const before = Date.now();
+      const ui = mapQuestionToUIQuestion(question(), SID);
+      const after = Date.now();
+      const parsed = Date.parse(ui.timestamp);
+      expect(parsed).toBeGreaterThanOrEqual(before);
+      expect(parsed).toBeLessThanOrEqual(after);
+    });
+
+    test('falls back to the current time for a malformed wire timestamp', () => {
+      const before = Date.now();
+      const ui = mapQuestionToUIQuestion(question(), SID, 'not-a-date');
+      const after = Date.now();
+      const parsed = Date.parse(ui.timestamp);
+      expect(parsed).toBeGreaterThanOrEqual(before);
+      expect(parsed).toBeLessThanOrEqual(after);
+    });
+  });
 });

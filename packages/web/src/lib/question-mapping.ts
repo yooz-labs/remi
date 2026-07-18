@@ -7,7 +7,7 @@
  * no side effects.
  */
 
-import type { Question, UUID } from '@remi/shared';
+import type { Question, Timestamp, UUID } from '@remi/shared';
 import type { UIQuestion, UIQuestionOption } from '@/types';
 
 /**
@@ -45,8 +45,18 @@ function toUIQuestionOption(o: Question['options'][number]): UIQuestionOption {
  * responsible for the "sessionId is mandatory" guard (#437) before calling
  * this — a malformed message with no sessionId is dropped upstream, never
  * reaching this pure mapping.
+ *
+ * `wireTimestamp` (#798 part 4) should be the enclosing `QuestionMessage`'s own
+ * `timestamp` when the caller has one — preferred over local receipt time so a
+ * card born from a delayed/replayed message shows its true age instead of
+ * always reading "Just now". Falls back to the current time when omitted or
+ * malformed (e.g. a caller with no wire message to hand, or a bad timestamp).
  */
-export function mapQuestionToUIQuestion(q: Question, sessionId: UUID): UIQuestion {
+export function mapQuestionToUIQuestion(
+  q: Question,
+  sessionId: UUID,
+  wireTimestamp?: Timestamp,
+): UIQuestion {
   const structuredOptions = q.options.map(toUIQuestionOption);
 
   // #626: carry the full AskUserQuestion structure (headers, per-option
@@ -58,6 +68,11 @@ export function mapQuestionToUIQuestion(q: Question, sessionId: UUID): UIQuestio
     options: step.options.map(toUIQuestionOption),
   }));
 
+  const timestamp =
+    wireTimestamp !== undefined && Number.isFinite(Date.parse(wireTimestamp))
+      ? wireTimestamp
+      : new Date().toISOString();
+
   return {
     id: q.id,
     sessionId,
@@ -65,7 +80,7 @@ export function mapQuestionToUIQuestion(q: Question, sessionId: UUID): UIQuestio
     prompt: q.text,
     options: q.options.length > 0 ? q.options.map((o) => o.label) : undefined,
     structuredOptions: structuredOptions.length > 0 ? structuredOptions : undefined,
-    timestamp: new Date().toISOString(),
+    timestamp,
     agentId: q.agentId,
     ...(q.kind ? { kind: q.kind } : {}),
     ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
