@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.22-dev.2'; // REMI_COMPILED_VERSION
+      return '0.6.22-dev.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.22-dev.2'; // REMI_COMPILED_VERSION
+    return '0.6.22-dev.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -125,6 +125,7 @@ import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
@@ -350,13 +351,12 @@ if (cliInstall || cliUninstall) {
   const binaryPath = pathResolved ?? process.execPath;
 
   if (platform === 'darwin') {
-    const plistName = 'com.yooz.remi.plist';
-    const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
+    // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
+    // the builder in service-templates.ts.
+    const { launchAgentPath, buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
+    const dest = launchAgentPath(home);
 
     if (cliInstall) {
-      // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
-      // the builder in service-templates.ts.
-      const { buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
       const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
@@ -407,11 +407,11 @@ if (cliInstall || cliUninstall) {
       }
     }
   } else if (platform === 'linux') {
-    const serviceDir = path.join(home, '.config', 'systemd', 'user');
-    const dest = path.join(serviceDir, 'remi.service');
+    const { systemdUnitPath, buildSystemdUnit } = await import('./cli/service-templates.ts');
+    const dest = systemdUnitPath(home);
+    const serviceDir = path.dirname(dest);
 
     if (cliInstall) {
-      const { buildSystemdUnit } = await import('./cli/service-templates.ts');
       fs.mkdirSync(serviceDir, { recursive: true });
       fs.writeFileSync(dest, buildSystemdUnit(binaryPath));
       Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
@@ -1694,6 +1694,9 @@ const hubClientTracker: HubClientTracker | null = serveMode
       // #786/#787: the same listLive() read the plain session count used,
       // now also flattened into the pending-question census.
       getCensus: () => buildHubQuestionCensus(liveSessionsRegistry.listLive()),
+      // Re-checked on every census build/change-check (#788): a cheap fs
+      // stat, cheap enough to not bother caching across calls.
+      getAutostartState: () => detectAutostartState(process.platform, os.homedir()),
       hubVersion: REMI_VERSION,
     })
   : null;

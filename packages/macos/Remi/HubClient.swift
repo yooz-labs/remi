@@ -61,6 +61,11 @@ final class HubClient: ObservableObject {
     /// RemiApp sets `onNotificationActivated` once at startup.
     let notificationManager = NotificationManager()
 
+    /// Autostart state reported by the hub (#788): `"installed"`, `"none"`,
+    /// or nil (either not yet received, or a pre-#788 hub that never sends
+    /// the field). Settings/menu treat nil as "unknown", not "none".
+    @Published private(set) var autostart: String?
+
     var iconState: IconState {
         switch phase {
         case .connected(_, isHub: true):
@@ -107,6 +112,15 @@ final class HubClient: ObservableObject {
         if localClients > 0 { parts.append("\(localClients) local") }
         if remoteClients > 0 { parts.append("\(remoteClients) remote") }
         return "Clients: \(parts.joined(separator: ", "))"
+    }
+
+    /// True only once a real hub has explicitly confirmed no autostart
+    /// artifact exists (#788). nil (not yet received, or a pre-#788 hub
+    /// that never sends the field) reads false — a warning only fires on a
+    /// confirmed "none", never on "we don't know yet".
+    var autostartMissing: Bool {
+        guard case .connected(_, isHub: true) = phase else { return false }
+        return autostart == "none"
     }
 
     var menuStatusLine: String {
@@ -334,6 +348,7 @@ final class HubClient: ObservableObject {
                         PendingQuestionNotice(
                             id: $0.id, sessionName: $0.sessionName, label: $0.label)
                     })
+                autostart = status.autostart
             }
         case "pong":
             missedPongs = 0
@@ -389,6 +404,7 @@ final class HubClient: ObservableObject {
         // still-pending questions and re-alert on every reconnect. The next
         // hub_status frame after reconnecting re-syncs both from the real
         // census.
+        autostart = nil
         phase = .unreachable
         consecutiveFailures += 1
         scheduleReconnect()

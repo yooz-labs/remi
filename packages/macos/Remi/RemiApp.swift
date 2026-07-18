@@ -35,6 +35,17 @@ struct RemiApp: App {
                     NSApp.activate(ignoringOtherApps: true)
                 }
             }
+            // The hub confirmed no LaunchAgent is installed (#788): remote
+            // access silently stops working after the next logout/reboot.
+            // Routes to Settings, the same place the fix lives, via the
+            // same responder-chain action + activate() pairing used by the
+            // "Settings…" item below.
+            if hubClient.autostartMissing {
+                Button("Hub autostart not set up…") {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
             Divider()
             Button("Open Remi") {
                 openWindow(id: "main")

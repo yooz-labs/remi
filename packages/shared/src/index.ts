@@ -96,6 +96,7 @@ export type {
   DaemonUpdateAvailableMessage,
   HubStatusMessage,
   HubPendingQuestion,
+  HubAutostartState,
   SessionRotatedMessage,
   SessionViewsMessage,
   SessionViewMeta,

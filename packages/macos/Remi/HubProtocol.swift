@@ -105,4 +105,11 @@ struct HubStatusFrame: Decodable {
     /// daemon than the app, or the field was never populated yet).
     let pendingQuestions: Int?
     let questions: [HubPendingQuestionFrame]?
+    /// Whether `remi --install`'s login-service artifact exists on this
+    /// Mac (#788): `"installed"` or `"none"`. The sandboxed app cannot
+    /// read `~/Library/LaunchAgents` itself, so the hub self-reports this.
+    /// Optional/nil on a pre-#788 hub — that must read as "unknown", not
+    /// "none", so the UI keeps today's neutral copy instead of a false
+    /// warning.
+    let autostart: String?
 }
