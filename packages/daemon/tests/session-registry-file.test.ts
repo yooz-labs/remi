@@ -433,4 +433,68 @@ describe('SessionRegistryFile', () => {
       ).toBe(false);
     });
   });
+
+  // ---- pending questions mirror (#786/#787) -------------------------------
+
+  describe('pending questions', () => {
+    test('setPendingQuestions round-trips and preserves other fields (notably startedAt)', () => {
+      const entry = makeEntry({ sessionId: 's', wsPort: 18767 });
+      registry.register(entry);
+      registry.setPendingQuestions('s', [
+        { id: 'q1', label: 'Permission: Bash', createdAt: '2026-07-17T00:00:00.000Z' },
+      ]);
+
+      const live = registry.listLive();
+      expect(live).toHaveLength(1);
+      expect(live[0]!.pendingQuestions).toEqual([
+        { id: 'q1', label: 'Permission: Bash', createdAt: '2026-07-17T00:00:00.000Z' },
+      ]);
+      expect(live[0]!.startedAt).toBe(entry.startedAt);
+      expect(live[0]!.wsPort).toBe(18767);
+    });
+
+    test('setPendingQuestions with an empty array clears the mirror', () => {
+      registry.register(makeEntry({ sessionId: 's' }));
+      registry.setPendingQuestions('s', [{ id: 'q1', label: 'x', createdAt: 'now' }]);
+      registry.setPendingQuestions('s', []);
+
+      const live = registry.listLive();
+      expect(live[0]!.pendingQuestions).toEqual([]);
+    });
+
+    test('legacy entry without pendingQuestions parses with the field absent', () => {
+      registry.register(makeEntry({ sessionId: 'legacy' }));
+      const live = registry.listLive();
+      expect(live[0]!.pendingQuestions).toBeUndefined();
+    });
+
+    test('setPendingQuestions is a no-op for a missing entry', () => {
+      registry.setPendingQuestions('ghost', [{ id: 'q1', label: 'x', createdAt: 'now' }]);
+      expect(registry.listLive()).toHaveLength(0);
+    });
+
+    test('an entry with a malformed pendingQuestions array is rejected by listLive', () => {
+      const filePath = path.join(tmpDir, 'bad-pq.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({
+          ...makeEntry({ sessionId: 'bad-pq' }),
+          pendingQuestions: [{ id: 'q1' /* missing label/createdAt */ }],
+        }),
+      );
+      expect(registry.listLive()).toHaveLength(0);
+    });
+
+    test('multiple sessions each keep their own independent pendingQuestions', () => {
+      registry.register(makeEntry({ sessionId: 'a' }));
+      registry.register(makeEntry({ sessionId: 'b' }));
+      registry.setPendingQuestions('a', [{ id: 'qa', label: 'A', createdAt: 't' }]);
+
+      const live = registry.listLive();
+      const a = live.find((e) => e.sessionId === 'a');
+      const b = live.find((e) => e.sessionId === 'b');
+      expect(a!.pendingQuestions).toEqual([{ id: 'qa', label: 'A', createdAt: 't' }]);
+      expect(b!.pendingQuestions).toBeUndefined();
+    });
+  });
 });

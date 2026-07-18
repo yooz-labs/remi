@@ -20,7 +20,15 @@ export { TranscriptIndex, type TranscriptIndexEntry } from './transcript-index.t
 export {
   SessionRegistryFile,
   type LiveSessionEntry,
+  type PendingQuestionEntry,
   claudeChildLooksAlive,
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
 } from './session-registry-file.ts';
+
+export {
+  buildPendingQuestionLabel,
+  PENDING_QUESTION_LABEL_MAX,
+} from './pending-question-label.ts';
+
+export { PendingQuestionCreatedAtTracker } from './pending-question-created-at-tracker.ts';

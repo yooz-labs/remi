@@ -106,6 +106,15 @@ export interface SessionRegistryEvents {
    * transport — the registry has no transport handle to do that itself.
    */
   onConnectionReclaimed?: (sessionId: UUID, staleConnectionId: UUID, newConnectionId: UUID) => void;
+  /**
+   * The session's pending-question set changed: one was added, one was
+   * resolved (from any surface — terminal, push, web), or all were cleared
+   * (#786/#787). Fires with the FULL current set (not a delta) from
+   * `addQuestion`/`removeQuestion`/`clearQuestions`, so a caller mirroring
+   * this into another store (the live-sessions registry file, for the hub
+   * census) can always overwrite rather than merge.
+   */
+  onQuestionsChanged?: (sessionId: UUID, questions: readonly Question[]) => void;
 }
 
 /** A managed session with all its runtime state */
@@ -664,6 +673,7 @@ export class SessionRegistry {
       );
     }
     this.session.lastActivityAt = now();
+    this.events.onQuestionsChanged?.(sessionId, [...map.values()]);
   }
 
   /** Remove one answered/resolved question by id. */
@@ -671,6 +681,7 @@ export class SessionRegistry {
     if (this.session !== null && this.session.sessionId === sessionId) {
       this.session.currentQuestions.delete(questionId);
       this.session.lastActivityAt = now();
+      this.events.onQuestionsChanged?.(sessionId, [...this.session.currentQuestions.values()]);
     }
   }
 
@@ -682,6 +693,7 @@ export class SessionRegistry {
     if (this.session !== null && this.session.sessionId === sessionId) {
       this.session.currentQuestions.clear();
       this.session.lastActivityAt = now();
+      this.events.onQuestionsChanged?.(sessionId, []);
     }
   }
 
