@@ -9,9 +9,10 @@
  */
 
 import { createHubStatus } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { HubPendingQuestion, ProtocolMessage, UUID } from '@remi/shared';
 import type { AdapterMetadata } from '../adapters/index.ts';
 import { isLoopbackAddress } from '../server/peer-helpers.ts';
+import type { HubQuestionCensus } from './hub-question-census.ts';
 
 /**
  * How a connection counts toward the icon state:
@@ -55,36 +56,71 @@ export interface HubClientTrackerDeps {
   readonly send: (connectionId: UUID, message: ProtocolMessage) => void;
   /** Broadcast a message to all connections (count changes). */
   readonly broadcast: (message: ProtocolMessage) => void;
-  /** Live child session daemon count (live-sessions registry census). */
-  readonly getSessions: () => number;
+  /**
+   * Live child session daemon count + pending-question census
+   * (live-sessions registry, #786/#787). Reads the same registry entries
+   * the plain session count used to.
+   */
+  readonly getCensus: () => HubQuestionCensus;
   /** REMI_VERSION of the hub process. */
   readonly hubVersion: string;
+}
+
+/** Stable, order-independent key for a question-id set, so change detection
+ *  (`broadcastIfChanged`) treats "same ids, different array order" as
+ *  unchanged but any add/remove as a change. */
+function questionIdsKey(questions: readonly HubPendingQuestion[]): string {
+  return questions
+    .map((q) => q.id)
+    .sort()
+    .join(',');
 }
 
 export class HubClientTracker {
   private readonly clients = new Map<UUID, PeerClass>();
   private readonly deps: HubClientTrackerDeps;
   /**
-   * Last counts broadcast, for change detection (sessions included). Seeded
-   * with the real census at construction — a null sentinel would force a
-   * spurious broadcast on the first connect even when nothing changed
-   * (#744 review).
+   * Last counts broadcast, for change detection (sessions + the pending-
+   * question id set included, #786/#787 — two different question sets of
+   * equal SIZE, e.g. one answered while another arrived in the same beat,
+   * must still count as a change). Seeded with the real census at
+   * construction — a null sentinel would force a spurious broadcast on the
+   * first connect even when nothing changed (#744 review).
    */
-  private lastEmitted: { local: number; remote: number; sessions: number };
+  private lastEmitted: { local: number; remote: number; sessions: number; questionIds: string };
 
   constructor(deps: HubClientTrackerDeps) {
     this.deps = deps;
-    this.lastEmitted = { local: 0, remote: 0, sessions: deps.getSessions() };
+    const census = deps.getCensus();
+    this.lastEmitted = {
+      local: 0,
+      remote: 0,
+      sessions: census.sessions,
+      questionIds: questionIdsKey(census.questions),
+    };
   }
 
-  counts(): { localClients: number; remoteClients: number; sessions: number } {
+  counts(): {
+    localClients: number;
+    remoteClients: number;
+    sessions: number;
+    pendingQuestions: number;
+    questions: readonly HubPendingQuestion[];
+  } {
     let local = 0;
     let remote = 0;
     for (const cls of this.clients.values()) {
       if (cls === 'local') local++;
       else if (cls === 'remote') remote++;
     }
-    return { localClients: local, remoteClients: remote, sessions: this.deps.getSessions() };
+    const census = this.deps.getCensus();
+    return {
+      localClients: local,
+      remoteClients: remote,
+      sessions: census.sessions,
+      pendingQuestions: census.questions.length,
+      questions: census.questions,
+    };
   }
 
   /**
@@ -110,7 +146,8 @@ export class HubClientTracker {
   }
 
   /** Re-check the census after an external change (child session
-   *  registered/removed via the live-sessions watcher). */
+   *  registered/removed, or a session's pendingQuestions changed, via the
+   *  live-sessions watcher, #786/#787). */
   refresh(): void {
     this.broadcastIfChanged();
   }
@@ -121,16 +158,18 @@ export class HubClientTracker {
 
   /** Returns true when a broadcast actually went out. */
   private broadcastIfChanged(): boolean {
-    const { localClients, remoteClients, sessions } = this.counts();
+    const { localClients, remoteClients, sessions, questions } = this.counts();
+    const questionIds = questionIdsKey(questions);
     const prev = this.lastEmitted;
     if (
       prev.local === localClients &&
       prev.remote === remoteClients &&
-      prev.sessions === sessions
+      prev.sessions === sessions &&
+      prev.questionIds === questionIds
     ) {
       return false;
     }
-    this.lastEmitted = { local: localClients, remote: remoteClients, sessions };
+    this.lastEmitted = { local: localClients, remote: remoteClients, sessions, questionIds };
     this.deps.broadcast(this.statusMessage());
     return true;
   }

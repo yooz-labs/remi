@@ -591,7 +591,7 @@ describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
           sent.push({ connectionId, message });
         },
         broadcast: (message) => broadcasts.push(message),
-        getSessions: () => 0,
+        getCensus: () => ({ sessions: 0, questions: [] }),
         hubVersion: '9.9.9-test',
       });
       const handlers = createConnectionHandlers({

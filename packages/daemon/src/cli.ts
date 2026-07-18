@@ -151,6 +151,7 @@ import {
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { HubClientTracker } from './cli/hub-client-tracker.ts';
+import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
@@ -173,6 +174,7 @@ import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
+  PendingQuestionCreatedAtTracker,
   SessionBindingStore,
   SessionRegistry,
   SessionRegistryFile,
@@ -963,6 +965,10 @@ const orphanTimeoutMs =
 // registry below is constructed before `sessionHandlers` exists, so onSessionClosed
 // reaches the resolver through this holder, assigned once the handlers are wired.
 let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
+// Mirrors the session's pending questions into the live-sessions registry
+// file (#786/#787), keyed by question id so `createdAt` stays stable across
+// the repeated onQuestionsChanged calls a single question's lifecycle fires.
+const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
@@ -1009,6 +1015,19 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
+    },
+    onQuestionsChanged: (sessionId, questions) => {
+      // Best-effort: a registry-file hiccup here must never take down the
+      // question pipeline itself (the live WS `question`/`question_resolved`
+      // broadcasts already happened before this fires).
+      try {
+        liveSessionsRegistry.setPendingQuestions(
+          sessionId,
+          pendingQuestionCreatedAt.sync(questions),
+        );
+      } catch (err) {
+        logError(`[live-sessions] setPendingQuestions failed: ${errorToString(err)}`);
+      }
     },
     onConnectionReclaimed: (sessionId, staleConnectionId, newConnectionId) => {
       // Same device reconnected while its own previous connection still held
@@ -1672,7 +1691,9 @@ const hubClientTracker: HubClientTracker | null = serveMode
         sendToConnection(connectionId, message);
       },
       broadcast: (message) => registry.broadcast(message),
-      getSessions: () => liveSessionsRegistry.listLive().length,
+      // #786/#787: the same listLive() read the plain session count used,
+      // now also flattened into the pending-question census.
+      getCensus: () => buildHubQuestionCensus(liveSessionsRegistry.listLive()),
       hubVersion: REMI_VERSION,
     })
   : null;
