@@ -2,6 +2,68 @@
 
 All notable changes to Remi are documented here.
 
+## [0.6.22] - 2026-07-18
+
+Two big interaction-model changes from hands-on hub testing — the macOS app
+becomes a real citizen of the desktop, and sessions stop pretending only one
+device is allowed to talk — plus the end of phantom question cards.
+
+### Added
+- **macOS app shows in the Dock while its window is open** (#785): hybrid
+  activation policy — opening the window adds the app to the Dock and
+  Cmd-Tab, closing the last window returns it to menu-bar-only. Launch stays
+  Dock-free; closing the window still never quits anything (#651).
+- **Native macOS notifications for pending questions** (#786): session
+  daemons mirror their pending questions into the live-sessions registry,
+  the hub aggregates them into `hub_status`, and the menu-bar app posts one
+  notification per new question (withdrawn automatically when the question
+  is answered anywhere; clicking opens the window). Follow-up: surface the
+  authorization-denied state in Settings (#793).
+- **Needs-attention menu-bar icon state** (#787): while any question is
+  pending the "r" glyph inverts (filled rounded square, knocked-out r),
+  taking precedence over the client-connection states, and reverts on
+  answer.
+- **Hub autostart indication** (#788): the hub self-reports whether its
+  `remi --install` LaunchAgent/systemd unit is installed via `hub_status`;
+  Settings shows the state and the menu warns when the hub is running
+  without autostart. Job-health verification (beyond file presence) is
+  tracked in #791.
+- **`question_snapshot` protocol message** (#798): the daemon broadcasts its
+  authoritative live-question id set on every change, and clients prune any
+  displayed card not in it — a self-healing backstop for the whole
+  phantom-card bug family.
+
+### Changed
+- **The session exclusive write lock is gone** (#795): any connected
+  non-query client can send input — no more one-client-per-session, FIFO
+  queueing, or "read-only: another device is attached." The remotely-created
+  session lockout (the creating phone racing every other client for the
+  lock and losing) disappears with it. Safety moved to where it belongs: a
+  per-session serialized PTY write queue (the missing piece when this was
+  last attempted and reverted), verified by a regression test that fails
+  without it. The raw terminal stream now reaches every attached client;
+  resize is last-writer-wins; query mode remains the read-only monitor mode.
+
+### Fixed
+- **Phantom question cards** (#798, #799): two converging root causes.
+  Client side, every reconnect replayed recent history and resurrected
+  long-answered questions as fresh cards stamped "Just now" — replayed
+  questions are now gated (parity with the terminal client's #753 fix),
+  cards reconcile against the live snapshot, and a stale answer force-clears
+  its named card instead of sticking at "Answering…". Daemon side,
+  subagent/teammate permissions answered in the terminal never left the
+  pending store (feeding phantoms to reconnect resends, the hub census, and
+  lock-screen pushes): parked subagent escalations now register agent-scoped
+  signatures, tool advancement resolves them, and terminal-denied questions
+  clear on Stop/SubagentStop — always through the full resolution funnel so
+  the broadcast, APNS dismissal, and hub mirror stay in sync. Conservative
+  residual for StopFailure tracked in #802.
+
+## [0.6.21] - 2026-07-17
+
+Housekeeping release: TestFlight build 6 (macOS + iOS) version bump and
+`.context` documentation pruning with ADR backfill. No runtime changes.
+
 ## [0.6.20] - 2026-07-10
 
 App-polish follow-ups from the first TestFlight round: the macOS app learns

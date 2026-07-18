@@ -100,7 +100,7 @@ describe('createResumeSessionHandlers', () => {
       daemonVersion?: unknown;
     };
     expect('daemonVersion' in resumeAck).toBe(false);
-    expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+    expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
   });
 
   test('#753: re-sends pending questions as live messages on the still-alive attach path', async () => {
@@ -208,7 +208,7 @@ describe('createResumeSessionHandlers', () => {
     expect(types).toContain('resume_session_response');
     expect(types).toContain('hello_ack');
     const attachedId = spawnHistory[0]?.sessionId as UUID;
-    expect(sessionRegistry.getSession(attachedId)?.activeConnectionId).toBe(CID);
+    expect(sessionRegistry.getSession(attachedId)?.attachedConnections.has(CID)).toBe(true);
   });
 
   test('closes the newly-spawned session and reports failure when createNewSession throws', async () => {

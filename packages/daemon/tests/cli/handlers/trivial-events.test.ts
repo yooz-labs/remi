@@ -3,8 +3,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { generateId } from '@remi/shared';
+import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { createTrivialHandlers } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 
@@ -99,6 +102,46 @@ describe('createTrivialHandlers', () => {
     handlers.onTerminalResize(CID, 80, 24);
 
     expect(logs.some((m) => m.includes('Terminal resize ignored'))).toBe(true);
+  });
+
+  test('resize is last-writer-wins across multiple attached connections (#795)', () => {
+    const resizes: Array<{ cols: number; rows: number }> = [];
+    const pty = {
+      id: generateId(),
+      resize: (size: { cols: number; rows: number }) => {
+        resizes.push(size);
+      },
+      close: async () => {},
+    } as unknown as PTYSession;
+    const messageApi = { bulletCount: 0 } as unknown as MessageAPI;
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', pty, messageApi);
+    const connA = generateId();
+    const connB = generateId();
+    sessionRegistry.attachConnection(sessionId, connA);
+    sessionRegistry.attachConnection(sessionId, connB);
+
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({
+      registerDeviceToken: () => {},
+      unregisterDeviceToken: () => {},
+      sessionStore,
+      sessionRegistry,
+      send,
+    });
+    configureLogger({ writeLog: () => {} });
+
+    // Both attached connections can resize; there is no negotiation --
+    // whichever call lands LAST wins, regardless of which connection sent it.
+    handlers.onTerminalResize(connA, 80, 24);
+    handlers.onTerminalResize(connB, 120, 40);
+    handlers.onTerminalResize(connA, 100, 30);
+
+    expect(resizes).toEqual([
+      { cols: 80, rows: 24 },
+      { cols: 120, rows: 40 },
+      { cols: 100, rows: 30 },
+    ]);
   });
 
   test('onError writes [error]-prefixed log in wrapper mode', () => {

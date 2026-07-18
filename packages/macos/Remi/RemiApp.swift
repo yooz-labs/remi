@@ -21,12 +21,28 @@ struct RemiApp: App {
             Text(hubClient.menuStatusLine)
             if case .connected(_, isHub: true) = hubClient.phase {
                 Text(hubClient.clientsLine)
+                // #786/#787: "1 question waiting" / "N questions waiting",
+                // the same census driving the notifications + icon state.
+                if let questionsLine = hubClient.questionsLine {
+                    Text(questionsLine)
+                }
             }
             if case .unreachable = hubClient.phase {
                 // The sandboxed app cannot start the hub itself (#651); the
                 // onboarding panel (#773) carries the actual setup steps.
                 Button("Set Up Hub…") {
                     openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+            // The hub confirmed no LaunchAgent is installed (#788): remote
+            // access silently stops working after the next logout/reboot.
+            // Routes to Settings, the same place the fix lives, via the
+            // same responder-chain action + activate() pairing used by the
+            // "Settings…" item below.
+            if hubClient.autostartMissing {
+                Button("Hub autostart not set up…") {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                     NSApp.activate(ignoringOtherApps: true)
                 }
             }
@@ -74,7 +90,17 @@ struct RemiApp: App {
             // accessory app with no initial window.
             Image(hubClient.iconState.assetName)
                 .opacity(hubClient.iconState.opacity)
-                .task { hubClient.start() }
+                .task {
+                    hubClient.start()
+                    // #786: clicking a delivered notification activates the
+                    // app and opens the main window, same as "Open Remi"
+                    // below. NotificationManager has no `openWindow`
+                    // environment action of its own to call.
+                    hubClient.notificationManager.onNotificationActivated = {
+                        openWindow(id: "main")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                }
         }
         .menuBarExtraStyle(.menu)
 

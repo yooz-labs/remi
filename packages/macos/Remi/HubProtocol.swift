@@ -84,6 +84,16 @@ struct HelloAckFrame: Decodable {
     let daemonVersion: String?
 }
 
+/// One pending question in the hub census (#786/#787): mirrors
+/// `HubPendingQuestion` in packages/shared/src/protocol.ts.
+struct HubPendingQuestionFrame: Decodable, Equatable {
+    let id: String
+    let sessionId: String
+    let sessionName: String
+    let label: String
+    let createdAt: String
+}
+
 /// Incoming `hub_status` census (#650): the icon-state data source.
 struct HubStatusFrame: Decodable {
     let type: String
@@ -91,4 +101,15 @@ struct HubStatusFrame: Decodable {
     let remoteClients: Int
     let sessions: Int
     let hubVersion: String
+    /// #786/#787: absent on a hub build predating these fields (older
+    /// daemon than the app, or the field was never populated yet).
+    let pendingQuestions: Int?
+    let questions: [HubPendingQuestionFrame]?
+    /// Whether `remi --install`'s login-service artifact exists on this
+    /// Mac (#788): `"installed"` or `"none"`. The sandboxed app cannot
+    /// read `~/Library/LaunchAgents` itself, so the hub self-reports this.
+    /// Optional/nil on a pre-#788 hub — that must read as "unknown", not
+    /// "none", so the UI keeps today's neutral copy instead of a false
+    /// warning.
+    let autostart: String?
 }

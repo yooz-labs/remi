@@ -72,6 +72,10 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
     },
 
     onTerminalResize: (connectionId: UUID, cols: number, rows: number): void => {
+      // #795: any attached connection can resize; there is no negotiation
+      // between multiple attached clients' terminal sizes, so this is
+      // last-writer-wins by design — whichever resize lands last sets the
+      // PTY's dimensions for everyone.
       const session = sessionRegistry.getSessionForConnection(connectionId);
       if (!session) {
         log(`Terminal resize ignored: no session for connection ${connectionId}`);

@@ -106,7 +106,8 @@ export type ProtocolMessage =
   | SessionRotatedMessage
   | SessionViewsMessage
   | QuestionResolvedMessage
-  | RemiStatusMessage;
+  | RemiStatusMessage
+  | QuestionSnapshotMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -125,12 +126,12 @@ export interface HelloMessage {
   readonly mode?: 'query' | undefined;
   /**
    * Stable per-device identifier, persisted client-side across app restarts
-   * (#662). When a reconnecting hello carries the SAME deviceId as the
-   * connection currently holding the session's exclusive write lock, the
-   * daemon treats it as the same physical client reconnecting after a
-   * transport blip (dead socket, iOS background, NAT drop) and reclaims the
-   * lock instead of FIFO-queuing behind the stale connection. Omitted by
-   * older clients, which keep today's queuing behavior.
+   * (#662). Historically used by the daemon to reclaim a stale connection's
+   * exclusive write lock on reconnect from the same device instead of
+   * FIFO-queuing behind it. Any attached connection can write since #795, so
+   * there is no more lock to reclaim — current daemons ignore this field.
+   * Still sent (and still read) for interop with an OLDER daemon that still
+   * implements exclusivity and reclaim.
    */
   readonly deviceId?: string | undefined;
 }
@@ -170,12 +171,15 @@ export interface HelloAckMessage {
   /** Next bullet ID for continuation (if resume) */
   readonly nextBulletId?: number | undefined;
   /**
-   * Whether this connection holds the session's exclusive write lock
-   * ('attached') or is read-only, waiting for the current holder to
-   * disconnect ('queued') (#662). Omitted for hello_acks sent outside the
-   * attach flow (e.g. query-mode clients, NO_SESSION). Older clients that
-   * don't read this field keep behaving as if every hello_ack meant
-   * 'attached', which was the pre-#662 (buggy) assumption.
+   * A current daemon only ever reports 'attached' here (or omits the field
+   * for hello_acks sent outside the attach flow — query-mode clients,
+   * NO_SESSION): #795 removed the exclusive write lock, so every attached
+   * connection can read and write immediately and there is no more
+   * queued/read-only state. 'queued' remains a valid value on the wire
+   * purely for interop with an OLDER daemon that still enforces exclusivity
+   * (#662) and FIFO-queues a second connection behind the first. Older
+   * clients that don't read this field keep behaving as if every hello_ack
+   * meant 'attached', which was the pre-#662 (buggy) assumption.
    */
   readonly attachState?: 'attached' | 'queued' | undefined;
   /**
@@ -336,6 +340,38 @@ export interface QuestionResolvedMessage {
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
   readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+}
+
+/**
+ * Daemon -> client broadcast: the authoritative set of question ids currently
+ * pending for a session (#798). Fired from the SAME `SessionRegistry.onQuestionsChanged`
+ * wiring that already mirrors the live set into the live-sessions registry file on
+ * every add/remove/clear (#786/#787) — this is the WebSocket counterpart, sent to
+ * ALL connected clients (never recorded into replay history; a reconnecting client
+ * gets a fresh one on the next add/remove/clear, not a stale replayed copy).
+ *
+ * Backstops the replay-gate fix (#798 part 1): a `question` message replayed from
+ * history is not trustworthy for pendingness (`question_resolved` is broadcast-only
+ * and never recorded), so a client that reconnects into a quiet session — no new
+ * question/resolve event to re-sync it — would otherwise keep a phantom card
+ * forever. On receipt, a client drops any displayed card for `sessionId` whose id
+ * is not in `questionIds`, while preserving cards in a locally-submitting or
+ * already-resolved/answered-trace state (#652/#653 invariants) since those own
+ * their own removal timer and a snapshot racing ahead of the resolve broadcast must
+ * not rip them out early.
+ *
+ * Old clients ignore the unknown message type (`isValidMessage` drops it); a new
+ * client against an old daemon simply never receives one — no behavior change, the
+ * replay gate alone still fixes the reconnect-into-quiet-session case there.
+ */
+export interface QuestionSnapshotMessage {
+  readonly type: 'question_snapshot';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Remi session the snapshot describes. */
+  readonly sessionId: UUID;
+  /** Every question id currently pending for this session (may be empty). */
+  readonly questionIds: readonly UUID[];
 }
 
 /**
@@ -792,12 +828,45 @@ export interface DaemonUpdateAvailableMessage {
 }
 
 /**
+ * One unanswered question surfaced in the hub census (#786/#787): one entry
+ * per pending question across every live child session daemon, sourced from
+ * each session's live-sessions registry entry (`LiveSessionEntry.pendingQuestions`,
+ * packages/daemon/src/session/session-registry-file.ts). Drives the macOS
+ * menu-bar app's native notifications (#786) and needs-attention icon state
+ * (#787) — the app is a query-mode client with no other way to learn a
+ * question is pending.
+ */
+export interface HubPendingQuestion {
+  /** Question id, matching the owning session's `Question.id`. */
+  readonly id: UUID;
+  /** Session the question belongs to. */
+  readonly sessionId: UUID;
+  /** The owning session's human-readable name (registry entry's `name`). */
+  readonly sessionName: string;
+  /** Short human label, e.g. "Permission: Bash" or a truncated question text
+   *  (see `buildPendingQuestionLabel` in the daemon package). */
+  readonly label: string;
+  /** When the question first became pending (ISO8601). */
+  readonly createdAt: Timestamp;
+}
+
+/**
+ * Whether the hub's login-service artifact (`remi --install`'s LaunchAgent
+ * plist on macOS, systemd user unit on Linux) exists on disk (#788).
+ * `'installed'` means the hub restarts automatically after logout/reboot;
+ * `'none'` means it runs only for the lifetime of the process that started
+ * it. Omitted entirely on platforms `--install` does not support.
+ */
+export type HubAutostartState = 'installed' | 'none';
+
+/**
  * Hub connection/session census (#650, epic #648): the daemon half of the
  * menu-bar icon state. Sent by HUB-MODE daemons only — to a connection right
  * after its hello_ack, and broadcast to all connections whenever the counts
- * change (client connect/disconnect, child session registered/removed).
- * Query-mode clients (remi ls, the menu-bar app itself) receive it but are
- * never counted. Pre-#650 clients drop it via isValidMessage.
+ * change (client connect/disconnect, child session registered/removed,
+ * autostart install/uninstall). Query-mode clients (remi ls, the menu-bar
+ * app itself) receive it but are never counted. Pre-#650 clients drop it via
+ * isValidMessage.
  */
 export interface HubStatusMessage {
   readonly type: 'hub_status';
@@ -811,6 +880,24 @@ export interface HubStatusMessage {
   readonly sessions: number;
   /** REMI_VERSION of the hub process. */
   readonly hubVersion: string;
+  /**
+   * Total pending questions across every live child session (#786/#787).
+   * Optional: absent on a hub predating this field, and safely ignored by a
+   * pre-#786 client (isValidMessage only checks `type`).
+   */
+  readonly pendingQuestions?: number;
+  /**
+   * The pending questions themselves (#786/#787). #787's icon state only
+   * needs `pendingQuestions`' count; #786's native notifications need this
+   * list to diff by id (new question -> post, disappeared id -> withdraw).
+   */
+  readonly questions?: readonly HubPendingQuestion[];
+  /**
+   * Autostart state (#788), OPTIONAL so older hubs (pre-#788) still decode
+   * cleanly on newer clients. Absent means "unknown", not "none" — clients
+   * should treat it the same as a hub too old to report it.
+   */
+  readonly autostart?: HubAutostartState;
 }
 
 /** A recent project directory aggregated from session history */
@@ -928,6 +1015,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'session_views',
     'question_resolved',
     'remi_status',
+    'question_snapshot',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1236,6 +1324,24 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+  };
+}
+
+/**
+ * Create a question-snapshot broadcast (#798). `questionIds` is copied into a
+ * new array so a later in-place mutation of the caller's live set cannot
+ * retroactively change a message already queued for serialization.
+ */
+export function createQuestionSnapshot(
+  sessionId: UUID,
+  questionIds: readonly UUID[],
+): QuestionSnapshotMessage {
+  return {
+    type: 'question_snapshot',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionIds: [...questionIds],
   };
 }
 
@@ -1714,6 +1820,9 @@ export function createHubStatus(counts: {
   remoteClients: number;
   sessions: number;
   hubVersion: string;
+  pendingQuestions?: number;
+  questions?: readonly HubPendingQuestion[];
+  autostart?: HubAutostartState;
 }): HubStatusMessage {
   return {
     type: 'hub_status',
@@ -1723,6 +1832,9 @@ export function createHubStatus(counts: {
     remoteClients: counts.remoteClients,
     sessions: counts.sessions,
     hubVersion: counts.hubVersion,
+    ...(counts.pendingQuestions !== undefined && { pendingQuestions: counts.pendingQuestions }),
+    ...(counts.questions !== undefined && { questions: counts.questions }),
+    ...(counts.autostart !== undefined && { autostart: counts.autostart }),
   };
 }
 

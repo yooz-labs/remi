@@ -5,7 +5,12 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { buildLaunchAgentPlist, buildSystemdUnit } from '../../src/cli/service-templates.ts';
+import {
+  buildLaunchAgentPlist,
+  buildSystemdUnit,
+  launchAgentPath,
+  systemdUnitPath,
+} from '../../src/cli/service-templates.ts';
 
 describe('buildLaunchAgentPlist', () => {
   const binary = '/opt/homebrew/bin/remi';
@@ -46,5 +51,19 @@ describe('buildSystemdUnit', () => {
     expect(unit).not.toContain('--daemon');
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('WantedBy=default.target');
+  });
+});
+
+// Single source of truth for the paths --install writes and the
+// autostart-state detector (#788) reads, so they can never drift apart.
+describe('launchAgentPath / systemdUnitPath (#788)', () => {
+  const home = '/Users/testuser';
+
+  test('launchAgentPath matches the plist --install writes', () => {
+    expect(launchAgentPath(home)).toBe(`${home}/Library/LaunchAgents/com.yooz.remi.plist`);
+  });
+
+  test('systemdUnitPath matches the unit --install writes', () => {
+    expect(systemdUnitPath(home)).toBe(`${home}/.config/systemd/user/remi.service`);
   });
 });

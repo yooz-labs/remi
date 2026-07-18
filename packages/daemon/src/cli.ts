@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.21'; // REMI_COMPILED_VERSION
+      return '0.6.22-dev.11'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.21'; // REMI_COMPILED_VERSION
+    return '0.6.22-dev.11'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -111,11 +111,9 @@ loadDotenvFile();
 
 import {
   createDaemonUpdateAvailable,
-  createError,
-  createHelloAck,
   createQuestionResolved,
+  createQuestionSnapshot,
   createRemiStatus,
-  createReplayBatch,
   createSessionUpdate,
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
@@ -125,6 +123,7 @@ import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
@@ -151,6 +150,7 @@ import {
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
 import { HubClientTracker } from './cli/hub-client-tracker.ts';
+import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
@@ -173,6 +173,7 @@ import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
+  PendingQuestionCreatedAtTracker,
   SessionBindingStore,
   SessionRegistry,
   SessionRegistryFile,
@@ -348,13 +349,12 @@ if (cliInstall || cliUninstall) {
   const binaryPath = pathResolved ?? process.execPath;
 
   if (platform === 'darwin') {
-    const plistName = 'com.yooz.remi.plist';
-    const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
+    // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
+    // the builder in service-templates.ts.
+    const { launchAgentPath, buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
+    const dest = launchAgentPath(home);
 
     if (cliInstall) {
-      // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
-      // the builder in service-templates.ts.
-      const { buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
       const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
@@ -405,11 +405,11 @@ if (cliInstall || cliUninstall) {
       }
     }
   } else if (platform === 'linux') {
-    const serviceDir = path.join(home, '.config', 'systemd', 'user');
-    const dest = path.join(serviceDir, 'remi.service');
+    const { systemdUnitPath, buildSystemdUnit } = await import('./cli/service-templates.ts');
+    const dest = systemdUnitPath(home);
+    const serviceDir = path.dirname(dest);
 
     if (cliInstall) {
-      const { buildSystemdUnit } = await import('./cli/service-templates.ts');
       fs.mkdirSync(serviceDir, { recursive: true });
       fs.writeFileSync(dest, buildSystemdUnit(binaryPath));
       Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
@@ -963,6 +963,10 @@ const orphanTimeoutMs =
 // registry below is constructed before `sessionHandlers` exists, so onSessionClosed
 // reaches the resolver through this holder, assigned once the handlers are wired.
 let resolveStopOnClose: ((sessionId: UUID) => void) | null = null;
+// Mirrors the session's pending questions into the live-sessions registry
+// file (#786/#787), keyed by question id so `createdAt` stays stable across
+// the repeated onQuestionsChanged calls a single question's lifecycle fires.
+const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
 const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
@@ -1010,76 +1014,33 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
-    onConnectionReclaimed: (sessionId, staleConnectionId, newConnectionId) => {
-      // Same device reconnected while its own previous connection still held
-      // the lock (#662) — likely a dead socket the pong reaper hasn't caught
-      // yet. The registry already moved the lock to newConnectionId; force-
-      // close the stale transport so it can't linger as a second listener.
-      log(
-        `Session ${sessionId} reclaimed by same device: evicting stale connection ${staleConnectionId} for ${newConnectionId}`,
-      );
-      registry.sendRaw(
-        staleConnectionId,
-        createError(
-          'SESSION_RECLAIMED',
-          'This device reconnected from a new connection; closing this one.',
-        ),
-      );
-      registry.closeConnection(staleConnectionId, 'Reclaimed by the same device reconnecting');
-    },
-    onConnectionPromoted: (sessionId, connectionId, result) => {
-      log(`Promoted waiting connection ${connectionId} to session ${sessionId}`);
-      // NOTE: this resolves the hello_ack binding inline rather than via
-      // currentOwnedSession() because the promoted connection may be attaching
-      // to a specific `sessionId` that is not necessarily the daemon's primary.
-      // Both read the same disk-backed store, so they stay in sync (#499).
-      const stored = sessionStore.findByRemiSessionId(sessionId);
-      const claudeId = stored?.claudeSessionId ?? null;
-      const projPath = stored?.projectPath ?? null;
-      const tpath =
-        claudeId && projPath
-          ? `${transcriptDiscovery.getProjectTranscriptDir(projPath)}/${claudeId}.jsonl`
-          : null;
-      const sent = registry.sendRaw(
-        connectionId,
-        createHelloAck('1.0.0', sessionId, {
-          resumeInfo: {
-            isResume: result.replayMessages.length > 0,
-            replayCount: result.replayMessages.length,
-            nextBulletId: result.nextBulletId,
-          },
-          binding: { claudeSessionId: claudeId, transcriptPath: tpath },
-          attachState: result.attachState,
-          daemonVersion: REMI_VERSION,
-        }),
-      );
-      if (!sent) {
-        log(`Promoted connection ${connectionId} is unreachable; detaching`);
-        sessionRegistry.detachConnection(connectionId);
-        return;
-      }
-      if (result.replayMessages.length > 0) {
-        const replaySent = registry.sendRaw(
-          connectionId,
-          createReplayBatch(sessionId, result.replayMessages, true),
+    onQuestionsChanged: (sessionId, questions) => {
+      // Best-effort: a registry-file hiccup here must never take down the
+      // question pipeline itself (the live WS `question`/`question_resolved`
+      // broadcasts already happened before this fires).
+      try {
+        liveSessionsRegistry.setPendingQuestions(
+          sessionId,
+          pendingQuestionCreatedAt.sync(questions),
         );
-        if (!replaySent) {
-          log(`Failed to send replay batch to promoted connection ${connectionId}`);
-        }
+      } catch (err) {
+        logError(`[live-sessions] setPendingQuestions failed: ${errorToString(err)}`);
       }
-      // #753 (#760 review finding 2): a promoted connection was queued
-      // (read-only) while live questions may have arrived — those broadcasts
-      // only reach the active connection, so re-send the pending set now.
-      const resent = resendPendingQuestions(
-        (m) => registry.sendRaw(connectionId, m),
-        sessionId,
-        result.currentQuestions,
-        claudeId ?? undefined,
-      );
-      if (resent > 0) {
-        log(`Re-sent ${resent} pending question(s) to promoted connection ${connectionId}`);
+      // #798: broadcast the authoritative live-question-id set to every
+      // connected client (same fan-out as question_resolved/remi_status).
+      // Backstops the client-side replay gate -- a client that reconnects
+      // into a quiet session gets no new question/resolve event to re-sync
+      // it, so this snapshot is what actually clears a phantom card there.
+      try {
+        registry.broadcast(
+          createQuestionSnapshot(
+            sessionId,
+            questions.map((q) => q.id),
+          ),
+        );
+      } catch (err) {
+        logError(`[QuestionSnapshot] broadcast failed for ${sessionId}: ${errorToString(err)}`);
       }
-      cancelOrphanTimeout();
     },
   },
 );
@@ -1518,14 +1479,16 @@ remiStatusBroadcast = (status) => {
   registry.broadcast(createRemiStatus(primary, status as RemiStatus));
 };
 // #755: attach state pulled from the session registry at flush time — the
-// exclusive PTY slot + FIFO queue, never the blunt connection counter.
+// set of attached connections, never the blunt connection counter. #795:
+// there is no more exclusive slot or FIFO queue, so `queuedCount` is always
+// 0; kept on the wire for older readers of the status bar/file.
 remiAttachState = () => {
   const primary = getPrimarySessionId();
   if (!primary) return { attached: false, queuedCount: 0 };
   const session = sessionRegistry.getSession(primary);
   return {
-    attached: (session?.activeConnectionId ?? null) !== null,
-    queuedCount: sessionRegistry.waitingConnectionCount,
+    attached: (session?.attachedConnections.size ?? 0) > 0,
+    queuedCount: 0,
   };
 };
 
@@ -1560,12 +1523,22 @@ const onQuestionResolved = (
   }
 };
 
-import { resendPendingQuestions } from './cli/handlers/pending-question-resend.ts';
+import { createPtyMessageFanout } from './cli/handlers/pty-message-fanout.ts';
 import { getRecentDirectories } from './cli/recent-client.ts';
 
 const sendToConnection = (connectionId: UUID, message: ProtocolMessage): boolean => {
   return registry.sendRaw(connectionId, message);
 };
+
+// #795: raw_pty_output fans out to every ATTACHED connection (there is no
+// more single exclusive one); every other message type keeps broadcasting to
+// all connections as before. Shared by both daemon-mode and wrapper-mode
+// session creation below.
+const ptyMessageFanout = createPtyMessageFanout({
+  sessionRegistry,
+  sendToConnection,
+  broadcast: (message) => registry.broadcast(message),
+});
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
@@ -1672,7 +1645,12 @@ const hubClientTracker: HubClientTracker | null = serveMode
         sendToConnection(connectionId, message);
       },
       broadcast: (message) => registry.broadcast(message),
-      getSessions: () => liveSessionsRegistry.listLive().length,
+      // #786/#787: the same listLive() read the plain session count used,
+      // now also flattened into the pending-question census.
+      getCensus: () => buildHubQuestionCensus(liveSessionsRegistry.listLive()),
+      // Re-checked on every census build/change-check (#788): a cheap fs
+      // stat, cheap enough to not bother caching across calls.
+      getAutostartState: () => detectAutostartState(process.platform, os.homedir()),
       hubVersion: REMI_VERSION,
     })
   : null;
@@ -2194,15 +2172,7 @@ if (cliDaemonMode) {
 
     // Create the PTY session
     try {
-      await createNewSession(sessionId, workingDirectory, (sid, msg) => {
-        const session = sessionRegistry.getSession(sid);
-        if (session?.activeConnectionId) {
-          sendToConnection(session.activeConnectionId, msg);
-        }
-        if (msg.type !== 'raw_pty_output') {
-          registry.broadcast(msg);
-        }
-      });
+      await createNewSession(sessionId, workingDirectory, ptyMessageFanout);
     } catch (err) {
       const msg = errorToString(err);
       console.error(`Failed to create session: ${msg}`);
@@ -2418,16 +2388,7 @@ if (cliDaemonMode) {
   const ptySession = await createNewSession(
     sessionId,
     workingDirectory,
-    (sid, msg) => {
-      const session = sessionRegistry.getSession(sid);
-      if (session?.activeConnectionId) {
-        sendToConnection(session.activeConnectionId, msg);
-      }
-      // Raw PTY output is high-volume; only send to attached CLI client, not all viewers
-      if (msg.type !== 'raw_pty_output') {
-        registry.broadcast(msg);
-      }
-    },
+    ptyMessageFanout,
     claudeArgs,
     true, // pass-through mode
     reservedRows,
@@ -2471,7 +2432,12 @@ if (cliDaemonMode) {
   function writeToPty(text: string): void {
     if (ptySession.isRunning) {
       try {
-        ptySession.write(text);
+        // write() is queued (#795); the immediate synchronous state check
+        // still throws here, but the actual byte write settles later, so
+        // catch its rejection too.
+        void ptySession.write(text).catch((err) => {
+          log(`[PTY] write failed: ${errorToString(err)}`);
+        });
       } catch (err) {
         log(`[PTY] write failed: ${errorToString(err)}`);
       }
@@ -2638,8 +2604,11 @@ if (cliDaemonMode) {
     if (isWrapperDetached()) return; // No local terminal to forward from
     if (ptySession.isRunning) {
       try {
-        // Send Ctrl+C (0x03) to the PTY
-        ptySession.write('\x03');
+        // Send Ctrl+C (0x03) to the PTY. Queued (#795); catch the deferred
+        // rejection too, not just the immediate synchronous state check.
+        void ptySession.write('\x03').catch(() => {
+          // PTY may have exited
+        });
       } catch {
         // PTY may have exited
       }

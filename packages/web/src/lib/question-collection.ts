@@ -9,6 +9,7 @@
 
 import { MAIN_AGENT_ID } from '@remi/shared';
 import type { AgentStatus, UIQuestion, UIQuestionResolvedReason } from '@/types';
+import { shouldKeepExisting } from './question-merge';
 
 /**
  * How long an answered/resolved card lingers (collapsed) before it is removed
@@ -34,6 +35,41 @@ export interface StatusClearOptions {
 /** Composite map key: a session's prompt, scoped to its agent (main default). */
 export function questionKey(sessionId: string, agentId?: string | undefined): string {
   return `${sessionId}#${agentId ?? MAIN_AGENT_ID}`;
+}
+
+/**
+ * Apply an incoming `question` message to the collection the way `App.tsx`'s
+ * `case 'question'` handler does: insert at the composite key, deferring to
+ * `shouldKeepExisting`'s richer-wins guard (#396) when a card is already
+ * there. A REPLAYED message (`inReplay=true`) is a pure no-op (#798 part 1,
+ * mirrors the terminal client's #753 fix): replayed history is not
+ * trustworthy for pendingness -- `question_resolved` is broadcast-only and
+ * never recorded, so an already-answered question replays indistinguishably
+ * from a pending one, and the daemon re-sends the authoritative live set as
+ * LIVE messages right after the replay batch (pending-question-resend.ts).
+ *
+ * Extracted as the exact insertion logic App.tsx composes at the call site
+ * (rather than only inline there) so the #798 fix is unit-testable
+ * independent of the WebSocket/React plumbing (mirrors the #718 review
+ * precedent for `mapQuestionToUIQuestion`). App.tsx additionally short-
+ * circuits BEFORE calling this on `inReplay`, so a replayed message never
+ * touches its `lastQuestionIdRef` dedup ref either -- poisoning that ref
+ * with a replayed id would dedupe away the live resend of the SAME id that
+ * immediately follows the replay batch. Returns the SAME reference when the
+ * message is skipped (replay) or a richer existing card wins.
+ */
+export function applyIncomingQuestion(
+  questions: Map<string, UIQuestion>,
+  uiQuestion: UIQuestion,
+  inReplay: boolean,
+): Map<string, UIQuestion> {
+  if (inReplay) return questions;
+  const key = questionKey(uiQuestion.sessionId, uiQuestion.agentId);
+  const existing = questions.get(key);
+  if (existing && shouldKeepExisting(existing, uiQuestion)) return questions;
+  const next = new Map(questions);
+  next.set(key, uiQuestion);
+  return next;
 }
 
 /** All pending questions belonging to a session, in insertion order. */
@@ -224,4 +260,44 @@ export function resolveQuestionCard(
 /** Whether a card is still awaiting the user (drives the session's pending badge). */
 export function isQuestionPending(q: UIQuestion): boolean {
   return q.answeredWith == null && q.resolvedReason == null;
+}
+
+/**
+ * Whether a card must be PROTECTED from live-question-snapshot pruning (#798
+ * parts 2/3) even though its id is absent from the snapshot. Mirrors the
+ * #652/#653 invariants `resolveQuestionCard` already applies to a
+ * `question_resolved` broadcast: a card the user is actively submitting (#627
+ * AUQ/cancel in flight) or one already flipped to a resolved/answered trace
+ * owns its own removal timer, so a snapshot racing ahead of the matching
+ * resolve broadcast must not rip it out early.
+ */
+function isProtectedFromPruning(q: UIQuestion): boolean {
+  return q.submitting === true || q.answeredWith != null || q.resolvedReason != null;
+}
+
+/**
+ * Reconcile a session's cards against the daemon's authoritative live-question
+ * id set (#798 parts 2/3, the replay-gate backstop): drop any unprotected card
+ * for `sessionId` whose id is not in `liveQuestionIds` (see
+ * `isProtectedFromPruning`). Sourced from either the `question_snapshot`
+ * broadcast (fired on every `SessionRegistry.onQuestionsChanged` add/remove/
+ * clear) or a `STALE_ANSWER` error's `pendingQuestionIds` — both carry the same
+ * shape (the full live id set for a session), so one function serves both call
+ * sites. Returns the SAME reference when nothing was pruned (no-op update).
+ */
+export function pruneQuestionsNotLive(
+  questions: Map<string, UIQuestion>,
+  sessionId: string,
+  liveQuestionIds: readonly string[],
+): Map<string, UIQuestion> {
+  const liveIds = new Set(liveQuestionIds);
+  let next: Map<string, UIQuestion> | undefined;
+  for (const [key, q] of questions) {
+    if (q.sessionId !== sessionId) continue;
+    if (liveIds.has(q.id)) continue;
+    if (isProtectedFromPruning(q)) continue;
+    if (!next) next = new Map(questions);
+    next.delete(key);
+  }
+  return next ?? questions;
 }

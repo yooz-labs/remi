@@ -131,7 +131,7 @@ describe('createConnectionHandlers', () => {
       expect(msg.sessionId).toBe(sessionId);
       // Every connection-time ack path stamps the binary version (#539).
       expect(msg.daemonVersion).toBe('9.9.9-test');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
     });
 
     test('auto-attaches and sends helloAck when a primary session exists (non-query)', async () => {
@@ -147,7 +147,7 @@ describe('createConnectionHandlers', () => {
       expect(sendCalls).toHaveLength(1);
       const msg = sendCalls[0]?.message as { type: string };
       expect(msg.type).toBe('hello_ack');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
       expect(cancelOrphanCalls).toBe(1);
     });
 
@@ -191,7 +191,7 @@ describe('createConnectionHandlers', () => {
       expect(queryAck.type).toBe('hello_ack');
       // The query-mode/no-attach ack path also stamps the version (#539).
       expect(queryAck.daemonVersion).toBe('9.9.9-test');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.size).toBe(0);
       expect(cancelOrphanCalls).toBe(0);
     });
 
@@ -213,7 +213,7 @@ describe('createConnectionHandlers', () => {
       expect(msg.type).toBe('error');
       expect(msg.code).toBe('SESSION_NOT_FOUND');
       // Attach should NOT have happened.
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.size).toBe(0);
     });
 
     test('attaches when resumeSessionId matches the primary session', async () => {
@@ -231,7 +231,7 @@ describe('createConnectionHandlers', () => {
       const msg = sendCalls[0]?.message as { type: string; sessionId?: UUID };
       expect(msg.type).toBe('hello_ack');
       expect(msg.sessionId).toBe(sessionId);
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
       expect(cancelOrphanCalls).toBe(1);
     });
 
@@ -315,36 +315,42 @@ describe('createConnectionHandlers', () => {
       expect(sendCalls[sendCalls.length - 1]?.message.type).toBe('question');
     });
 
-    test('second concurrent connection is queued and still receives helloAck + replay', async () => {
+    test('second concurrent connection also attaches (not queued) and receives helloAck + replay (#795)', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI(2));
       setPrimarySessionId(sessionId);
 
-      // First connection takes the active slot.
+      // First connection attaches.
       const firstConn = generateId();
       sessionRegistry.attachConnection(sessionId, firstConn);
       const recorded: ProtocolMessage = { type: 'ping', id: generateId(), timestamp: now() };
       sessionRegistry.recordOutgoingMessage(sessionId, recorded);
 
-      // Second connection arrives while the first is still active.
+      // Second connection arrives while the first is still attached.
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
         platformData: { kind: 'websocket' },
       });
 
-      // Active connection is still the first; CID is queued.
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
-      expect(sessionRegistry.waitingConnectionCount).toBe(1);
+      // Both connections are attached -- no exclusivity, no queue.
+      const session = sessionRegistry.getSession(sessionId);
+      expect(session?.attachedConnections.has(firstConn)).toBe(true);
+      expect(session?.attachedConnections.has(CID)).toBe(true);
+      expect(session?.attachedConnections.size).toBe(2);
+      // CID can read AND write immediately.
+      expect(sessionRegistry.getSessionForConnection(CID)?.sessionId).toBe(sessionId);
 
-      // Queued client still gets helloAck + replay so it can render history.
+      // The second connection still gets helloAck + replay so it can render
+      // history, exactly as before -- only the write-exclusivity is gone.
       expect(sendCalls).toHaveLength(2);
       const ack = sendCalls[0]?.message as {
         type: string;
         isResume?: boolean;
         replayCount?: number;
+        attachState?: string;
       };
       expect(ack.type).toBe('hello_ack');
-      expect(ack.isResume).toBe(true);
+      expect(ack.attachState).toBe('attached');
       expect(ack.replayCount).toBe(1);
 
       const replay = sendCalls[1]?.message as {
@@ -355,7 +361,7 @@ describe('createConnectionHandlers', () => {
       expect(replay.messages?.length).toBe(1);
     });
 
-    test('query-mode connection does not displace an existing active connection', async () => {
+    test('query-mode connection does not attach at all', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
       setPrimarySessionId(sessionId);
@@ -368,10 +374,12 @@ describe('createConnectionHandlers', () => {
         platformData: { kind: 'websocket', mode: 'query' },
       });
 
-      // Active connection stays; query-mode client did not grab the slot or
-      // queue (utility clients ls/kill should not contend for write access).
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
-      expect(sessionRegistry.waitingConnectionCount).toBe(0);
+      // The attached connection stays; query-mode client (ls/kill) does not
+      // attach at all -- it never contends for a slot because there is none.
+      const session = sessionRegistry.getSession(sessionId);
+      expect(session?.attachedConnections.has(firstConn)).toBe(true);
+      expect(session?.attachedConnections.has(CID)).toBe(false);
+      expect(session?.attachedConnections.size).toBe(1);
       expect(sendCalls).toHaveLength(1);
       const ack = sendCalls[0]?.message as { type: string; isResume?: boolean };
       expect(ack.type).toBe('hello_ack');
@@ -392,7 +400,7 @@ describe('createConnectionHandlers', () => {
 
       expect(sendCalls).toHaveLength(1);
       expect((sendCalls[0]?.message as { type: string }).type).toBe('hello_ack');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
     });
 
     test('tracks the connection on the AdapterRegistry before any branch decision', async () => {
@@ -405,14 +413,14 @@ describe('createConnectionHandlers', () => {
       expect(connectionAddedCount).toBe(1);
     });
 
-    test('helloAck reports attachState "attached" for a fresh attach (#662)', async () => {
+    test('helloAck reports attachState "attached" for a fresh attach', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
       setPrimarySessionId(sessionId);
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: { kind: 'websocket', deviceId: 'device-A' },
+        platformData: { kind: 'websocket' },
       });
 
       const ack = sendCalls[0]?.message as { type: string; attachState?: string };
@@ -420,112 +428,25 @@ describe('createConnectionHandlers', () => {
       expect(ack.attachState).toBe('attached');
     });
 
-    test('helloAck reports attachState "queued" for a second connection without a matching deviceId (#662)', async () => {
+    test('helloAck reports attachState "attached" for a SECOND connection too (#795: no more queued state)', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
       setPrimarySessionId(sessionId);
 
       const firstConn = generateId();
-      sessionRegistry.attachConnection(sessionId, firstConn, 'device-A');
+      sessionRegistry.attachConnection(sessionId, firstConn);
 
       await makeHandlers().onConnect(CID, {
         adapterType: 'websocket',
-        platformData: { kind: 'websocket', deviceId: 'device-B' },
-      });
-
-      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
-      expect(ack.type).toBe('hello_ack');
-      expect(ack.attachState).toBe('queued');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(firstConn);
-    });
-
-    test('same deviceId reclaims the lock instead of queuing behind its own stale connection (#662)', async () => {
-      const sessionId = sessionRegistry.createSessionId();
-      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
-      setPrimarySessionId(sessionId);
-
-      // First connection from this device takes the active slot.
-      const staleConn = generateId();
-      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A');
-
-      // Same device reconnects (e.g. after a dead-socket blip) as a new
-      // connection carrying the SAME deviceId.
-      await makeHandlers().onConnect(CID, {
-        adapterType: 'websocket',
-        platformData: { kind: 'websocket', deviceId: 'device-A' },
+        platformData: { kind: 'websocket' },
       });
 
       const ack = sendCalls[0]?.message as { type: string; attachState?: string };
       expect(ack.type).toBe('hello_ack');
       expect(ack.attachState).toBe('attached');
-      // The lock moved to the new connection; nothing is queued.
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
-      expect(sessionRegistry.waitingConnectionCount).toBe(0);
-      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
-    });
-
-    test('same deviceId + matching clientFingerprint reclaims (#671, auth on)', async () => {
-      const sessionId = sessionRegistry.createSessionId();
-      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
-      setPrimarySessionId(sessionId);
-
-      const staleConn = generateId();
-      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A', 'fp-alice');
-
-      await makeHandlers().onConnect(CID, {
-        adapterType: 'websocket',
-        platformData: { kind: 'websocket', deviceId: 'device-A', clientFingerprint: 'fp-alice' },
-      });
-
-      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
-      expect(ack.attachState).toBe('attached');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
-      expect(sessionRegistry.waitingConnectionCount).toBe(0);
-      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
-    });
-
-    test('same deviceId + DIFFERENT clientFingerprint is refused: queues, does not evict (#671)', async () => {
-      const sessionId = sessionRegistry.createSessionId();
-      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
-      setPrimarySessionId(sessionId);
-
-      // Legitimate device holds the lock after authenticating.
-      const activeConn = generateId();
-      sessionRegistry.attachConnection(sessionId, activeConn, 'device-A', 'fp-alice');
-
-      // A different authenticated peer replays the same deviceId but cannot
-      // produce the matching fingerprint (it authenticated with its OWN key).
-      await makeHandlers().onConnect(CID, {
-        adapterType: 'websocket',
-        platformData: { kind: 'websocket', deviceId: 'device-A', clientFingerprint: 'fp-mallory' },
-      });
-
-      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
-      expect(ack.attachState).toBe('queued');
-      // Legitimate device keeps the lock; nothing was evicted.
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(activeConn);
-      expect(sessionRegistry.getSessionForConnection(activeConn)?.sessionId).toBe(sessionId);
-    });
-
-    test('same deviceId with no clientFingerprint on either side still reclaims (#671, auth off)', async () => {
-      const sessionId = sessionRegistry.createSessionId();
-      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
-      setPrimarySessionId(sessionId);
-
-      // Localhost daemon / loopback-exempt peer: no authenticator, so no
-      // clientFingerprint is ever produced on either side.
-      const staleConn = generateId();
-      sessionRegistry.attachConnection(sessionId, staleConn, 'device-A');
-
-      await makeHandlers().onConnect(CID, {
-        adapterType: 'websocket',
-        platformData: { kind: 'websocket', deviceId: 'device-A' },
-      });
-
-      const ack = sendCalls[0]?.message as { type: string; attachState?: string };
-      expect(ack.attachState).toBe('attached');
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBe(CID);
-      expect(sessionRegistry.getSessionForConnection(staleConn)).toBeUndefined();
+      const session = sessionRegistry.getSession(sessionId);
+      expect(session?.attachedConnections.has(firstConn)).toBe(true);
+      expect(session?.attachedConnections.has(CID)).toBe(true);
     });
   });
 
@@ -539,7 +460,22 @@ describe('createConnectionHandlers', () => {
 
       expect(untrackedConnections).toEqual([CID]);
       expect(connectionRemovedCount).toBe(1);
-      expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).toBeNull();
+      expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(false);
+    });
+
+    test('detaching one of two attached connections leaves the other attached (#795)', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      const otherConn = generateId();
+      sessionRegistry.attachConnection(sessionId, otherConn);
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      await makeHandlers().onDisconnect(CID, 'client closed');
+
+      const session = sessionRegistry.getSession(sessionId);
+      expect(session?.attachedConnections.has(CID)).toBe(false);
+      expect(session?.attachedConnections.has(otherConn)).toBe(true);
+      expect(sessionRegistry.getSessionForConnection(otherConn)?.sessionId).toBe(sessionId);
     });
 
     test('does not reach into deviceTokens on disconnect (regression #286)', async () => {
@@ -591,7 +527,8 @@ describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
           sent.push({ connectionId, message });
         },
         broadcast: (message) => broadcasts.push(message),
-        getSessions: () => 0,
+        getCensus: () => ({ sessions: 0, questions: [] }),
+        getAutostartState: () => 'none',
         hubVersion: '9.9.9-test',
       });
       const handlers = createConnectionHandlers({

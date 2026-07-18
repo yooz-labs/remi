@@ -268,9 +268,11 @@ export function createPtySessionForSession(
           }
         }
 
-        // Forward raw PTY bytes to the actively attached CLI client (if any).
+        // Forward raw PTY bytes when at least one connection is attached
+        // (#795: fanned out to ALL attached connections downstream, not just
+        // a single exclusive one — see the sendMessage wiring in cli.ts).
         const session = sessionRegistry.getSession(sessionId);
-        if (session?.activeConnectionId) {
+        if (session && session.attachedConnections.size > 0) {
           const base64Data = Buffer.from(data).toString('base64');
           sendMessage(sessionId, createRawPtyOutput(base64Data, sessionId));
         }

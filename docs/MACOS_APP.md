@@ -8,8 +8,15 @@ connections, and a window hosting the full Remi web UI. Part of epic #648.
 menu bar:  [r]  idle (thin outline)      no clients connected
            [r]  bold "r"                 local client attached
            [■]  filled, "r" knocked out  remote client(s) connected
+           [■]  filled, "r" knocked out  a question is pending (needs you!)
            [r]  dimmed                   hub not running
 ```
+
+The needs-attention state (#786/#787) reuses the remote-connected glyph —
+"the icon just inverts" — and takes precedence over every other reachable
+state: a pending question on ANY session outranks remote/local client
+presence, second only to the hub being unreachable at all (see
+"Notifications" below).
 
 ## Relationship to the hub
 
@@ -44,22 +51,66 @@ network-client capability only. It **cannot**:
   session. Before the app has ever found a hub, the main window shows an
   onboarding panel (#773) walking through installing `remi`, starting the
   hub, and setting up its login item, each with a one-click Copy button for
-  the terminal command. The Settings scene (⌘,) repeats the login-item
-  command alongside the current hub status for later reference.
+  the terminal command.
 - **Stop the hub.** "Quit Remi" quits the app; the hub and every session it
   supervises keep running. Stop the hub with `remi stop` (running session
   daemons keep serving even then). A protocol-level stop from the app is
   tracked in #747, blocked on #535.
 - Read `~/.remi` or signal processes. Everything it knows arrives over the
-  loopback WebSocket.
+  loopback WebSocket — including, since #788, whether `remi --install`'s
+  LaunchAgent is actually on disk: the hub self-reports its own autostart
+  state (`"installed"` / `"none"`) as an optional field on the `hub_status`
+  census, because the sandboxed app has no other way to know.
 
-## Lifecycle (#651)
+## Notifications (#786)
+
+When a question is pending on any session, the app posts a native macOS
+notification ("Claude needs you") — the same "push" experience iOS gets via
+APNS, delivered locally with no relay. Both the notification and the
+needs-attention icon state read the same data source: the hub's
+`hub_status.questions` census, which the daemon builds by mirroring each
+session's pending questions into its `~/.remi/live-sessions/<id>.json` entry
+(so the hub never has to talk to a session daemon's own connection).
+
+- `NotificationManager` (`Remi/NotificationManager.swift`) requests
+  `UNUserNotificationCenter` authorization lazily, the first time a question
+  actually needs posting — not at launch.
+- Notifications are keyed by question id: a reconnect or a repeated
+  `hub_status` broadcast for a still-pending question never re-alerts.
+- Answered anywhere (terminal, phone, web) clears it: the next census drops
+  the id, and the app withdraws that notification (delivered or still
+  pending).
+- A transient hub disconnect does NOT clear notifications or the menu's
+  "N questions waiting" line — those only refresh from a real `hub_status`
+  frame after reconnecting, so a missed pong or a brief network blip can't
+  make a still-pending question look resolved.
+- Clicking a notification activates the app and opens the main window, same
+  as the "Open Remi" menu item.
+- The pure new-vs-seen diff (`NotificationDiff.diff`) is unit-tested without
+  touching `UNUserNotificationCenter` at all (`RemiTests/NotificationDiffTests.swift`).
+
+## Lifecycle (#651, Dock presence #785)
 
 - Closing the window hides the UI; the menu-bar item and your hub stay up.
-- There is no Dock icon (accessory app); the menu-bar "r" is the app.
+- The app launches as an accessory (no Dock icon, no Cmd-Tab entry) and
+  stays that way whenever no app window is open — the menu-bar "r" is the
+  app. When a window (the main web-UI window or Settings) becomes key, the
+  app promotes itself to a regular app so it shows in the Dock and Cmd-Tab
+  like anything else; when the last such window closes, it drops back to
+  accessory. `ActivationPolicy.derive` is the pure window-count -> policy
+  decision (`ActivationPolicy.swift`); `AppDelegate` wires
+  `NSWindow.didBecomeKeyNotification`/`willCloseNotification` to it, plus
+  one manual sync right after registering (launch-ordering race).
 - "Open Remi at Login" registers the APP as a login item (SMAppService).
   This is independent of the HUB's autostart — the LaunchAgent from
   `remi --install`. For the full always-on setup, enable both.
+- The Settings scene's Hub section is state-aware on the hub's reported
+  autostart (#788): `"installed"` shows a plain confirmation line (no
+  command needed); `"none"` shows a warning that remote access won't
+  survive a logout/reboot, plus the `remi --install` command row to fix it;
+  a hub too old to report the field (nil) falls back to today's neutral
+  command row. The menu-bar dropdown adds a "Hub autostart not set up…"
+  item — opening Settings — whenever a connected hub confirms `"none"`.
 - The main window never tears down its WKWebView once a hub has ever been
   seen (see "Relationship to the hub" above) — only the true first-run,
   never-connected case shows the onboarding panel instead.

@@ -19,6 +19,19 @@ import { isProcessAlive } from './process-alive.ts';
 const REMI_DIR = path.join(os.homedir(), '.remi');
 const LIVE_SESSIONS_DIR = path.join(REMI_DIR, 'live-sessions');
 
+/**
+ * One unanswered question surfaced in the live-sessions registry mirror
+ * (#786/#787): the hub census reads this straight off disk to build the
+ * `hub_status.questions` list, without needing to talk to the owning session
+ * daemon. `label` is a short human string, e.g. "Permission: Bash" or a
+ * truncated free-text question (see `buildPendingQuestionLabel`).
+ */
+export interface PendingQuestionEntry {
+  readonly id: string;
+  readonly label: string;
+  readonly createdAt: string;
+}
+
 /** A live session entry written by each remi wrapper process. */
 export interface LiveSessionEntry {
   readonly sessionId: string;
@@ -48,6 +61,16 @@ export interface LiveSessionEntry {
    * installed binary to flag stale daemons.
    */
   readonly version?: string;
+  /**
+   * Unanswered questions currently pending on this session (#786/#787),
+   * mirroring `SessionRegistry`'s in-memory `currentQuestions` so the hub
+   * (which never talks to a session daemon's own connection) can build its
+   * `hub_status` census straight off the registry file. Kept in sync by
+   * `setPendingQuestions` on every add/resolve/clear via `SessionRegistry`'s
+   * `onQuestionsChanged` event. Absent on legacy entries and pre-#786
+   * daemons; both cases mean "unknown", not "definitely none".
+   */
+  readonly pendingQuestions?: readonly PendingQuestionEntry[];
 }
 
 /**
@@ -68,6 +91,18 @@ export function claudeChildLooksAlive(entry: LiveSessionEntry): boolean {
 export const DEFAULT_BASE_PORT = DAEMON_BASE_PORT;
 export const DEFAULT_PORT_RANGE = DAEMON_PORT_RANGE;
 
+/** Type guard for a single `PendingQuestionEntry` after JSON.parse. */
+function isValidPendingQuestionEntry(data: unknown): data is PendingQuestionEntry {
+  if (typeof data !== 'object' || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  return (
+    typeof obj['id'] === 'string' &&
+    obj['id'].length > 0 &&
+    typeof obj['label'] === 'string' &&
+    typeof obj['createdAt'] === 'string'
+  );
+}
+
 /** Type guard for LiveSessionEntry after JSON.parse. */
 function isValidEntry(data: unknown): data is LiveSessionEntry {
   if (typeof data !== 'object' || data === null) return false;
@@ -78,6 +113,10 @@ function isValidEntry(data: unknown): data is LiveSessionEntry {
     (typeof childPid === 'number' && Number.isInteger(childPid) && childPid > 0);
   const childExited = obj['claudeChildExited'];
   const childExitedOk = childExited === undefined || typeof childExited === 'boolean';
+  const pendingQuestions = obj['pendingQuestions'];
+  const pendingQuestionsOk =
+    pendingQuestions === undefined ||
+    (Array.isArray(pendingQuestions) && pendingQuestions.every(isValidPendingQuestionEntry));
   return (
     typeof obj['sessionId'] === 'string' &&
     obj['sessionId'].length > 0 &&
@@ -87,7 +126,8 @@ function isValidEntry(data: unknown): data is LiveSessionEntry {
     obj['wsPort'] > 0 &&
     obj['wsPort'] <= 65535 &&
     childPidOk &&
-    childExitedOk
+    childExitedOk &&
+    pendingQuestionsOk
   );
 }
 
@@ -184,6 +224,18 @@ export class SessionRegistryFile {
    */
   markClaudeChildExited(sessionId: string): void {
     this.patchEntry(sessionId, { claudeChildExited: true });
+  }
+
+  /**
+   * Replace the pending-questions mirror for a session (#786/#787). Called
+   * from the daemon's `SessionRegistry.onQuestionsChanged` event, which
+   * fires with the FULL current question set on every add/resolve/clear —
+   * so this always overwrites rather than merges, keeping the file an exact
+   * mirror of `SessionRegistry`'s in-memory `currentQuestions` regardless of
+   * which lifecycle path (hook, PTY-parsed, terminal, push, web) changed it.
+   */
+  setPendingQuestions(sessionId: string, pendingQuestions: readonly PendingQuestionEntry[]): void {
+    this.patchEntry(sessionId, { pendingQuestions });
   }
 
   /**

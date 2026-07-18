@@ -38,12 +38,23 @@ final class HubClientIntegrationTests: XCTestCase {
     }
 
     /// Spawns a real hub (session-less `serve`) on `port` with an isolated
-    /// $HOME, stored on `process`/`homeDir` for tearDown to clean up.
-    private func spawnHub(binary: String, port: Int) throws {
+    /// $HOME, stored on `process`/`homeDir` for tearDown to clean up. When
+    /// `withAutostartInstalled` is set, pre-creates the exact LaunchAgent
+    /// artifact `remi --install` would have written (#788) — no
+    /// launchctl/systemctl involved, just the fs marker the hub checks for.
+    private func spawnHub(binary: String, port: Int, withAutostartInstalled: Bool = false) throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("remi-macos-it-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         homeDir = home
+
+        if withAutostartInstalled {
+            let launchAgentsDir = home.appendingPathComponent("Library/LaunchAgents")
+            try FileManager.default.createDirectory(
+                at: launchAgentsDir, withIntermediateDirectories: true)
+            let plist = launchAgentsDir.appendingPathComponent("com.yooz.remi.plist")
+            try "<plist/>".write(to: plist, atomically: true, encoding: .utf8)
+        }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binary)
@@ -101,6 +112,9 @@ final class HubClientIntegrationTests: XCTestCase {
             if envelope.type == "hub_status" {
                 let status = try JSONDecoder().decode(HubStatusFrame.self, from: data)
                 XCTAssertEqual(status.localClients, 0)  // query client never counts
+                // #788: the isolated $HOME this test spawns the hub with
+                // never had `remi --install` run against it.
+                XCTAssertEqual(status.autostart, "none")
                 sawHubStatus = true
             }
             if sawHubAck && sawHubStatus { break }
@@ -130,20 +144,45 @@ final class HubClientIntegrationTests: XCTestCase {
         // query-mode client never counts itself.
         var censusSeen = false
         for _ in 0..<20 {
-            let (sessions, local, version) = await MainActor.run {
-                (client.sessions, client.localClients, client.hubVersion)
+            let (sessions, local, version, autostart) = await MainActor.run {
+                (client.sessions, client.localClients, client.hubVersion, client.autostart)
             }
             if version != nil {
                 XCTAssertEqual(sessions, 0)
                 XCTAssertEqual(local, 0)
+                // #788: fresh isolated $HOME, never `remi --install`ed.
+                XCTAssertEqual(autostart, "none")
                 censusSeen = true
                 break
             }
             try await Task.sleep(nanoseconds: 250_000_000)
         }
         XCTAssertTrue(censusSeen, "hub_status never reached the published state")
+        let autostartMissing = await MainActor.run { client.autostartMissing }
+        XCTAssertTrue(autostartMissing, "autostartMissing should be true for an uninstalled hub")
         let statusLine = await MainActor.run { client.menuStatusLine }
         XCTAssertTrue(statusLine.contains("running on \(port)"), statusLine)
+    }
+
+    /// #788: a hub whose $HOME already carries the LaunchAgent artifact
+    /// (as if `remi --install` had run) reports "installed", and
+    /// autostartMissing reads false — no false warning.
+    func testHubWithAutostartInstalledReportsInstalled() async throws {
+        let binary = try requireBinary()
+        let port = 18784
+        try spawnHub(binary: binary, port: port, withAutostartInstalled: true)
+
+        let client = await MainActor.run { HubClient(scanPorts: [port]) }
+        await MainActor.run { client.start() }
+        var autostart: String?
+        for _ in 0..<60 {  // up to ~15 s
+            autostart = await MainActor.run { client.autostart }
+            if autostart != nil { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertEqual(autostart, "installed")
+        let autostartMissing = await MainActor.run { client.autostartMissing }
+        XCTAssertFalse(autostartMissing, "autostartMissing must be false once installed")
     }
 
     /// #773: the onboarding panel's "Check Again" button calls rescanNow();

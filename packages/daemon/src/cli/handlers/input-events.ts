@@ -624,31 +624,37 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
       const session = sessionRegistry.getSessionForConnection(connectionId);
       if (!session) {
-        // #662: this connection does not hold the exclusive write lock —
-        // either it's read-only (queued behind the active connection: a
-        // second client, or this same client's new connection racing the
-        // pong-reaper's eviction of its own stale one) or the session no
-        // longer exists. Previously this dropped the input with only a
-        // server-side log line, so the sender's UI showed the message as
-        // "sent" while it silently vanished. Surface it as an error instead.
+        // #795: there is no more exclusive write lock, so every attached
+        // (non-query) connection already finds its session above. Landing
+        // here now only means this connectionId was never attached at all —
+        // a query-mode client (ls/kill) sending input it should not, or a
+        // connection that already explicitly detached. New daemons no longer
+        // emit NOT_ACTIVE_CONNECTION (kept only so a newer client still
+        // understands an OLDER daemon that still queues); SESSION_NOT_FOUND
+        // covers both "session missing" and "this connection isn't attached
+        // to it" since from this connection's perspective there is no
+        // session to write to either way. Previously this dropped the input
+        // with only a server-side log line, so the sender's UI showed the
+        // message as "sent" while it silently vanished; still surface an
+        // error instead.
         const sessionExists = sessionRegistry.getSession(sessionId) !== undefined;
         log(
-          `No session found for connection ${connectionId} (session ${sessionExists ? 'exists but this connection is not active' : 'not found'})`,
+          `No session found for connection ${connectionId} (session ${sessionExists ? 'exists but this connection is not attached' : 'not found'})`,
         );
         send(
           connectionId,
-          sessionExists
-            ? createError(
-                'NOT_ACTIVE_CONNECTION',
-                'This connection is read-only (another connection holds the session); input was not delivered.',
-                // #681: carry the rejected input's own message id so the client
-                // can flip that SPECIFIC bubble to 'failed' -- the daemon acks
-                // user_input unconditionally before this check runs (connection.ts
-                // handleUserInput), so the sender otherwise sees a false
-                // "delivered" with only the read-only banner as a signal.
-                { sessionId, ...(messageId !== undefined && { messageId }) },
-              )
-            : createError('SESSION_NOT_FOUND', `Session ${sessionId} not found on this daemon`),
+          createError(
+            'SESSION_NOT_FOUND',
+            sessionExists
+              ? `This connection is not attached to session ${sessionId}; input was not delivered.`
+              : `Session ${sessionId} not found on this daemon`,
+            // #681: carry the rejected input's own message id so the client
+            // can flip that SPECIFIC bubble to 'failed' -- the daemon acks
+            // user_input unconditionally before this check runs (connection.ts
+            // handleUserInput), so the sender otherwise sees a false
+            // "delivered" with only silence as a signal.
+            { sessionId, ...(messageId !== undefined && { messageId }) },
+          ),
         );
         return;
       }
@@ -658,9 +664,12 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       }
 
       if (raw) {
-        // Raw terminal input from attach client: write directly without Enter
+        // Raw terminal input from attach client: write directly without
+        // Enter. Awaited (#795) so it queues onto the same per-session write
+        // chain as submitInput() and a failure from a queued write is still
+        // caught here.
         try {
-          session.pty.write(content);
+          await session.pty.write(content);
         } catch (err) {
           log(`[PTY] raw write failed: ${errorToString(err)}`);
         }

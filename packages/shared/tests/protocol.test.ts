@@ -17,10 +17,12 @@ import {
   createError,
   createHello,
   createHelloAck,
+  createHubStatus,
   createPing,
   createPong,
   createQuestion,
   createQuestionResolved,
+  createQuestionSnapshot,
   createRemiStatus,
   createReplayBatch,
   createResumeSessionRequest,
@@ -39,7 +41,7 @@ import {
   now,
   serialize,
 } from '../src/protocol.ts';
-import type { AgentOutputMessage, HelloMessage } from '../src/protocol.ts';
+import type { AgentOutputMessage, HelloMessage, HubStatusMessage } from '../src/protocol.ts';
 import type { Acknowledgment, Message, Question, StructuredMessage } from '../src/types.ts';
 
 describe('generateId()', () => {
@@ -410,6 +412,39 @@ describe('createQuestionResolved() (#585 P7)', () => {
   });
 });
 
+describe('createQuestionSnapshot() (#798)', () => {
+  test('builds a well-formed question_snapshot message', () => {
+    const sessionId = generateId();
+    const q1 = generateId();
+    const q2 = generateId();
+    const msg = createQuestionSnapshot(sessionId, [q1, q2]);
+    expect(msg.type).toBe('question_snapshot');
+    expect(msg.sessionId).toBe(sessionId);
+    expect(msg.questionIds).toEqual([q1, q2]);
+    expect(typeof msg.id).toBe('string');
+    expect(typeof msg.timestamp).toBe('string');
+  });
+
+  test('round-trips through serialize/deserialize, including an empty set', () => {
+    const sessionId = generateId();
+    const original = createQuestionSnapshot(sessionId, []);
+    const parsed = deserialize(serialize(original));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.type).toBe('question_snapshot');
+    if (parsed?.type === 'question_snapshot') {
+      expect(parsed.sessionId).toBe(sessionId);
+      expect(parsed.questionIds).toEqual([]);
+    }
+  });
+
+  test('copies questionIds: later mutation of the source array does not leak into the message', () => {
+    const ids = [generateId(), generateId()];
+    const msg = createQuestionSnapshot(generateId(), ids);
+    ids.push(generateId());
+    expect(msg.questionIds).toHaveLength(2);
+  });
+});
+
 describe('createRemiStatus() (#754)', () => {
   function mkRemiStatus() {
     return {
@@ -448,6 +483,68 @@ describe('createRemiStatus() (#754)', () => {
     status.autoApprove.inFlight = 5;
     expect(msg.status.attached).toBe(true);
     expect(msg.status.autoApprove.inFlight).toBe(0);
+  });
+});
+
+describe('createHubStatus() (#650, #786/#787)', () => {
+  test('builds a well-formed hub_status message with the base counts only', () => {
+    const msg = createHubStatus({
+      localClients: 1,
+      remoteClients: 2,
+      sessions: 3,
+      hubVersion: '9.9.9-test',
+    });
+    expect(msg.type).toBe('hub_status');
+    expect(msg.localClients).toBe(1);
+    expect(msg.remoteClients).toBe(2);
+    expect(msg.sessions).toBe(3);
+    expect(msg.hubVersion).toBe('9.9.9-test');
+    // Optional fields are genuinely absent, not present-but-undefined, so a
+    // pre-#786 client's isValidMessage (type-only check) sees a frame that
+    // looks exactly like it always has.
+    expect('pendingQuestions' in msg).toBe(false);
+    expect('questions' in msg).toBe(false);
+  });
+
+  test('carries pendingQuestions + questions when provided, and round-trips', () => {
+    const questions = [
+      {
+        id: generateId(),
+        sessionId: generateId(),
+        sessionName: 'host:project/main',
+        label: 'Permission: Bash',
+        createdAt: now(),
+      },
+    ];
+    const msg = createHubStatus({
+      localClients: 0,
+      remoteClients: 0,
+      sessions: 1,
+      hubVersion: '9.9.9-test',
+      pendingQuestions: 1,
+      questions,
+    });
+    expect(msg.pendingQuestions).toBe(1);
+    expect(msg.questions).toEqual(questions);
+
+    const parsed = deserialize(serialize(msg));
+    expect(parsed?.type).toBe('hub_status');
+    const status = parsed as HubStatusMessage;
+    expect(status.pendingQuestions).toBe(1);
+    expect(status.questions).toEqual(questions);
+  });
+
+  test('pendingQuestions: 0 is preserved, not dropped as falsy', () => {
+    const msg = createHubStatus({
+      localClients: 0,
+      remoteClients: 0,
+      sessions: 0,
+      hubVersion: '9.9.9-test',
+      pendingQuestions: 0,
+      questions: [],
+    });
+    expect(msg.pendingQuestions).toBe(0);
+    expect(msg.questions).toEqual([]);
   });
 });
 

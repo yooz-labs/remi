@@ -2,7 +2,9 @@
  * sharedEvents handlers for connection lifecycle:
  *   onConnect    - tracks a new connection, sends helloAck (optionally with
  *                  replay), and auto-attaches to the primary session unless
- *                  the client declared query mode
+ *                  the client declared query mode. Any non-query connection
+ *                  that attaches can read AND write (#795) — there is no
+ *                  more exclusive write lock or FIFO queue to land in.
  *   onDisconnect - detaches from the session registry, untracks on the
  *                  AdapterRegistry, and decrements the StatusWriter
  *                  connection count. Device tokens deliberately persist:
@@ -86,23 +88,13 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
 
-      // resumeSessionId, mode, deviceId, and clientFingerprint are only
-      // carried by the websocket adapter. Telegram and relay clients have no
-      // equivalent (their adapter selects session ownership differently).
+      // resumeSessionId and mode are only carried by the websocket adapter.
+      // Telegram and relay clients have no equivalent (their adapter selects
+      // session ownership differently).
       const platformData = metadata.platformData;
       const resumeSessionId =
         platformData?.kind === 'websocket'
           ? (platformData.resumeSessionId ?? undefined)
-          : undefined;
-      const deviceId =
-        platformData?.kind === 'websocket' ? (platformData.deviceId ?? undefined) : undefined;
-      // Authenticated identity bound to deviceId (#671); undefined when this
-      // connection has no authenticated identity (auth disabled, or a
-      // loopback-exempt peer) — attachConnection then falls back to
-      // deviceId-only reclaim matching.
-      const clientFingerprint =
-        platformData?.kind === 'websocket'
-          ? (platformData.clientFingerprint ?? undefined)
           : undefined;
       const currentPrimary = getPrimarySessionId();
 
@@ -125,12 +117,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       if (currentPrimary) {
         // Only auto-attach if the client wants to attach, not a utility client like ls/kill.
         if (!isQueryMode) {
-          const result = sessionRegistry.attachConnection(
-            currentPrimary,
-            connectionId,
-            deviceId,
-            clientFingerprint,
-          );
+          const result = sessionRegistry.attachConnection(currentPrimary, connectionId);
           if (result.success) {
             send(
               connectionId,
@@ -162,16 +149,17 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
               log(`Re-sent ${resent} pending question(s) to connection ${connectionId}`);
             }
             cancelOrphanTimeout();
-            log(
-              `${result.attachState === 'queued' ? 'Queued' : 'Attached'} connection ${connectionId} ${result.attachState === 'queued' ? 'behind' : 'to'} session ${currentPrimary}`,
-            );
+            log(`Attached connection ${connectionId} to session ${currentPrimary}`);
             return;
           }
         }
 
-        // Query mode or attach failed (session busy); send hello_ack without
-        // attach so utility clients (ls, kill) can still send requests. Still
-        // carry the binding so the client follows the current session (#499).
+        // Query mode, or a race where the session closed between the
+        // currentPrimary read above and attachConnection (attach otherwise
+        // always succeeds when the session exists, #795); send hello_ack
+        // without attach so utility clients (ls, kill) can still send
+        // requests. Still carry the binding so the client follows the
+        // current session (#499).
         send(
           connectionId,
           createHelloAck('1.0.0', currentPrimary, {
@@ -181,7 +169,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         );
         onPeerConnect?.(connectionId, metadata);
         log(
-          `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'session busy'})`,
+          `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'attach race'})`,
         );
         return;
       }
@@ -206,10 +194,6 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // an explicit unregister_device_token message arrives or APNS reports
       // the token as bad. See #308 for the explicit-disconnect follow-up.
 
-      // Explicitly remove from the waiting queue, then detach if active.
-      // detachConnection also handles waiting removal, but this ensures
-      // cleanup even if detachConnection's early-return path changes.
-      sessionRegistry.removeWaitingConnection(connectionId);
       sessionRegistry.detachConnection(connectionId);
       untrackConnection(connectionId);
       onConnectionRemoved();

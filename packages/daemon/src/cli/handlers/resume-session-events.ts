@@ -215,9 +215,13 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           newSessionId,
           workingDirectory,
           (sid, msg) => {
+            // #795: fan out to every attached connection, not a single
+            // exclusive one. In practice this window is before `connectionId`
+            // has attached below, so this is normally a no-op either way.
             const session = sessionRegistry.getSession(sid);
-            if (session?.activeConnectionId) {
-              send(session.activeConnectionId, msg);
+            if (!session) return;
+            for (const connId of session.attachedConnections) {
+              send(connId, msg);
             }
           },
           ['--resume', claudeSessionId],

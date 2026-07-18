@@ -8,6 +8,10 @@
  * - Locally-owned sessions (wrapper mode) are exempt from orphan timeout
  * - Connections can resume the session within the timeout window
  * - Message history is tracked for replay on reconnect
+ * - Any attached (non-query) connection can read AND write (#795): there is
+ *   no more single exclusive writer, no FIFO queue, no same-device reclaim.
+ *   Concurrent-write safety instead comes from PTYSession's own write
+ *   serialization (see pty-session.ts).
  */
 
 import type {
@@ -18,7 +22,6 @@ import type {
   Timestamp,
   UUID,
 } from '@remi/shared';
-import { errorToString } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
@@ -35,24 +38,6 @@ export interface SessionRegistryConfig {
   readonly orphanTimeoutMs?: number;
   /** Maximum messages to keep for replay. Default: 1000 */
   readonly maxReplayHistory?: number;
-}
-
-/**
- * A connection waiting for the active connection to disconnect, plus the
- * deviceId (and, when authenticated, clientFingerprint) its hello carried
- * (#662, #671). Carrying these here (not just the bare connectionId) means a
- * queued connection that gets FIFO-promoted still has its identity on record
- * afterward — so if IT later goes stale, a genuine reconnect from the same
- * device can still reclaim the lock instead of falling back to queuing
- * behind a connection that's gone for good. Without this, only the
- * FIRST-ever active connection's identity got reclaim protection; every
- * promoted connection would lose it.
- */
-interface WaitingConnection {
-  readonly connectionId: UUID;
-  readonly deviceId?: string;
-  /** Authenticated identity bound to this deviceId at hello time (#671). */
-  readonly clientFingerprint?: string;
 }
 
 /** Result of attempting to attach a connection to a session */
@@ -72,10 +57,12 @@ export interface AttachResult {
   /** Error message if attachment failed */
   readonly error?: string;
   /**
-   * Whether the connection ended up holding the exclusive write lock
-   * ('attached') or is read-only, waiting for the current holder to
-   * disconnect ('queued') (#662). Undefined only on the failure path
-   * (session not found), where the distinction is moot.
+   * Always 'attached' on success now that there is no exclusive write lock to
+   * queue behind (#795) — every non-query connection that attaches can read
+   * and write immediately. Undefined only on the failure path (session not
+   * found). Kept as a union (not narrowed to the literal) so the wire type
+   * (`HelloAckMessage.attachState`) does not need to change: older clients
+   * that still branch on `'queued'` simply never see it from a new daemon.
    */
   readonly attachState?: 'attached' | 'queued';
 }
@@ -86,26 +73,28 @@ export interface SessionRegistryEvents {
   onSessionCreated?: (sessionId: UUID) => void;
   /** Session was closed (timeout or PTY exit) */
   onSessionClosed?: (sessionId: UUID, reason: 'timeout' | 'pty_exit' | 'forced') => void;
-  /** Connection detached from the session. Fires for ALL detach reasons, not
-   * only genuine orphans: a plain non-locally-owned, non-persistent session
-   * becomes orphaned (orphan timeout armed), while locally-owned, persistent,
-   * and explicitly-detached sessions stay alive with no timeout. Inspect the
-   * session flags (locallyOwned / persistent / explicitlyDetached) to tell
-   * which case fired. */
+  /** The session's last attached connection detached, leaving it with none.
+   *  Fires for ALL such detach reasons, not only genuine orphans: a plain
+   *  non-locally-owned, non-persistent session becomes orphaned (orphan
+   *  timeout armed), while locally-owned, persistent, and explicitly-detached
+   *  sessions stay alive with no timeout. Inspect the session flags
+   *  (locallyOwned / persistent / explicitlyDetached) to tell which case
+   *  fired. Does NOT fire when one of several attached connections detaches
+   *  while others remain (#795). */
   onSessionOrphaned?: (sessionId: UUID) => void;
-  /** Session was resumed (connection reattached) */
+  /** Session was resumed: a connection attached after the session had zero
+   *  attached connections (as opposed to a second connection joining one
+   *  that already has an attached connection, which is not a "resume"). */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
-  /** A waiting connection was promoted to active after the previous client disconnected */
-  onConnectionPromoted?: (sessionId: UUID, connectionId: UUID, result: AttachResult) => void;
   /**
-   * Same device reclaimed the exclusive write lock from its own stale
-   * connection (#662): `attachConnection` was called with a `deviceId` that
-   * matches the device already holding the lock, so the stale connection was
-   * evicted from the registry's bookkeeping in favor of the new one. The
-   * caller (cli.ts) must still force-close the stale connection's actual
-   * transport — the registry has no transport handle to do that itself.
+   * The session's pending-question set changed: one was added, one was
+   * resolved (from any surface — terminal, push, web), or all were cleared
+   * (#786/#787). Fires with the FULL current set (not a delta) from
+   * `addQuestion`/`removeQuestion`/`clearQuestions`, so a caller mirroring
+   * this into another store (the live-sessions registry file, for the hub
+   * census) can always overwrite rather than merge.
    */
-  onConnectionReclaimed?: (sessionId: UUID, staleConnectionId: UUID, newConnectionId: UUID) => void;
+  onQuestionsChanged?: (sessionId: UUID, questions: readonly Question[]) => void;
 }
 
 /** A managed session with all its runtime state */
@@ -127,28 +116,15 @@ export interface ManagedSession {
   /** When session last had activity (message, status change) */
   lastActivityAt: Timestamp;
 
-  /** Currently attached connection ID (null if no connection is attached) */
-  activeConnectionId: UUID | null;
   /**
-   * Device id the active connection's hello carried (null if unset or no
-   * active connection). Compared against an incoming hello's deviceId
-   * (#662) to distinguish "same device reconnecting after a blip" (reclaim
-   * the lock) from "a second writer" (queue behind the FIFO as before).
+   * Connections currently attached to this session (#795). Any attached
+   * (non-query) connection can read AND write — there is no more single
+   * exclusive writer, so this is a set rather than one slot. Empty means
+   * nobody is attached (orphaned/detached).
    */
-  activeDeviceId: string | null;
-  /**
-   * Authenticated client fingerprint bound to the active connection at hello
-   * time (#671), null when the connection had no authenticated identity to
-   * bind (auth disabled daemon-wide, or this peer was loopback-exempted from
-   * auth). `deviceId` alone is client-supplied and replayable, so when this
-   * is non-null a reclaim attempt must match it too, not just `deviceId` —
-   * otherwise an authenticated-but-different peer could evict the legitimate
-   * device by guessing/replaying its deviceId. When null, there is no
-   * authenticated identity to bind to, so reclaim falls back to today's
-   * deviceId-only comparison.
-   */
-  activeClientFingerprint: string | null;
-  /** When session was last disconnected (null if connected) */
+  attachedConnections: Set<UUID>;
+  /** When the session last had ZERO attached connections (null while at
+   *  least one connection is attached). */
   lastDisconnectedAt: Timestamp | null;
   /** Timeout handle for orphan cleanup */
   orphanTimeoutId: ReturnType<typeof setTimeout> | null;
@@ -193,8 +169,6 @@ export class SessionRegistry {
   private readonly events: SessionRegistryEvents;
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
-  /** Connections waiting for the active connection to disconnect */
-  private readonly waitingConnections: WaitingConnection[] = [];
   /** Buffer for messages received before session registration (from readExisting transcript) */
   private preRegistrationBuffer: ProtocolMessage[] = [];
 
@@ -236,9 +210,7 @@ export class SessionRegistry {
       pty,
       messageApi,
       lastActivityAt: createdAt,
-      activeConnectionId: null,
-      activeDeviceId: null,
-      activeClientFingerprint: null,
+      attachedConnections: new Set<UUID>(),
       lastDisconnectedAt: null,
       orphanTimeoutId: null,
       messageHistory: [],
@@ -286,43 +258,35 @@ export class SessionRegistry {
   }
 
   /**
-   * Get the session for a given connection — only when that connection holds
-   * the exclusive write lock. Queued connections receive replay history via
-   * attachConnection() but cannot write to the PTY: input/answer/resize from
-   * a queued client would race the active client's session. They are auto-
-   * promoted on disconnect (FIFO).
+   * Get the session for a given connection, if that connection is currently
+   * attached (#795: any attached connection, not just a single exclusive
+   * one).
    */
   getSessionForConnection(connectionId: UUID): ManagedSession | undefined {
     if (this.session === null) return undefined;
-    if (this.session.activeConnectionId === connectionId) return this.session;
+    if (this.session.attachedConnections.has(connectionId)) return this.session;
     return undefined;
   }
 
   /**
-   * Check if a session can be resumed.
-   * Returns true if session exists and has no active connection.
+   * Check whether a session can be attached/resumed. Now simply "does the
+   * session exist" (#795) — attaching a second, third, etc. connection is
+   * always allowed, so there is no more "busy" state to distinguish.
    */
   canResume(sessionId: UUID): boolean {
-    if (this.session === null || this.session.sessionId !== sessionId) {
-      return false;
-    }
-    return this.session.activeConnectionId === null;
+    return this.session !== null && this.session.sessionId === sessionId;
   }
 
   /**
-   * Attach a connection to the session. `deviceId`, when present and equal to
-   * the device already holding the exclusive write lock, reclaims that lock
-   * instead of queuing behind it (#662) — see `reclaimForSameDevice`. When
-   * the active connection has a bound `clientFingerprint` (#671), reclaim
-   * additionally requires the incoming `clientFingerprint` to match it —
-   * see `matchesActiveDevice`.
+   * Attach a connection to the session. Always succeeds when the session
+   * exists (#795) — there is no exclusive write lock to queue behind, so
+   * every non-query connection ends up attached and able to read/write
+   * immediately. `isResume` is true only when the session had ZERO attached
+   * connections before this attach (a genuine resume after everyone left),
+   * not merely because a second connection is joining an already-attached
+   * session.
    */
-  attachConnection(
-    sessionId: UUID,
-    connectionId: UUID,
-    deviceId?: string,
-    clientFingerprint?: string,
-  ): AttachResult {
+  attachConnection(sessionId: UUID, connectionId: UUID): AttachResult {
     if (this.session === null || this.session.sessionId !== sessionId) {
       return {
         success: false,
@@ -335,46 +299,8 @@ export class SessionRegistry {
       };
     }
 
-    if (this.session.activeConnectionId !== null) {
-      if (
-        deviceId !== undefined &&
-        this.matchesActiveDevice(this.session, deviceId, clientFingerprint)
-      ) {
-        return this.reclaimForSameDevice(this.session, connectionId, deviceId, clientFingerprint);
-      }
-
-      // Different (or unknown) device, or a fingerprint mismatch against an
-      // authenticated active connection (#671): provide replay history
-      // (read-only) and queue for write promotion when the active connection
-      // disconnects. Writes from queued connections are blocked at
-      // getSessionForConnection. deviceId/clientFingerprint travel with the
-      // queue entry (#662, #671) so promotion still leaves this connection
-      // reclaimable (under the same identity check) if it later goes stale
-      // itself.
-      if (!this.waitingConnections.some((w) => w.connectionId === connectionId)) {
-        this.waitingConnections.push({
-          connectionId,
-          ...(deviceId !== undefined && { deviceId }),
-          ...(clientFingerprint !== undefined && { clientFingerprint }),
-        });
-      }
-      const MAX_REPLAY_MESSAGES = 200;
-      const replayMessages =
-        this.session.messageHistory.length > MAX_REPLAY_MESSAGES
-          ? this.session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
-          : [...this.session.messageHistory];
-      return {
-        success: true,
-        isResume: true,
-        replayMessages,
-        currentStatus: this.session.currentStatus,
-        currentQuestions: [...this.session.currentQuestions.values()],
-        nextBulletId: this.session.messageApi.bulletCount + 1,
-        attachState: 'queued',
-      };
-    }
-
-    const isResume = this.session.lastDisconnectedAt !== null;
+    const wasEmpty = this.session.attachedConnections.size === 0;
+    const isResume = wasEmpty && this.session.lastDisconnectedAt !== null;
 
     // Clear orphan timeout if resuming
     if (this.session.orphanTimeoutId !== null) {
@@ -382,10 +308,7 @@ export class SessionRegistry {
       this.session.orphanTimeoutId = null;
     }
 
-    // Attach connection
-    this.session.activeConnectionId = connectionId;
-    this.session.activeDeviceId = deviceId ?? null;
-    this.session.activeClientFingerprint = clientFingerprint ?? null;
+    this.session.attachedConnections.add(connectionId);
     this.session.lastDisconnectedAt = null;
     this.session.explicitlyDetached = false;
 
@@ -416,151 +339,31 @@ export class SessionRegistry {
   }
 
   /**
-   * Whether an incoming hello's `deviceId` + `clientFingerprint` match the
-   * identity already recorded for the session's active connection (#671).
+   * Detach a connection from the session. If other connections remain
+   * attached, the session stays live (#795: no more FIFO promotion — there
+   * is nothing to promote, since everyone attached could already read and
+   * write). Only when the LAST attached connection leaves does the session
+   * become orphaned and the timeout countdown start (skipped for
+   * locally-owned, persistent, and explicitly-detached sessions).
    *
-   * `deviceId` alone is a client-supplied, self-reported string (persisted in
-   * `localStorage`) with no cryptographic binding, so trusting it in
-   * isolation lets any peer that can complete a hello (a hostile local
-   * process, or an authenticated-but-different networked peer) evict the
-   * legitimate device by guessing or replaying its `deviceId`.
-   *
-   * `clientFingerprint` must match via STRICT equality, where "both null"
-   * counts as a match: `null` means "no authenticated identity" (auth
-   * disabled daemon-wide, or this peer was loopback-exempted from auth), and
-   * a loopback peer reclaiming its own loopback-held lock (both null) is the
-   * original #666 feature this must keep working. Every other combination —
-   * fingerprint-bearing peer against a fingerprint-less active connection,
-   * fingerprint-less peer against a fingerprint-bound active connection, or
-   * two different fingerprints — is a genuine identity mismatch and must
-   * queue, not reclaim. A user switching transports (e.g. network-authenticated
-   * one moment, SSH-tunnel loopback the next) is an accepted, deliberate
-   * consequence: it queues FIFO instead of reclaiming.
-   */
-  private matchesActiveDevice(
-    session: ManagedSession,
-    deviceId: string,
-    clientFingerprint?: string,
-  ): boolean {
-    if (session.activeDeviceId === null || session.activeDeviceId !== deviceId) {
-      return false;
-    }
-    return session.activeClientFingerprint === (clientFingerprint ?? null);
-  }
-
-  /**
-   * Same physical device reconnecting while its own previous connection is
-   * still marked active (#662) — a dead-socket reconnect (missed pongs, iOS
-   * background, NAT drop) rather than a second writer. Evicts the stale
-   * connection from the registry's bookkeeping and hands the lock straight
-   * to the new one, instead of FIFO-queuing behind a connection that will
-   * likely never come back. `onConnectionReclaimed` tells the caller which
-   * connection id is now stale so it can force-close the underlying
-   * transport; the registry itself has no transport handle to do that.
-   *
-   * Callers must have already verified the identity match via
-   * `matchesActiveDevice` (#671).
-   */
-  private reclaimForSameDevice(
-    session: ManagedSession,
-    connectionId: UUID,
-    deviceId: string,
-    clientFingerprint?: string,
-  ): AttachResult {
-    const staleId = session.activeConnectionId;
-    if (staleId === null) {
-      // Unreachable: attachConnection only calls this when activeConnectionId
-      // is non-null. Guarded defensively rather than asserted.
-      throw new Error('reclaimForSameDevice called without an active connection');
-    }
-
-    session.activeConnectionId = connectionId;
-    session.activeDeviceId = deviceId;
-    session.activeClientFingerprint = clientFingerprint ?? null;
-    session.lastDisconnectedAt = null;
-    session.explicitlyDetached = false;
-
-    const MAX_REPLAY_MESSAGES = 200;
-    const replayMessages =
-      session.messageHistory.length > MAX_REPLAY_MESSAGES
-        ? session.messageHistory.slice(-MAX_REPLAY_MESSAGES)
-        : [...session.messageHistory];
-    session.lastDeliveredIndex = session.messageHistory.length - 1;
-
-    this.events.onConnectionReclaimed?.(session.sessionId, staleId, connectionId);
-
-    return {
-      success: true,
-      isResume: true,
-      replayMessages,
-      currentStatus: session.currentStatus,
-      currentQuestions: [...session.currentQuestions.values()],
-      nextBulletId: session.messageApi.bulletCount + 1,
-      attachState: 'attached',
-    };
-  }
-
-  /**
-   * Detach a connection from the session.
-   * If there are waiting connections, the next one is auto-promoted.
-   * Otherwise, non-locally-owned sessions become orphaned and start the timeout countdown.
-   * Locally-owned sessions remain active without a timeout.
-   *
-   * When `explicit` is true (tmux-style detach), the orphan timeout is skipped
-   * regardless of whether the session is locally owned; the session remains
-   * discoverable and re-attachable indefinitely.
+   * When `explicit` is true (tmux-style detach), the orphan timeout is
+   * skipped regardless of whether the session is locally owned; the session
+   * remains discoverable and re-attachable indefinitely.
    */
   detachConnection(connectionId: UUID, explicit = false): void {
-    if (this.session === null || this.session.activeConnectionId !== connectionId) {
-      // Also remove from waiting list if it was queued
-      const waitIdx = this.waitingConnections.findIndex((w) => w.connectionId === connectionId);
-      if (waitIdx >= 0) {
-        this.waitingConnections.splice(waitIdx, 1);
-      }
+    if (this.session === null || !this.session.attachedConnections.has(connectionId)) {
       return;
     }
 
     const { sessionId } = this.session;
+    this.session.attachedConnections.delete(connectionId);
 
-    // Detach connection
-    this.session.activeConnectionId = null;
-    this.session.activeDeviceId = null;
-    this.session.activeClientFingerprint = null;
-    this.session.lastDisconnectedAt = now();
-
-    // Try to promote the next waiting connection (loop until one succeeds or queue exhausted)
-    while (this.waitingConnections.length > 0) {
-      const next = this.waitingConnections.shift();
-      if (!next) continue;
-      // Carrying deviceId + clientFingerprint through promotion (#662, #671)
-      // means this connection stays reclaimable (under the same identity
-      // check) by the same device if it later goes stale itself, instead of
-      // only the original active connection getting that protection.
-      const result = this.attachConnection(
-        sessionId,
-        next.connectionId,
-        next.deviceId,
-        next.clientFingerprint,
-      );
-      if (result.success) {
-        try {
-          this.events.onConnectionPromoted?.(sessionId, next.connectionId, result);
-        } catch (err) {
-          // Callback failed (e.g., promoted connection unreachable).
-          // Log the error and detach so the loop can try the next waiter.
-          const msg = errorToString(err);
-          console.error(
-            `[SessionRegistry] Promotion callback failed for ${next.connectionId}: ${msg}`,
-          );
-          this.session.activeConnectionId = null;
-          this.session.activeDeviceId = null;
-          this.session.activeClientFingerprint = null;
-          this.session.lastDisconnectedAt = now();
-          continue;
-        }
-        return;
-      }
+    // Other connections are still attached; the session is not orphaned.
+    if (this.session.attachedConnections.size > 0) {
+      return;
     }
+
+    this.session.lastDisconnectedAt = now();
 
     // Track explicit detach state for discovery status
     this.session.explicitlyDetached = explicit;
@@ -584,24 +387,6 @@ export class SessionRegistry {
   }
 
   /**
-   * Remove a connection from the waiting queue.
-   * Call this when a waiting connection disconnects before being promoted.
-   */
-  removeWaitingConnection(connectionId: UUID): void {
-    const idx = this.waitingConnections.findIndex((w) => w.connectionId === connectionId);
-    if (idx >= 0) {
-      this.waitingConnections.splice(idx, 1);
-    }
-  }
-
-  /**
-   * Get the number of connections waiting for promotion.
-   */
-  get waitingConnectionCount(): number {
-    return this.waitingConnections.length;
-  }
-
-  /**
    * Record an outgoing message for potential replay.
    * Call this for every message sent to the client.
    */
@@ -622,7 +407,7 @@ export class SessionRegistry {
     this.session.lastActivityAt = now();
 
     // If connected, mark as delivered
-    if (this.session.activeConnectionId !== null) {
+    if (this.session.attachedConnections.size > 0) {
       this.session.lastDeliveredIndex = this.session.messageHistory.length - 1;
     }
 
@@ -664,6 +449,7 @@ export class SessionRegistry {
       );
     }
     this.session.lastActivityAt = now();
+    this.events.onQuestionsChanged?.(sessionId, [...map.values()]);
   }
 
   /** Remove one answered/resolved question by id. */
@@ -671,6 +457,7 @@ export class SessionRegistry {
     if (this.session !== null && this.session.sessionId === sessionId) {
       this.session.currentQuestions.delete(questionId);
       this.session.lastActivityAt = now();
+      this.events.onQuestionsChanged?.(sessionId, [...this.session.currentQuestions.values()]);
     }
   }
 
@@ -682,6 +469,7 @@ export class SessionRegistry {
     if (this.session !== null && this.session.sessionId === sessionId) {
       this.session.currentQuestions.clear();
       this.session.lastActivityAt = now();
+      this.events.onQuestionsChanged?.(sessionId, []);
     }
   }
 
@@ -710,9 +498,6 @@ export class SessionRegistry {
         console.error(`Failed to close PTY for session ${sessionId}:`, err);
       });
     }
-
-    // Clear waiting queue to prevent stale IDs leaking into a future session
-    this.waitingConnections.length = 0;
 
     // Clear the session
     this.session = null;
@@ -775,7 +560,8 @@ export class SessionRegistry {
         messageCount: this.session.messageHistory.length,
         lastMessage,
         source: 'daemon',
-        canAttach: this.session.activeConnectionId === null,
+        // Always attachable (#795): there is no exclusive slot to be full.
+        canAttach: true,
         canResume: false,
       },
     ];
@@ -784,7 +570,7 @@ export class SessionRegistry {
   private getDiscoverableStatus(
     session: ManagedSession,
   ): 'active' | 'idle' | 'orphaned' | 'detached' {
-    if (session.activeConnectionId === null) {
+    if (session.attachedConnections.size === 0) {
       if (session.locallyOwned) return 'active';
       if (session.explicitlyDetached || session.persistent) return 'detached';
       return 'orphaned';
@@ -828,7 +614,7 @@ export class SessionRegistry {
   get orphanedCount(): number {
     if (
       this.session !== null &&
-      this.session.activeConnectionId === null &&
+      this.session.attachedConnections.size === 0 &&
       !this.session.locallyOwned &&
       // Persistent (tmux-style) sessions are intentionally kept alive, not orphaned.
       !this.session.persistent
@@ -863,7 +649,6 @@ export class SessionRegistry {
       } catch (err) {
         console.error('Failed to close PTY during shutdown:', err);
       }
-      this.waitingConnections.length = 0;
       this.session = null;
     }
   }
