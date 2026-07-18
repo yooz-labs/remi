@@ -115,6 +115,7 @@ describe('AutoApproveGate', () => {
         parkForPTY: (i, summary) => {
           parks.push(i);
           parkSummaries.push(summary);
+          return undefined; // these tests don't exercise #799 signature registration
         },
       },
       SID,
@@ -150,6 +151,7 @@ describe('AutoApproveGate', () => {
         parkForPTY: (i, summary) => {
           parks.push(i);
           parkSummaries.push(summary);
+          return undefined; // these tests don't exercise #799 signature registration
         },
         escalateModel: 'big-model',
       },
@@ -2401,5 +2403,449 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
     expect(() =>
       g.cancelExternallyResolved({ toolName: 'Bash', toolInput: { command: 'ls' } }, 'PreToolUse'),
     ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #799: a subagent/teammate permission question answered IN THE TERMINAL had
+// NO removal path from sessionRegistry.currentQuestions -- parkSubagentForPTY
+// never registered an openQuestionSignatures entry (only main-context
+// escalateToUser did), so a matching subagent PreToolUse/PostToolUse could
+// never find it to clean up. These tests exercise the fix: parkSubagentForPTY
+// now registers an agent-scoped signature too.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate subagent external-resolution (#799)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let parkedIds: UUID[];
+
+  function gate(
+    opts: {
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        // No service configured: a subagent-tagged event parks synchronously
+        // (deterministic, no eval timing to await).
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        // Unused by these subagent-only tests (no main escalation is ever
+        // driven), but AutoApproveGateDeps requires it.
+        escalate: () => generateId(),
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+      ...over,
+    };
+  }
+
+  function stashQuestion(id: UUID, agentId: string): void {
+    registry.addQuestion(SID, {
+      id,
+      text: 'proceed?',
+      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId,
+    });
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    parkedIds = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('(a) a matching subagent tool signature resolves the parked/pushed question', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const qid = parkedIds[0] as UUID;
+    stashQuestion(qid, 'agent-1');
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    // The user answered directly in the terminal: Claude now runs the tool.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PreToolUse-subagent',
+    );
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+
+  test('(a) the same signature match also works from the PostToolUse side', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const qid = parkedIds[0] as UUID;
+    stashQuestion(qid, 'agent-1');
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PostToolUse-subagent',
+    );
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+
+  test('(b) a non-matching tool_input for the SAME agent leaves the parked question open', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const qid = parkedIds[0] as UUID;
+    stashQuestion(qid, 'agent-1');
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'rm -rf /' }, agentId: 'agent-1' },
+      'PreToolUse-subagent',
+    );
+
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+    expect(resolvedLog).toHaveLength(0);
+  });
+
+  test('(b) a matching signature from a DIFFERENT agent does not resolve this one', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
+    const qid = parkedIds[0] as UUID;
+    stashQuestion(qid, 'agent-1');
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-OTHER' },
+      'PreToolUse-subagent',
+    );
+
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+    expect(resolvedLog).toHaveLength(0);
+  });
+
+  test('(b) a MAIN tool event (no agentId) never resolves a subagent-parked question with an identical signature', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const qid = parkedIds[0] as UUID;
+    stashQuestion(qid, 'agent-1');
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } }, // no agentId -> main
+      'PreToolUse',
+    );
+
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+    expect(resolvedLog).toHaveLength(0);
+  });
+
+  test('a duplicate park for the SAME agent + signature cancels the stale earlier parked record', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const firstQid = parkedIds[0] as UUID;
+    // Claude re-issues the IDENTICAL PermissionRequest for the same agent.
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const secondQid = parkedIds[1] as UUID;
+    expect(secondQid).not.toBe(firstQid);
+
+    expect(resolvedLog).toEqual([{ qid: firstQid, reason: 'cancelled' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #799 part 2: a question REJECTED in the terminal never produces a matching
+// tool call, so the signature-match funnel above can never catch it. Stop
+// cannot fire ("Claude finished responding") while genuinely blocked
+// rendering its own native passthrough prompt, so a MAIN-tagged signature
+// still open when Stop(mainOnly) fires is resolved through the same funnel
+// instead of a silent bookkeeping-only delete.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (#799 part 2)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let lastQuestionId: UUID | undefined;
+  let parkedIds: UUID[];
+
+  function gate(
+    opts: {
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        holdMs: 60_000, // holding is on, but ExitPlanMode is always multi-choice -> passthrough
+        alwaysEscalateTools: new Set(),
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  /** ExitPlanMode is ALWAYS multi-choice (`ALWAYS_MULTI_CHOICE_TOOLS`), so
+   *  this escalates as a PASSTHROUGH -- never held -- exactly the
+   *  "No, keep planning" shape #799 targets. */
+  function planModePr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'plan',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'ExitPlanMode',
+      tool_input: {},
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    lastQuestionId = undefined;
+    parkedIds = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('fires: Stop(mainOnly) resolves a still-open MAIN passthrough question ("keep planning" answered in the terminal)', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(planModePr())).toBe('passthrough');
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'Accept plan?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    g.cancelStale('Stop', { mainOnly: true });
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+
+  test('never fires ambiguously: Stop(mainOnly) does not touch a still-open SUBAGENT question', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    // A still-open SUBAGENT escalation (#799: now also signature-registered,
+    // tagged isSubagent -- this is exactly the entry Stop(mainOnly) must spare).
+    const subagentPr: PermissionRequestHookInput = {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+    };
+    expect(await g.resolvePermission(subagentPr)).toBe('passthrough');
+    const subagentQid = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid,
+      text: 'ls?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+
+    // A genuinely open MAIN question too, so the test proves Stop(mainOnly)
+    // resolves ITS OWN kind while sparing the subagent's.
+    expect(await g.resolvePermission(planModePr())).toBe('passthrough');
+    const mainQid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: mainQid,
+      text: 'Accept plan?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    g.cancelStale('Stop', { mainOnly: true });
+
+    expect(registry.getQuestion(SID, mainQid)).toBeNull(); // MAIN: resolved
+    expect(registry.getQuestion(SID, subagentQid)).not.toBeNull(); // subagent: untouched
+    expect(resolvedLog).toEqual([{ qid: mainQid, reason: 'cancelled' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #799 part 2, subagent mirror: cancelStaleForAgent, wired from SubagentStop.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let parkedIds: UUID[];
+
+  function gate(
+    opts: {
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => {}),
+        isInSubagentContext: () => false,
+        // Unused by these subagent-only tests (no main escalation is ever
+        // driven), but AutoApproveGateDeps requires it.
+        escalate: () => generateId(),
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(agentId: string, command: string): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command },
+      agent_id: agentId,
+      agent_type: 'general-purpose',
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    parkedIds = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test("fires: SubagentStop resolves that agent's still-open question (denied in the terminal, no tool call ever followed)", async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr('agent-1', 'rm -rf /tmp/x'))).toBe('passthrough');
+    const qid = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'proceed?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+
+  test("never fires ambiguously: a DIFFERENT agent's SubagentStop does not resolve this agent's still-open question", async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr('agent-1', 'ls'))).toBe('passthrough');
+    const qid1 = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: qid1,
+      text: 'proceed?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+    expect(await g.resolvePermission(pr('agent-2', 'ls'))).toBe('passthrough');
+    const qid2 = parkedIds[1] as UUID;
+    registry.addQuestion(SID, {
+      id: qid2,
+      text: 'proceed?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-2',
+    });
+
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+
+    expect(registry.getQuestion(SID, qid1)).toBeNull(); // agent-1's is resolved
+    expect(registry.getQuestion(SID, qid2)).not.toBeNull(); // agent-2's is untouched
+    expect(resolvedLog).toEqual([{ qid: qid1, reason: 'cancelled' }]);
   });
 });
