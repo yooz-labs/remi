@@ -45,6 +45,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.refreshActivationPolicy(closing: notification.object as? NSWindow)
             },
         ]
+
+        // Ordering race (#789 review): SwiftUI can present/key the launch
+        // window before this callback runs, so the very first
+        // didBecomeKeyNotification can fire ahead of the observers above
+        // and get missed — leaving the app stuck on .accessory with a
+        // visible window. Do one manual sync against whatever window state
+        // already exists so the policy converges regardless of ordering.
+        refreshActivationPolicy()
     }
 
     /// Window close dismisses UI only (#651 hard requirement). Accessory
