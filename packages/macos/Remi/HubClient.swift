@@ -49,6 +49,10 @@ final class HubClient: ObservableObject {
     @Published private(set) var remoteClients = 0
     @Published private(set) var sessions = 0
     @Published private(set) var hubVersion: String?
+    /// Autostart state reported by the hub (#788): `"installed"`, `"none"`,
+    /// or nil (either not yet received, or a pre-#788 hub that never sends
+    /// the field). Settings/menu treat nil as "unknown", not "none".
+    @Published private(set) var autostart: String?
 
     var iconState: IconState {
         switch phase {
@@ -86,6 +90,15 @@ final class HubClient: ObservableObject {
         if localClients > 0 { parts.append("\(localClients) local") }
         if remoteClients > 0 { parts.append("\(remoteClients) remote") }
         return "Clients: \(parts.joined(separator: ", "))"
+    }
+
+    /// True only once a real hub has explicitly confirmed no autostart
+    /// artifact exists (#788). nil (not yet received, or a pre-#788 hub
+    /// that never sends the field) reads false — a warning only fires on a
+    /// confirmed "none", never on "we don't know yet".
+    var autostartMissing: Bool {
+        guard case .connected(_, isHub: true) = phase else { return false }
+        return autostart == "none"
     }
 
     var menuStatusLine: String {
@@ -306,6 +319,7 @@ final class HubClient: ObservableObject {
                 remoteClients = status.remoteClients
                 sessions = status.sessions
                 hubVersion = status.hubVersion
+                autostart = status.autostart
             }
         case "pong":
             missedPongs = 0
@@ -353,6 +367,7 @@ final class HubClient: ObservableObject {
         remoteClients = 0
         sessions = 0
         hubVersion = nil
+        autostart = nil
         phase = .unreachable
         consecutiveFailures += 1
         scheduleReconnect()

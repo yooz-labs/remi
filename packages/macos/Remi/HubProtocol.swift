@@ -91,4 +91,11 @@ struct HubStatusFrame: Decodable {
     let remoteClients: Int
     let sessions: Int
     let hubVersion: String
+    /// Whether `remi --install`'s login-service artifact exists on this
+    /// Mac (#788): `"installed"` or `"none"`. The sandboxed app cannot
+    /// read `~/Library/LaunchAgents` itself, so the hub self-reports this.
+    /// Optional/nil on a pre-#788 hub — that must read as "unknown", not
+    /// "none", so the UI keeps today's neutral copy instead of a false
+    /// warning.
+    let autostart: String?
 }
