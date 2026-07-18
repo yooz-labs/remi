@@ -171,12 +171,12 @@ describe('createMessageApiForSession', () => {
     // hasActiveClient branch were bypassed. sendPushTrigger is imported
     // statically by the production module, so tests can't observe that call
     // directly without a mock. What we CAN assert: the in-app question
-    // message still went out, and activeConnectionId is non-null (the
-    // condition guarding the push for-loop). A follow-up that injects
+    // message still went out, and the session has an attached connection
+    // (the condition guarding the push for-loop). A follow-up that injects
     // sendPushTrigger via deps would let us assert the opposite branch.
     const questions = sendCalls.filter((c) => c.message.type === 'question');
     expect(questions).toHaveLength(1);
-    expect(sessionRegistry.getSession(sessionId)?.activeConnectionId).not.toBeNull();
+    expect(sessionRegistry.getSession(sessionId)?.attachedConnections.size).toBeGreaterThan(0);
   });
 
   test('onStatusChange emits session_update and patches StatusWriter', () => {

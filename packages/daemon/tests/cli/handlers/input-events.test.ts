@@ -147,7 +147,64 @@ describe('createInputHandlers', () => {
       expect(msg.code).toBe('SESSION_NOT_FOUND');
     });
 
-    test('sends NOT_ACTIVE_CONNECTION when the session exists but this connection is queued (#662)', async () => {
+    test('a SECOND attached connection can also submit input (#795: no exclusive lock)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const firstConn = generateId();
+      sessionRegistry.attachConnection(sessionId, firstConn);
+      // CID is a SECOND connection attaching concurrently -- also attached,
+      // not queued behind the first.
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onUserInput(firstConn, sessionId, 'from first', false);
+      await handlers.onUserInput(CID, sessionId, 'from second', false);
+
+      // Both submits landed -- neither connection was denied.
+      expect(ptyCapture.submits).toEqual(['from first', 'from second']);
+      expect(sendCalls).toHaveLength(0);
+    });
+
+    test('detaching one connection leaves the other still attached and able to type (#795)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const firstConn = generateId();
+      sessionRegistry.attachConnection(sessionId, firstConn);
+      sessionRegistry.attachConnection(sessionId, CID);
+
+      // The first connection detaches (e.g. it closed its tab).
+      sessionRegistry.detachConnection(firstConn);
+
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      await handlers.onUserInput(CID, sessionId, 'still typing', false);
+
+      // CID's submit still lands -- it was never affected by the other
+      // connection's detach.
+      expect(ptyCapture.submits).toEqual(['still typing']);
+      expect(sendCalls).toHaveLength(0);
+
+      // The detached connection, meanwhile, can no longer submit.
+      await handlers.onUserInput(firstConn, sessionId, 'too late', false);
+      expect(ptyCapture.submits).toEqual(['still typing']);
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as { type: string; code?: string };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('SESSION_NOT_FOUND');
+    });
+
+    test('sends SESSION_NOT_FOUND for a connection that never attached (e.g. query-mode misuse)', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(
         sessionId,
@@ -155,10 +212,7 @@ describe('createInputHandlers', () => {
         fakePTY({ writes: [], submits: [] }),
         fakeMessageAPI(new Map()),
       );
-      const activeConn = generateId();
-      sessionRegistry.attachConnection(sessionId, activeConn);
-      // CID is a different connection queued behind the active one.
-      sessionRegistry.attachConnection(sessionId, CID);
+      // CID never attaches (as a query-mode connection would not).
 
       const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       await handlers.onUserInput(CID, sessionId, 'ignored', false);
@@ -170,13 +224,15 @@ describe('createInputHandlers', () => {
         details?: { sessionId?: string; messageId?: string };
       };
       expect(msg.type).toBe('error');
-      expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
+      // New daemons never emit NOT_ACTIVE_CONNECTION (#795); the error code is
+      // kept string-only for an older client talking to an older daemon.
+      expect(msg.code).toBe('SESSION_NOT_FOUND');
       expect(msg.details?.sessionId).toBe(sessionId);
       // No messageId was passed in -- details must not carry a stray key.
       expect(msg.details?.messageId).toBeUndefined();
     });
 
-    test('NOT_ACTIVE_CONNECTION details carry the rejected input message id (#681)', async () => {
+    test('SESSION_NOT_FOUND details carry the rejected input message id (#681) for an unattached connection', async () => {
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(
         sessionId,
@@ -184,10 +240,7 @@ describe('createInputHandlers', () => {
         fakePTY({ writes: [], submits: [] }),
         fakeMessageAPI(new Map()),
       );
-      const activeConn = generateId();
-      sessionRegistry.attachConnection(sessionId, activeConn);
-      // CID is a different connection queued behind the active one.
-      sessionRegistry.attachConnection(sessionId, CID);
+      // CID never attaches.
 
       const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
       const droppedMessageId = generateId();
@@ -200,10 +253,10 @@ describe('createInputHandlers', () => {
         details?: { sessionId?: string; messageId?: string };
       };
       expect(msg.type).toBe('error');
-      expect(msg.code).toBe('NOT_ACTIVE_CONNECTION');
+      expect(msg.code).toBe('SESSION_NOT_FOUND');
       expect(msg.details?.sessionId).toBe(sessionId);
       // The specific dropped message's id, so the client can flip that ONE
-      // bubble to 'failed' instead of only refreshing the read-only banner.
+      // bubble to 'failed'.
       expect(msg.details?.messageId).toBe(droppedMessageId);
     });
 
