@@ -108,19 +108,36 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// not app launch) per the issue's implementation sketch. Safe to call
     /// repeatedly: `getNotificationSettings` reflects the real OS state, so
     /// an already-decided user is never re-prompted.
+    ///
+    /// `getNotificationSettings`/`requestAuthorization`'s completion handlers
+    /// are `@Sendable` and run on an arbitrary background queue, not
+    /// MainActor -- so every hop back into MainActor-isolated state (the
+    /// `center` property itself, and `completion`'s body, which in `sync()`
+    /// calls the MainActor-isolated `post(_:)`) must go through
+    /// `Task { @MainActor in ... }`, same pattern as the delegate callback
+    /// below.
     private func requestAuthorizationIfNeeded(_ completion: @escaping (Bool) -> Void) {
-        center.getNotificationSettings { settings in
-            switch settings.authorizationStatus {
-            case .authorized, .provisional:
-                completion(true)
-            case .notDetermined:
-                self.center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    completion(granted)
+        center.getNotificationSettings { [weak self] settings in
+            Task { @MainActor [weak self] in
+                switch settings.authorizationStatus {
+                case .authorized, .provisional:
+                    completion(true)
+                case .notDetermined:
+                    self?.center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                        Task { @MainActor in
+                            completion(granted)
+                        }
+                    }
+                case .denied, .ephemeral:
+                    // Silently drops the push: the icon state (#787) and the
+                    // "N questions waiting" menu line still work (they read
+                    // hub_status directly, independent of OS authorization),
+                    // but nothing tells the user THIS is why they stopped
+                    // getting banners. Tracked in #793.
+                    completion(false)
+                @unknown default:
+                    completion(false)
                 }
-            case .denied, .ephemeral:
-                completion(false)
-            @unknown default:
-                completion(false)
             }
         }
     }
