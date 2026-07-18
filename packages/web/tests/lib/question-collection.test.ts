@@ -422,3 +422,37 @@ describe('pruneQuestionsNotLive (#798 parts 2/3)', () => {
     expect(getSessionQuestions(next, 's1')).toEqual([]);
   });
 });
+
+describe('STALE_ANSWER force-clear (#800 review, MEDIUM finding)', () => {
+  // pruneQuestionsNotLive protects a submitting card (above), which means the
+  // exact card a STALE_ANSWER names -- the one the user just answered, still
+  // `submitting: true` -- can never clear through reconciliation alone. /clear,
+  // /resume, and a MAX_PENDING_QUESTIONS eviction all reach STALE_ANSWER without
+  // ever firing question_resolved for the dead id, so App.tsx force-removes the
+  // named id by id (removeQuestionById, unconditional) BEFORE reconciling the
+  // rest of the session against the live snapshot.
+
+  test('removeQuestionById force-clears a submitting card unconditionally (no protection)', () => {
+    const map = build(qWith(q('s1', undefined, 'a'), { submitting: true }));
+    const next = removeQuestionById(map, 's1', 'a');
+    expect(getSessionQuestions(next, 's1')).toEqual([]);
+  });
+
+  test('the App.tsx STALE_ANSWER flow: force-remove the named id, then prune the rest against the live snapshot', () => {
+    // Two submitting cards in the same session: 'a' is the one a STALE_ANSWER
+    // names (the daemon rejected it -- /clear, /resume, or an eviction), 'b' is
+    // a genuinely different in-flight submit the error says nothing about.
+    const map = build(
+      qWith(q('s1', undefined, 'a'), { submitting: true }),
+      qWith(q('s1', 'sub-7', 'b'), { submitting: true }),
+    );
+    // Step 1 (the fix): force-remove the exact id STALE_ANSWER names.
+    let next = removeQuestionById(map, 's1', 'a');
+    // Step 2: reconcile the rest against the live snapshot (empty here too).
+    next = pruneQuestionsNotLive(next, 's1', []);
+    // 'a' is gone (force-cleared, no longer stuck at "Answering..."); 'b'
+    // SURVIVES -- still submitting and never named by this error, so pruning
+    // alone must not touch it even though it's also missing from the live set.
+    expect(getSessionQuestions(next, 's1').map((x) => x.id)).toEqual(['b']);
+  });
+});

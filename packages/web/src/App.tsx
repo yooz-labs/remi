@@ -480,14 +480,11 @@ function App() {
       requestTranscriptLoadRef.current?.(connId, sid);
     };
 
-    // Reconcile a session's cards against an authoritative live-question-id
-    // set (#798 parts 2/3), shared by the `question_snapshot` broadcast and a
-    // `STALE_ANSWER` error's `pendingQuestionIds` -- both carry the same
-    // shape. Reads/writes questionsRef the same way the question_resolved
-    // handler does (#585, P7 FIX 3) so concurrent reconciliations never race
-    // each other into a stale `questionPending` badge.
-    const reconcileLiveQuestions = (sid: string, liveQuestionIds: readonly string[]) => {
-      const nextQuestions = pruneQuestionsNotLive(questionsRef.current, sid, liveQuestionIds);
+    // Commit a recomputed questions map if it actually changed, recomputing
+    // `sid`'s `questionPending` badge from the SAME committed map (#585, P7
+    // FIX 3) so concurrent reconciliations never race each other into a stale
+    // badge. Shared by every pure question-map reducer below.
+    const commitQuestionsIfChanged = (nextQuestions: Map<string, UIQuestion>, sid: string) => {
       if (nextQuestions === questionsRef.current) return;
       const stillPending = getSessionQuestions(nextQuestions, sid).some(isQuestionPending);
       questionsRef.current = nextQuestions;
@@ -495,6 +492,13 @@ function App() {
       setSessions((prev) =>
         prev.map((s) => (s.id === sid ? { ...s, questionPending: stillPending } : s)),
       );
+    };
+
+    // Reconcile a session's cards against an authoritative live-question-id
+    // set (#798 parts 2/3), shared by the `question_snapshot` broadcast and a
+    // `STALE_ANSWER` error's `pendingQuestionIds` -- both carry the same shape.
+    const reconcileLiveQuestions = (sid: string, liveQuestionIds: readonly string[]) => {
+      commitQuestionsIfChanged(pruneQuestionsNotLive(questionsRef.current, sid, liveQuestionIds), sid);
     };
 
     switch (message.type) {
@@ -1539,7 +1543,25 @@ function App() {
         if (errorCode === 'STALE_ANSWER') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const staleSessionId = asNonEmptyString(details?.['sessionId']);
+          const staleQuestionId = asNonEmptyString(details?.['questionId']);
           const pendingQuestionIds = asStringArray(details?.['pendingQuestionIds']);
+          // The named question is precisely the one the user just answered,
+          // so its card is very likely `submitting: true` -- which
+          // pruneQuestionsNotLive deliberately PROTECTS from the
+          // reconciliation below (#652/#653). /clear, /resume, and a
+          // MAX_PENDING_QUESTIONS eviction all reach STALE_ANSWER without ever
+          // firing question_resolved for the dead id, and AUQ_AUTOANSWER_FAILED
+          // (above) only clears `submitting` for a different failure path --
+          // so without this, the card this error names would stick at
+          // "Answering..." forever (#800 review). Force-remove it outright by
+          // id first, mirroring resolveQuestionCard's submitting-card branch
+          // for question_resolved: no trace, no protection.
+          if (staleSessionId && staleQuestionId) {
+            commitQuestionsIfChanged(
+              removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
+              staleSessionId,
+            );
+          }
           if (staleSessionId && pendingQuestionIds) {
             reconcileLiveQuestions(staleSessionId, pendingQuestionIds);
           }
