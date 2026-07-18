@@ -349,13 +349,12 @@ if (cliInstall || cliUninstall) {
   const binaryPath = pathResolved ?? process.execPath;
 
   if (platform === 'darwin') {
-    const { launchAgentPath } = await import('./cli/service-templates.ts');
+    // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
+    // the builder in service-templates.ts.
+    const { launchAgentPath, buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
     const dest = launchAgentPath(home);
 
     if (cliInstall) {
-      // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
-      // the builder in service-templates.ts.
-      const { buildLaunchAgentPlist } = await import('./cli/service-templates.ts');
       const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
@@ -406,12 +405,11 @@ if (cliInstall || cliUninstall) {
       }
     }
   } else if (platform === 'linux') {
-    const { systemdUnitPath } = await import('./cli/service-templates.ts');
+    const { systemdUnitPath, buildSystemdUnit } = await import('./cli/service-templates.ts');
     const dest = systemdUnitPath(home);
     const serviceDir = path.dirname(dest);
 
     if (cliInstall) {
-      const { buildSystemdUnit } = await import('./cli/service-templates.ts');
       fs.mkdirSync(serviceDir, { recursive: true });
       fs.writeFileSync(dest, buildSystemdUnit(binaryPath));
       Bun.spawnSync(['systemctl', '--user', 'daemon-reload']);
