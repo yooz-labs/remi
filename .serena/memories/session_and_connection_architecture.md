@@ -9,9 +9,9 @@ Remi manages Claude Code sessions with a clear separation between **session life
 
 ### Key Concepts
 - **Sessions survive connection drops** via orphan timeout mechanism
-- **Orphaned state**: When a connection detaches, non-locally-owned sessions enter orphan state for 5 minutes (default), then timeout/cleanup
+- **Orphaned state**: When the LAST attached connection detaches, non-locally-owned sessions enter orphan state for 5 minutes (default), then timeout/cleanup
 - **Locally-owned sessions** (wrapper mode): Never timeout while connected or locally owned, remain alive indefinitely until PTY exits
-- **One active connection per session**: Only one client can have an attached connection at any time
+- **Any number of attached connections per session** (#795, replacing the old exclusive-lock design): every non-query connection that attaches can read AND write immediately — there is no more single "active" connection, no FIFO queue, and no same-device/fingerprint reclaim. Concurrent-write safety instead comes from a write-serialization queue inside `PTYSession` (see below), not from exclusivity.
 
 ### ManagedSession State
 ```
@@ -23,14 +23,14 @@ workingDirectory      - Working directory for Claude Code
 PTY & MessageAPI      - References to running PTY and message processor
 lastActivityAt        - Timestamp of last message/status change
 
-activeConnectionId    - Current attached connection ID (null if none)
-lastDisconnectedAt    - When last connection detached (null if connected)
+attachedConnections   - Set<UUID> of currently attached connection IDs (empty if none) (#795)
+lastDisconnectedAt    - When the session last had ZERO attached connections (null while any are attached)
 orphanTimeoutId       - Timeout handle for cleanup on orphan timeout
 
 messageHistory[]      - Messages for replay (capped at 1000)
 lastDeliveredIndex    - Index of last delivered message
 currentStatus         - Agent status (idle, running, etc.)
-currentQuestion       - Current pending question (if any)
+currentQuestions      - Map of pending questions (multiple can be in flight: main + subagent)
 
 locallyOwned          - TRUE for wrapper mode sessions (NEVER timeout)
 ```
@@ -40,27 +40,30 @@ locallyOwned          - TRUE for wrapper mode sessions (NEVER timeout)
 #### Creation
 1. `sessionRegistry.createSessionId()` generates new UUID
 2. `registerSession(sessionId, pty, messageApi, locallyOwned)` stores session with:
-   - `activeConnectionId = null` (no one attached yet)
+   - `attachedConnections = new Set()` (no one attached yet)
    - `lastDisconnectedAt = null` (not orphaned)
    - `orphanTimeoutId = null` (no timeout)
    - `locallyOwned = false` (daemon mode) or `true` (wrapper mode)
 
 #### Connection Attach
 - `attachConnection(sessionId, connectionId)` called when client connects
-- **Exclusive Lock**: Returns error if `activeConnectionId !== null` (session already has client!)
+- **No exclusivity (#795)**: always succeeds when the session exists — the connection is added to `attachedConnections`, regardless of how many others are already attached
 - On success:
-  - `activeConnectionId = connectionId`
+  - `connectionId` added to `attachedConnections`
   - `lastDisconnectedAt = null`
   - Clears orphan timeout if resuming
   - Marks all history as delivered
   - Returns `replayMessages` (history since last delivery)
+  - `isResume` is true only when the session had ZERO attached connections before this attach — a second connection joining an already-attached session is NOT a resume
 
 #### Detach (Connection closes)
 - `detachConnection(connectionId)` called when client disconnects
-- Sets `activeConnectionId = null`
-- Sets `lastDisconnectedAt = now()`
-- **For non-locally-owned sessions**: Starts orphan timeout → cleanup after 5 min
-- **For locally-owned sessions** (wrapper): No timeout, stays alive indefinitely
+- Removes `connectionId` from `attachedConnections`
+- If OTHER connections remain attached: nothing else happens — the session stays live, no orphan timeout, no `onSessionOrphaned` (#795)
+- Only once `attachedConnections` becomes EMPTY:
+  - Sets `lastDisconnectedAt = now()`
+  - **For non-locally-owned, non-persistent sessions**: Starts orphan timeout → cleanup after 5 min
+  - **For locally-owned sessions** (wrapper) or persistent/explicitly-detached sessions: No timeout, stays alive indefinitely
 
 #### Cleanup
 - `closeSession(sessionId, reason)` removes session from registry
@@ -68,18 +71,20 @@ locallyOwned          - TRUE for wrapper mode sessions (NEVER timeout)
 - Reason: 'timeout', 'pty_exit', or 'forced'
 
 ### Multi-Attach Behavior
-**Current behavior**: Session rejects second attach attempt with error "Session already has active connection"
+**Current behavior (#795)**: any number of connections can be attached to a session at once. Every attached (non-query) connection can read AND write immediately — there is no exclusive lock, no queue, and no rejection on a second/third/... attach.
 
 ```typescript
-if (session.activeConnectionId !== null) {
-  return {
-    success: false,
-    error: 'Session already has active connection',
-  };
-}
+// attachConnection always succeeds when the session exists; no capacity check.
+session.attachedConnections.add(connectionId);
 ```
 
-This enforces **exclusive connection ownership**. Second client must wait for first to detach.
+Concurrent-write safety is NOT enforced here — it comes from `PTYSession`'s own write-serialization queue (a promise chain every `write()`/`submitInput()` call enqueues onto), so two connections submitting input at the same time can never interleave each other's bytes.
+
+### PTY Write Serialization (pty-session.ts, #795)
+- `submitInput(text)` writes `text`, waits ~50ms, then writes a trailing CR — a multi-step sequence. Without serialization, two concurrent submits from different attached connections could interleave (one's text landing inside another's 50ms gap), corrupting both. This exact race is why an earlier attempt at removing the lock (`390898b`) was reverted (`588afde`).
+- Every write-ish call (`write()`, `submitInput()`) now enqueues onto a private `writeChain: Promise<void>` so only one write sequence is ever in flight per session; a failed write doesn't poison the chain for the next one.
+- `resize()` is NOT part of this queue — it is last-writer-wins: any attached connection's `terminal_resize` is applied immediately, no negotiation between attached clients' terminal sizes.
+- `raw_pty_output` fans out to every attached connection (`cli/handlers/pty-message-fanout.ts`), not just one.
 
 ---
 
@@ -214,46 +219,44 @@ if (wrapperMode && primarySessionId && !resumeSessionId) {
 
 ## 4. ATTACH FLOW (attach-client.ts)
 
-### Multi-Attach Behavior
+### Multi-Attach Behavior (#795)
 
-When a second client tries to attach:
+When a second client attaches:
 
 1. **Connection established** → sends `hello` with session ID
 2. **Daemon receives hello** → calls `onConnect` event handler
 3. **Check primary session**: `wrapperMode && primarySessionId`
-   - If primary session has `activeConnectionId !== null`: attach fails
-   - Returns "Session already has active connection" error
-4. **Result**: Client receives error and must wait for first client to detach
+   - Always attaches (non-query connections only) — no capacity check
+4. **Result**: BOTH clients are attached and can read/write immediately; `hello_ack.attachState` is `'attached'` for each of them (never `'queued'` from a current daemon — that value is only sent for interop with an OLDER daemon that still enforces exclusivity)
 
 ### Attach Sequence
 1. Client connects WebSocket
 2. Optional: auth handshake if auth enabled
 3. Client sends `hello(clientId, version, resumeSessionId)`
 4. Server:
-   - If resuming: calls `canResume(resumeSessionId)` → checks `activeConnectionId === null`
-   - If successful: calls `attachConnection()` → sets `activeConnectionId = connectionId`
+   - `attachConnection()` → adds `connectionId` to `attachedConnections` (always succeeds when the session exists)
    - Sends `hello_ack` with session ID and `replayCount`
 5. Client receives `replay_batch` with message history
 6. Client enters raw terminal mode (if CLI attach)
 7. Client sends raw PTY bytes to server
-8. Server forwards to `session.activeConnectionId`
+8. Server forwards `raw_pty_output` to EVERY connection in `session.attachedConnections`, not a single one
 
-### Session Resume After Detach
-1. Client detaches (WebSocket closes)
-2. `detachConnection(connectionId)` → `activeConnectionId = null`
+### Session Resume After Everyone Detaches
+1. Last attached client detaches (WebSocket closes) → `attachedConnections` becomes empty
+2. `lastDisconnectedAt = now()`, orphan timeout starts
 3. Client reconnects with same `resumeSessionId`
-4. `canResume(sessionId)` checks if `activeConnectionId === null` → TRUE
-5. `attachConnection(resumeSessionId, newConnectionId)` succeeds
+4. `canResume(sessionId)` just checks the session still exists → TRUE
+5. `attachConnection(resumeSessionId, newConnectionId)` succeeds, `isResume = true` (attachedConnections was empty)
 6. Replay messages sent to restore state
 
-### Example: Re-attach Same Session
+### Example: Concurrent Attach (replaces the old exclusive-lock example)
 ```
-Client 1 attaches    → Connection A, activeConnectionId = A
-Client 1 detaches    → activeConnectionId = null, orphan timeout started
-Client 1 re-attaches → canResume(sessionId) = true
-                     → attachConnection succeeds, Connection B, activeConnectionId = B
-Client 2 tries attach → canResume(sessionId) = false (because activeConnectionId = B)
-                      → attach fails with "Session already has active connection"
+Client 1 attaches    → attachedConnections = {A}, isResume = false
+Client 2 attaches    → attachedConnections = {A, B}, isResume = false (NOT a resume -- A is still here)
+Client 1 and 2 can both submit input; PTYSession's write queue serializes the actual bytes
+Client 1 detaches    → attachedConnections = {B} -- session stays live, no orphan timeout, no onSessionOrphaned
+Client 2 detaches    → attachedConnections = {} -- NOW lastDisconnectedAt is set, orphan timeout starts
+Client 3 attaches    → attachedConnections = {C}, isResume = true (was empty)
 ```
 
 ---
@@ -262,25 +265,40 @@ Client 2 tries attach → canResume(sessionId) = false (because activeConnection
 
 ```
 Created:
-  activeConnectionId = null
+  attachedConnections = {} (empty set)
   lastDisconnectedAt = null
   orphanTimeoutId = null
   
     ↓
     
-Client Attaches:
-  activeConnectionId = connectionId
+Client A Attaches:
+  attachedConnections = {A}
   lastDisconnectedAt = null
   orphanTimeoutId = null
-  (exclusive lock established)
+  (no lock -- just membership in the set)
   
     ↓
     
-Client Detaches:
-  activeConnectionId = null
+Client B Also Attaches (#795 -- this is new, not a rejection):
+  attachedConnections = {A, B}
+  Both A and B can read AND write; PTYSession's write queue
+  serializes concurrent submits so their bytes never interleave
+  
+    ↓
+    
+Client A Detaches (B still attached):
+  attachedConnections = {B}
+  Nothing else happens -- session stays live, NO orphan timeout,
+  NO onSessionOrphaned (only fires when the set becomes empty)
+  
+    ↓
+    
+Client B Detaches (now the LAST one):
+  attachedConnections = {} (empty)
   lastDisconnectedAt = now()
+  onSessionOrphaned fires
   
-  ├─ If locallyOwned: no timeout (stays alive)
+  ├─ If locallyOwned, persistent, or explicitly detached: no timeout (stays alive)
   └─ If not: orphanTimeoutId = setTimeout(5 min)
   
     ↓
@@ -297,11 +315,11 @@ If PTY Exits:
   
 OR
   
-If Client Re-attaches:
-  activeConnectionId = newConnectionId
+If A Client Re-attaches (attachedConnections was empty):
+  attachedConnections = {newConnectionId}
   lastDisconnectedAt = null
   orphanTimeoutId = null (cleared)
-  (exclusive lock re-established)
+  isResume = true (attachedConnections WAS empty before this attach)
 ```
 
 ---
@@ -310,14 +328,14 @@ If Client Re-attaches:
 
 ### Session Uniqueness
 - Session ID = Connection ID for new sessions (set in hello)
-- Same session ID can have multiple connections over time (via resume)
-- But only ONE active connection at any time (exclusive lock)
+- Same session ID can have multiple connections over time (via resume), AND multiple connections at once (#795)
+- Any number of connections can be attached simultaneously -- no exclusive lock
 
-### Multi-Attach Prevention
-- `attachConnection()` checks `activeConnectionId !== null`
-- Returns error if already attached
-- Second client must wait for first to detach
-- No queue or multi-client support
+### Multi-Attach (#795, replacing the old "Multi-Attach Prevention")
+- `attachConnection()` always succeeds when the session exists — no capacity check, no rejection
+- Every attached connection can read and write immediately, at the same time as every other one
+- No FIFO queue, no "queued/read-only" state, no same-device/fingerprint reclaim (the old #662/#671 machinery was deleted outright, not just bypassed)
+- Concurrent-write safety comes from `PTYSession`'s write-serialization queue (see PTY WRITE SERIALIZATION above), not from exclusivity
 
 ### Port Selection
 - **Wrapper mode**: Auto-selects from 18765-18774 (10 ports max)
@@ -334,7 +352,7 @@ If Client Re-attaches:
 
 ### Connection vs Session
 - **Connection**: WebSocket transport, state machine, message handling
-- **Session**: PTY process, message history, active connection tracking
-- Sessions persist after connection closes (orphan timeout)
+- **Session**: PTY process, message history, attached-connections tracking
+- Sessions persist after all connections close (orphan timeout)
 - Connections don't persist after detach
-- 1:1 mapping for active connections; many:1 for resume lifetime
+- many:1 mapping for concurrently attached connections (#795), AND many:1 for resume lifetime over time
