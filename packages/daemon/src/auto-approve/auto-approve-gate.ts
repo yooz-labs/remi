@@ -415,20 +415,20 @@ export class AutoApproveGate {
    *   - the private `releaseHeld`, which EVERY other resolution path funnels
    *     through: `releaseHeldAsPassthrough` (normal answer), `failOpenHeld`
    *     (hold-timeout / undelivered-notification fail-open),
-   *     `reconcileLateVerdict`'s cancelled branch (Part B), and
+   *     `reconcileLateVerdict`'s cancelled branch (Part B),
    *     `resolveSupersededQuestion` (#673's own external-resolution / stale
    *     -duplicate cleanup, also the funnel `cancelStaleForAgent` (#799) and
-   *     `cancelStale`'s mainOnly Stop sweep (#799) use).
-   * `releaseAllHolds` ALSO deletes an entry it just released (#799 — so the
-   * mainOnly Stop sweep below never double-resolves it), and `cancelStale`
-   * (non-mainOnly) / `forceRelease` wholesale-clear the whole map (session
-   * end / force-release — nothing tracked is relevant after either). A stale
-   * entry is harmless (a signature match just triggers a redundant, idempotent
-   * cleanup), but MUST NOT be able to accumulate indefinitely: an un-deleted
-   * entry from a timed-out/cancelled hold would sit for the rest of the
-   * process lifetime and could fire a spurious `notifyResolved` for a
-   * question dead for hours on a much-later, unrelated duplicate of the same
-   * command.
+   *     `cancelStale`'s mainOnly Stop sweep (#799) use), and `releaseAllHolds`
+   *     (#799 -- so the mainOnly Stop sweep below never re-finds and double
+   *     -resolves a qid it just released via a held hook).
+   * `cancelStale` (non-mainOnly) / `forceRelease` wholesale-clear the whole
+   * map (session end / force-release — nothing tracked is relevant after
+   * either). A stale entry is harmless (a signature match just triggers a
+   * redundant, idempotent cleanup), but MUST NOT be able to accumulate
+   * indefinitely: an un-deleted entry from a timed-out/cancelled hold would
+   * sit for the rest of the process lifetime and could fire a spurious
+   * `notifyResolved` for a question dead for hours on a much-later,
+   * unrelated duplicate of the same command.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
@@ -689,11 +689,16 @@ export class AutoApproveGate {
     return this.releaseHeld(questionId, 'passthrough');
   }
 
-  /** Resolve pending holds with one decision + reason, clearing timers and
-   *  removing each released entry. Used by `cancelStale` (session teardown, or
-   *  a mainOnly-scoped Stop, #711) -- `mainOnly` releases only holds NOT
-   *  tagged subagent, leaving a teammate's hold (and its timer) intact so it
-   *  stays answerable via `resolveHeld`. */
+  /** Resolve pending holds with one decision + reason. Used by `cancelStale`
+   *  (session teardown, or a mainOnly-scoped Stop, #711) -- `mainOnly`
+   *  releases only holds NOT tagged subagent, leaving a teammate's hold (and
+   *  its timer) intact so it stays answerable via `resolveHeld`. Delegates
+   *  the per-hold teardown entirely to `releaseHeld` (its single owner, see
+   *  that method's docstring) so the timer/registry/signature/delivery
+   *  cleanup is never duplicated here -- #799's mainOnly Stop sweep in
+   *  `cancelStale` depends on `releaseHeld` having already dropped this qid's
+   *  `openQuestionSignatures` entry, or it would re-find it and double-fire
+   *  `notifyResolved`. */
   private releaseAllHolds(decision: PermissionDecision, reason: string, mainOnly = false): void {
     const targets = mainOnly
       ? [...this.pendingHolds].filter(([, hold]) => !hold.isSubagent)
@@ -702,21 +707,13 @@ export class AutoApproveGate {
     log(
       `[AutoApprove ${this.sessionTag}] Releasing ${targets.length} held hook(s) as ${decision} (${reason}${mainOnly ? ', main-only' : ''})`,
     );
-    for (const [qid, hold] of targets) {
-      clearTimeout(hold.timer);
+    for (const [qid] of targets) {
       // The session is going away (Stop/SessionEnd); dismiss the pushed card on
       // every client BEFORE resolving so it does not linger after the prompt is
-      // gone (#585, P7), and drop the registry entry so no ghost card replays.
+      // gone (#585, P7). `releaseHeld` then clears the timer, drops the registry
+      // + signature/delivery bookkeeping, and resolves the hook.
       this.notifyResolved(qid, 'cancelled');
-      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
-      // #799: mirror releaseHeld's own openQuestionSignatures/confirmedDeliveries
-      // cleanup so this qid reads as ALREADY resolved. Without this, cancelStale's
-      // mainOnly sweep over the surviving signatures (below) would find this
-      // just-released entry too and fire a second, spurious notifyResolved for it.
-      this.openQuestionSignatures.delete(qid);
-      this.confirmedDeliveries.delete(qid);
-      hold.resolve(decision);
-      this.pendingHolds.delete(qid);
+      this.releaseHeld(qid, decision);
     }
   }
 
