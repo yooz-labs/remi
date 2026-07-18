@@ -125,12 +125,12 @@ export interface HelloMessage {
   readonly mode?: 'query' | undefined;
   /**
    * Stable per-device identifier, persisted client-side across app restarts
-   * (#662). When a reconnecting hello carries the SAME deviceId as the
-   * connection currently holding the session's exclusive write lock, the
-   * daemon treats it as the same physical client reconnecting after a
-   * transport blip (dead socket, iOS background, NAT drop) and reclaims the
-   * lock instead of FIFO-queuing behind the stale connection. Omitted by
-   * older clients, which keep today's queuing behavior.
+   * (#662). Historically used by the daemon to reclaim a stale connection's
+   * exclusive write lock on reconnect from the same device instead of
+   * FIFO-queuing behind it. Any attached connection can write since #795, so
+   * there is no more lock to reclaim — current daemons ignore this field.
+   * Still sent (and still read) for interop with an OLDER daemon that still
+   * implements exclusivity and reclaim.
    */
   readonly deviceId?: string | undefined;
 }
@@ -170,12 +170,15 @@ export interface HelloAckMessage {
   /** Next bullet ID for continuation (if resume) */
   readonly nextBulletId?: number | undefined;
   /**
-   * Whether this connection holds the session's exclusive write lock
-   * ('attached') or is read-only, waiting for the current holder to
-   * disconnect ('queued') (#662). Omitted for hello_acks sent outside the
-   * attach flow (e.g. query-mode clients, NO_SESSION). Older clients that
-   * don't read this field keep behaving as if every hello_ack meant
-   * 'attached', which was the pre-#662 (buggy) assumption.
+   * A current daemon only ever reports 'attached' here (or omits the field
+   * for hello_acks sent outside the attach flow — query-mode clients,
+   * NO_SESSION): #795 removed the exclusive write lock, so every attached
+   * connection can read and write immediately and there is no more
+   * queued/read-only state. 'queued' remains a valid value on the wire
+   * purely for interop with an OLDER daemon that still enforces exclusivity
+   * (#662) and FIFO-queues a second connection behind the first. Older
+   * clients that don't read this field keep behaving as if every hello_ack
+   * meant 'attached', which was the pre-#662 (buggy) assumption.
    */
   readonly attachState?: 'attached' | 'queued' | undefined;
   /**

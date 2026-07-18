@@ -152,9 +152,10 @@ const SERVER_VERSION = '0.1.0';
  * Consecutive ping ticks allowed to pass with no pong before a connection is
  * force-closed as dead (#662). A transport that dies without a clean close
  * (iOS backgrounding, cellular NAT drop) never fires the WebSocket 'close'
- * event, so without this the session's exclusive write lock
- * (`activeConnectionId`) would stay held forever. At the default 30s ping
- * interval this reaps an unresponsive peer after 2-3 intervals (60-90s),
+ * event, so without this a stale connection would stay in the session's
+ * attached set forever (#795) — never freeing the orphan timeout and
+ * lingering as a phantom recipient of broadcasts/fan-out. At the default 30s
+ * ping interval this reaps an unresponsive peer after 2-3 intervals (60-90s),
  * comfortably inside the Bun-level idleTimeout backstop in websocket-server.ts.
  */
 const MAX_MISSED_PONGS = 2;

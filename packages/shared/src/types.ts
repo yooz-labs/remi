@@ -489,14 +489,17 @@ export interface RemiStatus {
   branch: string;
   autoApprove: AutoApproveState;
   /**
-   * #755: true when a client holds the session's exclusive PTY slot
-   * (`activeConnectionId !== null`) — the status label reads "attached".
-   * Unlike `connections`, this never counts query-mode utility clients
-   * (`remi ls` / `remi kill` / phone session-list polls). Optional so an
-   * older writer/reader pair degrades gracefully.
+   * #755: true when at least one connection is attached to the session
+   * (#795: any number can be, not just one) — the status label reads
+   * "attached". Unlike `connections`, this never counts query-mode utility
+   * clients (`remi ls` / `remi kill` / phone session-list polls). Optional so
+   * an older writer/reader pair degrades gracefully.
    */
   attached?: boolean;
-  /** #755: clients queued behind the active one (read-only viewers). */
+  /** Always 0 from a current daemon (#795: no more exclusive write lock or
+   *  FIFO queue to wait behind). Kept on the wire so a NEWER client reading
+   *  this status from an OLDER daemon still renders a sensible "+N waiting"
+   *  label. */
   queuedCount?: number;
   /**
    * Distinguishes a session-less hub daemon (`remi serve`, #542) from an

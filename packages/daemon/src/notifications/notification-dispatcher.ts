@@ -331,7 +331,7 @@ export class NotificationDispatcher {
 
     const sessionForPush = sessionRegistry.getSession(questionSessionId);
     const hasActiveClient =
-      sessionForPush !== undefined && sessionForPush.activeConnectionId !== null;
+      sessionForPush !== undefined && sessionForPush.attachedConnections.size > 0;
     // A non-held question with a client attached: it is seen in-app over the
     // WebSocket; no push (as before), and the user IS reachable -> in_app. A HELD
     // escalation does NOT short-circuit here — it also pushes to the lock screen

@@ -54,12 +54,14 @@ export interface StatusWriterDeps {
   readonly debounceMs?: number;
   /**
    * #755: live attach state, stamped into the status on every flush so the
-   * "attached / N waiting" label tracks the session registry (the source of
-   * truth: `activeConnectionId` / `waitingConnections`) rather than the blunt
-   * `connections` counter, which also counts query-mode utility clients.
+   * "attached" label tracks the session registry (the source of truth: its
+   * attached-connections set, #795) rather than the blunt `connections`
+   * counter, which also counts query-mode utility clients. `queuedCount` is
+   * always 0 now that there is no more exclusive write lock/FIFO queue to
+   * wait behind; kept on the wire for older readers of the status file.
    * Pull-based because attach transitions happen in several places (attach,
-   * disconnect, FIFO auto-promotion) that don't all flow through cli.ts.
-   * Optional: tests and the earliest boot phase run without it.
+   * disconnect) that don't all flow through cli.ts. Optional: tests and the
+   * earliest boot phase run without it.
    */
   readonly getAttachState?: () => { attached: boolean; queuedCount: number } | null;
   /**

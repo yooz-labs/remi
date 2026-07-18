@@ -12,10 +12,9 @@
  * that never renders on the PTY).
  *
  * Shared by every attach surface (#760 review finding 2): the hello attach
- * path (connection-events), the resume-request attach path
- * (resume-session-events), and FIFO queue promotion (cli.ts
- * onConnectionPromoted). A send failure is the caller's transport's problem;
- * this helper only reports how many were attempted.
+ * path (connection-events) and the resume-request attach path
+ * (resume-session-events). A send failure is the caller's transport's
+ * problem; this helper only reports how many were attempted.
  */
 
 import { createQuestion } from '@remi/shared';
