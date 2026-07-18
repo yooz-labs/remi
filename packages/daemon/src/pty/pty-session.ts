@@ -216,6 +216,11 @@ export class PTYSession {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
     return this.enqueueWrite(() => {
+      // Re-check: the session may have exited while this write was queued
+      // behind another one (mirrors submitInput's re-check).
+      if (this.state !== 'running' || !this.process?.terminal) {
+        throw new Error(`Cannot write to session in state: ${this.state}`);
+      }
       this.termWrite(data);
     });
   }
