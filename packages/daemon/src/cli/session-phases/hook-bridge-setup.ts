@@ -759,6 +759,10 @@ export function setupHookBridge(
     // the bridge emits a "Retry?" card via onQuestion. Like PermissionRequest it
     // is NOT agent_id-dropped — PTY-presence gating happens downstream in the
     // tracker (#419).
+    //
+    // #799 deliberately does NOT clear open escalations here: an unknown-state
+    // agent is exactly the ambiguous signal #799 avoids clearing on (unlike a
+    // clean Stop/SubagentStop). Known residual leak, tracked as #802.
     handlers.onStopFailure?.(input);
   });
 
