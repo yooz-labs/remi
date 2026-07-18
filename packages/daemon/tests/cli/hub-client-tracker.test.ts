@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import type { HubStatusMessage, ProtocolMessage, UUID } from '@remi/shared';
+import type { HubAutostartState, HubStatusMessage, ProtocolMessage, UUID } from '@remi/shared';
 import type { AdapterMetadata } from '../../src/adapters/index.ts';
 import { HubClientTracker, classifyClient } from '../../src/cli/hub-client-tracker.ts';
 
@@ -49,20 +49,25 @@ describe('classifyClient (#650)', () => {
 });
 
 describe('HubClientTracker (#650)', () => {
-  function makeTracker(initialSessions = 0) {
+  function makeTracker(initialSessions = 0, initialAutostart: HubAutostartState = 'none') {
     const sent: Array<{ connectionId: UUID; message: ProtocolMessage }> = [];
     const broadcasts: ProtocolMessage[] = [];
     let sessions = initialSessions;
+    let autostart = initialAutostart;
     const tracker = new HubClientTracker({
       send: (connectionId, message) => sent.push({ connectionId, message }),
       broadcast: (message) => broadcasts.push(message),
       getSessions: () => sessions,
+      getAutostartState: () => autostart,
       hubVersion: '9.9.9-test',
     });
     const setSessions = (n: number): void => {
       sessions = n;
     };
-    return { tracker, sent, broadcasts, setSessions };
+    const setAutostart = (s: HubAutostartState): void => {
+      autostart = s;
+    };
+    return { tracker, sent, broadcasts, setSessions, setAutostart };
   }
 
   const asStatus = (m: ProtocolMessage): HubStatusMessage => m as HubStatusMessage;
@@ -145,5 +150,33 @@ describe('HubClientTracker (#650)', () => {
     tracker.refresh();
     expect(broadcasts).toHaveLength(1);
     expect(asStatus(broadcasts[0]!).sessions).toBe(2);
+  });
+
+  test('status frames carry the current autostart state (#788)', () => {
+    const { tracker, sent } = makeTracker(0, 'installed');
+    tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
+    expect(asStatus(sent[0]!.message).autostart).toBe('installed');
+  });
+
+  test('refresh broadcasts when autostart install/uninstall is detected (#788)', () => {
+    const { tracker, broadcasts, setAutostart } = makeTracker(0, 'none');
+    tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
+    broadcasts.length = 0;
+
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(0); // nothing changed
+
+    // `remi --install` ran while the hub was up; next census build picks it
+    // up without a restart.
+    setAutostart('installed');
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(1);
+    expect(asStatus(broadcasts[0]!).autostart).toBe('installed');
+
+    broadcasts.length = 0;
+    setAutostart('none');
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(1);
+    expect(asStatus(broadcasts[0]!).autostart).toBe('none');
   });
 });

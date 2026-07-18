@@ -44,14 +44,16 @@ network-client capability only. It **cannot**:
   session. Before the app has ever found a hub, the main window shows an
   onboarding panel (#773) walking through installing `remi`, starting the
   hub, and setting up its login item, each with a one-click Copy button for
-  the terminal command. The Settings scene (⌘,) repeats the login-item
-  command alongside the current hub status for later reference.
+  the terminal command.
 - **Stop the hub.** "Quit Remi" quits the app; the hub and every session it
   supervises keep running. Stop the hub with `remi stop` (running session
   daemons keep serving even then). A protocol-level stop from the app is
   tracked in #747, blocked on #535.
 - Read `~/.remi` or signal processes. Everything it knows arrives over the
-  loopback WebSocket.
+  loopback WebSocket — including, since #788, whether `remi --install`'s
+  LaunchAgent is actually on disk: the hub self-reports its own autostart
+  state (`"installed"` / `"none"`) as an optional field on the `hub_status`
+  census, because the sandboxed app has no other way to know.
 
 ## Lifecycle (#651, Dock presence #785)
 
@@ -68,6 +70,13 @@ network-client capability only. It **cannot**:
 - "Open Remi at Login" registers the APP as a login item (SMAppService).
   This is independent of the HUB's autostart — the LaunchAgent from
   `remi --install`. For the full always-on setup, enable both.
+- The Settings scene's Hub section is state-aware on the hub's reported
+  autostart (#788): `"installed"` shows a plain confirmation line (no
+  command needed); `"none"` shows a warning that remote access won't
+  survive a logout/reboot, plus the `remi --install` command row to fix it;
+  a hub too old to report the field (nil) falls back to today's neutral
+  command row. The menu-bar dropdown adds a "Hub autostart not set up…"
+  item — opening Settings — whenever a connected hub confirms `"none"`.
 - The main window never tears down its WKWebView once a hub has ever been
   seen (see "Relationship to the hub" above) — only the true first-run,
   never-connected case shows the onboarding panel instead.

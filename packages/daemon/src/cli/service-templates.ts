@@ -6,6 +6,25 @@
  * touching launchctl/systemctl (#542 review).
  */
 
+import path from 'node:path';
+
+/**
+ * Where `remi --install` writes the LaunchAgent plist, and where the
+ * autostart-state detector (#788) checks for it. Single source of truth so
+ * the two never drift.
+ */
+export function launchAgentPath(home: string): string {
+  return path.join(home, 'Library', 'LaunchAgents', 'com.yooz.remi.plist');
+}
+
+/**
+ * Where `remi --install` writes the systemd user unit, and where the
+ * autostart-state detector (#788) checks for it.
+ */
+export function systemdUnitPath(home: string): string {
+  return path.join(home, '.config', 'systemd', 'user', 'remi.service');
+}
+
 /**
  * LaunchAgent plist running the session-less hub.
  *

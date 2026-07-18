@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHello, deserialize, serialize } from '@remi/shared/protocol.ts';
 import type { HubStatusMessage, ProtocolMessage } from '@remi/shared/protocol.ts';
+import { launchAgentPath, systemdUnitPath } from '../../src/cli/service-templates.ts';
 import { type HubHandle, cleanupHub, pollUntil, spawnHub } from './hub-test-utils.ts';
 
 const hubs: HubHandle[] = [];
@@ -171,6 +172,38 @@ describe('hub_status census (integration, #650)', () => {
       'sessions census after removal',
     );
 
+    monitor.ws.close();
+  }, 30000);
+
+  test('reports autostart state, re-checked on the next census build (#788)', async () => {
+    const hub = await spawnHub();
+    hubs.push(hub);
+
+    const monitor = await connect(hub.port, 'query');
+    await pollUntil(() => lastStatus(monitor) !== undefined, 5000, 'initial hub_status');
+    // Real subprocess, real HOME (isolated temp dir): nothing was ever
+    // installed there, so the hub reports 'none'.
+    expect(lastStatus(monitor)?.autostart).toBe('none');
+
+    // Write the exact artifact `remi --install` would write (no
+    // launchctl/systemctl involved) for whatever platform this test runs
+    // on — matches what the spawned hub subprocess checks for.
+    const artifact =
+      process.platform === 'darwin' ? launchAgentPath(hub.home) : systemdUnitPath(hub.home);
+    fs.mkdirSync(path.dirname(artifact), { recursive: true });
+    fs.writeFileSync(artifact, 'placeholder');
+
+    // No watcher on the autostart artifact by design (#788): it is only
+    // re-checked when the next census build fires for another reason. A
+    // second client connecting is exactly such a trigger.
+    const user = await connect(hub.port);
+    await pollUntil(
+      () => lastStatus(monitor)?.autostart === 'installed',
+      5000,
+      'autostart flips to installed on the next broadcast',
+    );
+
+    user.ws.close();
     monitor.ws.close();
   }, 30000);
 });

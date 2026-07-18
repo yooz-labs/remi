@@ -792,12 +792,22 @@ export interface DaemonUpdateAvailableMessage {
 }
 
 /**
+ * Whether the hub's login-service artifact (`remi --install`'s LaunchAgent
+ * plist on macOS, systemd user unit on Linux) exists on disk (#788).
+ * `'installed'` means the hub restarts automatically after logout/reboot;
+ * `'none'` means it runs only for the lifetime of the process that started
+ * it. Omitted entirely on platforms `--install` does not support.
+ */
+export type HubAutostartState = 'installed' | 'none';
+
+/**
  * Hub connection/session census (#650, epic #648): the daemon half of the
  * menu-bar icon state. Sent by HUB-MODE daemons only — to a connection right
  * after its hello_ack, and broadcast to all connections whenever the counts
- * change (client connect/disconnect, child session registered/removed).
- * Query-mode clients (remi ls, the menu-bar app itself) receive it but are
- * never counted. Pre-#650 clients drop it via isValidMessage.
+ * change (client connect/disconnect, child session registered/removed,
+ * autostart install/uninstall). Query-mode clients (remi ls, the menu-bar
+ * app itself) receive it but are never counted. Pre-#650 clients drop it via
+ * isValidMessage.
  */
 export interface HubStatusMessage {
   readonly type: 'hub_status';
@@ -811,6 +821,12 @@ export interface HubStatusMessage {
   readonly sessions: number;
   /** REMI_VERSION of the hub process. */
   readonly hubVersion: string;
+  /**
+   * Autostart state (#788), OPTIONAL so older hubs (pre-#788) still decode
+   * cleanly on newer clients. Absent means "unknown", not "none" — clients
+   * should treat it the same as a hub too old to report it.
+   */
+  readonly autostart?: HubAutostartState;
 }
 
 /** A recent project directory aggregated from session history */
@@ -1714,6 +1730,7 @@ export function createHubStatus(counts: {
   remoteClients: number;
   sessions: number;
   hubVersion: string;
+  autostart?: HubAutostartState;
 }): HubStatusMessage {
   return {
     type: 'hub_status',
@@ -1723,6 +1740,7 @@ export function createHubStatus(counts: {
     remoteClients: counts.remoteClients,
     sessions: counts.sessions,
     hubVersion: counts.hubVersion,
+    ...(counts.autostart !== undefined && { autostart: counts.autostart }),
   };
 }
 

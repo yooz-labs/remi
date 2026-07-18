@@ -18,6 +18,10 @@ final class HubProtocolTests: XCTestCase {
     private let hubStatusFixture = """
         {"type":"hub_status","id":"fd070ecd-17da-4569-9509-55760a9b4ae5","timestamp":"2026-07-08T01:29:44.322Z","localClients":0,"remoteClients":0,"sessions":0,"hubVersion":"0.6.19-dev.4"}
         """
+    /// #788: a hub new enough to report autostart state.
+    private let hubStatusWithAutostartFixture = """
+        {"type":"hub_status","id":"fd070ecd-17da-4569-9509-55760a9b4ae5","timestamp":"2026-07-08T01:29:44.322Z","localClients":0,"remoteClients":0,"sessions":0,"hubVersion":"0.6.22-dev.1","autostart":"installed"}
+        """
     /// A message-delivery ack (#663) arrives BEFORE hello_ack on a real
     /// connection; the client must skip unknown types without failing.
     private let ackFixture = """
@@ -58,6 +62,21 @@ final class HubProtocolTests: XCTestCase {
         XCTAssertEqual(status.remoteClients, 0)
         XCTAssertEqual(status.sessions, 0)
         XCTAssertEqual(status.hubVersion, "0.6.19-dev.4")
+    }
+
+    /// #788: a pre-#788 hub omits `autostart` entirely — must decode
+    /// cleanly to nil (unknown), not fail the whole frame.
+    func testHubStatusWithoutAutostartDecodesToNil() throws {
+        let status = try JSONDecoder().decode(
+            HubStatusFrame.self, from: Data(hubStatusFixture.utf8))
+        XCTAssertNil(status.autostart)
+    }
+
+    /// #788: a hub that HAS installed its LaunchAgent reports it.
+    func testDecodesHubStatusWithAutostartInstalled() throws {
+        let status = try JSONDecoder().decode(
+            HubStatusFrame.self, from: Data(hubStatusWithAutostartFixture.utf8))
+        XCTAssertEqual(status.autostart, "installed")
     }
 
     func testUnknownFrameTypeOnlyNeedsTheEnvelope() throws {
