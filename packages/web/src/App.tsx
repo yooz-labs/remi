@@ -1419,6 +1419,36 @@ function App() {
           );
           break;
         }
+        // SESSION_NOT_FOUND carrying details.messageId (#795): a current
+        // daemon no longer queues (there is no more exclusive lock), so this
+        // replaces NOT_ACTIVE_CONNECTION as the rejection for "this
+        // connection isn't attached to the session" -- e.g. it explicitly
+        // detached, or a query-mode connection tried to send input. Same
+        // immediate bubble-flip as above (#681) so the sender isn't stuck at
+        // 'delivered' until the 5s ack-timeout sweep, but WITHOUT the
+        // queued-banner side effect: a new daemon never queues, so there is
+        // no read-only state to refresh. SESSION_NOT_FOUND without a
+        // messageId (session genuinely missing, resume mismatch, etc.) falls
+        // through to the generic error-message handling below, unchanged.
+        if (errorCode === 'SESSION_NOT_FOUND') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const rejectedMessageId = asNonEmptyString(details?.['messageId']);
+          if (rejectedMessageId) {
+            // The ack for this same input usually lands first (bubble already
+            // at 'delivered') since the daemon acks unconditionally before
+            // this check runs -- this rejection is authoritative and must
+            // win over that.
+            pendingSendsRef.current = rejectSend(pendingSendsRef.current, rejectedMessageId);
+            setMessages((prev) =>
+              prev.map((m) => (m.id === rejectedMessageId ? { ...m, state: 'failed' as const } : m)),
+            );
+            console.warn(
+              '[App] SESSION_NOT_FOUND: input not delivered (connection not attached)',
+              rejectedMessageId,
+            );
+            break;
+          }
+        }
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const refusedSessionId = asNonEmptyString(details?.['sessionId']) as UUID | undefined;
