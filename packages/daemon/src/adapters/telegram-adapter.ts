@@ -540,9 +540,10 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       // Messages that don't need Telegram rendering.
       // N/A on Telegram: no PTY/attach/wire-auth; content surfaces via other branches.
-      // hub_status / remi_status are display-state broadcasts (menu-bar icon,
-      // attach status bar) fired on every census change / status flush — without
-      // an explicit no-op they would console.warn continuously (#766 review).
+      // hub_status / remi_status / question_snapshot are display-state broadcasts
+      // (menu-bar icon, attach status bar, web reconciliation) fired on every
+      // census change / status flush / question add-remove-clear — without an
+      // explicit no-op they would console.warn continuously (#766 review, #798).
       case 'create_session_response':
       case 'ping':
       case 'pong':
@@ -554,6 +555,7 @@ export class TelegramAdapter implements ConnectionAdapter {
       case 'auth_result':
       case 'hub_status':
       case 'remi_status':
+      case 'question_snapshot':
         return true;
 
       default:

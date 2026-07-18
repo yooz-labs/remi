@@ -112,6 +112,7 @@ loadDotenvFile();
 import {
   createDaemonUpdateAvailable,
   createQuestionResolved,
+  createQuestionSnapshot,
   createRemiStatus,
   createSessionUpdate,
 } from '@remi/shared';
@@ -1024,6 +1025,21 @@ const sessionRegistry = new SessionRegistry(
         );
       } catch (err) {
         logError(`[live-sessions] setPendingQuestions failed: ${errorToString(err)}`);
+      }
+      // #798: broadcast the authoritative live-question-id set to every
+      // connected client (same fan-out as question_resolved/remi_status).
+      // Backstops the client-side replay gate -- a client that reconnects
+      // into a quiet session gets no new question/resolve event to re-sync
+      // it, so this snapshot is what actually clears a phantom card there.
+      try {
+        registry.broadcast(
+          createQuestionSnapshot(
+            sessionId,
+            questions.map((q) => q.id),
+          ),
+        );
+      } catch (err) {
+        logError(`[QuestionSnapshot] broadcast failed for ${sessionId}: ${errorToString(err)}`);
       }
     },
   },
