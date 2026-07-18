@@ -51,7 +51,24 @@ enum NotificationDiff {
 
 @MainActor
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
-    private let center: UNUserNotificationCenter
+    /// LAZY, not constructed in `init()`: `UNUserNotificationCenter.current()`
+    /// requires a real app-bundle context and crashes
+    /// (`bundleProxyForCurrentProcess is nil`) when called from a process
+    /// without one -- notably `RemiTests.xctest`, which is UN-hosted by
+    /// design (project.yml) so it never runs inside `Remi.app`.
+    /// `HubClientIntegrationTests` constructs real `HubClient` instances
+    /// (and therefore a real `NotificationManager` via `HubClient`'s stored
+    /// property), so an eager `.current()` in `init()` crashed EVERY test
+    /// that merely creates a `HubClient`, not just notification-specific
+    /// ones (#786 CI failure). Deferring until the first actual post/
+    /// withdraw means a `sync()` call with nothing to report -- the common
+    /// case for those tests, which never have a pending question -- never
+    /// touches it at all.
+    private lazy var center: UNUserNotificationCenter = {
+        let c = UNUserNotificationCenter.current()
+        c.delegate = self
+        return c
+    }()
     /// Question ids from the most recent `sync()` call, so the next call can
     /// diff against it. Not persisted across launches: a question still
     /// pending after a relaunch is, correctly, treated as new again (there is
@@ -63,12 +80,6 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// the "Open Remi" menu item (RemiApp.swift) -- this class has no
     /// `openWindow` environment action of its own to call directly.
     var onNotificationActivated: (() -> Void)?
-
-    init(center: UNUserNotificationCenter = .current()) {
-        self.center = center
-        super.init()
-        center.delegate = self
-    }
 
     /// Called on every `hub_status` frame (#786/#787): diffs the current
     /// pending-question set against what was last synced, posts one
