@@ -81,11 +81,14 @@ export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): st
     state = 'approved';
   }
 
-  // #755: label from the REAL attach state (exclusive PTY slot + FIFO queue),
-  // not the raw connection counter — `connections` also counts query-mode
-  // utility clients (remi ls / kill / phone list polls), which is how the bar
-  // used to read "1 client(s)" with nobody attached. Fall back to the old
-  // counter label only when the attach fields are absent (older writer).
+  // #755: label from the REAL attach state (the session's attached-connections
+  // set, #795), not the raw connection counter — `connections` also counts
+  // query-mode utility clients (remi ls / kill / phone list polls), which is
+  // how the bar used to read "1 client(s)" with nobody attached. `queued` is
+  // always 0 now that there is no more exclusive lock/FIFO queue; the
+  // "+N waiting" branch below is dead code kept only for an older daemon
+  // writing this same status file. Fall back to the old counter label only
+  // when the attach fields are absent (older writer).
   const queued = status.queuedCount ?? 0;
   const clients =
     status.attached === undefined

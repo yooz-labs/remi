@@ -82,8 +82,9 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
   interface PendingStop {
     // Mutable: a duplicate stop appends itself via waiters.push (see below).
     waiters: Array<{ connectionId: UUID; requestId: UUID }>;
-    /** Active client to notify with SESSION_ENDED, if it isn't a requester. */
-    readonly notifyConnectionId: UUID | null;
+    /** Attached clients (#795: any number, not just one) to notify with
+     *  SESSION_ENDED, excluding requesters. */
+    readonly notifyConnectionIds: readonly UUID[];
     readonly fallbackTimer: ReturnType<typeof setTimeout>;
   }
   const pendingStops = new Map<UUID, PendingStop>();
@@ -91,16 +92,16 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
   /**
    * Resolve a deferred Stop once the session has actually closed. Call from the
    * registry's onSessionClosed for every close reason; a no-op when the session
-   * ended on its own (no pending Stop). Cancels the force-fallback, notifies a
-   * third-party client, and acks every waiting requester.
+   * ended on its own (no pending Stop). Cancels the force-fallback, notifies
+   * every third-party attached client, and acks every waiting requester.
    */
   function resolveStopOnClose(sessionId: UUID): void {
     const pending = pendingStops.get(sessionId);
     if (!pending) return;
     pendingStops.delete(sessionId);
     clearTimeout(pending.fallbackTimer);
-    if (pending.notifyConnectionId) {
-      send(pending.notifyConnectionId, createError('SESSION_ENDED', 'Session ended by request'));
+    for (const notifyConnectionId of pending.notifyConnectionIds) {
+      send(notifyConnectionId, createError('SESSION_ENDED', 'Session ended by request'));
     }
     for (const waiter of pending.waiters) {
       send(waiter.connectionId, createKillSessionResponse(true, waiter.requestId));
@@ -214,13 +215,12 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // normal /exit path the PTY has already drained before the notice fires;
       // on the rare force-fallback the close races a still-resolving pty.close(),
       // so a third-party client may see a few trailing bytes after SESSION_ENDED.
-      const notifyConnectionId =
-        session.activeConnectionId && session.activeConnectionId !== connectionId
-          ? session.activeConnectionId
-          : null;
+      const notifyConnectionIds = [...session.attachedConnections].filter(
+        (id) => id !== connectionId,
+      );
       pendingStops.set(sessionId, {
         waiters: [{ connectionId, requestId }],
-        notifyConnectionId,
+        notifyConnectionIds,
         fallbackTimer,
       });
       log(`Session stop initiated: ${sessionName}`);
@@ -238,31 +238,34 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         return;
       }
 
-      const activeConnId = session.activeConnectionId;
-      if (activeConnId === null) {
+      const attachedConnIds = [...session.attachedConnections];
+      if (attachedConnIds.length === 0) {
         send(connectionId, createDetachSessionAck(sessionId, false, 'Session is already detached'));
         return;
       }
 
-      // Send ack to the requesting connection. It may be the active client
-      // itself, or a separate query-mode client (like `remi detach <session>`).
+      // Send ack to the requesting connection. It may be one of the attached
+      // clients itself, or a separate query-mode client (like `remi detach
+      // <session>`).
       const ackSent = send(connectionId, createDetachSessionAck(sessionId, true));
       if (!ackSent) {
         log(`Warning: detach ack could not be delivered to ${connectionId}`);
       }
 
-      // Detach the ACTIVE connection (not necessarily the requesting one).
-      // Only untrack + decrement here for third-party detach
-      // (connectionId !== activeConnId). For self-detach, onDisconnect will
-      // clean up when the WebSocket actually closes.
-      sessionRegistry.detachConnection(activeConnId, true);
-      if (activeConnId !== connectionId) {
-        untrackConnection(activeConnId);
-        onConnectionRemoved();
+      // Detach EVERY attached connection (#795: there can be more than one
+      // now), not just a single active one. Only untrack + decrement for a
+      // third-party detach (attachedConnId !== connectionId). For self-detach,
+      // onDisconnect will clean up when the WebSocket actually closes.
+      for (const attachedConnId of attachedConnIds) {
+        sessionRegistry.detachConnection(attachedConnId, true);
+        if (attachedConnId !== connectionId) {
+          untrackConnection(attachedConnId);
+          onConnectionRemoved();
+        }
       }
 
       log(
-        `Session explicitly detached: ${session.name} (active connection ${activeConnId} detached)`,
+        `Session explicitly detached: ${session.name} (attached connections [${attachedConnIds.join(', ')}] detached)`,
       );
     },
 
