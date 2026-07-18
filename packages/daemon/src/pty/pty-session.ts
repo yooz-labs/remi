@@ -172,20 +172,59 @@ export class PTYSession {
   }
 
   /**
-   * Write data to the terminal.
-   * Throws if session is not running.
+   * Per-session write serialization (#795). Every write-ish entry point
+   * (`write`, `submitInput`) chains its terminal writes onto this promise so
+   * only one write sequence is ever in flight — one submit's full multi-step
+   * sequence (text, delay, CR) always completes before the next one starts.
+   *
+   * This is the safety property that removing the exclusive session lock
+   * requires: with any attached connection now able to submit input,
+   * concurrent submits are possible where previously only one connection
+   * could ever write at all. `390898b` allowed exactly this (queued
+   * connections could send input too) without adding this serialization, and
+   * `588afde` reverted it because "queued resize/answer/input would race the
+   * active client's session" — two concurrent `submitInput()` calls could
+   * interleave their text/CR writes and corrupt each other's input. This
+   * queue is what makes removing the lock safe this time.
    */
-  write(data: string | Uint8Array): void {
+  private writeChain: Promise<void> = Promise.resolve();
+
+  /**
+   * Queue `fn` to run only after every previously-queued write has settled
+   * (whether it succeeded or failed). Returns a promise for `fn`'s own
+   * outcome so the caller can still await/catch it; a failure never poisons
+   * the chain for writes queued after it.
+   */
+  private enqueueWrite<T>(fn: () => Promise<T> | T): Promise<T> {
+    const run = this.writeChain.then(fn);
+    this.writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Write data to the terminal.
+   * Throws synchronously if the session is not currently running. The actual
+   * byte write is then queued (see `enqueueWrite`) so a single-shot write can
+   * never land in the middle of another connection's in-flight `submitInput`
+   * sequence (#795).
+   */
+  write(data: string | Uint8Array): Promise<void> {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
-    this.termWrite(data);
+    return this.enqueueWrite(() => {
+      this.termWrite(data);
+    });
   }
 
   /**
    * The single sink for every byte sent to the child's terminal. Routes the
    * input through the optional capture (#627) so a keystroke recording sees the
-   * exact bytes, then writes them. Callers must have already checked `running`.
+   * exact bytes, then writes them. Callers must have already checked `running`
+   * and must only call this from inside `enqueueWrite` (#795).
    */
   private termWrite(data: string | Uint8Array): void {
     ptyCapture.in(data);
@@ -196,20 +235,31 @@ export class PTYSession {
    * Write text and submit with Enter key.
    * IMPORTANT: Writes text first, then CR separately after a small delay.
    * This matches how real keyboard input works and is required for Claude Code.
+   * Queued (#795) so the text-then-CR sequence always completes atomically
+   * with respect to any other queued write (another submit, or a raw write)
+   * for this session.
    */
   async submitInput(text: string): Promise<void> {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
 
-    // Write the text first
-    this.termWrite(text);
+    await this.enqueueWrite(async () => {
+      // Re-check: the session may have exited while this submit was queued
+      // behind another one.
+      if (this.state !== 'running' || !this.process?.terminal) {
+        throw new Error(`Cannot write to session in state: ${this.state}`);
+      }
 
-    // Small delay to let Claude Code process the text
-    await new Promise((resolve) => setTimeout(resolve, 50));
+      // Write the text first
+      this.termWrite(text);
 
-    // Send CR (Enter key) separately
-    this.termWrite('\r');
+      // Small delay to let Claude Code process the text
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Send CR (Enter key) separately
+      this.termWrite('\r');
+    });
   }
 
   /**
