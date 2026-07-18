@@ -2325,6 +2325,62 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
     });
+
+    test('a matching subagent PostToolUseFailure resolves it (a failed tool still proves the permission was granted)', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-failure');
+
+      await hookServer.firePermission({
+        session_id: 'claude-799-failure',
+        agent_id: 'agent-799-5',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf build/' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(0);
+
+      hookServer.fire('PostToolUseFailure', {
+        session_id: 'claude-799-failure',
+        agent_id: 'agent-799-5',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf build/' },
+        error: 'exit 1',
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('a non-matching subagent PostToolUseFailure leaves the parked permission open', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-failure-nomatch');
+
+      await hookServer.firePermission({
+        session_id: 'claude-799-failure-nomatch',
+        agent_id: 'agent-799-6',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf build/' },
+      });
+
+      hookServer.fire('PostToolUseFailure', {
+        session_id: 'claude-799-failure-nomatch',
+        agent_id: 'agent-799-6',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf dist/' }, // different command -> no signature match
+        error: 'exit 1',
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(0);
+    });
   });
 
   describe('session_rotated emission on rotation (#430 #438)', () => {

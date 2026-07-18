@@ -767,7 +767,21 @@ export function setupHookBridge(
     if (!binder.admits(input)) return;
     // Status event: a subagent's tool failure must not flip MAIN's status, so
     // drop on agent_id — the same split policy as Pre/PostToolUse (#419).
-    if (isSubagentEvent(input)) return;
+    if (isSubagentEvent(input)) {
+      // #799: a tool call that FAILED still proves the gating permission was
+      // granted (the tool actually ran) — at least as strong a signal as a
+      // successful PostToolUse. Same agent-scoped external-resolution cancel
+      // as the PreToolUse/PostToolUse subagent branches above.
+      autoApproveGate.cancelExternallyResolved(
+        {
+          toolName: input.tool_name,
+          toolInput: input.tool_input,
+          agentId: input.agent_id,
+        },
+        'PostToolUseFailure-subagent',
+      );
+      return;
+    }
     handlers.onPostToolUseFailure?.(input);
   });
 
