@@ -53,10 +53,17 @@ network-client capability only. It **cannot**:
 - Read `~/.remi` or signal processes. Everything it knows arrives over the
   loopback WebSocket.
 
-## Lifecycle (#651)
+## Lifecycle (#651, Dock presence #785)
 
 - Closing the window hides the UI; the menu-bar item and your hub stay up.
-- There is no Dock icon (accessory app); the menu-bar "r" is the app.
+- The app launches as an accessory (no Dock icon, no Cmd-Tab entry) and
+  stays that way whenever no app window is open — the menu-bar "r" is the
+  app. The moment a window (the main web-UI window or Settings) is open,
+  the app promotes itself to a regular app so it shows in the Dock and
+  Cmd-Tab like anything else; when the last such window closes, it drops
+  back to accessory. `ActivationPolicy.derive` is the pure window-count ->
+  policy decision (`ActivationPolicy.swift`); `AppDelegate` wires
+  `NSWindow.didBecomeKeyNotification`/`willCloseNotification` to it.
 - "Open Remi at Login" registers the APP as a login item (SMAppService).
   This is independent of the HUB's autostart — the LaunchAgent from
   `remi --install`. For the full always-on setup, enable both.
