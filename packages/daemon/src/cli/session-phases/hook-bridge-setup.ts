@@ -29,6 +29,10 @@
  * while agent-team teammates keep working, so it releases/cancels only
  * MAIN-context holds and evals, sparing a teammate's still-open escalation.
  * SessionEnd is real teardown and stays unscoped (releases/cancels everything).
+ * #799: `SubagentStop` calls `gate.cancelStaleForAgent(agent_id)`, the
+ * single-agent mirror of Stop's mainOnly sweep — resolves any permission
+ * still open for THAT agent (the terminal-rejection case a matching tool
+ * call can never signal, since a deny produces no tool call at all).
  *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
@@ -800,6 +804,17 @@ export function setupHookBridge(
       handlers.onSubagentStop?.(input);
     } catch (err) {
       logError(`[Hooks] SubagentStop view-tracking failed for ${sessionId}: ${errorToString(err)}`);
+    }
+    // #799: this agent's turn is fully over, so any permission escalation the
+    // gate still tracks for it (parked-then-pushed, or parked-and-never-
+    // rendered) can no longer be "about to run a tool" — resolve it through
+    // the same funnel a matching tool call uses. Covers the one case a tool
+    // signature match never can: the subagent's permission was REJECTED in
+    // the terminal (or an unrelated allowlist absorption left no render), so
+    // no PreToolUse/PostToolUse ever fires for it. Scoped to this exact
+    // agent_id, so a sibling teammate's still-open escalation is untouched.
+    if (input.agent_id) {
+      autoApproveGate.cancelStaleForAgent(input.agent_id, 'SubagentStop');
     }
   });
 

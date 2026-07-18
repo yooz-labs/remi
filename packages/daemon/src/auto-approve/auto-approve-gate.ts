@@ -57,6 +57,19 @@
  * gets, so a subagent permission answered directly in the terminal (the
  * matching tool then runs) is resolved through the normal `removeQuestion`
  * + `onResolved` funnel instead of leaking forever.
+ *
+ * A tool-signature match cannot cover a permission REJECTED in the terminal
+ * ("No" / "keep planning" — a deny produces no tool call at all). Two more
+ * triggers close that gap, both routing through the SAME funnel instead of a
+ * silent bookkeeping-only delete:
+ *   - `cancelStale('Stop', {mainOnly:true})`: Claude cannot fire `Stop`
+ *     ("finished responding") while still genuinely blocked rendering its
+ *     own native passthrough prompt (design/multi-choice, e.g. ExitPlanMode),
+ *     so a MAIN-tagged signature still open at Stop proves it was resolved
+ *     without a matching tool call ever firing.
+ *   - `cancelStaleForAgent`, called from `SubagentStop`: that agent's own
+ *     turn is over, so anything still open for it cannot still be blocking —
+ *     the single-agent mirror of the Stop reasoning above.
  */
 
 import type { UUID } from '@remi/shared';
@@ -81,9 +94,10 @@ interface ToolSignature {
    *  not wiped out just because the lead agent idled. */
   readonly isSubagent: boolean;
   /** #799: the escalating event's own `input.agent_id` (undefined for a MAIN
-   *  event). Lets `findOpenQuestionMatching` scope a match to the EXACT
-   *  agent that opened it -- without this, two different agents (or a
-   *  subagent and main) issuing an identical (tool_name, tool_input) could
+   *  event). Lets `findOpenQuestionMatching` and `cancelStaleForAgent` scope
+   *  a match to the EXACT agent that opened it -- without this, two
+   *  different agents (or a subagent and main) issuing an identical
+   *  (tool_name, tool_input) could
    *  cross-resolve each other's unrelated escalation. */
   readonly agentId: string | undefined;
 }
@@ -403,15 +417,18 @@ export class AutoApproveGate {
    *     (hold-timeout / undelivered-notification fail-open),
    *     `reconcileLateVerdict`'s cancelled branch (Part B), and
    *     `resolveSupersededQuestion` (#673's own external-resolution / stale
-   *     -duplicate cleanup).
-   * `cancelStale` and `forceRelease` additionally wholesale-clear the whole
-   * map (session end / force-release — nothing tracked is relevant after
-   * either). A stale entry is harmless (a signature match just triggers a
-   * redundant, idempotent cleanup), but MUST NOT be able to accumulate
-   * indefinitely: an un-deleted entry from a timed-out/cancelled hold would
-   * sit for the rest of the process lifetime and could fire a spurious
-   * `notifyResolved` for a question dead for hours on a much-later,
-   * unrelated duplicate of the same command.
+   *     -duplicate cleanup, also the funnel `cancelStaleForAgent` (#799) and
+   *     `cancelStale`'s mainOnly Stop sweep (#799) use).
+   * `releaseAllHolds` ALSO deletes an entry it just released (#799 — so the
+   * mainOnly Stop sweep below never double-resolves it), and `cancelStale`
+   * (non-mainOnly) / `forceRelease` wholesale-clear the whole map (session
+   * end / force-release — nothing tracked is relevant after either). A stale
+   * entry is harmless (a signature match just triggers a redundant, idempotent
+   * cleanup), but MUST NOT be able to accumulate indefinitely: an un-deleted
+   * entry from a timed-out/cancelled hold would sit for the rest of the
+   * process lifetime and could fire a spurious `notifyResolved` for a
+   * question dead for hours on a much-later, unrelated duplicate of the same
+   * command.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
@@ -462,8 +479,22 @@ export class AutoApproveGate {
     // moot; a teammate's is not (its hold, if any, was just spared above, and
     // its signature must stay trackable for external-resolution cancellation).
     if (mainOnly) {
-      for (const [qid, sig] of this.openQuestionSignatures) {
-        if (!sig.isSubagent) this.openQuestionSignatures.delete(qid);
+      // #799: a MAIN-tagged signature STILL open here was never held (a held
+      // one was already released + unregistered by releaseAllHolds above) --
+      // it is a PASSTHROUGH escalation (multi-choice / design, e.g.
+      // ExitPlanMode) Claude rendered natively and is still tracking. Claude
+      // cannot fire `Stop` ("finished responding") while genuinely blocked
+      // rendering that native prompt, so a MAIN Stop observing it still open
+      // proves it was resolved WITHOUT a matching tool call ever firing --
+      // most commonly a rejection ("No" / "keep planning") answered directly
+      // in the terminal, the one #799 gap `cancelExternallyResolved` can
+      // never catch (a deny produces no PreToolUse to match against). Route
+      // each survivor through the SAME funnel a tool-signature match uses
+      // (not a silent bookkeeping-only delete), so question_resolved + APNS
+      // dismiss + the live-sessions mirror all fire for it too.
+      for (const [qid, sig] of [...this.openQuestionSignatures]) {
+        if (sig.isSubagent) continue;
+        this.resolveSupersededQuestion(qid, reason);
       }
     } else {
       this.openQuestionSignatures.clear();
@@ -503,6 +534,35 @@ export class AutoApproveGate {
     }
     if (cancelledCount > 0) {
       log(`[AutoApprove] Cancelled ${cancelledCount} stale MAIN-context LLM eval(s): ${reason}`);
+    }
+  }
+
+  /**
+   * #799: resolve every OPEN escalation this gate still tracks for ONE exact
+   * subagent/team-member `agent_id` -- the single-agent mirror of
+   * `cancelStale('Stop', {mainOnly:true})`'s reasoning above. Called from
+   * `SubagentStop`: that event fires only once THAT agent's own turn is
+   * fully over, so any escalation still open for it (whether its rich
+   * question was ever pushed to a client, or only parked awaiting a PTY
+   * render that never came) can no longer be "about to run a tool" for that
+   * agent. This is the one unambiguous signal for a subagent permission
+   * REJECTED in the terminal (or silently absorbed by the allowlist without
+   * a render): a deny produces no tool call, so the #799 tool-signature
+   * match (`cancelExternallyResolved`, wired on subagent PreToolUse/
+   * PostToolUse) can never catch it.
+   *
+   * Scoped strictly to `agentId`: a DIFFERENT agent's still-open escalation
+   * (including main's, whose signatures never carry an agentId) is left
+   * completely untouched, so one teammate finishing can never phantom-
+   * resolve another teammate's -- or the lead's -- still-pending prompt.
+   * Each match funnels through `resolveSupersededQuestion`, so
+   * `removeQuestion` + `onResolved` (question_resolved broadcast + APNS
+   * dismiss) fire exactly as a matching tool call would.
+   */
+  cancelStaleForAgent(agentId: string, reason: string): void {
+    for (const [qid, sig] of [...this.openQuestionSignatures]) {
+      if (sig.agentId !== agentId) continue;
+      this.resolveSupersededQuestion(qid, reason);
     }
   }
 
@@ -649,6 +709,12 @@ export class AutoApproveGate {
       // gone (#585, P7), and drop the registry entry so no ghost card replays.
       this.notifyResolved(qid, 'cancelled');
       this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
+      // #799: mirror releaseHeld's own openQuestionSignatures/confirmedDeliveries
+      // cleanup so this qid reads as ALREADY resolved. Without this, cancelStale's
+      // mainOnly sweep over the surviving signatures (below) would find this
+      // just-released entry too and fire a second, spurious notifyResolved for it.
+      this.openQuestionSignatures.delete(qid);
+      this.confirmedDeliveries.delete(qid);
       hold.resolve(decision);
       this.pendingHolds.delete(qid);
     }
@@ -1401,7 +1467,8 @@ export class AutoApproveGate {
    * `cancelExternallyResolved` (no signature to match) nor `cancelStale`
    * (subagent holds never exist) could reach it. A later matching subagent
    * PreToolUse/PostToolUse (`cancelExternallyResolved`, wired in
-   * `hook-bridge-setup.ts`) can now find and resolve it through the normal
+   * `hook-bridge-setup.ts`) or that agent's own `SubagentStop`
+   * (`cancelStaleForAgent`) can now find and resolve it through the normal
    * `removeQuestion` + `onResolved` funnel. Mirrors `escalateToUser`'s own
    * duplicate-re-request cleanup: a re-park for the identical signature (the
    * SAME agent re-asking) proves the earlier parked/pushed record is dead.

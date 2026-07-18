@@ -2253,6 +2253,66 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(0);
     });
+
+    test("SubagentStop resolves that agent's still-open permission (denied in the terminal, no tool call ever followed)", async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-stop');
+
+      await hookServer.firePermission({
+        session_id: 'claude-799-stop',
+        agent_id: 'agent-799-4',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm important-file' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(0); // still open: no tool call ever fired (denied)
+
+      hookServer.fire('SubagentStop', {
+        session_id: 'claude-799-stop',
+        agent_id: 'agent-799-4',
+        agent_type: 'general-purpose',
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-799-ambig');
+
+      await hookServer.firePermission({
+        session_id: 'claude-799-ambig',
+        agent_id: 'agent-799-A',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo A' },
+      });
+      await hookServer.firePermission({
+        session_id: 'claude-799-ambig',
+        agent_id: 'agent-799-B',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo B' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(0);
+
+      // Only agent-A finished.
+      hookServer.fire('SubagentStop', {
+        session_id: 'claude-799-ambig',
+        agent_id: 'agent-799-A',
+        agent_type: 'general-purpose',
+      });
+
+      // Exactly ONE resolution -- agent-B's still-open permission is untouched.
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
   });
 
   describe('session_rotated emission on rotation (#430 #438)', () => {
