@@ -813,7 +813,15 @@ export function setupHookBridge(
     // the terminal (or an unrelated allowlist absorption left no render), so
     // no PreToolUse/PostToolUse ever fires for it. Scoped to this exact
     // agent_id, so a sibling teammate's still-open escalation is untouched.
+    //
+    // Also expire this agent's PARKED tracker record (#763), pairing with
+    // cancelStaleForAgent the same way the PreToolUse-subagent branch pairs
+    // noteAgentAdvanced with cancelExternallyResolved above. Without this, a
+    // resolved-but-still-parked record can survive up to PARKED_RECORD_TTL_MS
+    // (120s) and pair with a delayed PTY render for this agent key, re-pushing
+    // a phantom card for a question that is already gone from sessionRegistry.
     if (input.agent_id) {
+      tracker.noteAgentAdvanced(input.agent_id);
       autoApproveGate.cancelStaleForAgent(input.agent_id, 'SubagentStop');
     }
   });

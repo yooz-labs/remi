@@ -2256,7 +2256,11 @@ describe('setupHookBridge', () => {
 
     test("SubagentStop resolves that agent's still-open permission (denied in the terminal, no tool call ever followed)", async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      const { tracker } = build({
+        autoApprove: true,
+        autoApproveDecision: 'escalate',
+        broadcastResolvedLog,
+      });
       lock('claude-799-stop');
 
       await hookServer.firePermission({
@@ -2268,6 +2272,8 @@ describe('setupHookBridge', () => {
         tool_input: { command: 'rm important-file' },
       });
       expect(broadcastResolvedLog).toHaveLength(0); // still open: no tool call ever fired (denied)
+      // The park left a parked-awaiting-PTY tracker record for this agent.
+      expect(tracker.awaitingPTYCountForTest()).toBe(1);
 
       hookServer.fire('SubagentStop', {
         session_id: 'claude-799-stop',
@@ -2277,6 +2283,12 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      // #799 review fix: SubagentStop must ALSO expire the tracker's parked
+      // record (mirrors the PreToolUse-subagent branch's noteAgentAdvanced
+      // pairing) -- otherwise it survives up to PARKED_RECORD_TTL_MS and can
+      // pair with a later, unrelated PTY render for this agent key and
+      // re-push a phantom card for a question already gone from the registry.
+      expect(tracker.awaitingPTYCountForTest()).toBe(0);
     });
 
     test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
