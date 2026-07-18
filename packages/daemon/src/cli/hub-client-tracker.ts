@@ -105,6 +105,22 @@ export class HubClientTracker {
   }
 
   /**
+   * Full census for one broadcast cycle: client counts plus a single fresh
+   * getAutostartState() fs check. Callers thread the result through
+   * statusMessage()/broadcastIfChanged() instead of each re-reading deps,
+   * so one onConnect/onDisconnect/refresh() call does exactly one
+   * getAutostartState() (and one counts()) rather than two (#788 review).
+   */
+  private snapshot(): {
+    localClients: number;
+    remoteClients: number;
+    sessions: number;
+    autostart: HubAutostartState;
+  } {
+    return { ...this.counts(), autostart: this.deps.getAutostartState() };
+  }
+
+  /**
    * Track a newly connected client. Every client receives the census exactly
    * ONCE per connect (#744 review): by the time this runs (post-hello_ack),
    * the new connection is already reachable by `broadcast` on every
@@ -115,35 +131,31 @@ export class HubClientTracker {
    */
   onConnect(connectionId: UUID, metadata: AdapterMetadata): void {
     this.clients.set(connectionId, classifyClient(metadata));
-    if (!this.broadcastIfChanged()) {
-      this.deps.send(connectionId, this.statusMessage());
+    const snapshot = this.snapshot();
+    if (!this.broadcastIfChanged(snapshot)) {
+      this.deps.send(connectionId, this.statusMessage(snapshot));
     }
   }
 
   onDisconnect(connectionId: UUID): void {
     if (this.clients.delete(connectionId)) {
-      this.broadcastIfChanged();
+      this.broadcastIfChanged(this.snapshot());
     }
   }
 
   /** Re-check the census after an external change (child session
    *  registered/removed via the live-sessions watcher). */
   refresh(): void {
-    this.broadcastIfChanged();
+    this.broadcastIfChanged(this.snapshot());
   }
 
-  private statusMessage(): ProtocolMessage {
-    return createHubStatus({
-      ...this.counts(),
-      hubVersion: this.deps.hubVersion,
-      autostart: this.deps.getAutostartState(),
-    });
+  private statusMessage(snapshot: ReturnType<HubClientTracker['snapshot']>): ProtocolMessage {
+    return createHubStatus({ ...snapshot, hubVersion: this.deps.hubVersion });
   }
 
   /** Returns true when a broadcast actually went out. */
-  private broadcastIfChanged(): boolean {
-    const { localClients, remoteClients, sessions } = this.counts();
-    const autostart = this.deps.getAutostartState();
+  private broadcastIfChanged(snapshot: ReturnType<HubClientTracker['snapshot']>): boolean {
+    const { localClients, remoteClients, sessions, autostart } = snapshot;
     const prev = this.lastEmitted;
     if (
       prev.local === localClients &&
@@ -154,7 +166,7 @@ export class HubClientTracker {
       return false;
     }
     this.lastEmitted = { local: localClients, remote: remoteClients, sessions, autostart };
-    this.deps.broadcast(this.statusMessage());
+    this.deps.broadcast(this.statusMessage(snapshot));
     return true;
   }
 }
