@@ -125,6 +125,7 @@ import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
@@ -348,8 +349,8 @@ if (cliInstall || cliUninstall) {
   const binaryPath = pathResolved ?? process.execPath;
 
   if (platform === 'darwin') {
-    const plistName = 'com.yooz.remi.plist';
-    const dest = path.join(home, 'Library', 'LaunchAgents', plistName);
+    const { launchAgentPath } = await import('./cli/service-templates.ts');
+    const dest = launchAgentPath(home);
 
     if (cliInstall) {
       // Template rationale (serve-not-daemon, KeepAlive semantics) lives with
@@ -405,8 +406,9 @@ if (cliInstall || cliUninstall) {
       }
     }
   } else if (platform === 'linux') {
-    const serviceDir = path.join(home, '.config', 'systemd', 'user');
-    const dest = path.join(serviceDir, 'remi.service');
+    const { systemdUnitPath } = await import('./cli/service-templates.ts');
+    const dest = systemdUnitPath(home);
+    const serviceDir = path.dirname(dest);
 
     if (cliInstall) {
       const { buildSystemdUnit } = await import('./cli/service-templates.ts');
@@ -1673,6 +1675,9 @@ const hubClientTracker: HubClientTracker | null = serveMode
       },
       broadcast: (message) => registry.broadcast(message),
       getSessions: () => liveSessionsRegistry.listLive().length,
+      // Re-checked on every census build/change-check (#788): a cheap fs
+      // stat, cheap enough to not bother caching across calls.
+      getAutostartState: () => detectAutostartState(process.platform, os.homedir()),
       hubVersion: REMI_VERSION,
     })
   : null;

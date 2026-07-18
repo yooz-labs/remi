@@ -9,7 +9,7 @@
  */
 
 import { createHubStatus } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { HubAutostartState, ProtocolMessage, UUID } from '@remi/shared';
 import type { AdapterMetadata } from '../adapters/index.ts';
 import { isLoopbackAddress } from '../server/peer-helpers.ts';
 
@@ -57,6 +57,13 @@ export interface HubClientTrackerDeps {
   readonly broadcast: (message: ProtocolMessage) => void;
   /** Live child session daemon count (live-sessions registry census). */
   readonly getSessions: () => number;
+  /**
+   * Cheap fs existence check for the `remi --install` login-service artifact
+   * (#788). Called fresh on every census build/change-check so installing or
+   * uninstalling while the hub is running is picked up on the next
+   * broadcast, without a restart.
+   */
+  readonly getAutostartState: () => HubAutostartState;
   /** REMI_VERSION of the hub process. */
   readonly hubVersion: string;
 }
@@ -65,16 +72,26 @@ export class HubClientTracker {
   private readonly clients = new Map<UUID, PeerClass>();
   private readonly deps: HubClientTrackerDeps;
   /**
-   * Last counts broadcast, for change detection (sessions included). Seeded
-   * with the real census at construction — a null sentinel would force a
-   * spurious broadcast on the first connect even when nothing changed
-   * (#744 review).
+   * Last counts broadcast, for change detection (sessions + autostart
+   * included). Seeded with the real census at construction — a null
+   * sentinel would force a spurious broadcast on the first connect even
+   * when nothing changed (#744 review).
    */
-  private lastEmitted: { local: number; remote: number; sessions: number };
+  private lastEmitted: {
+    local: number;
+    remote: number;
+    sessions: number;
+    autostart: HubAutostartState;
+  };
 
   constructor(deps: HubClientTrackerDeps) {
     this.deps = deps;
-    this.lastEmitted = { local: 0, remote: 0, sessions: deps.getSessions() };
+    this.lastEmitted = {
+      local: 0,
+      remote: 0,
+      sessions: deps.getSessions(),
+      autostart: deps.getAutostartState(),
+    };
   }
 
   counts(): { localClients: number; remoteClients: number; sessions: number } {
@@ -116,21 +133,27 @@ export class HubClientTracker {
   }
 
   private statusMessage(): ProtocolMessage {
-    return createHubStatus({ ...this.counts(), hubVersion: this.deps.hubVersion });
+    return createHubStatus({
+      ...this.counts(),
+      hubVersion: this.deps.hubVersion,
+      autostart: this.deps.getAutostartState(),
+    });
   }
 
   /** Returns true when a broadcast actually went out. */
   private broadcastIfChanged(): boolean {
     const { localClients, remoteClients, sessions } = this.counts();
+    const autostart = this.deps.getAutostartState();
     const prev = this.lastEmitted;
     if (
       prev.local === localClients &&
       prev.remote === remoteClients &&
-      prev.sessions === sessions
+      prev.sessions === sessions &&
+      prev.autostart === autostart
     ) {
       return false;
     }
-    this.lastEmitted = { local: localClients, remote: remoteClients, sessions };
+    this.lastEmitted = { local: localClients, remote: remoteClients, sessions, autostart };
     this.deps.broadcast(this.statusMessage());
     return true;
   }
