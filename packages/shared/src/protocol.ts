@@ -106,7 +106,8 @@ export type ProtocolMessage =
   | SessionRotatedMessage
   | SessionViewsMessage
   | QuestionResolvedMessage
-  | RemiStatusMessage;
+  | RemiStatusMessage
+  | QuestionSnapshotMessage;
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -339,6 +340,38 @@ export interface QuestionResolvedMessage {
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
   readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+}
+
+/**
+ * Daemon -> client broadcast: the authoritative set of question ids currently
+ * pending for a session (#798). Fired from the SAME `SessionRegistry.onQuestionsChanged`
+ * wiring that already mirrors the live set into the live-sessions registry file on
+ * every add/remove/clear (#786/#787) — this is the WebSocket counterpart, sent to
+ * ALL connected clients (never recorded into replay history; a reconnecting client
+ * gets a fresh one on the next add/remove/clear, not a stale replayed copy).
+ *
+ * Backstops the replay-gate fix (#798 part 1): a `question` message replayed from
+ * history is not trustworthy for pendingness (`question_resolved` is broadcast-only
+ * and never recorded), so a client that reconnects into a quiet session — no new
+ * question/resolve event to re-sync it — would otherwise keep a phantom card
+ * forever. On receipt, a client drops any displayed card for `sessionId` whose id
+ * is not in `questionIds`, while preserving cards in a locally-submitting or
+ * already-resolved/answered-trace state (#652/#653 invariants) since those own
+ * their own removal timer and a snapshot racing ahead of the resolve broadcast must
+ * not rip them out early.
+ *
+ * Old clients ignore the unknown message type (`isValidMessage` drops it); a new
+ * client against an old daemon simply never receives one — no behavior change, the
+ * replay gate alone still fixes the reconnect-into-quiet-session case there.
+ */
+export interface QuestionSnapshotMessage {
+  readonly type: 'question_snapshot';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** Remi session the snapshot describes. */
+  readonly sessionId: UUID;
+  /** Every question id currently pending for this session (may be empty). */
+  readonly questionIds: readonly UUID[];
 }
 
 /**
@@ -982,6 +1015,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
     'session_views',
     'question_resolved',
     'remi_status',
+    'question_snapshot',
   ];
 
   return validTypes.includes(obj['type'] as string);
@@ -1290,6 +1324,24 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+  };
+}
+
+/**
+ * Create a question-snapshot broadcast (#798). `questionIds` is copied into a
+ * new array so a later in-place mutation of the caller's live set cannot
+ * retroactively change a message already queued for serialization.
+ */
+export function createQuestionSnapshot(
+  sessionId: UUID,
+  questionIds: readonly UUID[],
+): QuestionSnapshotMessage {
+  return {
+    type: 'question_snapshot',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    questionIds: [...questionIds],
   };
 }
 

@@ -33,10 +33,12 @@ import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
   RESOLVED_TRACE_LINGER_MS,
+  applyIncomingQuestion,
   clearMainQuestionOnStatus,
   clearSessionQuestions,
   getSessionQuestions,
   isQuestionPending,
+  pruneQuestionsNotLive,
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
@@ -44,7 +46,6 @@ import {
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
 import { mapQuestionToUIQuestion } from '@/lib/question-mapping';
-import { shouldKeepExisting } from '@/lib/question-merge';
 import { bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
@@ -107,6 +108,14 @@ const RESYNC_MAX_STASH_AGE_MS = 10000;
  */
 function asNonEmptyString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/** Validates an unknown JSON value as a string array (an empty array is a
+ *  valid result -- e.g. `pendingQuestionIds` when a session has no pending
+ *  questions left -- so this must not be confused with `asNonEmptyString`'s
+ *  "absent" semantics). Returns undefined only when malformed. */
+function asStringArray(v: unknown): string[] | undefined {
+  return Array.isArray(v) && v.every((item) => typeof item === 'string') ? v : undefined;
 }
 
 function rememberSessionDaemon(sessionId: string, url: string): void {
@@ -272,7 +281,6 @@ function App() {
   // review). Without this, every reply set/clear in any session would
   // re-create handleSend and bust InputArea memoization.
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
-  const isReplayingRef = useRef(false);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
   // Outstanding user_input sends awaiting their `ack`, keyed by message id
@@ -355,7 +363,11 @@ function App() {
   }, []);
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
-  const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage) => {
+  // `inReplay` (#798, mirrors the terminal client's #753 fix) is true only for
+  // messages recursively dispatched from the `replay_batch` case below; every
+  // external caller (the connection manager's onMessage) always passes a LIVE
+  // message and relies on the default.
+  const handleMessage = useCallback((connectionId: ConnectionId, message: ProtocolMessage, inReplay = false) => {
     // Cancel and forget both resync timers for `sid`, if any -- shared by
     // flushResyncSurvivors (a trigger just fired) and discardResyncStash (the
     // session is gone, no trigger will ever fire).
@@ -466,6 +478,27 @@ function App() {
       }
       loadedTranscriptsRef.current.add(sid);
       requestTranscriptLoadRef.current?.(connId, sid);
+    };
+
+    // Commit a recomputed questions map if it actually changed, recomputing
+    // `sid`'s `questionPending` badge from the SAME committed map (#585, P7
+    // FIX 3) so concurrent reconciliations never race each other into a stale
+    // badge. Shared by every pure question-map reducer below.
+    const commitQuestionsIfChanged = (nextQuestions: Map<string, UIQuestion>, sid: string) => {
+      if (nextQuestions === questionsRef.current) return;
+      const stillPending = getSessionQuestions(nextQuestions, sid).some(isQuestionPending);
+      questionsRef.current = nextQuestions;
+      setQuestions(nextQuestions);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sid ? { ...s, questionPending: stillPending } : s)),
+      );
+    };
+
+    // Reconcile a session's cards against an authoritative live-question-id
+    // set (#798 parts 2/3), shared by the `question_snapshot` broadcast and a
+    // `STALE_ANSWER` error's `pendingQuestionIds` -- both carry the same shape.
+    const reconcileLiveQuestions = (sid: string, liveQuestionIds: readonly string[]) => {
+      commitQuestionsIfChanged(pruneQuestionsNotLive(questionsRef.current, sid, liveQuestionIds), sid);
     };
 
     switch (message.type) {
@@ -805,6 +838,15 @@ function App() {
       }
 
       case 'question': {
+        // #798 (mirrors the terminal client's #753 fix): replayed history is
+        // not trustworthy for pendingness -- `question_resolved` is
+        // broadcast-only and never recorded, so an already-answered question
+        // replays indistinguishably from a pending one. Skip BEFORE touching
+        // lastQuestionIdRef too: poisoning it with a replayed id would dedupe
+        // away the daemon's live resend of the SAME id that immediately
+        // follows the replay batch (pending-question-resend.ts), leaving no
+        // card at all for a genuinely still-pending question.
+        if (inReplay) break;
         const q = message.question;
         // Dedup: skip if we already have this question (can arrive from multiple connections or hook+PTY)
         if (q.id === lastQuestionIdRef.current) {
@@ -821,25 +863,19 @@ function App() {
           break;
         }
         // Map daemon Question to UIQuestion (pure function, unit-tested in
-        // lib/question-mapping.test.ts).
-        const uiQuestion = mapQuestionToUIQuestion(q, questionSessionId);
-        const questionAgentId = q.agentId;
-        const key = questionKey(questionSessionId, questionAgentId);
-        setQuestions((prev) => {
-          // Richer-wins guard (#396), scoped to this agent's slot. The daemon
-          // emits two questions for one prompt cycle (HookEventBridge default
-          // 3-set + PTY-parsed multi-choice with full sentences); their ids
-          // differ so a same-key second arrival would otherwise overwrite the
-          // first regardless of richness. A DIFFERENT agent's prompt has a
-          // different key and so coexists rather than clobbering (#419/#425).
-          const existing = prev.get(key);
-          if (existing && shouldKeepExisting(existing, uiQuestion)) {
-            return prev;
-          }
-          const next = new Map(prev);
-          next.set(key, uiQuestion);
-          return next;
-        });
+        // lib/question-mapping.test.ts). #798 part 4: prefer the wire
+        // message's own timestamp over local receipt time.
+        const uiQuestion = mapQuestionToUIQuestion(q, questionSessionId, message.timestamp);
+        // Insert at the composite key (scoped by agent, #419/#425), deferring
+        // to the richer-wins guard (#396) when a card is already in that slot
+        // -- the daemon emits two questions per prompt cycle (HookEventBridge
+        // default 3-set + PTY-parsed multi-choice with full sentences) with
+        // different ids, so a same-key second arrival would otherwise
+        // overwrite the first regardless of richness. `inReplay` is always
+        // false here (the case already broke above otherwise); threaded
+        // through so applyIncomingQuestion stays self-contained (#798 part 1,
+        // unit-tested in question-collection.test.ts).
+        setQuestions((prev) => applyIncomingQuestion(prev, uiQuestion, inReplay));
 
         // Mark session as having a pending question
         setSessions((prev) =>
@@ -895,14 +931,24 @@ function App() {
         break;
       }
 
+      case 'question_snapshot': {
+        // #798 parts 2/3: the daemon's authoritative live-question-id set for
+        // this session, fired from SessionRegistry.onQuestionsChanged on every
+        // add/remove/clear. Backstops the replay gate above -- a reconnect into
+        // a QUIET session gets no new question/resolve event to re-sync it, so
+        // this snapshot is what actually clears a phantom card there.
+        reconcileLiveQuestions(message.sessionId, message.questionIds);
+        break;
+      }
+
       case 'replay_batch': {
-        // Replay batches arrive on connect/reconnect. Suppress notifications during replay
-        // to prevent spamming the user with old events.
-        isReplayingRef.current = true;
+        // Replay batches arrive on connect/reconnect. Each replayed message is
+        // dispatched with inReplay=true (#798) so replay-sensitive cases (currently
+        // just 'question', mirroring the terminal client's #753 fix) can skip
+        // state mutations that assume LIVE pendingness.
         for (const replayMsg of message.messages) {
-          handleMessage(connectionId, replayMsg);
+          handleMessage(connectionId, replayMsg, true);
         }
-        isReplayingRef.current = false;
         break;
       }
 
@@ -1486,6 +1532,39 @@ function App() {
             details,
           );
           // Fall through so the user sees the error in chat.
+        }
+        // STALE_ANSWER (#798 part 3): the daemon already rejected the answer
+        // (input-events.ts) because the question is no longer pending, and it
+        // attaches the full live-question-id set it rejected against --
+        // reconcile through the same pruning path as a `question_snapshot`
+        // broadcast so any other phantom card for this session (not just the
+        // one this answer targeted) clears too. Falls through unchanged so the
+        // user still sees the rejection in chat.
+        if (errorCode === 'STALE_ANSWER') {
+          const details = (message as { details?: Record<string, unknown> }).details;
+          const staleSessionId = asNonEmptyString(details?.['sessionId']);
+          const staleQuestionId = asNonEmptyString(details?.['questionId']);
+          const pendingQuestionIds = asStringArray(details?.['pendingQuestionIds']);
+          // The named question is precisely the one the user just answered,
+          // so its card is very likely `submitting: true` -- which
+          // pruneQuestionsNotLive deliberately PROTECTS from the
+          // reconciliation below (#652/#653). /clear, /resume, and a
+          // MAX_PENDING_QUESTIONS eviction all reach STALE_ANSWER without ever
+          // firing question_resolved for the dead id, and AUQ_AUTOANSWER_FAILED
+          // (above) only clears `submitting` for a different failure path --
+          // so without this, the card this error names would stick at
+          // "Answering..." forever (#800 review). Force-remove it outright by
+          // id first, mirroring resolveQuestionCard's submitting-card branch
+          // for question_resolved: no trace, no protection.
+          if (staleSessionId && staleQuestionId) {
+            commitQuestionsIfChanged(
+              removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
+              staleSessionId,
+            );
+          }
+          if (staleSessionId && pendingQuestionIds) {
+            reconcileLiveQuestions(staleSessionId, pendingQuestionIds);
+          }
         }
         // Clear loading state for any session awaiting transcript load, and allow retry.
         // The daemon does not echo sessionId in error responses, so we clear all loading sessions.
