@@ -102,6 +102,7 @@ export type {
   SessionViewMeta,
   QuestionResolvedMessage,
   RemiStatusMessage,
+  QuestionSnapshotMessage,
   CreateHelloAckOptions,
   CreateHelloOptions,
 } from './protocol.ts';
@@ -157,6 +158,7 @@ export {
   createSessionViews,
   createQuestionResolved,
   createRemiStatus,
+  createQuestionSnapshot,
   MessageIdTracker,
 } from './protocol.ts';
 

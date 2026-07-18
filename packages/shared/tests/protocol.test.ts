@@ -22,6 +22,7 @@ import {
   createPong,
   createQuestion,
   createQuestionResolved,
+  createQuestionSnapshot,
   createRemiStatus,
   createReplayBatch,
   createResumeSessionRequest,
@@ -408,6 +409,39 @@ describe('createQuestionResolved() (#585 P7)', () => {
         expect(parsed.reason).toBe(reason);
       }
     }
+  });
+});
+
+describe('createQuestionSnapshot() (#798)', () => {
+  test('builds a well-formed question_snapshot message', () => {
+    const sessionId = generateId();
+    const q1 = generateId();
+    const q2 = generateId();
+    const msg = createQuestionSnapshot(sessionId, [q1, q2]);
+    expect(msg.type).toBe('question_snapshot');
+    expect(msg.sessionId).toBe(sessionId);
+    expect(msg.questionIds).toEqual([q1, q2]);
+    expect(typeof msg.id).toBe('string');
+    expect(typeof msg.timestamp).toBe('string');
+  });
+
+  test('round-trips through serialize/deserialize, including an empty set', () => {
+    const sessionId = generateId();
+    const original = createQuestionSnapshot(sessionId, []);
+    const parsed = deserialize(serialize(original));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.type).toBe('question_snapshot');
+    if (parsed?.type === 'question_snapshot') {
+      expect(parsed.sessionId).toBe(sessionId);
+      expect(parsed.questionIds).toEqual([]);
+    }
+  });
+
+  test('copies questionIds: later mutation of the source array does not leak into the message', () => {
+    const ids = [generateId(), generateId()];
+    const msg = createQuestionSnapshot(generateId(), ids);
+    ids.push(generateId());
+    expect(msg.questionIds).toHaveLength(2);
   });
 });
 
