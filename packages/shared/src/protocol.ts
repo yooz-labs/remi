@@ -792,6 +792,29 @@ export interface DaemonUpdateAvailableMessage {
 }
 
 /**
+ * One unanswered question surfaced in the hub census (#786/#787): one entry
+ * per pending question across every live child session daemon, sourced from
+ * each session's live-sessions registry entry (`LiveSessionEntry.pendingQuestions`,
+ * packages/daemon/src/session/session-registry-file.ts). Drives the macOS
+ * menu-bar app's native notifications (#786) and needs-attention icon state
+ * (#787) — the app is a query-mode client with no other way to learn a
+ * question is pending.
+ */
+export interface HubPendingQuestion {
+  /** Question id, matching the owning session's `Question.id`. */
+  readonly id: UUID;
+  /** Session the question belongs to. */
+  readonly sessionId: UUID;
+  /** The owning session's human-readable name (registry entry's `name`). */
+  readonly sessionName: string;
+  /** Short human label, e.g. "Permission: Bash" or a truncated question text
+   *  (see `buildPendingQuestionLabel` in the daemon package). */
+  readonly label: string;
+  /** When the question first became pending (ISO8601). */
+  readonly createdAt: Timestamp;
+}
+
+/**
  * Whether the hub's login-service artifact (`remi --install`'s LaunchAgent
  * plist on macOS, systemd user unit on Linux) exists on disk (#788).
  * `'installed'` means the hub restarts automatically after logout/reboot;
@@ -821,6 +844,18 @@ export interface HubStatusMessage {
   readonly sessions: number;
   /** REMI_VERSION of the hub process. */
   readonly hubVersion: string;
+  /**
+   * Total pending questions across every live child session (#786/#787).
+   * Optional: absent on a hub predating this field, and safely ignored by a
+   * pre-#786 client (isValidMessage only checks `type`).
+   */
+  readonly pendingQuestions?: number;
+  /**
+   * The pending questions themselves (#786/#787). #787's icon state only
+   * needs `pendingQuestions`' count; #786's native notifications need this
+   * list to diff by id (new question -> post, disappeared id -> withdraw).
+   */
+  readonly questions?: readonly HubPendingQuestion[];
   /**
    * Autostart state (#788), OPTIONAL so older hubs (pre-#788) still decode
    * cleanly on newer clients. Absent means "unknown", not "none" — clients
@@ -1730,6 +1765,8 @@ export function createHubStatus(counts: {
   remoteClients: number;
   sessions: number;
   hubVersion: string;
+  pendingQuestions?: number;
+  questions?: readonly HubPendingQuestion[];
   autostart?: HubAutostartState;
 }): HubStatusMessage {
   return {
@@ -1740,6 +1777,8 @@ export function createHubStatus(counts: {
     remoteClients: counts.remoteClients,
     sessions: counts.sessions,
     hubVersion: counts.hubVersion,
+    ...(counts.pendingQuestions !== undefined && { pendingQuestions: counts.pendingQuestions }),
+    ...(counts.questions !== undefined && { questions: counts.questions }),
     ...(counts.autostart !== undefined && { autostart: counts.autostart }),
   };
 }

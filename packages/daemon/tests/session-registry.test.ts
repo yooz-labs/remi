@@ -35,6 +35,7 @@ describe('SessionRegistry', () => {
     onSessionResumed: ReturnType<typeof mock>;
     onConnectionPromoted: ReturnType<typeof mock>;
     onConnectionReclaimed: ReturnType<typeof mock>;
+    onQuestionsChanged: ReturnType<typeof mock>;
   };
 
   beforeEach(() => {
@@ -45,6 +46,7 @@ describe('SessionRegistry', () => {
       onSessionResumed: mock(() => {}),
       onConnectionPromoted: mock(() => {}),
       onConnectionReclaimed: mock(() => {}),
+      onQuestionsChanged: mock(() => {}),
     };
 
     registry = new SessionRegistry(
@@ -155,6 +157,59 @@ describe('SessionRegistry', () => {
 
       const result = registry.attachConnection(sid, generateId());
       expect(result.currentQuestions.map((q) => q.id)).toEqual([q1, q2]);
+    });
+
+    describe('onQuestionsChanged (#786/#787)', () => {
+      test('fires with the full current set on addQuestion', () => {
+        const sid = generateId();
+        registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+        const q1 = generateId();
+        registry.addQuestion(sid, mkQuestion(q1));
+        expect(events.onQuestionsChanged).toHaveBeenLastCalledWith(sid, [mkQuestion(q1)]);
+
+        const q2 = generateId();
+        registry.addQuestion(sid, mkQuestion(q2, 'sub-7'));
+        expect(events.onQuestionsChanged).toHaveBeenLastCalledWith(sid, [
+          mkQuestion(q1),
+          mkQuestion(q2, 'sub-7'),
+        ]);
+      });
+
+      test('fires with the reduced set on removeQuestion', () => {
+        const sid = generateId();
+        registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+        const q1 = generateId();
+        const q2 = generateId();
+        registry.addQuestion(sid, mkQuestion(q1));
+        registry.addQuestion(sid, mkQuestion(q2));
+        events.onQuestionsChanged.mockClear();
+
+        registry.removeQuestion(sid, q1);
+        expect(events.onQuestionsChanged).toHaveBeenCalledTimes(1);
+        expect(events.onQuestionsChanged).toHaveBeenCalledWith(sid, [mkQuestion(q2)]);
+      });
+
+      test('fires with an empty array on clearQuestions', () => {
+        const sid = generateId();
+        registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+        registry.addQuestion(sid, mkQuestion(generateId()));
+        events.onQuestionsChanged.mockClear();
+
+        registry.clearQuestions(sid);
+        expect(events.onQuestionsChanged).toHaveBeenCalledWith(sid, []);
+      });
+
+      test('does not fire for a sessionId that does not match the registered session', () => {
+        const sid = generateId();
+        registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+        registry.addQuestion(
+          'unknown-session' as ReturnType<typeof generateId>,
+          mkQuestion(generateId()),
+        );
+        registry.removeQuestion('unknown-session' as ReturnType<typeof generateId>, generateId());
+        registry.clearQuestions('unknown-session' as ReturnType<typeof generateId>);
+        expect(events.onQuestionsChanged).not.toHaveBeenCalled();
+      });
     });
   });
 

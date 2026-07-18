@@ -5,9 +5,16 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import type { HubAutostartState, HubStatusMessage, ProtocolMessage, UUID } from '@remi/shared';
+import type {
+  HubAutostartState,
+  HubPendingQuestion,
+  HubStatusMessage,
+  ProtocolMessage,
+  UUID,
+} from '@remi/shared';
 import type { AdapterMetadata } from '../../src/adapters/index.ts';
 import { HubClientTracker, classifyClient } from '../../src/cli/hub-client-tracker.ts';
+import type { HubQuestionCensus } from '../../src/cli/hub-question-census.ts';
 
 function wsMeta(peerAddress: string | null, mode?: 'query' | 'attach'): AdapterMetadata {
   return {
@@ -48,26 +55,44 @@ describe('classifyClient (#650)', () => {
   });
 });
 
-describe('HubClientTracker (#650)', () => {
-  function makeTracker(initialSessions = 0, initialAutostart: HubAutostartState = 'none') {
+function makeQuestion(overrides: Partial<HubPendingQuestion> = {}): HubPendingQuestion {
+  return {
+    id: 'q-1',
+    sessionId: 's-1',
+    sessionName: 'host:project/main',
+    label: 'Permission: Bash',
+    createdAt: '2026-07-17T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('HubClientTracker (#650, #786/#787, #788)', () => {
+  function makeTracker(
+    initialSessions = 0,
+    initialQuestions: HubPendingQuestion[] = [],
+    initialAutostart: HubAutostartState = 'none',
+  ) {
     const sent: Array<{ connectionId: UUID; message: ProtocolMessage }> = [];
     const broadcasts: ProtocolMessage[] = [];
-    let sessions = initialSessions;
+    let census: HubQuestionCensus = { sessions: initialSessions, questions: initialQuestions };
     let autostart = initialAutostart;
     const tracker = new HubClientTracker({
       send: (connectionId, message) => sent.push({ connectionId, message }),
       broadcast: (message) => broadcasts.push(message),
-      getSessions: () => sessions,
+      getCensus: () => census,
       getAutostartState: () => autostart,
       hubVersion: '9.9.9-test',
     });
     const setSessions = (n: number): void => {
-      sessions = n;
+      census = { ...census, sessions: n };
+    };
+    const setQuestions = (questions: HubPendingQuestion[]): void => {
+      census = { ...census, questions };
     };
     const setAutostart = (s: HubAutostartState): void => {
       autostart = s;
     };
-    return { tracker, sent, broadcasts, setSessions, setAutostart };
+    return { tracker, sent, broadcasts, setSessions, setQuestions, setAutostart };
   }
 
   const asStatus = (m: ProtocolMessage): HubStatusMessage => m as HubStatusMessage;
@@ -129,13 +154,25 @@ describe('HubClientTracker (#650)', () => {
     tracker.onConnect('r1' as UUID, wsMeta('192.168.1.20'));
     tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
 
-    expect(tracker.counts()).toEqual({ localClients: 2, remoteClients: 1, sessions: 0 });
+    expect(tracker.counts()).toEqual({
+      localClients: 2,
+      remoteClients: 1,
+      sessions: 0,
+      pendingQuestions: 0,
+      questions: [],
+    });
     const last = asStatus(broadcasts.at(-1) as ProtocolMessage);
     expect(last.localClients).toBe(2);
     expect(last.remoteClients).toBe(1);
 
     tracker.onDisconnect('l1' as UUID);
-    expect(tracker.counts()).toEqual({ localClients: 1, remoteClients: 1, sessions: 0 });
+    expect(tracker.counts()).toEqual({
+      localClients: 1,
+      remoteClients: 1,
+      sessions: 0,
+      pendingQuestions: 0,
+      questions: [],
+    });
   });
 
   test('refresh broadcasts only when the session census changed', () => {
@@ -152,14 +189,74 @@ describe('HubClientTracker (#650)', () => {
     expect(asStatus(broadcasts[0]!).sessions).toBe(2);
   });
 
+  test('cold start seeds the pending-question census too (no spurious first broadcast)', () => {
+    const q = makeQuestion();
+    const { tracker, broadcasts, sent } = makeTracker(1, [q]);
+    tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
+    expect(broadcasts).toHaveLength(0);
+    const frame = asStatus(sent[0]!.message);
+    expect(frame.pendingQuestions).toBe(1);
+    expect(frame.questions).toEqual([q]);
+  });
+
+  test('refresh broadcasts a NEW question even when counts are unchanged', () => {
+    const { tracker, broadcasts, setQuestions } = makeTracker(1, []);
+    tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
+    broadcasts.length = 0;
+
+    setQuestions([makeQuestion({ id: 'q-new' })]);
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(1);
+    const frame = asStatus(broadcasts[0]!);
+    expect(frame.pendingQuestions).toBe(1);
+    expect(frame.questions).toEqual([makeQuestion({ id: 'q-new' })]);
+  });
+
+  test('refresh broadcasts when a question is answered (count drops to 0)', () => {
+    const q = makeQuestion();
+    const { tracker, broadcasts, setQuestions } = makeTracker(1, [q]);
+    tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
+    broadcasts.length = 0;
+
+    setQuestions([]);
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(1);
+    expect(asStatus(broadcasts[0]!).pendingQuestions).toBe(0);
+  });
+
+  test('refresh broadcasts when the SET changes but the SIZE does not', () => {
+    // One answered, a different one arrives in the same beat: pure count
+    // comparison would miss this (both censuses have length 1).
+    const { tracker, broadcasts, setQuestions } = makeTracker(1, [makeQuestion({ id: 'q-old' })]);
+    tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
+    broadcasts.length = 0;
+
+    setQuestions([makeQuestion({ id: 'q-different' })]);
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(1);
+    expect(asStatus(broadcasts[0]!).questions?.[0]?.id).toBe('q-different');
+  });
+
+  test('refresh does NOT broadcast when the question set is unchanged, just reordered', () => {
+    const a = makeQuestion({ id: 'q-a' });
+    const b = makeQuestion({ id: 'q-b' });
+    const { tracker, broadcasts, setQuestions } = makeTracker(1, [a, b]);
+    tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
+    broadcasts.length = 0;
+
+    setQuestions([b, a]); // same ids, different order
+    tracker.refresh();
+    expect(broadcasts).toHaveLength(0);
+  });
+
   test('status frames carry the current autostart state (#788)', () => {
-    const { tracker, sent } = makeTracker(0, 'installed');
+    const { tracker, sent } = makeTracker(0, [], 'installed');
     tracker.onConnect('q1' as UUID, wsMeta('127.0.0.1', 'query'));
     expect(asStatus(sent[0]!.message).autostart).toBe('installed');
   });
 
   test('refresh broadcasts when autostart install/uninstall is detected (#788)', () => {
-    const { tracker, broadcasts, setAutostart } = makeTracker(0, 'none');
+    const { tracker, broadcasts, setAutostart } = makeTracker(0, [], 'none');
     tracker.onConnect('c1' as UUID, wsMeta('127.0.0.1'));
     broadcasts.length = 0;
 

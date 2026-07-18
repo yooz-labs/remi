@@ -62,6 +62,29 @@ final class HubProtocolTests: XCTestCase {
         XCTAssertEqual(status.remoteClients, 0)
         XCTAssertEqual(status.sessions, 0)
         XCTAssertEqual(status.hubVersion, "0.6.19-dev.4")
+        // Pre-#786 fixture: the new fields are genuinely absent, not
+        // present-but-null -- decodeIfPresent-style optionals collapse both
+        // to nil, which is exactly the "older hub" case this must handle.
+        XCTAssertNil(status.pendingQuestions)
+        XCTAssertNil(status.questions)
+    }
+
+    /// #786/#787: a hub_status frame carrying the pending-question census.
+    /// Shape matches packages/shared/src/protocol.ts's HubPendingQuestion /
+    /// createHubStatus.
+    private let hubStatusWithQuestionsFixture = """
+        {"type":"hub_status","id":"fd070ecd-17da-4569-9509-55760a9b4ae5","timestamp":"2026-07-17T01:29:44.322Z","localClients":1,"remoteClients":0,"sessions":1,"hubVersion":"0.6.22-dev.1","pendingQuestions":1,"questions":[{"id":"9f717fd0-b097-4457-9f3b-42cc40c9d3c2","sessionId":"b165ec10-6d38-4fc1-b733-fcabd58d1430","sessionName":"host:project/main","label":"Permission: Bash","createdAt":"2026-07-17T01:29:40.000Z"}]}
+        """
+
+    func testDecodesHubStatusWithPendingQuestions() throws {
+        let status = try JSONDecoder().decode(
+            HubStatusFrame.self, from: Data(hubStatusWithQuestionsFixture.utf8))
+        XCTAssertEqual(status.pendingQuestions, 1)
+        let questions = try XCTUnwrap(status.questions)
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(questions[0].id, "9f717fd0-b097-4457-9f3b-42cc40c9d3c2")
+        XCTAssertEqual(questions[0].sessionName, "host:project/main")
+        XCTAssertEqual(questions[0].label, "Permission: Bash")
     }
 
     /// #788: a pre-#788 hub omits `autostart` entirely — must decode

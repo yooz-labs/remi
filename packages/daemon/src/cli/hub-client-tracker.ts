@@ -9,9 +9,10 @@
  */
 
 import { createHubStatus } from '@remi/shared';
-import type { HubAutostartState, ProtocolMessage, UUID } from '@remi/shared';
+import type { HubAutostartState, HubPendingQuestion, ProtocolMessage, UUID } from '@remi/shared';
 import type { AdapterMetadata } from '../adapters/index.ts';
 import { isLoopbackAddress } from '../server/peer-helpers.ts';
+import type { HubQuestionCensus } from './hub-question-census.ts';
 
 /**
  * How a connection counts toward the icon state:
@@ -55,8 +56,12 @@ export interface HubClientTrackerDeps {
   readonly send: (connectionId: UUID, message: ProtocolMessage) => void;
   /** Broadcast a message to all connections (count changes). */
   readonly broadcast: (message: ProtocolMessage) => void;
-  /** Live child session daemon count (live-sessions registry census). */
-  readonly getSessions: () => number;
+  /**
+   * Live child session daemon count + pending-question census
+   * (live-sessions registry, #786/#787). Reads the same registry entries
+   * the plain session count used to.
+   */
+  readonly getCensus: () => HubQuestionCensus;
   /**
    * Cheap fs existence check for the `remi --install` login-service artifact
    * (#788). Called fresh on every census build/change-check so installing or
@@ -68,53 +73,84 @@ export interface HubClientTrackerDeps {
   readonly hubVersion: string;
 }
 
+/** Stable, order-independent key for a question-id set, so change detection
+ *  (`broadcastIfChanged`) treats "same ids, different array order" as
+ *  unchanged but any add/remove as a change. */
+function questionIdsKey(questions: readonly HubPendingQuestion[]): string {
+  return questions
+    .map((q) => q.id)
+    .sort()
+    .join(',');
+}
+
 export class HubClientTracker {
   private readonly clients = new Map<UUID, PeerClass>();
   private readonly deps: HubClientTrackerDeps;
   /**
-   * Last counts broadcast, for change detection (sessions + autostart
-   * included). Seeded with the real census at construction — a null
-   * sentinel would force a spurious broadcast on the first connect even
-   * when nothing changed (#744 review).
+   * Last counts broadcast, for change detection (sessions, the pending-
+   * question id set, and autostart all included). Two different question
+   * sets of equal SIZE (#786/#787 — one answered while another arrived in
+   * the same beat) must still count as a change, hence the id-set key
+   * rather than a bare count. Seeded with the real census at construction —
+   * a null sentinel would force a spurious broadcast on the first connect
+   * even when nothing changed (#744 review).
    */
   private lastEmitted: {
     local: number;
     remote: number;
     sessions: number;
+    questionIds: string;
     autostart: HubAutostartState;
   };
 
   constructor(deps: HubClientTrackerDeps) {
     this.deps = deps;
+    const census = deps.getCensus();
     this.lastEmitted = {
       local: 0,
       remote: 0,
-      sessions: deps.getSessions(),
+      sessions: census.sessions,
+      questionIds: questionIdsKey(census.questions),
       autostart: deps.getAutostartState(),
     };
   }
 
-  counts(): { localClients: number; remoteClients: number; sessions: number } {
+  counts(): {
+    localClients: number;
+    remoteClients: number;
+    sessions: number;
+    pendingQuestions: number;
+    questions: readonly HubPendingQuestion[];
+  } {
     let local = 0;
     let remote = 0;
     for (const cls of this.clients.values()) {
       if (cls === 'local') local++;
       else if (cls === 'remote') remote++;
     }
-    return { localClients: local, remoteClients: remote, sessions: this.deps.getSessions() };
+    const census = this.deps.getCensus();
+    return {
+      localClients: local,
+      remoteClients: remote,
+      sessions: census.sessions,
+      pendingQuestions: census.questions.length,
+      questions: census.questions,
+    };
   }
 
   /**
-   * Full census for one broadcast cycle: client counts plus a single fresh
-   * getAutostartState() fs check. Callers thread the result through
-   * statusMessage()/broadcastIfChanged() instead of each re-reading deps,
-   * so one onConnect/onDisconnect/refresh() call does exactly one
+   * Full census for one broadcast cycle: client + question counts plus a
+   * single fresh getAutostartState() fs check. Callers thread the result
+   * through statusMessage()/broadcastIfChanged() instead of each re-reading
+   * deps, so one onConnect/onDisconnect/refresh() call does exactly one
    * getAutostartState() (and one counts()) rather than two (#788 review).
    */
   private snapshot(): {
     localClients: number;
     remoteClients: number;
     sessions: number;
+    pendingQuestions: number;
+    questions: readonly HubPendingQuestion[];
     autostart: HubAutostartState;
   } {
     return { ...this.counts(), autostart: this.deps.getAutostartState() };
@@ -144,7 +180,8 @@ export class HubClientTracker {
   }
 
   /** Re-check the census after an external change (child session
-   *  registered/removed via the live-sessions watcher). */
+   *  registered/removed, a session's pendingQuestions changed, or autostart
+   *  installed/uninstalled, via the live-sessions watcher, #786/#787/#788). */
   refresh(): void {
     this.broadcastIfChanged(this.snapshot());
   }
@@ -155,17 +192,25 @@ export class HubClientTracker {
 
   /** Returns true when a broadcast actually went out. */
   private broadcastIfChanged(snapshot: ReturnType<HubClientTracker['snapshot']>): boolean {
-    const { localClients, remoteClients, sessions, autostart } = snapshot;
+    const { localClients, remoteClients, sessions, questions, autostart } = snapshot;
+    const questionIds = questionIdsKey(questions);
     const prev = this.lastEmitted;
     if (
       prev.local === localClients &&
       prev.remote === remoteClients &&
       prev.sessions === sessions &&
+      prev.questionIds === questionIds &&
       prev.autostart === autostart
     ) {
       return false;
     }
-    this.lastEmitted = { local: localClients, remote: remoteClients, sessions, autostart };
+    this.lastEmitted = {
+      local: localClients,
+      remote: remoteClients,
+      sessions,
+      questionIds,
+      autostart,
+    };
     this.deps.broadcast(this.statusMessage(snapshot));
     return true;
   }

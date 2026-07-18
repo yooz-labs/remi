@@ -95,6 +95,7 @@ export type {
   UnregisterDeviceTokenMessage,
   DaemonUpdateAvailableMessage,
   HubStatusMessage,
+  HubPendingQuestion,
   HubAutostartState,
   SessionRotatedMessage,
   SessionViewsMessage,
