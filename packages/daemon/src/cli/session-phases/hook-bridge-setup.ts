@@ -394,8 +394,8 @@ export function setupHookBridge(
       // signature in `openQuestionSignatures` -- without it, a subagent
       // permission answered in the terminal has no removal path at all (see
       // the PreToolUse/PostToolUse/SubagentStop wiring below).
-      parkForPTY: (i, summary) => {
-        const question = hookBridge.buildPermissionQuestion(i, summary);
+      parkForPTY: (i) => {
+        const question = hookBridge.buildPermissionQuestion(i);
         tracker.parkAwaitingPTY(question);
         return question.id;
       },

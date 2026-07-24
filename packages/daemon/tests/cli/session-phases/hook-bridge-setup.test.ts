@@ -447,14 +447,17 @@ describe('setupHookBridge', () => {
     expect(() => build()).not.toThrow();
   });
 
-  test('Phase 4 (#419): PermissionRequest with agent_id is forwarded through auto-approve, gated by PTY presence', async () => {
-    // Pre-phase-4, agent_id-tagged events were dropped at the listener
-    // boundary. Phase 4 demoted agent_id from kill-switch to metadata:
-    // the auto-approve LLM evaluates and forwards to the inject path.
-    // Inject is then gated by tracker.isPromptVisibleOnPTY() — true for
-    // a hot-switched subagent view, false for a background subagent.
-    // This test simulates the hot-switched case (PTY confirms presence)
-    // so inject proceeds end to end.
+  test('#807: an agent_id-tagged PermissionRequest passes through unevaluated even with the PTY prompt visible', async () => {
+    // History: pre-phase-4 these events were dropped at the listener boundary;
+    // #419 demoted agent_id to metadata and let the LLM evaluate them, gating
+    // only the PTY inject on presence.
+    //
+    // #807 removes the evaluation entirely. The hook is answered before Claude
+    // renders anything, so PTY presence at THIS moment says nothing about
+    // whether this particular prompt will render — the visible prompt here may
+    // well belong to another agent. So the answer is 'passthrough' regardless,
+    // and Claude's own permission flow decides. A card only appears if the
+    // parked record later pairs with a real render.
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
@@ -480,10 +483,8 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // #496: approve returns 'allow' via the hook response — no PTY inject
-    // (the old inject was what the PTY-presence gate guarded; approve no
-    // longer needs the PTY at all).
-    expect(decision).toBe('allow');
+    // #807: never evaluated, so never auto-approved. Passthrough, no inject.
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
   });
 
@@ -1688,18 +1689,20 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(true);
   });
 
-  test('subagent approve returns "allow" via the response — no inject, no escalate (#496)', async () => {
+  test('#807: a subagent never reaches an approve verdict — passthrough, no inject, no escalate', async () => {
     // Regression guard for the dev.3 misfiring: a background subagent's
-    // PermissionRequest cannot answer by injecting into the MAIN PTY
-    // because the subagent's prompt isn't there — "1" would land in the
-    // main agent's input. inject() must gate on
-    // tracker.isPromptVisibleOnPTY(); when false (no PTY confirmation),
-    // it returns false so the approve branch falls through to
-    // escalateToUser, which records into the tracker. The PassthroughTracker
-    // collapses that into a push (one question call). In production the
-    // real tracker would wait for PTY confirmation that never arrives →
-    // pending dropped on next status change → no spurious push.
-    build({ autoApprove: true, autoApproveDecision: 'approve' });
+    // PermissionRequest cannot answer by injecting into the MAIN PTY because
+    // the subagent's prompt isn't there — "1" would land in the main agent's
+    // input.
+    //
+    // #807 makes that structural rather than gated: the configured 'approve'
+    // verdict below is never reached at all, because the evaluator is never
+    // called for an agent_id-tagged event. No card, no push, no GPU.
+    //
+    // realTracker (not the PassthroughTracker, which force-pushes anything
+    // recorded) so `questionCalls === 0` proves the real invariant: parking
+    // stores the question and waits for a render, it does not push.
+    build({ autoApprove: true, autoApproveDecision: 'approve', realTracker: true });
 
     hookServer.fire('SessionStart', {
       session_id: 'claude-sub-AA',
@@ -1718,19 +1721,21 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // approve -> 'allow' via the response; no PTY inject and no escalation,
-    // regardless of subagent PTY presence.
-    expect(decision).toBe('allow');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  test('subagent approve with PTY-visible prompt returns "allow" (no inject) (#496)', async () => {
-    // Preserves PR #419's hot-switched-subagent case: when the user
-    // has switched to the subagent's view, its permission prompt IS
-    // rendered on the main PTY. Simulate that by firing
-    // onPTYPromptVisible BEFORE the PermissionRequest so the tracker's
-    // ptyShowingQuestion flag is true when inject's gate checks it.
+  test('#807: a PTY-visible prompt does not make a subagent approve either', async () => {
+    // Preserves PR #419's hot-switched-subagent case: when the user has
+    // switched to the subagent's view, its permission prompt IS rendered on
+    // the main PTY. Simulate that by firing onPTYPromptVisible BEFORE the
+    // PermissionRequest.
+    //
+    // The answer is still 'passthrough': a prompt visible at hook time is not
+    // evidence about THIS request (it may be another agent's), so presence
+    // cannot be used to justify evaluating. Pairing happens later, on a real
+    // render, via the parked record.
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
     hookServer.fire('SessionStart', {
@@ -1759,19 +1764,17 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // #496: approve allows via the response even with a hot-switched subagent
-    // view; no inject.
-    expect(decision).toBe('allow');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
   });
 
-  test('subagent deny returns "deny" via the response — no inject, no escalate (#496)', async () => {
-    // Mirrors the approve case for the deny branch — same gate, same
-    // fallthrough. The non-hang guarantee for background subagents is
-    // now structural: with no PTY presence the subagent has no answerable
-    // prompt to hang on (the inject never could have reached it), so
-    // dropping is correct.
-    build({ autoApprove: true, autoApproveDecision: 'deny' });
+  test('#807: a subagent never reaches a deny verdict either — passthrough', async () => {
+    // Mirrors the approve case. Note this is the branch that matters most for
+    // safety: passthrough hands the decision to Claude's own permission flow
+    // rather than silently denying a background agent, which is what broke
+    // teammates with no trace before #751. realTracker for the same reason as
+    // the approve case above.
+    build({ autoApprove: true, autoApproveDecision: 'deny', realTracker: true });
 
     hookServer.fire('SessionStart', {
       session_id: 'claude-sub-deny',
@@ -1790,13 +1793,12 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'rm -rf /' },
     });
 
-    // deny -> 'deny' via the response; no inject, no escalation.
-    expect(decision).toBe('deny');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(0);
   });
 
-  test('subagent deny with PTY-visible prompt returns "deny" (no inject) (#496)', async () => {
+  test('#807: a PTY-visible prompt does not make a subagent deny either', async () => {
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'deny' });
 
     hookServer.fire('SessionStart', {
@@ -1824,9 +1826,7 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'rm -rf /' },
     });
 
-    // #496: deny returns 'deny' via the response; no PTY inject even with a
-    // visible prompt.
-    expect(decision).toBe('deny');
+    expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
   });
 
@@ -2985,7 +2985,7 @@ describe('setupHookBridge', () => {
       expect(statuses).not.toContain('approved');
     });
 
-    test('#711 a SUBAGENT (agent_id) eval broadcasts NEITHER "evaluating" NOR "approved" (no phantom pill)', async () => {
+    test('#807 a SUBAGENT (agent_id) broadcasts NEITHER "evaluating" NOR "approved" (no phantom pill)', async () => {
       const sendLog: ProtocolMessage[] = [];
       build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 10, sendLog });
 
@@ -3005,11 +3005,13 @@ describe('setupHookBridge', () => {
         agent_id: 'teammate-1',
         agent_type: 'general-purpose',
       });
-      expect(decision).toBe('allow');
+      expect(decision).toBe('passthrough');
 
       const statuses = sessionUpdateStatuses(sendLog);
-      // The tracker buffer + StatusWriter terminal cue still ran (decision is
-      // still 'allow'); only the CLIENT session_update broadcast is skipped.
+      // #711 skipped only the CLIENT broadcast while the eval still ran.
+      // #807 removes the eval itself, so there is no in-flight work for any
+      // surface to advertise — the pill stays quiet for a strictly stronger
+      // reason than before.
       expect(statuses).not.toContain('evaluating');
       expect(statuses).not.toContain('approved');
     });
