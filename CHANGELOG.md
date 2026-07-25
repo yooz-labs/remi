@@ -2,6 +2,36 @@
 
 All notable changes to Remi are documented here.
 
+## [0.6.24] - 2026-07-25
+
+Finishes the subagent permission story started in 0.6.23: a background
+agent's prompt that actually reaches the screen is no longer an automatic
+interruption.
+
+### Changed
+- **A rendered subagent permission is evaluated, not just parked** (#814):
+  0.6.23 stopped evaluating a subagent's permission at hook time, because at
+  that point the daemon cannot know whether the prompt will ever reach a
+  human — and most never do. That left a gap: a prompt that *did* render
+  always interrupted you, even when the configured auto-approve policy would
+  have approved it outright. Now, the moment a parked prompt renders on the
+  main PTY, the policy evaluates it there: an `approve`/`deny`/`pick` verdict
+  is typed straight into the on-screen prompt, with no card and no
+  interruption, while an `escalate` verdict still pushes a card to your
+  phone carrying the model's summary, exactly as a main-session escalation
+  does. An "always allow" option is never auto-picked — persisting a
+  permission rule stays your call. Any failure along the way (no service, an
+  eval error, an option that can't be identified on screen, a failed inject)
+  falls back to asking you rather than guessing.
+
+### Fixed
+- **Externally resolving a rendered subagent question now targets the right
+  id** (#814): the merged card pushed for a parked prompt previously kept
+  the id of the original hook-time question rather than the id of the
+  prompt that actually rendered, so answering it from the phone, or any
+  other external resolution, targeted an id no client had ever seen. The
+  signature is now re-keyed onto the rendered id at push time.
+
 ## [0.6.23] - 2026-07-25
 
 Background agents stop costing you GPU and stop making decisions in your name,
