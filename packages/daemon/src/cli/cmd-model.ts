@@ -39,6 +39,7 @@ import { errorToString } from '@remi/shared';
 import {
   type EngineModel,
   type ManagedModel,
+  type PullProgress,
   cancelDownload,
   cleanupModels,
   deleteModel,
@@ -61,6 +62,9 @@ const defaultIO: ModelCommandIO = {
   out: (msg) => console.log(msg),
   err: (msg) => console.error(msg),
 };
+
+/** How often to print a line while the engine's fraction is not advancing. */
+const HEARTBEAT_MS = 5_000;
 
 const VERBS = [
   'ls',
@@ -100,11 +104,26 @@ function formatRow(m: EngineModel, current: string): string {
   return `${marker} ${m.id.padEnd(24)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
 }
 
-/** A single-line progress renderer. Deliberately not a spinner: this output is
- *  as likely to land in a log or a CI transcript as on a TTY. */
-function renderProgress(io: ModelCommandIO, model: string, fraction: number | undefined): void {
-  if (fraction === undefined) return;
-  io.out(`  ${model}: ${Math.round(fraction * 100)}%`);
+/**
+ * Render one progress line. Deliberately not a spinner: this output is as
+ * likely to land in a log or a CI transcript as on a TTY.
+ *
+ * A percentage is shown ONLY while the fraction is actually advancing. For a
+ * single-big-file repo — which both of remi's LLM tiers are — the engine's
+ * fraction steps ~0.6% and then sits there for the whole multi-GB download
+ * (yooz-engine#292/#293). Printing "1%" for two minutes reads as a wedged
+ * download and is worse than saying nothing, so the flat case reports elapsed
+ * time against the known size instead, which is honest about what we know: it
+ * is running, and this is how big it is.
+ */
+function renderProgress(io: ModelCommandIO, model: string, p: PullProgress): void {
+  const elapsed = `${Math.round(p.elapsedMs / 1000)}s`;
+  if (p.advancing && p.fraction !== undefined) {
+    io.out(`  ${model}: ${Math.round(p.fraction * 100)}% (${elapsed})`);
+    return;
+  }
+  const size = p.sizeBytes === undefined ? '' : ` of ${formatSize(p.sizeBytes)}`;
+  io.out(`  ${model}: downloading${size}, ${elapsed} elapsed`);
 }
 
 export interface ModelCommandDeps {
@@ -251,18 +270,21 @@ export async function runModelCommand(
           return 2;
         }
         io.out(`Pulling ${id} from HuggingFace. This does not change the active model.`);
-        io.out(
-          'Progress may sit at 0% for the whole download (engine bug yooz-engine#292); completion is detected from disk.',
-        );
-        let lastShown = -1;
+        let lastLineAt = -HEARTBEAT_MS;
+        let lastPct = -1;
         await pull(baseUrl, id, {
           onProgress: (p) => {
-            // Only report on change, so a slow download does not spam a log.
+            // Report a moving percentage on every change; when the fraction is
+            // flat (the normal case for our tiers) fall back to a periodic
+            // heartbeat so the user can see it is alive without a misleading
+            // number, and without spamming a log line every poll.
             const pct = p.fraction === undefined ? -1 : Math.round(p.fraction * 100);
-            if (pct !== lastShown) {
-              lastShown = pct;
-              renderProgress(io, id, p.fraction);
-            }
+            const movedEnough = p.advancing && pct !== lastPct;
+            const dueForHeartbeat = p.elapsedMs - lastLineAt >= HEARTBEAT_MS;
+            if (!movedEnough && !dueForHeartbeat) return;
+            lastPct = pct;
+            lastLineAt = p.elapsedMs;
+            renderProgress(io, id, p);
           },
         });
         io.out(`${id} is downloaded.`);

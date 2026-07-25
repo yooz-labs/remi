@@ -271,12 +271,69 @@ export async function cancelDownload(
   });
 }
 
+/** One row of the `touchup` module in `GET /v1/state` — the PER-MODEL view of
+ *  load/download state. */
+export interface ModelStateRow {
+  readonly id: string;
+  readonly displayName?: string | undefined;
+  readonly sizeBytes?: number | undefined;
+  /** `idle` | `loading` | `ready` | `failed` (engine `ModelLoadState`). */
+  readonly loadState?: string | undefined;
+  readonly isActive?: boolean | undefined;
+  /** Fraction [0,1) while THIS row is fetching, else absent. */
+  readonly downloadProgress?: number | undefined;
+}
+
+/**
+ * Per-model load/download state from `GET /v1/state` (engine#292 added the
+ * per-row `downloadProgress` precisely so a consumer can answer "how is THIS
+ * download doing?" on demand, without depending on catching event frames).
+ *
+ * This is the endpoint to use for a specific model. `/v1/llm/status` reports
+ * only the ACTIVE tier, so reading it while pulling a non-active model gives
+ * you a different model's state — including, disastrously, a different
+ * model's `failed`.
+ *
+ * The LLM models remi uses are the `touchup` module's rows.
+ */
+export async function getModelState(
+  baseUrl: string,
+  id: string,
+  timeoutMs?: number,
+): Promise<ModelStateRow | undefined> {
+  const raw = await engineRequest<{
+    modules?: Array<{ module?: string; models?: ModelStateRow[] }>;
+  }>(baseUrl, '/v1/state', { method: 'GET', ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+  for (const mod of raw.modules ?? []) {
+    const row = (mod.models ?? []).find((m) => m.id === id);
+    if (row !== undefined) return row;
+  }
+  return undefined;
+}
+
 /** Progress report for an in-flight pull, handed to the CLI's renderer. */
 export interface PullProgress {
-  /** 0..1 when the engine reports a download fraction; undefined while it is
-   *  loading already-downloaded weights (no fraction to report). */
+  /** 0..1 when the engine reports a download fraction for THIS model.
+   *  Frequently near-useless — see `advancing`. */
   readonly fraction?: number | undefined;
   readonly state?: string | undefined;
+  /** Total download size, when the engine knows it. The honest thing to show
+   *  when the fraction is not moving. */
+  readonly sizeBytes?: number | undefined;
+  /** Milliseconds since the pull started. */
+  readonly elapsedMs: number;
+  /**
+   * False when the fraction has not moved since the pull began — the normal
+   * case for a single-big-file repo (both of remi's LLM tiers are one
+   * multi-GB `model.safetensors` plus small files). The engine's parent
+   * `Progress` advances per completed FILE, so the fraction steps ~0.6% and
+   * then sits there until the whole thing lands; yooz-engine#293 measured the
+   * byte-on-disk alternative and found the big file is staged outside the hub
+   * directory, so that is equally flat, and assigned the honest finish to
+   * consumers. A renderer MUST NOT show a percentage when this is false — it
+   * reads as a stalled download. Show elapsed + size instead.
+   */
+  readonly advancing: boolean;
 }
 
 export interface PullOptions {
@@ -305,12 +362,14 @@ const STATE_FAILED = 'failed';
  * making a model resident are different acts, and the download endpoint is the
  * one that does not disturb which model is currently active.
  *
+ * Per-model state comes from `GET /v1/state` (`getModelState`), NOT
+ * `/v1/llm/status` — the latter reports only the active tier, so pulling a
+ * non-active model would read some other model's progress and failure.
+ *
  * Completion is judged from the INVENTORY (`cached: true` in `GET /v1/models`),
- * which the engine derives from bytes actually on disk — NOT from
- * `status.progress`, which yooz-engine#292 documents as publishing a single
- * near-zero sample and then freezing for the rest of the download. Progress is
- * still forwarded when it moves, so this gets better for free once that engine
- * bug is fixed, but nothing here depends on it.
+ * which is the engine's own "loadable without a download" answer. That is the
+ * only reliable completion signal for our tiers: the fraction steps ~0.6% and
+ * then sits until the whole file lands (see `PullProgress.advancing`).
  */
 export async function pullModel(
   baseUrl: string,
@@ -328,17 +387,27 @@ export async function pullModel(
 
   await startDownload(baseUrl, model);
 
-  const deadline = now() + timeoutMs;
+  const started = now();
+  const deadline = started + timeoutMs;
+  let firstFraction: number | undefined;
   for (;;) {
-    // Status first (cheap, and carries the failure detail); inventory second
-    // (authoritative for "is it actually down?").
-    const status = await getStatus(baseUrl).catch(() => undefined);
-    if (status !== undefined) {
-      opts.onProgress?.({ fraction: status.progress, state: status.state });
-      if (status.state === STATE_FAILED) {
-        throw new Error(
-          `engine failed to fetch ${model}: ${status.lastError ?? 'no detail reported'}`,
-        );
+    // Per-model row first: it carries THIS model's loadState and fraction.
+    const row = await getModelState(baseUrl, model).catch(() => undefined);
+    if (row !== undefined) {
+      if (firstFraction === undefined) firstFraction = row.downloadProgress;
+      const advancing =
+        row.downloadProgress !== undefined &&
+        firstFraction !== undefined &&
+        row.downloadProgress > firstFraction;
+      opts.onProgress?.({
+        fraction: row.downloadProgress,
+        state: row.loadState,
+        sizeBytes: row.sizeBytes,
+        elapsedMs: now() - started,
+        advancing,
+      });
+      if (row.loadState === STATE_FAILED) {
+        throw new Error(`engine failed to fetch ${model}: see "remi model status" for detail`);
       }
     }
 

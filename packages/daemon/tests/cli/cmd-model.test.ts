@@ -185,9 +185,10 @@ describe('remi model pull', () => {
     const code = await runModelCommand(['pull', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       pull: async (_url, model, opts) => {
-        opts?.onProgress?.({ fraction: 0.5 });
-        opts?.onProgress?.({ fraction: 0.5 }); // duplicate: must not double-print
-        opts?.onProgress?.({ fraction: 1 });
+        opts?.onProgress?.({ fraction: 0.5, elapsedMs: 1000, advancing: true });
+        // duplicate: must not double-print
+        opts?.onProgress?.({ fraction: 0.5, elapsedMs: 1500, advancing: true });
+        opts?.onProgress?.({ fraction: 1, elapsedMs: 2000, advancing: true });
         expect(model).toBe('yooz-light-v3');
       },
     });
@@ -355,5 +356,52 @@ describe('remi model cleanup / cancel', () => {
 
     expect(code).toBe(0);
     expect(cancelled).toBe('yooz-light-v3');
+  });
+});
+
+describe('remi model pull — flat-fraction rendering (engine#292/#293)', () => {
+  test('never prints a percentage while the fraction is not advancing', async () => {
+    // Both remi LLM tiers are single-big-file repos, so the engine's fraction
+    // steps ~0.6% and sits. A percentage there reads as a wedged download.
+    const t = io();
+    await runModelCommand(['pull', 'yooz-quality-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      pull: async (_url, _model, opts) => {
+        opts?.onProgress?.({
+          fraction: 0.0058,
+          sizeBytes: 3_400_000_000,
+          elapsedMs: 0,
+          advancing: false,
+        });
+        opts?.onProgress?.({
+          fraction: 0.0058,
+          sizeBytes: 3_400_000_000,
+          elapsedMs: 30_000,
+          advancing: false,
+        });
+      },
+    });
+
+    const text = t.out.join('\n');
+    expect(text).not.toMatch(/\d+%/); // no misleading percentage anywhere
+    expect(text).toContain('3.4 GB'); // the honest thing we do know
+    expect(text).toContain('elapsed');
+  });
+
+  test('heartbeats rather than printing on every poll', async () => {
+    const t = io();
+    await runModelCommand(['pull', 'm'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      pull: async (_url, _model, opts) => {
+        // Ten polls one second apart: a line every poll would be log spam.
+        for (let i = 0; i < 10; i++) {
+          opts?.onProgress?.({ elapsedMs: i * 1000, advancing: false });
+        }
+      },
+    });
+
+    const lines = t.out.filter((l) => l.includes('downloading'));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeLessThan(4); // heartbeat, not per-poll
   });
 });

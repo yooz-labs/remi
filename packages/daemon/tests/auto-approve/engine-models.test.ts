@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
   cleanupModels,
   deleteModel,
+  getModelState,
   getStatus,
   listManagedModels,
   listModels,
@@ -141,7 +142,13 @@ describe('pullModel', () => {
     let polls = 0;
     const server = engineServer((path) => {
       if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
-      if (path === '/v1/llm/status') return Response.json({ loaded: false, state: 'idle' });
+      if (path === '/v1/state') {
+        return Response.json({
+          modules: [
+            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'loading' }] },
+          ],
+        });
+      }
       // Not cached on the first look, cached once the download "finishes".
       return Response.json({ models: [managed({ cached: polls++ >= 1 })] });
     });
@@ -156,26 +163,44 @@ describe('pullModel', () => {
     expect(server.seen.some((s) => s.path === '/v1/llm/preload')).toBe(false);
   });
 
-  test('completes from BYTES ON DISK even when progress never moves (engine#292)', async () => {
-    // The engine publishes one near-zero sample and then freezes. A pull that
-    // waited on progress would hang forever on a download that succeeded.
+  test('completes even when the fraction never advances, and says so (engine#292/#293)', async () => {
+    // For a single-big-file repo the engine's fraction steps ~0.6% and sits
+    // there. A pull that waited on progress would hang forever on a download
+    // that actually succeeded, and a percentage would read as wedged.
     let polls = 0;
     const server = engineServer((path) => {
       if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
-      if (path === '/v1/llm/status') {
-        return Response.json({ loaded: false, progress: 0.000027, state: 'idle' });
+      if (path === '/v1/state') {
+        return Response.json({
+          modules: [
+            {
+              module: 'touchup',
+              models: [
+                {
+                  id: 'yooz-quality-v3',
+                  loadState: 'loading',
+                  downloadProgress: 0.0058,
+                  sizeBytes: 3_400_000_000,
+                },
+              ],
+            },
+          ],
+        });
       }
       return Response.json({ models: [managed({ cached: polls++ >= 2 })] });
     });
     stop = server.stop;
 
-    const seen: Array<number | undefined> = [];
+    const seen: Array<{ advancing: boolean; size?: number | undefined }> = [];
     await pullModel(server.url, 'yooz-quality-v3', {
       sleep: noSleep,
-      onProgress: (p) => seen.push(p.fraction),
+      onProgress: (p) => seen.push({ advancing: p.advancing, size: p.sizeBytes }),
     });
 
-    expect(seen.every((f) => f === 0.000027)).toBe(true); // frozen, as documented
+    // Never claims to be advancing, and carries the size so a renderer has
+    // something honest to show instead of a frozen percentage.
+    expect(seen.every((p) => p.advancing === false)).toBe(true);
+    expect(seen.every((p) => p.size === 3_400_000_000)).toBe(true);
   });
 
   test('is idempotent: an already-cached model downloads nothing', async () => {
@@ -193,22 +218,32 @@ describe('pullModel', () => {
   test('a failed fetch throws with the engine reason', async () => {
     const server = engineServer((path) => {
       if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
-      if (path === '/v1/llm/status') {
-        return Response.json({ loaded: false, state: 'failed', lastError: 'disk full' });
+      if (path === '/v1/state') {
+        return Response.json({
+          modules: [
+            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'failed' }] },
+          ],
+        });
       }
       return Response.json({ models: [managed()] });
     });
     stop = server.stop;
 
     await expect(pullModel(server.url, 'yooz-quality-v3', { sleep: noSleep })).rejects.toThrow(
-      /disk full/,
+      /engine failed to fetch yooz-quality-v3/,
     );
   });
 
   test('a wedged download times out and points at the cancel command', async () => {
     const server = engineServer((path) => {
       if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
-      if (path === '/v1/llm/status') return Response.json({ loaded: false });
+      if (path === '/v1/state') {
+        return Response.json({
+          modules: [
+            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'loading' }] },
+          ],
+        });
+      }
       return Response.json({ models: [managed()] });
     });
     stop = server.stop;
@@ -310,5 +345,47 @@ describe('unloadModel', () => {
 
     expect(server.seen[0]?.path).toBe('/v1/llm/unload');
     expect(server.seen[0]?.body).toEqual({ model: 'yooz-quality-v3' });
+  });
+});
+
+describe('getModelState (per-model, not active-tier)', () => {
+  let stop: (() => void) | undefined;
+  afterEach(() => {
+    stop?.();
+    stop = undefined;
+  });
+
+  test("reads THIS model's row from /v1/state, whichever module owns it", async () => {
+    // /v1/llm/status reports only the ACTIVE tier, so pulling a non-active
+    // model must not read it: you would get another model's state, including
+    // another model's `failed`.
+    const server = engineServer(() =>
+      Response.json({
+        modules: [
+          { module: 'stt', models: [{ id: 'parakeet', loadState: 'ready' }] },
+          {
+            module: 'touchup',
+            models: [
+              { id: 'yooz-quality-v3', loadState: 'ready', isActive: true },
+              { id: 'yooz-light-v3', loadState: 'loading', downloadProgress: 0.0058 },
+            ],
+          },
+        ],
+      }),
+    );
+    stop = server.stop;
+
+    const row = await getModelState(server.url, 'yooz-light-v3');
+
+    expect(server.seen[0]?.path).toBe('/v1/state');
+    expect(row?.loadState).toBe('loading'); // the NON-active model's own state
+    expect(row?.downloadProgress).toBeCloseTo(0.0058);
+  });
+
+  test('returns undefined for a model no module lists', async () => {
+    const server = engineServer(() => Response.json({ modules: [] }));
+    stop = server.stop;
+
+    expect(await getModelState(server.url, 'nope')).toBeUndefined();
   });
 });
