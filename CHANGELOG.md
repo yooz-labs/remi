@@ -2,6 +2,64 @@
 
 All notable changes to Remi are documented here.
 
+## [0.6.23] - 2026-07-25
+
+Background agents stop costing you GPU and stop making decisions in your name,
+and the last structural cause of cards reappearing after you answer them is
+gone.
+
+### Changed
+- **A background agent's permission is never LLM-evaluated** (#807): a
+  subagent-tagged `PermissionRequest` now parks for PTY arbitration and returns
+  `passthrough` immediately, before the evaluator is reached. Claude blocks on
+  the hook response, so at decision time the daemon cannot know whether the
+  prompt will ever render — and most never do (a live session logged 16
+  subagent permission requests against 2 renders). Every one of those cost a
+  GPU-backed LLM call, and each approve/deny verdict was applied to a prompt no
+  human saw and no card recorded. Claude's own permission flow now decides:
+  either its allowlist absorbs the request silently, or the prompt renders and
+  the parked record pushes a card. The PTY, not the hook, decides whether you
+  are asked. Evaluating a subagent prompt *after* it renders is #814.
+
+### Added
+- **Alerts for flagged background-agent commands** (#807): new
+  `[auto_approve] subagent_alert` substring list. One branch of Claude's own
+  permission flow allows a call without ever rendering it, so with the LLM out
+  of that path nothing would otherwise mention a destructive background
+  command. A match fires a dismiss-only notification plus an audit log line.
+  This does **not** gate anything — the command runs; it closes the visibility
+  gap, not the interdiction gap. Repeats of the same command collapse over five
+  minutes, because useful patterns are broad and a banner nobody reads costs
+  more than it buys. Defaults are irreversible-only (`rm -rf`, `push --force`,
+  `reset --hard`, `DROP TABLE`, `TRUNCATE`, `sudo `, `chmod 777`); broad ones
+  like `curl`/`ssh` are opt-in per machine.
+- **Opt-in question-lifecycle trace** (#808): `REMI_QUESTION_TRACE=1` appends
+  every question add and removal to `~/.remi/question-trace.jsonl` with the
+  signal that caused it and whether it went through the `removeQuestion`
+  funnel. The earlier phantom-card fixes were reasoned from hook semantics
+  rather than live capture, which is why residuals survived; this is the
+  capture tool.
+
+### Fixed
+- **Answered cards no longer reappear on reconnect** (#808): every attach now
+  sends a `question_snapshot` carrying the authoritative live-question-id set,
+  including — critically — an empty one when nothing is pending. #798 broadcast
+  that snapshot only from `onQuestionsChanged`, and its own comment said the
+  point was to resync a client reconnecting into a quiet session; but a quiet
+  session is precisely one where nothing changes, so the broadcast never fired.
+  Since `question_resolved` is never replayed, a resolve missed while
+  disconnected was lost permanently with nothing able to correct the client.
+  The re-send was purely additive and structurally could not retract a card.
+
+### Known residuals (#808)
+- A question answered by *denial* in the terminal fires no matching tool call,
+  so it clears only on the owning agent's next `Stop`/`SubagentStop` — it
+  persists while that agent keeps working.
+- A card stuck in `submitting` is exempt from pruning indefinitely.
+- `StopFailure` still leaves open escalations uncleared (#802).
+- LRU eviction at the pending-question cap deletes without firing
+  `question_resolved` or the push dismissal.
+
 ## [0.6.22] - 2026-07-18
 
 Two big interaction-model changes from hands-on hub testing — the macOS app
