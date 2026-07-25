@@ -24,11 +24,31 @@
  * mode changes who owns the process and the residency policy, not the address
  * (owner decision, 2026-07-25).
  *
- * Ownership WITHIN remi: one helper per machine. When a hub (`remi serve`) is
- * running it owns the helper and session daemons attach to it; N session
- * daemons must never spawn N engines, each loading its own multi-GB copy of
- * the same weights. A standalone `remi --daemon` with no hub spawns and
- * supervises its own.
+ * Ownership WITHIN remi: one engine per MACHINE, and it is an INDEPENDENT
+ * process — a peer of the hub, never a child of a session daemon.
+ *
+ * The rule is: **ownership is about who STARTS it, not who holds it.**
+ *   - If an engine is already answering, attach. It does not matter who
+ *     started it — a hub, another session, or the user by hand.
+ *   - If nothing is answering, the first process that needs one starts it
+ *     DETACHED (`detached: true` + `unref()`, exactly how `daemon-manager.ts`
+ *     launches the hub) and records `~/.remi/engine.pid`. In practice the hub
+ *     usually wins that race by construction, because it starts at login from
+ *     the LaunchAgent — but a hub is not REQUIRED, so a standalone
+ *     `remi --daemon` on a machine with no hub still gets auto-approve.
+ *   - Nobody kills it on their own exit. A session daemon that spawned the
+ *     engine and then quit must not take auto-approve down for every other
+ *     session — that is the whole reason it is detached.
+ *
+ * The expensive resource is the WEIGHTS, not the process, and `keep_alive`
+ * (#820) already evicts those after idle. So a long-lived, cheap, idle engine
+ * process plus aggressive weight eviction is the right shape; reaping the
+ * process itself is not worth the coordination.
+ *
+ * The pidfile doubles as the start race guard: it is created O_EXCL, so of two
+ * daemons booting simultaneously exactly one spawns and the other waits and
+ * attaches. (The port would arbitrate anyway — the loser's engine would fail
+ * to bind — but losing that race noisily is worse than not entering it.)
  */
 
 import { errorToString } from '@remi/shared';
@@ -57,18 +77,34 @@ export interface EngineHostConfig {
 
 export interface EngineHostDeps {
   readonly log: (msg: string) => void;
-  /** Spawn seam. Returns a handle; tests supply a fake process. */
-  readonly spawn?: (path: string, env: Record<string, string>) => SpawnedProcess;
+  /**
+   * Spawn seam. The real implementation launches DETACHED and unrefs, so the
+   * engine survives this process; it returns only the pid because there is no
+   * child handle to hold onto afterwards. Tests supply a fake.
+   */
+  readonly spawn?: (path: string, env: Record<string, string>) => number;
+  /** Kill a pid. Needed on the failure paths: a helper we started that lost
+   *  the race, or never bound, must not be left running. */
+  readonly kill?: (pid: number) => void;
   readonly probe?: typeof probeEngine;
   readonly sleep?: (ms: number) => Promise<void>;
+  /** Pidfile seam (`~/.remi/engine.pid` in production). */
+  readonly pidStore?: PidStore;
 }
 
-/** The subset of a child process this file needs. */
-export interface SpawnedProcess {
-  readonly pid: number;
-  kill(): void;
-  /** Resolves when the process exits, with its code. */
-  readonly exited: Promise<number>;
+/**
+ * The `~/.remi/engine.pid` record. Claiming is EXCLUSIVE: `claim` must fail
+ * when a live pid already holds it, and must succeed (after clearing) when the
+ * recorded pid is dead — a machine that lost power mid-download should not
+ * need manual cleanup.
+ */
+export interface PidStore {
+  /** The recorded pid, or null when absent/stale. */
+  read(): number | null;
+  /** Take the record for `pid`. False when another LIVE process holds it. */
+  claim(pid: number): boolean;
+  /** Release the record if it names `pid`. */
+  release(pid: number): void;
 }
 
 /** What `ensureRunning` concluded, as a value — every outcome is reportable,
@@ -79,11 +115,15 @@ export type EngineHostState =
   | { readonly kind: 'unavailable'; readonly reason: string };
 
 export class EngineHost {
-  private child: SpawnedProcess | null = null;
+  /** The pid THIS process started, if any. Not a child handle: the engine is
+   *  detached and outlives us. */
+  private startedPid: number | null = null;
   private readonly log: EngineHostDeps['log'];
   private readonly probe: typeof probeEngine;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly spawnFn: EngineHostDeps['spawn'];
+  private readonly killFn: (pid: number) => void;
+  private readonly pids: PidStore | undefined;
 
   constructor(
     private readonly config: EngineHostConfig,
@@ -93,6 +133,8 @@ export class EngineHost {
     this.probe = deps.probe ?? probeEngine;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.spawnFn = deps.spawn;
+    this.killFn = deps.kill ?? ((pid) => process.kill(pid));
+    this.pids = deps.pidStore;
   }
 
   /** True when remi may load/unload/delete models on this engine. The single
@@ -102,18 +144,19 @@ export class EngineHost {
     return this.config.ownership === 'owned';
   }
 
-  /** True when THIS process spawned the running helper. */
-  get isSupervising(): boolean {
-    return this.child !== null;
+  /** The pid this process started, or null when it attached to an existing
+   *  engine. NOT "is the engine running" — the engine usually outlives us. */
+  get startedByUs(): number | null {
+    return this.startedPid;
   }
 
   /**
-   * Make sure an engine is answering, spawning one if this remi owns the
+   * Make sure an engine is answering, starting one if this remi owns the
    * engine and nothing is there yet.
    *
-   * Attach-before-spawn is deliberate even in `owned` mode: a hub may already
-   * have started the helper for the machine, and spawning a second one would
-   * load a second multi-GB copy of the same weights and lose the port race.
+   * Attach first, always: it does not matter who started the engine, only that
+   * one is up. Starting a second would load a second multi-GB copy of the same
+   * weights and lose the port race anyway.
    */
   async ensureRunning(): Promise<EngineHostState> {
     const existing = await this.probe(this.config.baseUrl);
@@ -137,24 +180,39 @@ export class EngineHost {
       return { kind: 'unavailable', reason };
     }
 
-    return await this.spawnHelper(helperPath);
+    return await this.startEngine(helperPath);
   }
 
-  /** Stop a helper THIS process started. Never touches an engine it merely
-   *  attached to — that one belongs to a hub, a host, or the user. */
-  stop(): void {
-    const child = this.child;
-    if (child === null) return;
-    this.child = null;
-    try {
-      child.kill();
-      this.log(`[Engine] Stopped the helper this daemon started (pid ${child.pid})`);
-    } catch (err) {
-      this.log(`[Engine] Failed to stop helper pid ${child.pid}: ${errorToString(err)}`);
-    }
+  /**
+   * Stop the engine THIS process started. Deliberately NOT called on daemon
+   * shutdown: the engine is a machine singleton and other sessions may be
+   * using it, so taking it down on our own exit would break them. Exists for
+   * an explicit operator teardown only.
+   */
+  stopStartedEngine(): void {
+    const pid = this.startedPid;
+    if (pid === null) return;
+    this.killStarted(pid);
+    this.log(`[Engine] Stopped engine pid ${pid}`);
   }
 
-  private async spawnHelper(helperPath: string): Promise<EngineHostState> {
+  /**
+   * Operator teardown from ANY process (`remi engine stop`), which is the case
+   * that matters: the CLI invoking it is never the long-dead daemon that
+   * started the engine, so `startedPid` is null there. Resolves the target
+   * from the pidfile instead, mirroring how `daemon-manager.stopDaemon`
+   * resolves the hub. Returns the pid it signalled, or null when no engine is
+   * recorded.
+   */
+  static stopRecordedEngine(pids: PidStore, kill: (pid: number) => void): number | null {
+    const pid = pids.read();
+    if (pid === null) return null;
+    kill(pid);
+    pids.release(pid);
+    return pid;
+  }
+
+  private async startEngine(helperPath: string): Promise<EngineHostState> {
     const spawnFn = this.spawnFn;
     if (spawnFn === undefined) {
       const reason = 'no spawn implementation wired (engine supervision unavailable)';
@@ -162,44 +220,64 @@ export class EngineHost {
       return { kind: 'unavailable', reason };
     }
 
-    let child: SpawnedProcess;
+    // CLAIM BEFORE SPAWNING. Claiming after would leave a window where two
+    // daemons both spawn and only then discover the conflict — by which point
+    // two multi-GB processes exist and one has to be killed. Claiming first
+    // means the loser never starts anything.
+    if (this.pids !== undefined && !this.pids.claim(process.pid)) {
+      const holder = this.pids.read();
+      this.log(`[Engine] Engine is being started elsewhere (pid ${holder ?? 'unknown'}); waiting`);
+      if (await this.waitForReady()) {
+        return { kind: 'attached', ownership: this.config.ownership };
+      }
+      const reason = `another remi holds the engine start record (pid ${holder ?? 'unknown'}) but no engine answered on ${this.config.baseUrl}`;
+      this.log(`[Engine] ${reason}`);
+      return { kind: 'unavailable', reason };
+    }
+
+    let pid: number;
     try {
-      child = spawnFn(helperPath, {
+      pid = spawnFn(helperPath, {
         // Headless: no menu-bar UI for a helper nobody looks at.
         YOOZ_ENGINE_HEADLESS: '1',
         // remi's reserved port, in every configuration (see the module doc).
         YOOZ_ENGINE_PORT: String(portOf(this.config.baseUrl)),
       });
     } catch (err) {
+      // Release the claim we took above, or the next attempt is blocked by a
+      // record for a process that never existed.
+      this.pids?.release(process.pid);
       const reason = `failed to start the engine helper at ${helperPath}: ${errorToString(err)}`;
       this.log(`[Engine] ${reason}`);
       return { kind: 'unavailable', reason };
     }
-    this.child = child;
-    this.log(`[Engine] Started helper pid ${child.pid} (${helperPath})`);
 
-    // A helper that dies is not silently forgotten: clear our handle so a
-    // later ensureRunning() starts a fresh one rather than assuming this is
-    // still alive.
-    void child.exited
-      .then((code) => {
-        if (this.child === child) {
-          this.child = null;
-          this.log(`[Engine] Helper pid ${child.pid} exited (code ${code})`);
-        }
-      })
-      .catch(() => {
-        /* exit reporting is best-effort */
-      });
+    // Re-record under the child's pid now that we have it.
+    this.pids?.release(process.pid);
+    this.pids?.claim(pid);
+    this.startedPid = pid;
+    this.log(`[Engine] Started detached engine pid ${pid} (${helperPath})`);
 
-    const ready = await this.waitForReady();
-    if (ready) return { kind: 'spawned', pid: child.pid };
+    if (await this.waitForReady()) return { kind: 'spawned', pid };
 
-    // Started but never answered: leave nothing half-supervised behind.
-    this.stop();
-    const reason = `engine helper started (pid ${child.pid}) but never answered on ${this.config.baseUrl}`;
+    // Started but never bound. Kill it rather than leaving a wedged headless
+    // process behind: we cannot assume the helper exits on its own when it
+    // cannot take the port.
+    this.killStarted(pid);
+    const reason = `engine started (pid ${pid}) but never answered on ${this.config.baseUrl}`;
     this.log(`[Engine] ${reason}`);
     return { kind: 'unavailable', reason };
+  }
+
+  /** Kill a pid we started and drop its record. Never throws. */
+  private killStarted(pid: number): void {
+    try {
+      this.killFn(pid);
+    } catch (err) {
+      this.log(`[Engine] Could not stop engine pid ${pid}: ${errorToString(err)}`);
+    }
+    this.pids?.release(pid);
+    if (this.startedPid === pid) this.startedPid = null;
   }
 
   private async waitForReady(): Promise<boolean> {
@@ -207,9 +285,6 @@ export class EngineHost {
     const intervalMs = this.config.probeIntervalMs ?? 500;
     const attempts = Math.max(1, Math.floor(timeoutMs / intervalMs));
     for (let i = 0; i < attempts; i++) {
-      // A helper that already exited will never answer; fail fast rather than
-      // burning the whole startup window on a dead process.
-      if (this.child === null) return false;
       const probe = await this.probe(this.config.baseUrl, intervalMs);
       if (probe.reachable) return true;
       await this.sleep(intervalMs);

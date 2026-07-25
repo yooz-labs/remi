@@ -91,7 +91,9 @@ describe('ModelResidency (#820)', () => {
     await Promise.resolve();
 
     expect(h.logs.join('\n')).toContain('engine restarted');
-    expect(h.logs.join('\n')).toContain('stays resident');
+    // And it does not give up for the whole idle window: a transient failure
+    // would otherwise leave the weights pinned overnight with one log line.
+    expect(h.logs.join('\n')).toContain('retrying once');
   });
 
   test('one failing model does not skip the others', async () => {
@@ -134,5 +136,75 @@ describe('ModelResidency (#820)', () => {
     await Promise.resolve();
 
     expect(h.unloaded).toEqual(['model-a']);
+  });
+});
+
+describe('ModelResidency — failure retry and mid-unload activity', () => {
+  test('retries once after a failed unload, then stops', async () => {
+    let attempts = 0;
+    let fire: (() => void) | undefined;
+    const logs: string[] = [];
+    const residency = new ModelResidency(
+      { keepAliveMs: 1000, models: ['m'], ownsEngine: true },
+      {
+        unload: async () => {
+          attempts++;
+          throw new Error('engine mid-restart');
+        },
+        log: (m) => logs.push(m),
+        setTimer: (fn) => {
+          fire = fn;
+          return 1 as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimer: () => {},
+      },
+    );
+    residency.noteActivity();
+
+    fire?.(); // first attempt fails, re-arms
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    fire?.(); // retry, also fails
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    fire?.(); // must NOT try a third time
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(attempts).toBe(2);
+  });
+
+  test('an evaluation arriving mid-unload aborts the remaining unloads', async () => {
+    // The unload loop is a sequence of awaited HTTP calls; a new eval landing
+    // in the middle must not have its model freed underneath it.
+    const unloaded: string[] = [];
+    let fire: (() => void) | undefined;
+    // Holder so the unload callback can reach the instance it belongs to.
+    const self: { residency?: ModelResidency } = {};
+    const residency = new ModelResidency(
+      { keepAliveMs: 1000, models: ['first', 'second'], ownsEngine: true },
+      {
+        unload: async (m) => {
+          unloaded.push(m);
+          // A permission arrives while we are freeing the first model.
+          if (m === 'first') self.residency?.noteActivity();
+        },
+        log: () => {},
+        setTimer: (fn) => {
+          fire = fn;
+          return 1 as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimer: () => {},
+      },
+    );
+    self.residency = residency;
+    residency.noteActivity();
+
+    fire?.();
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    expect(unloaded).toEqual(['first']); // 'second' was spared
   });
 });

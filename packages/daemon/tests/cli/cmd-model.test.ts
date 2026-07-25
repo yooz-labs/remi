@@ -4,7 +4,7 @@ import type {
   EngineProbe,
   ManagedModel,
 } from '../../src/auto-approve/engine-models.ts';
-import { runModelCommand } from '../../src/cli/cmd-model.ts';
+import { persistModelInConfig, runModelCommand } from '../../src/cli/cmd-model.ts';
 import { DEFAULT_CONFIG, type RemiConfig } from '../../src/config/config.ts';
 
 /** Real config object with the yooz provider, as a fresh engine install has. */
@@ -443,5 +443,89 @@ describe('remi model — shared-engine ownership boundary (#818)', () => {
     await runModelCommand(['status'], shared(), t.io, { probe: async () => REACHABLE });
 
     expect(t.out.join('\n')).toContain('shared');
+  });
+});
+
+describe('persistModelInConfig — REAL filesystem (no seam)', () => {
+  const os = require('node:os') as typeof import('node:os');
+  const fs = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+
+  function tmpConfig(contents?: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-cfg-'));
+    const file = path.join(dir, 'config.toml');
+    if (contents !== undefined) fs.writeFileSync(file, contents);
+    return file;
+  }
+
+  test('creates a minimal config when none exists', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-cfg-')), 'config.toml');
+
+    persistModelInConfig('yooz-light-v3', file);
+
+    expect(fs.readFileSync(file, 'utf-8')).toContain('[auto_approve]');
+    expect(fs.readFileSync(file, 'utf-8')).toContain('model = "yooz-light-v3"');
+  });
+
+  test('replaces the key IN PLACE, preserving every surrounding comment', () => {
+    const file = tmpConfig(
+      ['# my notes', '[auto_approve]', '# a comment', 'model = "old"', 'timeout = 30', ''].join(
+        '\n',
+      ),
+    );
+
+    persistModelInConfig('new-model', file);
+
+    const out = fs.readFileSync(file, 'utf-8');
+    expect(out).toContain('# my notes');
+    expect(out).toContain('# a comment');
+    expect(out).toContain('timeout = 30');
+    expect(out).toContain('model = "new-model"');
+    expect(out).not.toContain('"old"');
+  });
+
+  test('NEVER touches a model key belonging to a different section', () => {
+    // The unscoped regex this replaced would have rewritten the [stt] key.
+    const file = tmpConfig(
+      ['[stt]', 'model = "parakeet"', '', '[auto_approve]', 'model = "old"', ''].join('\n'),
+    );
+
+    persistModelInConfig('new-model', file);
+
+    const out = fs.readFileSync(file, 'utf-8');
+    expect(out).toContain('model = "parakeet"'); // untouched
+    expect(out).toContain('model = "new-model"');
+  });
+
+  test('a fresh install (commented-out template) gets one live section, not two', () => {
+    const file = tmpConfig(['# [auto_approve]', '# model = "yooz-quality-v3"', ''].join('\n'));
+
+    persistModelInConfig('first-choice', file);
+    persistModelInConfig('second-choice', file);
+
+    const out = fs.readFileSync(file, 'utf-8');
+    expect(out.match(/^\[auto_approve\]$/gm)).toHaveLength(1); // exactly one live section
+    expect(out).toContain('model = "second-choice"');
+    expect(out).not.toContain('model = "first-choice"');
+    expect(out).toContain('# [auto_approve]'); // template comment survives
+  });
+
+  test('inserts the key under a live header that has none', () => {
+    const file = tmpConfig(['[auto_approve]', 'timeout = 30', ''].join('\n'));
+
+    persistModelInConfig('inserted', file);
+
+    const out = fs.readFileSync(file, 'utf-8');
+    expect(out).toContain('model = "inserted"');
+    expect(out).toContain('timeout = 30');
+  });
+
+  test('an id containing $& is written literally, not expanded', () => {
+    // String.replace would have injected the matched text here.
+    const file = tmpConfig(['[auto_approve]', 'model = "old"', ''].join('\n'));
+
+    persistModelInConfig('weird$&id', file);
+
+    expect(fs.readFileSync(file, 'utf-8')).toContain('model = "weird$&id"');
   });
 });

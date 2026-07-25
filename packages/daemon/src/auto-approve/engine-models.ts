@@ -116,8 +116,21 @@ async function engineRequest<T>(
       const detail = await response.text().catch(() => '');
       throw new Error(`${path} failed ${response.status}: ${detail.slice(0, 200)}`);
     }
-    // A 202 (dispatched preload) has no body worth decoding; tolerate both.
-    return (await response.json().catch(() => ({}))) as T;
+    // A dispatched-work response (202) legitimately has no body. Anything
+    // else that fails to parse is a BROKEN response — an engine mid-restart, a
+    // truncated write, a proxy error page — and must throw. Swallowing it to
+    // `{}` would hand every caller a plausible-looking wrong answer: an empty
+    // catalogue rendered as "no models on disk", or a reachable-but-broken
+    // engine reported as healthy.
+    const body = await response.text();
+    if (body.trim().length === 0) return {} as T;
+    try {
+      return JSON.parse(body) as T;
+    } catch (err) {
+      throw new Error(
+        `${path} returned ${response.status} with an unparsable body (${body.slice(0, 120)}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   } finally {
     clearTimeout(timer);
   }
@@ -277,7 +290,17 @@ export interface ModelStateRow {
   readonly id: string;
   readonly displayName?: string | undefined;
   readonly sizeBytes?: number | undefined;
-  /** `idle` | `loading` | `ready` | `failed` (engine `ModelLoadState`). */
+  /**
+   * `unavailable` | `available` | `cached` | `loaded` — the engine's
+   * `ModelLoadState` (`ModelPicker.swift`).
+   *
+   * NOT the `idle`/`loading`/`ready`/`failed` `LoadState` enum: that one is
+   * `LLMStatus.state` on `/v1/llm/status`, a DIFFERENT type on a different
+   * endpoint. There is no `failed` case here — a failed fetch reverts the row
+   * to `available`, and the snapshot row carries no `message`/`lastError` to
+   * say why (only the `/v1/events` `loadStateChanged` frame does). See
+   * `pullModel` for how failure is inferred without it.
+   */
   readonly loadState?: string | undefined;
   readonly isActive?: boolean | undefined;
   /** Fraction [0,1) while THIS row is fetching, else absent. */
@@ -349,11 +372,10 @@ export interface PullOptions {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** The engine's `ModelLoadState.failed`, which carries `lastError`. Success is
- *  NOT read from this field: `pullModel` judges doneness from the inventory
- *  (bytes on disk), and `loading`/`ready` describe RESIDENCY, which a download
- *  deliberately does not change. */
-const STATE_FAILED = 'failed';
+/** `ModelLoadState` values that mean the weights are on disk. Either one ends
+ *  a pull; `loaded` additionally means resident, which a download does not
+ *  itself cause but a concurrent preload might. */
+const DISK_STATES: ReadonlySet<string> = new Set(['cached', 'loaded']);
 
 /**
  * Download `model` and wait until it is on disk (#819's `remi model pull`).
@@ -364,12 +386,23 @@ const STATE_FAILED = 'failed';
  *
  * Per-model state comes from `GET /v1/state` (`getModelState`), NOT
  * `/v1/llm/status` — the latter reports only the active tier, so pulling a
- * non-active model would read some other model's progress and failure.
+ * non-active model would read some other model's state.
  *
- * Completion is judged from the INVENTORY (`cached: true` in `GET /v1/models`),
- * which is the engine's own "loadable without a download" answer. That is the
- * only reliable completion signal for our tiers: the fraction steps ~0.6% and
- * then sits until the whole file lands (see `PullProgress.advancing`).
+ * **Failure detection is inferential, because the contract gives us nothing
+ * better.** `/v1/state` rows carry `ModelLoadState`, which has no `failed`
+ * case and no error field: a failed fetch reverts the row to `available`
+ * exactly as if it had never started (the reason exists only on an
+ * `/v1/events` frame, which a polling client does not see). So a pull is
+ * judged failed when a download that WAS in flight — we saw a
+ * `downloadProgress` for it — stops being in flight without the model
+ * becoming available on disk. Requiring that we observed progress first is
+ * what keeps the check from firing in the gap between dispatching the
+ * download and the engine registering it. Filed as yooz-engine#298.
+ *
+ * Completion is `cached`/`loaded` on the row, or `cached` in the inventory —
+ * the engine's own "loadable without a download" answer, and the only
+ * reliable completion signal for our tiers, whose fraction steps ~0.6% and
+ * then sits until the whole file lands.
  */
 export async function pullModel(
   baseUrl: string,
@@ -385,16 +418,34 @@ export async function pullModel(
   const before = await listManagedModels(baseUrl).catch(() => [] as readonly ManagedModel[]);
   if (before.some((m) => m.id === model && m.cached)) return;
 
+  // Deliberately NOT wrapped: an unknown model id is a 400 from the engine and
+  // must fail immediately with that message, not enter the poll loop.
   await startDownload(baseUrl, model);
 
   const started = now();
   const deadline = started + timeoutMs;
   let firstFraction: number | undefined;
+  let sawInFlight = false;
+  let consecutiveUnreachable = 0;
   for (;;) {
-    // Per-model row first: it carries THIS model's loadState and fraction.
     const row = await getModelState(baseUrl, model).catch(() => undefined);
-    if (row !== undefined) {
+    if (row === undefined) {
+      // Distinguish "engine went away" from "slow download" — otherwise a
+      // crash mid-pull is indistinguishable from progress for 30 minutes.
+      consecutiveUnreachable += 1;
+      if (consecutiveUnreachable >= 3) {
+        const probe = await probeEngine(baseUrl);
+        if (!probe.reachable) {
+          throw new Error(
+            `engine stopped answering during the download of ${model}: ${probe.reason}`,
+          );
+        }
+      }
+    } else {
+      consecutiveUnreachable = 0;
       if (firstFraction === undefined) firstFraction = row.downloadProgress;
+      const inFlight = row.downloadProgress !== undefined;
+      if (inFlight) sawInFlight = true;
       const advancing =
         row.downloadProgress !== undefined &&
         firstFraction !== undefined &&
@@ -406,8 +457,12 @@ export async function pullModel(
         elapsedMs: now() - started,
         advancing,
       });
-      if (row.loadState === STATE_FAILED) {
-        throw new Error(`engine failed to fetch ${model}: see "remi model status" for detail`);
+
+      if (row.loadState !== undefined && DISK_STATES.has(row.loadState)) return;
+      if (sawInFlight && !inFlight) {
+        throw new Error(
+          `the download of ${model} stopped without the model becoming available; check the engine log (the engine reports no reason on this endpoint, yooz-engine#298)`,
+        );
       }
     }
 

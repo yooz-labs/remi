@@ -58,6 +58,14 @@ export class ModelResidency {
   /** Models this instance has actually unloaded, so a second fire is a no-op
    *  until real activity re-loads them. */
   private unloaded = false;
+  /** Bumped by every `noteActivity`. An unload loop that started before the
+   *  bump aborts rather than freeing weights an evaluation is now using —
+   *  the unload is a sequence of awaited HTTP calls, so "we decided to unload"
+   *  and "we finished unloading" are far enough apart for a new eval to
+   *  arrive in between (rule 2 in the module doc). */
+  private activityGeneration = 0;
+  /** One retry per idle window after a failed unload; reset by real activity. */
+  private retried = false;
 
   constructor(
     private readonly config: ModelResidencyConfig,
@@ -79,6 +87,8 @@ export class ModelResidency {
   noteActivity(): void {
     if (!this.enabled) return;
     this.unloaded = false;
+    this.retried = false;
+    this.activityGeneration += 1;
     this.arm();
   }
 
@@ -108,16 +118,39 @@ export class ModelResidency {
   private async unloadIdle(): Promise<void> {
     if (this.unloaded) return;
     this.unloaded = true;
+    let anyFailed = false;
+    const generation = this.activityGeneration;
     const idleSec = Math.round(this.config.keepAliveMs / 1000);
     for (const model of this.config.models) {
+      // Re-check before EACH unload: an eval that arrived mid-loop must not
+      // have the next model pulled out from under it.
+      if (this.activityGeneration !== generation) {
+        this.deps.log(
+          '[AutoApprove] keep_alive unload aborted: an evaluation started while unloading',
+        );
+        return;
+      }
       try {
         await this.deps.unload(model);
         this.deps.log(`[AutoApprove] Unloaded ${model} after ${idleSec}s idle (keep_alive)`);
       } catch (err) {
+        anyFailed = true;
         this.deps.log(
-          `[AutoApprove] keep_alive unload of ${model} failed (harmless; it stays resident): ${err instanceof Error ? err.message : String(err)}`,
+          `[AutoApprove] keep_alive unload of ${model} failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    }
+    // A transient failure (engine mid-restart, a blip) must not defeat the
+    // feature for the rest of the idle window: without a retry, a daemon left
+    // idle overnight keeps pinning the weights this timer exists to free, and
+    // the only trace is one log line nobody is watching. Re-arm ONCE.
+    if (anyFailed && !this.retried) {
+      this.retried = true;
+      this.unloaded = false;
+      this.deps.log(
+        '[AutoApprove] keep_alive unload failed; retrying once after another idle window',
+      );
+      this.arm();
     }
   }
 

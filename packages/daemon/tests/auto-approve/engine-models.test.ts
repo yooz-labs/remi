@@ -6,6 +6,7 @@ import {
   getStatus,
   listManagedModels,
   listModels,
+  preloadAsync,
   probeEngine,
   pullModel,
   unloadModel,
@@ -145,7 +146,10 @@ describe('pullModel', () => {
       if (path === '/v1/state') {
         return Response.json({
           modules: [
-            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'loading' }] },
+            {
+              module: 'touchup',
+              models: [{ id: 'yooz-quality-v3', loadState: 'available', downloadProgress: 0.006 }],
+            },
           ],
         });
       }
@@ -178,7 +182,7 @@ describe('pullModel', () => {
               models: [
                 {
                   id: 'yooz-quality-v3',
-                  loadState: 'loading',
+                  loadState: 'available',
                   downloadProgress: 0.0058,
                   sizeBytes: 3_400_000_000,
                 },
@@ -215,13 +219,40 @@ describe('pullModel', () => {
     expect(server.seen.some((s) => s.path === '/v1/touchup/download')).toBe(false);
   });
 
-  test('a failed fetch throws with the engine reason', async () => {
+  test('a download that STOPS mid-flight is reported, not waited out', async () => {
+    // The real failure shape: the engine reverts the row to `available` and
+    // drops `downloadProgress`, with no `failed` state and no reason field
+    // anywhere on this endpoint (yooz-engine#298). "Was fetching, now is not,
+    // still not on disk" is the only signal a polling client gets.
+    let polls = 0;
+    const server = engineServer((path) => {
+      if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
+      if (path === '/v1/state') {
+        const row =
+          polls++ === 0
+            ? { id: 'yooz-quality-v3', loadState: 'available', downloadProgress: 0.006 }
+            : { id: 'yooz-quality-v3', loadState: 'available' }; // fetch gone
+        return Response.json({ modules: [{ module: 'touchup', models: [row] }] });
+      }
+      return Response.json({ models: [managed()] });
+    });
+    stop = server.stop;
+
+    await expect(
+      pullModel(server.url, 'yooz-quality-v3', { sleep: noSleep, timeoutMs: 5_000 }),
+    ).rejects.toThrow(/stopped without the model becoming available/);
+  });
+
+  test('a download that never reports progress still ends at the timeout, never spins forever', async () => {
+    // Progress can be absent entirely (engine#292's first sample is late or
+    // missing). Without a bound this loop would poll until the 30-minute
+    // default -- a hot loop with no sleep.
     const server = engineServer((path) => {
       if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
       if (path === '/v1/state') {
         return Response.json({
           modules: [
-            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'failed' }] },
+            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'available' }] },
           ],
         });
       }
@@ -229,9 +260,17 @@ describe('pullModel', () => {
     });
     stop = server.stop;
 
-    await expect(pullModel(server.url, 'yooz-quality-v3', { sleep: noSleep })).rejects.toThrow(
-      /engine failed to fetch yooz-quality-v3/,
-    );
+    let clock = 0;
+    await expect(
+      pullModel(server.url, 'yooz-quality-v3', {
+        sleep: noSleep,
+        now: () => {
+          clock += 1_000;
+          return clock;
+        },
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow(/timed out/);
   });
 
   test('a wedged download times out and points at the cancel command', async () => {
@@ -240,7 +279,10 @@ describe('pullModel', () => {
       if (path === '/v1/state') {
         return Response.json({
           modules: [
-            { module: 'touchup', models: [{ id: 'yooz-quality-v3', loadState: 'loading' }] },
+            {
+              module: 'touchup',
+              models: [{ id: 'yooz-quality-v3', loadState: 'available', downloadProgress: 0.006 }],
+            },
           ],
         });
       }
@@ -367,7 +409,7 @@ describe('getModelState (per-model, not active-tier)', () => {
             module: 'touchup',
             models: [
               { id: 'yooz-quality-v3', loadState: 'ready', isActive: true },
-              { id: 'yooz-light-v3', loadState: 'loading', downloadProgress: 0.0058 },
+              { id: 'yooz-light-v3', loadState: 'available', downloadProgress: 0.0058 },
             ],
           },
         ],
@@ -378,7 +420,7 @@ describe('getModelState (per-model, not active-tier)', () => {
     const row = await getModelState(server.url, 'yooz-light-v3');
 
     expect(server.seen[0]?.path).toBe('/v1/state');
-    expect(row?.loadState).toBe('loading'); // the NON-active model's own state
+    expect(row?.loadState).toBe('available'); // the NON-active model's own state
     expect(row?.downloadProgress).toBeCloseTo(0.0058);
   });
 
@@ -387,5 +429,65 @@ describe('getModelState (per-model, not active-tier)', () => {
     stop = server.stop;
 
     expect(await getModelState(server.url, 'nope')).toBeUndefined();
+  });
+});
+
+describe('broken responses are never silently "empty"', () => {
+  let stop: (() => void) | undefined;
+  afterEach(() => {
+    stop?.();
+    stop = undefined;
+  });
+
+  test('a 200 with an unparsable body THROWS rather than decoding to {}', async () => {
+    // Swallowing this to {} would report a malfunctioning engine as healthy,
+    // and an engine full of models as "no models on disk".
+    const server = engineServer(() => new Response('<html>proxy error</html>', { status: 200 }));
+    stop = server.stop;
+
+    await expect(listManagedModels(server.url)).rejects.toThrow(/unparsable body/);
+  });
+
+  test('a genuinely EMPTY body (202 dispatched work) is still tolerated', async () => {
+    const server = engineServer(() => new Response(null, { status: 202 }));
+    stop = server.stop;
+
+    await expect(preloadAsync(server.url, 'm')).resolves.toBeUndefined();
+  });
+
+  test('probeEngine reports a broken engine as UNREACHABLE, not healthy', async () => {
+    const server = engineServer(() => new Response('not json', { status: 200 }));
+    stop = server.stop;
+
+    const probe = await probeEngine(server.url);
+
+    expect(probe.reachable).toBe(false);
+  });
+});
+
+describe('pullModel — engine death mid-download', () => {
+  let stop: (() => void) | undefined;
+  afterEach(() => {
+    stop?.();
+    stop = undefined;
+  });
+
+  test('a dead engine is reported promptly, not as a 30-minute timeout', async () => {
+    // The old behavior printed nothing at all for the whole window and then
+    // blamed a "wedged" download, suggesting a cancel that would also fail.
+    let started = false;
+    const server = engineServer((path) => {
+      if (path === '/v1/touchup/download') {
+        started = true;
+        return new Response(null, { status: 202 });
+      }
+      // Everything after the download starts fails, as if the engine died.
+      return started ? new Response('gone', { status: 503 }) : Response.json({ models: [] });
+    });
+    stop = server.stop;
+
+    await expect(pullModel(server.url, 'm', { sleep: noSleep })).rejects.toThrow(
+      /stopped answering|unparsable|503/,
+    );
   });
 });

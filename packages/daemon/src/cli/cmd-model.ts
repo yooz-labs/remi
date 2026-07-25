@@ -350,44 +350,82 @@ export async function runModelCommand(
 }
 
 /**
- * Persist `auto_approve.model` in `~/.remi/config.toml` with a surgical
- * line edit: rewriting the file from the parsed config would discard the
- * user's comments and their commented-out examples, which the generated
- * default config is full of. Adds the key under `[auto_approve]` when it is
- * absent (including commented out).
+ * Persist `auto_approve.model` in a config file with a surgical, SECTION-SCOPED
+ * line edit.
+ *
+ * Surgical rather than "reserialize the parsed config" because the generated
+ * default config is mostly comments and commented-out examples, and rewriting
+ * from the parsed object would silently delete all of it.
+ *
+ * Three things this has to get right, each of which is a way to corrupt a
+ * user's config:
+ *   - **Scope.** Only a `model =` inside `[auto_approve]` may be touched. An
+ *     unscoped match would rewrite the first `model =` anywhere in the file,
+ *     which today happens to be the right one only because no other section
+ *     defines that key.
+ *   - **Replacement escaping.** `String.replace` gives `$&`, `$1`, `$$` special
+ *     meaning in a replacement STRING. A model id containing them would inject
+ *     matched text into the file. A function replacement has no such
+ *     interpretation, so this uses one.
+ *   - **A commented-out section.** A fresh install ships `[auto_approve]` and
+ *     its keys entirely commented out, so the first `remi model use` finds
+ *     neither an active key nor an active header. Appending a live section is
+ *     correct there — but it must not ALSO append when a live section already
+ *     exists further down.
  */
-function persistModelInConfig(id: string): void {
-  // Imported lazily so the pure-function path above stays filesystem-free for
-  // tests that inject `persistModel`.
+export function persistModelInConfig(id: string, configPath = defaultConfigPath()): void {
   const fs = require('node:fs') as typeof import('node:fs');
-  const os = require('node:os') as typeof import('node:os');
   const path = require('node:path') as typeof import('node:path');
-  const configPath = path.join(os.homedir(), '.remi', 'config.toml');
 
   const line = `model = "${id}"`;
   let text = '';
   try {
     text = fs.readFileSync(configPath, 'utf-8');
-  } catch {
-    // No config yet: write a minimal one rather than failing the command.
+  } catch (err) {
+    // ONLY "there is no config yet" may fall through to writing a fresh file.
+    // A permissions or I/O error must propagate: treating EACCES as "no
+    // config" and writing a minimal one would silently destroy the user's
+    // rules, provider and api_key, and report success while doing it.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, `[auto_approve]\n${line}\n`, { mode: 0o600 });
     return;
   }
 
-  const active = /^\s*model\s*=.*$/m;
-  if (active.test(text)) {
-    fs.writeFileSync(configPath, text.replace(active, line), { mode: 0o600 });
+  const section = findAutoApproveSection(text);
+  if (section === null) {
+    // No LIVE [auto_approve] section (absent, or only the commented-out
+    // template a fresh install ships). Append one.
+    fs.writeFileSync(configPath, `${text.trimEnd()}\n\n[auto_approve]\n${line}\n`);
     return;
   }
-  const section = /^\s*\[auto_approve\]\s*$/m;
-  if (section.test(text)) {
-    fs.writeFileSync(
-      configPath,
-      text.replace(section, (m) => `${m}\n${line}`),
-      { mode: 0o600 },
-    );
-    return;
-  }
-  fs.writeFileSync(configPath, `${text.trimEnd()}\n\n[auto_approve]\n${line}\n`, { mode: 0o600 });
+
+  const body = text.slice(section.start, section.end);
+  const active = /^[ \t]*model[ \t]*=.*$/m;
+  const newBody = active.test(body)
+    ? // Function replacement: `$&` and friends in `id` stay literal.
+      body.replace(active, () => line)
+    : `${body.replace(/^(\s*\[auto_approve\][ \t]*)$/m, (m) => `${m}\n${line}`)}`;
+  fs.writeFileSync(configPath, text.slice(0, section.start) + newBody + text.slice(section.end));
+}
+
+/** Byte range of the LIVE `[auto_approve]` section (header through the line
+ *  before the next section header, or EOF), or null when there is none. A
+ *  commented-out `# [auto_approve]` is deliberately not a match. */
+function findAutoApproveSection(text: string): { start: number; end: number } | null {
+  const header = /^[ \t]*\[auto_approve\][ \t]*$/m;
+  const match = header.exec(text);
+  if (match === null) return null;
+  const start = match.index;
+  const rest = text.slice(start + match[0].length);
+  const next = /^[ \t]*\[[^\]\n]+\][ \t]*$/m.exec(rest);
+  const end = next === null ? text.length : start + match[0].length + next.index;
+  return { start, end };
+}
+
+/** `~/.remi/config.toml`. */
+function defaultConfigPath(): string {
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+  return path.join(os.homedir(), '.remi', 'config.toml');
 }

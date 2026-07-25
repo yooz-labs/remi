@@ -217,7 +217,16 @@ export class AutoApproveService {
     this.residency = new ModelResidency(
       {
         keepAliveMs: config.keep_alive * 1000,
-        models: [config.model, ...(config.escalate_model ? [config.escalate_model] : [])],
+        // EVERY model this service can cause the engine to load, or the timer
+        // silently exempts one: multichoice_model is a third tier `evaluate`
+        // dispatches against when a multi-choice prompt arrives.
+        models: [
+          ...new Set(
+            [config.model, config.escalate_model, config.multichoice_model].filter(
+              (m): m is string => typeof m === 'string' && m.length > 0,
+            ),
+          ),
+        ],
         // #818: unloading is gated on OWNERSHIP, not on the transport. A
         // shared (super-yooz) engine's residency is the host's policy, and
         // evicting weights another module is mid-generate on is hostile.
