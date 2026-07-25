@@ -59,6 +59,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     log_decisions: true,
     allow: [],
     deny: [],
+    subagent_alert: [],
     approve_groups: [],
     deny_groups: [],
     instructions: '',

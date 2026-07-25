@@ -165,6 +165,23 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // is compound-command-unsafe); the LLM prompt evaluates those in full.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
+    // Background-agent commands worth a heads-up even though they ran (#807).
+    // Irreversible-only by default: these are things you cannot undo, so a
+    // banner is warranted even at the cost of an occasional false positive.
+    // Broad-but-common patterns (curl, wget, ssh, scp) are deliberately NOT
+    // defaulted — on a session driving many agents they fire on benign traffic
+    // and a banner nobody reads is worse than no banner. Add them per machine.
+    subagent_alert: [
+      'rm -rf',
+      'rm -f',
+      'push --force',
+      'push -f ',
+      'reset --hard',
+      'DROP TABLE',
+      'TRUNCATE',
+      'sudo ',
+      'chmod 777',
+    ],
     // Built-in read-by-definition groups, fast-pathed without an LLM call
     // using compound-segment-aware matching (epic #494). All three on by
     // default so enabling auto-approve immediately stops paying LLM latency
@@ -418,6 +435,11 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   if (!isStringArray(cfg.approve_groups)) {
     throw new Error(
       `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read"]`,
+    );
+  }
+  if (!isStringArray(cfg.subagent_alert)) {
+    throw new Error(
+      `Invalid auto_approve.subagent_alert in ${configPath}: must be an array of strings. Example: subagent_alert = ["rm -rf", "push --force"]`,
     );
   }
   if (!isStringArray(cfg.deny_groups)) {

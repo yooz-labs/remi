@@ -236,6 +236,20 @@ export interface AutoApproveGateDeps {
    * main-context sibling, still carries one).
    */
   parkForPTY?: (input: PermissionRequestHookInput) => UUID | undefined;
+  /**
+   * Every subagent-tagged permission that passed through unevaluated (#807),
+   * reported to the sink for observation ONLY — the decision is already made
+   * and returned by the time this fires, so a sink cannot influence it.
+   *
+   * Two purposes: the destructive-command alert (`SubagentAlerter` decides
+   * which of these are worth notifying about — see `subagent-alert.ts`), and
+   * the audit trail #756 direction (d) asked for, so a silently-handled
+   * background permission is silent but not invisible.
+   *
+   * Fire-and-forget and throw-safe, like the cosmetic cues: a sink that throws
+   * is logged and absorbed, never propagated into the hook response.
+   */
+  onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -1049,6 +1063,12 @@ export class AutoApproveGate {
         `[Hooks] Subagent PermissionRequest passed through UNEVALUATED (PTY arbitrates): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
       this.parkSubagentForPTY(input);
+      // Observation only, AFTER the routing above is settled: one branch of
+      // Claude's own permission flow allows a call without ever rendering it
+      // (an allowlist-covered command), so the parked record never pairs and
+      // nothing else would ever mention it. The sink decides what is worth a
+      // notification; it cannot change this decision.
+      this.safeCueWithArg('onSubagentPassthrough', this.deps.onSubagentPassthrough, input);
       return 'passthrough';
     }
 

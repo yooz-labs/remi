@@ -122,7 +122,13 @@ import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/i
 import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
-import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts';
+import {
+  AutoApproveService,
+  SubagentAlerter,
+  alertBody,
+  alertTitle,
+  resolveProviderUrl,
+} from './auto-approve/index.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
@@ -166,8 +172,10 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
+import type { PermissionRequestHookInput } from './hooks/index.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
+import { sendPushTrigger } from './notifications/push-client.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
@@ -1083,6 +1091,47 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   currentPort: () => PORT,
 });
 
+// Daemon-wide destructive-command alerter for background agents (#807). Shared
+// across every session's hook bridge for the same reason as the escalator
+// above: the rate-limit window must be daemon-wide, or a fleet of agents spread
+// over several sessions each gets its own quota and the throttle stops
+// throttling. See `subagent-alert.ts` for why this alerts rather than gates.
+const subagentAlerter = new SubagentAlerter(remiConfig.auto_approve.subagent_alert);
+
+/** Report a subagent permission that passed through unevaluated: always an
+ *  audit log line (#756 direction d), plus a dismiss-only push when the command
+ *  matches an alert pattern. Fire-and-forget — the gate has already answered
+ *  the hook and this must never delay or throw into it. */
+function onSubagentPassthrough(input: PermissionRequestHookInput): void {
+  const alert = subagentAlerter.check(
+    input.tool_name,
+    input.tool_input,
+    input.agent_id,
+    input.agent_type,
+  );
+  if (alert === null) return;
+
+  const title = alertTitle(alert);
+  const body = alertBody(alert);
+  // Log unconditionally: the push can fail or be throttled downstream, and the
+  // local record is what makes a silent background decision auditable.
+  log(`[SubagentAlert] ${title} - ${body}`);
+
+  if (deviceTokens.size === 0) return;
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+  for (const dt of deviceTokens.values()) {
+    // Deliberately no `category` / `options` / `questionId`: this is
+    // dismiss-only and answers nothing (see subagent-alert.ts module doc).
+    void sendPushTrigger(signalingUrl, dt.token, {
+      title,
+      body,
+      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+    }).catch((err) => {
+      logError('[SubagentAlert] push failed:', err);
+    });
+  }
+}
+
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
 let hookServer: HookServer | null = null;
@@ -1338,6 +1387,7 @@ async function createNewSession(
         subagentViews,
         statusWriter,
         foreignSessionEscalator,
+        onSubagentPassthrough,
         // #573: classify holdable escalations + the hold / slow-eval-push budgets
         // (seconds; the gate converts to ms and treats <=0 as disabled).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),

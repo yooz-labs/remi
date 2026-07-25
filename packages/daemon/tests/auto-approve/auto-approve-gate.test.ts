@@ -510,6 +510,62 @@ describe('AutoApproveGate', () => {
     expect(escalations).toHaveLength(0);
   });
 
+  test('#807: onSubagentPassthrough reports the subagent call, never a main one', async () => {
+    subagent = false;
+    const observed: PermissionRequestHookInput[] = [];
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(approve),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => undefined,
+        onSubagentPassthrough: (i) => observed.push(i),
+      },
+      SID,
+    );
+
+    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.agent_id).toBe('agent-1');
+
+    // The main path is not an audit/alert subject: it already produces a card.
+    expect(await g.resolvePermission(pr({}))).toBe('allow');
+    expect(observed).toHaveLength(1);
+  });
+
+  test('#807: a throwing onSubagentPassthrough cannot break the hook answer', async () => {
+    subagent = false;
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(approve),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => undefined,
+        onSubagentPassthrough: () => {
+          throw new Error('push transport down');
+        },
+      },
+      SID,
+    );
+    // Observation is cosmetic; a dead notification path must never turn into a
+    // stuck hook or a changed decision.
+    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
+  });
+
   test('#807: a MAIN-tagged permission still evaluates', async () => {
     subagent = false;
     let evaluateCalls = 0;
