@@ -112,6 +112,21 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - `HookEventBridge` — emits questions from `PermissionRequest` hooks; suppresses redundant notifications.
 - `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
 
+**Subagent permissions: the PTY is the arbiter** (#756 policy, #807 + #814):
+
+- An `agent_id`-tagged `PermissionRequest` is NEVER evaluated at hook time. `AutoApproveGate`
+  parks it (`parkForPTY` → `QuestionPresenceTracker.parkAwaitingPTY`) and answers the hook
+  `passthrough` immediately. Claude blocks on that response, so at hook time nothing can know
+  whether the prompt will ever render — and most never do (16 hooks → 2 renders in a live
+  0.6.22 session).
+- If the prompt DOES render, `arbitrateParkedRender` evaluates it then: `approve`/`deny`/`pick`
+  are typed into the prompt on screen (never a persisting "always" option), and only an
+  `escalate` verdict pushes a card. Every failure direction escalates; nothing is ever
+  auto-answered by guess.
+- An allowlist-covered subagent command never renders and so is never evaluated; the
+  `subagent_alert` informational push (`auto-approve/subagent-alert.ts`) is the visibility
+  path for those, deliberately alerting rather than blocking.
+
 **Notification channel — APNS push only** (no local notifications for questions):
 
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen).

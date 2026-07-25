@@ -2,6 +2,39 @@
 
 All notable changes to Remi are documented here.
 
+## [0.6.24] - 2026-07-25
+
+Finishes the subagent permission story started in 0.6.23: a background
+agent's prompt that actually reaches the screen is no longer an automatic
+interruption.
+
+### Changed
+- **A rendered subagent permission is evaluated, not just parked** (#814):
+  0.6.23 stopped evaluating a subagent's permission at hook time, because at
+  that point the daemon cannot know whether the prompt will ever reach a
+  human — and most never do. That left a gap: a prompt that *did* render
+  always interrupted you, even when the configured auto-approve policy would
+  have approved it outright. Now, the moment a parked prompt renders on the
+  main PTY, the policy evaluates it there: an `approve`/`deny`/`pick` verdict
+  is typed straight into the on-screen prompt, with no card and no
+  interruption, while an `escalate` verdict still pushes a card to your
+  phone carrying the model's summary, exactly as a main-session escalation
+  does. An "always allow" option is never auto-picked — persisting a
+  permission rule stays your call. Any failure along the way (no service, an
+  eval error, an option that can't be identified on screen, a failed inject)
+  falls back to asking you rather than guessing.
+
+### Fixed
+- **A subagent permission resolved outside Remi no longer leaves a stale
+  card** (#814): when a parked permission was resolved outside Remi's own
+  answer path — answered directly in the terminal, or inferred from its
+  matching tool call having run — the cleanup looked the question up by the
+  original hook-time id instead of the id of the prompt that actually
+  rendered. `removeQuestion` no-oped and the `question_resolved` broadcast
+  named an id no client held, so the card stayed on screen as a phantom, and
+  the open-escalation signature leaked along with it. The signature is now
+  re-keyed onto the rendered id at push time, so that cleanup path finds it.
+
 ## [0.6.23] - 2026-07-25
 
 Background agents stop costing you GPU and stop making decisions in your name,
