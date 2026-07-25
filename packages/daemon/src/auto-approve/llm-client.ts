@@ -3,12 +3,22 @@ import { errorToString } from '@remi/shared';
  * Chat-completions client for the auto-approve evaluator.
  *
  * Two transports:
- *  - 'openai': the OpenAI-compatible /v1/chat/completions (OpenRouter, custom).
- *  - 'ollama': Ollama's NATIVE /api/chat, so we can pass `think: false` and turn
- *    OFF the model's reasoning. The OpenAI-compat /v1 endpoint has no way to
- *    disable thinking, and for a quick approve/deny classify the reasoning is
- *    pure latency (a 4B model spends most of its tokens "thinking"). When we
- *    move to the Yooz engine this stays a clean transport seam.
+ *  - 'openai': the OpenAI-compatible /v1/chat/completions (OpenRouter, a thin
+ *    llama.cpp server on non-Apple-Silicon hosts, or any custom URL).
+ *  - 'yooz': the Yooz engine's native /v1/llm/generate (loopback :19924 on
+ *    macOS -- see yooz-engine's LLMModule / CONSUMER_INTEGRATION.md). llama.cpp's
+ *    server already speaks the OpenAI-compatible shape, so it reuses 'openai'
+ *    unchanged; only the engine needed its own transport.
+ *
+ * `disableThinking` ('yooz' only) prefixes the engine's own `/no_think` prompt
+ * convention (see yooz-engine's YoozPrompts.swift, whose Quality-tier prompts
+ * use the same prefix) onto the system prompt to turn OFF the model's Qwen3-
+ * style chain-of-thought reasoning -- for a quick approve/deny classify the
+ * reasoning is pure latency (a 4B model spends most of its tokens "thinking").
+ * `LLMGenerateRequest` (the engine's wire type) has no request-level knob for
+ * this; `/no_think` is a chat-template convention the model itself recognizes,
+ * the same mechanism the engine's own built-in prompts rely on. No effect on
+ * 'openai' providers (no equivalent there either).
  */
 
 export interface ChatMessage {
@@ -22,10 +32,15 @@ export interface LLMClientConfig {
   readonly model: string;
   readonly timeoutMs: number;
   /**
-   * Transport. 'ollama' uses the native /api/chat with `think: false` (no
-   * reasoning). Defaults to 'openai' (the OpenAI-compatible /v1 endpoint).
+   * Transport. 'yooz' speaks the engine's native /v1/llm/generate. Defaults to
+   * 'openai' (the OpenAI-compatible /v1 endpoint -- OpenRouter, llama.cpp, custom).
    */
-  readonly kind?: 'openai' | 'ollama';
+  readonly kind?: 'openai' | 'yooz';
+  /**
+   * 'yooz' kind only: see the module doc comment above for what this does and
+   * why it lives here instead of on `kind`. Ignored for 'openai'.
+   */
+  readonly disableThinking?: boolean;
 }
 
 export interface LLMResponse {
@@ -39,15 +54,25 @@ export interface LLMResponse {
     | undefined;
 }
 
-/** Well-known provider shortnames mapped to base URLs */
+/**
+ * Well-known provider shortnames mapped to base URLs. 'yooz' and 'llamacpp'
+ * both target remi's reserved loopback port (19924 -- see
+ * ../yooz/AGENTS_master.md "Per-app port isolation"); only one runs at a time
+ * per the platform probe (engine on Apple Silicon, llama.cpp elsewhere).
+ * 'yooz' has no trailing /v1 -- its paths (`/v1/llm/generate`, etc.) are built
+ * in `chatCompletion`/`warmModel` from the bare root. 'llamacpp' keeps the
+ * /v1 suffix because it is dispatched through the 'openai' kind, which appends
+ * `/chat/completions` directly.
+ */
 const PROVIDER_URLS: Record<string, string> = {
-  ollama: 'http://localhost:11434/v1',
+  yooz: 'http://127.0.0.1:19924',
+  llamacpp: 'http://127.0.0.1:19924/v1',
   openrouter: 'https://openrouter.ai/api/v1',
 };
 
 /**
  * Resolve a provider string to a base URL.
- * Accepts 'ollama', 'openrouter', or a full URL.
+ * Accepts 'yooz', 'llamacpp', 'openrouter', or a full URL.
  */
 export function resolveProviderUrl(provider: string, fallbackUrl: string): string {
   const known = PROVIDER_URLS[provider];
@@ -62,35 +87,54 @@ export function resolveProviderUrl(provider: string, fallbackUrl: string): strin
 }
 
 /**
- * Derive the Ollama NATIVE API root (…/api/chat) from a base URL that may end
- * in /v1 (the OpenAI-compat path). `http://h:11434/v1` -> `http://h:11434`.
- * Exported for testing.
+ * Split the auto-approve evaluator's fixed system+user message pair into the
+ * engine's `{ prompt, systemPrompt }` shape (`LLMGenerateRequest` has no
+ * multi-turn message array). Every caller (prompt-builder.ts, multichoice.ts)
+ * sends exactly one system and one user message; any additional non-system
+ * messages are defensively joined into the prompt rather than dropped.
  */
-export function ollamaNativeBase(baseUrl: string): string {
-  return baseUrl.replace(/\/v1\/?$/, '');
+function splitForYoozGenerate(messages: readonly ChatMessage[]): {
+  systemPrompt: string | undefined;
+  prompt: string;
+} {
+  const systemPrompt = messages.find((m) => m.role === 'system')?.content;
+  const prompt = messages
+    .filter((m) => m.role !== 'system')
+    .map((m) => m.content)
+    .join('\n\n');
+  return { systemPrompt, prompt };
 }
 
+/** The engine's Qwen3-style reasoning-suppression convention (see the module
+ *  doc comment above). Prefixed onto the system prompt, or the prompt itself
+ *  when there is no system message. */
+const NO_THINK_PREFIX = '/no_think\n';
+
 /**
- * Warm-load an Ollama model so a later request does not pay the cold model-load
- * penalty. Uses the native /api/generate with an EMPTY prompt (the documented
- * load-only call) and a long `keep_alive` so the model stays resident. Throws on
- * network errors or non-200 responses; the caller treats it as best-effort.
+ * Preload a model on the Yooz engine so a later request does not pay the cold
+ * model-load penalty. Uses `POST /v1/llm/preload?wait=true` -- the blocking
+ * variant (see yooz-engine's APIServer.swift `/v1/llm/preload` handler; the
+ * default is fire-and-forget/202, `?wait=true` opts into awaiting the load) --
+ * so the returned promise only resolves once the model is actually resident.
+ * Throws on network errors or non-2xx responses; the caller treats it as
+ * best-effort.
  *
- * `keepAlive` accepts Ollama's duration string ("30m", "-1" for forever).
+ * The engine has no keep-alive-duration concept (a model stays resident until
+ * `/v1/llm/unload` or the engine's own eviction policy) -- there is no such
+ * duration parameter to pass here.
  */
 export async function warmModel(
   baseUrl: string,
   model: string,
-  keepAlive = '30m',
   timeoutMs = 120_000,
 ): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${ollamaNativeBase(baseUrl)}/api/generate`, {
+    const response = await fetch(`${baseUrl}/v1/llm/preload?wait=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt: '', keep_alive: keepAlive, stream: false }),
+      body: JSON.stringify({ model }),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -131,27 +175,29 @@ export async function chatCompletion(
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
 
-  const ollama = config.kind === 'ollama';
-  const url = ollama
-    ? `${ollamaNativeBase(config.baseUrl)}/api/chat`
-    : `${config.baseUrl}/chat/completions`;
-  // Ollama native: `think: false` disables reasoning; `format: 'json'` forces a
-  // JSON body. OpenAI-compat: temperature 0 + json_object response format.
-  const body = ollama
-    ? {
-        model: config.model,
-        messages,
-        stream: false,
-        think: false,
-        format: 'json',
-        options: { temperature: 0 },
-      }
-    : {
-        model: config.model,
-        messages,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-      };
+  const yooz = config.kind === 'yooz';
+  const url = yooz ? `${config.baseUrl}/v1/llm/generate` : `${config.baseUrl}/chat/completions`;
+  // Yooz engine: `{ prompt, systemPrompt, model }`, no JSON-forcing knob (the
+  // system prompt already says "Respond with JSON ONLY" -- the same technique
+  // the engine's own built-in prompts use, since /v1/llm/generate has no
+  // response_format field to force it). OpenAI-compat: temperature 0 +
+  // json_object response format.
+  let body: Record<string, unknown>;
+  if (yooz) {
+    const { systemPrompt, prompt } = splitForYoozGenerate(messages);
+    const noThink = config.disableThinking ? NO_THINK_PREFIX : '';
+    body =
+      systemPrompt !== undefined
+        ? { model: config.model, prompt, systemPrompt: `${noThink}${systemPrompt}` }
+        : { model: config.model, prompt: `${noThink}${prompt}` };
+  } else {
+    body = {
+      model: config.model,
+      messages,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+    };
+  }
 
   try {
     const response = await fetch(url, {
@@ -169,18 +215,17 @@ export async function chatCompletion(
     // biome-ignore lint/suspicious/noExplicitAny: provider response shapes differ
     const data: any = await response.json();
 
-    if (ollama) {
-      const content = data.message?.content;
-      if (!content) throw new Error('LLM response missing content (ollama /api/chat)');
+    if (yooz) {
+      const content = data.text;
+      if (!content) throw new Error('LLM response missing content (yooz /v1/llm/generate)');
       return {
         content,
         model: data.model ?? config.model,
+        // The engine reports only a completion-side count (`tokensGenerated`);
+        // it has no prompt-token figure, so prompt_tokens is always 0 here.
         usage:
-          data.prompt_eval_count != null || data.eval_count != null
-            ? {
-                prompt_tokens: data.prompt_eval_count ?? 0,
-                completion_tokens: data.eval_count ?? 0,
-              }
+          typeof data.tokensGenerated === 'number'
+            ? { prompt_tokens: 0, completion_tokens: data.tokensGenerated }
             : undefined,
       };
     }
