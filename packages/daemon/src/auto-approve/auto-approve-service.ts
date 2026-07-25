@@ -120,8 +120,8 @@ export class AutoApproveService {
    *  fast model's timeout. The heavy model is usually cold, so it needs a longer
    *  budget than the fast path. */
   private readonly escalateTimeoutMs: number;
-  /** True when the provider is Ollama (enables the native warm-up load). */
-  private readonly providerIsOllama: boolean;
+  /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
+  private readonly providerIsYooz: boolean;
   /** Max ms a permission eval may wait in the serialization queue before it
    *  escalates gracefully (#551); 0 = no bound. */
   private readonly queueTimeoutMs: number;
@@ -178,11 +178,15 @@ export class AutoApproveService {
       apiKey: config.api_key,
       model: config.model,
       timeoutMs: config.timeout * 1000,
-      // Opt-in (Ollama only): native /api/chat with `think: false` to disable
+      // The Yooz engine's /v1/llm/generate is the only transport that is not
+      // OpenAI-compatible (a thin llama.cpp server, OpenRouter, and any custom
+      // URL all speak /v1/chat/completions already).
+      kind: config.provider === 'yooz' ? 'yooz' : 'openai',
+      // 'yooz' only: prefix the engine's `/no_think` convention to disable
       // reasoning. Faster, but lowers decision quality (the chain-of-thought is
       // load-bearing for following broad user instructions), so default OFF.
-      // Everyone else uses the OpenAI-compat path with reasoning on.
-      kind: config.provider === 'ollama' && config.disable_thinking ? 'ollama' : 'openai',
+      // No effect on the 'openai' kind (no equivalent knob there).
+      disableThinking: config.disable_thinking,
     };
     this.logFn = logFn;
     this.logDecisions = config.log_decisions;
@@ -197,7 +201,7 @@ export class AutoApproveService {
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
-    this.providerIsOllama = config.provider === 'ollama';
+    this.providerIsYooz = config.provider === 'yooz';
   }
 
   /**
@@ -315,16 +319,17 @@ export class AutoApproveService {
 
   /**
    * Warm-load the escalate_model so the FIRST second opinion does not pay a
-   * cold model-load (15s+ for a 35B). Ollama only (the native /api/generate
-   * empty-prompt load with a long keep_alive); a no-op otherwise or when no
-   * escalate_model is configured. Best-effort and never throws — a failed warm
-   * just means the first real consult loads the model itself.
+   * cold model-load (15s+ for a 35B). Yooz engine only (`POST
+   * /v1/llm/preload?wait=true`); a no-op otherwise (e.g. an OpenAI-compatible
+   * provider, which has no equivalent preload route) or when no escalate_model
+   * is configured. Best-effort and never throws — a failed warm just means the
+   * first real consult loads the model itself.
    */
   async warmEscalateModel(): Promise<void> {
-    if (!this.escalateModel || !this.providerIsOllama) return;
+    if (!this.escalateModel || !this.providerIsYooz) return;
     try {
       await warmModel(this.llmConfig.baseUrl, this.escalateModel);
-      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (kept resident 30m)`);
+      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (preloaded)`);
     } catch (err) {
       this.logFn(
         `[AutoApprove] escalate_model warm-up failed (will load on first consult): ${errorToString(err)}`,

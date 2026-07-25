@@ -76,11 +76,15 @@ export const DEFAULT_ALWAYS_ESCALATE_TOOLS: readonly string[] = ['AskUserQuestio
 /** Configuration for the auto-approve feature */
 export interface AutoApproveConfig {
   readonly enabled: boolean;
-  /** Provider shortname or custom base URL: 'ollama', 'openrouter', or a URL */
+  /**
+   * Provider shortname or custom base URL: 'yooz' (the Yooz engine's native
+   * /v1/llm/generate, loopback :19924 -- macOS), 'llamacpp' (a thin llama.cpp
+   * server, also loopback :19924, on other platforms), 'openrouter', or a URL.
+   */
   readonly provider: string;
-  /** Model name (e.g. 'gemma4:e2b', 'anthropic/claude-3-haiku') */
+  /** Model name (e.g. 'yooz-quality-v3', 'anthropic/claude-3-haiku') */
   readonly model: string;
-  /** API key (empty for Ollama, required for OpenRouter) */
+  /** API key (empty for the local engine/llama.cpp, required for OpenRouter) */
   readonly api_key: string;
   /** Full base URL for the OpenAI-compatible API */
   readonly base_url: string;
@@ -167,15 +171,16 @@ export interface AutoApproveConfig {
    */
   readonly queue_timeout: number;
   /**
-   * Ollama only: route through the native /api/chat with `think: false` to
-   * turn OFF the model's reasoning. This is FASTER but lowers decision quality
-   * — live testing showed the chain-of-thought is load-bearing for following
-   * broad user `instructions` (without it even a 35B model reverts to its
-   * cautious prior and escalates mutations it would otherwise approve). The
-   * buffer-until-verdict design already hides eval latency from the user, so
-   * the default is `false` (keep thinking). Opt in only if you value raw speed
-   * over nuance. No effect on non-Ollama providers (the OpenAI-compat endpoint
-   * has no knob to disable reasoning).
+   * Yooz engine provider only: prefix the engine's `/no_think` prompt
+   * convention onto the system prompt to turn OFF the model's reasoning. This
+   * is FASTER but lowers decision quality — live testing showed the
+   * chain-of-thought is load-bearing for following broad user `instructions`
+   * (without it even a 35B model reverts to its cautious prior and escalates
+   * mutations it would otherwise approve).
+   * The buffer-until-verdict design already hides eval latency from the user,
+   * so the default is `false` (keep thinking). Opt in only if you value raw
+   * speed over nuance. No effect on non-'yooz' providers (the OpenAI-compat
+   * endpoint has no knob to disable reasoning).
    */
   readonly disable_thinking: boolean;
   /**
