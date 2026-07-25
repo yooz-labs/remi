@@ -10,25 +10,44 @@
  * user can see or control any of this — hence `remi model` (#819) and the
  * idle-unload timer (#820), both of which call through here.
  *
- * Endpoint contract (yooz-engine `EndpointSpecs.swift`, wire types in
- * `YoozEngineWire/LLMWireTypes.swift`):
- *   - `GET  /v1/llm/models`  -> { current, available: [{id, displayName, sizeBytes, loaded, latencyHintMs}] }
+ * Endpoint contract (yooz-engine `EndpointSpecs.swift`; wire types in
+ * `YoozEngineWire/{LLMWireTypes,ModelManagementWireTypes,TouchUpWireTypes}.swift`).
+ * Model management is deliberately split across two families, and using the
+ * wrong one is the easy mistake here:
+ *
+ *   RESIDENCY (is it in memory?) -- the `/v1/llm/*` family:
+ *   - `GET  /v1/llm/models`  -> { current, available: [{id, displayName, sizeBytes, loaded}] }
  *   - `GET  /v1/llm/status`  -> { loaded, modelId, progress, state, lastError }
- *   - `POST /v1/llm/preload` -> 202 dispatch-and-poll; `?wait=true` blocks until resident
+ *   - `POST /v1/llm/preload` -> 202 dispatch; `?wait=true` blocks until resident
  *   - `POST /v1/llm/unload`  -> free that model's weights
- *   - `POST /v1/llm/model`   -> set the preferred model. PROCESS-LIFETIME ONLY:
- *     the engine forgets it on restart, which is why `remi model use` persists
- *     the choice in remi's own config instead of relying on this.
+ *   - `POST /v1/llm/model`   -> preferred model. PROCESS-LIFETIME ONLY: the
+ *     engine forgets it on restart, which is why `remi model use` persists the
+ *     choice in remi's own config instead of relying on this.
+ *
+ *   DISK (is it downloaded? may I delete it?) -- the inventory + download family:
+ *   - `GET    /v1/models`                  -> [{id, module, displayName, sizeBytes
+ *     (REAL measured on-disk footprint), cached, loaded, isActive, deletable}]
+ *   - `DELETE /v1/models/:id`              -> { id, reclaimedBytes }
+ *   - `POST   /v1/models/cleanup`          -> { totalReclaimedBytes, perRepo }
+ *   - `POST   /v1/touchup/download`        -> fetch weights WITHOUT changing the
+ *     active selection (the touch-up picker owns the LLM models remi uses)
+ *   - `POST   /v1/touchup/download/cancel` -> abort that fetch
  *
  * Two contract details that are easy to get wrong and expensive to get wrong:
  *
- *   1. **A first-run pull must NOT use `?wait=true`.** The blocking variant
- *      holds the HTTP request open for the entire HuggingFace download, which
- *      for a multi-GB model exceeds any sane client timeout — the engine SDK
- *      says as much ("use for first-run pulls of large weights where the
- *      blocking call would HTTP-timeout"). `pullModel` therefore dispatches
- *      the 202 variant and polls `/v1/llm/status` for progress, which is also
- *      the only way to show the user anything while it runs.
+ *   1. **Downloading is `/v1/touchup/download`, not `preload`.** Preload
+ *      conflates "fetch the weights" with "make this resident", and its
+ *      `?wait=true` form holds one HTTP request open for an entire multi-GB
+ *      HuggingFace pull. The explicit download endpoint exists precisely so a
+ *      client can fetch without touching the active selection.
+ *   1b. **Do not trust `status.progress` to move.** yooz-engine#292 (open):
+ *      the engine publishes ONE near-zero download sample and then nothing for
+ *      the rest of the download, because the upstream MLX progress handler
+ *      fires once and the watcher's 2%-delta gate never clears again. So
+ *      `pullModel` treats progress as a bonus, not a completion signal, and
+ *      decides doneness from the INVENTORY (`cached: true`), which is derived
+ *      from bytes actually on disk. A progress bar built on that field alone
+ *      sits at 0% for the whole download and then jumps to done.
  *   2. **`unload` is not remi's to call unconditionally.** Under a shared
  *      (super-yooz) engine another module may be mid-generate on the same
  *      weights, so unloading is hostile. Ownership is decided one layer up
@@ -82,7 +101,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 async function engineRequest<T>(
   baseUrl: string,
   path: string,
-  init: { method: 'GET' | 'POST'; body?: unknown; timeoutMs?: number },
+  init: { method: 'GET' | 'POST' | 'DELETE'; body?: unknown; timeoutMs?: number },
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -165,6 +184,93 @@ export async function unloadModel(
   });
 }
 
+/** One row of `GET /v1/models` — the DISK view. Distinct from `EngineModel`
+ *  (the residency view): `sizeBytes` here is the real measured on-disk
+ *  footprint, and `deletable` is the engine's own judgement about whether the
+ *  app may offer to remove it (false for the active model). */
+export interface ManagedModel {
+  readonly id: string;
+  readonly module: string;
+  readonly displayName: string;
+  readonly sizeBytes: number;
+  /** On disk (or bundled): loadable with no download. */
+  readonly cached: boolean;
+  readonly loaded: boolean;
+  readonly isActive: boolean;
+  readonly deletable: boolean;
+}
+
+/** `GET /v1/models` — every module's models, not just the LLM's. */
+export async function listManagedModels(
+  baseUrl: string,
+  timeoutMs?: number,
+): Promise<readonly ManagedModel[]> {
+  const raw = await engineRequest<{ models?: ManagedModel[] }>(baseUrl, '/v1/models', {
+    method: 'GET',
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+  return raw.models ?? [];
+}
+
+/** `DELETE /v1/models/:id` — reclaim a model's disk. Returns the bytes freed.
+ *  The engine refuses to delete the active model, so callers should check
+ *  `deletable` first and report the engine's own refusal otherwise. */
+export async function deleteModel(
+  baseUrl: string,
+  id: string,
+  timeoutMs?: number,
+): Promise<{ id: string; reclaimedBytes: number }> {
+  const raw = await engineRequest<{ id?: string; reclaimedBytes?: number }>(
+    baseUrl,
+    `/v1/models/${encodeURIComponent(id)}`,
+    { method: 'DELETE', ...(timeoutMs === undefined ? {} : { timeoutMs }) },
+  );
+  return { id: raw.id ?? id, reclaimedBytes: raw.reclaimedBytes ?? 0 };
+}
+
+/** `POST /v1/models/cleanup` — the engine's one-shot disk-hygiene sweep. */
+export async function cleanupModels(
+  baseUrl: string,
+  timeoutMs?: number,
+): Promise<{ totalReclaimedBytes: number; perRepo: Record<string, number> }> {
+  const raw = await engineRequest<{
+    totalReclaimedBytes?: number;
+    perRepo?: Record<string, number>;
+  }>(baseUrl, '/v1/models/cleanup', {
+    method: 'POST',
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+  return { totalReclaimedBytes: raw.totalReclaimedBytes ?? 0, perRepo: raw.perRepo ?? {} };
+}
+
+/** `POST /v1/touchup/download` — fetch weights WITHOUT changing which model is
+ *  active. The LLM models remi evaluates with are the touch-up picker's, which
+ *  is why the download verb lives under that path rather than `/v1/llm`. */
+export async function startDownload(
+  baseUrl: string,
+  id: string,
+  timeoutMs?: number,
+): Promise<void> {
+  await engineRequest(baseUrl, '/v1/touchup/download', {
+    method: 'POST',
+    body: { id },
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+}
+
+/** `POST /v1/touchup/download/cancel` — abort an in-flight fetch. */
+export async function cancelDownload(
+  baseUrl: string,
+  id: string,
+  timeoutMs?: number,
+): Promise<void> {
+  await engineRequest(baseUrl, '/v1/touchup/download/cancel', {
+    method: 'POST',
+    body: { id },
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+}
+
 /** Progress report for an in-flight pull, handed to the CLI's renderer. */
 export interface PullProgress {
   /** 0..1 when the engine reports a download fraction; undefined while it is
@@ -186,23 +292,25 @@ export interface PullOptions {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** Terminal states from the engine's `LoadState`. `ready` is success; `failed`
- *  carries `lastError`. Anything else (`loading`, `downloading`, absent on
- *  older builds) means keep polling. */
-const STATE_READY = 'ready';
+/** The engine's `ModelLoadState.failed`, which carries `lastError`. Success is
+ *  NOT read from this field: `pullModel` judges doneness from the inventory
+ *  (bytes on disk), and `loading`/`ready` describe RESIDENCY, which a download
+ *  deliberately does not change. */
 const STATE_FAILED = 'failed';
 
 /**
- * Download + load `model`, reporting progress (#819's `remi model pull`).
+ * Download `model` and wait until it is on disk (#819's `remi model pull`).
  *
- * Dispatches the async preload, then polls `/v1/llm/status` until the model is
- * resident, the engine reports a failure, or the timeout expires. This is the
- * ONLY correct shape for a first-run pull — see the module doc for why
- * `?wait=true` cannot be used here.
+ * Uses the EXPLICIT download endpoint, not `preload`: fetching weights and
+ * making a model resident are different acts, and the download endpoint is the
+ * one that does not disturb which model is currently active.
  *
- * Completion is judged on `status.loaded` for the requested model (plus the
- * `state` field when the engine build provides one), so it also works against
- * older engines that report no `state`.
+ * Completion is judged from the INVENTORY (`cached: true` in `GET /v1/models`),
+ * which the engine derives from bytes actually on disk — NOT from
+ * `status.progress`, which yooz-engine#292 documents as publishing a single
+ * near-zero sample and then freezing for the rest of the download. Progress is
+ * still forwarded when it moves, so this gets better for free once that engine
+ * bug is fixed, but nothing here depends on it.
  */
 export async function pullModel(
   baseUrl: string,
@@ -214,28 +322,35 @@ export async function pullModel(
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 
-  await preloadAsync(baseUrl, model);
+  // Already on disk: nothing to fetch. Cheap, and it makes `pull` idempotent.
+  const before = await listManagedModels(baseUrl).catch(() => [] as readonly ManagedModel[]);
+  if (before.some((m) => m.id === model && m.cached)) return;
+
+  await startDownload(baseUrl, model);
 
   const deadline = now() + timeoutMs;
   for (;;) {
-    const status = await getStatus(baseUrl);
-    opts.onProgress?.({ fraction: status.progress, state: status.state });
-
-    if (status.state === STATE_FAILED) {
-      throw new Error(
-        `engine failed to load ${model}: ${status.lastError ?? 'no detail reported'}`,
-      );
+    // Status first (cheap, and carries the failure detail); inventory second
+    // (authoritative for "is it actually down?").
+    const status = await getStatus(baseUrl).catch(() => undefined);
+    if (status !== undefined) {
+      opts.onProgress?.({ fraction: status.progress, state: status.state });
+      if (status.state === STATE_FAILED) {
+        throw new Error(
+          `engine failed to fetch ${model}: ${status.lastError ?? 'no detail reported'}`,
+        );
+      }
     }
-    // `modelId` may lag or be absent on older builds; treat "loaded and either
-    // unnamed or named as ours" as done rather than polling forever.
-    if (status.loaded && (status.modelId === undefined || status.modelId === model)) return;
-    if (status.state === STATE_READY) return;
+
+    const inventory = await listManagedModels(baseUrl).catch(
+      () => undefined as readonly ManagedModel[] | undefined,
+    );
+    if (inventory?.some((m) => m.id === model && m.cached)) return;
 
     if (now() >= deadline) {
-      const stalledAt =
-        status.progress === undefined ? '' : ` (stalled at ${Math.round(status.progress * 100)}%)`;
       throw new Error(
-        `timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${model} to load${stalledAt}`,
+        `timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${model} to download; ` +
+          `cancel it with "remi model cancel ${model}" if it is wedged`,
       );
     }
     await sleep(pollMs);

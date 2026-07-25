@@ -8,13 +8,21 @@
  * holding — and the first evaluation would silently trigger a multi-GB
  * HuggingFace download with no feedback anywhere.
  *
- *   remi model ls              catalogue: id, size, downloaded, resident
+ *   remi model ls              inventory: size on disk, downloaded, resident
  *   remi model ps              what is resident right now
  *   remi model status          engine reachable? which model? pull in flight?
- *   remi model pull <id>       download + load, with progress
+ *   remi model pull <id>       download weights, without changing the active model
+ *   remi model cancel <id>     abort an in-flight download
+ *   remi model rm <id>         delete weights, reporting the disk reclaimed
+ *   remi model cleanup         the engine's one-shot disk-hygiene sweep
  *   remi model load <id>       make resident (already-downloaded weights)
  *   remi model unload <id>     free its memory
  *   remi model use <id>        make it the configured default (persisted)
+ *
+ * `ls` reads the DISK inventory (`GET /v1/models`), whose `sizeBytes` is the
+ * engine's real measured footprint and whose `deletable` flag is what `rm`
+ * honors; `ps` reads the RESIDENCY view. Conflating the two is the easy
+ * mistake — see `engine-models.ts`.
  *
  * `use` writes remi's own config rather than calling the engine's
  * `POST /v1/llm/model`, because that preference is PROCESS-LIFETIME only —
@@ -30,6 +38,11 @@
 import { errorToString } from '@remi/shared';
 import {
   type EngineModel,
+  type ManagedModel,
+  cancelDownload,
+  cleanupModels,
+  deleteModel,
+  listManagedModels,
   listModels,
   preloadAsync,
   probeEngine,
@@ -49,7 +62,18 @@ const defaultIO: ModelCommandIO = {
   err: (msg) => console.error(msg),
 };
 
-const VERBS = ['ls', 'ps', 'status', 'pull', 'load', 'unload', 'use'] as const;
+const VERBS = [
+  'ls',
+  'ps',
+  'status',
+  'pull',
+  'cancel',
+  'rm',
+  'cleanup',
+  'load',
+  'unload',
+  'use',
+] as const;
 type Verb = (typeof VERBS)[number];
 
 function isVerb(s: string | undefined): s is Verb {
@@ -62,6 +86,12 @@ function formatSize(bytes: number | undefined): string {
   const gb = bytes / 1e9;
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${Math.round(bytes / 1e6)} MB`;
+}
+
+function formatManagedRow(m: ManagedModel): string {
+  const marker = m.isActive ? '*' : ' ';
+  const state = m.loaded ? 'resident' : m.cached ? 'on disk' : 'not downloaded';
+  return `${marker} ${m.id.padEnd(22)} ${m.module.padEnd(8)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
 }
 
 function formatRow(m: EngineModel, current: string): string {
@@ -80,6 +110,10 @@ function renderProgress(io: ModelCommandIO, model: string, fraction: number | un
 export interface ModelCommandDeps {
   /** Seams for tests; default to the real engine client. */
   readonly list?: typeof listModels;
+  readonly inventory?: typeof listManagedModels;
+  readonly remove?: typeof deleteModel;
+  readonly cleanup?: typeof cleanupModels;
+  readonly cancel?: typeof cancelDownload;
   readonly probe?: typeof probeEngine;
   readonly pull?: typeof pullModel;
   readonly load?: typeof preloadAsync;
@@ -109,6 +143,10 @@ export async function runModelCommand(
   }
 
   const list = deps.list ?? listModels;
+  const inventory = deps.inventory ?? listManagedModels;
+  const remove = deps.remove ?? deleteModel;
+  const cleanup = deps.cleanup ?? cleanupModels;
+  const cancel = deps.cancel ?? cancelDownload;
   const probe = deps.probe ?? probeEngine;
   const pull = deps.pull ?? pullModel;
   const load = deps.load ?? preloadAsync;
@@ -149,13 +187,51 @@ export async function runModelCommand(
         return 0;
       }
       case 'ls': {
-        const catalog = await list(baseUrl);
-        if (catalog.available.length === 0) {
-          io.out('No models in the engine catalogue.');
+        const models = await inventory(baseUrl);
+        if (models.length === 0) {
+          io.out('No models on disk.');
           return 0;
         }
-        io.out('  MODEL                        SIZE  STATE');
-        for (const m of catalog.available) io.out(formatRow(m, catalog.current));
+        io.out('  MODEL                    MODULE      SIZE  STATE');
+        for (const m of models) io.out(formatManagedRow(m));
+        return 0;
+      }
+      case 'rm': {
+        const id = args[1];
+        if (!id) {
+          io.err('Usage: remi model rm <model-id>');
+          return 2;
+        }
+        const models = await inventory(baseUrl);
+        const target = models.find((m) => m.id === id);
+        if (target !== undefined && !target.deletable) {
+          io.err(
+            target.isActive
+              ? `"${id}" is the active model; switch with "remi model use <other>" before removing it.`
+              : `"${id}" is not deletable (nothing reclaimable on disk).`,
+          );
+          return 1;
+        }
+        const result = await remove(baseUrl, id);
+        io.out(`Removed ${result.id}, reclaimed ${formatSize(result.reclaimedBytes)}.`);
+        return 0;
+      }
+      case 'cleanup': {
+        const result = await cleanup(baseUrl);
+        const repos = Object.keys(result.perRepo).length;
+        io.out(
+          `Reclaimed ${formatSize(result.totalReclaimedBytes)}${repos > 0 ? ` across ${repos} repo(s)` : ''}.`,
+        );
+        return 0;
+      }
+      case 'cancel': {
+        const id = args[1];
+        if (!id) {
+          io.err('Usage: remi model cancel <model-id>');
+          return 2;
+        }
+        await cancel(baseUrl, id);
+        io.out(`Cancelled the download of ${id}.`);
         return 0;
       }
       case 'ps': {
@@ -174,7 +250,10 @@ export async function runModelCommand(
           io.err('Usage: remi model pull <model-id>');
           return 2;
         }
-        io.out(`Pulling ${id} (this downloads from HuggingFace on first run)…`);
+        io.out(`Pulling ${id} from HuggingFace. This does not change the active model.`);
+        io.out(
+          'Progress may sit at 0% for the whole download (engine bug yooz-engine#292); completion is detected from disk.',
+        );
         let lastShown = -1;
         await pull(baseUrl, id, {
           onProgress: (p) => {
@@ -186,7 +265,7 @@ export async function runModelCommand(
             }
           },
         });
-        io.out(`${id} is ready.`);
+        io.out(`${id} is downloaded.`);
         return 0;
       }
       case 'load': {

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  cleanupModels,
+  deleteModel,
   getStatus,
+  listManagedModels,
   listModels,
   probeEngine,
   pullModel,
@@ -14,16 +17,16 @@ import {
  */
 function engineServer(handler: (path: string, body: unknown) => Response): {
   url: string;
-  seen: Array<{ path: string; search: string; body: unknown }>;
+  seen: Array<{ path: string; search: string; method: string; body: unknown }>;
   stop: () => void;
 } {
-  const seen: Array<{ path: string; search: string; body: unknown }> = [];
+  const seen: Array<{ path: string; search: string; method: string; body: unknown }> = [];
   const server = Bun.serve({
     port: 0,
     fetch: async (req) => {
       const url = new URL(req.url);
       const body = req.method === 'POST' ? await req.json().catch(() => undefined) : undefined;
-      seen.push({ path: url.pathname, search: url.search, body });
+      seen.push({ path: url.pathname, search: url.search, method: req.method, body });
       return handler(url.pathname, body);
     },
   });
@@ -120,54 +123,99 @@ describe('pullModel', () => {
     stop = undefined;
   });
 
-  test('dispatches the ASYNC preload (never ?wait=true) and polls status to completion', async () => {
-    // A first-run pull must not hold one HTTP request open for a multi-GB
-    // download -- see the module doc. Progress arrives via /v1/llm/status.
-    const statuses = [
-      { loaded: false, progress: 0.1, state: 'downloading' },
-      { loaded: false, progress: 0.8, state: 'downloading' },
-      { loaded: true, modelId: 'yooz-quality-v3', state: 'ready' },
-    ];
-    let poll = 0;
+  const managed = (over: Record<string, unknown> = {}) => ({
+    id: 'yooz-quality-v3',
+    module: 'llm',
+    displayName: 'Yooz-Quality',
+    sizeBytes: 3_400_000_000,
+    cached: false,
+    loaded: false,
+    isActive: false,
+    deletable: false,
+    ...over,
+  });
+
+  test('uses the explicit DOWNLOAD endpoint, not preload, and never ?wait=true', async () => {
+    // Fetching weights and making a model resident are different acts; the
+    // download endpoint is the one that leaves the active model alone.
+    let polls = 0;
     const server = engineServer((path) => {
-      if (path === '/v1/llm/preload') return new Response(null, { status: 202 });
-      return Response.json(statuses[Math.min(poll++, statuses.length - 1)]);
+      if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
+      if (path === '/v1/llm/status') return Response.json({ loaded: false, state: 'idle' });
+      // Not cached on the first look, cached once the download "finishes".
+      return Response.json({ models: [managed({ cached: polls++ >= 1 })] });
     });
     stop = server.stop;
 
-    const progress: Array<number | undefined> = [];
+    await pullModel(server.url, 'yooz-quality-v3', { sleep: noSleep });
+
+    const download = server.seen.find((s) => s.path === '/v1/touchup/download');
+    expect(download).toBeDefined();
+    expect(download?.body).toEqual({ id: 'yooz-quality-v3' });
+    expect(download?.search).toBe('');
+    expect(server.seen.some((s) => s.path === '/v1/llm/preload')).toBe(false);
+  });
+
+  test('completes from BYTES ON DISK even when progress never moves (engine#292)', async () => {
+    // The engine publishes one near-zero sample and then freezes. A pull that
+    // waited on progress would hang forever on a download that succeeded.
+    let polls = 0;
+    const server = engineServer((path) => {
+      if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
+      if (path === '/v1/llm/status') {
+        return Response.json({ loaded: false, progress: 0.000027, state: 'idle' });
+      }
+      return Response.json({ models: [managed({ cached: polls++ >= 2 })] });
+    });
+    stop = server.stop;
+
+    const seen: Array<number | undefined> = [];
     await pullModel(server.url, 'yooz-quality-v3', {
-      onProgress: (p) => progress.push(p.fraction),
       sleep: noSleep,
+      onProgress: (p) => seen.push(p.fraction),
     });
 
-    const preload = server.seen.find((s) => s.path === '/v1/llm/preload');
-    expect(preload).toBeDefined();
-    expect(preload?.search).toBe(''); // NOT ?wait=true
-    expect(preload?.body).toEqual({ model: 'yooz-quality-v3' });
-    expect(progress).toEqual([0.1, 0.8, undefined]);
+    expect(seen.every((f) => f === 0.000027)).toBe(true); // frozen, as documented
   });
 
-  test('a failed load throws with the engine reason, never silently "succeeds"', async () => {
+  test('is idempotent: an already-cached model downloads nothing', async () => {
     const server = engineServer((path) => {
-      if (path === '/v1/llm/preload') return new Response(null, { status: 202 });
-      return Response.json({ loaded: false, state: 'failed', lastError: 'disk full' });
+      if (path === '/v1/models') return Response.json({ models: [managed({ cached: true })] });
+      return Response.json({});
     });
     stop = server.stop;
 
-    await expect(pullModel(server.url, 'm', { sleep: noSleep })).rejects.toThrow(/disk full/);
+    await pullModel(server.url, 'yooz-quality-v3', { sleep: noSleep });
+
+    expect(server.seen.some((s) => s.path === '/v1/touchup/download')).toBe(false);
   });
 
-  test('a stalled download times out and reports where it stalled', async () => {
+  test('a failed fetch throws with the engine reason', async () => {
     const server = engineServer((path) => {
-      if (path === '/v1/llm/preload') return new Response(null, { status: 202 });
-      return Response.json({ loaded: false, progress: 0.42, state: 'downloading' });
+      if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
+      if (path === '/v1/llm/status') {
+        return Response.json({ loaded: false, state: 'failed', lastError: 'disk full' });
+      }
+      return Response.json({ models: [managed()] });
+    });
+    stop = server.stop;
+
+    await expect(pullModel(server.url, 'yooz-quality-v3', { sleep: noSleep })).rejects.toThrow(
+      /disk full/,
+    );
+  });
+
+  test('a wedged download times out and points at the cancel command', async () => {
+    const server = engineServer((path) => {
+      if (path === '/v1/touchup/download') return new Response(null, { status: 202 });
+      if (path === '/v1/llm/status') return Response.json({ loaded: false });
+      return Response.json({ models: [managed()] });
     });
     stop = server.stop;
 
     let clock = 0;
     await expect(
-      pullModel(server.url, 'm', {
+      pullModel(server.url, 'yooz-quality-v3', {
         sleep: noSleep,
         now: () => {
           clock += 10_000;
@@ -175,17 +223,75 @@ describe('pullModel', () => {
         },
         timeoutMs: 20_000,
       }),
-    ).rejects.toThrow(/stalled at 42%/);
+    ).rejects.toThrow(/remi model cancel/);
+  });
+});
+
+describe('disk inventory', () => {
+  let stop: (() => void) | undefined;
+  afterEach(() => {
+    stop?.();
+    stop = undefined;
   });
 
-  test('completes against an older engine that reports no `state` field', async () => {
-    const server = engineServer((path) => {
-      if (path === '/v1/llm/preload') return new Response(null, { status: 202 });
-      return Response.json({ loaded: true }); // no state, no modelId
-    });
+  test('listManagedModels reads the real on-disk footprint and delete eligibility', async () => {
+    const server = engineServer(() =>
+      Response.json({
+        models: [
+          {
+            id: 'yooz-quality-v3',
+            module: 'llm',
+            displayName: 'Yooz-Quality',
+            sizeBytes: 3_400_000_000,
+            cached: true,
+            loaded: true,
+            isActive: true,
+            deletable: false,
+          },
+        ],
+      }),
+    );
     stop = server.stop;
 
-    await expect(pullModel(server.url, 'm', { sleep: noSleep })).resolves.toBeUndefined();
+    const models = await listManagedModels(server.url);
+
+    expect(server.seen[0]?.path).toBe('/v1/models');
+    expect(models[0]?.deletable).toBe(false); // active model is never deletable
+    expect(models[0]?.sizeBytes).toBe(3_400_000_000);
+  });
+
+  test('deleteModel issues a DELETE and reports the bytes reclaimed', async () => {
+    const server = engineServer(() =>
+      Response.json({ id: 'yooz-light-v3', reclaimedBytes: 800_000_000 }),
+    );
+    stop = server.stop;
+
+    const result = await deleteModel(server.url, 'yooz-light-v3');
+
+    expect(server.seen[0]?.method).toBe('DELETE');
+    expect(server.seen[0]?.path).toBe('/v1/models/yooz-light-v3');
+    expect(result.reclaimedBytes).toBe(800_000_000);
+  });
+
+  test('deleteModel url-encodes an id with a slash (hub directory names)', async () => {
+    const server = engineServer(() => Response.json({ id: 'x', reclaimedBytes: 0 }));
+    stop = server.stop;
+
+    await deleteModel(server.url, 'models--YoozLabs--Qwen3.5-4B');
+
+    expect(server.seen[0]?.path).toBe('/v1/models/models--YoozLabs--Qwen3.5-4B');
+  });
+
+  test('cleanupModels reports the total reclaimed', async () => {
+    const server = engineServer(() =>
+      Response.json({ totalReclaimedBytes: 1_200_000_000, perRepo: { 'models--a--b': 1.2e9 } }),
+    );
+    stop = server.stop;
+
+    const result = await cleanupModels(server.url);
+
+    expect(server.seen[0]?.path).toBe('/v1/models/cleanup');
+    expect(result.totalReclaimedBytes).toBe(1_200_000_000);
   });
 });
 

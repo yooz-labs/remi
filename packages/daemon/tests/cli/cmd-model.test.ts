@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import type { EngineModelCatalog, EngineProbe } from '../../src/auto-approve/engine-models.ts';
+import type {
+  EngineModelCatalog,
+  EngineProbe,
+  ManagedModel,
+} from '../../src/auto-approve/engine-models.ts';
 import { runModelCommand } from '../../src/cli/cmd-model.ts';
 import { DEFAULT_CONFIG, type RemiConfig } from '../../src/config/config.ts';
 
@@ -25,6 +29,29 @@ const REACHABLE: EngineProbe = {
   reachable: true,
   status: { loaded: true, modelId: 'yooz-quality-v3', state: 'ready' },
 };
+
+const INVENTORY: readonly ManagedModel[] = [
+  {
+    id: 'yooz-quality-v3',
+    module: 'llm',
+    displayName: 'Yooz-Quality',
+    sizeBytes: 3_400_000_000,
+    cached: true,
+    loaded: true,
+    isActive: true,
+    deletable: false,
+  },
+  {
+    id: 'yooz-light-v3',
+    module: 'llm',
+    displayName: 'Yooz-Light',
+    sizeBytes: 800_000_000,
+    cached: true,
+    loaded: false,
+    isActive: false,
+    deletable: true,
+  },
+];
 
 const CATALOG: EngineModelCatalog = {
   current: 'yooz-quality-v3',
@@ -70,20 +97,29 @@ describe('remi model — unreachable engine', () => {
 });
 
 describe('remi model ls / ps', () => {
-  test('ls lists the catalogue and marks the current model', async () => {
+  test('ls lists the DISK inventory with real footprints and marks the active model', async () => {
     const t = io();
     const code = await runModelCommand(['ls'], configWith(), t.io, {
       probe: async () => REACHABLE,
-      list: async () => CATALOG,
+      inventory: async () => INVENTORY,
     });
 
     expect(code).toBe(0);
     const text = t.out.join('\n');
-    expect(text).toContain('yooz-quality-v3');
-    expect(text).toContain('yooz-light-v3');
-    expect(text).toContain('2.4 GB');
+    expect(text).toContain('3.4 GB'); // measured on-disk size, not an estimate
     expect(text).toContain('800 MB');
-    expect(text).toMatch(/\*\s+yooz-quality-v3/); // current marker
+    expect(text).toContain('resident');
+    expect(text).toMatch(/\*\s+yooz-quality-v3/); // active marker
+  });
+
+  test('ls distinguishes not-downloaded from on-disk', async () => {
+    const t = io();
+    await runModelCommand(['ls'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => [{ ...(INVENTORY[1] as ManagedModel), cached: false }],
+    });
+
+    expect(t.out.join('\n')).toContain('not downloaded');
   });
 
   test('ps shows only resident models', async () => {
@@ -144,7 +180,7 @@ describe('remi model status', () => {
 });
 
 describe('remi model pull', () => {
-  test('reports progress and confirms readiness', async () => {
+  test('reports progress, and is explicit that it does not change the active model', async () => {
     const t = io();
     const code = await runModelCommand(['pull', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
@@ -161,7 +197,8 @@ describe('remi model pull', () => {
     expect(text).toContain('50%');
     expect(text).toContain('100%');
     expect(text.match(/50%/g)).toHaveLength(1); // deduped
-    expect(text).toContain('is ready');
+    expect(text).toContain('is downloaded'); // downloading != making it active
+    expect(text).toContain('does not change the active model');
   });
 
   test('defaults to the configured model when no id is given', async () => {
@@ -245,5 +282,78 @@ describe('remi model use', () => {
     expect(code).toBe(1);
     expect(persisted).toBe(''); // nothing written
     expect(t.err.join('\n')).toContain('yooz-quality-v3');
+  });
+});
+
+describe('remi model rm', () => {
+  test('deletes a deletable model and reports the disk reclaimed', async () => {
+    const t = io();
+    let removed = '';
+    const code = await runModelCommand(['rm', 'yooz-light-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      remove: async (_url, id) => {
+        removed = id;
+        return { id, reclaimedBytes: 800_000_000 };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(removed).toBe('yooz-light-v3');
+    expect(t.out.join('\n')).toContain('800 MB');
+  });
+
+  test('refuses to delete the ACTIVE model, and says how to switch first', async () => {
+    const t = io();
+    let removed = '';
+    const code = await runModelCommand(['rm', 'yooz-quality-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      remove: async (_url, id) => {
+        removed = id;
+        return { id, reclaimedBytes: 0 };
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(removed).toBe(''); // never called
+    expect(t.err.join('\n')).toContain('remi model use');
+  });
+
+  test('requires an explicit id', async () => {
+    const t = io();
+    expect(
+      await runModelCommand(['rm'], configWith(), t.io, { probe: async () => REACHABLE }),
+    ).toBe(2);
+  });
+});
+
+describe('remi model cleanup / cancel', () => {
+  test('cleanup reports the total reclaimed', async () => {
+    const t = io();
+    const code = await runModelCommand(['cleanup'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      cleanup: async () => ({
+        totalReclaimedBytes: 1_200_000_000,
+        perRepo: { 'models--a--b': 1_200_000_000 },
+      }),
+    });
+
+    expect(code).toBe(0);
+    expect(t.out.join('\n')).toContain('1.2 GB');
+  });
+
+  test('cancel aborts the named download', async () => {
+    const t = io();
+    let cancelled = '';
+    const code = await runModelCommand(['cancel', 'yooz-light-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      cancel: async (_url, id) => {
+        cancelled = id;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(cancelled).toBe('yooz-light-v3');
   });
 });
