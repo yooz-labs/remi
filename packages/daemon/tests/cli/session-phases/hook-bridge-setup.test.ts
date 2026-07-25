@@ -254,7 +254,7 @@ describe('setupHookBridge', () => {
               await new Promise((r) => setTimeout(r, opts.autoApproveDelayMs));
             }
             if (opts.autoApproveThrows) {
-              throw new Error('test: ollama down');
+              throw new Error('test: llm provider down');
             }
             const decision = opts.autoApproveDecision ?? 'approve';
             const durationMs = opts.autoApproveDelayMs ?? 0;

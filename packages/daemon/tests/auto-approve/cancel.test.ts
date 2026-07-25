@@ -1,6 +1,6 @@
 /**
  * Tests for AutoApproveService.cancel() and the hard-kill timeout race.
- * Uses a local Bun.serve fixture so we don't depend on Ollama.
+ * Uses a local Bun.serve fixture so we don't depend on a real LLM provider.
  *
  * A slow LLM eval (cold model load, contended GPU) outliving the user's
  * terminal answer would inject a stale "1" or escalate a phantom question.

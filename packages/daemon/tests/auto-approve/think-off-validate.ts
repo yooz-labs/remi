@@ -1,7 +1,8 @@
 /**
- * Live A/B validation (NOT a CI test): native /api/chat with think:false vs the
- * OpenAI-compat /v1 path. Confirms thinking-off cuts latency and preserves the
- * decision. Run manually against a local Ollama:
+ * Live A/B validation (NOT a CI test): the Yooz engine's `/no_think` prompt
+ * prefix (disableThinking) vs the OpenAI-compat /v1 path with thinking on.
+ * Confirms thinking-off cuts latency and preserves the decision. Run manually
+ * against a local Yooz engine helper on :19924:
  *   bun packages/daemon/tests/auto-approve/think-off-validate.ts [model...]
  */
 import { chatCompletion } from '../../src/auto-approve/llm-client.ts';
@@ -9,7 +10,7 @@ import { buildPrompt } from '../../src/auto-approve/prompt-builder.ts';
 
 const MODELS = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ['qwen3.5:4b-mlx', 'qwen3.5:35b-mlx'];
+  : ['yooz-quality-v3', 'yooz-light-v3'];
 
 const INSTRUCTIONS =
   'Approve every command except if it appears to be an irreversible delete. Wait for the user for directional questions.';
@@ -47,23 +48,33 @@ function parseDecision(content: string): string {
   }
 }
 
-const base = 'http://localhost:11434/v1';
+const base = 'http://127.0.0.1:19924';
+
+const VARIANTS = [
+  { label: 'yooz (disableThinking=true, /no_think)', disableThinking: true },
+  { label: 'yooz (disableThinking=false, thinking on)', disableThinking: false },
+] as const;
 
 for (const model of MODELS) {
   console.log(`\n=== ${model} ===`);
-  for (const kind of ['ollama', 'openai'] as const) {
+  for (const variant of VARIANTS) {
     let total = 0;
     let matches = 0;
-    console.log(
-      `  -- transport: ${kind}${kind === 'ollama' ? ' (think:false)' : ' (/v1, thinking on)'}`,
-    );
+    console.log(`  -- ${variant.label}`);
     for (const s of SCENARIOS) {
       const msgs = buildPrompt(s.tool, s.input, INSTRUCTIONS);
       const t0 = performance.now();
       let decision = 'ERR';
       try {
         const r = await chatCompletion(
-          { baseUrl: base, apiKey: '', model, timeoutMs: 120_000, kind },
+          {
+            baseUrl: base,
+            apiKey: '',
+            model,
+            timeoutMs: 120_000,
+            kind: 'yooz',
+            disableThinking: variant.disableThinking,
+          },
           msgs,
         );
         decision = parseDecision(r.content);
@@ -79,7 +90,7 @@ for (const model of MODELS) {
       );
     }
     console.log(
-      `     ${kind}: ${matches}/${SCENARIOS.length} match, avg ${Math.round(total / SCENARIOS.length)}ms`,
+      `     ${variant.label}: ${matches}/${SCENARIOS.length} match, avg ${Math.round(total / SCENARIOS.length)}ms`,
     );
   }
 }
