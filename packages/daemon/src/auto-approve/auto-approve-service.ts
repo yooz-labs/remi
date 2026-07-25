@@ -10,6 +10,7 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { fileActivityRecord } from './engine-activity.ts';
 import { unloadModel } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
@@ -235,6 +236,9 @@ export class AutoApproveService {
       {
         unload: (model) => unloadModel(this.llmConfig.baseUrl, model),
         log: logFn,
+        // #818: ten daemons, one engine — coordinate eviction through a shared
+        // mtime so no daemon evicts weights another is actively using.
+        activity: fileActivityRecord(),
       },
     );
   }
@@ -358,6 +362,9 @@ export class AutoApproveService {
     return drained;
   }
 
+  /** Whether the lazy first-eval warm has been kicked off (#818 advisory). */
+  private warmDispatched = false;
+
   /**
    * Warm-load the escalate_model so the FIRST second opinion does not pay a
    * cold model-load (15s+ for a 35B). Yooz engine only (`POST
@@ -416,6 +423,14 @@ export class AutoApproveService {
     // eval cannot have the model unloaded out from under it, and again when it
     // settles so the window measures from the LAST activity.
     this.residency.noteActivity();
+    // #818 advisory: warm the heavy escalate_model on the FIRST evaluation
+    // rather than at daemon boot, so a session that never sees a permission
+    // never pulls ~20 GB resident. Fire-and-forget: it must not delay this
+    // decision, and it still lands long before a typical escalation.
+    if (!this.warmDispatched) {
+      this.warmDispatched = true;
+      void this.warmEscalateModel();
+    }
     // modelOverride (#522: the escalate_model second opinion) replaces the base
     // model for this call; the fast-path deny/allow/group checks below still run.
     const baseModel = modelOverride || this.llmConfig.model;

@@ -849,9 +849,13 @@ let autoApproveService: AutoApproveService | null = null;
     writeToLog(
       `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}, ${queueSummary}`,
     );
-    // Warm-load the heavy second-opinion model so the first escalation is not a
-    // cold start. Best-effort, fire-and-forget (never blocks daemon startup).
-    void autoApproveService.warmEscalateModel();
+    // NOT warmed here (#818 advisory). `escalate_model` is typically a large
+    // model -- a 35B is ~20 GB resident -- and warming at daemon boot means
+    // merely CREATING a session pulls those weights in, even for a session
+    // that never sees a permission, only for keep_alive to evict them 30
+    // minutes later. Pure heat, multiplied by every session in a fleet. The
+    // service now warms on its FIRST evaluation instead, which still lands
+    // long before a typical escalation.
   }
 }
 

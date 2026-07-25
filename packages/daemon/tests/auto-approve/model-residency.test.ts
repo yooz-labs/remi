@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { fileActivityRecord } from '../../src/auto-approve/engine-activity.ts';
 import { ModelResidency } from '../../src/auto-approve/model-residency.ts';
 
 /** Collects unload calls and log lines from a real ModelResidency (no mocks;
@@ -206,5 +207,112 @@ describe('ModelResidency — failure retry and mid-unload activity', () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
 
     expect(unloaded).toEqual(['first']); // 'second' was spared
+  });
+});
+
+describe('ModelResidency — machine-wide coordination (#818)', () => {
+  function withActivity(sinceMs: number | null) {
+    const unloaded: string[] = [];
+    const touches: number[] = [];
+    let fire: (() => void) | undefined;
+    let armCount = 0;
+    const residency = new ModelResidency(
+      { keepAliveMs: 1000, models: ['m'], ownsEngine: true },
+      {
+        unload: async (model) => {
+          unloaded.push(model);
+        },
+        log: () => {},
+        activity: {
+          touch: () => touches.push(1),
+          sinceLastMs: () => sinceMs,
+        },
+        setTimer: (fn) => {
+          armCount++;
+          fire = fn;
+          return 1 as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimer: () => {},
+      },
+    );
+    return { residency, unloaded, touches, fire: () => fire?.(), armCount: () => armCount };
+  }
+
+  test('does NOT unload when another daemon evaluated recently', async () => {
+    // Ten sessions share one engine; the first to idle must not evict weights
+    // the other nine are using.
+    const h = withActivity(200); // machine active 200ms ago, window is 1000ms
+    h.residency.noteActivity();
+    const armsBefore = h.armCount();
+
+    h.fire();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.unloaded).toEqual([]);
+    expect(h.armCount()).toBeGreaterThan(armsBefore); // re-armed, not given up
+  });
+
+  test('unloads when the whole MACHINE has been idle past the window', async () => {
+    const h = withActivity(5000); // nobody has evaluated in 5s
+    h.residency.noteActivity();
+
+    h.fire();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.unloaded).toEqual(['m']);
+  });
+
+  test('an unreadable record never pins weights forever', async () => {
+    // A missing or broken activity file must degrade to eviction, not to
+    // "wait forever because we cannot prove the machine is idle".
+    const h = withActivity(null);
+    h.residency.noteActivity();
+
+    h.fire();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.unloaded).toEqual(['m']);
+  });
+
+  test('every evaluation records machine-wide activity', () => {
+    const h = withActivity(5000);
+
+    h.residency.noteActivity();
+    h.residency.noteActivity();
+
+    expect(h.touches).toHaveLength(2);
+  });
+});
+
+describe('fileActivityRecord — real filesystem', () => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const os = require('node:os') as typeof import('node:os');
+  const path = require('node:path') as typeof import('node:path');
+
+  test('touch then read reports a fresh elapsed time', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-act-')), 'engine-activity');
+    const record = fileActivityRecord(file);
+
+    record.touch();
+
+    const since = record.sinceLastMs();
+    expect(since).not.toBeNull();
+    expect(since ?? Number.POSITIVE_INFINITY).toBeLessThan(5_000);
+  });
+
+  test('a missing record reads as null, never as "just now"', () => {
+    const file = path.join(os.tmpdir(), `remi-act-missing-${process.pid}`, 'engine-activity');
+
+    expect(fileActivityRecord(file).sinceLastMs()).toBeNull();
+  });
+
+  test('an unwritable path degrades silently instead of throwing into an eval', () => {
+    // /dev/null/... can never be created; touch must swallow it.
+    const record = fileActivityRecord('/dev/null/nope/engine-activity');
+
+    expect(() => record.touch()).not.toThrow();
   });
 });

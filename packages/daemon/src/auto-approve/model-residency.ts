@@ -23,21 +23,46 @@
  *      AND when it settles, so a long-running evaluation keeps pushing the
  *      deadline out rather than being cut out from under.
  *
- * Known limitation, deliberately accepted for now: each daemon process runs its
- * own timer. Two remi daemons sharing one engine means the first to idle
- * unloads a model the other may still want, costing that one a cold reload —
- * annoying, not incorrect. Proper cross-daemon coordination is the same problem
- * #620 tracks for GPU admission, and belongs there rather than being
- * half-solved here.
+ * **Cross-daemon coordination (#818 advisory).** Every daemon runs its own
+ * timer, but they all share ONE engine. With ten sessions open, the first
+ * daemon to sit idle for `keep_alive` would evict weights the other nine are
+ * actively using — at that fleet size this is the common case, not an edge,
+ * and it reads to the user as "remi randomly gets slow" (every eviction costs
+ * the next session a multi-second cold load).
+ *
+ * The fix is deliberately the cheapest thing that works, not a protocol:
+ * every eval touches a shared activity file, and a timer that fires checks it
+ * before unloading. If the MACHINE saw an eval within the window, this daemon
+ * re-arms instead of unloading. One `utimes` per eval, one `stat` per fire, no
+ * locks and no IPC — and it restores exactly the semantic ollama had: unload N
+ * minutes after the machine's last use, not after this process's. Anything
+ * heavier belongs with #620's GPU admission work.
  */
 
 export interface ModelResidencyDeps {
   /** Free a model's weights. Wired to `engine-models.unloadModel`. */
   readonly unload: (model: string) => Promise<void>;
   readonly log: (msg: string) => void;
+  /**
+   * Shared machine-wide activity record (`~/.remi/engine-activity`), so ten
+   * daemons sharing one engine do not evict each other's weights. Absent =>
+   * this instance behaves as a lone daemon (the old per-process semantics),
+   * which is correct for tests and for a single-session machine.
+   */
+  readonly activity?: ActivityRecord;
   /** Timer seams so tests do not wait in real time. */
   readonly setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   readonly clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
+}
+
+/** The shared "when did any remi on this machine last evaluate?" record. */
+export interface ActivityRecord {
+  /** Mark an evaluation happening now. Must not throw. */
+  touch(): void;
+  /** Milliseconds since the last recorded eval by ANY daemon, or null when
+   *  unknown (no record yet, or the read failed — treated as "no reason to
+   *  wait", so a missing file never blocks eviction forever). */
+  sinceLastMs(): number | null;
 }
 
 export interface ModelResidencyConfig {
@@ -89,6 +114,9 @@ export class ModelResidency {
     this.unloaded = false;
     this.retried = false;
     this.activityGeneration += 1;
+    // Record for the whole machine, not just this process: another daemon's
+    // timer must be able to see that WE are busy.
+    this.deps.activity?.touch();
     this.arm();
   }
 
@@ -117,6 +145,15 @@ export class ModelResidency {
    */
   private async unloadIdle(): Promise<void> {
     if (this.unloaded) return;
+
+    // Another daemon on this machine may have evaluated during OUR idle
+    // window. Evicting now would cold-load that session's next permission.
+    const sinceMachineActivity = this.deps.activity?.sinceLastMs() ?? null;
+    if (sinceMachineActivity !== null && sinceMachineActivity < this.config.keepAliveMs) {
+      this.arm();
+      return;
+    }
+
     this.unloaded = true;
     let anyFailed = false;
     const generation = this.activityGeneration;
