@@ -46,6 +46,17 @@
  * first place (post-#672 that stays entirely with ForeignSessionEscalator's
  * informational-only push), so there is nothing for this gate to cancel for it.
  *
+ * #814: parking is not the end of the story. When a parked subagent prompt
+ * actually RENDERS on the main PTY, the tracker calls back into
+ * `arbitrateParkedRender`, and THAT is where the permission is evaluated —
+ * the first moment we know a human would otherwise be interrupted. The hook
+ * was answered 'passthrough' long before, so the verdict is delivered by PTY
+ * inject (approve/deny/pick type the matching option into the prompt on
+ * screen) instead of by hook response; only what the policy will not decide
+ * becomes a pushed card. Every failure direction — no verdict, an
+ * unidentifiable option, a failed inject, a vanished prompt — resolves to
+ * "ask the human", never to a fabricated answer.
+ *
  * #799: `parkSubagentForPTY` registers a signature too (tagged `isSubagent`
  * + the event's own `agent_id`), closing the gap where a subagent/teammate
  * permission answered in the terminal had NO removal path at all (only
@@ -72,15 +83,25 @@
  *     the single-agent mirror of the Stop reasoning above.
  */
 
-import type { UUID } from '@remi/shared';
+import type { Question, QuestionOption, UUID } from '@remi/shared';
 
-import type { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
+import type {
+  ParkedRenderVerdict,
+  QuestionPresenceTracker,
+} from '../api/question-presence-tracker.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import { type DeliveryOutcome, isDelivered } from '../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { AutoApproveResult } from './types.ts';
+
+/** Hard cap on `parkedInputs` (#814). One entry per parked subagent
+ *  permission awaiting a PTY render; a real agent fleet holds a handful at
+ *  once, so this only ever trips on a pathological park-and-never-advance
+ *  loop, where dropping the OLDEST (whose prompt has long since not rendered)
+ *  is the right eviction. */
+const MAX_PARKED_INPUTS = 64;
 
 /** The (tool_name, tool_input) signature of an OPEN escalation (#673),
  *  tracked so an external-resolution signal can find and cancel it. */
@@ -140,6 +161,69 @@ function canonicalize(value: unknown): unknown {
     return Object.fromEntries(sortedEntries);
   }
   return value;
+}
+
+/** A label that PERSISTS a permission ("Yes, and don't ask again…", "Always",
+ *  "Yes, always allow: …"). Never auto-answerable (#814): committing a
+ *  standing permission rule on the user's behalf is the user's call, not the
+ *  model's — the model may only answer this ONE prompt. */
+function isPersistingLabel(label: string): boolean {
+  return /\balways\b|don'?t\s+ask\s+again/i.test(label);
+}
+
+/** The plain one-time "Yes" among `options`, by flag first (hook-derived
+ *  options carry `isYes`) then by label (PTY-parsed numbered options carry no
+ *  flags at all — see `question-parser.ts`). Undefined when no option can be
+ *  identified confidently; the caller escalates rather than guessing. */
+function findApproveOption(options: readonly QuestionOption[]): QuestionOption | undefined {
+  return (
+    options.find(
+      (o) => o.isYes && o.suggestionIndex === undefined && !isPersistingLabel(o.label),
+    ) ?? options.find((o) => /^\s*yes\b/i.test(o.label) && !isPersistingLabel(o.label))
+  );
+}
+
+/** The "No" among `options` — same flag-then-label strategy as
+ *  {@link findApproveOption}. */
+function findDenyOption(options: readonly QuestionOption[]): QuestionOption | undefined {
+  return options.find((o) => o.isNo) ?? options.find((o) => /^\s*no\b/i.test(o.label));
+}
+
+/**
+ * The PTY input that expresses `result` on the prompt currently rendered
+ * (#814), or undefined when no option can be identified — in which case the
+ * caller escalates to the user instead of typing a guess (the #751 hazard:
+ * a wrong digit answers the wrong thing).
+ *
+ * `ptyOptions` (what the parser read off the ACTUAL screen) is preferred over
+ * `renderedOptions` (the merged card's, which may be the hook's own set): the
+ * value submitted is a 1-based index into the prompt as drawn, so the screen
+ * is the ground truth for numbering. The merged set is the fallback for
+ * prompt shapes the parser could not enumerate.
+ *
+ * Exported for direct unit testing of the mapping, independent of the gate.
+ */
+export function autoAnswerValue(
+  result: AutoApproveResult,
+  renderedOptions: readonly QuestionOption[],
+  ptyOptions: readonly QuestionOption[],
+): string | undefined {
+  if (result.decision === 'pick') {
+    // A pick index was chosen against the PARK-TIME options, and this path has
+    // an unbounded gap between park and render (Claude's own permission flow
+    // runs in between) — so unlike the synchronous main path, the index is not
+    // guaranteed to still address the same option, or any option at all.
+    // Accept it only when the prompt ON SCREEN actually has that many options;
+    // otherwise return undefined and let the caller escalate.
+    const screen = ptyOptions.length > 0 ? ptyOptions : renderedOptions;
+    if (result.pickIndex === undefined || screen.length === 0) return undefined;
+    return result.pickIndex >= 1 && result.pickIndex <= screen.length
+      ? String(result.pickIndex)
+      : undefined;
+  }
+  if (result.decision !== 'approve' && result.decision !== 'deny') return undefined;
+  const find = result.decision === 'approve' ? findApproveOption : findDenyOption;
+  return (find(ptyOptions) ?? find(renderedOptions))?.value;
 }
 
 /**
@@ -450,6 +534,24 @@ export class AutoApproveGate {
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
+  /**
+   * The original hook input of every PARKED subagent permission (#814), keyed
+   * by the parked `Question.id`. The hook itself was answered 'passthrough'
+   * immediately (#807), so this is the only surviving record of what the
+   * permission actually asked for — and it is what `arbitrateParkedRender`
+   * evaluates if and when Claude's native prompt renders on the main PTY.
+   *
+   * Entries are deleted the moment an arbitration consumes one (exactly one
+   * evaluation per park), and by every resolution path that retires the
+   * matching `openQuestionSignatures` entry (`releaseHeld`, `resolveHeld`,
+   * `cancelStale`'s wholesale clear, `forceRelease`), so a permission whose
+   * prompt never renders cannot linger. `MAX_PARKED_INPUTS` is the backstop
+   * for the one shape none of those cover: an agent that parks repeatedly and
+   * never advances, ends, or renders — oldest-first eviction bounds the map at
+   * a size far above any real fleet's concurrent parks.
+   */
+  private readonly parkedInputs = new Map<UUID, PermissionRequestHookInput>();
+
   constructor(
     private readonly deps: AutoApproveGateDeps,
     private readonly sessionId: UUID,
@@ -516,6 +618,9 @@ export class AutoApproveGate {
       }
     } else {
       this.openQuestionSignatures.clear();
+      // #814: a full teardown retires every parked permission too — none of
+      // them can render on a PTY that is going away.
+      this.parkedInputs.clear();
     }
     if (this.deps.service === null) return;
     // #730 (BUG 1 fix): drop THIS session's own QUEUED evals first -- work a
@@ -623,6 +728,7 @@ export class AutoApproveGate {
     // #673: mirrors cancelStale's wholesale clear -- a force-release is at
     // least as final as a session end for bookkeeping purposes.
     this.openQuestionSignatures.clear();
+    this.parkedInputs.clear(); // #814, same finality
     const service = this.deps.service;
     if (service === null) return { holds, cancelled: false, drained: 0 };
     const cancelled = service.cancel(reason);
@@ -659,6 +765,7 @@ export class AutoApproveGate {
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
     this.openQuestionSignatures.delete(questionId);
+    this.parkedInputs.delete(questionId); // #814, see releaseHeld
     this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
@@ -1012,8 +1119,9 @@ export class AutoApproveGate {
    *     always observe it false — the tag on the event itself is the truth).
    *     Claude then runs its NORMAL permission flow: the session allowlist
    *     may absorb the request silently, or the native prompt renders on the
-   *     main PTY and the tracker merges the parked labels onto it and pushes
-   *     (answers inject; nothing is held). Replaces three prior behaviors:
+   *     main PTY — where `arbitrateParkedRender` (#814) evaluates it and
+   *     either answers it on screen or pushes the merged card (answers
+   *     inject; nothing is held). Replaces three prior behaviors:
    *     silent default-deny (sync-Task shape, broke teammates with no trace),
    *     hold+push-as-main (async/team shape, pushed cards for prompts the
    *     user never saw asked), and evaluate-then-route (#751's shape, which
@@ -1054,10 +1162,10 @@ export class AutoApproveGate {
     // onto it and pushes a card. The PTY — not the hook — decides whether a
     // human is asked, which is the arbiter policy #756 asked for.
     //
-    // Evaluating a subagent permission AFTER it renders (auto-approve it on
-    // the user's behalf, or escalate and let the phone answer) is the
-    // deliberate follow-up: it needs the async inject path, because this hook
-    // is answered long before any render.
+    // The evaluation itself is not skipped, only DEFERRED: if this prompt does
+    // render, `arbitrateParkedRender` (#814) evaluates it at that point and
+    // answers it by PTY inject, or pushes a card the phone can answer. That is
+    // the async route this hook response could never take.
     if (isSubagent) {
       log(
         `[Hooks] Subagent PermissionRequest passed through UNEVALUATED (PTY arbitrates): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
@@ -1216,37 +1324,16 @@ export class AutoApproveGate {
     // bother the user. Its latency only hits would-escalate cases. Main context
     // only; never re-escalates into a third call.
     const escalateModel = this.deps.escalateModel;
-    if (escalateModel) {
-      let second: AutoApproveResult;
-      try {
-        // #711: deliberately NOT tagged in evalIsSubagentById (no evalId passed) --
-        // the same "Claude blocks on the hook while the gate evaluates" invariant
-        // that keeps a MAIN primary eval from ever being in flight at Stop applies
-        // here too, since Claude is still blocked on this same hook response
-        // while the second opinion runs. A mainOnly Stop therefore has nothing to
-        // cancel for this call by construction; leaving it untracked is correct,
-        // not a gap. #730: scope IS passed (unlike evalId) so a full teardown's
-        // scoped, untargeted-by-evalId cancel can still abort this call if it is
-        // somehow still running.
-        second = await service.evaluate(
-          input.tool_name,
-          input.tool_input,
-          this.sessionTag,
-          input.permission_suggestions as readonly unknown[] | undefined,
-          escalateModel,
-          undefined,
-          this.sessionId,
-          isSubagent,
-        );
-      } catch (err) {
-        logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
-        second = {
-          decision: 'escalate',
-          reasoning: 'second-opinion error',
-          durationMs: 0,
-          model: escalateModel,
-        };
-      }
+    // #711: the second opinion is deliberately NOT tagged in evalIsSubagentById
+    // (`runSecondOpinion` passes no evalId) -- the same "Claude blocks on the
+    // hook while the gate evaluates" invariant that keeps a MAIN primary eval
+    // from ever being in flight at Stop applies here too, since Claude is still
+    // blocked on this same hook response while it runs. A mainOnly Stop
+    // therefore has nothing to cancel for this call by construction; leaving it
+    // untracked is correct, not a gap. #730: scope IS passed so a full
+    // teardown's scoped, untargeted-by-evalId cancel can still abort it.
+    const second = await this.runSecondOpinion(input, isSubagent);
+    if (second !== null) {
       if (second.decision === 'approve') {
         log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) approved`);
         this.markHandled(isSubagent);
@@ -1435,6 +1522,10 @@ export class AutoApproveGate {
     toolName?: string,
   ): boolean {
     this.openQuestionSignatures.delete(questionId);
+    // #814: a parked permission resolved through any of these paths can never
+    // be arbitrated on render any more; retire its remembered hook input with
+    // the signature it belongs to.
+    this.parkedInputs.delete(questionId);
     // #733: unconditional for the same leak reason as the signature delete
     // above — every hold exit path funnels through here.
     this.confirmedDeliveries.delete(questionId);
@@ -1521,8 +1612,301 @@ export class AutoApproveGate {
         isSubagent: true,
         agentId: observed.agentId,
       });
+      // #814: keep the hook input so this permission can still be EVALUATED if
+      // its prompt renders. Nothing else survives the passthrough answer.
+      this.rememberParkedInput(questionId, input);
     }
     this.safeCueWithArg('onEscalate', this.deps.onEscalate, { isSubagent: true });
+  }
+
+  /** Stash a parked permission's hook input (#814), evicting oldest-first at
+   *  `MAX_PARKED_INPUTS`. Map iteration order is insertion order, so the first
+   *  key is the oldest park. */
+  private rememberParkedInput(questionId: UUID, input: PermissionRequestHookInput): void {
+    if (this.parkedInputs.size >= MAX_PARKED_INPUTS) {
+      const oldest = this.parkedInputs.keys().next();
+      if (!oldest.done) {
+        this.parkedInputs.delete(oldest.value);
+        // logError, not log: hitting this cap is anomalous (an agent parking
+        // in a loop without ever advancing, ending or rendering), and the
+        // evicted permission can no longer be evaluated if it does render.
+        logError(
+          `[AutoApprove ${this.sessionTag}] parkedInputs at cap (${MAX_PARKED_INPUTS}); evicted the oldest parked permission ${oldest.value.slice(0, 8)} — if its prompt renders it will escalate unevaluated`,
+        );
+      }
+    }
+    this.parkedInputs.set(questionId, input);
+  }
+
+  /**
+   * #814: a PARKED subagent permission's prompt has now RENDERED on the main
+   * PTY — the moment it becomes a question a human would actually be
+   * interrupted by. THIS is where it gets evaluated.
+   *
+   * #807 deliberately does not evaluate a subagent permission at hook time:
+   * Claude blocks on that response, so the gate cannot know whether the prompt
+   * will ever render, and most never do (16 hooks -> 2 renders in a live
+   * session). The render removes that uncertainty, so the eval is worth its
+   * GPU here and only here. The hook was answered 'passthrough' long ago, so
+   * the verdict is delivered by PTY inject rather than by hook response — the
+   * async route #814 exists for.
+   *
+   * Outcomes:
+   *   - approve / deny / pick -> type the matching option into the prompt on
+   *     screen (the SAME resolution a phone answer performs) and report
+   *     `answered`: the user is never interrupted. The inject is gated on the
+   *     prompt still being visible (`inject`'s subagent PTY-presence check),
+   *     so a prompt answered in the terminal mid-eval cannot be typed over.
+   *   - escalate (optionally after the `escalate_model` second opinion) ->
+   *     `push`, carrying the model's lock-screen summary: the card the user
+   *     answers from the phone.
+   *   - anything unresolvable (no service, no remembered input, an eval error,
+   *     a verdict whose option cannot be identified on the rendered prompt)
+   *     -> `push`. Every failure direction is "ask the human," never a
+   *     fabricated answer.
+   *
+   * Never throws (the tracker treats a rejection as `push` anyway).
+   */
+  async arbitrateParkedRender(
+    parkedQuestionId: UUID,
+    rendered: Question,
+    ptyPrompt: Question,
+  ): Promise<ParkedRenderVerdict> {
+    const input = this.parkedInputs.get(parkedQuestionId);
+    const service = this.deps.service;
+    if (input === undefined || service === null) {
+      // No auto-approve, or the park was already consumed/retired (an external
+      // resolution, a session teardown, a duplicate render, a MAX_PARKED_INPUTS
+      // eviction). Push: the prompt is on screen and nobody else is going to
+      // surface it. The re-key still has to happen — the signature may well
+      // still be open (eviction drops only the input), and a card pushed under
+      // an id no resolution path knows is the #808 stale card.
+      log(
+        `[AutoApprove ${this.sessionTag}] Parked render for ${parkedQuestionId.slice(0, 8)} not evaluated (${service === null ? 'no auto-approve service' : 'no parked input'}); pushing to the user`,
+      );
+      this.rekeySignatureToRendered(parkedQuestionId, rendered);
+      return { outcome: 'push' };
+    }
+    // Exactly one evaluation per park: a second render of the same prompt
+    // (or a re-entrant call) must not start a second eval.
+    this.parkedInputs.delete(parkedQuestionId);
+
+    log(
+      `[AutoApprove ${this.sessionTag}] Parked subagent prompt RENDERED; evaluating now (agent=${input.agent_id?.slice(0, 8) ?? 'n/a'} type=${input.agent_type ?? 'n/a'} tool=${input.tool_name})`,
+    );
+    // isSubagent: true throughout — this opens the terminal cue but neither the
+    // #484 main buffer window (#767) nor the client status pill (#711).
+    this.safeCueWithArg('onEvalStart', this.deps.onEvalStart, { isSubagent: true });
+
+    const evalId = ++this.evalSeq;
+    this.evalIsSubagentById.set(evalId, true);
+    // Keyed by the PARKED question id so `cancelEvalForQuestion` (external
+    // resolution, a user answer that beat us) aborts exactly this eval.
+    this.evalIdByQuestion.set(parkedQuestionId, evalId);
+    let result: AutoApproveResult;
+    try {
+      result = await service.evaluate(
+        input.tool_name,
+        input.tool_input,
+        this.sessionTag,
+        input.permission_suggestions as readonly unknown[] | undefined,
+        undefined,
+        evalId,
+        this.sessionId,
+        true,
+      );
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
+      return this.escalateRenderedParked(parkedQuestionId, rendered);
+    } finally {
+      this.evalIsSubagentById.delete(evalId);
+      if (this.evalIdByQuestion.get(parkedQuestionId) === evalId) {
+        this.evalIdByQuestion.delete(parkedQuestionId);
+      }
+    }
+
+    if (result.decision === 'cancelled') {
+      // The eval was aborted because something proved the prompt moot (the
+      // agent advanced, the user answered in the terminal). Report push: the
+      // tracker drops it when the prompt is already off screen, and if it is
+      // somehow still up, the user is the right fallback.
+      log(`[AutoApprove ${this.sessionTag}] Parked-render eval cancelled: ${result.reasoning}`);
+      return this.escalateRenderedParked(parkedQuestionId, rendered);
+    }
+
+    if (result.decision === 'approve' || result.decision === 'deny' || result.decision === 'pick') {
+      if (await this.answerRenderedParked(input, result, rendered, ptyPrompt)) {
+        // Answered on the user's behalf. The parked question was never
+        // registered or pushed (parking only stashes it in the tracker), so
+        // there is no card to dismiss — only the open-escalation bookkeeping
+        // to retire, which a deny in particular would otherwise leak until
+        // SubagentStop (a denial fires no tool call to match against).
+        this.openQuestionSignatures.delete(parkedQuestionId);
+        this.markHandled(true);
+        return { outcome: 'answered' };
+      }
+      return this.escalateRenderedParked(parkedQuestionId, rendered);
+    }
+
+    // escalate: consult the second opinion before interrupting the user, the
+    // same courtesy a main-context escalate gets (#522). Skipped once this
+    // prompt is no longer the one on screen — nobody is waiting on that answer.
+    if (this.deps.tracker.isPromptCurrent(rendered.id, ptyPrompt.text)) {
+      // Tracked under the parked id (the primary eval's entry is already
+      // retired by its `finally`), so a terminal answer landing mid-second-
+      // opinion still frees the GPU (#617). Unlike the main-context caller,
+      // Claude is NOT blocked on a hook here — the prompt is live and
+      // answerable in the terminal — so leaving it untracked would be a real
+      // gap, not the by-construction non-issue it is there.
+      const secondEvalId = ++this.evalSeq;
+      this.evalIsSubagentById.set(secondEvalId, true);
+      this.evalIdByQuestion.set(parkedQuestionId, secondEvalId);
+      let second: AutoApproveResult | null;
+      try {
+        second = await this.runSecondOpinion(input, true, secondEvalId);
+      } finally {
+        this.evalIsSubagentById.delete(secondEvalId);
+        if (this.evalIdByQuestion.get(parkedQuestionId) === secondEvalId) {
+          this.evalIdByQuestion.delete(parkedQuestionId);
+        }
+      }
+      if (
+        second !== null &&
+        (second.decision === 'approve' || second.decision === 'deny') &&
+        (await this.answerRenderedParked(input, second, rendered, ptyPrompt))
+      ) {
+        this.openQuestionSignatures.delete(parkedQuestionId);
+        this.markHandled(true);
+        log(
+          `[AutoApprove ${this.sessionTag}] escalate_model (${this.deps.escalateModel}) ${second.decision === 'deny' ? 'denied' : 'approved'} a parked render (${input.tool_name})`,
+        );
+        return { outcome: 'answered' };
+      }
+    }
+    return this.escalateRenderedParked(parkedQuestionId, rendered, result.summary);
+  }
+
+  /**
+   * Type an auto-approve verdict into the parked prompt now on screen (#814).
+   * Returns false — and the caller escalates — when the verdict cannot be
+   * expressed safely, which is deliberately the DEFAULT for anything
+   * ambiguous:
+   *
+   *   - no option on the rendered prompt matches the verdict (never guess a
+   *     digit: the #751 wrong-option hazard);
+   *   - `rendered` is no longer THE prompt on screen. Presence alone is not
+   *     enough here: an eval can outlive its prompt (a terminal deny fires no
+   *     tool call, so nothing cancels it) and the NEXT prompt would then take
+   *     the answer meant for this one. `isPromptCurrent` is checked as late as
+   *     possible, immediately before the write;
+   *   - the inject itself fails (PTY gone, submitInput threw).
+   */
+  private async answerRenderedParked(
+    input: PermissionRequestHookInput,
+    result: AutoApproveResult,
+    rendered: Question,
+    ptyPrompt: Question,
+  ): Promise<boolean> {
+    const value = autoAnswerValue(result, rendered.options, ptyPrompt.options);
+    if (value === undefined) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] Parked-render verdict '${result.decision}' has no usable option on the rendered prompt (${ptyPrompt.options.length || rendered.options.length} option(s)); escalating instead of guessing`,
+      );
+      return false;
+    }
+    if (!this.deps.tracker.isPromptCurrent(rendered.id, ptyPrompt.text)) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Parked render ${rendered.id.slice(0, 8)} is no longer the prompt on screen; NOT typing "${value}" into whatever replaced it`,
+      );
+      return false;
+    }
+    if (!(await this.inject(input, value, `parked-render-${result.decision}`))) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Parked-render inject failed (prompt gone or PTY unavailable); escalating`,
+      );
+      return false;
+    }
+    log(
+      `[AutoApprove ${this.sessionTag}] Parked render auto-${result.decision === 'deny' ? 'denied' : 'answered'} (${input.tool_name}, option "${value}"): ${result.reasoning}`,
+    );
+    return true;
+  }
+
+  /**
+   * Hand a rendered parked prompt to the user (#814): re-key its open-escalation
+   * signature onto the id of the card that is about to be pushed, close the
+   * eval cue, and report `push`.
+   *
+   * The re-key matters. A parked render pushes the MERGED question, whose id
+   * comes from the PTY question — NOT from the parked hook question the
+   * signature was registered under. Without this, every later resolution
+   * signal (a matching PreToolUse, `SubagentStop`, a phone answer) would
+   * remove/dismiss the parked id while the client holds a card under the
+   * rendered id, leaving exactly the stale card #808 is about.
+   */
+  private escalateRenderedParked(
+    parkedQuestionId: UUID,
+    rendered: Question,
+    summary?: string,
+  ): ParkedRenderVerdict {
+    this.rekeySignatureToRendered(parkedQuestionId, rendered);
+    this.safeCueWithArg('onEscalate', this.deps.onEscalate, { isSubagent: true });
+    return summary === undefined ? { outcome: 'push' } : { outcome: 'push', summary };
+  }
+
+  /** Move a parked question's open-escalation signature onto the id of the
+   *  card about to be pushed (#814) — see `escalateRenderedParked`. Every
+   *  path that returns `push` must call this, including the ones that never
+   *  evaluated, or the pushed card is unresolvable. No-op when the park has
+   *  no signature (parkForPTY returned no id, or it was already retired). */
+  private rekeySignatureToRendered(parkedQuestionId: UUID, rendered: Question): void {
+    const signature = this.openQuestionSignatures.get(parkedQuestionId);
+    if (signature === undefined || rendered.id === parkedQuestionId) return;
+    this.openQuestionSignatures.delete(parkedQuestionId);
+    this.openQuestionSignatures.set(rendered.id as UUID, signature);
+  }
+
+  /**
+   * Second-opinion eval (#522): a heavier `escalate_model` may resolve what the
+   * fast model would escalate, before the user is bothered. Returns null when
+   * no `escalate_model` is configured (or no service exists). Never throws — an
+   * error becomes an `escalate` result, so callers only ever see "still unsure."
+   *
+   * Shared by the main synchronous path and the #814 parked-render path.
+   * `evalId` is optional because the two callers differ: the main path omits it
+   * (Claude is blocked on the hook while it runs, so there is nothing that
+   * could cancel it), while the parked-render path passes one — its prompt is
+   * live in the terminal and a direct answer there must free the GPU (#617).
+   * `scope` is always passed, so a full-teardown cancel reaches either.
+   */
+  private async runSecondOpinion(
+    input: PermissionRequestHookInput,
+    isSubagent: boolean,
+    evalId?: number,
+  ): Promise<AutoApproveResult | null> {
+    const escalateModel = this.deps.escalateModel;
+    const service = this.deps.service;
+    if (!escalateModel || service === null) return null;
+    try {
+      return await service.evaluate(
+        input.tool_name,
+        input.tool_input,
+        this.sessionTag,
+        input.permission_suggestions as readonly unknown[] | undefined,
+        escalateModel,
+        evalId,
+        this.sessionId,
+        isSubagent,
+      );
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
+      return {
+        decision: 'escalate',
+        reasoning: 'second-opinion error',
+        durationMs: 0,
+        model: escalateModel,
+      };
+    }
   }
 
   /**
