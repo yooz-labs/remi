@@ -333,6 +333,7 @@ function makeConfig(model: string): AutoApproveConfig {
     escalate_model: '',
     escalate_timeout: 0,
     queue_timeout: 240,
+    keep_alive: 0,
     disable_thinking: false,
     always_escalate_tools: [],
     hold_timeout: 0,

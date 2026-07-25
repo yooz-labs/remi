@@ -10,9 +10,11 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { unloadModel } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
+import { ModelResidency } from './model-residency.ts';
 import {
   buildMultiChoicePrompt,
   isDesignQuestion,
@@ -122,6 +124,13 @@ export class AutoApproveService {
   private readonly escalateTimeoutMs: number;
   /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
   private readonly providerIsYooz: boolean;
+
+  /**
+   * Idle-unload timer (#820). The engine never evicts on its own, so without
+   * this a daemon holds the weights for its entire life. Armed on every
+   * evaluation; fires `keep_alive` seconds after the last one.
+   */
+  private readonly residency: ModelResidency;
   /** Max ms a permission eval may wait in the serialization queue before it
    *  escalates gracefully (#551); 0 = no bound. */
   private readonly queueTimeoutMs: number;
@@ -202,6 +211,26 @@ export class AutoApproveService {
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
     this.providerIsYooz = config.provider === 'yooz';
+    // Only the engine transport has an unload endpoint at all, and (today)
+    // remi always owns its own engine -- #818 introduces the shared-engine
+    // mode, where `ownsEngine` flips false and this timer must never arm.
+    this.residency = new ModelResidency(
+      {
+        keepAliveMs: config.keep_alive * 1000,
+        models: [config.model, ...(config.escalate_model ? [config.escalate_model] : [])],
+        ownsEngine: this.providerIsYooz,
+      },
+      {
+        unload: (model) => unloadModel(this.llmConfig.baseUrl, model),
+        log: logFn,
+      },
+    );
+  }
+
+  /** Stop the idle-unload timer (daemon shutdown). Does not unload: another
+   *  daemon may still be using the model (#820). */
+  stopResidencyTimer(): void {
+    this.residency.stop();
   }
 
   /**
@@ -371,6 +400,10 @@ export class AutoApproveService {
     isSubagent?: boolean,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
+    // #820: push the idle-unload deadline out. Called at the START so a long
+    // eval cannot have the model unloaded out from under it, and again when it
+    // settles so the window measures from the LAST activity.
+    this.residency.noteActivity();
     // modelOverride (#522: the escalate_model second opinion) replaces the base
     // model for this call; the fast-path deny/allow/group checks below still run.
     const baseModel = modelOverride || this.llmConfig.model;
@@ -604,6 +637,9 @@ export class AutoApproveService {
         this.currentScope = null;
         this.currentEvalId = null;
         this.releaseSlot();
+        // #820: re-arm from the END of the eval, so the idle window measures
+        // silence rather than "time since we started thinking".
+        this.residency.noteActivity();
       }
     } catch (err) {
       const durationMs = Date.now() - start;

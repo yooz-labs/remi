@@ -152,6 +152,14 @@ export interface AutoApproveConfig {
    */
   readonly escalate_model: string;
   /**
+   * Seconds of inactivity after which remi unloads the model(s) it loaded
+   * (#820) -- the replacement for ollama's `keep_alive`, which the Yooz engine
+   * has no equivalent of (weights stay resident until explicitly unloaded).
+   * 0 disables the timer. Ignored under a shared engine, where residency is
+   * the host's policy and unloading would cut another module off (#818).
+   */
+  readonly keep_alive: number;
+  /**
    * Timeout (seconds) for the `escalate_model` second opinion specifically. The
    * heavy model is larger and frequently COLD (escalations are sporadic, so it
    * has usually been unloaded by the host), so its first call pays a model-load

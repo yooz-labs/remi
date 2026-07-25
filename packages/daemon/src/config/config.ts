@@ -193,6 +193,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // escalating (#551). Concurrent evals run one at a time; a deep burst could
     // otherwise wait long enough to risk the ~600s hook budget. 0 = no bound.
     queue_timeout: 240,
+    // Seconds a model stays resident after the last evaluation before remi
+    // unloads it (#820). The engine has no keep-alive of its own, so without
+    // this a daemon pins the weights forever; 1800 matches what ollama's
+    // keep_alive gave us. 0 = never unload.
+    keep_alive: 1800,
     // Keep the model's reasoning ON by default: live testing showed it is
     // load-bearing for following broad user instructions. Opt in (Yooz engine
     // provider only) for raw speed over decision nuance.
@@ -368,6 +373,16 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   ) {
     throw new Error(
       `Invalid auto_approve.queue_timeout in ${configPath}: must be a non-negative number (seconds; 0 = no bound), got ${typeof cfg.queue_timeout === 'string' ? `string "${cfg.queue_timeout}"` : typeof cfg.queue_timeout}. Example: queue_timeout = 240`,
+    );
+  }
+
+  if (
+    typeof cfg.keep_alive !== 'number' ||
+    !Number.isFinite(cfg.keep_alive) ||
+    cfg.keep_alive < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.keep_alive in ${configPath}: must be a non-negative number (seconds; 0 = never unload), got ${typeof cfg.keep_alive === 'string' ? `string "${cfg.keep_alive}"` : typeof cfg.keep_alive}. Example: keep_alive = 1800`,
     );
   }
 
@@ -771,6 +786,9 @@ authorized_user_ids = []
 #                                  # Raise (e.g. 90) for a large, often-cold
 #                                  # second-opinion model so its first-call load
 #                                  # does not abort into an error->escalate.
+# keep_alive = 1800                # Seconds a model stays resident after the
+                                   # last eval before remi unloads it. The
+                                   # engine never evicts on its own. 0 = never.
 # queue_timeout = 240              # Max seconds an eval waits in the serial
 #                                  # queue before escalating. Concurrent evals
 #                                  # run one at a time; a deep burst could risk
@@ -882,6 +900,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
+  lines.push(`  keep_alive = ${config.auto_approve.keep_alive}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
   lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);
   lines.push(`  push_hold_timeout = ${config.auto_approve.push_hold_timeout}`);
