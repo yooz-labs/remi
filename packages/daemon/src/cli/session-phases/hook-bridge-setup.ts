@@ -56,7 +56,11 @@ import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
-import type { ForeignSessionEscalator, HookServer } from '../../hooks/index.ts';
+import type {
+  ForeignSessionEscalator,
+  HookServer,
+  PermissionRequestHookInput,
+} from '../../hooks/index.ts';
 import type { DeliveryOutcome } from '../../notifications/notification-dispatcher.ts';
 import type {
   SessionBindingStore,
@@ -167,6 +171,16 @@ export interface HookBridgeDeps {
    * their own bridge without daemon-wide escalation wiring).
    */
   foreignSessionEscalator?: ForeignSessionEscalator;
+  /**
+   * Observer for every subagent-tagged permission that passed through
+   * unevaluated (#807). Forwarded verbatim to the gate's
+   * `onSubagentPassthrough`; see that dep's doc for why it cannot influence
+   * the decision. Supplied by `cli.ts`, which owns the `SubagentAlerter` and
+   * the push transport (daemon-wide, so alert rate-limiting is shared across
+   * sessions rather than reset per session — same reasoning as
+   * `foreignSessionEscalator` above). Absent => no alert, no audit line.
+   */
+  onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
 }
 
 export interface HookBridgeArgs {
@@ -394,11 +408,12 @@ export function setupHookBridge(
       // signature in `openQuestionSignatures` -- without it, a subagent
       // permission answered in the terminal has no removal path at all (see
       // the PreToolUse/PostToolUse/SubagentStop wiring below).
-      parkForPTY: (i, summary) => {
-        const question = hookBridge.buildPermissionQuestion(i, summary);
+      parkForPTY: (i) => {
+        const question = hookBridge.buildPermissionQuestion(i);
         tracker.parkAwaitingPTY(question);
         return question.id;
       },
+      ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native

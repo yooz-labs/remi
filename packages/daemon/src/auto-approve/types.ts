@@ -102,6 +102,22 @@ export interface AutoApproveConfig {
    */
   readonly deny: readonly string[];
   /**
+   * Substring patterns that, when a BACKGROUND AGENT invokes them, fire an
+   * after-the-fact notification (#807). Same matching rules as `allow`/`deny`.
+   *
+   * This is NOT a gate: the command runs. A subagent permission is never
+   * evaluated (#807) and Claude's own allowlist may allow it without ever
+   * rendering a prompt, so nothing would otherwise tell you it happened. These
+   * patterns pick the commands worth being told about anyway.
+   *
+   * Default: irreversible filesystem / VCS / privilege operations only.
+   * Broader patterns (`curl`, `ssh`) are useful but fire constantly on a
+   * session running many agents, so they are opt-in per machine rather than
+   * shipped on. Alerts for one (pattern, command) pair collapse within a
+   * 5-minute window; see `subagent-alert.ts`.
+   */
+  readonly subagent_alert: readonly string[];
+  /**
    * Built-in permission groups to approve without calling the LLM (epic #494).
    * A group is a curated set of read-by-definition operations matched with
    * compound-segment-aware prefix logic (see `permission-groups.ts`), safer

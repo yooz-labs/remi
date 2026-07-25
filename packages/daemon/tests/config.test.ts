@@ -344,6 +344,19 @@ describe('auto_approve config', () => {
       log_decisions: true,
       allow: ['Read', 'Glob', 'Grep'],
       deny: [],
+      // #807: irreversible-only by default; broad patterns (curl/ssh) are
+      // opt-in per machine because they fire constantly under agent fleets.
+      subagent_alert: [
+        'rm -rf',
+        'rm -f',
+        'push --force',
+        'push -f ',
+        'reset --hard',
+        'DROP TABLE',
+        'TRUNCATE',
+        'sudo ',
+        'chmod 777',
+      ],
       approve_groups: ['read-only', 'vcs-read', 'build-test'],
       deny_groups: [],
       instructions: '',
