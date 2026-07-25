@@ -25,12 +25,15 @@ interruption.
   falls back to asking you rather than guessing.
 
 ### Fixed
-- **Externally resolving a rendered subagent question now targets the right
-  id** (#814): the merged card pushed for a parked prompt previously kept
-  the id of the original hook-time question rather than the id of the
-  prompt that actually rendered, so answering it from the phone, or any
-  other external resolution, targeted an id no client had ever seen. The
-  signature is now re-keyed onto the rendered id at push time.
+- **A subagent permission resolved outside Remi no longer leaves a stale
+  card** (#814): when a parked permission was resolved outside Remi's own
+  answer path — answered directly in the terminal, or inferred from its
+  matching tool call having run — the cleanup looked the question up by the
+  original hook-time id instead of the id of the prompt that actually
+  rendered. `removeQuestion` no-oped and the `question_resolved` broadcast
+  named an id no client held, so the card stayed on screen as a phantom, and
+  the open-escalation signature leaked along with it. The signature is now
+  re-keyed onto the rendered id at push time, so that cleanup path finds it.
 
 ## [0.6.23] - 2026-07-25
 
