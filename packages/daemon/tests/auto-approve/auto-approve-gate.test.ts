@@ -3006,7 +3006,12 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
 
   function gate(
     result: AutoApproveResult | null,
-    opts: { throws?: boolean; secondResult?: AutoApproveResult; ptyThrows?: boolean } = {},
+    opts: {
+      throws?: boolean;
+      secondResult?: AutoApproveResult;
+      ptyThrows?: boolean;
+      customService?: AutoApproveEvaluator;
+    } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY(submits, { throws: opts.ptyThrows ?? false }), {
       handleMessage: () => {},
@@ -3014,7 +3019,8 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
       handleStatusChange: () => {},
     } as never);
     const service: AutoApproveEvaluator | null =
-      result === null
+      opts.customService ??
+      (result === null
         ? null
         : {
             evaluate: async (
@@ -3033,7 +3039,7 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
               return result;
             },
             cancel: () => true,
-          };
+          });
     return new AutoApproveGate(
       {
         service,
@@ -3299,6 +3305,87 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
       outcome: 'push',
     });
     expect(evalCalls).toHaveLength(0);
+  });
+
+  test('an evicted park (parkedInputs at cap) escalates unevaluated instead of guessing', async () => {
+    const g = gate(approve);
+    // MAX_PARKED_INPUTS is 64; the 65th park evicts the oldest.
+    for (let i = 0; i < 65; i++) {
+      expect(await g.resolvePermission(pr(`cmd-${i}`))).toBe('passthrough');
+    }
+    expect(evalCalls).toHaveLength(0);
+
+    // The FIRST park lost its remembered input: its render must fall open to
+    // the user, never be answered from a verdict computed for something else.
+    const evicted = rendered(generateId() as UUID);
+    promptOnScreen(evicted);
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, evicted, screen(evicted))).toEqual({
+      outcome: 'push',
+    });
+    expect(evalCalls).toHaveLength(0);
+    expect(submits).toHaveLength(0);
+
+    // The newest park is untouched and still evaluates normally.
+    const live = rendered(generateId() as UUID);
+    promptOnScreen(live);
+    expect(await g.arbitrateParkedRender(parkedIds[64] as UUID, live, screen(live))).toEqual({
+      outcome: 'answered',
+    });
+    expect(evalCalls).toHaveLength(1);
+  });
+
+  test('an external cancel mid-eval aborts THIS parked eval and falls open to the user', async () => {
+    // The eval resolves only when something cancels it — how a 'cancelled'
+    // verdict really arrives (the service aborts the in-flight request).
+    let finishEval: ((r: AutoApproveResult) => void) | undefined;
+    const cancelReasons: string[] = [];
+    const customService: AutoApproveEvaluator = {
+      evaluate: async (toolName, _i, _tag, _s, _m, _e, _scope, isSubagent) => {
+        evalCalls.push({ toolName, isSubagent });
+        return await new Promise<AutoApproveResult>((res) => {
+          finishEval = res;
+        });
+      },
+      cancel: (reason: string) => {
+        cancelReasons.push(reason);
+        finishEval?.({ decision: 'cancelled', reasoning: reason, durationMs: 0 });
+        return true;
+      },
+    };
+    const g = gate(null, { customService });
+    await g.resolvePermission(pr());
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
+    const qid = parkedIds[0] as UUID;
+
+    const verdictPromise = g.arbitrateParkedRender(qid, r, screen(r));
+    await Promise.resolve(); // let the eval start
+    // A PreToolUse proved the permission resolved elsewhere while we thought.
+    g.cancelEvalForQuestion(qid, 'external-resolution');
+
+    expect(await verdictPromise).toEqual({ outcome: 'push' });
+    expect(cancelReasons).toEqual(['external-resolution']);
+    expect(submits).toHaveLength(0);
+  });
+
+  test("two agents' renders arbitrate independently; only the prompt on screen is typed into", async () => {
+    const g = gate(approve);
+    await g.resolvePermission(pr('git push'));
+    await g.resolvePermission({ ...pr('rm -rf build'), agent_id: 'agent-2' });
+    const rA = rendered(generateId() as UUID);
+    const rB = { ...rendered(generateId() as UUID), text: 'agent-2 · Bash: rm -rf build' };
+
+    // Both evaluate concurrently; B's prompt is the one actually on screen.
+    promptOnScreen(rB);
+    const [vA, vB] = await Promise.all([
+      g.arbitrateParkedRender(parkedIds[0] as UUID, rA, screen(rA)),
+      g.arbitrateParkedRender(parkedIds[1] as UUID, rB, screen(rB)),
+    ]);
+
+    expect(vB).toEqual({ outcome: 'answered' });
+    expect(vA).toEqual({ outcome: 'push' }); // A's prompt is not on screen
+    expect(submits).toEqual(['1']); // exactly one answer typed
+    expect(evalCalls).toHaveLength(2); // both were evaluated, independently
   });
 
   test('a pushed render is resolvable by its RENDERED id: the signature is re-keyed', async () => {

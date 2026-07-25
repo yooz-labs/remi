@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { Question, QuestionOption } from '@remi/shared';
 import { generateId } from '@remi/shared';
+import type { ParkedRenderVerdict } from '../../src/api/question-presence-tracker.ts';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 
 function makeOption(
@@ -1335,6 +1336,70 @@ describe('parked-render arbitration (#814)', () => {
     tracker.onOrphanPTYPrompt(makePTYQuestion('a later unrelated prompt'));
     await wait(DEBOUNCE_MS * 2);
     expect(pushes).toHaveLength(1);
+  });
+
+  it("two agents' parked renders arbitrate concurrently and independently", async () => {
+    const pushes: Question[] = [];
+    const releases = new Map<string, () => void>();
+    const verdicts = new Map<string, ParkedRenderVerdict>();
+    const tracker = trackerWith(
+      pushes,
+      (ctx) =>
+        new Promise((resolve) => {
+          releases.set(ctx.ptyPrompt.text, () =>
+            resolve(verdicts.get(ctx.ptyPrompt.text) ?? { outcome: 'push' }),
+          );
+        }),
+    );
+    tracker.parkAwaitingPTY({
+      ...makePermissionRequestHook('A · Bash: ls'),
+      agentId: 'agent-A',
+    });
+    tracker.parkAwaitingPTY({
+      ...makePermissionRequestHook('B · Bash: rm -rf build'),
+      agentId: 'agent-B',
+    });
+
+    tracker.onOrphanPTYPrompt({ ...makePTYQuestion('A prompt'), agentId: 'agent-A' });
+    tracker.onOrphanPTYPrompt({ ...makePTYQuestion('B prompt'), agentId: 'agent-B' });
+    expect(tracker.parkedArbitrationsForTest()).toBe(2);
+
+    // B (the prompt now on screen) escalates; A was auto-answered.
+    verdicts.set('B prompt', { outcome: 'push' });
+    verdicts.set('A prompt', { outcome: 'answered' });
+    releases.get('B prompt')?.();
+    releases.get('A prompt')?.();
+    await flush();
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.text).toBe('B · Bash: rm -rf build');
+    expect(tracker.parkedArbitrationsForTest()).toBe(0);
+  });
+
+  it('a re-parked permission for the same agent arbitrates under the SECOND id, not the stale one', async () => {
+    // recordPendingHook replaces a same-agent permission_request record, so
+    // the id handed to the arbiter must be the surviving record's — a stale
+    // id would look up no parked input and silently escalate unevaluated.
+    const seen: string[] = [];
+    const pushes: Question[] = [];
+    const tracker = trackerWith(pushes, async (ctx) => {
+      seen.push(ctx.parkedQuestionId);
+      return { outcome: 'answered' };
+    });
+    const first = { ...makePermissionRequestHook('agent · Bash: ls'), agentId: 'agent-A' };
+    const second = {
+      ...makePermissionRequestHook('agent · Bash: rm -rf build'),
+      agentId: 'agent-A',
+    };
+    tracker.parkAwaitingPTY(first);
+    tracker.parkAwaitingPTY(second);
+    expect(tracker.awaitingPTYCountForTest()).toBe(1);
+    expect(tracker.pendingCountForTest()).toBe(1);
+
+    tracker.onOrphanPTYPrompt({ ...makePTYQuestion('proceed?'), agentId: 'agent-A' });
+    await flush();
+
+    expect(seen).toEqual([second.id]);
   });
 
   it('without an arbiter a parked render still pushes SYNCHRONOUSLY (pre-#814 behavior)', () => {
