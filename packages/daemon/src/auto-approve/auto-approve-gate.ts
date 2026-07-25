@@ -592,7 +592,7 @@ export class AutoApproveGate {
 
   /**
    * Force-release escape (#617, `remi unstick`): the "just get me out" lever when
-   * Ollama and a question are stuck and the phone has no device visibility.
+   * the LLM eval and a question are stuck and the phone has no device visibility.
    * Releases EVERY held hook to passthrough (the native terminal prompt), aborts
    * the in-flight eval, and drains queued evals so they escalate gracefully
    * instead of seizing the freed GPU. Safe with no service configured (only

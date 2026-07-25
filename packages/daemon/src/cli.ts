@@ -910,8 +910,8 @@ const binderClosers: Map<UUID, () => void> = new Map();
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
- * get me out" lever when Ollama + a question are stuck and the phone has no device
- * visibility. Each gate releases its held hooks to passthrough (native prompt),
+ * get me out" lever when an LLM eval + a question are stuck and the phone has no
+ * device visibility. Each gate releases its held hooks to passthrough (native prompt),
  * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
  * zero sessions.
  */
