@@ -148,14 +148,21 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   auto_approve: {
     enabled: false,
-    provider: 'ollama',
+    // The Yooz engine's LLM module (loopback :19924, macOS) is the local-LLM
+    // provider (#809). Elsewhere, `provider = "llamacpp"` points the same port
+    // at a thin llama.cpp server instead (OpenAI-compatible, so it reuses the
+    // 'openai' transport unmodified).
+    provider: 'yooz',
     // Fast small default: with synchronous decisions (#496) the eval blocks
     // Claude, so the default must be quick + RAM-light across platforms (incl.
-    // MacBook Air). qwen3.5:4b is benchmarked safe (38/38). Heavier models go in
-    // `escalate_model` (second opinion only on would-escalate cases).
-    model: 'qwen3.5:4b',
+    // MacBook Air). Yooz-Quality-v3 is the engine's KD Qwen3.5-4B model,
+    // matching the prior 4B-class default's benchmarked-safe (38/38) tier;
+    // #809 Phase D re-benchmarks the permission grid against the engine and
+    // may change this default. Heavier models go in `escalate_model`
+    // (second opinion, would-escalate cases only).
+    model: 'yooz-quality-v3',
     api_key: '',
-    base_url: 'http://localhost:11434/v1',
+    base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
     // Safe read-only TOOLS, fast-pathed without an LLM call. These are
@@ -175,8 +182,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     multichoice: 'skip',
     multichoice_model: '',
     // Second-opinion model on a primary 'escalate' (main context only). Empty =
-    // no second opinion. Put a heavy model here (e.g. qwen3.5:35b) to honor a
-    // broad approve policy without paying its latency on every permission.
+    // no second opinion. Put a heavy model here to honor a broad approve
+    // policy without paying its latency on every permission.
     escalate_model: '',
     // Dedicated timeout (seconds) for the heavy escalate_model. 0 = use
     // `timeout`. Set higher (e.g. 90) when escalate_model is a large, often-cold
@@ -187,8 +194,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // otherwise wait long enough to risk the ~600s hook budget. 0 = no bound.
     queue_timeout: 240,
     // Keep the model's reasoning ON by default: live testing showed it is
-    // load-bearing for following broad user instructions. Opt in (Ollama only)
-    // for raw speed over decision nuance.
+    // load-bearing for following broad user instructions. Opt in (Yooz engine
+    // provider only) for raw speed over decision nuance.
     disable_thinking: false,
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
@@ -326,6 +333,14 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   expectBool('log_decisions', cfg.log_decisions);
   expectBool('disable_thinking', cfg.disable_thinking);
   expectString('provider', cfg.provider);
+  // #809: ollama support was removed outright (no compatibility shim, no
+  // silent fallback to a different provider) -- a config that still names it
+  // must fail loudly with an actionable next step.
+  if (cfg.provider === 'ollama') {
+    throw new Error(
+      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "yooz-quality-v3" for the engine).`,
+    );
+  }
   expectString('model', cfg.model);
   expectString('api_key', cfg.api_key);
   expectString('base_url', cfg.base_url);
@@ -716,12 +731,14 @@ authorized_user_ids = []
 
 # [auto_approve]
 # enabled = false
-# provider = "ollama"           # "ollama" | "openrouter" | custom base URL
-# model = "qwen3.5:4b"          # Fast small default; the eval blocks Claude (#496)
-# api_key = ""                  # Required for OpenRouter, empty for Ollama
-# base_url = "http://localhost:11434/v1"
+# provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
+                                # llama.cpp server, elsewhere) | "openrouter"
+                                # | custom base URL
+# model = "yooz-quality-v3"     # Fast small default; the eval blocks Claude (#496)
+# api_key = ""                  # Required for OpenRouter, empty for the local engine/llama.cpp
+# base_url = "http://127.0.0.1:19924"
 # timeout = 30                  # Seconds; falls through to user if exceeded
-                                # (covers cold model load on local Ollama)
+                                # (covers cold model load on the local engine)
 # log_decisions = true
 #
 # User-defined rules. Substring matching for Bash, tool-name match for others.
@@ -748,8 +765,8 @@ authorized_user_ids = []
 #                                  # multichoice = "evaluate".
 # escalate_model = ""              # Second opinion on a primary 'escalate'
 #                                  # (main context only). Put a heavy model here
-#                                  # (e.g. qwen3.5:35b) to honor a broad approve
-#                                  # policy without its latency on every prompt.
+#                                  # to honor a broad approve policy without
+#                                  # its latency on every prompt.
 # escalate_timeout = 0             # Seconds for escalate_model; 0 = use timeout.
 #                                  # Raise (e.g. 90) for a large, often-cold
 #                                  # second-opinion model so its first-call load
@@ -770,8 +787,8 @@ authorized_user_ids = []
 #                                  # seconds, so the user can step in while the
 #                                  # model keeps thinking (Part B, #573). A late
 #                                  # verdict resolves the held hook. 0 = off.
-# disable_thinking = false         # Ollama only: native /api/chat with
-#                                  # think:false (no reasoning). Faster but
+# disable_thinking = false         # Yooz engine provider only: /no_think
+#                                  # prompt prefix (no reasoning). Faster but
 #                                  # lowers decision quality (reasoning helps
 #                                  # the model follow broad instructions), so
 #                                  # default off. Opt in for raw speed.
