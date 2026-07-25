@@ -35,7 +35,7 @@
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
-import type { AgentStatus, Question, QuestionOption } from '@remi/shared';
+import type { AgentStatus, Question } from '@remi/shared';
 
 export interface PushOptions {
   /**
@@ -82,15 +82,17 @@ export type ParkedRenderVerdict =
  *     tracks in `openQuestionSignatures`), NOT the id of the card that would
  *     be pushed (that one comes from the PTY question, see `pairAndPush`).
  *   - `rendered` — the merged question as it would be pushed.
- *   - `ptyOptions` — the options the PTY parser read off the ACTUAL rendered
- *     prompt, before the merge policy may have replaced them with the hook's
- *     (#718). Supplied separately so an arbiter that answers by typing an
- *     option index can prefer what is literally on screen.
+ *   - `ptyPrompt` — what the PTY parser actually read off the screen, before
+ *     the merge policy may have replaced its options with the hook's (#718).
+ *     Supplied separately so an arbiter that answers by typing an option index
+ *     can prefer what is literally on screen, and so it can re-check (via
+ *     `isPromptCurrent`) that the same prompt is still there when its verdict
+ *     lands.
  */
 export type ParkedRenderArbiter = (ctx: {
   parkedQuestionId: string;
   rendered: Question;
-  ptyOptions: readonly QuestionOption[];
+  ptyPrompt: Question;
 }) => Promise<ParkedRenderVerdict>;
 
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
@@ -174,6 +176,30 @@ export class QuestionPresenceTracker {
    *  dropped instead of typing into the main agent's input. */
   private ptyShowingQuestion = false;
 
+  /** The id of the LAST PTY question this tracker observed (#814), set on
+   *  entry to every PTY-render callback — before any pushing, buffering or
+   *  arbitration decision — and cleared by the same resets as
+   *  `ptyShowingQuestion`.
+   *
+   *  `ptyShowingQuestion` alone answers "is SOME prompt on screen", which is
+   *  not enough for an async verdict: an auto-approve verdict computed for
+   *  prompt A must never be typed into prompt B just because B happens to be
+   *  showing when it lands (the #751 wrong-prompt hazard, reachable here in a
+   *  way it never was for the synchronous main path — see `isPromptCurrent`).
+   *  Each PTY emit mints a fresh question id (rising-edge, #486), so id
+   *  identity is exactly the "still the same prompt" test. */
+  private observedPTYQuestionId: string | null = null;
+
+  /** The TEXT of the last observed PTY question (#814). A prompt that merely
+   *  REDRAWS re-emits under a fresh id (rising edge on a changed fingerprint,
+   *  #486), so id identity alone would call a live prompt "gone" and drop its
+   *  card. Text is the stable half of the identity: same text => same prompt
+   *  cycle. Two DIFFERENT prompts with byte-identical text (the same agent
+   *  re-asking the same command) are indistinguishable here by construction —
+   *  and answering the second with the first's verdict is the same answer to
+   *  the same question, which is why that collapse is acceptable. */
+  private observedPTYText: string | null = null;
+
   /** Count of MAIN-context auto-approve evals in flight. A PTY prompt that
    *  appears while this is > 0 is BUFFERED (not pushed): if the verdict is
    *  approve/deny/pick the prompt is auto-handled and must never reach the
@@ -224,15 +250,21 @@ export class QuestionPresenceTracker {
    *  auto-approve gate that arbitrates. */
   private parkedRenderArbiter: ParkedRenderArbiter | null = null;
 
-  /** Parked-render arbitrations currently awaiting a verdict (#814). While
-   *  > 0, a PTY prompt that is NOT itself a parked render is suppressed rather
-   *  than pushed: the main TUI renders one prompt at a time, so a render
-   *  arriving mid-arbitration is the same prompt cycle the arbiter already
-   *  owns (the rising-edge PTY emit, #486, makes an echo rare but not
-   *  impossible — a redraw that changes the fingerprint re-emits). The
-   *  arbiter's own verdict is the release valve; the status/clearPending
-   *  resets zero it so a hung eval cannot suppress pushes indefinitely. */
-  private parkedArbitrationsInFlight = 0;
+  /** The on-screen TEXT of each parked render currently awaiting a verdict
+   *  (#814); one entry per in-flight arbitration, removed when its verdict
+   *  lands.
+   *
+   *  Only a re-render of the SAME text is suppressed while an arbitration
+   *  runs: that is an echo of the cycle the arbiter already owns (the
+   *  rising-edge PTY emit, #486, re-fires when a redraw changes the
+   *  fingerprint), and pushing it would race the verdict — possibly carding a
+   *  prompt about to be auto-answered, the #625 phantom shape. A render with
+   *  DIFFERENT text is a different prompt (the previous one was answered in
+   *  the terminal, or an agent view was switched) and must flow through the
+   *  normal orphan path, because a suppressed render never re-emits — silently
+   *  dropping it would lose a real question. The status/clearPending resets
+   *  clear the list, so a hung eval cannot suppress past its own cycle. */
+  private arbitratingPTYTexts: string[] = [];
 
   constructor(
     private readonly push: PushQuestion,
@@ -418,6 +450,9 @@ export class QuestionPresenceTracker {
    * numbered options), which beats crashing on a network blip during APNS.
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
+    // #814, before any branch: record what is on screen now.
+    this.observedPTYQuestionId = ptyQuestion.id;
+    this.observedPTYText = ptyQuestion.text;
     if (this.mainEvalsInFlight > 0) {
       // A MAIN permission eval owns this prompt: buffer it, do not push yet.
       // The verdict decides — onAutoApproveEscalate releases it; a status-
@@ -527,14 +562,21 @@ export class QuestionPresenceTracker {
   }
 
   /** Push a merged question through the sink. Push errors are caught and
-   *  logged but not rethrown — the next PTY emit for the same prompt retries
-   *  WITHOUT the hook merge, which beats crashing on a network blip. */
-  private pushMerged(merged: Question): void {
+   *  logged but not rethrown — for a live render the next PTY emit for the
+   *  same prompt retries WITHOUT the hook merge, which beats crashing on a
+   *  network blip.
+   *
+   *  `context` (#814) names the caller in the error line, because that retry
+   *  argument does NOT hold for a post-arbitration push: its pending record
+   *  was consumed at render time and a prompt sitting idle may never redraw,
+   *  so a throw there is an unrecoverable missed notification and has to be
+   *  greppable as such. */
+  private pushMerged(merged: Question, context = 'render'): void {
     try {
       this.push(merged);
     } catch (err) {
       console.error(
-        `[QuestionPresenceTracker] push sink threw: ${err instanceof Error ? err.message : String(err)}`,
+        `[QuestionPresenceTracker] push sink threw (${context}): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -569,6 +611,11 @@ export class QuestionPresenceTracker {
    * `onPTYPromptVisible` merge/push path.
    */
   onOrphanPTYPrompt(ptyQuestion: Question): void {
+    // #814: record what is on screen NOW before any branch below decides to
+    // push, buffer, suppress or arbitrate — an in-flight verdict for an
+    // earlier prompt must be able to see that it has been superseded.
+    this.observedPTYQuestionId = ptyQuestion.id;
+    this.observedPTYText = ptyQuestion.text;
     // #751 PTY-arbiter: a parked subagent escalation whose prompt has now
     // rendered. Merge + push IMMEDIATELY through the pair core — no orphan
     // debounce (hook + render is positive double-confirmation), no gate-owned
@@ -591,20 +638,21 @@ export class QuestionPresenceTracker {
       // answered 'passthrough' long ago. No arbiter (auto-approve off) => push
       // straight to the user, the pre-#814 behavior.
       if (this.parkedRenderArbiter !== null && hookRecord !== undefined) {
-        this.arbitrateParkedRender(hookRecord.id, merged, ptyQuestion.options);
+        this.arbitrateParkedRender(hookRecord.id, merged, ptyQuestion);
         return;
       }
       this.pushMerged(merged);
       return;
     }
-    if (this.parkedArbitrationsInFlight > 0) {
-      // A parked render is being evaluated right now. The main TUI shows one
-      // prompt at a time, so this render belongs to the cycle the arbiter
-      // already owns; its verdict pushes (escalate) or answers (approve) that
-      // prompt. Pushing here too would race the verdict and could card a
-      // prompt that is about to be auto-answered — the #625 phantom shape.
+    if (this.arbitratingPTYTexts.includes(ptyQuestion.text)) {
+      // An echo of a prompt cycle an arbiter already owns: its verdict either
+      // pushes this prompt or answers it. Pushing here too would race that
+      // verdict and could card a prompt about to be auto-answered (#625).
+      // Only a same-TEXT render is suppressed — a different prompt during the
+      // window is a different question and falls through below, because a
+      // suppressed render never re-emits (#486) and would be lost outright.
       console.debug(
-        `[QuestionPresenceTracker] PTY prompt suppressed during parked-render arbitration: "${ptyQuestion.text.slice(0, 60)}"`,
+        `[QuestionPresenceTracker] PTY prompt suppressed: an arbitration already owns this prompt cycle: "${ptyQuestion.text.slice(0, 60)}"`,
       );
       return;
     }
@@ -646,23 +694,24 @@ export class QuestionPresenceTracker {
   private arbitrateParkedRender(
     parkedQuestionId: string,
     merged: Question,
-    ptyOptions: readonly QuestionOption[],
+    ptyQuestion: Question,
   ): void {
     const arbiter = this.parkedRenderArbiter;
     if (arbiter === null) {
       this.pushMerged(merged);
       return;
     }
-    this.parkedArbitrationsInFlight += 1;
+    this.arbitratingPTYTexts.push(ptyQuestion.text);
     let settled = false;
     const settle = (): void => {
       if (settled) return;
       settled = true;
-      this.parkedArbitrationsInFlight = Math.max(0, this.parkedArbitrationsInFlight - 1);
+      const at = this.arbitratingPTYTexts.indexOf(ptyQuestion.text);
+      if (at !== -1) this.arbitratingPTYTexts.splice(at, 1);
     };
     let pending: Promise<ParkedRenderVerdict>;
     try {
-      pending = arbiter({ parkedQuestionId, rendered: merged, ptyOptions });
+      pending = arbiter({ parkedQuestionId, rendered: merged, ptyPrompt: ptyQuestion });
     } catch (err) {
       // A synchronous throw from the arbiter (contract violation): fail open.
       console.error(
@@ -687,9 +736,12 @@ export class QuestionPresenceTracker {
           );
           return;
         }
-        if (!this.ptyShowingQuestion) {
+        if (!this.isPromptCurrent(merged.id, ptyQuestion.text)) {
+          // Either the screen is clear (answered in the terminal, Claude
+          // advanced) or a DIFFERENT prompt has taken it over. Pushing now
+          // would card a prompt nobody is looking at — a phantom either way.
           console.debug(
-            `[QuestionPresenceTracker] Parked render left the screen during arbitration; dropping the push: "${merged.text.slice(0, 60)}"`,
+            `[QuestionPresenceTracker] Parked render is no longer the prompt on screen; dropping the push: "${merged.text.slice(0, 60)}"`,
           );
           return;
         }
@@ -697,6 +749,7 @@ export class QuestionPresenceTracker {
           verdict.summary !== undefined && merged.summary === undefined
             ? { ...merged, summary: verdict.summary }
             : merged,
+          'parked-render arbitration verdict; NO retry path exists for this push',
         );
       });
   }
@@ -799,16 +852,19 @@ export class QuestionPresenceTracker {
         this.awaitingPTY.delete(key);
       }
       this.ptyShowingQuestion = false;
+      // #814: nothing is on screen now.
+      this.observedPTYQuestionId = null;
+      this.observedPTYText = null;
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
       this.mainEvalsInFlight = 0;
       this.bufferedDuringEval = null;
       // #814: the prompt cycle an in-flight parked arbitration belongs to is
-      // over. Its own verdict is still handled (a `push` is dropped by the
-      // cleared `ptyShowingQuestion` above), but the suppression window must
-      // not outlive the cycle — a hung eval would otherwise swallow every
-      // later prompt.
-      this.parkedArbitrationsInFlight = 0;
+      // over. Its own verdict is still handled safely (the identity check in
+      // `isPromptCurrent` drops its push), but the suppression window must not
+      // outlive the cycle — a hung eval would otherwise swallow every later
+      // prompt with the same text.
+      this.arbitratingPTYTexts = [];
       // New prompt cycle starts fresh: a held push from the prior cycle must not
       // suppress an identical id in a future one (ids are unique, so this is
       // belt-and-suspenders, but keeps the set bounded). (#573)
@@ -885,12 +941,14 @@ export class QuestionPresenceTracker {
     this.pending.clear();
     this.awaitingPTY.clear();
     this.ptyShowingQuestion = false;
+    this.observedPTYQuestionId = null;
+    this.observedPTYText = null;
     this.mainEvalsInFlight = 0;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();
     // #814: same reasoning as the status reset — the cycle is gone, so the
     // suppression window must not survive it.
-    this.parkedArbitrationsInFlight = 0;
+    this.arbitratingPTYTexts = [];
     // #712: the prompt was answered in-terminal or the session is rotating —
     // either way an armed orphan timer for it must not fire a stale push.
     this.cancelOrphanTimer();
@@ -941,6 +999,35 @@ export class QuestionPresenceTracker {
   }
 
   /**
+   * True when `questionId` is BOTH on screen and still the LATEST prompt this
+   * tracker observed (#814). The identity half is what `isPromptVisibleOnPTY`
+   * cannot express, and it is load-bearing for any ASYNC verdict:
+   *
+   *   1. a subagent prompt renders and its evaluation starts;
+   *   2. the user answers it in the terminal — a DENY fires no tool call, so
+   *      no external-resolution signal reaches the gate and the eval keeps
+   *      running;
+   *   3. that agent immediately asks again and the new prompt renders, so
+   *      "some prompt is on screen" is true again;
+   *   4. the verdict for step 1's prompt lands.
+   *
+   * With presence alone, step 4 types an answer meant for the FIRST prompt
+   * into the SECOND one (the #751 wrong-prompt hazard) or cards a prompt
+   * nobody is looking at.
+   *
+   * `ptyText` matters because a prompt that merely REDRAWS re-emits under a
+   * fresh id (#486) — matching on the id alone would call a prompt still
+   * sitting on screen "gone" and silently drop its card. Either half matching
+   * means the same prompt cycle; see `observedPTYText` for the one collapse
+   * this accepts.
+   */
+  isPromptCurrent(questionId: string, ptyText?: string): boolean {
+    if (!this.ptyShowingQuestion) return false;
+    if (this.observedPTYQuestionId === questionId) return true;
+    return ptyText !== undefined && this.observedPTYText === ptyText;
+  }
+
+  /**
    * Test-only inspection of pending state. Exposed so the unit test suite
    * can assert state-machine invariants without mocking the push sink.
    */
@@ -965,6 +1052,6 @@ export class QuestionPresenceTracker {
 
   /** Test-only: parked-render arbitrations awaiting a verdict (#814). */
   parkedArbitrationsForTest(): number {
-    return this.parkedArbitrationsInFlight;
+    return this.arbitratingPTYTexts.length;
   }
 }

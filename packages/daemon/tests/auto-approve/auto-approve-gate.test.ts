@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { generateId } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { Question, UUID } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import {
   type AutoApproveEvaluator,
@@ -2981,6 +2981,18 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     },
   ];
 
+  /** What the PTY parser read off the screen for `r` (same id + text, since
+   *  the merged card is built from it). */
+  function screen(r: { id: UUID; text: string }, options = PTY_OPTIONS) {
+    return {
+      id: r.id,
+      text: r.text,
+      options,
+      allowsFreeText: false,
+      isAnswered: false,
+    };
+  }
+
   function rendered(id: UUID, options = HOOK_OPTIONS) {
     return {
       id,
@@ -3055,11 +3067,19 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     };
   }
 
-  /** Put a prompt on the "screen" so the gate's subagent inject gate passes. */
-  function promptOnScreen(): void {
+  /** Put `q` on the "screen": the tracker's presence flag AND its
+   *  last-observed id both have to point at it, since the gate refuses to
+   *  type into a prompt that is no longer the current one. */
+  function promptOnScreen(q: Question): void {
+    tracker.onPTYPromptVisible(q);
+  }
+
+  /** A DIFFERENT prompt took the screen over (the first was answered in the
+   *  terminal and the agent asked again). */
+  function otherPromptOnScreen(): void {
     tracker.onPTYPromptVisible({
       id: generateId(),
-      text: 'Do you want to proceed?',
+      text: 'A different prompt entirely',
       options: [],
       allowsFreeText: false,
       isAnswered: false,
@@ -3085,13 +3105,10 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     const g = gate(approve);
     expect(await g.resolvePermission(pr())).toBe('passthrough');
     expect(evalCalls).toHaveLength(0); // #807: not evaluated at hook time
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    const verdict = await g.arbitrateParkedRender(
-      parkedIds[0] as UUID,
-      rendered(generateId() as UUID),
-      PTY_OPTIONS,
-    );
+    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
 
     expect(verdict).toEqual({ outcome: 'answered' });
     expect(evalCalls).toEqual([{ toolName: 'Bash', isSubagent: true }]);
@@ -3101,13 +3118,10 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('deny types the No option (the same option a phone "No" resolves to)', async () => {
     const g = gate(deny);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    const verdict = await g.arbitrateParkedRender(
-      parkedIds[0] as UUID,
-      rendered(generateId() as UUID),
-      PTY_OPTIONS,
-    );
+    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
 
     expect(verdict).toEqual({ outcome: 'answered' });
     expect(submits).toEqual(['3']);
@@ -3116,35 +3130,33 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('pick types the 1-based index', async () => {
     const g = gate(pick(2));
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(parkedIds[0] as UUID, rendered(generateId() as UUID), []),
-    ).toEqual({ outcome: 'answered' });
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r, []))).toEqual({
+      outcome: 'answered',
+    });
     expect(submits).toEqual(['2']);
   });
 
   test('never auto-picks a PERSISTING option: only the one-time Yes is typed', async () => {
     const g = gate(approve);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    // Only "always" flavors offered plus No: nothing safe to auto-answer.
+    const r = rendered(generateId() as UUID, [
+      {
+        label: 'Yes, always allow: git push',
+        value: '1',
+        isRecommended: true,
+        isYes: true,
+        isNo: false,
+        suggestionIndex: 0,
+      },
+      { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: true },
+    ]);
+    promptOnScreen(r);
 
-    await g.arbitrateParkedRender(
-      parkedIds[0] as UUID,
-      // Only "always" flavors offered plus No: nothing safe to auto-answer.
-      rendered(generateId() as UUID, [
-        {
-          label: 'Yes, always allow: git push',
-          value: '1',
-          isRecommended: true,
-          isYes: true,
-          isNo: false,
-          suggestionIndex: 0,
-        },
-        { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: true },
-      ]),
-      [],
-    );
+    await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r, []));
 
     expect(submits).toHaveLength(0); // escalated instead of persisting a rule
   });
@@ -3152,13 +3164,10 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('escalate becomes a push carrying the model summary', async () => {
     const g = gate(escalateWithSummary);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    const verdict = await g.arbitrateParkedRender(
-      parkedIds[0] as UUID,
-      rendered(generateId() as UUID),
-      PTY_OPTIONS,
-    );
+    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
 
     expect(verdict).toEqual({ outcome: 'push', summary: 'Force-push to main?' });
     expect(submits).toHaveLength(0);
@@ -3167,13 +3176,10 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('escalate_model second opinion can still answer it before the user is bothered', async () => {
     const g = gate(escalate, { secondResult: approve });
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    const verdict = await g.arbitrateParkedRender(
-      parkedIds[0] as UUID,
-      rendered(generateId() as UUID),
-      PTY_OPTIONS,
-    );
+    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
 
     expect(verdict).toEqual({ outcome: 'answered' });
     expect(submits).toEqual(['1']);
@@ -3183,48 +3189,39 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('an eval error pushes rather than guessing', async () => {
     const g = gate(approve, { throws: true });
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(generateId() as UUID),
-        PTY_OPTIONS,
-      ),
-    ).toEqual({ outcome: 'push' });
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+      outcome: 'push',
+    });
     expect(submits).toHaveLength(0);
   });
 
   test('a cancelled eval pushes, never fabricates an answer', async () => {
     const g = gate(cancelled);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(generateId() as UUID),
-        PTY_OPTIONS,
-      ),
-    ).toEqual({ outcome: 'push' });
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+      outcome: 'push',
+    });
     expect(submits).toHaveLength(0);
   });
 
   test('approve with no identifiable option pushes instead of typing a guess (#751 hazard)', async () => {
     const g = gate(approve);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID, [
+      { label: 'Proceed', value: '1', isRecommended: true, isYes: false, isNo: false },
+      { label: 'Abort', value: '2', isRecommended: false, isYes: false, isNo: false },
+    ]);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(generateId() as UUID, [
-          { label: 'Proceed', value: '1', isRecommended: true, isYes: false, isNo: false },
-          { label: 'Abort', value: '2', isRecommended: false, isYes: false, isNo: false },
-        ]),
-        [],
-      ),
-    ).toEqual({ outcome: 'push' });
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r, []))).toEqual({
+      outcome: 'push',
+    });
     expect(submits).toHaveLength(0);
   });
 
@@ -3234,38 +3231,50 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     // No promptOnScreen(): isPromptVisibleOnPTY() is false, exactly as after
     // the user answered in the terminal.
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(generateId() as UUID),
-        PTY_OPTIONS,
-      ),
-    ).toEqual({ outcome: 'push' });
+    const gone = rendered(generateId() as UUID);
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, gone, screen(gone))).toEqual({
+      outcome: 'push',
+    });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('a verdict is NEVER typed into a DIFFERENT prompt that took the screen over', async () => {
+    // The #751 wrong-prompt hazard, reachable only on this async path: the
+    // user denied the parked prompt in the terminal (a deny fires no tool
+    // call, so nothing cancelled the eval), the agent asked again, and the
+    // new prompt is on screen when the old verdict lands.
+    const g = gate(approve);
+    await g.resolvePermission(pr());
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
+    otherPromptOnScreen();
+
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+      outcome: 'push',
+    });
     expect(submits).toHaveLength(0);
   });
 
   test('an inject failure falls back to the user', async () => {
     const g = gate(approve, { ptyThrows: true });
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(generateId() as UUID),
-        PTY_OPTIONS,
-      ),
-    ).toEqual({ outcome: 'push' });
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+      outcome: 'push',
+    });
   });
 
   test('exactly ONE evaluation per park: a second render does not re-evaluate', async () => {
     const g = gate(escalate);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
     const qid = parkedIds[0] as UUID;
 
-    await g.arbitrateParkedRender(qid, rendered(generateId() as UUID), PTY_OPTIONS);
-    const second = await g.arbitrateParkedRender(qid, rendered(generateId() as UUID), PTY_OPTIONS);
+    await g.arbitrateParkedRender(qid, r, screen(r));
+    const second = await g.arbitrateParkedRender(qid, r, screen(r));
 
     expect(evalCalls).toHaveLength(1);
     expect(second).toEqual({ outcome: 'push' });
@@ -3274,38 +3283,36 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('no auto-approve service: pushes without evaluating (pre-#814 behavior)', async () => {
     const g = gate(null);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(generateId() as UUID),
-        PTY_OPTIONS,
-      ),
-    ).toEqual({ outcome: 'push' });
+    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+      outcome: 'push',
+    });
     expect(evalCalls).toHaveLength(0);
   });
 
   test('an unknown parked id pushes without evaluating', async () => {
     const g = gate(approve);
-    expect(
-      await g.arbitrateParkedRender(
-        generateId() as UUID,
-        rendered(generateId() as UUID),
-        PTY_OPTIONS,
-      ),
-    ).toEqual({ outcome: 'push' });
+    const unknown = rendered(generateId() as UUID);
+    expect(await g.arbitrateParkedRender(generateId() as UUID, unknown, screen(unknown))).toEqual({
+      outcome: 'push',
+    });
     expect(evalCalls).toHaveLength(0);
   });
 
   test('a pushed render is resolvable by its RENDERED id: the signature is re-keyed', async () => {
     const g = gate(escalate);
     await g.resolvePermission(pr());
-    promptOnScreen();
     const renderedId = generateId() as UUID;
+    promptOnScreen(rendered(renderedId));
 
     expect(
-      await g.arbitrateParkedRender(parkedIds[0] as UUID, rendered(renderedId), PTY_OPTIONS),
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(renderedId),
+        screen(rendered(renderedId)),
+      ),
     ).toEqual({ outcome: 'push' });
     // The tracker pushes the MERGED question, whose id is the PTY question's.
     registry.addQuestion(SID, rendered(renderedId));
@@ -3323,14 +3330,13 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
   test('an auto-answered render leaves NO open escalation behind (a deny fires no tool call)', async () => {
     const g = gate(deny);
     await g.resolvePermission(pr());
-    promptOnScreen();
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
     const qid = parkedIds[0] as UUID;
 
-    expect(await g.arbitrateParkedRender(qid, rendered(generateId() as UUID), PTY_OPTIONS)).toEqual(
-      {
-        outcome: 'answered',
-      },
-    );
+    expect(await g.arbitrateParkedRender(qid, r, screen(r))).toEqual({
+      outcome: 'answered',
+    });
 
     // Nothing left for SubagentStop to resolve: no phantom resolution fires.
     g.cancelStaleForAgent('agent-1', 'SubagentStop');
@@ -3399,8 +3405,14 @@ describe('autoAnswerValue (#814)', () => {
     expect(autoAnswerValue(approve, [yes, no], shifted)).toBe('2');
   });
 
-  test('pick maps to its index; escalate/cancelled map to nothing', () => {
-    expect(autoAnswerValue(pick(3), [yes, no], [])).toBe('3');
+  test('pick maps to its index ONLY when the prompt on screen has that many options', () => {
+    expect(autoAnswerValue(pick(2), [yes, no], [])).toBe('2');
+    expect(autoAnswerValue(pick(1), [], ptyNumbered)).toBe('1');
+    // Out of range for the prompt as drawn: the park-time index no longer
+    // addresses a real option, so refuse rather than type a stray digit.
+    expect(autoAnswerValue(pick(3), [yes, no], [])).toBeUndefined();
+    expect(autoAnswerValue(pick(4), [], ptyNumbered)).toBeUndefined();
+    expect(autoAnswerValue(pick(0), [yes, no], [])).toBeUndefined();
     expect(autoAnswerValue(escalate, [yes, no], [])).toBeUndefined();
     expect(autoAnswerValue(cancelled, [yes, no], [])).toBeUndefined();
   });

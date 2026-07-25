@@ -504,7 +504,7 @@ export function setupHookBridge(
       autoApproveGate.arbitrateParkedRender(
         ctx.parkedQuestionId as UUID,
         ctx.rendered,
-        ctx.ptyOptions,
+        ctx.ptyPrompt,
       ),
     );
   }

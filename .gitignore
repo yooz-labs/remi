@@ -95,3 +95,4 @@ playwright-report/
 packages/macos/Remi/Resources/web/*
 !packages/macos/Remi/Resources/web/.gitkeep
 packages/macos/DerivedData/
+.claude/*.local.md.archived

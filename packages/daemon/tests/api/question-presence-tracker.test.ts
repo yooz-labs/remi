@@ -1197,14 +1197,14 @@ describe('parked-render arbitration (#814)', () => {
     expect(pushes[0]?.summary).toBe('Force-push to main?');
   });
 
-  it('the arbiter receives the parked question id and the ON-SCREEN options', async () => {
+  it('the arbiter receives the parked question id and the ON-SCREEN prompt', async () => {
     const seen: Array<{ parkedQuestionId: string; ptyOptionValues: string[] }> = [];
     const pushes: Question[] = [];
     const parked = makePermissionRequestHook('reviewer · Bash: git push');
     const tracker = trackerWith(pushes, async (ctx) => {
       seen.push({
         parkedQuestionId: ctx.parkedQuestionId,
-        ptyOptionValues: ctx.ptyOptions.map((o) => o.value),
+        ptyOptionValues: ctx.ptyPrompt.options.map((o) => o.value),
       });
       return { outcome: 'answered' };
     });
@@ -1293,6 +1293,33 @@ describe('parked-render arbitration (#814)', () => {
     tracker.onOrphanPTYPrompt(makePTYQuestion('a later unrelated prompt'));
     await wait(DEBOUNCE_MS * 2);
     expect(pushes).toHaveLength(2);
+  });
+
+  it('a DIFFERENT prompt arriving mid-arbitration is NOT swallowed', async () => {
+    // A suppressed render never re-emits (#486), so anything dropped here is a
+    // question the user never hears about. Only same-text echoes are dropped.
+    const pushes: Question[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tracker = trackerWith(pushes, async () => {
+      await gate;
+      return { outcome: 'push' };
+    });
+    tracker.parkAwaitingPTY(makePermissionRequestHook());
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion('An entirely different question'));
+    await wait(DEBOUNCE_MS * 2);
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.text).toBe('An entirely different question');
+
+    // And the superseded arbitration's own verdict is dropped, not carded.
+    release?.();
+    await flush();
+    expect(pushes).toHaveLength(1);
   });
 
   it('a hung arbitration cannot suppress prompts past its own prompt cycle', async () => {
