@@ -25,6 +25,7 @@ import type {
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
+import { traceQuestionEvent } from './question-trace.ts';
 import { generateSessionName } from './session-name.ts';
 
 /** Upper bound on concurrently-pending questions per session. Real prompts are
@@ -431,7 +432,7 @@ export class SessionRegistry {
    * Bounded by MAX_PENDING_QUESTIONS (oldest evicted first) so a runaway
    * prompt loop cannot grow the map without limit.
    */
-  addQuestion(sessionId: UUID, question: Question): void {
+  addQuestion(sessionId: UUID, question: Question, signal = 'unknown'): void {
     if (this.session === null || this.session.sessionId !== sessionId) return;
     const map = this.session.currentQuestions;
     map.delete(question.id); // re-insert so a refreshed question is "newest"
@@ -447,29 +448,76 @@ export class SessionRegistry {
       console.warn(
         `[SessionRegistry] pending-question cap (${MAX_PENDING_QUESTIONS}) exceeded; evicted oldest id=${oldest} text="${evicted?.text.slice(0, 60) ?? ''}"`,
       );
+      // #808: an LRU eviction is a removal too -- it never goes through
+      // removeQuestion (there is no single questionId call site for it), so
+      // trace it here directly rather than let it appear as a silent gap.
+      traceQuestionEvent({
+        action: 'remove',
+        sessionId,
+        questionId: oldest,
+        agentId: evicted?.agentId,
+        isSubagent: evicted?.agentId !== undefined,
+        signal: 'lru_eviction',
+        throughFunnel: true,
+      });
     }
     this.session.lastActivityAt = now();
     this.events.onQuestionsChanged?.(sessionId, [...map.values()]);
+    traceQuestionEvent({
+      action: 'add',
+      sessionId,
+      questionId: question.id,
+      agentId: question.agentId,
+      isSubagent: question.agentId !== undefined,
+      signal,
+    });
   }
 
-  /** Remove one answered/resolved question by id. */
-  removeQuestion(sessionId: UUID, questionId: UUID): void {
+  /** Remove one answered/resolved question by id. `signal` (#808) names the
+   *  event/reason that caused the removal (e.g. 'PostToolUse', 'Stop',
+   *  'user_answer') for the opt-in question-lifecycle trace; `toolName`,
+   *  when the caller knows it, is carried onto the same record. */
+  removeQuestion(sessionId: UUID, questionId: UUID, signal = 'unknown', toolName?: string): void {
     if (this.session !== null && this.session.sessionId === sessionId) {
+      const existing = this.session.currentQuestions.get(questionId);
       this.session.currentQuestions.delete(questionId);
       this.session.lastActivityAt = now();
       this.events.onQuestionsChanged?.(sessionId, [...this.session.currentQuestions.values()]);
+      traceQuestionEvent({
+        action: 'remove',
+        sessionId,
+        questionId,
+        agentId: existing?.agentId,
+        isSubagent: existing?.agentId !== undefined,
+        toolName,
+        signal,
+        throughFunnel: true,
+      });
     }
   }
 
   /** Drop all pending questions on Claude session restart (/clear, /resume).
    *  Status-leaving-'waiting' is handled by QuestionPresenceTracker and the
    *  client; this covers the restart path only, so answers to the dying
-   *  session's prompts are refused. */
-  clearQuestions(sessionId: UUID): void {
+   *  session's prompts are refused. `signal` (#808) is carried onto one trace
+   *  record per cleared question. */
+  clearQuestions(sessionId: UUID, signal = 'unknown'): void {
     if (this.session !== null && this.session.sessionId === sessionId) {
+      const cleared = [...this.session.currentQuestions.values()];
       this.session.currentQuestions.clear();
       this.session.lastActivityAt = now();
       this.events.onQuestionsChanged?.(sessionId, []);
+      for (const q of cleared) {
+        traceQuestionEvent({
+          action: 'remove',
+          sessionId,
+          questionId: q.id,
+          agentId: q.agentId,
+          isSubagent: q.agentId !== undefined,
+          signal,
+          throughFunnel: true,
+        });
+      }
     }
   }
 

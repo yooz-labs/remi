@@ -190,6 +190,7 @@ import {
   TranscriptIndex,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
+import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 
 // ---------------------------------------------------------------------------
@@ -1049,6 +1050,19 @@ const sessionRegistry = new SessionRegistry(
       } catch (err) {
         logError(`[QuestionSnapshot] broadcast failed for ${sessionId}: ${errorToString(err)}`);
       }
+      // #808: this is the ONLY signal that drives client-side reconciliation
+      // (pruneQuestionsNotLive) today, and it fires ONLY on a change -- never
+      // proactively on attach/reconnect (see connection-events.ts /
+      // resume-session-events.ts, which only resend the still-live set).
+      // Recording every broadcast lets the on-device capture correlate "the
+      // daemon told every client the live set was X" against "the client
+      // still shows a card not in X".
+      traceQuestionEvent({
+        action: 'snapshot_broadcast',
+        sessionId,
+        signal: 'onQuestionsChanged',
+        detail: { liveQuestionIds: questions.map((q) => q.id) },
+      });
     },
   },
 );

@@ -512,7 +512,7 @@ export class AutoApproveGate {
       // dismiss + the live-sessions mirror all fire for it too.
       for (const [qid, sig] of [...this.openQuestionSignatures]) {
         if (sig.isSubagent) continue;
-        this.resolveSupersededQuestion(qid, reason);
+        this.resolveSupersededQuestion(qid, reason, sig.toolName);
       }
     } else {
       this.openQuestionSignatures.clear();
@@ -580,7 +580,7 @@ export class AutoApproveGate {
   cancelStaleForAgent(agentId: string, reason: string): void {
     for (const [qid, sig] of [...this.openQuestionSignatures]) {
       if (sig.agentId !== agentId) continue;
-      this.resolveSupersededQuestion(qid, reason);
+      this.resolveSupersededQuestion(qid, reason, sig.toolName);
     }
   }
 
@@ -669,7 +669,7 @@ export class AutoApproveGate {
     // this leaves a ghost card that replays on reconnect and lets a late
     // handleAnswer find it "live" and misroute. The user-answer path also
     // removes it in handleAnswer's finally; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, `resolveHeld:${decision}`);
     this.markHandled(hold.isSubagent);
     let resolvedDecision: PermissionDecision = decision;
     let logSuffix: string = decision;
@@ -704,7 +704,7 @@ export class AutoApproveGate {
     // #673: openQuestionSignatures cleanup lives in the private releaseHeld
     // itself (the single owner every internal caller funnels through), so
     // there is nothing extra to do here.
-    return this.releaseHeld(questionId, 'passthrough');
+    return this.releaseHeld(questionId, 'passthrough', 'released-passthrough-for-pty-answer');
   }
 
   /** Resolve pending holds with one decision + reason. Used by `cancelStale`
@@ -731,7 +731,7 @@ export class AutoApproveGate {
       // gone (#585, P7). `releaseHeld` then clears the timer, drops the registry
       // + signature/delivery bookkeeping, and resolves the hook.
       this.notifyResolved(qid, 'cancelled');
-      this.releaseHeld(qid, decision);
+      this.releaseHeld(qid, decision, reason);
     }
   }
 
@@ -833,7 +833,7 @@ export class AutoApproveGate {
     // Dismiss the stale card everywhere BEFORE resolving (#585, P7); releaseHeld
     // then clears the timer, drops the registry entry, and resolves passthrough.
     this.notifyResolved(qid, 'cancelled');
-    this.releaseHeld(qid, 'passthrough');
+    this.releaseHeld(qid, 'passthrough', 'hold-fail-open');
   }
 
   /**
@@ -1405,7 +1405,7 @@ export class AutoApproveGate {
       // Claude advanced past the prompt during the slow eval; fail the hold open.
       this.deps.tracker.clearPending();
       this.notifyResolved(qid, 'cancelled');
-      this.releaseHeld(qid, 'passthrough');
+      this.releaseHeld(qid, 'passthrough', 'part-b-cancelled');
     }
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
@@ -1423,8 +1423,17 @@ export class AutoApproveGate {
    * delete must be UNCONDITIONAL (not gated on `hold` existing) or every one
    * of those exit paths leaks an entry for the rest of the process lifetime.
    * (`resolveHeld` is a separate, non-delegating path and owns its own delete.)
+   *
+   * `reason` (#808) names the caller/signal for the opt-in question-lifecycle
+   * trace; `toolName`, when the caller knows it, is carried onto the same
+   * trace record.
    */
-  private releaseHeld(questionId: UUID, decision: PermissionDecision): boolean {
+  private releaseHeld(
+    questionId: UUID,
+    decision: PermissionDecision,
+    reason = 'held-released',
+    toolName?: string,
+  ): boolean {
     this.openQuestionSignatures.delete(questionId);
     // #733: unconditional for the same leak reason as the signature delete
     // above — every hold exit path funnels through here.
@@ -1436,7 +1445,7 @@ export class AutoApproveGate {
     // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
     // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
     // removes it; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, reason, toolName);
     hold.resolve(decision);
     return true;
   }
@@ -1705,7 +1714,7 @@ export class AutoApproveGate {
   cancelExternallyResolved(observed: ObservedToolCall, reason: string): void {
     const qid = this.findOpenQuestionMatching(observed);
     if (!qid) return;
-    this.resolveSupersededQuestion(qid, reason);
+    this.resolveSupersededQuestion(qid, reason, observed.toolName);
   }
 
   /** Find an open escalation matching `observed`, preferring an exact
@@ -1749,13 +1758,17 @@ export class AutoApproveGate {
    * independently try/catch'd so one failure can never skip the rest —
    * `removeQuestion` in particular must always run even if the eval was
    * already gone or the hold release throws, or the pushed card lingers.
+   *
+   * `toolName` (#808), when the caller knows it (a signature match or a
+   * tracked `ToolSignature` both carry it), is carried onto the
+   * question-lifecycle trace record for this removal.
    */
-  private resolveSupersededQuestion(qid: UUID, reason: string): void {
+  private resolveSupersededQuestion(qid: UUID, reason: string, toolName?: string): void {
     log(
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     try {
-      this.releaseHeld(qid, 'passthrough');
+      this.releaseHeld(qid, 'passthrough', reason, toolName);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] releaseHeld during external-resolve cleanup threw:`,
@@ -1771,7 +1784,7 @@ export class AutoApproveGate {
       );
     }
     try {
-      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
+      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid, reason, toolName);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,

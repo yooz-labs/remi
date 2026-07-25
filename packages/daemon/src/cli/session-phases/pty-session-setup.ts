@@ -148,7 +148,7 @@ export function detectAuqTerminalAnswers(
     } catch (err) {
       logError(`[AUQ] terminal-answer eval cancel failed: ${errorToString(err)}`);
     }
-    sessionRegistry.removeQuestion(sessionId, q.id);
+    sessionRegistry.removeQuestion(sessionId, q.id, 'terminal_auq_closed');
     try {
       onQuestionResolved?.(sessionId, q.id);
     } catch (err) {

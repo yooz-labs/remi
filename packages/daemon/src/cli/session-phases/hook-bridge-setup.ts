@@ -317,7 +317,7 @@ export function setupHookBridge(
         }
       }
     }
-    sessionRegistry.clearQuestions(sessionId);
+    sessionRegistry.clearQuestions(sessionId, 'session_restart');
   };
 
   // ---- Bridge + hook handler registration ---------------------------------
