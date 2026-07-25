@@ -180,6 +180,20 @@ export async function runModelCommand(
     return 1;
   }
 
+  // #818 ownership boundary: against a SHARED (super-yooz) engine, residency
+  // and disk are the host's policy. Unloading weights another module is
+  // mid-generate on, or deleting a model the host manages, is hostile — so
+  // these verbs refuse rather than mutating shared state. Read-only verbs
+  // work identically in both modes.
+  const MUTATING: ReadonlySet<string> = new Set(['pull', 'cancel', 'rm', 'cleanup', 'unload']);
+  if (aa.engine === 'shared' && MUTATING.has(verb)) {
+    io.err(
+      `"remi model ${verb}" is not available against a shared engine: this remi is a guest (auto_approve.engine = "shared"), and another module may be using these weights.`,
+    );
+    io.err('Manage models from the host that owns the engine.');
+    return 1;
+  }
+
   // One probe up front so every verb can explain "nothing is listening" the
   // same way, instead of each surfacing a raw fetch error (#818).
   const reachable = await probe(baseUrl);
@@ -195,7 +209,7 @@ export async function runModelCommand(
     switch (verb) {
       case 'status': {
         const s = reachable.status;
-        io.out(`engine:   ${baseUrl} (reachable)`);
+        io.out(`engine:   ${baseUrl} (reachable, ${aa.engine})`);
         io.out(`model:    ${s.modelId ?? aa.model} (configured: ${aa.model})`);
         io.out(`loaded:   ${s.loaded ? 'yes' : 'no'}`);
         if (s.state !== undefined) io.out(`state:    ${s.state}`);

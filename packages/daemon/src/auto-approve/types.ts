@@ -160,6 +160,18 @@ export interface AutoApproveConfig {
    */
   readonly keep_alive: number;
   /**
+   * #818: whether remi owns the engine process on its port. `'owned'` (the
+   * default, and the only mode that exists today) means remi spawns and
+   * supervises its own helper and may load/unload/delete models. `'shared'`
+   * means a super-yooz host owns it: remi evaluates against it but must never
+   * spawn, unload or delete, since another module may be mid-generate on the
+   * same weights. remi keeps its own port either way.
+   */
+  readonly engine: 'owned' | 'shared';
+  /** Absolute path to the helper remi starts in `'owned'` mode. Empty = none
+   *  bundled; remi then attaches to a running engine or reports the gap. */
+  readonly engine_path: string;
+  /**
    * Timeout (seconds) for the `escalate_model` second opinion specifically. The
    * heavy model is larger and frequently COLD (escalations are sporadic, so it
    * has usually been unloaded by the host), so its first call pays a model-load

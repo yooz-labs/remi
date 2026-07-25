@@ -198,6 +198,16 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // this a daemon pins the weights forever; 1800 matches what ollama's
     // keep_alive gave us. 0 = never unload.
     keep_alive: 1800,
+    // #818: who owns the engine process on remi's port. 'owned' (default) =
+    // remi starts and supervises its own helper and may load/unload/delete
+    // models. 'shared' = a super-yooz host owns it; remi reads and evaluates
+    // but never spawns, unloads or deletes, because another module may be
+    // mid-generate on the same weights.
+    engine: 'owned',
+    // Absolute path to the helper executable remi starts in 'owned' mode.
+    // Empty = nothing to start: remi still attaches to an engine already on
+    // the port, and otherwise reports the gap rather than failing silently.
+    engine_path: '',
     // Keep the model's reasoning ON by default: live testing showed it is
     // load-bearing for following broad user instructions. Opt in (Yooz engine
     // provider only) for raw speed over decision nuance.
@@ -373,6 +383,18 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   ) {
     throw new Error(
       `Invalid auto_approve.queue_timeout in ${configPath}: must be a non-negative number (seconds; 0 = no bound), got ${typeof cfg.queue_timeout === 'string' ? `string "${cfg.queue_timeout}"` : typeof cfg.queue_timeout}. Example: queue_timeout = 240`,
+    );
+  }
+
+  if (cfg.engine !== 'owned' && cfg.engine !== 'shared') {
+    throw new Error(
+      `Invalid auto_approve.engine in ${configPath}: must be "owned" (remi starts its own engine) or "shared" (a super-yooz host owns it), got ${JSON.stringify(cfg.engine)}. Example: engine = "owned"`,
+    );
+  }
+
+  if (typeof cfg.engine_path !== 'string') {
+    throw new Error(
+      `Invalid auto_approve.engine_path in ${configPath}: must be a string path to the engine helper (empty = none bundled). Example: engine_path = "/Applications/Yooz Engine.app/Contents/MacOS/YoozEngine"`,
     );
   }
 
@@ -900,6 +922,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
+  lines.push(`  engine = "${config.auto_approve.engine}"`);
   lines.push(`  keep_alive = ${config.auto_approve.keep_alive}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
   lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);

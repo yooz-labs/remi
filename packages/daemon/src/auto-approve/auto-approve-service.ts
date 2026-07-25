@@ -218,7 +218,10 @@ export class AutoApproveService {
       {
         keepAliveMs: config.keep_alive * 1000,
         models: [config.model, ...(config.escalate_model ? [config.escalate_model] : [])],
-        ownsEngine: this.providerIsYooz,
+        // #818: unloading is gated on OWNERSHIP, not on the transport. A
+        // shared (super-yooz) engine's residency is the host's policy, and
+        // evicting weights another module is mid-generate on is hostile.
+        ownsEngine: this.providerIsYooz && config.engine === 'owned',
       },
       {
         unload: (model) => unloadModel(this.llmConfig.baseUrl, model),

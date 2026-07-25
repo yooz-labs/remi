@@ -405,3 +405,43 @@ describe('remi model pull — flat-fraction rendering (engine#292/#293)', () => 
     expect(lines.length).toBeLessThan(4); // heartbeat, not per-poll
   });
 });
+
+describe('remi model — shared-engine ownership boundary (#818)', () => {
+  const shared = () => configWith({ engine: 'shared' as const });
+
+  test('refuses every MUTATING verb, without even probing', async () => {
+    // A super-yooz host owns residency and disk; another module may be
+    // mid-generate on these weights.
+    for (const verb of ['pull', 'cancel', 'rm', 'cleanup', 'unload']) {
+      const t = io();
+      let probed = false;
+      const code = await runModelCommand([verb, 'some-model'], shared(), t.io, {
+        probe: async () => {
+          probed = true;
+          return REACHABLE;
+        },
+      });
+      expect(code).toBe(1);
+      expect(probed).toBe(false);
+      expect(t.err.join('\n')).toContain('shared engine');
+    }
+  });
+
+  test('READ-ONLY verbs still work against a shared engine', async () => {
+    const t = io();
+    const code = await runModelCommand(['ls'], shared(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+    });
+
+    expect(code).toBe(0);
+    expect(t.out.join('\n')).toContain('yooz-quality-v3');
+  });
+
+  test('status names which mode this remi is in', async () => {
+    const t = io();
+    await runModelCommand(['status'], shared(), t.io, { probe: async () => REACHABLE });
+
+    expect(t.out.join('\n')).toContain('shared');
+  });
+});
