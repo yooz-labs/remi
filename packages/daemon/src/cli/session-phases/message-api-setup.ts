@@ -151,7 +151,10 @@ export function createMessageApiForSession(
         ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
       };
       sendAndRecord(msg);
-      sessionRegistry.addQuestion(questionSessionId, stamped);
+      // #808: `source` ('permission_request' | 'notification' | 'pty') is the
+      // richest "why did this appear" signal already on the Question, and
+      // free to pass through -- no extra threading needed.
+      sessionRegistry.addQuestion(questionSessionId, stamped, stamped.source ?? 'unknown');
 
       // Push: a non-held question only pushes when no client is attached (the
       // client sees it in-app). A HELD escalation (#603 Phase 3) always also

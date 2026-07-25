@@ -3,6 +3,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { ProtocolMessage } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../src/api/message-api.ts';
@@ -204,6 +207,102 @@ describe('SessionRegistry', () => {
         registry.removeQuestion('unknown-session' as ReturnType<typeof generateId>, generateId());
         registry.clearQuestions('unknown-session' as ReturnType<typeof generateId>);
         expect(events.onQuestionsChanged).not.toHaveBeenCalled();
+      });
+    });
+
+    // Real subprocess (like session-store-concurrency.test.ts): Bun's
+    // os.homedir() resolves once at process startup, so a fresh subprocess
+    // with HOME set in its spawn env is the only reliable way to point the
+    // trace module (session/question-trace.ts) at a throwaway directory --
+    // mutating process.env.HOME in THIS process would not be seen by it. See
+    // tests/session/question-trace.test.ts for the module's own unit tests;
+    // this suite instead proves the WIRING from SessionRegistry is correct.
+    describe('question-lifecycle trace (#808, wiring)', () => {
+      function readTraceLines(home: string): Record<string, unknown>[] {
+        const tracePath = path.join(home, '.remi', 'question-trace.jsonl');
+        if (!fs.existsSync(tracePath)) return [];
+        return fs
+          .readFileSync(tracePath, 'utf-8')
+          .split('\n')
+          .filter((l) => l.length > 0)
+          .map((l) => JSON.parse(l));
+      }
+
+      test('add/remove/clear/evict each emit the expected trace record', async () => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-registry-trace-test-'));
+        try {
+          const worker = path.join(import.meta.dir, 'session/session-registry-trace-worker.ts');
+          const proc = Bun.spawn(['bun', worker], {
+            env: { ...process.env, HOME: tmpHome, REMI_QUESTION_TRACE: '1' },
+            stdout: 'pipe',
+            stderr: 'pipe',
+          });
+          const code = await proc.exited;
+          const stdout = await new Response(proc.stdout).text();
+          if (code !== 0) {
+            throw new Error(`worker exited ${code}: ${await new Response(proc.stderr).text()}`);
+          }
+          const { q1, q2, oldestEvicted } = JSON.parse(stdout.trim()) as {
+            q1: string;
+            q2: string;
+            oldestEvicted: string;
+          };
+
+          const lines = readTraceLines(tmpHome);
+
+          const addQ1 = lines.find((l) => l['action'] === 'add' && l['questionId'] === q1);
+          expect(addQ1).toMatchObject({ signal: 'unknown', isSubagent: false });
+
+          const addQ2 = lines.find((l) => l['action'] === 'add' && l['questionId'] === q2);
+          expect(addQ2).toMatchObject({
+            signal: 'permission_request',
+            agentId: 'sub-2',
+            isSubagent: true,
+          });
+
+          const removeQ1 = lines.find((l) => l['action'] === 'remove' && l['questionId'] === q1);
+          expect(removeQ1).toMatchObject({
+            signal: 'user_answer',
+            toolName: 'Bash',
+            throughFunnel: true,
+          });
+
+          const clearQ2 = lines.find(
+            (l) =>
+              l['action'] === 'remove' &&
+              l['questionId'] === q2 &&
+              l['signal'] === 'session_restart',
+          );
+          expect(clearQ2).toMatchObject({ throughFunnel: true });
+
+          const eviction = lines.find((l) => l['signal'] === 'lru_eviction');
+          expect(eviction).toMatchObject({
+            action: 'remove',
+            questionId: oldestEvicted,
+            throughFunnel: true,
+          });
+        } finally {
+          fs.rmSync(tmpHome, { recursive: true, force: true });
+        }
+      });
+
+      test('disabled by default (no REMI_QUESTION_TRACE): no file is written', async () => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-registry-trace-test-'));
+        try {
+          const worker = path.join(import.meta.dir, 'session/session-registry-trace-worker.ts');
+          // Rebuild from scratch (rather than `delete`) so this run can never
+          // inherit REMI_QUESTION_TRACE from the parent test process's own env.
+          const { REMI_QUESTION_TRACE: _inherited, ...rest } = process.env;
+          const env = { ...rest, HOME: tmpHome };
+          const proc = Bun.spawn(['bun', worker], { env, stdout: 'pipe', stderr: 'pipe' });
+          const code = await proc.exited;
+          if (code !== 0) {
+            throw new Error(`worker exited ${code}: ${await new Response(proc.stderr).text()}`);
+          }
+          expect(fs.existsSync(path.join(tmpHome, '.remi', 'question-trace.jsonl'))).toBe(false);
+        } finally {
+          fs.rmSync(tmpHome, { recursive: true, force: true });
+        }
       });
     });
   });
