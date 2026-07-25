@@ -172,6 +172,18 @@ export interface AutoApproveConfig {
    *  bundled; remi then attaches to a running engine or reports the gap. */
   readonly engine_path: string;
   /**
+   * Directory the engine downloads model weights into. Empty = the engine's
+   * own default. Passed to a remi-STARTED engine as `HF_HUB_CACHE`, the
+   * standard HuggingFace variable the engine already honors (`EngineConfig.
+   * huggingFaceCacheDirectory` checks `HF_HUB_CACHE`, then `HF_HOME`/hub) —
+   * so this is a pass-through of an existing contract, not a remi invention.
+   *
+   * Only affects an engine remi starts. An engine already running (started by
+   * a hub, by hand, or by a super-yooz host) keeps whatever cache IT was
+   * launched with, and remi cannot retarget it.
+   */
+  readonly model_cache: string;
+  /**
    * Timeout (seconds) for the `escalate_model` second opinion specifically. The
    * heavy model is larger and frequently COLD (escalations are sporadic, so it
    * has usually been unloaded by the host), so its first call pays a model-load

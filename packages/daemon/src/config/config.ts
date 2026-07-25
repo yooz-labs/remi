@@ -208,10 +208,18 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Empty = nothing to start: remi still attaches to an engine already on
     // the port, and otherwise reports the gap rather than failing silently.
     engine_path: '',
-    // Keep the model's reasoning ON by default: live testing showed it is
-    // load-bearing for following broad user instructions. Opt in (Yooz engine
-    // provider only) for raw speed over decision nuance.
-    disable_thinking: false,
+    // Where the engine downloads model weights. Empty = the engine's own
+    // default (~/.cache/huggingface/hub, or its sandbox container). Set this
+    // to keep multi-GB weights off the boot volume, e.g. an external disk.
+    model_cache: '',
+    // Reasoning OFF by default (owner decision 2026-07-25). The earlier
+    // "reasoning is load-bearing" finding came from ollama-era testing with
+    // models large enough to afford it. On the QAT-lean tiers this is now
+    // measured as fatal, not merely slow: served through mlx_lm, the 0.8B
+    // spent an entire 600-token budget thinking about a trivial prompt and
+    // emitted NO content at all, so every evaluation degraded to an error.
+    // A permission classify wants a short JSON verdict, not an essay.
+    disable_thinking: true,
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
@@ -389,6 +397,12 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   if (cfg.engine !== 'owned' && cfg.engine !== 'shared') {
     throw new Error(
       `Invalid auto_approve.engine in ${configPath}: must be "owned" (remi starts its own engine) or "shared" (a super-yooz host owns it), got ${JSON.stringify(cfg.engine)}. Example: engine = "owned"`,
+    );
+  }
+
+  if (typeof cfg.model_cache !== 'string') {
+    throw new Error(
+      `Invalid auto_approve.model_cache in ${configPath}: must be a directory path (empty = the engine's default). Example: model_cache = "/Volumes/S1/huggingface/hub"`,
     );
   }
 
@@ -808,6 +822,12 @@ authorized_user_ids = []
 #                                  # Raise (e.g. 90) for a large, often-cold
 #                                  # second-opinion model so its first-call load
 #                                  # does not abort into an error->escalate.
+# model_cache = ""                # Where the engine downloads weights.
+                                   # Empty = its default (~/.cache/huggingface).
+                                   # Point at an external disk to keep several
+                                   # GB off the boot volume. Applies to an
+                                   # engine remi STARTS; an already-running one
+                                   # keeps the cache it was started with.
 # keep_alive = 1800                # Seconds a model stays resident after the
                                    # last eval before remi unloads it. The
                                    # engine never evicts on its own. 0 = never.
@@ -827,11 +847,13 @@ authorized_user_ids = []
 #                                  # seconds, so the user can step in while the
 #                                  # model keeps thinking (Part B, #573). A late
 #                                  # verdict resolves the held hook. 0 = off.
-# disable_thinking = false         # Yooz engine provider only: /no_think
-#                                  # prompt prefix (no reasoning). Faster but
-#                                  # lowers decision quality (reasoning helps
-#                                  # the model follow broad instructions), so
-#                                  # default off. Opt in for raw speed.
+# disable_thinking = true          # Suppress model reasoning. ON by default: a
+#                                  # permission classify wants a short JSON
+#                                  # verdict, and small models can spend their
+#                                  # whole token budget thinking and return
+#                                  # nothing at all. Set false to let the model
+#                                  # reason (slower, sometimes better on broad
+#                                  # custom instructions).
 # always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]
 #                                  # Tools that ALWAYS go to the user, never
 #                                  # auto-decided by the LLM (design / plan-mode

@@ -6,6 +6,16 @@
  *
  * Usage: bun packages/daemon/tests/auto-approve/run-model-sweep.ts [model1 model2 ...]
  * Default models: yooz-light-v3, yooz-quality-v3
+ *
+ * Backend is env-overridable, because #809 Phase D has to compare the SAME
+ * grid across backends (engine on Apple Silicon, llama.cpp elsewhere) and
+ * against reference runners while the engine's own catalogue is still just its
+ * two tiers:
+ *   SWEEP_PROVIDER   'yooz' (default) | 'openai' | 'llamacpp' | a full URL
+ *   SWEEP_BASE_URL   overrides the base URL for the chosen provider
+ * e.g. against a local ollama:
+ *   SWEEP_PROVIDER=openai SWEEP_BASE_URL=http://localhost:11434/v1 \
+ *     bun run-model-sweep.ts gemma4:e4b-mlx qwen3.5:4b-mlx
  */
 
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
@@ -317,10 +327,10 @@ const scenarios: Scenario[] = [
 function makeConfig(model: string): AutoApproveConfig {
   return {
     enabled: true,
-    provider: 'yooz',
+    provider: process.env['SWEEP_PROVIDER'] ?? 'yooz',
     model,
     api_key: '',
-    base_url: 'http://127.0.0.1:19924',
+    base_url: process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924',
     timeout: 60,
     log_decisions: false,
     allow: [],
@@ -336,7 +346,11 @@ function makeConfig(model: string): AutoApproveConfig {
     keep_alive: 0,
     engine: 'owned' as const,
     engine_path: '',
-    disable_thinking: false,
+    model_cache: '',
+    // Thinking OFF by default here too: with it on, a small model can burn its
+    // whole budget reasoning and return no content, which scores as an error
+    // rather than a judgment. SWEEP_THINKING=1 measures the other axis.
+    disable_thinking: process.env['SWEEP_THINKING'] !== '1',
     always_escalate_tools: [],
     hold_timeout: 0,
     push_hold_timeout: 0,

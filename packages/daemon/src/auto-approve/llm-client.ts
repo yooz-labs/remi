@@ -10,7 +10,7 @@ import { errorToString } from '@remi/shared';
  *    server already speaks the OpenAI-compatible shape, so it reuses 'openai'
  *    unchanged; only the engine needed its own transport.
  *
- * `disableThinking` ('yooz' only) prefixes the engine's own `/no_think` prompt
+ * `disableThinking` prefixes the `/no_think` prompt
  * convention (see yooz-engine's YoozPrompts.swift, whose Quality-tier prompts
  * use the same prefix) onto the system prompt to turn OFF the model's Qwen3-
  * style chain-of-thought reasoning -- for a quick approve/deny classify the
@@ -110,6 +110,17 @@ function splitForYoozGenerate(messages: readonly ChatMessage[]): {
  *  when there is no system message. */
 const NO_THINK_PREFIX = '/no_think\n';
 
+/** Prefix `/no_think` onto the system message (or the first message when there
+ *  is none), for the OpenAI-compatible transport. Returns a new array; the
+ *  caller's messages are never mutated. */
+function withNoThink(messages: readonly ChatMessage[]): ChatMessage[] {
+  const systemIndex = messages.findIndex((m) => m.role === 'system');
+  const target = systemIndex === -1 ? 0 : systemIndex;
+  return messages.map((m, i) =>
+    i === target ? { ...m, content: `${NO_THINK_PREFIX}${m.content}` } : { ...m },
+  );
+}
+
 /**
  * Preload a model on the Yooz engine so a later request does not pay the cold
  * model-load penalty. Uses `POST /v1/llm/preload?wait=true` -- the blocking
@@ -191,11 +202,28 @@ export async function chatCompletion(
         ? { model: config.model, prompt, systemPrompt: `${noThink}${systemPrompt}` }
         : { model: config.model, prompt: `${noThink}${prompt}` };
   } else {
+    // Thinking suppression on an OpenAI-compatible server (llama.cpp, ollama's
+    // /v1, mlx_lm, vLLM). Belt AND braces, because no single mechanism is
+    // universal and getting this wrong is not a slowdown but a total failure:
+    // measured against the QAT-lean 0.8B, an unsuppressed model spent its
+    // whole token budget reasoning and returned NO content at all, so every
+    // evaluation became an error (#822).
+    //   - `/no_think` is a chat-template convention the Qwen3 family itself
+    //     recognizes, so it works wherever the model does — it is a property
+    //     of the MODEL, not of the server. (The claim that the openai
+    //     transport has "no equivalent" was wrong.)
+    //   - `chat_template_kwargs.enable_thinking: false` is what vLLM and
+    //     newer llama.cpp/mlx servers honor at the template level.
+    // Servers ignore request fields they do not know, so sending both is safe
+    // and strictly increases the chance suppression actually happens.
+    const suppress = config.disableThinking === true;
+    const suppressedMessages = suppress ? withNoThink(messages) : messages;
     body = {
       model: config.model,
-      messages,
+      messages: suppressedMessages,
       temperature: 0,
       response_format: { type: 'json_object' },
+      ...(suppress ? { chat_template_kwargs: { enable_thinking: false } } : {}),
     };
   }
 

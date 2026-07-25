@@ -115,6 +115,7 @@ function makeConfig(server: GatedServer): AutoApproveConfig {
     keep_alive: 0,
     engine: 'owned' as const,
     engine_path: '',
+    model_cache: '',
     disable_thinking: false,
     always_escalate_tools: [],
     hold_timeout: 0,

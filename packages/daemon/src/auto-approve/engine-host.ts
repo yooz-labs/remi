@@ -69,6 +69,12 @@ export interface EngineHostConfig {
    * (The LLM-only variant this should point at is yooz-engine#297.)
    */
   readonly helperPath?: string | undefined;
+  /**
+   * Where the engine should download weights (`HF_HUB_CACHE`). Empty/absent =
+   * the engine's own default. Only reaches an engine remi STARTS — see
+   * `AutoApproveConfig.model_cache`.
+   */
+  readonly modelCache?: string | undefined;
   /** How long to wait for a freshly-spawned helper to answer. */
   readonly startupTimeoutMs?: number;
   /** Interval between readiness probes during startup. */
@@ -237,11 +243,16 @@ export class EngineHost {
 
     let pid: number;
     try {
+      const cache = this.config.modelCache;
       pid = spawnFn(helperPath, {
         // Headless: no menu-bar UI for a helper nobody looks at.
         YOOZ_ENGINE_HEADLESS: '1',
         // remi's reserved port, in every configuration (see the module doc).
         YOOZ_ENGINE_PORT: String(portOf(this.config.baseUrl)),
+        // Weights location, via the standard HuggingFace variable the engine
+        // already reads. Omitted entirely when unset so the engine keeps its
+        // own default rather than being handed an empty path.
+        ...(cache !== undefined && cache.length > 0 ? { HF_HUB_CACHE: cache } : {}),
       });
     } catch (err) {
       // Release the claim we took above, or the next attempt is blocked by a

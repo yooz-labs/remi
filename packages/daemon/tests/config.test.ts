@@ -288,7 +288,7 @@ describe('formatConfig', () => {
     expect(output).toContain('provider = "yooz"');
     // disable_thinking must be visible in `config show` so a user who set it
     // can confirm it (it was missed in the initial formatConfig wiring).
-    expect(output).toContain('disable_thinking = false');
+    expect(output).toContain('disable_thinking = true');
     // approve_groups/deny_groups likewise visible (#494 phase 1).
     expect(output).toContain('approve_groups = ["read-only", "vcs-read", "build-test"]');
     expect(output).toContain('deny_groups = []');
@@ -355,7 +355,8 @@ describe('auto_approve config', () => {
       keep_alive: 1800,
       engine: 'owned' as const,
       engine_path: '',
-      disable_thinking: false,
+      model_cache: '',
+      disable_thinking: true,
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
       hold_timeout: 1800,
       push_hold_timeout: 60,
