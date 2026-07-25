@@ -17,6 +17,7 @@ import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
 import { readPtyOutput, resetPtyOutput } from '../../pty/output-buffer.ts';
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
+import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
 import type { SendToConnection } from './trivial-events.ts';
@@ -322,7 +323,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       try {
         cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-auq');
       } finally {
-        sessionRegistry.removeQuestion(session.sessionId, questionId);
+        sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:auq');
         try {
           onQuestionResolved?.(session.sessionId, questionId);
         } catch (err) {
@@ -440,7 +441,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       } catch (err) {
         logError(`[Answer] cancel: eval cancel failed: ${errorToString(err)}`);
       }
-      sessionRegistry.removeQuestion(session.sessionId, questionId);
+      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:cancel');
       try {
         onQuestionResolved?.(session.sessionId, questionId);
       } catch (err) {
@@ -488,6 +489,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       log(
         `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]${freedHeld ? ' (freed an orphaned held hook -> passthrough)' : ''}`,
       );
+      // #808: informational -- nothing was removed (it is already gone), but
+      // recording what WAS still pending at this moment is exactly the
+      // evidence needed to tell "client is showing a stale card" (Shape 1/2)
+      // apart from "client and daemon agree, this really is a bad answer".
+      traceQuestionEvent({
+        action: 'stale_answer',
+        sessionId: session.sessionId,
+        questionId,
+        signal: 'STALE_ANSWER',
+        detail: { pendingQuestionIds: pendingIds, freedHeld },
+      });
       if (!viaRelay) {
         send(
           connectionId,
@@ -596,7 +608,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
       // In `finally` so a throwing submit cannot leave a zombie question.
-      sessionRegistry.removeQuestion(session.sessionId, questionId);
+      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer');
       // Cross-client dismissal (#585, P7): tell every client this question is
       // resolved so its card clears and the lock-screen push is dismissed.
       // Throw-safe: a broadcast/push failure must never break answer handling,

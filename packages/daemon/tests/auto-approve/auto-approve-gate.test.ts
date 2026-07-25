@@ -72,9 +72,8 @@ describe('AutoApproveGate', () => {
   // genuine subagent-tagged one.
   let resets: number;
   // #751: records parkForPTY() calls (subagent escalations parked for PTY
-  // arbitration instead of held/denied). #763: the summary passed with each.
+  // arbitration instead of held/denied).
   let parks: PermissionRequestHookInput[];
-  let parkSummaries: (string | undefined)[];
 
   function evaluator(
     result: AutoApproveResult,
@@ -112,9 +111,8 @@ describe('AutoApproveGate', () => {
           escalations.push(i);
           return generateId();
         },
-        parkForPTY: (i, summary) => {
+        parkForPTY: (i) => {
           parks.push(i);
-          parkSummaries.push(summary);
           return undefined; // these tests don't exercise #799 signature registration
         },
       },
@@ -148,9 +146,8 @@ describe('AutoApproveGate', () => {
           escalations.push(i);
           return generateId();
         },
-        parkForPTY: (i, summary) => {
+        parkForPTY: (i) => {
           parks.push(i);
-          parkSummaries.push(summary);
           return undefined; // these tests don't exercise #799 signature registration
         },
         escalateModel: 'big-model',
@@ -180,7 +177,6 @@ describe('AutoApproveGate', () => {
     subagent = false;
     resets = 0;
     parks = [];
-    parkSummaries = [];
     tracker = new QuestionPresenceTracker(() => {});
     configureLogger({ writeLog: () => {} });
   });
@@ -493,13 +489,97 @@ describe('AutoApproveGate', () => {
     expect(parks).toHaveLength(1);
   });
 
-  test('#763: the escalate verdict summary is threaded into the park', async () => {
+  test('#807: a subagent-tagged permission is NEVER evaluated', async () => {
     subagent = false;
-    const d = await gateWith(evaluator(escalateWithSummary)).resolvePermission(
-      pr({ agent_id: 'agent-1' }),
-    );
+    let evaluateCalls = 0;
+    const counting: AutoApproveEvaluator = {
+      evaluate: async () => {
+        evaluateCalls++;
+        return approve;
+      },
+      cancel: () => true,
+    };
+    const d = await gateWith(counting).resolvePermission(pr({ agent_id: 'agent-1' }));
+    // No LLM call at all: the hook is answered before Claude renders anything,
+    // so the gate cannot know whether this prompt will ever reach the main PTY.
+    expect(evaluateCalls).toBe(0);
     expect(d).toBe('passthrough');
-    expect(parkSummaries).toEqual(['Force-push to main?']);
+    expect(parks).toHaveLength(1);
+    // ...and no verdict was silently applied to an agent the user never saw.
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
+  });
+
+  test('#807: onSubagentPassthrough reports the subagent call, never a main one', async () => {
+    subagent = false;
+    const observed: PermissionRequestHookInput[] = [];
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(approve),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => undefined,
+        onSubagentPassthrough: (i) => observed.push(i),
+      },
+      SID,
+    );
+
+    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.agent_id).toBe('agent-1');
+
+    // The main path is not an audit/alert subject: it already produces a card.
+    expect(await g.resolvePermission(pr({}))).toBe('allow');
+    expect(observed).toHaveLength(1);
+  });
+
+  test('#807: a throwing onSubagentPassthrough cannot break the hook answer', async () => {
+    subagent = false;
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const g = new AutoApproveGate(
+      {
+        service: evaluator(approve),
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => undefined,
+        onSubagentPassthrough: () => {
+          throw new Error('push transport down');
+        },
+      },
+      SID,
+    );
+    // Observation is cosmetic; a dead notification path must never turn into a
+    // stuck hook or a changed decision.
+    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
+  });
+
+  test('#807: a MAIN-tagged permission still evaluates', async () => {
+    subagent = false;
+    let evaluateCalls = 0;
+    const counting: AutoApproveEvaluator = {
+      evaluate: async () => {
+        evaluateCalls++;
+        return approve;
+      },
+      cancel: () => true,
+    };
+    const d = await gateWith(counting).resolvePermission(pr({}));
+    expect(evaluateCalls).toBe(1);
+    expect(d).toBe('allow');
+    expect(parks).toHaveLength(0);
   });
 
   test('#751: a parkForPTY throw is absorbed; the passthrough still stands', async () => {
@@ -637,17 +717,22 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     expect(events).toEqual(['start', 'escalate']);
   });
 
-  test('#751: subagent escalate parks -> fires start then escalate (buffer closes), no inject', async () => {
+  test('#807: a subagent park fires escalate ONLY — no start cue, no inject', async () => {
     subagent = true;
     expect(await gate(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }))).toBe(
       'passthrough',
     );
     // Parking is semantically an escalation (PTY-mediated): the onEscalate cue
-    // still fires for the statusline, but tagged subagent (#767) — a subagent
-    // eval never opens the #484 buffer window, so its cue must not release or
+    // still fires for the statusline, tagged subagent (#767) — a subagent
+    // never opens the #484 buffer window, so its cue must not release or
     // discard a prompt buffered by a concurrent MAIN eval.
+    //
+    // #807: 'start' is now ABSENT. No eval runs, so there is no in-flight
+    // work for the statusline spinner or the client pill to advertise —
+    // flashing 'evaluating' for a background prompt was itself part of the
+    // phantom-auto-approval read.
     expect(submits).toHaveLength(0);
-    expect(events).toEqual(['start', 'escalate:subagent']);
+    expect(events).toEqual(['escalate:subagent']);
   });
 
   test('a throwing cue callback is absorbed: decision not re-run, no re-escalation', async () => {
@@ -1232,7 +1317,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
     expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
   });
 
-  test('cancelStale(Stop, mainOnly) cancels only the in-flight MAIN eval; a concurrent SUBAGENT eval keeps running and its late verdict still reconciles', async () => {
+  test('cancelStale(Stop, mainOnly) cancels the in-flight MAIN eval; a subagent has no eval to cancel (#807)', async () => {
     const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
     const resolvers = new Map<string, (r: AutoApproveResult) => void>();
     const service: AutoApproveEvaluator = {
@@ -1273,29 +1358,26 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
 
     const pendingMain = g.resolvePermission(pr({ tool_input: { command: 'echo main' } }));
     await new Promise((r) => setTimeout(r, 20));
-    const pendingSub = g.resolvePermission(
-      pr({ tool_input: { command: 'echo sub' }, ...teammate }),
-    );
-    await new Promise((r) => setTimeout(r, 20));
-
-    let subSettled = false;
-    void pendingSub.then(() => {
-      subSettled = true;
-    });
+    // #807: a subagent permission settles IMMEDIATELY as an unevaluated
+    // passthrough — it never becomes an in-flight eval, so there is no
+    // subagent hold and no subagent eval for a Stop to spare in the first
+    // place. `mainOnly` is now trivially satisfied rather than load-bearing;
+    // the flag stays because the post-render subagent evaluation (the #807
+    // follow-up) will reintroduce genuinely concurrent subagent evals.
+    expect(
+      await g.resolvePermission(pr({ tool_input: { command: 'echo sub' }, ...teammate })),
+    ).toBe('passthrough');
 
     g.cancelStale('Stop', { mainOnly: true });
 
     expect(await pendingMain).toBe('passthrough'); // main hold released + eval cancelled
-    await new Promise((r) => setTimeout(r, 10));
-    expect(subSettled).toBe(false); // subagent untouched: hold AND eval survive
     expect(cancelLog).toHaveLength(1); // ONLY the main eval's cancel() call
-
-    // Prove the subagent eval was never aborted: its late verdict reconciles.
-    resolvers.get(JSON.stringify({ command: 'echo sub' }))?.(approve);
-    expect(await pendingSub).toBe('allow');
+    // The subagent's own eval never existed, so nothing of its could be cancelled.
+    expect(cancelLog.every((c) => c.evalId !== undefined)).toBe(true);
+    expect(resolvers.has(JSON.stringify({ command: 'echo sub' }))).toBe(false);
   });
 
-  test('#711 onEvalStart/onHandled ctx carries isSubagent (true for agent_id, false for main)', async () => {
+  test('#807 a subagent fires NO onEvalStart/onHandled; main still reports isSubagent false', async () => {
     const ctxLog: Array<{ isSubagent: boolean }> = [];
     registry.registerSession(SID, '/d', fakePTY([]), {
       handleMessage: () => {},
@@ -1314,14 +1396,13 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       },
       SID,
     );
-    expect(await g.resolvePermission(pr(teammate))).toBe('allow');
+    // Subagent: parked unevaluated, so neither the eval-start nor the
+    // silently-handled cue has anything to report.
+    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
+    expect(ctxLog).toEqual([]);
+    // Main: unchanged — start then handled, both main-tagged.
     expect(await g.resolvePermission(pr())).toBe('allow');
-    expect(ctxLog).toEqual([
-      { isSubagent: true },
-      { isSubagent: true },
-      { isSubagent: false },
-      { isSubagent: false },
-    ]);
+    expect(ctxLog).toEqual([{ isSubagent: false }, { isSubagent: false }]);
   });
 });
 

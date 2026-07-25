@@ -230,8 +230,26 @@ export interface AutoApproveGateDeps {
    * matching subagent tool event or `SubagentStop` to resolve, which was the
    * root cause of #799 (a subagent question answered in the terminal never
    * left the pending store). `undefined` when the dep is unwired or throws.
+   *
+   * #807: takes no `summary` — a subagent permission is never evaluated, so
+   * there is no LLM reasoning to fold into the question text (`escalate`, the
+   * main-context sibling, still carries one).
    */
-  parkForPTY?: (input: PermissionRequestHookInput, summary?: string) => UUID | undefined;
+  parkForPTY?: (input: PermissionRequestHookInput) => UUID | undefined;
+  /**
+   * Every subagent-tagged permission that passed through unevaluated (#807),
+   * reported to the sink for observation ONLY — the decision is already made
+   * and returned by the time this fires, so a sink cannot influence it.
+   *
+   * Two purposes: the destructive-command alert (`SubagentAlerter` decides
+   * which of these are worth notifying about — see `subagent-alert.ts`), and
+   * the audit trail #756 direction (d) asked for, so a silently-handled
+   * background permission is silent but not invisible.
+   *
+   * Fire-and-forget and throw-safe, like the cosmetic cues: a sink that throws
+   * is logged and absorbed, never propagated into the hook response.
+   */
+  onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -494,7 +512,7 @@ export class AutoApproveGate {
       // dismiss + the live-sessions mirror all fire for it too.
       for (const [qid, sig] of [...this.openQuestionSignatures]) {
         if (sig.isSubagent) continue;
-        this.resolveSupersededQuestion(qid, reason);
+        this.resolveSupersededQuestion(qid, reason, sig.toolName);
       }
     } else {
       this.openQuestionSignatures.clear();
@@ -562,7 +580,7 @@ export class AutoApproveGate {
   cancelStaleForAgent(agentId: string, reason: string): void {
     for (const [qid, sig] of [...this.openQuestionSignatures]) {
       if (sig.agentId !== agentId) continue;
-      this.resolveSupersededQuestion(qid, reason);
+      this.resolveSupersededQuestion(qid, reason, sig.toolName);
     }
   }
 
@@ -651,7 +669,7 @@ export class AutoApproveGate {
     // this leaves a ghost card that replays on reconnect and lets a late
     // handleAnswer find it "live" and misroute. The user-answer path also
     // removes it in handleAnswer's finally; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, `resolveHeld:${decision}`);
     this.markHandled(hold.isSubagent);
     let resolvedDecision: PermissionDecision = decision;
     let logSuffix: string = decision;
@@ -686,7 +704,7 @@ export class AutoApproveGate {
     // #673: openQuestionSignatures cleanup lives in the private releaseHeld
     // itself (the single owner every internal caller funnels through), so
     // there is nothing extra to do here.
-    return this.releaseHeld(questionId, 'passthrough');
+    return this.releaseHeld(questionId, 'passthrough', 'released-passthrough-for-pty-answer');
   }
 
   /** Resolve pending holds with one decision + reason. Used by `cancelStale`
@@ -713,7 +731,7 @@ export class AutoApproveGate {
       // gone (#585, P7). `releaseHeld` then clears the timer, drops the registry
       // + signature/delivery bookkeeping, and resolves the hook.
       this.notifyResolved(qid, 'cancelled');
-      this.releaseHeld(qid, decision);
+      this.releaseHeld(qid, decision, reason);
     }
   }
 
@@ -815,7 +833,7 @@ export class AutoApproveGate {
     // Dismiss the stale card everywhere BEFORE resolving (#585, P7); releaseHeld
     // then clears the timer, drops the registry entry, and resolves passthrough.
     this.notifyResolved(qid, 'cancelled');
-    this.releaseHeld(qid, 'passthrough');
+    this.releaseHeld(qid, 'passthrough', 'hold-fail-open');
   }
 
   /**
@@ -986,25 +1004,27 @@ export class AutoApproveGate {
    *   - approve -> 'allow', deny -> 'deny' (Claude proceeds; NO PTY inject).
    *   - escalate (main) -> escalateToUser + 'passthrough' (Claude renders the
    *     prompt; the user answers).
-   *   - escalate / no-service / eval-error / pick on a SUBAGENT-TAGGED event
-   *     (`agent_id` present) -> park the rich question in the presence
-   *     tracker + 'passthrough' (#751 PTY-arbiter), REGARDLESS of
+   *   - ANY SUBAGENT-TAGGED event (`agent_id` present) -> park the rich
+   *     question in the presence tracker + 'passthrough' (#751 PTY-arbiter)
+   *     WITHOUT evaluating it (#807), and REGARDLESS of
    *     `isInSubagentContext()` (the tracker only brackets synchronous
    *     Task/Agent spawns, so team members and async/background subagents
    *     always observe it false — the tag on the event itself is the truth).
    *     Claude then runs its NORMAL permission flow: the session allowlist
    *     may absorb the request silently, or the native prompt renders on the
    *     main PTY and the tracker merges the parked labels onto it and pushes
-   *     (answers inject; nothing is held). Replaces both prior behaviors:
-   *     silent default-deny (sync-Task shape, broke teammates with no trace)
-   *     and hold+push-as-main (async/team shape, pushed cards for prompts
-   *     the user never saw asked).
-   *   - the SAME three branches with `isInSubagentContext()` true but NO
-   *     `agent_id` on the input -> this is the #710 tracker-leak signature
-   *     (a PostToolUse(Task/Agent) completion tagged with the spawned agent's
-   *     own agent_id was dropped before popping the tracker), NOT a real
-   *     subagent prompt. Reset the tracker and escalate as main instead of
-   *     silently denying the main agent forever.
+   *     (answers inject; nothing is held). Replaces three prior behaviors:
+   *     silent default-deny (sync-Task shape, broke teammates with no trace),
+   *     hold+push-as-main (async/team shape, pushed cards for prompts the
+   *     user never saw asked), and evaluate-then-route (#751's shape, which
+   *     spent a GPU-backed LLM call per background tool call and silently
+   *     applied its allow/deny verdict to a prompt no human ever saw).
+   *   - a MAIN-tagged event (no `agent_id`) with `isInSubagentContext()` true
+   *     -> this is the #710 tracker-leak signature (a PostToolUse(Task/Agent)
+   *     completion tagged with the spawned agent's own agent_id was dropped
+   *     before popping the tracker), NOT a real subagent prompt. Reset the
+   *     tracker and escalate as main instead of silently denying the main
+   *     agent forever.
    *   - pick (multi-choice) -> inject the index + 'passthrough' (the hook
    *     response can't express "pick option N"; keep the PTY for this rare case).
    *   - cancelled -> 'passthrough' (the user already advanced).
@@ -1017,22 +1037,44 @@ export class AutoApproveGate {
     // subagent/team-member (`agent_id` present) or the main agent.
     const isSubagent = this.isSubagentEvent(input);
 
+    // #807: a subagent-tagged permission NEVER reaches the evaluator, with or
+    // without auto-approve configured.
+    //
+    // Claude blocks on this hook response, so at decision time we cannot know
+    // whether the prompt will ever render on the main PTY — and empirically
+    // most never do (a live 0.6.22 session logged 16 subagent
+    // PermissionRequests against 2 renders). Evaluating them all meant one
+    // GPU-backed LLM call per background tool call, and every approve/deny
+    // verdict was applied to a prompt no human ever saw and no card ever
+    // recorded.
+    //
+    // So park + passthrough unconditionally: Claude runs its own permission
+    // flow, and either its allowlist absorbs the request silently or the
+    // native prompt renders on the main PTY, where the parked record merges
+    // onto it and pushes a card. The PTY — not the hook — decides whether a
+    // human is asked, which is the arbiter policy #756 asked for.
+    //
+    // Evaluating a subagent permission AFTER it renders (auto-approve it on
+    // the user's behalf, or escalate and let the phone answer) is the
+    // deliberate follow-up: it needs the async inject path, because this hook
+    // is answered long before any render.
     if (isSubagent) {
       log(
-        `[Hooks] Subagent PermissionRequest forwarded: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        `[Hooks] Subagent PermissionRequest passed through UNEVALUATED (PTY arbitrates): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
+      this.parkSubagentForPTY(input);
+      // Observation only, AFTER the routing above is settled: one branch of
+      // Claude's own permission flow allows a call without ever rendering it
+      // (an allowlist-covered command), so the parked record never pairs and
+      // nothing else would ever mention it. The sink decides what is worth a
+      // notification; it cannot change this decision.
+      this.safeCueWithArg('onSubagentPassthrough', this.deps.onSubagentPassthrough, input);
+      return 'passthrough';
     }
 
     // No auto-approve: main escalates to the user (holding the hook when
-    // binary, #573); a subagent-tagged event parks for PTY arbitration (#751).
+    // binary, #573).
     if (!service) {
-      if (isSubagent) {
-        log(
-          `[AutoApprove ${this.sessionTag}] Subagent PermissionRequest without auto-approve; parking for PTY arbitration`,
-        );
-        this.parkSubagentForPTY(input);
-        return 'passthrough';
-      }
       if (isInSubagentContext()) {
         // #710: a MAIN-tagged event (no agent_id) with the tracker stuck true
         // means the tracker leaked, not a real subagent prompt. Reset it so
@@ -1050,6 +1092,13 @@ export class AutoApproveGate {
       }
       return this.escalateMain(input);
     }
+
+    // Everything below is MAIN-context by construction: the #807 early return
+    // above is the only path an `agent_id`-tagged event can take, so
+    // `isSubagent` is false from here down. It is still threaded through
+    // `evaluate` / `evalIsSubagentById` / `markHandled` rather than hardcoded,
+    // because the post-render subagent evaluation (the #807 follow-up) will
+    // re-enter this machinery with it true.
 
     // Open the buffer/cue window (#484/#513). With synchronous decisions Claude
     // does not render the prompt during the eval, so the buffer rarely holds a
@@ -1100,13 +1149,6 @@ export class AutoApproveGate {
       result = await evalPromise;
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Unexpected error:`, err);
-      // #751: a subagent-tagged event the eval could not decide parks for
-      // PTY arbitration (keys on the event's own agent_id alone; the
-      // tracker is sync-Task-only -- see resolvePermission's doc).
-      if (isSubagent) {
-        this.parkSubagentForPTY(input);
-        return 'passthrough';
-      }
       if (isInSubagentContext()) {
         // #710: MAIN-tagged + stuck tracker == leak, not a real subagent
         // prompt. Reset and fall through to escalateMain below. Blanket-reset
@@ -1140,16 +1182,6 @@ export class AutoApproveGate {
       // Multi-choice pick (#399): the response can't express it, so render the
       // prompt (passthrough) and inject the 1-based index into the PTY.
       //
-      // #751: a subagent's prompt is never on the main PTY at decision time
-      // (the hook is blocked on this very response), so the inject below
-      // would either be dropped or -- worse, when an unrelated MAIN prompt is
-      // visible -- type into the wrong prompt. Park for PTY arbitration
-      // instead: the pick verdict is forfeited and the user answers the
-      // rendered prompt (terminal or merged push card).
-      if (isSubagent) {
-        this.parkSubagentForPTY(input);
-        return 'passthrough';
-      }
       // The index was validated against options length upstream. The
       // discriminated union guarantees pickIndex, but guard defensively: a
       // malformed result must escalate, not silently fall through.
@@ -1164,21 +1196,6 @@ export class AutoApproveGate {
         return 'passthrough';
       }
       return this.escalatePassthrough(input);
-    }
-    // escalate on a subagent-tagged event: park for PTY arbitration (#751).
-    // Keys on the event's own agent_id alone -- the SubagentContextTracker
-    // only brackets SYNCHRONOUS Task/Agent spawns, so team members and
-    // async/background subagents always observe isInSubagentContext() false;
-    // the old AND-gate escalated their prompts to the phone as if they were
-    // the main agent's, while the sync-Task shape silently default-denied.
-    // The second opinion below is skipped deliberately: the hook answer is
-    // 'passthrough' either way, so a heavier model buys nothing here.
-    if (isSubagent) {
-      log(
-        `[AutoApprove ${this.sessionTag}] Subagent escalate; parking for PTY arbitration (agent=${input.agent_id?.slice(0, 8)})`,
-      );
-      this.parkSubagentForPTY(input, result.summary);
-      return 'passthrough';
     }
     // A MAIN-tagged event (agent_id absent) with isInSubagentContext() true is
     // NOT a real subagent prompt: it is the #710 tracker-leak signature (a
@@ -1388,7 +1405,7 @@ export class AutoApproveGate {
       // Claude advanced past the prompt during the slow eval; fail the hold open.
       this.deps.tracker.clearPending();
       this.notifyResolved(qid, 'cancelled');
-      this.releaseHeld(qid, 'passthrough');
+      this.releaseHeld(qid, 'passthrough', 'part-b-cancelled');
     }
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
@@ -1406,8 +1423,17 @@ export class AutoApproveGate {
    * delete must be UNCONDITIONAL (not gated on `hold` existing) or every one
    * of those exit paths leaks an entry for the rest of the process lifetime.
    * (`resolveHeld` is a separate, non-delegating path and owns its own delete.)
+   *
+   * `reason` (#808) names the caller/signal for the opt-in question-lifecycle
+   * trace; `toolName`, when the caller knows it, is carried onto the same
+   * trace record.
    */
-  private releaseHeld(questionId: UUID, decision: PermissionDecision): boolean {
+  private releaseHeld(
+    questionId: UUID,
+    decision: PermissionDecision,
+    reason = 'held-released',
+    toolName?: string,
+  ): boolean {
     this.openQuestionSignatures.delete(questionId);
     // #733: unconditional for the same leak reason as the signature delete
     // above — every hold exit path funnels through here.
@@ -1419,7 +1445,7 @@ export class AutoApproveGate {
     // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
     // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
     // removes it; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId);
+    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, reason, toolName);
     hold.resolve(decision);
     return true;
   }
@@ -1470,10 +1496,10 @@ export class AutoApproveGate {
    * duplicate-re-request cleanup: a re-park for the identical signature (the
    * SAME agent re-asking) proves the earlier parked/pushed record is dead.
    */
-  private parkSubagentForPTY(input: PermissionRequestHookInput, summary?: string): void {
+  private parkSubagentForPTY(input: PermissionRequestHookInput): void {
     let questionId: UUID | undefined;
     try {
-      questionId = this.deps.parkForPTY?.(input, summary);
+      questionId = this.deps.parkForPTY?.(input);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] parkForPTY threw (prompt will fall to the orphan push path):`,
@@ -1688,7 +1714,7 @@ export class AutoApproveGate {
   cancelExternallyResolved(observed: ObservedToolCall, reason: string): void {
     const qid = this.findOpenQuestionMatching(observed);
     if (!qid) return;
-    this.resolveSupersededQuestion(qid, reason);
+    this.resolveSupersededQuestion(qid, reason, observed.toolName);
   }
 
   /** Find an open escalation matching `observed`, preferring an exact
@@ -1732,13 +1758,17 @@ export class AutoApproveGate {
    * independently try/catch'd so one failure can never skip the rest —
    * `removeQuestion` in particular must always run even if the eval was
    * already gone or the hold release throws, or the pushed card lingers.
+   *
+   * `toolName` (#808), when the caller knows it (a signature match or a
+   * tracked `ToolSignature` both carry it), is carried onto the
+   * question-lifecycle trace record for this removal.
    */
-  private resolveSupersededQuestion(qid: UUID, reason: string): void {
+  private resolveSupersededQuestion(qid: UUID, reason: string, toolName?: string): void {
     log(
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     try {
-      this.releaseHeld(qid, 'passthrough');
+      this.releaseHeld(qid, 'passthrough', reason, toolName);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] releaseHeld during external-resolve cleanup threw:`,
@@ -1754,7 +1784,7 @@ export class AutoApproveGate {
       );
     }
     try {
-      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid);
+      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid, reason, toolName);
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,

@@ -35,6 +35,18 @@ const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 describe('createConnectionHandlers', () => {
   let sessionRegistry: SessionRegistry;
   let sendCalls: Array<{ connectionId: UUID; message: ProtocolMessage }>;
+
+  /**
+   * #808: every successful attach now ends with a `question_snapshot` carrying
+   * the authoritative live-question-id set (see `pending-question-resend.ts`).
+   * The tests below assert attach MECHANICS — ack shape, replay ordering — so
+   * they filter it out rather than re-indexing around it. The snapshot's own
+   * contract (contents, position, and the load-bearing empty case) is covered
+   * by `pending-question-resend.test.ts` plus the dedicated test at the end of
+   * this describe.
+   */
+  const attachMessages = (): Array<{ connectionId: UUID; message: ProtocolMessage }> =>
+    sendCalls.filter((c) => c.message.type !== 'question_snapshot');
   let trackedConnections: Array<{ id: UUID; type: string }>;
   let untrackedConnections: UUID[];
   let connectionAddedCount: number;
@@ -121,7 +133,7 @@ describe('createConnectionHandlers', () => {
         platformData: { kind: 'websocket' },
       });
 
-      expect(sendCalls).toHaveLength(1);
+      expect(attachMessages()).toHaveLength(1);
       const msg = sendCalls[0]?.message as {
         type: string;
         sessionId?: unknown;
@@ -144,7 +156,7 @@ describe('createConnectionHandlers', () => {
         platformData: { kind: 'websocket' },
       });
 
-      expect(sendCalls).toHaveLength(1);
+      expect(attachMessages()).toHaveLength(1);
       const msg = sendCalls[0]?.message as { type: string };
       expect(msg.type).toBe('hello_ack');
       expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
@@ -227,7 +239,7 @@ describe('createConnectionHandlers', () => {
       });
 
       // No error; helloAck sent and attach succeeded.
-      expect(sendCalls).toHaveLength(1);
+      expect(attachMessages()).toHaveLength(1);
       const msg = sendCalls[0]?.message as { type: string; sessionId?: UUID };
       expect(msg.type).toBe('hello_ack');
       expect(msg.sessionId).toBe(sessionId);
@@ -255,7 +267,7 @@ describe('createConnectionHandlers', () => {
         platformData: { kind: 'websocket' },
       });
 
-      expect(sendCalls).toHaveLength(2);
+      expect(attachMessages()).toHaveLength(2);
       const ack = sendCalls[0]?.message as {
         type: string;
         isResume?: boolean;
@@ -312,7 +324,62 @@ describe('createConnectionHandlers', () => {
       expect(q.question.text).toBe('Allow Bash: git push');
       // Ordering: hello_ack first, live questions after (and after any replay).
       expect(sendCalls[0]?.message.type).toBe('hello_ack');
-      expect(sendCalls[sendCalls.length - 1]?.message.type).toBe('question');
+      expect(attachMessages().at(-1)?.message.type).toBe('question');
+    });
+
+    test('#808: attach ends with a question_snapshot naming exactly the live ids', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      // One answered, one still pending: the snapshot must name ONLY the live
+      // one, so a client still showing the answered card learns to drop it.
+      const answeredId = generateId();
+      sessionRegistry.addQuestion(sessionId, {
+        id: answeredId,
+        text: 'already answered?',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      sessionRegistry.removeQuestion(sessionId, answeredId);
+      const pendingId = generateId();
+      sessionRegistry.addQuestion(sessionId, {
+        id: pendingId,
+        text: 'Allow Bash: git push',
+        options: [],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      const snapshot = sendCalls.at(-1)?.message;
+      if (snapshot?.type !== 'question_snapshot') throw new Error('expected a trailing snapshot');
+      expect(snapshot.sessionId).toBe(sessionId);
+      expect([...snapshot.questionIds]).toEqual([pendingId]);
+    });
+
+    test('#808: attaching into a session with NO pending questions still sends an empty snapshot', async () => {
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), fakeMessageAPI());
+      setPrimarySessionId(sessionId);
+
+      await makeHandlers().onConnect(CID, {
+        adapterType: 'websocket',
+        platformData: { kind: 'websocket' },
+      });
+
+      // The regression that #808 is actually about: pre-fix this attach sent
+      // hello_ack and nothing else, so a client holding a phantom card from a
+      // resolve it missed while disconnected was never corrected. The empty
+      // snapshot is the correction, and it only exists on this quiet path.
+      const snapshot = sendCalls.at(-1)?.message;
+      if (snapshot?.type !== 'question_snapshot') throw new Error('expected a trailing snapshot');
+      expect([...snapshot.questionIds]).toEqual([]);
     });
 
     test('second concurrent connection also attaches (not queued) and receives helloAck + replay (#795)', async () => {
@@ -342,7 +409,7 @@ describe('createConnectionHandlers', () => {
 
       // The second connection still gets helloAck + replay so it can render
       // history, exactly as before -- only the write-exclusivity is gone.
-      expect(sendCalls).toHaveLength(2);
+      expect(attachMessages()).toHaveLength(2);
       const ack = sendCalls[0]?.message as {
         type: string;
         isResume?: boolean;
@@ -398,7 +465,7 @@ describe('createConnectionHandlers', () => {
 
       await makeHandlers().onConnect(CID, { adapterType: 'websocket' });
 
-      expect(sendCalls).toHaveLength(1);
+      expect(attachMessages()).toHaveLength(1);
       expect((sendCalls[0]?.message as { type: string }).type).toBe('hello_ack');
       expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(true);
     });
