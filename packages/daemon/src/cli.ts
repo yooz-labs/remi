@@ -126,6 +126,7 @@ import { AutoApproveService, resolveProviderUrl } from './auto-approve/index.ts'
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
+import { runModelCommand } from './cli/cmd-model.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
@@ -257,6 +258,13 @@ if (parsedArgs.subcommand === 'config') {
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
+}
+
+// Handle 'model' subcommand (#819): the ollama-style CLI for the local LLM
+// the auto-approve evaluator runs on (catalogue / pull / residency / default).
+// Async, unlike its siblings: every verb talks to the engine over HTTP.
+if (parsedArgs.subcommand === 'model') {
+  process.exit(await runModelCommand(parsedArgs.subcommandArgs, remiConfig));
 }
 
 // Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).

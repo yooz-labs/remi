@@ -28,6 +28,7 @@ const SUBCOMMAND_LIST = [
   'status',
   'logs',
   'serve',
+  'model',
 ] as const;
 
 export type Subcommand = (typeof SUBCOMMAND_LIST)[number];
@@ -42,7 +43,14 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
   'kill',
   'detach',
   'unstick',
+  'model',
 ]);
+
+/** Subcommands that take a VERB plus its own operands (`remi model pull <id>`),
+ *  rather than the single positional every other subcommand takes. Their words
+ *  are collected into `subcommandArgs` instead of falling through to
+ *  `claudeArgs` -- a stray `pull` reaching Claude would be nonsense. #819 */
+const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>(['model']);
 
 export function isSubcommand(s: string): s is Subcommand {
   return SUBCOMMANDS.has(s);
@@ -72,6 +80,10 @@ export interface ParsedArgs {
   readonly uninstall: boolean;
   readonly subcommand: Subcommand | undefined;
   readonly subcommandArg: string | undefined;
+  /** All operands of a verb-taking subcommand (#819): `remi model pull foo` ->
+   *  `['pull', 'foo']`. Empty for every other subcommand; `subcommandArg`
+   *  remains the first element so existing callers are unaffected. */
+  readonly subcommandArgs: readonly string[];
   readonly codeRefresh: boolean;
   readonly permanentCode: boolean;
   readonly force: boolean;
@@ -121,6 +133,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let orphanTimeout: number | undefined;
   let subcommand: Subcommand | undefined;
   let subcommandArg: string | undefined;
+  const subcommandArgs: string[] = [];
   let codeRefresh = false;
   let permanentCode = false;
   let force = false;
@@ -383,7 +396,19 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       showHelp = true;
     } else if (isSubcommand(arg as string)) {
       subcommand = arg as Subcommand;
-      if (SUBCOMMANDS_WITH_POSITIONAL_ARG.has(subcommand) && nextArg && !nextArg.startsWith('-')) {
+      if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
+        // Consume every following operand up to the first flag: the verb and
+        // its arguments both belong to this subcommand.
+        while (args[i + 1] && !(args[i + 1] as string).startsWith('-')) {
+          subcommandArgs.push(args[i + 1] as string);
+          i++;
+        }
+        subcommandArg = subcommandArgs[0];
+      } else if (
+        SUBCOMMANDS_WITH_POSITIONAL_ARG.has(subcommand) &&
+        nextArg &&
+        !nextArg.startsWith('-')
+      ) {
         subcommandArg = nextArg;
         i++;
       } else if (
@@ -429,6 +454,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     uninstall,
     subcommand,
     subcommandArg,
+    subcommandArgs,
     codeRefresh,
     permanentCode,
     force,
