@@ -35,7 +35,7 @@
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
-import type { AgentStatus, Question } from '@remi/shared';
+import type { AgentStatus, Question, QuestionOption } from '@remi/shared';
 
 export interface PushOptions {
   /**
@@ -54,6 +54,44 @@ export interface PushOptions {
  * layer — unless `opts.held` marks the load-bearing held-hook card.
  */
 export type PushQuestion = (question: Question, opts?: PushOptions) => void;
+
+/**
+ * Verdict of a parked-render arbitration (#814).
+ *   - `answered` — the arbiter resolved the rendered prompt itself (the
+ *     auto-approve verdict was injected into the PTY). Do NOT push: the user
+ *     must not be interrupted by a prompt that is already answered.
+ *   - `push` — the arbiter could not (or must not) decide it: push the merged
+ *     card so the user can answer from the phone. `summary` is the model's
+ *     lock-screen one-liner (#628), applied only when the merged question does
+ *     not already carry one.
+ */
+export type ParkedRenderVerdict =
+  | { outcome: 'answered' }
+  | { outcome: 'push'; summary?: string | undefined };
+
+/**
+ * Arbiter for a PARKED subagent question whose prompt has now rendered on the
+ * main PTY (#814). Wired to `AutoApproveGate.arbitrateParkedRender`; absent
+ * (no auto-approve configured, or a tracker built without one) means the
+ * pre-#814 behavior — the render pushes straight to the user.
+ *
+ * MUST NOT reject: the tracker treats a rejection as `push` (fail open to the
+ * user), but the contract is a resolved verdict.
+ *
+ *   - `parkedQuestionId` — the id of the PARKED hook question (what the gate
+ *     tracks in `openQuestionSignatures`), NOT the id of the card that would
+ *     be pushed (that one comes from the PTY question, see `pairAndPush`).
+ *   - `rendered` — the merged question as it would be pushed.
+ *   - `ptyOptions` — the options the PTY parser read off the ACTUAL rendered
+ *     prompt, before the merge policy may have replaced them with the hook's
+ *     (#718). Supplied separately so an arbiter that answers by typing an
+ *     option index can prefer what is literally on screen.
+ */
+export type ParkedRenderArbiter = (ctx: {
+  parkedQuestionId: string;
+  rendered: Question;
+  ptyOptions: readonly QuestionOption[];
+}) => Promise<ParkedRenderVerdict>;
 
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
 function agentKey(question: Question): string {
@@ -180,10 +218,37 @@ export class QuestionPresenceTracker {
    *  (#486), which never re-emits for the tracker to catch on a later tick. */
   private armedOrphanQuestion: Question | null = null;
 
+  /** #814 arbiter for a parked question whose prompt rendered, or null for the
+   *  pre-#814 straight-to-push behavior. Set after construction
+   *  (`setParkedRenderArbiter`) because the tracker is built before the
+   *  auto-approve gate that arbitrates. */
+  private parkedRenderArbiter: ParkedRenderArbiter | null = null;
+
+  /** Parked-render arbitrations currently awaiting a verdict (#814). While
+   *  > 0, a PTY prompt that is NOT itself a parked render is suppressed rather
+   *  than pushed: the main TUI renders one prompt at a time, so a render
+   *  arriving mid-arbitration is the same prompt cycle the arbiter already
+   *  owns (the rising-edge PTY emit, #486, makes an echo rare but not
+   *  impossible — a redraw that changes the fingerprint re-emits). The
+   *  arbiter's own verdict is the release valve; the status/clearPending
+   *  resets zero it so a hung eval cannot suppress pushes indefinitely. */
+  private parkedArbitrationsInFlight = 0;
+
   constructor(
     private readonly push: PushQuestion,
     private readonly deps: QuestionPresenceTrackerDeps = {},
   ) {}
+
+  /**
+   * Wire the #814 parked-render arbiter (the auto-approve gate). Set once, at
+   * session setup, right after the gate is constructed — the tracker itself is
+   * built earlier (it is a dependency of the gate), so this cannot be a
+   * constructor dep. Absent => a parked render pushes immediately, exactly as
+   * before #814.
+   */
+  setParkedRenderArbiter(arbiter: ParkedRenderArbiter): void {
+    this.parkedRenderArbiter = arbiter;
+  }
 
   /**
    * Hook fired (PermissionRequest or Notification(permission_prompt)).
@@ -381,6 +446,23 @@ export class QuestionPresenceTracker {
    * re-capture a prompt that has already won its arbitration.
    */
   private pairAndPush(ptyQuestion: Question): void {
+    const { merged } = this.consumeAndMerge(ptyQuestion);
+    this.ptyShowingQuestion = true;
+    this.pushMerged(merged);
+  }
+
+  /**
+   * Consume the pending hook record this PTY prompt pairs with (if any) and
+   * return the question to push. Extracted from `pairAndPush` (#814) so the
+   * parked-render path can build the same merged question WITHOUT pushing it
+   * yet — the arbiter decides whether it is pushed at all. Mutates `pending` /
+   * `awaitingPTY` exactly as before, so a re-entrant call cannot re-merge the
+   * same record.
+   */
+  private consumeAndMerge(ptyQuestion: Question): {
+    merged: Question;
+    hookRecord: Question | undefined;
+  } {
     const key = agentKey(ptyQuestion);
     let recordKey: string | undefined = this.pending.has(key) ? key : undefined;
     if (recordKey === undefined && this.pending.size === 1) {
@@ -441,7 +523,13 @@ export class QuestionPresenceTracker {
           }
         : ptyQuestion;
 
-    this.ptyShowingQuestion = true;
+    return { merged, hookRecord };
+  }
+
+  /** Push a merged question through the sink. Push errors are caught and
+   *  logged but not rethrown — the next PTY emit for the same prompt retries
+   *  WITHOUT the hook merge, which beats crashing on a network blip. */
+  private pushMerged(merged: Question): void {
     try {
       this.push(merged);
     } catch (err) {
@@ -492,9 +580,32 @@ export class QuestionPresenceTracker {
     const parkedKey = this.matchAwaitingPTYKey(ptyQuestion);
     if (parkedKey !== undefined) {
       console.debug(
-        `[QuestionPresenceTracker] Parked question's prompt rendered; pushing (agent "${parkedKey}"): "${ptyQuestion.text.slice(0, 60)}"`,
+        `[QuestionPresenceTracker] Parked question's prompt rendered (agent "${parkedKey}"): "${ptyQuestion.text.slice(0, 60)}"`,
       );
-      this.pairAndPush(ptyQuestion);
+      const { merged, hookRecord } = this.consumeAndMerge(ptyQuestion);
+      // The prompt IS on screen now: set this before arbitrating, since the
+      // arbiter's own PTY inject is gated on `isPromptVisibleOnPTY()`.
+      this.ptyShowingQuestion = true;
+      // #814: the render is the moment the permission becomes a real question,
+      // so this is where it gets evaluated — the hook that carried it was
+      // answered 'passthrough' long ago. No arbiter (auto-approve off) => push
+      // straight to the user, the pre-#814 behavior.
+      if (this.parkedRenderArbiter !== null && hookRecord !== undefined) {
+        this.arbitrateParkedRender(hookRecord.id, merged, ptyQuestion.options);
+        return;
+      }
+      this.pushMerged(merged);
+      return;
+    }
+    if (this.parkedArbitrationsInFlight > 0) {
+      // A parked render is being evaluated right now. The main TUI shows one
+      // prompt at a time, so this render belongs to the cycle the arbiter
+      // already owns; its verdict pushes (escalate) or answers (approve) that
+      // prompt. Pushing here too would race the verdict and could card a
+      // prompt that is about to be auto-answered — the #625 phantom shape.
+      console.debug(
+        `[QuestionPresenceTracker] PTY prompt suppressed during parked-render arbitration: "${ptyQuestion.text.slice(0, 60)}"`,
+      );
       return;
     }
     if (this.mainEvalsInFlight > 0) {
@@ -514,6 +625,80 @@ export class QuestionPresenceTracker {
       return;
     }
     this.armOrphanTimer(ptyQuestion);
+  }
+
+  /**
+   * Run the #814 arbitration for a parked question whose prompt just rendered:
+   * hand it to the gate, and push the merged card only if the gate says the
+   * user must answer it.
+   *
+   * Three guards, all learned from the phantom-card work (#798/#799/#808):
+   *   - the verdict is awaited OUT of band (the PTY parse callback must not
+   *     block on an LLM), so `parkedArbitrationsInFlight` suppresses a
+   *     competing push for the same prompt cycle meanwhile;
+   *   - a rejected/throwing arbiter fails OPEN to a push — never silently
+   *     swallows a real prompt;
+   *   - a `push` verdict that lands after the prompt LEFT the screen
+   *     (`ptyShowingQuestion` cleared by a status transition — the user
+   *     answered in the terminal, or Claude advanced) is dropped, because
+   *     that card would be a phantom the moment it arrived.
+   */
+  private arbitrateParkedRender(
+    parkedQuestionId: string,
+    merged: Question,
+    ptyOptions: readonly QuestionOption[],
+  ): void {
+    const arbiter = this.parkedRenderArbiter;
+    if (arbiter === null) {
+      this.pushMerged(merged);
+      return;
+    }
+    this.parkedArbitrationsInFlight += 1;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      this.parkedArbitrationsInFlight = Math.max(0, this.parkedArbitrationsInFlight - 1);
+    };
+    let pending: Promise<ParkedRenderVerdict>;
+    try {
+      pending = arbiter({ parkedQuestionId, rendered: merged, ptyOptions });
+    } catch (err) {
+      // A synchronous throw from the arbiter (contract violation): fail open.
+      console.error(
+        `[QuestionPresenceTracker] parked-render arbiter threw: ${err instanceof Error ? err.message : String(err)}; pushing`,
+      );
+      settle();
+      this.pushMerged(merged);
+      return;
+    }
+    void pending
+      .catch((err): ParkedRenderVerdict => {
+        console.error(
+          `[QuestionPresenceTracker] parked-render arbiter rejected: ${err instanceof Error ? err.message : String(err)}; pushing`,
+        );
+        return { outcome: 'push' };
+      })
+      .then((verdict) => {
+        settle();
+        if (verdict.outcome === 'answered') {
+          console.debug(
+            `[QuestionPresenceTracker] Parked render auto-answered by the gate; no push: "${merged.text.slice(0, 60)}"`,
+          );
+          return;
+        }
+        if (!this.ptyShowingQuestion) {
+          console.debug(
+            `[QuestionPresenceTracker] Parked render left the screen during arbitration; dropping the push: "${merged.text.slice(0, 60)}"`,
+          );
+          return;
+        }
+        this.pushMerged(
+          verdict.summary !== undefined && merged.summary === undefined
+            ? { ...merged, summary: verdict.summary }
+            : merged,
+        );
+      });
   }
 
   /** True when the auto-approve gate already owns `ptyQuestion`'s prompt
@@ -618,6 +803,12 @@ export class QuestionPresenceTracker {
       // agent advanced) or left the screen. Discard it — do not ping the user.
       this.mainEvalsInFlight = 0;
       this.bufferedDuringEval = null;
+      // #814: the prompt cycle an in-flight parked arbitration belongs to is
+      // over. Its own verdict is still handled (a `push` is dropped by the
+      // cleared `ptyShowingQuestion` above), but the suppression window must
+      // not outlive the cycle — a hung eval would otherwise swallow every
+      // later prompt.
+      this.parkedArbitrationsInFlight = 0;
       // New prompt cycle starts fresh: a held push from the prior cycle must not
       // suppress an identical id in a future one (ids are unique, so this is
       // belt-and-suspenders, but keeps the set bounded). (#573)
@@ -697,6 +888,9 @@ export class QuestionPresenceTracker {
     this.mainEvalsInFlight = 0;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();
+    // #814: same reasoning as the status reset — the cycle is gone, so the
+    // suppression window must not survive it.
+    this.parkedArbitrationsInFlight = 0;
     // #712: the prompt was answered in-terminal or the session is rotating —
     // either way an armed orphan timer for it must not fire a stale push.
     this.cancelOrphanTimer();
@@ -767,5 +961,10 @@ export class QuestionPresenceTracker {
   /** Test-only: whether an orphan-prompt debounce timer is currently armed. */
   hasArmedOrphanTimerForTest(): boolean {
     return this.orphanTimer !== null;
+  }
+
+  /** Test-only: parked-render arbitrations awaiting a verdict (#814). */
+  parkedArbitrationsForTest(): number {
+    return this.parkedArbitrationsInFlight;
   }
 }

@@ -5,6 +5,7 @@ import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker
 import {
   type AutoApproveEvaluator,
   AutoApproveGate,
+  autoAnswerValue,
 } from '../../src/auto-approve/auto-approve-gate.ts';
 import type { AutoApproveResult } from '../../src/auto-approve/types.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -2928,5 +2929,484 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
     expect(registry.getQuestion(SID, qid1)).toBeNull(); // agent-1's is resolved
     expect(registry.getQuestion(SID, qid2)).not.toBeNull(); // agent-2's is untouched
     expect(resolvedLog).toEqual([{ qid: qid1, reason: 'cancelled' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #814: a PARKED subagent permission is evaluated when (and only when) its
+// prompt actually RENDERS on the main PTY. approve/deny/pick are typed into
+// that prompt; anything the policy will not decide becomes a card for the user.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate parked-render arbitration (#814)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let parkedIds: UUID[];
+  let submits: string[];
+  let evalCalls: Array<{ toolName: string; isSubagent: boolean | undefined }>;
+  let tracker: QuestionPresenceTracker;
+  let resolvedLog: Array<{ qid: UUID; reason: string }>;
+
+  /** Hook-derived permission options: plain Yes, a persisting "always" option,
+   *  and No — the shape `optionsFromSuggestions` produces (#718). */
+  const HOOK_OPTIONS = [
+    { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+    {
+      label: 'Yes, always allow: git push',
+      value: '2',
+      isRecommended: false,
+      isYes: true,
+      isNo: false,
+      suggestionIndex: 0,
+    },
+    { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
+  ];
+
+  /** PTY-parsed numbered options: NO isYes/isNo flags at all (see
+   *  question-parser.ts), so identification falls to the label heuristic. */
+  const PTY_OPTIONS = [
+    { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+    {
+      label: "Yes, and don't ask again for git push commands",
+      value: '2',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    },
+    {
+      label: 'No, and tell Claude what to do differently (esc)',
+      value: '3',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    },
+  ];
+
+  function rendered(id: UUID, options = HOOK_OPTIONS) {
+    return {
+      id,
+      text: 'reviewer · Bash: git push',
+      options,
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    };
+  }
+
+  function gate(
+    result: AutoApproveResult | null,
+    opts: { throws?: boolean; secondResult?: AutoApproveResult; ptyThrows?: boolean } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY(submits, { throws: opts.ptyThrows ?? false }), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const service: AutoApproveEvaluator | null =
+      result === null
+        ? null
+        : {
+            evaluate: async (
+              toolName,
+              _toolInput,
+              _tag,
+              _suggestions,
+              modelOverride,
+              _evalId,
+              _scope,
+              isSubagent,
+            ) => {
+              evalCalls.push({ toolName, isSubagent });
+              if (opts.throws) throw new Error('test: llm provider down');
+              if (modelOverride === 'big-model' && opts.secondResult) return opts.secondResult;
+              return result;
+            },
+            cancel: () => true,
+          };
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
+        ...(opts.secondResult ? { escalateModel: 'big-model' } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(command = 'git push'): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+    };
+  }
+
+  /** Put a prompt on the "screen" so the gate's subagent inject gate passes. */
+  function promptOnScreen(): void {
+    tracker.onPTYPromptVisible({
+      id: generateId(),
+      text: 'Do you want to proceed?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    parkedIds = [];
+    submits = [];
+    evalCalls = [];
+    resolvedLog = [];
+    tracker = new QuestionPresenceTracker(() => {});
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('approve types the plain Yes into the rendered prompt and never pushes', async () => {
+    const g = gate(approve);
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    expect(evalCalls).toHaveLength(0); // #807: not evaluated at hook time
+    promptOnScreen();
+
+    const verdict = await g.arbitrateParkedRender(
+      parkedIds[0] as UUID,
+      rendered(generateId() as UUID),
+      PTY_OPTIONS,
+    );
+
+    expect(verdict).toEqual({ outcome: 'answered' });
+    expect(evalCalls).toEqual([{ toolName: 'Bash', isSubagent: true }]);
+    expect(submits).toEqual(['1']);
+  });
+
+  test('deny types the No option (the same option a phone "No" resolves to)', async () => {
+    const g = gate(deny);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    const verdict = await g.arbitrateParkedRender(
+      parkedIds[0] as UUID,
+      rendered(generateId() as UUID),
+      PTY_OPTIONS,
+    );
+
+    expect(verdict).toEqual({ outcome: 'answered' });
+    expect(submits).toEqual(['3']);
+  });
+
+  test('pick types the 1-based index', async () => {
+    const g = gate(pick(2));
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    expect(
+      await g.arbitrateParkedRender(parkedIds[0] as UUID, rendered(generateId() as UUID), []),
+    ).toEqual({ outcome: 'answered' });
+    expect(submits).toEqual(['2']);
+  });
+
+  test('never auto-picks a PERSISTING option: only the one-time Yes is typed', async () => {
+    const g = gate(approve);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    await g.arbitrateParkedRender(
+      parkedIds[0] as UUID,
+      // Only "always" flavors offered plus No: nothing safe to auto-answer.
+      rendered(generateId() as UUID, [
+        {
+          label: 'Yes, always allow: git push',
+          value: '1',
+          isRecommended: true,
+          isYes: true,
+          isNo: false,
+          suggestionIndex: 0,
+        },
+        { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: true },
+      ]),
+      [],
+    );
+
+    expect(submits).toHaveLength(0); // escalated instead of persisting a rule
+  });
+
+  test('escalate becomes a push carrying the model summary', async () => {
+    const g = gate(escalateWithSummary);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    const verdict = await g.arbitrateParkedRender(
+      parkedIds[0] as UUID,
+      rendered(generateId() as UUID),
+      PTY_OPTIONS,
+    );
+
+    expect(verdict).toEqual({ outcome: 'push', summary: 'Force-push to main?' });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('escalate_model second opinion can still answer it before the user is bothered', async () => {
+    const g = gate(escalate, { secondResult: approve });
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    const verdict = await g.arbitrateParkedRender(
+      parkedIds[0] as UUID,
+      rendered(generateId() as UUID),
+      PTY_OPTIONS,
+    );
+
+    expect(verdict).toEqual({ outcome: 'answered' });
+    expect(submits).toEqual(['1']);
+    expect(evalCalls).toHaveLength(2); // primary + second opinion
+  });
+
+  test('an eval error pushes rather than guessing', async () => {
+    const g = gate(approve, { throws: true });
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    expect(
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(generateId() as UUID),
+        PTY_OPTIONS,
+      ),
+    ).toEqual({ outcome: 'push' });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('a cancelled eval pushes, never fabricates an answer', async () => {
+    const g = gate(cancelled);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    expect(
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(generateId() as UUID),
+        PTY_OPTIONS,
+      ),
+    ).toEqual({ outcome: 'push' });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('approve with no identifiable option pushes instead of typing a guess (#751 hazard)', async () => {
+    const g = gate(approve);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    expect(
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(generateId() as UUID, [
+          { label: 'Proceed', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'Abort', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ]),
+        [],
+      ),
+    ).toEqual({ outcome: 'push' });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('a prompt that left the screen mid-flight is never typed into', async () => {
+    const g = gate(approve);
+    await g.resolvePermission(pr());
+    // No promptOnScreen(): isPromptVisibleOnPTY() is false, exactly as after
+    // the user answered in the terminal.
+
+    expect(
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(generateId() as UUID),
+        PTY_OPTIONS,
+      ),
+    ).toEqual({ outcome: 'push' });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('an inject failure falls back to the user', async () => {
+    const g = gate(approve, { ptyThrows: true });
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    expect(
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(generateId() as UUID),
+        PTY_OPTIONS,
+      ),
+    ).toEqual({ outcome: 'push' });
+  });
+
+  test('exactly ONE evaluation per park: a second render does not re-evaluate', async () => {
+    const g = gate(escalate);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+    const qid = parkedIds[0] as UUID;
+
+    await g.arbitrateParkedRender(qid, rendered(generateId() as UUID), PTY_OPTIONS);
+    const second = await g.arbitrateParkedRender(qid, rendered(generateId() as UUID), PTY_OPTIONS);
+
+    expect(evalCalls).toHaveLength(1);
+    expect(second).toEqual({ outcome: 'push' });
+  });
+
+  test('no auto-approve service: pushes without evaluating (pre-#814 behavior)', async () => {
+    const g = gate(null);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+
+    expect(
+      await g.arbitrateParkedRender(
+        parkedIds[0] as UUID,
+        rendered(generateId() as UUID),
+        PTY_OPTIONS,
+      ),
+    ).toEqual({ outcome: 'push' });
+    expect(evalCalls).toHaveLength(0);
+  });
+
+  test('an unknown parked id pushes without evaluating', async () => {
+    const g = gate(approve);
+    expect(
+      await g.arbitrateParkedRender(
+        generateId() as UUID,
+        rendered(generateId() as UUID),
+        PTY_OPTIONS,
+      ),
+    ).toEqual({ outcome: 'push' });
+    expect(evalCalls).toHaveLength(0);
+  });
+
+  test('a pushed render is resolvable by its RENDERED id: the signature is re-keyed', async () => {
+    const g = gate(escalate);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+    const renderedId = generateId() as UUID;
+
+    expect(
+      await g.arbitrateParkedRender(parkedIds[0] as UUID, rendered(renderedId), PTY_OPTIONS),
+    ).toEqual({ outcome: 'push' });
+    // The tracker pushes the MERGED question, whose id is the PTY question's.
+    registry.addQuestion(SID, rendered(renderedId));
+
+    // The subagent's tool now runs => it was answered in the terminal.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PreToolUse-subagent',
+    );
+
+    expect(registry.getQuestion(SID, renderedId)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid: renderedId, reason: 'cancelled' }]);
+  });
+
+  test('an auto-answered render leaves NO open escalation behind (a deny fires no tool call)', async () => {
+    const g = gate(deny);
+    await g.resolvePermission(pr());
+    promptOnScreen();
+    const qid = parkedIds[0] as UUID;
+
+    expect(await g.arbitrateParkedRender(qid, rendered(generateId() as UUID), PTY_OPTIONS)).toEqual(
+      {
+        outcome: 'answered',
+      },
+    );
+
+    // Nothing left for SubagentStop to resolve: no phantom resolution fires.
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+    expect(resolvedLog).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #814: the pure verdict -> PTY-input mapping.
+// ---------------------------------------------------------------------------
+describe('autoAnswerValue (#814)', () => {
+  const yes = { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false };
+  const always = {
+    label: 'Yes, always allow: git push',
+    value: '2',
+    isRecommended: false,
+    isYes: true,
+    isNo: false,
+    suggestionIndex: 0,
+  };
+  const no = { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true };
+  const ptyNumbered = [
+    { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+    {
+      label: "Yes, and don't ask again for git push commands",
+      value: '2',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    },
+    {
+      label: 'No, and tell Claude what to do differently (esc)',
+      value: '3',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    },
+  ];
+
+  test('approve resolves the flagged one-time Yes', () => {
+    expect(autoAnswerValue(approve, [yes, always, no], [])).toBe('1');
+  });
+
+  test('approve resolves an unflagged PTY-parsed Yes by label', () => {
+    expect(autoAnswerValue(approve, [], ptyNumbered)).toBe('1');
+  });
+
+  test('approve never resolves a persisting ("always" / "don\'t ask again") option', () => {
+    expect(autoAnswerValue(approve, [always, no], [])).toBeUndefined();
+    expect(
+      autoAnswerValue(approve, [], [ptyNumbered[1] as never, ptyNumbered[2] as never]),
+    ).toBeUndefined();
+  });
+
+  test('deny resolves the No option by flag or by label', () => {
+    expect(autoAnswerValue(deny, [yes, no], [])).toBe('3');
+    expect(autoAnswerValue(deny, [], ptyNumbered)).toBe('3');
+  });
+
+  test('the ON-SCREEN options win over the merged card options (numbering ground truth)', () => {
+    // Hook options say Yes = "1"; the rendered prompt happens to number it "2".
+    const shifted = [
+      { label: 'No', value: '1', isRecommended: false, isYes: false, isNo: false },
+      { label: 'Yes', value: '2', isRecommended: true, isYes: false, isNo: false },
+    ];
+    expect(autoAnswerValue(approve, [yes, no], shifted)).toBe('2');
+  });
+
+  test('pick maps to its index; escalate/cancelled map to nothing', () => {
+    expect(autoAnswerValue(pick(3), [yes, no], [])).toBe('3');
+    expect(autoAnswerValue(escalate, [yes, no], [])).toBeUndefined();
+    expect(autoAnswerValue(cancelled, [yes, no], [])).toBeUndefined();
+  });
+
+  test('no options at all resolves to nothing (caller escalates)', () => {
+    expect(autoAnswerValue(approve, [], [])).toBeUndefined();
+    expect(autoAnswerValue(deny, [], [])).toBeUndefined();
   });
 });

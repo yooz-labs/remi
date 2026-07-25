@@ -1150,3 +1150,177 @@ describe('QuestionPresenceTracker', () => {
     });
   });
 });
+
+describe('parked-render arbitration (#814)', () => {
+  const DEBOUNCE_MS = 20;
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const flush = () => wait(0);
+
+  function trackerWith(
+    pushes: Question[],
+    arbiter: Parameters<QuestionPresenceTracker['setParkedRenderArbiter']>[0],
+  ): QuestionPresenceTracker {
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+      hasLiveQuestions: () => false,
+      orphanDebounceMs: DEBOUNCE_MS,
+    });
+    tracker.setParkedRenderArbiter(arbiter);
+    return tracker;
+  }
+
+  it('an "answered" verdict pushes NOTHING: the gate typed the answer for the user', async () => {
+    const pushes: Question[] = [];
+    const tracker = trackerWith(pushes, async () => ({ outcome: 'answered' }));
+    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+    expect(pushes).toHaveLength(0); // not pushed synchronously either
+    await flush();
+
+    expect(pushes).toHaveLength(0);
+    expect(tracker.parkedArbitrationsForTest()).toBe(0);
+  });
+
+  it('a "push" verdict pushes the merged card, with the model summary attached', async () => {
+    const pushes: Question[] = [];
+    const tracker = trackerWith(pushes, async () => ({
+      outcome: 'push',
+      summary: 'Force-push to main?',
+    }));
+    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+    await flush();
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.text).toBe('reviewer · Bash: git push'); // merged, as before
+    expect(pushes[0]?.summary).toBe('Force-push to main?');
+  });
+
+  it('the arbiter receives the parked question id and the ON-SCREEN options', async () => {
+    const seen: Array<{ parkedQuestionId: string; ptyOptionValues: string[] }> = [];
+    const pushes: Question[] = [];
+    const parked = makePermissionRequestHook('reviewer · Bash: git push');
+    const tracker = trackerWith(pushes, async (ctx) => {
+      seen.push({
+        parkedQuestionId: ctx.parkedQuestionId,
+        ptyOptionValues: ctx.ptyOptions.map((o) => o.value),
+      });
+      return { outcome: 'answered' };
+    });
+    tracker.parkAwaitingPTY(parked);
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+    await flush();
+
+    expect(seen).toEqual([{ parkedQuestionId: parked.id, ptyOptionValues: ['1', '2', '3'] }]);
+  });
+
+  it('a rejected arbiter fails OPEN to a push (never swallows a real prompt)', async () => {
+    const pushes: Question[] = [];
+    const tracker = trackerWith(pushes, async () => {
+      throw new Error('test: arbiter exploded');
+    });
+    tracker.parkAwaitingPTY(makePermissionRequestHook());
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion());
+    await flush();
+
+    expect(pushes).toHaveLength(1);
+    expect(tracker.parkedArbitrationsForTest()).toBe(0);
+  });
+
+  it('a SYNCHRONOUSLY throwing arbiter fails open too', async () => {
+    const pushes: Question[] = [];
+    const tracker = trackerWith(pushes, (() => {
+      throw new Error('test: arbiter exploded synchronously');
+    }) as never);
+    tracker.parkAwaitingPTY(makePermissionRequestHook());
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion());
+
+    expect(pushes).toHaveLength(1);
+    expect(tracker.parkedArbitrationsForTest()).toBe(0);
+  });
+
+  it('a push verdict that lands AFTER the prompt left the screen is dropped (no phantom card)', async () => {
+    const pushes: Question[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tracker = trackerWith(pushes, async () => {
+      await gate;
+      return { outcome: 'push' };
+    });
+    tracker.parkAwaitingPTY(makePermissionRequestHook());
+    tracker.onOrphanPTYPrompt(makePTYQuestion());
+
+    // The user answered in the terminal while the eval was running.
+    tracker.onStatusChange('executing');
+    release?.();
+    await flush();
+
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('suppresses a competing PTY render while an arbitration is in flight, then recovers', async () => {
+    const pushes: Question[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tracker = trackerWith(pushes, async () => {
+      await gate;
+      return { outcome: 'push' };
+    });
+    tracker.parkAwaitingPTY(makePermissionRequestHook());
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+    expect(tracker.parkedArbitrationsForTest()).toBe(1);
+
+    // A re-render of the same prompt cycle must not push a second card.
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+    await wait(DEBOUNCE_MS * 2);
+    expect(pushes).toHaveLength(0);
+    expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
+
+    release?.();
+    await flush();
+    expect(pushes).toHaveLength(1); // the arbitrated prompt itself
+    expect(tracker.parkedArbitrationsForTest()).toBe(0);
+
+    // Suppression is over: a later genuine orphan pushes normally.
+    tracker.onOrphanPTYPrompt(makePTYQuestion('a later unrelated prompt'));
+    await wait(DEBOUNCE_MS * 2);
+    expect(pushes).toHaveLength(2);
+  });
+
+  it('a hung arbitration cannot suppress prompts past its own prompt cycle', async () => {
+    const pushes: Question[] = [];
+    const tracker = trackerWith(pushes, () => new Promise(() => {}));
+    tracker.parkAwaitingPTY(makePermissionRequestHook());
+    tracker.onOrphanPTYPrompt(makePTYQuestion());
+    expect(tracker.parkedArbitrationsForTest()).toBe(1);
+
+    tracker.onStatusChange('executing'); // the cycle ended
+
+    expect(tracker.parkedArbitrationsForTest()).toBe(0);
+    tracker.onOrphanPTYPrompt(makePTYQuestion('a later unrelated prompt'));
+    await wait(DEBOUNCE_MS * 2);
+    expect(pushes).toHaveLength(1);
+  });
+
+  it('without an arbiter a parked render still pushes SYNCHRONOUSLY (pre-#814 behavior)', () => {
+    const pushes: Question[] = [];
+    const tracker = new QuestionPresenceTracker((q) => pushes.push(q), {
+      hasLiveQuestions: () => false,
+      orphanDebounceMs: DEBOUNCE_MS,
+    });
+    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+
+    tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.text).toBe('reviewer · Bash: git push');
+  });
+});

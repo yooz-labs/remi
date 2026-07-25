@@ -491,6 +491,24 @@ export function setupHookBridge(
     sessionId,
   );
 
+  // #814: with auto-approve configured, a PARKED subagent permission whose
+  // prompt actually renders on the main PTY is evaluated AT THAT MOMENT — the
+  // hook it arrived on was answered 'passthrough' long before (#807), so the
+  // render is the first point where we know a human would be interrupted. The
+  // gate answers it by PTY inject when it can, and only escalates (push) what
+  // the policy will not decide. Wired only when a service exists: without one
+  // there is nothing to evaluate, and the tracker keeps its pre-#814 behavior
+  // of pushing a parked render straight through (synchronously).
+  if (autoApproveService) {
+    tracker.setParkedRenderArbiter((ctx) =>
+      autoApproveGate.arbitrateParkedRender(
+        ctx.parkedQuestionId as UUID,
+        ctx.rendered,
+        ctx.ptyOptions,
+      ),
+    );
+  }
+
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
   // transcript, so session-id filtering cannot distinguish them.
