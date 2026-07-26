@@ -227,15 +227,60 @@ export async function runModelCommand(
   try {
     switch (verb) {
       case 'status': {
-        const s = reachable.status;
+        // Report the model REMI will use, not whatever the engine's TouchUp
+        // picker happens to have active. `/v1/llm/status` (`reachable.status`)
+        // describes the ACTIVE TIER ONLY — so on an engine whose picker sits on
+        // `yooz-light-v3`, this used to print that as `model:` and, worse,
+        // print ITS residency as `loaded:`. A user would read "loaded: yes" and
+        // conclude remi was warm while remi's own model was not resident at all.
+        //
+        // Sourced from the disk inventory (`/v1/models`), which is
+        // catalogue-wide. `/v1/state` is NOT usable here: it is scoped to the
+        // picker's rows, so a generate-only catalogue model (the default) is
+        // simply absent from it (verified live 2026-07-26; yooz-engine#307).
+        const configured = aa.model;
+        const row = await inventory(baseUrl)
+          .then((all) => all.find((m) => m.id === configured))
+          .catch(() => undefined);
+
         io.out(`engine:   ${baseUrl} (reachable, ${aa.engine})`);
-        io.out(`model:    ${s.modelId ?? aa.model} (configured: ${aa.model})`);
-        io.out(`loaded:   ${s.loaded ? 'yes' : 'no'}`);
-        if (s.state !== undefined) io.out(`state:    ${s.state}`);
-        if (s.progress !== undefined) {
-          io.out(`download: ${Math.round(s.progress * 100)}% in flight`);
+        io.out(`model:    ${configured}`);
+        if (row === undefined) {
+          // Do NOT report this as "not served". The engine accepts a model's
+          // HuggingFace repo id as an ALIAS (`YoozLabs/Qwen3.5-4B-...` resolves
+          // to `yooz-instruct-4b`), but neither `/v1/models` nor
+          // `/v1/llm/models` exposes that mapping — so when the configured
+          // value is an alias, which it is by default, an id comparison finds
+          // nothing even though the model is present and working. Claiming it
+          // is missing would be a false alarm on the default config
+          // (yooz-engine#308 asks for the mapping so this can be resolved).
+          io.out("state:    unknown — this engine's listing does not name it");
+          io.out('          (a HuggingFace-style id resolves server-side, so');
+          io.out('           this is expected until yooz-engine#308)');
+        } else {
+          io.out(`loaded:   ${row.loaded ? 'yes' : 'no'}`);
+          io.out(`on disk:  ${row.cached ? 'yes' : 'no'}`);
+          io.out(`size:     ${formatSize(row.sizeBytes)}`);
         }
-        if (s.lastError !== undefined) io.out(`error:    ${s.lastError}`);
+        // `/v1/llm/status` carries the live load state and the last load
+        // ERROR, which the inventory does not — worth surfacing, because "not
+        // loaded" and "failed to load, disk full" are very different problems.
+        // But it describes the ACTIVE TIER, so it is only OUR error when the
+        // active tier IS our model. Attributing another model's failure to
+        // remi's would be the same misreport this block exists to fix.
+        const s = reachable.status;
+        const statusIsOurs = s.modelId === undefined || s.modelId === configured;
+        if (statusIsOurs) {
+          if (s.state !== undefined) io.out(`state:    ${s.state}`);
+          if (s.progress !== undefined) {
+            io.out(`download: ${Math.round(s.progress * 100)}% in flight`);
+          }
+          if (s.lastError !== undefined) io.out(`error:    ${s.lastError}`);
+        } else {
+          // The picker's active tier belongs to whoever owns TouchUp, but it
+          // shares the GPU, so name it rather than hiding it.
+          io.out(`engine picker: ${s.modelId} (not used by remi)`);
+        }
         return 0;
       }
       case 'ls': {

@@ -151,19 +151,73 @@ describe('remi model ls / ps', () => {
 
 describe('remi model status', () => {
   test('reports the engine, the model, and an in-flight download', async () => {
+    // The status fixture must name the CONFIGURED model: `/v1/llm/status`
+    // describes the engine's active tier, so a download it reports is only
+    // remi's when that tier is remi's model. (The fixture used to say
+    // `yooz-light-v3` while the config asked for something else, and expected
+    // remi to claim that download as its own — the misattribution this
+    // command was fixed to stop.)
     const t = io();
+    const configured = DEFAULT_CONFIG.auto_approve.model;
     const code = await runModelCommand(['status'], configWith(), t.io, {
       probe: async (): Promise<EngineProbe> => ({
         reachable: true,
-        status: { loaded: false, modelId: 'yooz-light-v3', progress: 0.37, state: 'downloading' },
+        status: { loaded: false, modelId: configured, progress: 0.37, state: 'downloading' },
       }),
     });
 
     expect(code).toBe(0);
     const text = t.out.join('\n');
     expect(text).toContain('reachable');
-    expect(text).toContain('yooz-light-v3');
+    expect(text).toContain(configured);
     expect(text).toContain('37%');
+  });
+
+  test('an alias the engine lists under a canonical id is not called missing', async () => {
+    // The default config names a HuggingFace repo id, which the engine
+    // resolves server-side to a canonical catalogue id -- and neither model
+    // listing exposes that mapping. So an id comparison finds nothing for a
+    // model that is present and working. Reporting "not served" there would
+    // be a false alarm on the SHIPPED default (yooz-engine#308).
+    const t = io();
+    await runModelCommand(['status'], configWith({ model: 'YoozLabs/Some-Repo-Id' }), t.io, {
+      probe: async (): Promise<EngineProbe> => ({ reachable: true, status: { loaded: true } }),
+      // The engine lists it under its canonical id, not the alias.
+      inventory: async () => [
+        {
+          id: 'yooz-instruct-4b',
+          module: 'llm',
+          displayName: 'Yooz-Instruct-4B',
+          sizeBytes: 2_387_349_504,
+          cached: true,
+          loaded: false,
+          isActive: false,
+          deletable: true,
+        },
+      ],
+    });
+
+    const text = t.out.join('\n');
+    expect(text).not.toContain('not served');
+    expect(text).toContain('unknown');
+  });
+
+  test('never reports another model’s state as remi’s', async () => {
+    // The engine's picker sits on a different tier and is mid-download. None
+    // of that is remi's: reporting it would tell a user their model is busy or
+    // warm when it is neither.
+    const t = io();
+    await runModelCommand(['status'], configWith(), t.io, {
+      probe: async (): Promise<EngineProbe> => ({
+        reachable: true,
+        status: { loaded: true, modelId: 'yooz-light-v3', progress: 0.37, state: 'downloading' },
+      }),
+    });
+
+    const text = t.out.join('\n');
+    expect(text).not.toContain('37%');
+    // ...but it is named, not hidden — it shares the GPU.
+    expect(text).toContain('engine picker: yooz-light-v3');
   });
 
   test('surfaces a failed load rather than reporting a bare "not loaded"', async () => {
