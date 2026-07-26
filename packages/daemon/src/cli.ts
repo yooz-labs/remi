@@ -132,6 +132,7 @@ import {
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
+import { runModelCommand } from './cli/cmd-model.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
@@ -266,6 +267,13 @@ if (parsedArgs.subcommand === 'config') {
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
+}
+
+// Handle 'model' subcommand (#819): the ollama-style CLI for the local LLM
+// the auto-approve evaluator runs on (catalogue / pull / residency / default).
+// Async, unlike its siblings: every verb talks to the engine over HTTP.
+if (parsedArgs.subcommand === 'model') {
+  process.exit(await runModelCommand(parsedArgs.subcommandArgs, remiConfig));
 }
 
 // Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).
@@ -850,9 +858,13 @@ let autoApproveService: AutoApproveService | null = null;
     writeToLog(
       `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}, ${queueSummary}`,
     );
-    // Warm-load the heavy second-opinion model so the first escalation is not a
-    // cold start. Best-effort, fire-and-forget (never blocks daemon startup).
-    void autoApproveService.warmEscalateModel();
+    // NOT warmed here (#818 advisory). `escalate_model` is typically a large
+    // model -- a 35B is ~20 GB resident -- and warming at daemon boot means
+    // merely CREATING a session pulls those weights in, even for a session
+    // that never sees a permission, only for keep_alive to evict them 30
+    // minutes later. Pure heat, multiplied by every session in a fleet. The
+    // service now warms on its FIRST evaluation instead, which still lands
+    // long before a typical escalation.
   }
 }
 
@@ -919,8 +931,8 @@ const binderClosers: Map<UUID, () => void> = new Map();
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
- * get me out" lever when Ollama + a question are stuck and the phone has no device
- * visibility. Each gate releases its held hooks to passthrough (native prompt),
+ * get me out" lever when an LLM eval + a question are stuck and the phone has no
+ * device visibility. Each gate releases its held hooks to passthrough (native prompt),
  * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
  * zero sessions.
  */

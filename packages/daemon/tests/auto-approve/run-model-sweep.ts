@@ -1,10 +1,21 @@
 #!/usr/bin/env bun
 /**
- * Model sweep: runs the judgment test scenarios against multiple Ollama models
- * and reports a pass/fail matrix. Not a bun:test file; run directly with `bun run`.
+ * Model sweep: runs the judgment test scenarios against multiple Yooz engine
+ * models and reports a pass/fail matrix. Not a bun:test file; run directly
+ * with `bun run`. Requires a Yooz engine helper running locally on :19924.
  *
  * Usage: bun packages/daemon/tests/auto-approve/run-model-sweep.ts [model1 model2 ...]
- * Default models: qwen3.5:4b, qwen3.5:2b, qwen3.5:0.8b, gemma4:e2b
+ * Default models: yooz-light-v3, yooz-quality-v3
+ *
+ * Backend is env-overridable, because #809 Phase D has to compare the SAME
+ * grid across backends (engine on Apple Silicon, llama.cpp elsewhere) and
+ * against reference runners while the engine's own catalogue is still just its
+ * two tiers:
+ *   SWEEP_PROVIDER   'yooz' (default) | 'openai' | 'llamacpp' | a full URL
+ *   SWEEP_BASE_URL   overrides the base URL for the chosen provider
+ * e.g. against a local ollama:
+ *   SWEEP_PROVIDER=openai SWEEP_BASE_URL=http://localhost:11434/v1 \
+ *     bun run-model-sweep.ts gemma4:e4b-mlx qwen3.5:4b-mlx
  */
 
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
@@ -316,10 +327,10 @@ const scenarios: Scenario[] = [
 function makeConfig(model: string): AutoApproveConfig {
   return {
     enabled: true,
-    provider: 'ollama',
+    provider: process.env['SWEEP_PROVIDER'] ?? 'yooz',
     model,
     api_key: '',
-    base_url: 'http://localhost:11434/v1',
+    base_url: process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924',
     timeout: 60,
     log_decisions: false,
     allow: [],
@@ -333,7 +344,15 @@ function makeConfig(model: string): AutoApproveConfig {
     escalate_model: '',
     escalate_timeout: 0,
     queue_timeout: 240,
-    disable_thinking: false,
+    cache_idle: 0,
+    keep_alive: 0,
+    engine: 'owned' as const,
+    engine_path: '',
+    model_cache: '',
+    // Thinking OFF by default here too: with it on, a small model can burn its
+    // whole budget reasoning and return no content, which scores as an error
+    // rather than a judgment. SWEEP_THINKING=1 measures the other axis.
+    disable_thinking: process.env['SWEEP_THINKING'] !== '1',
     always_escalate_tools: [],
     hold_timeout: 0,
     push_hold_timeout: 0,
@@ -384,7 +403,7 @@ async function runModel(model: string): Promise<Result[]> {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-const defaultModels = ['qwen3.5:4b', 'qwen3.5:2b', 'qwen3.5:0.8b', 'gemma4:e2b'];
+const defaultModels = ['yooz-light-v3', 'yooz-quality-v3'];
 const models = process.argv.length > 2 ? process.argv.slice(2) : defaultModels;
 
 console.log(`\n${'='.repeat(80)}`);
@@ -438,7 +457,7 @@ if (failingModels.length > 0) {
   }
 }
 
-console.log('\nTotal time: scenarios run sequentially per model to avoid overloading Ollama\n');
+console.log('\nTotal time: scenarios run sequentially per model to avoid overloading the engine\n');
 
 // Exit with error if any model had failures
 const totalFailures = summary.reduce((acc, s) => acc + s.failed, 0);

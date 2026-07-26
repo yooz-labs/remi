@@ -1,6 +1,6 @@
 /**
  * Tests for AutoApproveService.cancel() and the hard-kill timeout race.
- * Uses a local Bun.serve fixture so we don't depend on Ollama.
+ * Uses a local Bun.serve fixture so we don't depend on a real LLM provider.
  *
  * A slow LLM eval (cold model load, contended GPU) outliving the user's
  * terminal answer would inject a stale "1" or escalate a phantom question.
@@ -118,6 +118,11 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     escalate_model: '',
     escalate_timeout: 0,
     queue_timeout: 240,
+    cache_idle: 0,
+    keep_alive: 0,
+    engine: 'owned' as const,
+    engine_path: '',
+    model_cache: '',
     disable_thinking: false,
     always_escalate_tools: [],
     hold_timeout: 0,

@@ -10,9 +10,12 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { fileActivityRecord } from './engine-activity.ts';
+import { clearModelCache, unloadModel } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
+import { ModelResidency } from './model-residency.ts';
 import {
   buildMultiChoicePrompt,
   isDesignQuestion,
@@ -120,8 +123,17 @@ export class AutoApproveService {
    *  fast model's timeout. The heavy model is usually cold, so it needs a longer
    *  budget than the fast path. */
   private readonly escalateTimeoutMs: number;
-  /** True when the provider is Ollama (enables the native warm-up load). */
-  private readonly providerIsOllama: boolean;
+  /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
+  private readonly providerIsYooz: boolean;
+
+  /**
+   * Two-stage idle policy (#820). The engine never evicts or drops cache on
+   * its own, so without this a daemon holds both for its entire life. Armed
+   * on every evaluation: `cache_idle` seconds of silence drops the retained
+   * prompt-KV cache (weights stay resident), `keep_alive` seconds unloads
+   * the weights entirely.
+   */
+  private readonly residency: ModelResidency;
   /** Max ms a permission eval may wait in the serialization queue before it
    *  escalates gracefully (#551); 0 = no bound. */
   private readonly queueTimeoutMs: number;
@@ -178,11 +190,15 @@ export class AutoApproveService {
       apiKey: config.api_key,
       model: config.model,
       timeoutMs: config.timeout * 1000,
-      // Opt-in (Ollama only): native /api/chat with `think: false` to disable
+      // The Yooz engine's /v1/llm/generate is the only transport that is not
+      // OpenAI-compatible (a thin llama.cpp server, OpenRouter, and any custom
+      // URL all speak /v1/chat/completions already).
+      kind: config.provider === 'yooz' ? 'yooz' : 'openai',
+      // 'yooz' only: prefix the engine's `/no_think` convention to disable
       // reasoning. Faster, but lowers decision quality (the chain-of-thought is
       // load-bearing for following broad user instructions), so default OFF.
-      // Everyone else uses the OpenAI-compat path with reasoning on.
-      kind: config.provider === 'ollama' && config.disable_thinking ? 'ollama' : 'openai',
+      // No effect on the 'openai' kind (no equivalent knob there).
+      disableThinking: config.disable_thinking,
     };
     this.logFn = logFn;
     this.logDecisions = config.log_decisions;
@@ -197,7 +213,48 @@ export class AutoApproveService {
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
-    this.providerIsOllama = config.provider === 'ollama';
+    this.providerIsYooz = config.provider === 'yooz';
+    // Only the engine transport has an unload endpoint at all, and (today)
+    // remi always owns its own engine -- #818 introduces the shared-engine
+    // mode, where `ownsEngine` flips false and this timer must never arm.
+    this.residency = new ModelResidency(
+      {
+        cacheIdleMs: config.cache_idle * 1000,
+        keepAliveMs: config.keep_alive * 1000,
+        // EVERY model this service can cause the engine to load, or the timer
+        // silently exempts one: multichoice_model is a third tier `evaluate`
+        // dispatches against when a multi-choice prompt arrives.
+        models: [
+          ...new Set(
+            [config.model, config.escalate_model, config.multichoice_model].filter(
+              (m): m is string => typeof m === 'string' && m.length > 0,
+            ),
+          ),
+        ],
+        // #818: both stages are gated on OWNERSHIP, not on the transport. A
+        // shared (super-yooz) engine's residency is the host's policy, and
+        // touching weights (or even just the cache) another module is
+        // mid-generate on is hostile.
+        ownsEngine: this.providerIsYooz && config.engine === 'owned',
+      },
+      {
+        unload: (model) => unloadModel(this.llmConfig.baseUrl, model),
+        // No model => every loaded tier. Safe because stage 1 only ever arms
+        // in owned mode (above), where remi is the only thing that can have
+        // loaded anything on this engine.
+        clearCache: () => clearModelCache(this.llmConfig.baseUrl),
+        log: logFn,
+        // #818: ten daemons, one engine — coordinate eviction through a shared
+        // mtime so no daemon acts on weights/cache another is actively using.
+        activity: fileActivityRecord(),
+      },
+    );
+  }
+
+  /** Stop both idle timers (daemon shutdown). Does not act: another daemon
+   *  may still be using the model or its cache (#820). */
+  stopResidencyTimer(): void {
+    this.residency.stop();
   }
 
   /**
@@ -313,18 +370,22 @@ export class AutoApproveService {
     return drained;
   }
 
+  /** Whether the lazy first-eval warm has been kicked off (#818 advisory). */
+  private warmDispatched = false;
+
   /**
    * Warm-load the escalate_model so the FIRST second opinion does not pay a
-   * cold model-load (15s+ for a 35B). Ollama only (the native /api/generate
-   * empty-prompt load with a long keep_alive); a no-op otherwise or when no
-   * escalate_model is configured. Best-effort and never throws — a failed warm
-   * just means the first real consult loads the model itself.
+   * cold model-load (15s+ for a 35B). Yooz engine only (`POST
+   * /v1/llm/preload?wait=true`); a no-op otherwise (e.g. an OpenAI-compatible
+   * provider, which has no equivalent preload route) or when no escalate_model
+   * is configured. Best-effort and never throws — a failed warm just means the
+   * first real consult loads the model itself.
    */
   async warmEscalateModel(): Promise<void> {
-    if (!this.escalateModel || !this.providerIsOllama) return;
+    if (!this.escalateModel || !this.providerIsYooz) return;
     try {
       await warmModel(this.llmConfig.baseUrl, this.escalateModel);
-      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (kept resident 30m)`);
+      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (preloaded)`);
     } catch (err) {
       this.logFn(
         `[AutoApprove] escalate_model warm-up failed (will load on first consult): ${errorToString(err)}`,
@@ -366,6 +427,18 @@ export class AutoApproveService {
     isSubagent?: boolean,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
+    // #820: push the idle-unload deadline out. Called at the START so a long
+    // eval cannot have the model unloaded out from under it, and again when it
+    // settles so the window measures from the LAST activity.
+    this.residency.noteActivity();
+    // #818 advisory: warm the heavy escalate_model on the FIRST evaluation
+    // rather than at daemon boot, so a session that never sees a permission
+    // never pulls ~20 GB resident. Fire-and-forget: it must not delay this
+    // decision, and it still lands long before a typical escalation.
+    if (!this.warmDispatched) {
+      this.warmDispatched = true;
+      void this.warmEscalateModel();
+    }
     // modelOverride (#522: the escalate_model second opinion) replaces the base
     // model for this call; the fast-path deny/allow/group checks below still run.
     const baseModel = modelOverride || this.llmConfig.model;
@@ -599,6 +672,9 @@ export class AutoApproveService {
         this.currentScope = null;
         this.currentEvalId = null;
         this.releaseSlot();
+        // #820: re-arm from the END of the eval, so the idle window measures
+        // silence rather than "time since we started thinking".
+        this.residency.noteActivity();
       }
     } catch (err) {
       const durationMs = Date.now() - start;

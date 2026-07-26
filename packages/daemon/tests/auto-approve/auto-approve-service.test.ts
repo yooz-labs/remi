@@ -11,17 +11,17 @@ import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
 
 /**
- * Integration tests that call real Ollama.
- * These tests are skipped if Ollama is not running on localhost:11434.
+ * Integration tests that call the real Yooz engine.
+ * These tests are skipped if the engine is not running on loopback :19924.
  */
 
-async function isOllamaAvailable(): Promise<boolean> {
+async function isEngineAvailable(): Promise<boolean> {
   // SKIP_LLM_TESTS=1 lets a developer pin GPU-heavy LLM tests off without
-  // killing the local Ollama daemon (which they may want running for other
-  // workflows). Honored by every Ollama-gated test in this directory.
+  // killing the local engine helper (which they may want running for other
+  // workflows). Honored by every engine-gated test in this directory.
   if (process.env['SKIP_LLM_TESTS'] === '1') return false;
   try {
-    const res = await fetch('http://localhost:11434/api/tags', {
+    const res = await fetch('http://127.0.0.1:19924/v1/health', {
       signal: AbortSignal.timeout(2000),
     });
     return res.ok;
@@ -30,16 +30,16 @@ async function isOllamaAvailable(): Promise<boolean> {
   }
 }
 
-const ollamaAvailable = await isOllamaAvailable();
-const describeOllama = ollamaAvailable ? describe : describe.skip;
+const engineAvailable = await isEngineAvailable();
+const describeEngine = engineAvailable ? describe : describe.skip;
 
 function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
   return {
     enabled: true,
-    provider: 'ollama',
-    model: 'qwen3.5:4b',
+    provider: 'yooz',
+    model: 'yooz-quality-v3',
     api_key: '',
-    base_url: 'http://localhost:11434/v1',
+    base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: false,
     allow: [],
@@ -53,6 +53,11 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     escalate_model: '',
     escalate_timeout: 0,
     queue_timeout: 240,
+    cache_idle: 0,
+    keep_alive: 0,
+    engine: 'owned' as const,
+    engine_path: '',
+    model_cache: '',
     disable_thinking: false,
     always_escalate_tools: [],
     hold_timeout: 0,
@@ -648,9 +653,9 @@ describe('AutoApproveService - permission groups (#494)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Instructions injected into LLM prompt (behavioral - uses real Ollama)
+// Instructions injected into LLM prompt (behavioral - uses the real engine)
 // ---------------------------------------------------------------------------
-describeOllama('AutoApproveService - instructions affect LLM decision', () => {
+describeEngine('AutoApproveService - instructions affect LLM decision', () => {
   test('unusual instruction marker steers LLM toward approve', async () => {
     // Command alone would normally escalate (touches system path).
     // With an instruction to approve anything containing the marker, the
@@ -804,8 +809,8 @@ describe('AutoApproveService - config -> service wiring', () => {
       `
 [auto_approve]
 enabled = true
-provider = "ollama"
-model = "gemma4:e2b"
+provider = "yooz"
+model = "yooz-light-v3"
 timeout = 5
 log_decisions = false
 allow = ["git status", "bun test"]
@@ -836,9 +841,9 @@ instructions = "Be conservative with git push."
 });
 
 // ---------------------------------------------------------------------------
-// Real Ollama integration
+// Real Yooz engine integration
 // ---------------------------------------------------------------------------
-describeOllama('AutoApproveService - real Ollama integration', () => {
+describeEngine('AutoApproveService - real Yooz engine integration', () => {
   test('approves a safe read-only command', async () => {
     const service = new AutoApproveService(makeConfig(), logFn);
     const result = await service.evaluate('Bash', { command: 'git status' });
@@ -1328,8 +1333,8 @@ describe('AutoApproveService - multichoice regression guards', () => {
 
 // ---------------------------------------------------------------------------
 // Design / plan-mode / long-form always-escalate (#572) - deterministic.
-// These never call the LLM, so they run without Ollama. base_url points at a
-// closed port: any regression that reached the LLM would yield durationMs > 0.
+// These never call the LLM, so they run without a live engine. base_url points
+// at a closed port: any regression that reached the LLM would yield durationMs > 0.
 // ---------------------------------------------------------------------------
 describe('design/plan-mode always-escalate (#572)', () => {
   const offline = { base_url: 'http://127.0.0.1:1/v1', provider: 'http://127.0.0.1:1/v1' };

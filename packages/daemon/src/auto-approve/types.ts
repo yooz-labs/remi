@@ -76,11 +76,15 @@ export const DEFAULT_ALWAYS_ESCALATE_TOOLS: readonly string[] = ['AskUserQuestio
 /** Configuration for the auto-approve feature */
 export interface AutoApproveConfig {
   readonly enabled: boolean;
-  /** Provider shortname or custom base URL: 'ollama', 'openrouter', or a URL */
+  /**
+   * Provider shortname or custom base URL: 'yooz' (the Yooz engine's native
+   * /v1/llm/generate, loopback :19924 -- macOS), 'llamacpp' (a thin llama.cpp
+   * server, also loopback :19924, on other platforms), 'openrouter', or a URL.
+   */
   readonly provider: string;
-  /** Model name (e.g. 'gemma4:e2b', 'anthropic/claude-3-haiku') */
+  /** Model name (e.g. 'yooz-quality-v3', 'anthropic/claude-3-haiku') */
   readonly model: string;
-  /** API key (empty for Ollama, required for OpenRouter) */
+  /** API key (empty for the local engine/llama.cpp, required for OpenRouter) */
   readonly api_key: string;
   /** Full base URL for the OpenAI-compatible API */
   readonly base_url: string;
@@ -164,6 +168,52 @@ export interface AutoApproveConfig {
    */
   readonly escalate_model: string;
   /**
+   * Seconds of inactivity after which remi drops the model's retained
+   * prompt-KV cache while KEEPING its weights resident (#820 stage 1) --
+   * cheaper than `keep_alive`'s full unload: no cold reload on the next
+   * evaluation, only the cost of recomputing the (identical every time --
+   * remi sends the same system prompt) prefix. Measured on an M4 Pro: the
+   * engine plateaus about 1.5 GB above its weights-only footprint after
+   * evaluations, purely retained cache -- a steady-state WIN (it is why p50
+   * stays ~1.0s) but pure cost once idle. 0 disables stage 1. Ignored under
+   * a shared engine, same as `keep_alive` (#818): a cache drop still costs
+   * another module's latency, so it is gated identically.
+   */
+  readonly cache_idle: number;
+  /**
+   * Seconds of inactivity after which remi unloads the model(s) it loaded
+   * (#820 stage 2) -- the replacement for ollama's `keep_alive`, which the
+   * Yooz engine has no equivalent of (weights stay resident until explicitly
+   * unloaded). 0 disables the timer. Ignored under a shared engine, where
+   * residency is the host's policy and unloading would cut another module
+   * off (#818).
+   */
+  readonly keep_alive: number;
+  /**
+   * #818: whether remi owns the engine process on its port. `'owned'` (the
+   * default, and the only mode that exists today) means remi spawns and
+   * supervises its own helper and may load/unload/delete models. `'shared'`
+   * means a super-yooz host owns it: remi evaluates against it but must never
+   * spawn, unload or delete, since another module may be mid-generate on the
+   * same weights. remi keeps its own port either way.
+   */
+  readonly engine: 'owned' | 'shared';
+  /** Absolute path to the helper remi starts in `'owned'` mode. Empty = none
+   *  bundled; remi then attaches to a running engine or reports the gap. */
+  readonly engine_path: string;
+  /**
+   * Directory the engine downloads model weights into. Empty = the engine's
+   * own default. Passed to a remi-STARTED engine as `HF_HUB_CACHE`, the
+   * standard HuggingFace variable the engine already honors (`EngineConfig.
+   * huggingFaceCacheDirectory` checks `HF_HUB_CACHE`, then `HF_HOME`/hub) —
+   * so this is a pass-through of an existing contract, not a remi invention.
+   *
+   * Only affects an engine remi starts. An engine already running (started by
+   * a hub, by hand, or by a super-yooz host) keeps whatever cache IT was
+   * launched with, and remi cannot retarget it.
+   */
+  readonly model_cache: string;
+  /**
    * Timeout (seconds) for the `escalate_model` second opinion specifically. The
    * heavy model is larger and frequently COLD (escalations are sporadic, so it
    * has usually been unloaded by the host), so its first call pays a model-load
@@ -183,15 +233,19 @@ export interface AutoApproveConfig {
    */
   readonly queue_timeout: number;
   /**
-   * Ollama only: route through the native /api/chat with `think: false` to
-   * turn OFF the model's reasoning. This is FASTER but lowers decision quality
-   * — live testing showed the chain-of-thought is load-bearing for following
-   * broad user `instructions` (without it even a 35B model reverts to its
-   * cautious prior and escalates mutations it would otherwise approve). The
-   * buffer-until-verdict design already hides eval latency from the user, so
-   * the default is `false` (keep thinking). Opt in only if you value raw speed
-   * over nuance. No effect on non-Ollama providers (the OpenAI-compat endpoint
-   * has no knob to disable reasoning).
+   * Suppress the model's chain-of-thought reasoning. Default TRUE (changed
+   * 2026-07-25): a permission classify wants a short JSON verdict, and on the
+   * QAT-lean tiers leaving reasoning on is not merely slow but fatal — the
+   * 0.8B spent an entire 600-token budget thinking about a trivial prompt and
+   * returned no content at all, so every evaluation degraded to an error.
+   *
+   * Applies to BOTH transports. The engine gets `/no_think` prefixed onto its
+   * prompt; an OpenAI-compatible server gets that same prefix (it is a
+   * chat-template convention the Qwen3 family itself honors, so it travels
+   * with the model rather than the server) plus
+   * `chat_template_kwargs.enable_thinking: false`, which is what vLLM and
+   * newer llama.cpp/mlx servers act on. Measured: the prefix alone did NOT
+   * suppress on mlx_lm; the chat_template_kwargs did. See `llm-client.ts`.
    */
   readonly disable_thinking: boolean;
   /**

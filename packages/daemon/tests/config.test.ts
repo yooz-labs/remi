@@ -285,10 +285,10 @@ describe('formatConfig', () => {
     const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
     expect(output).toContain('[auto_approve]');
     expect(output).toContain('enabled = false');
-    expect(output).toContain('provider = "ollama"');
+    expect(output).toContain('provider = "yooz"');
     // disable_thinking must be visible in `config show` so a user who set it
     // can confirm it (it was missed in the initial formatConfig wiring).
-    expect(output).toContain('disable_thinking = false');
+    expect(output).toContain('disable_thinking = true');
     // approve_groups/deny_groups likewise visible (#494 phase 1).
     expect(output).toContain('approve_groups = ["read-only", "vcs-read", "build-test"]');
     expect(output).toContain('deny_groups = []');
@@ -301,17 +301,28 @@ describe('formatConfig', () => {
     // show`.
     expect(output).toContain('delivery_confirm_timeout = 6');
     expect(output).toContain('hold_unconfirmed_timeout = 0');
+    // cache_idle visible (#820 stage 1), alongside its stage-2 sibling.
+    expect(output).toContain('cache_idle = 300');
+    expect(output).toContain('keep_alive = 1800');
   });
 
-  test('default model is a fast 4b; escalate_model empty (#522)', () => {
-    expect(DEFAULT_CONFIG.auto_approve.model).toBe('qwen3.5:4b');
+  test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
+    expect(DEFAULT_CONFIG.auto_approve.model).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
     expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
   });
 
+  // The TouchUp tiers read 38/38 on the permission grid but reach it partly by
+  // returning no verdict at all (echoing the prompt back) on six of the most
+  // dangerous scenarios, which only "pass" because unparsable => escalate.
+  // Defaulting to one would be safety by accident (#809 Phase D, engine#303).
+  test('default model is not one of the engine TouchUp grammar tiers', () => {
+    expect(['yooz-light-v3', 'yooz-quality-v3']).not.toContain(DEFAULT_CONFIG.auto_approve.model);
+  });
+
   test('REMI_AUTO_APPROVE_ESCALATE_MODEL env override (#522)', () => {
-    process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'] = 'qwen3.5:35b';
+    process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'] = 'yooz-heavy';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.escalate_model).toBe('qwen3.5:35b');
+    expect(config.auto_approve.escalate_model).toBe('yooz-heavy');
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
   });
@@ -336,10 +347,10 @@ describe('auto_approve config', () => {
   test('defaults are present', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
-      provider: 'ollama',
-      model: 'qwen3.5:4b',
+      provider: 'yooz',
+      model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
       api_key: '',
-      base_url: 'http://localhost:11434/v1',
+      base_url: 'http://127.0.0.1:19924',
       timeout: 30,
       log_decisions: true,
       allow: ['Read', 'Glob', 'Grep'],
@@ -365,7 +376,12 @@ describe('auto_approve config', () => {
       escalate_model: '',
       escalate_timeout: 0,
       queue_timeout: 240,
-      disable_thinking: false,
+      cache_idle: 300,
+      keep_alive: 1800,
+      engine: 'owned' as const,
+      engine_path: '',
+      model_cache: '',
+      disable_thinking: true,
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
       hold_timeout: 1800,
       push_hold_timeout: 60,
@@ -394,8 +410,14 @@ timeout = 5
     expect(config.auto_approve.api_key).toBe('sk-test');
     expect(config.auto_approve.timeout).toBe(5);
     // Defaults preserved for unset fields
-    expect(config.auto_approve.base_url).toBe('http://localhost:11434/v1');
+    expect(config.auto_approve.base_url).toBe('http://127.0.0.1:19924');
     expect(config.auto_approve.log_decisions).toBe(true);
+  });
+
+  test('rejects provider = "ollama" with an actionable error (#809)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nprovider = "ollama"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/ollama support was removed/);
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/"yooz"/);
   });
 
   test('loads always_escalate_tools from TOML (#572)', () => {
