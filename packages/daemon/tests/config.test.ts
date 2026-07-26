@@ -16,6 +16,14 @@ import {
   loadConfig,
 } from '../src/config/config.ts';
 
+/** What `auto_approve.provider` should default to on the machine running these
+ *  tests (#822). Derived from the platform detector rather than read back from
+ *  `DEFAULT_CONFIG`, so assertions using it are real rather than circular. */
+function expectedDefaultProvider(): string {
+  const detected = detectLocalLLMPlatform();
+  return detected === 'unsupported' ? 'yooz' : detected;
+}
+
 const TEST_DIR = path.join(os.tmpdir(), `remi-config-test-${process.pid}`);
 const TEST_CONFIG = path.join(TEST_DIR, 'config.toml');
 
@@ -286,7 +294,10 @@ describe('formatConfig', () => {
     const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
     expect(output).toContain('[auto_approve]');
     expect(output).toContain('enabled = false');
-    expect(output).toContain('provider = "yooz"');
+    // Platform-dependent by design (#822): the engine on Apple Silicon, a
+    // llama.cpp sidecar on Linux. Asserting a literal here passes on a macOS
+    // dev machine and fails on Linux CI, which is exactly what happened.
+    expect(output).toContain(`provider = "${expectedDefaultProvider()}"`);
     // disable_thinking must be visible in `config show` so a user who set it
     // can confirm it (it was missed in the initial formatConfig wiring).
     expect(output).toContain('disable_thinking = true');
@@ -377,7 +388,10 @@ describe('auto_approve config', () => {
   test('defaults are present', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
-      provider: 'yooz',
+      // Resolved per platform (#822), so the expectation is too — but derived
+      // from `detectLocalLLMPlatform` rather than from `DEFAULT_CONFIG`, which
+      // would assert the value against itself and prove nothing.
+      provider: expectedDefaultProvider(),
       model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
       api_key: '',
       base_url: 'http://127.0.0.1:19924',
