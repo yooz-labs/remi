@@ -124,10 +124,13 @@ import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import {
   AutoApproveService,
+  EngineHost,
+  FileEnginePidStore,
   SubagentAlerter,
   alertBody,
   alertTitle,
   resolveProviderUrl,
+  spawnDetachedEngine,
 } from './auto-approve/index.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
@@ -833,6 +836,27 @@ let autoApproveService: AutoApproveService | null = null;
     const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
     const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
 
+    // #818: who starts the engine. Only meaningful for the engine transport —
+    // an OpenRouter or llama.cpp base URL is not something remi supervises, and
+    // handing those an EngineHost would mean spawning a Yooz helper for a
+    // provider that never talks to one.
+    const engineHost =
+      provider === 'yooz'
+        ? new EngineHost(
+            {
+              baseUrl,
+              ownership: aaCfg.engine,
+              helperPath: aaCfg.engine_path,
+              modelCache: aaCfg.model_cache,
+            },
+            {
+              log: writeToLog,
+              spawn: spawnDetachedEngine,
+              pidStore: new FileEnginePidStore(),
+            },
+          )
+        : undefined;
+
     autoApproveService = new AutoApproveService(
       {
         ...aaCfg,
@@ -848,7 +872,22 @@ let autoApproveService: AutoApproveService | null = null;
         multichoice_model: multichoiceModel,
       },
       writeToLog,
+      engineHost,
     );
+
+    // Start (or attach to) the engine at boot, but do NOT block the daemon on
+    // it: a cold helper can take tens of seconds to bind, and remi must be
+    // answering its own port long before then. Evaluation escalates while the
+    // engine is coming up, which is the safe direction, and `ensureEngine`
+    // reports the outcome either way so "no engine" is never silent.
+    //
+    // On a hub machine the hub reaches here first and wins the pidfile race by
+    // construction; a standalone `remi --daemon` on a machine with no hub still
+    // gets one, because requiring a hub would recreate exactly the silent
+    // escalate-everything failure #818 exists to remove.
+    void autoApproveService.ensureEngine().catch((err) => {
+      writeToLog(`[AutoApprove] Engine startup check failed: ${errorToString(err)}`);
+    });
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
     const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
     const escalateSummary = aaCfg.escalate_model
