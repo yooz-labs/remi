@@ -193,10 +193,16 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // escalating (#551). Concurrent evals run one at a time; a deep burst could
     // otherwise wait long enough to risk the ~600s hook budget. 0 = no bound.
     queue_timeout: 240,
+    // Seconds of inactivity before remi drops the model's prompt-KV cache
+    // while keeping its weights resident (#820 stage 1) -- cheap and
+    // recomputable, unlike a full unload. 300 (5 min) mirrors ollama's old
+    // server-side keep_alive default. 0 = never drop the cache; keep_alive
+    // (stage 2, below) is unaffected either way.
+    cache_idle: 300,
     // Seconds a model stays resident after the last evaluation before remi
-    // unloads it (#820). The engine has no keep-alive of its own, so without
-    // this a daemon pins the weights forever; 1800 matches what ollama's
-    // keep_alive gave us. 0 = never unload.
+    // unloads it (#820 stage 2). The engine has no keep-alive of its own, so
+    // without this a daemon pins the weights forever; 1800 matches what
+    // ollama's keep_alive gave us. 0 = never unload.
     keep_alive: 1800,
     // #818: who owns the engine process on remi's port. 'owned' (default) =
     // remi starts and supervises its own helper and may load/unload/delete
@@ -409,6 +415,16 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   if (typeof cfg.engine_path !== 'string') {
     throw new Error(
       `Invalid auto_approve.engine_path in ${configPath}: must be a string path to the engine helper (empty = none bundled). Example: engine_path = "/Applications/Yooz Engine.app/Contents/MacOS/YoozEngine"`,
+    );
+  }
+
+  if (
+    typeof cfg.cache_idle !== 'number' ||
+    !Number.isFinite(cfg.cache_idle) ||
+    cfg.cache_idle < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.cache_idle in ${configPath}: must be a non-negative number (seconds; 0 = never drop the cache), got ${typeof cfg.cache_idle === 'string' ? `string "${cfg.cache_idle}"` : typeof cfg.cache_idle}. Example: cache_idle = 300`,
     );
   }
 
@@ -828,9 +844,14 @@ authorized_user_ids = []
                                    # GB off the boot volume. Applies to an
                                    # engine remi STARTS; an already-running one
                                    # keeps the cache it was started with.
+# cache_idle = 300                 # Seconds before remi drops the model's
+                                   # prompt cache while keeping it loaded
+                                   # (#820 stage 1). Cheap; no cold reload,
+                                   # just a recomputed prefix. 0 = never.
 # keep_alive = 1800                # Seconds a model stays resident after the
-                                   # last eval before remi unloads it. The
-                                   # engine never evicts on its own. 0 = never.
+                                   # last eval before remi unloads it (stage
+                                   # 2). The engine never evicts on its own.
+                                   # 0 = never.
 # queue_timeout = 240              # Max seconds an eval waits in the serial
 #                                  # queue before escalating. Concurrent evals
 #                                  # run one at a time; a deep burst could risk
@@ -945,6 +966,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
   lines.push(`  engine = "${config.auto_approve.engine}"`);
+  lines.push(`  cache_idle = ${config.auto_approve.cache_idle}`);
   lines.push(`  keep_alive = ${config.auto_approve.keep_alive}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
   lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);

@@ -301,6 +301,9 @@ describe('formatConfig', () => {
     // show`.
     expect(output).toContain('delivery_confirm_timeout = 6');
     expect(output).toContain('hold_unconfirmed_timeout = 0');
+    // cache_idle visible (#820 stage 1), alongside its stage-2 sibling.
+    expect(output).toContain('cache_idle = 300');
+    expect(output).toContain('keep_alive = 1800');
   });
 
   test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
@@ -352,6 +355,7 @@ describe('auto_approve config', () => {
       escalate_model: '',
       escalate_timeout: 0,
       queue_timeout: 240,
+      cache_idle: 300,
       keep_alive: 1800,
       engine: 'owned' as const,
       engine_path: '',

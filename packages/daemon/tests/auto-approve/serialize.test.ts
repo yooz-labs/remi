@@ -104,6 +104,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     escalate_model: '',
     escalate_timeout: 0,
     queue_timeout: 240,
+    cache_idle: 0,
     keep_alive: 0,
     engine: 'owned' as const,
     engine_path: '',

@@ -20,6 +20,12 @@
  *   - `GET  /v1/llm/status`  -> { loaded, modelId, progress, state, lastError }
  *   - `POST /v1/llm/preload` -> 202 dispatch; `?wait=true` blocks until resident
  *   - `POST /v1/llm/unload`  -> free that model's weights
+ *   - `POST /v1/llm/clear-cache` -> drop a model's retained prompt-KV cache
+ *     WITHOUT freeing its weights (#820 stage 1) -- cheaper than `unload`: no
+ *     cold reload on the next evaluation, only the cost of recomputing the
+ *     (identical every time, for remi's fixed system prompt) prefix. Body
+ *     `{model}`; omitted `model` clears every currently loaded tier. May not
+ *     exist on every engine build -- see `ClearCacheUnsupportedError`.
  *   - `POST /v1/llm/model`   -> preferred model. PROCESS-LIFETIME ONLY: the
  *     engine forgets it on restart, which is why `remi model use` persists the
  *     choice in remi's own config instead of relying on this.
@@ -95,6 +101,23 @@ export type EngineProbe =
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/**
+ * Thrown by `engineRequest` on a non-2xx response. Carries the raw HTTP
+ * status alongside the usual message so a caller that cares about a SPECIFIC
+ * code (e.g. `clearModelCache` distinguishing "endpoint doesn't exist yet"
+ * from a real failure, #820 stage 1) does not have to parse it back out of
+ * the message string.
+ */
+class EngineHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'EngineHttpError';
+  }
+}
+
 /** One JSON request against the engine, with a timeout. Throws a message that
  *  names the endpoint — these surface directly in CLI output, so "fetch
  *  failed" alone would be useless. */
@@ -114,7 +137,10 @@ async function engineRequest<T>(
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw new Error(`${path} failed ${response.status}: ${detail.slice(0, 200)}`);
+      throw new EngineHttpError(
+        response.status,
+        `${path} failed ${response.status}: ${detail.slice(0, 200)}`,
+      );
     }
     // A dispatched-work response (202) legitimately has no body. Anything
     // else that fails to parse is a BROKEN response — an engine mid-restart, a
@@ -195,6 +221,51 @@ export async function unloadModel(
     body: { model },
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
+}
+
+/**
+ * Thrown by `clearModelCache` when the engine does not implement the
+ * cache-clear route (404, or 501 if it recognizes the path but declines it)
+ * -- distinguishing "this engine build predates #820 stage 1" from a real
+ * failure. `ModelResidency` treats this as permanent for the process's life
+ * (retrying a route that will never exist is pure waste) rather than the
+ * transient-failure retry it gives every other error here.
+ */
+export class ClearCacheUnsupportedError extends Error {}
+
+/**
+ * Drop the retained prompt-KV cache for `model` -- or, when omitted, every
+ * currently loaded tier -- WITHOUT freeing weights (#820 stage 1). Cheaper
+ * than `unloadModel`: recomputing a prefix costs a few hundred ms, a cold
+ * reload costs seconds. See the module doc for why this is a SEPARATE verb
+ * from unload rather than a flag on it: residency (loaded/not) and cache
+ * retention are independent engine states, and only unload touches the
+ * former.
+ *
+ * `ModelResidency` (#818 ownership-gated, same as `unloadModel`) is the one
+ * production caller, and it always omits `model`: stage 1 only ever arms
+ * when remi owns the engine outright, so "every loaded tier" already means
+ * "everything remi could have loaded" -- there is no other module's
+ * residency to accidentally spare or clear.
+ */
+export async function clearModelCache(
+  baseUrl: string,
+  model?: string,
+  timeoutMs?: number,
+): Promise<readonly string[]> {
+  try {
+    const raw = await engineRequest<{ cleared?: string[] }>(baseUrl, '/v1/llm/clear-cache', {
+      method: 'POST',
+      body: model === undefined ? {} : { model },
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    });
+    return raw.cleared ?? [];
+  } catch (err) {
+    if (err instanceof EngineHttpError && (err.status === 404 || err.status === 501)) {
+      throw new ClearCacheUnsupportedError(err.message);
+    }
+    throw err;
+  }
 }
 
 /** One row of `GET /v1/models` — the DISK view. Distinct from `EngineModel`

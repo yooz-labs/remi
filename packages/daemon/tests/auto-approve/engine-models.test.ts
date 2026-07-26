@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  ClearCacheUnsupportedError,
   cleanupModels,
+  clearModelCache,
   deleteModel,
   getModelState,
   getStatus,
@@ -387,6 +389,71 @@ describe('unloadModel', () => {
 
     expect(server.seen[0]?.path).toBe('/v1/llm/unload');
     expect(server.seen[0]?.body).toEqual({ model: 'yooz-quality-v3' });
+  });
+});
+
+describe('clearModelCache (#820 stage 1)', () => {
+  let stop: (() => void) | undefined;
+  afterEach(() => {
+    stop?.();
+    stop = undefined;
+  });
+
+  test('posts to /v1/llm/clear-cache with the model when one is given', async () => {
+    const server = engineServer(() => Response.json({ cleared: ['yooz-quality-v3'] }));
+    stop = server.stop;
+
+    const cleared = await clearModelCache(server.url, 'yooz-quality-v3');
+
+    expect(server.seen[0]?.path).toBe('/v1/llm/clear-cache');
+    expect(server.seen[0]?.body).toEqual({ model: 'yooz-quality-v3' });
+    expect(cleared).toEqual(['yooz-quality-v3']);
+  });
+
+  test('omits the model to clear every loaded tier', async () => {
+    const server = engineServer(() =>
+      Response.json({ cleared: ['yooz-quality-v3', 'yooz-heavy'] }),
+    );
+    stop = server.stop;
+
+    const cleared = await clearModelCache(server.url);
+
+    expect(server.seen[0]?.body).toEqual({});
+    expect(cleared).toEqual(['yooz-quality-v3', 'yooz-heavy']);
+  });
+
+  test('tolerates a response with no cleared field', async () => {
+    const server = engineServer(() => Response.json({}));
+    stop = server.stop;
+
+    expect(await clearModelCache(server.url)).toEqual([]);
+  });
+
+  test('a 404 (engine predates this endpoint) throws ClearCacheUnsupportedError', async () => {
+    const server = engineServer(() => new Response('not found', { status: 404 }));
+    stop = server.stop;
+
+    await expect(clearModelCache(server.url, 'm')).rejects.toBeInstanceOf(
+      ClearCacheUnsupportedError,
+    );
+  });
+
+  test('a 501 (engine recognizes but declines the route) also throws ClearCacheUnsupportedError', async () => {
+    const server = engineServer(() => new Response('not implemented', { status: 501 }));
+    stop = server.stop;
+
+    await expect(clearModelCache(server.url, 'm')).rejects.toBeInstanceOf(
+      ClearCacheUnsupportedError,
+    );
+  });
+
+  test('a real failure (e.g. 500) is NOT reclassified as unsupported', async () => {
+    const server = engineServer(() => new Response('boom', { status: 500 }));
+    stop = server.stop;
+
+    const err = await clearModelCache(server.url, 'm').catch((e) => e);
+    expect(err).not.toBeInstanceOf(ClearCacheUnsupportedError);
+    expect(String(err)).toContain('/v1/llm/clear-cache failed 500');
   });
 });
 

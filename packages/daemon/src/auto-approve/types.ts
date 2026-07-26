@@ -152,11 +152,25 @@ export interface AutoApproveConfig {
    */
   readonly escalate_model: string;
   /**
+   * Seconds of inactivity after which remi drops the model's retained
+   * prompt-KV cache while KEEPING its weights resident (#820 stage 1) --
+   * cheaper than `keep_alive`'s full unload: no cold reload on the next
+   * evaluation, only the cost of recomputing the (identical every time --
+   * remi sends the same system prompt) prefix. Measured on an M4 Pro: the
+   * engine plateaus about 1.5 GB above its weights-only footprint after
+   * evaluations, purely retained cache -- a steady-state WIN (it is why p50
+   * stays ~1.0s) but pure cost once idle. 0 disables stage 1. Ignored under
+   * a shared engine, same as `keep_alive` (#818): a cache drop still costs
+   * another module's latency, so it is gated identically.
+   */
+  readonly cache_idle: number;
+  /**
    * Seconds of inactivity after which remi unloads the model(s) it loaded
-   * (#820) -- the replacement for ollama's `keep_alive`, which the Yooz engine
-   * has no equivalent of (weights stay resident until explicitly unloaded).
-   * 0 disables the timer. Ignored under a shared engine, where residency is
-   * the host's policy and unloading would cut another module off (#818).
+   * (#820 stage 2) -- the replacement for ollama's `keep_alive`, which the
+   * Yooz engine has no equivalent of (weights stay resident until explicitly
+   * unloaded). 0 disables the timer. Ignored under a shared engine, where
+   * residency is the host's policy and unloading would cut another module
+   * off (#818).
    */
   readonly keep_alive: number;
   /**

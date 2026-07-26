@@ -11,7 +11,7 @@
 
 import { errorToString } from '@remi/shared';
 import { fileActivityRecord } from './engine-activity.ts';
-import { unloadModel } from './engine-models.ts';
+import { clearModelCache, unloadModel } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
@@ -127,9 +127,11 @@ export class AutoApproveService {
   private readonly providerIsYooz: boolean;
 
   /**
-   * Idle-unload timer (#820). The engine never evicts on its own, so without
-   * this a daemon holds the weights for its entire life. Armed on every
-   * evaluation; fires `keep_alive` seconds after the last one.
+   * Two-stage idle policy (#820). The engine never evicts or drops cache on
+   * its own, so without this a daemon holds both for its entire life. Armed
+   * on every evaluation: `cache_idle` seconds of silence drops the retained
+   * prompt-KV cache (weights stay resident), `keep_alive` seconds unloads
+   * the weights entirely.
    */
   private readonly residency: ModelResidency;
   /** Max ms a permission eval may wait in the serialization queue before it
@@ -217,6 +219,7 @@ export class AutoApproveService {
     // mode, where `ownsEngine` flips false and this timer must never arm.
     this.residency = new ModelResidency(
       {
+        cacheIdleMs: config.cache_idle * 1000,
         keepAliveMs: config.keep_alive * 1000,
         // EVERY model this service can cause the engine to load, or the timer
         // silently exempts one: multichoice_model is a third tier `evaluate`
@@ -228,23 +231,28 @@ export class AutoApproveService {
             ),
           ),
         ],
-        // #818: unloading is gated on OWNERSHIP, not on the transport. A
+        // #818: both stages are gated on OWNERSHIP, not on the transport. A
         // shared (super-yooz) engine's residency is the host's policy, and
-        // evicting weights another module is mid-generate on is hostile.
+        // touching weights (or even just the cache) another module is
+        // mid-generate on is hostile.
         ownsEngine: this.providerIsYooz && config.engine === 'owned',
       },
       {
         unload: (model) => unloadModel(this.llmConfig.baseUrl, model),
+        // No model => every loaded tier. Safe because stage 1 only ever arms
+        // in owned mode (above), where remi is the only thing that can have
+        // loaded anything on this engine.
+        clearCache: () => clearModelCache(this.llmConfig.baseUrl),
         log: logFn,
         // #818: ten daemons, one engine — coordinate eviction through a shared
-        // mtime so no daemon evicts weights another is actively using.
+        // mtime so no daemon acts on weights/cache another is actively using.
         activity: fileActivityRecord(),
       },
     );
   }
 
-  /** Stop the idle-unload timer (daemon shutdown). Does not unload: another
-   *  daemon may still be using the model (#820). */
+  /** Stop both idle timers (daemon shutdown). Does not act: another daemon
+   *  may still be using the model or its cache (#820). */
   stopResidencyTimer(): void {
     this.residency.stop();
   }
