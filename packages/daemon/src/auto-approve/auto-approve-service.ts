@@ -12,7 +12,7 @@
 import { errorToString } from '@remi/shared';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
-import { clearModelCache, unloadModel } from './engine-models.ts';
+import { clearModelCache, probeEngine, unloadModel } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
@@ -144,6 +144,10 @@ export class AutoApproveService {
   private readonly engineHost: EngineHost | undefined;
   /** In-flight self-heal, so a burst of failed evals triggers one repair. */
   private healInFlight: Promise<void> | null = null;
+  /** How many times we concluded a DIFFERENT engine is now serving (#826).
+   *  Diagnostic: the decision is otherwise invisible, and treating a healthy
+   *  engine as replaced silently re-arms a degrade that exists to stay off. */
+  private engineChanges = 0;
   /** Max ms a permission eval may wait in the serialization queue before it
    *  escalates gracefully (#551); 0 = no bound. */
   private readonly queueTimeoutMs: number;
@@ -306,20 +310,53 @@ export class AutoApproveService {
     // discarded whenever a different one is now serving (#826). Two cases:
     //
     //   - `spawned`: unambiguously a new process.
-    //   - `attached` AFTER a failure: we only got here because an evaluation
-    //     failed against the engine, so something answering now is very likely
-    //     a replacement -- a restarted or upgraded helper, or another daemon's
-    //     engine that won the race to replace the dead one. Without this, a
-    //     `shared` guest could NEVER clear the flag (it can never spawn), and
-    //     the loser of a heal race would keep a stale flag learned from an
-    //     engine that no longer exists.
+    //   - `attached` after a repair that only ran BECAUSE the engine was
+    //     unreachable (`repairIfUnreachable` establishes that precondition):
+    //     the engine went away and something answers now, so it is a different
+    //     process. Without this a `shared` guest could NEVER clear the flag --
+    //     it can never spawn -- and the loser of a heal race would keep a flag
+    //     learned from an engine that no longer exists.
     //
-    // A boot-time `attached` is deliberately NOT treated as a change: that is
-    // the ordinary "an engine was already up" path, with nothing learned yet.
+    // The down-then-up transition is the ONLY evidence of a new process we
+    // have: `EngineProbe` carries `loaded`/`modelId`/`progress`/`state` but no
+    // pid and no start time, so a bare `attached` cannot distinguish "a
+    // replacement" from "the same engine, still alive, that merely failed one
+    // request". A boot-time `attached` is likewise not a change: nothing has
+    // been learned about that engine yet.
     if (state.kind === 'spawned' || (opts?.afterFailure === true && state.kind === 'attached')) {
+      this.engineChanges += 1;
       this.residency.noteEngineChanged();
     }
     return true;
+  }
+
+  /** Times a new engine has been detected (#826). Exposed because "we decided
+   *  the engine was replaced" is otherwise unobservable, and deciding it
+   *  wrongly is the failure this path has to be held to. */
+  get engineChangeCount(): number {
+    return this.engineChanges;
+  }
+
+  /**
+   * Repair, but ONLY when the engine is genuinely unreachable.
+   *
+   * `evaluate()`'s catch wraps the whole evaluation, including response
+   * parsing — so an unparsable reply from a perfectly healthy engine reaches
+   * the heal path exactly like a dead socket does. Without this probe, one bad
+   * LLM response would be treated as "a new engine appeared" and would clear
+   * `cacheUnsupported` against the very same process that already told us its
+   * clear-cache route is missing, re-arming the doomed request and the log line
+   * the degrade exists to stop.
+   *
+   * Probing first also makes the down-then-up transition a real precondition
+   * rather than an assumption, which is what licenses `afterFailure` below.
+   */
+  private async repairIfUnreachable(): Promise<boolean> {
+    const probe = await probeEngine(this.llmConfig.baseUrl);
+    // Reachable => the process never went anywhere; the failure was about this
+    // request, not about the engine. Nothing to repair, nothing new to learn.
+    if (probe.reachable) return true;
+    return await this.ensureEngine({ afterFailure: true });
   }
 
   /**
@@ -331,7 +368,7 @@ export class AutoApproveService {
    */
   private healEngine(): void {
     if (this.engineHost === undefined || this.healInFlight !== null) return;
-    this.healInFlight = this.ensureEngine({ afterFailure: true })
+    this.healInFlight = this.repairIfUnreachable()
       .catch((err) => {
         this.logFn(`[AutoApprove] Engine self-heal failed: ${errorToString(err)}`);
         return false;

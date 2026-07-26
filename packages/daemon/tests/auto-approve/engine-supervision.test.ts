@@ -214,6 +214,65 @@ describe('AutoApproveService engine supervision (#818)', () => {
     expect(h.service.evalsInFlight).toBe(0);
   });
 
+  test('a reachable engine is not "repaired" just because one eval failed', async () => {
+    // `evaluate()`'s catch wraps the WHOLE evaluation, including response
+    // parsing -- so an unparsable reply from a perfectly healthy engine reaches
+    // the heal path exactly like a dead socket does. Repairing there would
+    // clear `cacheUnsupported` against the very same process that already told
+    // us its clear-cache route is missing, re-arming the doomed request and the
+    // log line the degrade exists to suppress (#826).
+    //
+    // A real HTTP server stands in for the healthy engine, so the reachability
+    // probe is a genuine round trip rather than an assumption.
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => Response.json({ loaded: true }),
+    });
+    try {
+      const logs: string[] = [];
+      const spawns: string[] = [];
+      const base = `http://127.0.0.1:${server.port}`;
+      const engineHost = new EngineHost(
+        { baseUrl: base, ownership: 'owned', helperPath: '/bin/sleep' },
+        {
+          log: (m) => logs.push(m),
+          spawn: (p) => {
+            spawns.push(p);
+            return 4242;
+          },
+          pidStore: pidStore(),
+        },
+      );
+      // `provider` must carry the URL: `resolveProviderUrl('yooz', ...)` returns
+      // the fixed loopback 19924 and IGNORES `base_url`, so overriding
+      // `base_url` alone would silently point the probe at a different host
+      // than the engine under test. A full URL passes through unchanged.
+      //
+      // The server answers every path, so the ENGINE is healthy; the eval still
+      // fails because the generate response carries no `text` field. That is
+      // exactly the shape of "healthy engine, unusable reply".
+      const service = new AutoApproveService(
+        { ...config(), provider: base, base_url: base },
+        (m) => logs.push(m),
+        engineHost,
+      );
+
+      const result = await service.evaluate('Bash', { command: 'echo 1' });
+      expect(result.decision).toBe('escalate');
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Nothing started: the engine never went anywhere.
+      expect(spawns).toEqual([]);
+      // And crucially, it was NOT recorded as a new engine. This is the
+      // assertion that matters: both the correct and the broken version reach
+      // "attached, no spawn", so only the engine-change decision distinguishes
+      // them -- and it is the decision that resets `cacheUnsupported`.
+      expect(service.engineChangeCount).toBe(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test('the single-flight guard clears, so a later failure can still repair', async () => {
     // A stuck `healInFlight` would silently disable self-heal for the life of
     // the daemon -- the exact failure mode #818 exists to remove.

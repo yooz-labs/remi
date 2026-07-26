@@ -210,7 +210,58 @@ describe('EngineHost — the start race', () => {
     expect(spawnCalls).toHaveLength(1);
     expect(killed).toEqual([777]); // ours was stopped, not left running
     expect(h.startedByUs).toBeNull();
-    expect(logs.join('\n')).toContain('stopping ours');
+    expect(logs.join('\n')).toContain('Stopped our redundant engine');
+  });
+
+  test('losing the reclaim does NOT kill ours while nothing else is answering', async () => {
+    // The availability trap. Whoever took the record has not necessarily
+    // started anything yet -- it may only just have decided to, and may still
+    // be downloading multi-GB weights. Killing our already-running engine on
+    // that basis alone can leave the machine with NO engine at all, converting
+    // a cosmetic pidfile mismatch into a real outage, in exactly the
+    // multi-daemon boot this feature is built around.
+    let claims = 0;
+    const pids: PidStore = {
+      read: () => 999,
+      claim: () => ++claims === 1,
+      release: () => {},
+    };
+    const { h, killed, logs } = host(
+      // Nothing ever answers: the "winner" never produced a working engine.
+      {},
+      { probes: [UNREACHABLE], pids, spawnPid: 777 },
+    );
+
+    const state = await h.ensureRunning();
+
+    // Never reported as a healthy attach to an engine that does not exist.
+    expect(state.kind).toBe('unavailable');
+    expect(logs.join('\n')).not.toContain('Stopped our redundant engine');
+    // It is still cleaned up at the end -- but as "started and never bound",
+    // not as "redundant", and only after nothing answered.
+    expect(killed).toEqual([777]);
+    expect(logs.join('\n')).toContain('never answered');
+  });
+
+  test('if the port goes dark once ours is stopped, that is reported, not hidden', async () => {
+    // The probe carries no pid, so "someone answers" cannot tell us WHO. If we
+    // stop ours and the port dies with it, ours WAS the one serving -- and
+    // claiming `attached` there would report a healthy engine that is gone.
+    let claims = 0;
+    const pids: PidStore = {
+      read: () => 999,
+      claim: () => ++claims === 1,
+      release: () => {},
+    };
+    const { h, logs } = host(
+      {},
+      { probes: [UNREACHABLE, REACHABLE, UNREACHABLE], pids, spawnPid: 777 },
+    );
+
+    const state = await h.ensureRunning();
+
+    expect(state.kind).toBe('unavailable');
+    expect(logs.join('\n')).toContain('went dark');
   });
 });
 
