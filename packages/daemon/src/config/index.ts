@@ -2,6 +2,7 @@ export {
   applyEnvOverrides,
   CONFIG_PATH,
   DEFAULT_CONFIG,
+  detectLocalLLMPlatform,
   formatConfig,
   generateDefaultConfig,
   initConfigFile,

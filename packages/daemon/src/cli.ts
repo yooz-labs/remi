@@ -173,7 +173,7 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
-import { applyEnvOverrides, loadConfig } from './config/index.ts';
+import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { PermissionRequestHookInput } from './hooks/index.ts';
@@ -835,6 +835,18 @@ let autoApproveService: AutoApproveService | null = null;
 
     const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
     const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
+
+    // #822: say it plainly when this machine cannot run ANY local backend
+    // (notably an Intel Mac — "macOS" is not the boundary, Apple Silicon is).
+    // Without this the user gets a 30s startup timeout and then every question
+    // escalated, which is indistinguishable from a bug. Only a local provider
+    // is affected: a remote one (OpenRouter, a custom URL) works anywhere.
+    const localProvider = provider === 'yooz' || provider === 'llamacpp';
+    if (localProvider && detectLocalLLMPlatform() === 'unsupported') {
+      writeToLog(
+        `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
+      );
+    }
 
     // #818: who starts the engine. Only meaningful for the engine transport —
     // an OpenRouter or llama.cpp base URL is not something remi supervises, and

@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
+  detectLocalLLMPlatform,
   formatConfig,
   generateDefaultConfig,
   initConfigFile,
@@ -315,6 +316,35 @@ describe('formatConfig', () => {
   // returning no verdict at all (echoing the prompt back) on six of the most
   // dangerous scenarios, which only "pass" because unparsable => escalate.
   // Defaulting to one would be safety by accident (#809 Phase D, engine#303).
+  // #822: the supported targets carry DIFFERENT backends, so one hardcoded
+  // default is wrong on half of them. Apple Silicon runs the MLX engine; Linux
+  // runs a llama.cpp sidecar; an Intel Mac runs neither, and must be told so at
+  // boot rather than waiting 30s on an engine that cannot exist.
+  test('the local-LLM backend is chosen by platform, not hardcoded', () => {
+    expect(detectLocalLLMPlatform('darwin', 'arm64')).toBe('yooz');
+    expect(detectLocalLLMPlatform('linux', 'x64')).toBe('llamacpp');
+    expect(detectLocalLLMPlatform('linux', 'arm64')).toBe('llamacpp');
+  });
+
+  test('an Intel Mac is unsupported, not silently pointed at the MLX engine', () => {
+    // The trap this guards: "macOS" reads like the boundary, but MLX makes it
+    // Apple Silicon. Defaulting darwin-x64 to 'yooz' would look reasonable and
+    // fail as a startup timeout.
+    expect(detectLocalLLMPlatform('darwin', 'x64')).toBe('unsupported');
+    expect(detectLocalLLMPlatform('win32', 'x64')).toBe('unsupported');
+  });
+
+  test('the shipped default provider matches this machine', () => {
+    const expected = detectLocalLLMPlatform();
+    if (expected !== 'unsupported') {
+      expect(DEFAULT_CONFIG.auto_approve.provider).toBe(expected);
+    } else {
+      // Unsupported targets keep a stable config shape; the daemon reports the
+      // gap at boot instead of the config pretending it away.
+      expect(DEFAULT_CONFIG.auto_approve.provider).toBe('yooz');
+    }
+  });
+
   test('default model is not one of the engine TouchUp grammar tiers', () => {
     expect(['yooz-light-v3', 'yooz-quality-v3']).not.toContain(DEFAULT_CONFIG.auto_approve.model);
   });

@@ -17,6 +17,46 @@ import type { AutoApproveConfig } from '../auto-approve/types.ts';
 const REMI_DIR = path.join(os.homedir(), '.remi');
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
 
+/**
+ * Which local-LLM backend can actually run here (#822).
+ *
+ * The supported targets carry DIFFERENT backends, so a single hardcoded default
+ * is wrong on half of them:
+ *
+ *   - Apple Silicon -> the Yooz engine. MLX, so `darwin-arm64` only; an Intel
+ *     Mac cannot run it however much it looks like "macOS".
+ *   - Linux -> a thin `llama-server`, which speaks the OpenAI-compatible shape
+ *     and therefore reuses the existing transport unchanged.
+ *   - Anything else (notably `darwin-x64`) -> neither. Reported as such rather
+ *     than defaulted to a backend that cannot exist there, because the failure
+ *     would otherwise be a 30s startup timeout followed by escalate-everything
+ *     — indistinguishable from a bug.
+ *
+ * Both backends listen on remi's reserved port 19924, and only one can run per
+ * machine by construction, so the platform decides which without negotiation.
+ */
+export type LocalLLMPlatform = 'yooz' | 'llamacpp' | 'unsupported';
+
+export function detectLocalLLMPlatform(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): LocalLLMPlatform {
+  if (platform === 'darwin') return arch === 'arm64' ? 'yooz' : 'unsupported';
+  if (platform === 'linux') return 'llamacpp';
+  return 'unsupported';
+}
+
+/**
+ * The `auto_approve.provider` default for THIS machine. An unsupported target
+ * still gets `'yooz'` so the config shape and error messages stay stable; what
+ * changes there is that the daemon says so at boot (see `cli.ts`) instead of
+ * silently waiting on an engine that can never appear.
+ */
+function defaultProvider(): string {
+  const detected = detectLocalLLMPlatform();
+  return detected === 'unsupported' ? 'yooz' : detected;
+}
+
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
   readonly base_port: number;
@@ -148,11 +188,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   auto_approve: {
     enabled: false,
-    // The Yooz engine's LLM module (loopback :19924, macOS) is the local-LLM
-    // provider (#809). Elsewhere, `provider = "llamacpp"` points the same port
-    // at a thin llama.cpp server instead (OpenAI-compatible, so it reuses the
-    // 'openai' transport unmodified).
-    provider: 'yooz',
+    // Resolved by PLATFORM, not hardcoded (#822): the Yooz engine on Apple
+    // Silicon, a thin llama.cpp server on Linux. Both listen on remi's reserved
+    // port 19924 and only one can exist per machine, so nothing has to
+    // negotiate. See `detectLocalLLMPlatform`.
+    provider: defaultProvider(),
     // Fast small default: with synchronous decisions (#496) the eval blocks
     // Claude, so the default must be quick + RAM-light across platforms (incl.
     // MacBook Air). Heavier models go in `escalate_model` (second opinion,
