@@ -246,10 +246,17 @@ export async function runModelCommand(
         io.out(`engine:   ${baseUrl} (reachable, ${aa.engine})`);
         io.out(`model:    ${configured}`);
         if (row === undefined) {
-          // Either the engine does not serve this id, or it predates the
-          // catalogue. Both mean auto-approve cannot evaluate, so say so
-          // rather than printing a reassuring blank.
-          io.out('state:    not served by this engine');
+          // Do NOT report this as "not served". The engine accepts a model's
+          // HuggingFace repo id as an ALIAS (`YoozLabs/Qwen3.5-4B-...` resolves
+          // to `yooz-instruct-4b`), but neither `/v1/models` nor
+          // `/v1/llm/models` exposes that mapping — so when the configured
+          // value is an alias, which it is by default, an id comparison finds
+          // nothing even though the model is present and working. Claiming it
+          // is missing would be a false alarm on the default config
+          // (yooz-engine#308 asks for the mapping so this can be resolved).
+          io.out("state:    unknown — this engine's listing does not name it");
+          io.out('          (a HuggingFace-style id resolves server-side, so');
+          io.out('           this is expected until yooz-engine#308)');
         } else {
           io.out(`loaded:   ${row.loaded ? 'yes' : 'no'}`);
           io.out(`on disk:  ${row.cached ? 'yes' : 'no'}`);

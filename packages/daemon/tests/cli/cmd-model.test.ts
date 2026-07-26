@@ -173,6 +173,35 @@ describe('remi model status', () => {
     expect(text).toContain('37%');
   });
 
+  test('an alias the engine lists under a canonical id is not called missing', async () => {
+    // The default config names a HuggingFace repo id, which the engine
+    // resolves server-side to a canonical catalogue id -- and neither model
+    // listing exposes that mapping. So an id comparison finds nothing for a
+    // model that is present and working. Reporting "not served" there would
+    // be a false alarm on the SHIPPED default (yooz-engine#308).
+    const t = io();
+    await runModelCommand(['status'], configWith({ model: 'YoozLabs/Some-Repo-Id' }), t.io, {
+      probe: async (): Promise<EngineProbe> => ({ reachable: true, status: { loaded: true } }),
+      // The engine lists it under its canonical id, not the alias.
+      inventory: async () => [
+        {
+          id: 'yooz-instruct-4b',
+          module: 'llm',
+          displayName: 'Yooz-Instruct-4B',
+          sizeBytes: 2_387_349_504,
+          cached: true,
+          loaded: false,
+          isActive: false,
+          deletable: true,
+        },
+      ],
+    });
+
+    const text = t.out.join('\n');
+    expect(text).not.toContain('not served');
+    expect(text).toContain('unknown');
+  });
+
   test('never reports another model’s state as remi’s', async () => {
     // The engine's picker sits on a different tier and is mid-download. None
     // of that is remi's: reporting it would tell a user their model is busy or
