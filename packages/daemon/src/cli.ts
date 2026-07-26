@@ -897,9 +897,23 @@ let autoApproveService: AutoApproveService | null = null;
     // construction; a standalone `remi --daemon` on a machine with no hub still
     // gets one, because requiring a hub would recreate exactly the silent
     // escalate-everything failure #818 exists to remove.
-    void autoApproveService.ensureEngine().catch((err) => {
-      writeToLog(`[AutoApprove] Engine startup check failed: ${errorToString(err)}`);
-    });
+    void autoApproveService
+      .ensureEngine()
+      .then(async (up) => {
+        // Only once an engine answers: a pull is an engine operation. Chained
+        // rather than fired alongside, so a cold start does not race the
+        // helper's own startup with a download request it cannot serve.
+        //
+        // Owner decision 2026-07-26: fetch the model if it is not local, do
+        // nothing if it is. Without this the weights still arrive, but
+        // implicitly, on the first permission -- so a fresh install's first
+        // question blocks on a silent multi-GB download instead of a visible
+        // one that happened at boot.
+        if (up) await autoApproveService?.ensureModelPresent();
+      })
+      .catch((err) => {
+        writeToLog(`[AutoApprove] Engine startup check failed: ${errorToString(err)}`);
+      });
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
     const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
     const escalateSummary = aaCfg.escalate_model

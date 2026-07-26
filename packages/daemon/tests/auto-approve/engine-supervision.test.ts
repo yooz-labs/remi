@@ -273,6 +273,47 @@ describe('AutoApproveService engine supervision (#818)', () => {
     }
   });
 
+  // `ensureModelPresent` only acts for the `yooz` provider, and `provider =
+  // 'yooz'` resolves to the FIXED loopback 19924 regardless of `base_url` — so
+  // it cannot be pointed at an ephemeral test server the way the other tests
+  // here are. Pointing `provider` at a URL instead makes `providerIsYooz`
+  // false, which makes the method a no-op and any such test vacuous (it passes
+  // with the guard deleted). The observable that works without a server is the
+  // LOG: an owned engine attempts and reports, a shared one never starts.
+  //
+  // The "already cached, so do not re-fetch" half is covered where it is
+  // genuinely testable, at `pullModel` in engine-models.test.ts ("is
+  // idempotent: an already-cached model downloads nothing").
+  test('a shared engine is never told to fetch anything', async () => {
+    // What is on a super-yooz host's disk is the host's business — the same
+    // boundary that stops the residency timer touching its weights (#818).
+    const logs: string[] = [];
+    const service = new AutoApproveService(
+      { ...config(), provider: 'yooz', engine: 'shared' },
+      (m) => logs.push(m),
+    );
+
+    await service.ensureModelPresent();
+
+    expect(logs).toEqual([]); // it did not even try
+  });
+
+  test('an owned engine attempts the fetch and reports failure honestly', async () => {
+    // Nothing is listening on 19924 in this environment, so the pull fails —
+    // and the point is that it FAILS LOUDLY rather than silently, and never
+    // throws. A missing model degrades to escalate-everything, which is the
+    // behavior without this method at all.
+    const logs: string[] = [];
+    const service = new AutoApproveService(
+      { ...config(), provider: 'yooz', engine: 'owned' },
+      (m) => logs.push(m),
+    );
+
+    await service.ensureModelPresent();
+
+    expect(logs.join('\n')).toContain('Could not fetch');
+  });
+
   test('the single-flight guard clears, so a later failure can still repair', async () => {
     // A stuck `healInFlight` would silently disable self-heal for the life of
     // the daemon -- the exact failure mode #818 exists to remove.

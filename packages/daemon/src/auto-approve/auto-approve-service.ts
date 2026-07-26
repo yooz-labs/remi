@@ -12,7 +12,8 @@
 import { errorToString } from '@remi/shared';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
-import { clearModelCache, probeEngine, unloadModel } from './engine-models.ts';
+import { clearModelCache, probeEngine, pullModel, unloadModel } from './engine-models.ts';
+import type { PullProgress } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
@@ -40,6 +41,29 @@ const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate'])
  * (the one production caller) passes a real scope, its own `sessionId`.
  */
 const DEFAULT_SCOPE = '__default__';
+
+/**
+ * One line describing a pull in flight, for `ensureModelPresent`.
+ *
+ * Deliberately leads with SIZE and ELAPSED rather than a percentage. The
+ * engine's parent `Progress` advances per completed FILE, and these repos are
+ * one multi-GB `model.safetensors` plus a few small ones, so the fraction steps
+ * ~0.6% and then sits still for the entire transfer. Rendering that as a
+ * percentage reads as a stuck download; `advancing` is the engine's own signal
+ * for whether the number means anything yet (#292/#293).
+ */
+function describePullProgress(p: PullProgress): string {
+  const parts: string[] = [];
+  if (p.sizeBytes !== undefined && p.sizeBytes > 0) {
+    parts.push(`${(p.sizeBytes / 1_000_000_000).toFixed(2)} GB`);
+  }
+  parts.push(`${Math.round(p.elapsedMs / 1000)}s elapsed`);
+  // Only quote a percentage once it is demonstrably moving.
+  if (p.advancing && p.fraction !== undefined) {
+    parts.push(`${Math.round(p.fraction * 100)}%`);
+  }
+  return parts.join(', ');
+}
 
 /**
  * Convert one `permission_suggestions` entry into an LLM-ready label, or
@@ -126,6 +150,10 @@ export class AutoApproveService {
   private readonly escalateTimeoutMs: number;
   /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
   private readonly providerIsYooz: boolean;
+  /** True when remi owns this engine and may therefore mutate its disk/memory
+   *  state (fetch, unload, delete). False for a shared super-yooz host, where
+   *  all of that is the host's policy (#818). */
+  private readonly ownsEngine: boolean;
 
   /**
    * Two-stage idle policy (#820). The engine never evicts or drops cache on
@@ -231,6 +259,7 @@ export class AutoApproveService {
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
     this.providerIsYooz = config.provider === 'yooz';
+    this.ownsEngine = this.providerIsYooz && config.engine === 'owned';
     // Only the engine transport has an unload endpoint at all, and (today)
     // remi always owns its own engine -- #818 introduces the shared-engine
     // mode, where `ownsEngine` flips false and this timer must never arm.
@@ -252,7 +281,7 @@ export class AutoApproveService {
         // shared (super-yooz) engine's residency is the host's policy, and
         // touching weights (or even just the cache) another module is
         // mid-generate on is hostile.
-        ownsEngine: this.providerIsYooz && config.engine === 'owned',
+        ownsEngine: this.ownsEngine,
       },
       {
         unload: (model) => unloadModel(this.llmConfig.baseUrl, model),
@@ -335,6 +364,55 @@ export class AutoApproveService {
    *  wrongly is the failure this path has to be held to. */
   get engineChangeCount(): number {
     return this.engineChanges;
+  }
+
+  /**
+   * Make sure the configured model is on disk, fetching it if it is not.
+   *
+   * Owner decision 2026-07-26: "if we don't have the model locally we pull it;
+   * if the model is in, there would not be a reason to pull."
+   *
+   * Without this the model still arrives — the engine downloads it implicitly
+   * on the first `preload`/`generate` — but that means a fresh install's FIRST
+   * permission blocks on a silent multi-GB fetch. Doing it deliberately at boot
+   * makes it a visible, progress-reporting pull instead, and by the time a
+   * permission arrives the weights are already there.
+   *
+   * The "already present" half is cheap and doubly guarded: `pullModel` returns
+   * immediately when the inventory reports the model cached, and the engine's
+   * own `requestDownload` no-ops on a cached/loaded row. Concurrent pulls
+   * across daemons collapse onto one download engine-side, so ten daemons
+   * calling this produce one fetch.
+   *
+   * NOT awaited by the caller: a cold pull is minutes, and the daemon must be
+   * serving long before that. Evaluations escalate meanwhile, which is the safe
+   * direction.
+   */
+  async ensureModelPresent(): Promise<void> {
+    // Only when remi owns the engine. On a shared (super-yooz) host, what is on
+    // disk is the host's business -- the same boundary that stops the residency
+    // timer touching a shared engine's weights (#818).
+    if (!this.providerIsYooz || !this.ownsEngine) return;
+    const model = this.llmConfig.model;
+    if (model.length === 0) return;
+
+    try {
+      await pullModel(this.llmConfig.baseUrl, model, {
+        onProgress: (p) => {
+          // Report SIZE and elapsed, never a bare percentage: the engine's
+          // download fraction is flat for the whole multi-GB transfer (the
+          // weights file is staged outside the hub dir and moved in at the
+          // end), so a percentage would sit at ~0.6% and read as stuck.
+          this.logFn(`[AutoApprove] Fetching ${model}: ${describePullProgress(p)}`);
+        },
+      });
+    } catch (err) {
+      // Never fatal. A missing model means evaluations escalate, which is the
+      // behavior without this method at all.
+      this.logFn(
+        `[AutoApprove] Could not fetch ${model} (auto-approve will escalate until it is present): ${errorToString(err)}`,
+      );
+    }
   }
 
   /**
