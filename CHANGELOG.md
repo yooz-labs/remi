@@ -2,7 +2,7 @@
 
 All notable changes to Remi are documented here.
 
-## [0.6.25] - 2026-07-26
+## [0.7.0] - 2026-07-26
 
 Replaces ollama with the Yooz engine as the local-LLM backend for
 auto-approve. The measured result is a faster and safer evaluator: the
