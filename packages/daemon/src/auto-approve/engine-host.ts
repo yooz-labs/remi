@@ -45,10 +45,21 @@
  * process plus aggressive weight eviction is the right shape; reaping the
  * process itself is not worth the coordination.
  *
- * The pidfile doubles as the start race guard: it is created O_EXCL, so of two
- * daemons booting simultaneously exactly one spawns and the other waits and
- * attaches. (The port would arbitrate anyway — the loser's engine would fail
- * to bind — but losing that race noisily is worse than not entering it.)
+ * The pidfile is a BEST-EFFORT start-race guard, not the guarantee: created
+ * O_EXCL, so of two daemons booting simultaneously one normally spawns and the
+ * other waits and attaches. It is not an exclusive lock — see
+ * `engine-process.ts` for the window that survives, which Node cannot close
+ * without an OS advisory lock.
+ *
+ * **The port is the guarantee.** 19924 admits one listener, so a claimant that
+ * slips through the pidfile still fails to bind, and `startEngine` stops a
+ * helper that turns out to be redundant. The pidfile exists to keep that case
+ * rare and quiet — losing the race noisily is worse than not entering it.
+ *
+ * That cleanup is deliberately ordered: a redundant helper is stopped only
+ * AFTER something else is confirmed to be answering. Killing on the strength of
+ * the pidfile alone would bet a running engine against a competitor that has
+ * not started one yet, which can leave the machine with none.
  */
 
 import { errorToString } from '@remi/shared';
@@ -270,30 +281,41 @@ export class EngineHost {
     // claiming inside it would leave the pidfile naming someone else's engine
     // while we believe we own it -- so the reclaim is checked, not assumed.
     this.pids?.release(process.pid);
-    if (this.pids !== undefined && !this.pids.claim(pid)) {
-      // Somebody else's engine now owns the record, so ours is redundant: it
-      // will either lose the port bind or, worse, sit wedged forever. Logging
-      // and carrying on would leak a multi-GB process nothing tracks -- the
-      // pidfile would name their engine while we believed we owned ours.
-      this.log(
-        `[Engine] Started engine pid ${pid} but another process claimed the record first; stopping ours and attaching to theirs`,
-      );
-      this.killStarted(pid);
-      if (await this.waitForReady()) {
-        return { kind: 'attached', ownership: this.config.ownership };
-      }
-      const reason = `stopped our redundant engine (pid ${pid}) but the winner never answered on ${this.config.baseUrl}`;
-      this.log(`[Engine] ${reason}`);
-      return { kind: 'unavailable', reason };
+    const lostRecord = this.pids !== undefined && !this.pids.claim(pid);
+    if (lostRecord) {
+      this.log(`[Engine] Started engine pid ${pid} but another process claimed the record first`);
     }
     this.startedPid = pid;
     this.log(`[Engine] Started detached engine pid ${pid} (${helperPath})`);
 
-    if (await this.waitForReady()) return { kind: 'spawned', pid };
+    if (await this.waitForReady()) {
+      if (!lostRecord) return { kind: 'spawned', pid };
 
-    // Started but never bound. Kill it rather than leaving a wedged headless
-    // process behind: we cannot assume the helper exits on its own when it
-    // cannot take the port.
+      // Something is serving and the record says it is not ours to track, so
+      // ours is probably redundant -- but killing it BEFORE confirming that is
+      // a bad bet. The process that took the record has not necessarily started
+      // anything yet; it may only just have decided to. Killing on that basis
+      // can leave the machine with NO engine while a competitor is still
+      // downloading multi-GB weights.
+      //
+      // So: only now, with the port confirmed answering, stop ours -- then
+      // re-probe. The probe carries no pid, so "someone answers" cannot tell us
+      // WHO; if the port goes dark once ours is gone, ours was the one serving
+      // and we must report that rather than claim a healthy attach.
+      this.killStarted(pid);
+      const after = await this.probe(this.config.baseUrl);
+      if (after.reachable) {
+        this.log(`[Engine] Stopped our redundant engine (pid ${pid}); attached to theirs`);
+        return { kind: 'attached', ownership: this.config.ownership };
+      }
+      const reason = `stopped our engine (pid ${pid}) after another process claimed the record, but ${this.config.baseUrl} then went dark`;
+      this.log(`[Engine] ${reason}`);
+      return { kind: 'unavailable', reason };
+    }
+
+    // Started but never bound, and nothing else answered either. Kill it rather
+    // than leaving a wedged headless process behind: we cannot assume the
+    // helper exits on its own when it cannot take the port.
     this.killStarted(pid);
     const reason = `engine started (pid ${pid}) but never answered on ${this.config.baseUrl}`;
     this.log(`[Engine] ${reason}`);

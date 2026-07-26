@@ -126,6 +126,31 @@ describe('FileEnginePidStore', () => {
     expect(new FileEnginePidStore(PID_FILE).read()).toBe(process.pid);
   });
 
+  test('a claimant does not delete a record it did not observe as stale', () => {
+    // Compare-then-delete. The joint precondition a single crash mid-swap
+    // leaves behind: BOTH the record and the mutex stale. A claimant recovering
+    // from that must never blindly unlink -- if another process displaced the
+    // record and is LIVE, deleting it would let two processes each believe they
+    // hold an exclusive claim, which is the original bug one level down.
+    fs.writeFileSync(`${PID_FILE}.claim`, `${DEAD_PID}\n`); // stale mutex
+    fs.writeFileSync(PID_FILE, `${process.pid}\n`); // ...but a LIVE record
+
+    // The live record must win regardless of the stale mutex beside it.
+    expect(new FileEnginePidStore(PID_FILE).claim(process.pid + 1)).toBe(false);
+    expect(fs.readFileSync(PID_FILE, 'utf8').trim()).toBe(String(process.pid));
+  });
+
+  test('a stale mutex holder cannot be displaced by someone who misread it', () => {
+    // `unlinkIfMatches` on the mutex: a claimant that observed holder X must not
+    // remove a mutex now held by Y.
+    fs.writeFileSync(PID_FILE, `${DEAD_PID}\n`);
+    fs.writeFileSync(`${PID_FILE}.claim`, `${process.pid}\n`); // live holder
+
+    expect(new FileEnginePidStore(PID_FILE).claim(process.pid + 1)).toBe(false);
+    // The live mutex survives the failed claim.
+    expect(fs.readFileSync(`${PID_FILE}.claim`, 'utf8').trim()).toBe(String(process.pid));
+  });
+
   test('the displacement mutex is released once the claim settles', () => {
     // A leaked mutex would block the NEXT displacement until its holder died.
     fs.writeFileSync(PID_FILE, `${DEAD_PID}\n`);
