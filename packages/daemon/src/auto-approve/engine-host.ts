@@ -271,9 +271,20 @@ export class EngineHost {
     // while we believe we own it -- so the reclaim is checked, not assumed.
     this.pids?.release(process.pid);
     if (this.pids !== undefined && !this.pids.claim(pid)) {
+      // Somebody else's engine now owns the record, so ours is redundant: it
+      // will either lose the port bind or, worse, sit wedged forever. Logging
+      // and carrying on would leak a multi-GB process nothing tracks -- the
+      // pidfile would name their engine while we believed we owned ours.
       this.log(
-        `[Engine] Started engine pid ${pid} but another process claimed the record first; not recording ours`,
+        `[Engine] Started engine pid ${pid} but another process claimed the record first; stopping ours and attaching to theirs`,
       );
+      this.killStarted(pid);
+      if (await this.waitForReady()) {
+        return { kind: 'attached', ownership: this.config.ownership };
+      }
+      const reason = `stopped our redundant engine (pid ${pid}) but the winner never answered on ${this.config.baseUrl}`;
+      this.log(`[Engine] ${reason}`);
+      return { kind: 'unavailable', reason };
     }
     this.startedPid = pid;
     this.log(`[Engine] Started detached engine pid ${pid} (${helperPath})`);

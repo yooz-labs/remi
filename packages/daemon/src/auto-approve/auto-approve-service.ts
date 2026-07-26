@@ -281,7 +281,7 @@ export class AutoApproveService {
    * safe direction — but it must never be silent, which is what #818 was filed
    * for in the first place.
    */
-  async ensureEngine(): Promise<boolean> {
+  async ensureEngine(opts?: { readonly afterFailure?: boolean }): Promise<boolean> {
     const host = this.engineHost;
     if (host === undefined) return false;
     const state = await host.ensureRunning();
@@ -289,10 +289,24 @@ export class AutoApproveService {
       this.logFn(`[AutoApprove] No engine available: ${state.reason}`);
       return false;
     }
-    // A newly started engine is a DIFFERENT process, so any capability we
-    // learned about the previous one (notably "this build has no clear-cache
-    // route") no longer applies (#826).
-    if (state.kind === 'spawned') this.residency.noteEngineChanged();
+    // Any capability we learned about the previous engine (notably "this build
+    // has no clear-cache route") is a fact about a PROCESS, so it must be
+    // discarded whenever a different one is now serving (#826). Two cases:
+    //
+    //   - `spawned`: unambiguously a new process.
+    //   - `attached` AFTER a failure: we only got here because an evaluation
+    //     failed against the engine, so something answering now is very likely
+    //     a replacement -- a restarted or upgraded helper, or another daemon's
+    //     engine that won the race to replace the dead one. Without this, a
+    //     `shared` guest could NEVER clear the flag (it can never spawn), and
+    //     the loser of a heal race would keep a stale flag learned from an
+    //     engine that no longer exists.
+    //
+    // A boot-time `attached` is deliberately NOT treated as a change: that is
+    // the ordinary "an engine was already up" path, with nothing learned yet.
+    if (state.kind === 'spawned' || (opts?.afterFailure === true && state.kind === 'attached')) {
+      this.residency.noteEngineChanged();
+    }
     return true;
   }
 
@@ -305,7 +319,7 @@ export class AutoApproveService {
    */
   private healEngine(): void {
     if (this.engineHost === undefined || this.healInFlight !== null) return;
-    this.healInFlight = this.ensureEngine()
+    this.healInFlight = this.ensureEngine({ afterFailure: true })
       .catch((err) => {
         this.logFn(`[AutoApprove] Engine self-heal failed: ${errorToString(err)}`);
         return false;

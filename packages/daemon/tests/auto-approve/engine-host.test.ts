@@ -186,6 +186,32 @@ describe('EngineHost — the start race', () => {
     expect(await h.ensureRunning()).toEqual({ kind: 'attached', ownership: 'owned' });
     expect(spawnCalls).toHaveLength(0); // nothing was ever started
   });
+
+  test('losing the reclaim STOPS our redundant engine instead of leaking it', async () => {
+    // The claim is released and retaken under the child's pid once we have it.
+    // A third process can take the record inside that window -- and then our
+    // helper is redundant: the pidfile names THEIR engine while ours keeps
+    // running, untracked, holding multi-GB of weights nothing will ever free.
+    let claims = 0;
+    const pids: PidStore = {
+      read: () => 999,
+      // First claim (under our own pid, before spawning) succeeds; the reclaim
+      // under the child's pid loses to a third process.
+      claim: () => ++claims === 1,
+      release: () => {},
+    };
+    const { h, spawnCalls, killed, logs } = host(
+      {},
+      { probes: [UNREACHABLE, REACHABLE], pids, spawnPid: 777 },
+    );
+
+    // We attach to the winner's engine rather than reporting our own.
+    expect(await h.ensureRunning()).toEqual({ kind: 'attached', ownership: 'owned' });
+    expect(spawnCalls).toHaveLength(1);
+    expect(killed).toEqual([777]); // ours was stopped, not left running
+    expect(h.startedByUs).toBeNull();
+    expect(logs.join('\n')).toContain('stopping ours');
+  });
 });
 
 describe('EngineHost — lifetime independence', () => {

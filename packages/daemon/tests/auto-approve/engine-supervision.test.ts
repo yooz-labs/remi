@@ -73,10 +73,18 @@ function serviceWith(opts: {
   probes: EngineProbe[];
   ownership?: 'owned' | 'shared';
   helperPath?: string;
+  /** Block every probe until the returned gate is opened, so callers can hold
+   *  a repair in flight and observe what concurrent callers do. */
+  gated?: boolean;
 }) {
   const logs: string[] = [];
   const spawns: string[] = [];
   let probeIndex = 0;
+  let probeCalls = 0;
+  let openGate: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    openGate = resolve;
+  });
   const host = new EngineHost(
     {
       baseUrl: 'http://127.0.0.1:19929',
@@ -92,13 +100,25 @@ function serviceWith(opts: {
         return 4242;
       },
       kill: () => undefined,
-      probe: async () => opts.probes[Math.min(probeIndex++, opts.probes.length - 1)] ?? UNREACHABLE,
+      probe: async () => {
+        probeCalls += 1;
+        if (opts.gated === true) await gate;
+        return opts.probes[Math.min(probeIndex++, opts.probes.length - 1)] ?? UNREACHABLE;
+      },
       sleep: async () => undefined,
       pidStore: pidStore(),
     },
   );
   const service = new AutoApproveService(config(), (m) => logs.push(m), host);
-  return { service, logs, spawns };
+  return {
+    service,
+    logs,
+    spawns,
+    /** Every `ensureRunning` begins with exactly one attach-probe, so this
+     *  counts repair ATTEMPTS regardless of what each one concluded. */
+    probeCount: () => probeCalls,
+    openGate: () => openGate?.(),
+  };
 }
 
 describe('AutoApproveService engine supervision (#818)', () => {
@@ -145,7 +165,12 @@ describe('AutoApproveService engine supervision (#818)', () => {
     // `ensureRunning` waits for a spawned helper to bind, so an unguarded call
     // per failure would pile up overlapping waits -- and on a real machine,
     // every queued permission fails at once against the same dead engine.
-    const h = serviceWith({ probes: [UNREACHABLE, REACHABLE] });
+    //
+    // The probe is GATED so the first repair is provably still in flight when
+    // the later evaluations fail. Without that, evals serialize on the single
+    // eval slot, each repair finishes before the next failure, and the test
+    // passes whether or not the single-flight guard exists at all.
+    const h = serviceWith({ probes: [REACHABLE], gated: true });
     const results = await Promise.all([
       h.service.evaluate('Bash', { command: 'echo 1' }),
       h.service.evaluate('Bash', { command: 'echo 2' }),
@@ -154,10 +179,26 @@ describe('AutoApproveService engine supervision (#818)', () => {
 
     // Every one escalates: a dead engine must never approve anything.
     for (const r of results) expect(r.decision).toBe('escalate');
-    // Let the fire-and-forget repair settle.
-    await new Promise((r) => setTimeout(r, 50));
-    // Exactly one: >1 means the single-flight guard is gone, 0 means the repair
-    // never fired and the daemon would stay broken until restart.
-    expect(h.spawns).toEqual(['/bin/sleep']);
+    // Exactly one repair attempt is outstanding for three failures. Counting
+    // probes rather than spawns is deliberate: the pidfile would collapse
+    // concurrent SPAWNS on its own, so a spawn count cannot distinguish the
+    // guard working from the pidfile covering for its absence.
+    expect(h.probeCount()).toBe(1);
+
+    h.openGate();
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  test('the single-flight guard clears, so a later failure can still repair', async () => {
+    // A stuck `healInFlight` would silently disable self-heal for the life of
+    // the daemon -- the exact failure mode #818 exists to remove.
+    const h = serviceWith({ probes: [REACHABLE] });
+    await h.service.evaluate('Bash', { command: 'echo 1' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.probeCount()).toBe(1);
+
+    await h.service.evaluate('Bash', { command: 'echo 2' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.probeCount()).toBe(2);
   });
 });

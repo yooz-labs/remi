@@ -45,13 +45,29 @@ function isAlive(pid: number): boolean {
  *
  * The exclusivity is what makes it a start-race guard rather than a note: two
  * daemons booting together must not both spawn a multi-GB helper. `wx` gives
- * that atomically — the loser's create fails, it waits, and attaches to the
- * winner's engine.
+ * that atomically for the common case — the loser's create fails, it waits, and
+ * attaches to the winner's engine.
  *
  * A STALE record (the recorded process is gone, e.g. the machine lost power
- * mid-download) must not wedge the feature forever, so a dead holder is cleared
- * and the claim retried once. The retry is bounded at one: if a live process
- * takes the record in between, it genuinely owns it and we lose fairly.
+ * mid-download) must not wedge the feature forever, so a dead holder is
+ * displaced. That displacement is the subtle part, and a naive
+ * check-then-unlink-then-create is WRONG: two processes that both observe the
+ * same stale record can both proceed, and the second one's `unlink` deletes the
+ * first one's freshly written LIVE record before recreating under its own pid.
+ * Both callers then believe they hold an exclusive claim, and both spawn an
+ * engine — precisely the crash-then-reboot case (stale record + hub and session
+ * daemon booting together) this class exists to prevent.
+ *
+ * So displacement happens under a separate `wx` mutex, with the record
+ * RE-CHECKED inside it: whoever takes the mutex is the only process that may
+ * delete the stale file, and anyone who took it after a live record appeared
+ * backs off instead. The mutex is held for a few synchronous syscalls, and a
+ * dead mutex holder is itself displaced, so it cannot wedge anything either.
+ *
+ * The residual window is a process dying between taking the mutex and writing
+ * the record; the next claim clears it. Note also that the pidfile is the
+ * SECOND line of defence, not the only one — the port is the real singleton
+ * (see `engine-host.ts`), so a loser that slips through still fails to bind.
  */
 export class FileEnginePidStore implements PidStore {
   constructor(private readonly file: string = ENGINE_PID_FILE) {}
@@ -73,16 +89,59 @@ export class FileEnginePidStore implements PidStore {
 
   claim(pid: number): boolean {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    if (this.tryCreate(pid)) return true;
+    if (this.tryCreate(this.file, pid)) return true;
 
     // Create failed, so a record exists. Only a DEAD holder may be displaced.
     if (this.read() !== null) return false;
+
+    // Serialize displacement. Without this, two processes that both saw the
+    // stale record race, and the second's unlink destroys the first's LIVE
+    // record -- both then return true and both spawn an engine.
+    const mutex = `${this.file}.claim`;
+    if (!this.acquireMutex(mutex, pid)) return false;
     try {
-      fs.unlinkSync(this.file);
-    } catch {
-      // Someone else cleared it first; the retry below settles who wins.
+      // RE-CHECK inside the mutex: between our check above and taking it, the
+      // holder may have displaced the stale record and be live now.
+      if (this.read() !== null) return false;
+      try {
+        fs.unlinkSync(this.file);
+      } catch {
+        // Already gone -- the create below still decides the winner.
+      }
+      return this.tryCreate(this.file, pid);
+    } finally {
+      this.releaseMutex(mutex, pid);
     }
-    return this.tryCreate(pid);
+  }
+
+  /** Take the displacement mutex. A mutex left behind by a process that died
+   *  mid-displacement is itself displaced, so a crash cannot wedge claiming
+   *  permanently — the same staleness rule as the record it guards. */
+  private acquireMutex(mutex: string, pid: number): boolean {
+    if (this.tryCreate(mutex, pid)) return true;
+    let holder: number;
+    try {
+      holder = Number.parseInt(fs.readFileSync(mutex, 'utf8').trim(), 10);
+    } catch {
+      // Vanished between the failed create and the read: retry once.
+      return this.tryCreate(mutex, pid);
+    }
+    if (Number.isInteger(holder) && holder > 0 && isAlive(holder)) return false;
+    try {
+      fs.unlinkSync(mutex);
+    } catch {
+      // Someone else cleared it; the create below settles who wins.
+    }
+    return this.tryCreate(mutex, pid);
+  }
+
+  private releaseMutex(mutex: string, pid: number): void {
+    try {
+      if (Number.parseInt(fs.readFileSync(mutex, 'utf8').trim(), 10) !== pid) return;
+      fs.unlinkSync(mutex);
+    } catch {
+      // Already gone, or never ours to remove.
+    }
   }
 
   release(pid: number): void {
@@ -107,9 +166,9 @@ export class FileEnginePidStore implements PidStore {
 
   /** Atomic create-or-fail. `wx` is the whole point — an exists-then-write
    *  would reintroduce the race this class exists to close. */
-  private tryCreate(pid: number): boolean {
+  private tryCreate(file: string, pid: number): boolean {
     try {
-      fs.writeFileSync(this.file, `${pid}\n`, { flag: 'wx' });
+      fs.writeFileSync(file, `${pid}\n`, { flag: 'wx' });
       return true;
     } catch {
       return false;

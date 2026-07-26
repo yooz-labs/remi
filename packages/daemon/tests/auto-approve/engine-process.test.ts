@@ -97,6 +97,42 @@ describe('FileEnginePidStore', () => {
     expect(store.claim(process.pid)).toBe(true);
   });
 
+  // Displacing a stale record is the one path where two processes can both
+  // believe they won: without serialization, the second claimant's `unlink`
+  // deletes the first's freshly written LIVE record and both return true, so
+  // both spawn a multi-GB helper. That is the crash-then-reboot case (stale
+  // record + hub and session daemon booting together).
+  //
+  // These drive the mutex directly rather than racing real processes: a real
+  // race only hits the window occasionally, so a timing-based test passes just
+  // as happily against the broken implementation and proves nothing.
+  test('a claimant backs off while another process is mid-displacement', () => {
+    fs.writeFileSync(PID_FILE, `${DEAD_PID}\n`);
+    // A LIVE process (this one) holds the displacement mutex.
+    fs.writeFileSync(`${PID_FILE}.claim`, `${process.pid}\n`);
+
+    expect(new FileEnginePidStore(PID_FILE).claim(process.pid + 1)).toBe(false);
+    // The stale record is untouched: displacing it is the mutex holder's job.
+    expect(fs.readFileSync(PID_FILE, 'utf8').trim()).toBe(String(DEAD_PID));
+  });
+
+  test('a mutex left behind by a dead process does not wedge claiming', () => {
+    // The mutex must not become a new way to jam the feature permanently --
+    // that would trade one wedge for another.
+    fs.writeFileSync(PID_FILE, `${DEAD_PID}\n`);
+    fs.writeFileSync(`${PID_FILE}.claim`, `${DEAD_PID}\n`);
+
+    expect(new FileEnginePidStore(PID_FILE).claim(process.pid)).toBe(true);
+    expect(new FileEnginePidStore(PID_FILE).read()).toBe(process.pid);
+  });
+
+  test('the displacement mutex is released once the claim settles', () => {
+    // A leaked mutex would block the NEXT displacement until its holder died.
+    fs.writeFileSync(PID_FILE, `${DEAD_PID}\n`);
+    expect(new FileEnginePidStore(PID_FILE).claim(process.pid)).toBe(true);
+    expect(fs.existsSync(`${PID_FILE}.claim`)).toBe(false);
+  });
+
   test('creates the containing directory', () => {
     const nested = path.join(TEST_DIR, 'deep', 'engine.pid');
     expect(new FileEnginePidStore(nested).claim(process.pid)).toBe(true);
