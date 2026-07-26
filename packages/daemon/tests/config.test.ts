@@ -9,11 +9,20 @@ import * as path from 'node:path';
 import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
+  detectLocalLLMPlatform,
   formatConfig,
   generateDefaultConfig,
   initConfigFile,
   loadConfig,
 } from '../src/config/config.ts';
+
+/** What `auto_approve.provider` should default to on the machine running these
+ *  tests (#822). Derived from the platform detector rather than read back from
+ *  `DEFAULT_CONFIG`, so assertions using it are real rather than circular. */
+function expectedDefaultProvider(): string {
+  const detected = detectLocalLLMPlatform();
+  return detected === 'unsupported' ? 'yooz' : detected;
+}
 
 const TEST_DIR = path.join(os.tmpdir(), `remi-config-test-${process.pid}`);
 const TEST_CONFIG = path.join(TEST_DIR, 'config.toml');
@@ -285,7 +294,10 @@ describe('formatConfig', () => {
     const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
     expect(output).toContain('[auto_approve]');
     expect(output).toContain('enabled = false');
-    expect(output).toContain('provider = "yooz"');
+    // Platform-dependent by design (#822): the engine on Apple Silicon, a
+    // llama.cpp sidecar on Linux. Asserting a literal here passes on a macOS
+    // dev machine and fails on Linux CI, which is exactly what happened.
+    expect(output).toContain(`provider = "${expectedDefaultProvider()}"`);
     // disable_thinking must be visible in `config show` so a user who set it
     // can confirm it (it was missed in the initial formatConfig wiring).
     expect(output).toContain('disable_thinking = true');
@@ -315,6 +327,35 @@ describe('formatConfig', () => {
   // returning no verdict at all (echoing the prompt back) on six of the most
   // dangerous scenarios, which only "pass" because unparsable => escalate.
   // Defaulting to one would be safety by accident (#809 Phase D, engine#303).
+  // #822: the supported targets carry DIFFERENT backends, so one hardcoded
+  // default is wrong on half of them. Apple Silicon runs the MLX engine; Linux
+  // runs a llama.cpp sidecar; an Intel Mac runs neither, and must be told so at
+  // boot rather than waiting 30s on an engine that cannot exist.
+  test('the local-LLM backend is chosen by platform, not hardcoded', () => {
+    expect(detectLocalLLMPlatform('darwin', 'arm64')).toBe('yooz');
+    expect(detectLocalLLMPlatform('linux', 'x64')).toBe('llamacpp');
+    expect(detectLocalLLMPlatform('linux', 'arm64')).toBe('llamacpp');
+  });
+
+  test('an Intel Mac is unsupported, not silently pointed at the MLX engine', () => {
+    // The trap this guards: "macOS" reads like the boundary, but MLX makes it
+    // Apple Silicon. Defaulting darwin-x64 to 'yooz' would look reasonable and
+    // fail as a startup timeout.
+    expect(detectLocalLLMPlatform('darwin', 'x64')).toBe('unsupported');
+    expect(detectLocalLLMPlatform('win32', 'x64')).toBe('unsupported');
+  });
+
+  test('the shipped default provider matches this machine', () => {
+    const expected = detectLocalLLMPlatform();
+    if (expected !== 'unsupported') {
+      expect(DEFAULT_CONFIG.auto_approve.provider).toBe(expected);
+    } else {
+      // Unsupported targets keep a stable config shape; the daemon reports the
+      // gap at boot instead of the config pretending it away.
+      expect(DEFAULT_CONFIG.auto_approve.provider).toBe('yooz');
+    }
+  });
+
   test('default model is not one of the engine TouchUp grammar tiers', () => {
     expect(['yooz-light-v3', 'yooz-quality-v3']).not.toContain(DEFAULT_CONFIG.auto_approve.model);
   });
@@ -347,7 +388,10 @@ describe('auto_approve config', () => {
   test('defaults are present', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
-      provider: 'yooz',
+      // Resolved per platform (#822), so the expectation is too — but derived
+      // from `detectLocalLLMPlatform` rather than from `DEFAULT_CONFIG`, which
+      // would assert the value against itself and prove nothing.
+      provider: expectedDefaultProvider(),
       model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
       api_key: '',
       base_url: 'http://127.0.0.1:19924',
