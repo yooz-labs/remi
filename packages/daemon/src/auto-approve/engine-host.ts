@@ -198,8 +198,10 @@ export class EngineHost {
   stopStartedEngine(): void {
     const pid = this.startedPid;
     if (pid === null) return;
-    this.killStarted(pid);
-    this.log(`[Engine] Stopped engine pid ${pid}`);
+    // killStarted absorbs a failing kill and logs it, so only claim success
+    // when it actually succeeded -- otherwise an operator sees "could not
+    // stop pid N" immediately followed by "stopped pid N" for the same pid.
+    if (this.killStarted(pid)) this.log(`[Engine] Stopped engine pid ${pid}`);
   }
 
   /**
@@ -263,9 +265,16 @@ export class EngineHost {
       return { kind: 'unavailable', reason };
     }
 
-    // Re-record under the child's pid now that we have it.
+    // Re-record under the child's pid now that we have it. The window between
+    // release and reclaim is a few synchronous statements, but a third process
+    // claiming inside it would leave the pidfile naming someone else's engine
+    // while we believe we own it -- so the reclaim is checked, not assumed.
     this.pids?.release(process.pid);
-    this.pids?.claim(pid);
+    if (this.pids !== undefined && !this.pids.claim(pid)) {
+      this.log(
+        `[Engine] Started engine pid ${pid} but another process claimed the record first; not recording ours`,
+      );
+    }
     this.startedPid = pid;
     this.log(`[Engine] Started detached engine pid ${pid} (${helperPath})`);
 
@@ -280,15 +289,19 @@ export class EngineHost {
     return { kind: 'unavailable', reason };
   }
 
-  /** Kill a pid we started and drop its record. Never throws. */
-  private killStarted(pid: number): void {
+  /** Kill a pid we started and drop its record. Never throws; reports whether
+   *  the kill itself succeeded so callers do not log success over a failure. */
+  private killStarted(pid: number): boolean {
+    let killed = true;
     try {
       this.killFn(pid);
     } catch (err) {
+      killed = false;
       this.log(`[Engine] Could not stop engine pid ${pid}: ${errorToString(err)}`);
     }
     this.pids?.release(pid);
     if (this.startedPid === pid) this.startedPid = null;
+    return killed;
   }
 
   private async waitForReady(): Promise<boolean> {

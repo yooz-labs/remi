@@ -239,3 +239,40 @@ describe('EngineHost — lifetime independence', () => {
     expect(EngineHost.stopRecordedEngine(pidStore(null), () => {})).toBeNull();
   });
 });
+
+describe('EngineHost — teardown reporting', () => {
+  test('a failed kill is NOT reported as a successful stop', async () => {
+    // Otherwise an operator sees "could not stop pid N" immediately followed
+    // by "stopped pid N" for the same pid.
+    const pids = pidStore();
+    const logs: string[] = [];
+    const probes = [UNREACHABLE, REACHABLE];
+    let i = 0;
+    const h = new EngineHost(
+      {
+        baseUrl: 'http://127.0.0.1:19924',
+        ownership: 'owned',
+        helperPath: '/some/helper',
+        startupTimeoutMs: 1000,
+        probeIntervalMs: 100,
+      },
+      {
+        log: (m) => logs.push(m),
+        sleep: async () => {},
+        probe: async () => probes[Math.min(i++, probes.length - 1)] as EngineProbe,
+        spawn: () => 4242,
+        kill: () => {
+          throw new Error('EPERM');
+        },
+        pidStore: pids,
+      },
+    );
+    await h.ensureRunning();
+
+    h.stopStartedEngine();
+
+    const text = logs.join('\n');
+    expect(text).toContain('Could not stop engine pid 4242');
+    expect(text).not.toContain('Stopped engine pid 4242');
+  });
+});

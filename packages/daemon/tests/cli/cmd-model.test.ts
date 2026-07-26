@@ -592,3 +592,24 @@ describe('remi model ls — inventory display (found by live engine run)', () =>
     expect(offsets.size).toBe(1);
   });
 });
+
+describe('remi model — flag handling regressions', () => {
+  test('--all on a verb that does not take it is a usage error, not a bogus model id', async () => {
+    // The parser collects --all for every `model` verb; without a guard,
+    // `rm --all foo` read "--all" as the id and dropped the real one.
+    const t = io();
+    let removed = '';
+    const code = await runModelCommand(['rm', '--all', 'yooz-light-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      remove: async (_u, id) => {
+        removed = id;
+        return { id, reclaimedBytes: 0 };
+      },
+    });
+
+    expect(code).toBe(2);
+    expect(removed).toBe(''); // nothing was deleted under a wrong id
+    expect(t.err.join('\n')).toContain('ls');
+  });
+});

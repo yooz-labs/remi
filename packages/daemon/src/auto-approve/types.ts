@@ -217,16 +217,19 @@ export interface AutoApproveConfig {
    */
   readonly queue_timeout: number;
   /**
-   * Yooz engine provider only: prefix the engine's `/no_think` prompt
-   * convention onto the system prompt to turn OFF the model's reasoning. This
-   * is FASTER but lowers decision quality — live testing showed the
-   * chain-of-thought is load-bearing for following broad user `instructions`
-   * (without it even a 35B model reverts to its cautious prior and escalates
-   * mutations it would otherwise approve).
-   * The buffer-until-verdict design already hides eval latency from the user,
-   * so the default is `false` (keep thinking). Opt in only if you value raw
-   * speed over nuance. No effect on non-'yooz' providers (the OpenAI-compat
-   * endpoint has no knob to disable reasoning).
+   * Suppress the model's chain-of-thought reasoning. Default TRUE (changed
+   * 2026-07-25): a permission classify wants a short JSON verdict, and on the
+   * QAT-lean tiers leaving reasoning on is not merely slow but fatal — the
+   * 0.8B spent an entire 600-token budget thinking about a trivial prompt and
+   * returned no content at all, so every evaluation degraded to an error.
+   *
+   * Applies to BOTH transports. The engine gets `/no_think` prefixed onto its
+   * prompt; an OpenAI-compatible server gets that same prefix (it is a
+   * chat-template convention the Qwen3 family itself honors, so it travels
+   * with the model rather than the server) plus
+   * `chat_template_kwargs.enable_thinking: false`, which is what vLLM and
+   * newer llama.cpp/mlx servers act on. Measured: the prefix alone did NOT
+   * suppress on mlx_lm; the chat_template_kwargs did. See `llm-client.ts`.
    */
   readonly disable_thinking: boolean;
   /**

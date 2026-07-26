@@ -171,6 +171,15 @@ export async function runModelCommand(
     return 2;
   }
 
+  // `--all` belongs to `ls` alone. The parser collects it for any `model`
+  // verb, so without this an id after it would be dropped and the flag itself
+  // read as the model id -- `remi model rm --all foo` would report that a
+  // model called "--all" was not found instead of a usage error.
+  if (verb !== 'ls' && args.includes('--all')) {
+    io.err(`"--all" applies to "remi model ls" only, not "remi model ${verb}".`);
+    return 2;
+  }
+
   const list = deps.list ?? listModels;
   const inventory = deps.inventory ?? listManagedModels;
   const remove = deps.remove ?? deleteModel;
