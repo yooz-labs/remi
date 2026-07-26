@@ -149,7 +149,10 @@ export function spawnDetachedEngine(
     // helper would take the whole daemon down over a missing engine binary --
     // the opposite of the "no engine is not fatal" contract. Absorb it here;
     // `EngineHost.waitForReady` already treats never-answering as unavailable.
-    child.on('error', (err) => {
+    // Cast per the existing idiom in `live-sessions-watcher.ts`: the bundled
+    // `ChildProcess` type does not surface the EventEmitter surface it has at
+    // runtime, and CI resolves a stricter view of it than a local install.
+    (child as unknown as import('node:events').EventEmitter).on('error', (err: unknown) => {
       try {
         fs.appendFileSync(logFile, `Engine spawn failed: ${errorToString(err)}\n`);
       } catch {
