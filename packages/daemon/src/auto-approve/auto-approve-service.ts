@@ -651,6 +651,13 @@ export class AutoApproveService {
       // and aborts a healthy call (currentAbortController is shared instance
       // state).
       let raceTimer: ReturnType<typeof setTimeout> | null = null;
+      // #827: the evaluation is now genuinely in flight on the engine. Marking
+      // it HERE rather than at `evaluate()` entry also takes the queue wait out
+      // of the idle arithmetic -- the window now measures from when the LLM
+      // actually started, not from when we joined the queue. Paired with
+      // `endEval()` in the `finally` immediately below; nothing runs between
+      // this statement and the `try`, so the pairing cannot be skipped.
+      this.residency.beginEval();
       try {
         // Multi-choice + evaluate mode: dedicated prompt, optional alt model.
         // Otherwise the binary approve/deny prompt.
@@ -745,8 +752,9 @@ export class AutoApproveService {
         this.currentEvalId = null;
         this.releaseSlot();
         // #820: re-arm from the END of the eval, so the idle window measures
-        // silence rather than "time since we started thinking".
-        this.residency.noteActivity();
+        // silence rather than "time since we started thinking". #827: also
+        // drops the in-flight count, releasing both stages to act again.
+        this.residency.endEval();
       }
     } catch (err) {
       const durationMs = Date.now() - start;

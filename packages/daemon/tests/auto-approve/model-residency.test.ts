@@ -63,6 +63,92 @@ function harness(
   };
 }
 
+describe('ModelResidency rule 2 — never act mid-eval (#827)', () => {
+  // The case the timestamp approach got wrong: one evaluation whose wall time
+  // exceeds the idle window. `noteActivity` fires only at start and settle, so
+  // nothing re-armed in between and the timer fired with the eval still live on
+  // the engine. Reachable with shipped defaults: queue_timeout 240s +
+  // escalate_timeout 90s (this project's own advice for a cold escalate model)
+  // > cache_idle 300s.
+  test('stage 1 defers while an evaluation is still running', async () => {
+    const h = harness({ cacheIdleMs: 500 });
+    h.residency.beginEval();
+
+    h.fireCacheTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.cacheCleared).toEqual([]); // the cache survived the eval
+    expect(h.logs.join('\n')).toContain('deferred');
+    expect(h.residency.cacheStageEnabled).toBe(true); // deferral is not degradation
+  });
+
+  test('stage 2 defers while an evaluation is still running', async () => {
+    const h = harness();
+    h.residency.beginEval();
+
+    h.fireUnloadTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.unloaded).toEqual([]);
+    expect(h.logs.join('\n')).toContain('deferred');
+  });
+
+  test('both stages act again once the evaluation settles', async () => {
+    // The deferral must be temporary; a permanent one is just a memory leak.
+    const h = harness({ cacheIdleMs: 500 });
+    h.residency.beginEval();
+    h.fireCacheTimer();
+    await Promise.resolve();
+    expect(h.cacheCleared).toEqual([]);
+
+    h.residency.endEval();
+    h.fireCacheTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.cacheCleared).toHaveLength(1);
+  });
+
+  test('concurrent evaluations all have to settle before a stage acts', async () => {
+    // Parallel subagents produce overlapping evals; the LAST one to finish is
+    // what releases the stages, not the first.
+    const h = harness({ cacheIdleMs: 500 });
+    h.residency.beginEval();
+    h.residency.beginEval();
+    h.residency.endEval();
+
+    h.fireCacheTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.cacheCleared).toEqual([]);
+    expect(h.residency.inFlightCount).toBe(1);
+
+    h.residency.endEval();
+    h.fireCacheTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.cacheCleared).toHaveLength(1);
+  });
+
+  test('an unpaired endEval cannot drive the counter negative', async () => {
+    // A negative counter would read as "nothing in flight" forever after,
+    // silently restoring the very bug this counter fixes.
+    const h = harness({ cacheIdleMs: 500 });
+    h.residency.endEval();
+    h.residency.endEval();
+    expect(h.residency.inFlightCount).toBe(0);
+
+    h.residency.beginEval();
+    expect(h.residency.inFlightCount).toBe(1);
+    h.fireCacheTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.cacheCleared).toEqual([]); // still correctly deferred
+  });
+});
+
 describe('ModelResidency stage 2 (unload, #820)', () => {
   test('unloads every model remi loaded once the idle window elapses', async () => {
     const h = harness({ models: ['model-a', 'escalate-b'] });
