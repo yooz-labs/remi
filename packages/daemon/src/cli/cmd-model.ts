@@ -84,18 +84,28 @@ function isVerb(s: string | undefined): s is Verb {
   return s !== undefined && (VERBS as readonly string[]).includes(s);
 }
 
-/** Human-readable size. The engine reports bytes; a user thinks in GB. */
+/** Human-readable size. The engine reports bytes; a user thinks in GB.
+ *  Zero is rendered as unknown rather than "0 MB": the inventory reports 0 for
+ *  rows whose on-disk footprint it cannot measure (observed on swept hub
+ *  directories), and "0 MB" reads as "this is empty" rather than "we don't
+ *  know". */
 function formatSize(bytes: number | undefined): string {
-  if (bytes === undefined) return '-';
+  if (bytes === undefined || bytes === 0) return '-';
   const gb = bytes / 1e9;
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${Math.round(bytes / 1e6)} MB`;
 }
 
+/** Pad, or truncate with an ellipsis, so the columns survive a long id. Hub
+ *  directory names (`models--<ns>--<repo>`) routinely exceed the column. */
+function fitColumn(text: string, width: number): string {
+  return text.length <= width ? text.padEnd(width) : `${text.slice(0, width - 1)}…`;
+}
+
 function formatManagedRow(m: ManagedModel): string {
   const marker = m.isActive ? '*' : ' ';
   const state = m.loaded ? 'resident' : m.cached ? 'on disk' : 'not downloaded';
-  return `${marker} ${m.id.padEnd(22)} ${m.module.padEnd(8)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
+  return `${marker} ${fitColumn(m.id, 30)} ${fitColumn(m.module, 6)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
 }
 
 function formatRow(m: EngineModel, current: string): string {
@@ -220,13 +230,25 @@ export async function runModelCommand(
         return 0;
       }
       case 'ls': {
-        const models = await inventory(baseUrl);
+        const all = await inventory(baseUrl);
+        // The inventory covers EVERY module (a live engine returned 69 rows,
+        // 67 of them STT hub directories). This command manages the model
+        // auto-approve evaluates with, so show that module by default and say
+        // what was hidden rather than burying two useful rows in noise.
+        const wantAll = args.includes('--all');
+        const models = wantAll ? all : all.filter((m) => m.module === 'llm');
         if (models.length === 0) {
-          io.out('No models on disk.');
+          io.out(all.length === 0 ? 'No models on disk.' : 'No LLM models on disk.');
           return 0;
         }
-        io.out('  MODEL                    MODULE      SIZE  STATE');
+        io.out('  MODEL                          MODULE     SIZE  STATE');
         for (const m of models) io.out(formatManagedRow(m));
+        const hidden = all.length - models.length;
+        if (hidden > 0) {
+          io.out(
+            `  (${hidden} model(s) from other modules hidden; "remi model ls --all" shows them)`,
+          );
+        }
         return 0;
       }
       case 'rm': {

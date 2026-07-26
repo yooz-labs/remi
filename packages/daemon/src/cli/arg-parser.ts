@@ -399,7 +399,15 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
         // its arguments both belong to this subcommand.
-        while (args[i + 1] && !(args[i + 1] as string).startsWith('-')) {
+        //
+        // Flags are NOT swallowed wholesale -- `remi model --help` must still
+        // reach the global help branch -- so only flags this subcommand
+        // actually defines are collected, by name.
+        const OWN_FLAGS: ReadonlySet<string> = new Set(['--all']);
+        while (
+          args[i + 1] &&
+          (!(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
+        ) {
           subcommandArgs.push(args[i + 1] as string);
           i++;
         }

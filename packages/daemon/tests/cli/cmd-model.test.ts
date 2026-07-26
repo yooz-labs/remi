@@ -529,3 +529,66 @@ describe('persistModelInConfig — REAL filesystem (no seam)', () => {
     expect(fs.readFileSync(file, 'utf-8')).toContain('model = "weird$&id"');
   });
 });
+
+describe('remi model ls — inventory display (found by live engine run)', () => {
+  const OTHER: ManagedModel[] = Array.from({ length: 5 }, (_, i) => ({
+    id: `models--Qwen--Some-Very-Long-Repo-Name-${i}`,
+    module: 'stt',
+    displayName: 'stt thing',
+    sizeBytes: 0,
+    cached: true,
+    loaded: false,
+    isActive: false,
+    deletable: true,
+  }));
+
+  test('shows only LLM models by default and says what it hid', async () => {
+    // A live engine returned 69 rows, 67 of them STT hub directories. Burying
+    // the two useful rows in that is not a listing.
+    const t = io();
+    await runModelCommand(['ls'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => [...INVENTORY, ...OTHER],
+    });
+
+    const text = t.out.join('\n');
+    expect(text).toContain('yooz-quality-v3');
+    expect(text).not.toContain('models--Qwen');
+    expect(text).toContain('5 model(s) from other modules hidden');
+  });
+
+  test('--all shows every module', async () => {
+    const t = io();
+    await runModelCommand(['ls', '--all'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => [...INVENTORY, ...OTHER],
+    });
+
+    const text = t.out.join('\n');
+    expect(text).toContain('models--Qwen');
+    expect(text).not.toContain('hidden');
+  });
+
+  test('a size the engine could not measure reads as unknown, not "0 MB"', async () => {
+    const t = io();
+    await runModelCommand(['ls', '--all'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => OTHER,
+    });
+
+    expect(t.out.join('\n')).not.toContain('0 MB');
+  });
+
+  test('a long id does not break the columns', async () => {
+    const t = io();
+    await runModelCommand(['ls', '--all'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => OTHER,
+    });
+
+    // Every row keeps the module column at the same offset.
+    const rows = t.out.filter((l) => l.includes('stt'));
+    const offsets = new Set(rows.map((r) => r.indexOf('stt')));
+    expect(offsets.size).toBe(1);
+  });
+});
