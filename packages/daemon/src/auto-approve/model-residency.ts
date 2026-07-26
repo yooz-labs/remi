@@ -79,6 +79,16 @@
  * daemon re-arms instead of acting. One `utimes` per eval, one `stat` per
  * fire, no locks and no IPC. Anything heavier belongs with #620's GPU
  * admission work.
+ *
+ * Rule 2 applies across daemons too, and needs one addition to get there. The
+ * in-flight counter is per-instance and private, so a sibling daemon cannot see
+ * that WE are mid-eval; all it sees is the shared mtime, touched at the same
+ * two instants that proved insufficient locally. An eval that outlasts the
+ * sibling's window would therefore have its cache dropped by that sibling. So
+ * while `inFlight > 0` this daemon RE-TOUCHES the shared record on a heartbeat
+ * (a quarter of the shortest window, capped at 30s), which keeps every sibling
+ * deferring for as long as the work actually lasts — using the mechanism that
+ * is already there rather than introducing a second one.
  */
 
 import { ClearCacheUnsupportedError } from './engine-models.ts';
@@ -167,6 +177,10 @@ export class ModelResidency {
    *  neither stage may act: dropping the cache or the weights under a live
    *  evaluation is exactly what rule 2 forbids. */
   private inFlight = 0;
+  /** Refreshes the SHARED activity record while `inFlight > 0`, so a sibling
+   *  daemon on the same engine keeps seeing machine activity for the whole
+   *  duration of our eval rather than only at its two endpoints (#827). */
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly config: ModelResidencyConfig,
@@ -241,6 +255,7 @@ export class ModelResidency {
   beginEval(): void {
     this.inFlight += 1;
     this.noteActivity();
+    this.startHeartbeat();
   }
 
   /** An evaluation finished (any outcome). Clamped at zero so an unpaired call
@@ -248,6 +263,7 @@ export class ModelResidency {
    *  mid-eval — the failure direction that would reintroduce #827. */
   endEval(): void {
     if (this.inFlight > 0) this.inFlight -= 1;
+    if (this.inFlight === 0) this.stopHeartbeat();
     this.noteActivity();
   }
 
@@ -283,6 +299,56 @@ export class ModelResidency {
       this.clearTimerFn(this.cacheTimer);
       this.cacheTimer = null;
     }
+    this.stopHeartbeat();
+  }
+
+  /**
+   * Keep the SHARED activity record fresh while this daemon has work in flight
+   * (#827, cross-daemon half).
+   *
+   * The in-flight counter is per-instance and private, so it protects only THIS
+   * daemon's evals. A sibling daemon sharing the engine sees nothing but the
+   * `engine-activity` mtime — and that mtime is touched at exactly two instants,
+   * eval start and settle, which is the same "nothing in between" shape that
+   * failed locally. Once our eval outlasts the sibling's window, its
+   * `sinceLastMs() < window` check goes false and it drops the cache or unloads
+   * the weights out from under us. The module treats ten daemons on one engine
+   * as the common case, so this is not an exotic path.
+   *
+   * A heartbeat closes it with the mechanism already in place: while work is in
+   * flight we re-touch the shared record, so every sibling keeps seeing recent
+   * machine activity and keeps deferring. No locks, no IPC, nothing to keep in
+   * sync — the same reasons `engine-activity.ts` chose an mtime in the first
+   * place. The interval is a quarter of the shortest window (capped at 30s) so
+   * a sibling cannot observe a gap wider than its own threshold.
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer !== null || this.deps.activity === undefined) return;
+    const windows = [this.config.cacheIdleMs, this.config.keepAliveMs].filter((w) => w > 0);
+    if (windows.length === 0) return;
+    // A quarter of the SHORTEST window, so a sibling can never observe a gap
+    // as wide as its own threshold. Capped at 30s (a longer window does not
+    // need a faster beat) and floored at 50ms purely so a pathologically small
+    // configured window cannot turn this into a busy loop. The floor must never
+    // exceed the window itself, which is why it is not the round 1s it looks
+    // like it should be.
+    const interval = Math.max(50, Math.min(30_000, Math.floor(Math.min(...windows) / 4)));
+    const tick = (): void => {
+      this.heartbeatTimer = null;
+      // Settled while the timer was pending: nothing to advertise.
+      if (this.inFlight === 0) return;
+      this.deps.activity?.touch();
+      this.heartbeatTimer = this.setTimer(tick, interval);
+      this.heartbeatTimer.unref?.();
+    };
+    this.heartbeatTimer = this.setTimer(tick, interval);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer === null) return;
+    this.clearTimerFn(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   /**

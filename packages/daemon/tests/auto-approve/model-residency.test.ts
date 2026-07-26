@@ -67,9 +67,11 @@ describe('ModelResidency rule 2 — never act mid-eval (#827)', () => {
   // The case the timestamp approach got wrong: one evaluation whose wall time
   // exceeds the idle window. `noteActivity` fires only at start and settle, so
   // nothing re-armed in between and the timer fired with the eval still live on
-  // the engine. Reachable with shipped defaults: queue_timeout 240s +
-  // escalate_timeout 90s (this project's own advice for a cold escalate model)
-  // > cache_idle 300s.
+  // the engine. Reachable in a realistic configuration: queue_timeout 240s (a
+  // shipped default) plus escalate_timeout raised to 90s -- NOT a default
+  // (escalate_timeout ships as 0, meaning "reuse the 30s base timeout") but
+  // what config.ts's own tuning advice suggests for a large, often-cold
+  // escalate model. 240 + 90 exceeds cache_idle's 300s default.
   test('stage 1 defers while an evaluation is still running', async () => {
     const h = harness({ cacheIdleMs: 500 });
     h.residency.beginEval();
@@ -130,6 +132,50 @@ describe('ModelResidency rule 2 — never act mid-eval (#827)', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(h.cacheCleared).toHaveLength(1);
+  });
+
+  test('a heartbeat keeps the SHARED record fresh for a sibling daemon', async () => {
+    // The cross-daemon half. `inFlight` is private and per-instance, so a
+    // sibling sharing the engine sees only the `engine-activity` mtime -- which
+    // was touched at eval start and settle and nothing in between, the same
+    // shape that failed locally. Once our eval outlasts the sibling's window,
+    // its `sinceLastMs() < window` check goes false and it drops the cache out
+    // from under us.
+    const touches: number[] = [];
+    let heartbeatFire: (() => void) | undefined;
+    const residency = new ModelResidency(
+      { keepAliveMs: 0, cacheIdleMs: 400, models: ['shared'], ownsEngine: true },
+      {
+        unload: async () => {},
+        clearCache: async () => [],
+        log: () => {},
+        activity: {
+          touch: () => touches.push(1),
+          sinceLastMs: () => 0,
+        },
+        // The heartbeat is the only timer at a quarter of the window (100ms).
+        setTimer: (fn, ms) => {
+          if (ms === 100) heartbeatFire = fn;
+          return 1 as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimer: () => {},
+      },
+    );
+
+    residency.beginEval();
+    const afterBegin = touches.length;
+    // A long eval: the heartbeat fires while nothing else happens.
+    heartbeatFire?.();
+    heartbeatFire?.();
+
+    // Each beat re-advertises machine activity, so a sibling keeps deferring.
+    expect(touches.length).toBeGreaterThan(afterBegin);
+
+    // ...and it stops once the work settles, so eviction is not pinned forever.
+    residency.endEval();
+    const afterEnd = touches.length;
+    heartbeatFire?.();
+    expect(touches.length).toBe(afterEnd);
   });
 
   test('an unpaired endEval cannot drive the counter negative', async () => {
