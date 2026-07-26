@@ -11,6 +11,7 @@
 
 import { errorToString } from '@remi/shared';
 import { fileActivityRecord } from './engine-activity.ts';
+import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, unloadModel } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
@@ -134,6 +135,15 @@ export class AutoApproveService {
    * the weights entirely.
    */
   private readonly residency: ModelResidency;
+  /**
+   * Who starts the engine (#818). Absent when remi has no business supervising
+   * one — a non-engine provider (OpenRouter, llama.cpp), or a caller that did
+   * not supply it (tests). Absent means the old behavior: attach to whatever is
+   * on the port, or escalate.
+   */
+  private readonly engineHost: EngineHost | undefined;
+  /** In-flight self-heal, so a burst of failed evals triggers one repair. */
+  private healInFlight: Promise<void> | null = null;
   /** Max ms a permission eval may wait in the serialization queue before it
    *  escalates gracefully (#551); 0 = no bound. */
   private readonly queueTimeoutMs: number;
@@ -184,7 +194,8 @@ export class AutoApproveService {
    *  (Claude advanced past the prompt) from a timeout abort. */
   private cancelReason: string | null = null;
 
-  constructor(config: AutoApproveConfig, logFn: (msg: string) => void) {
+  constructor(config: AutoApproveConfig, logFn: (msg: string) => void, engineHost?: EngineHost) {
+    this.engineHost = engineHost;
     this.llmConfig = {
       baseUrl: resolveProviderUrl(config.provider, config.base_url),
       apiKey: config.api_key,
@@ -194,10 +205,12 @@ export class AutoApproveService {
       // OpenAI-compatible (a thin llama.cpp server, OpenRouter, and any custom
       // URL all speak /v1/chat/completions already).
       kind: config.provider === 'yooz' ? 'yooz' : 'openai',
-      // 'yooz' only: prefix the engine's `/no_think` convention to disable
-      // reasoning. Faster, but lowers decision quality (the chain-of-thought is
-      // load-bearing for following broad user instructions), so default OFF.
-      // No effect on the 'openai' kind (no equivalent knob there).
+      // Suppress the model's chain-of-thought. Defaults ON, and applies to BOTH
+      // transports -- `/no_think` is a chat-template convention the Qwen3 family
+      // itself recognizes, so it is a property of the model, not the server, and
+      // the openai kind additionally sends `chat_template_kwargs`. Not a tuning
+      // knob: unsuppressed, the QAT-lean 0.8B spent its whole token budget
+      // reasoning and returned NO content, so every eval became an error (#822).
       disableThinking: config.disable_thinking,
     };
     this.logFn = logFn;
@@ -255,6 +268,65 @@ export class AutoApproveService {
    *  may still be using the model or its cache (#820). */
   stopResidencyTimer(): void {
     this.residency.stop();
+  }
+
+  /**
+   * Make sure an engine is answering, starting one if this remi owns the engine
+   * (#818). Safe to call repeatedly: `EngineHost.ensureRunning` attaches to an
+   * existing engine before considering a spawn, and claims the pidfile before
+   * spawning, so concurrent callers across daemons cannot start two.
+   *
+   * Returns whether an engine is now reachable, so a caller at boot can report
+   * the gap. A missing engine is NOT fatal — evaluation escalates, which is the
+   * safe direction — but it must never be silent, which is what #818 was filed
+   * for in the first place.
+   */
+  async ensureEngine(opts?: { readonly afterFailure?: boolean }): Promise<boolean> {
+    const host = this.engineHost;
+    if (host === undefined) return false;
+    const state = await host.ensureRunning();
+    if (state.kind === 'unavailable') {
+      this.logFn(`[AutoApprove] No engine available: ${state.reason}`);
+      return false;
+    }
+    // Any capability we learned about the previous engine (notably "this build
+    // has no clear-cache route") is a fact about a PROCESS, so it must be
+    // discarded whenever a different one is now serving (#826). Two cases:
+    //
+    //   - `spawned`: unambiguously a new process.
+    //   - `attached` AFTER a failure: we only got here because an evaluation
+    //     failed against the engine, so something answering now is very likely
+    //     a replacement -- a restarted or upgraded helper, or another daemon's
+    //     engine that won the race to replace the dead one. Without this, a
+    //     `shared` guest could NEVER clear the flag (it can never spawn), and
+    //     the loser of a heal race would keep a stale flag learned from an
+    //     engine that no longer exists.
+    //
+    // A boot-time `attached` is deliberately NOT treated as a change: that is
+    // the ordinary "an engine was already up" path, with nothing learned yet.
+    if (state.kind === 'spawned' || (opts?.afterFailure === true && state.kind === 'attached')) {
+      this.residency.noteEngineChanged();
+    }
+    return true;
+  }
+
+  /**
+   * Fire-and-forget repair after a failed evaluation. Single-flight: a burst of
+   * failures (every queued permission failing against the same dead engine)
+   * must produce ONE repair attempt, not one per question — `ensureRunning`
+   * waits up to 30s for a spawned helper to bind, so an unguarded call per
+   * failure would pile up dozens of overlapping waits.
+   */
+  private healEngine(): void {
+    if (this.engineHost === undefined || this.healInFlight !== null) return;
+    this.healInFlight = this.ensureEngine({ afterFailure: true })
+      .catch((err) => {
+        this.logFn(`[AutoApprove] Engine self-heal failed: ${errorToString(err)}`);
+        return false;
+      })
+      .then(() => {
+        this.healInFlight = null;
+      });
   }
 
   /**
@@ -702,6 +774,14 @@ export class AutoApproveService {
       const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;
       // Always log errors regardless of logDecisions setting
       this.logFn(`${prefix} ERROR ${toolName}: ${reasoning} (${durationMs}ms)`);
+
+      // #818 self-heal, LAZY by design. A daemon started at 09:00 must survive
+      // the engine dying at 14:00, and boot-time-only supervision cannot do
+      // that. A timeout is excluded: the engine answered, it was just slow, and
+      // treating "slow" as "dead" would try to start a second engine against a
+      // busy one. Deliberately NOT awaited -- this eval has already escalated,
+      // so the repair is for the NEXT one and must not add latency here.
+      if (!isAbort) this.healEngine();
 
       return {
         decision: 'escalate',

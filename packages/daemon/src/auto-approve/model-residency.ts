@@ -159,6 +159,29 @@ export class ModelResidency {
     this.clearTimerFn = deps.clearTimer ?? ((h) => clearTimeout(h));
   }
 
+  /**
+   * A DIFFERENT engine process now answers on the port (#826): remi started
+   * one, or re-attached after a failure.
+   *
+   * `cacheUnsupported` is a fact about an engine PROCESS ("this build has no
+   * clear-cache route"), but it is stored on a daemon that outlives it. Once
+   * `EngineHost` can start and restart engines during a daemon's life, a user
+   * upgrading the engine underneath a long-running daemon is ordinary — and
+   * without this, stage 1 would stay disabled until the DAEMON restarted,
+   * leaving ~1.5 GB of prompt KV resident that could have been reclaimed.
+   *
+   * The retry flags go too: they are per-idle-window judgments about a
+   * specific engine, and a new one deserves a clean attempt.
+   */
+  noteEngineChanged(): void {
+    if (this.cacheUnsupported) {
+      this.deps.log('[Residency] New engine detected; re-enabling the prompt-cache stage');
+    }
+    this.cacheUnsupported = false;
+    this.cacheRetried = false;
+    this.unloadRetried = false;
+  }
+
   /** True when this instance will ever unload anything (stage 2). Predates
    *  stage 1 and is kept with this exact meaning for existing callers/tests. */
   get enabled(): boolean {

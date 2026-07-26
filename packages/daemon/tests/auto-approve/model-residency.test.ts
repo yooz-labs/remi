@@ -377,6 +377,36 @@ describe('ModelResidency stage 1 (cache-drop, #820)', () => {
     expect(h.logs.filter((l) => l.includes('does not support cache-clear'))).toHaveLength(1);
   });
 
+  test('noteEngineChanged re-enables stage 1 after an engine upgrade (#826)', async () => {
+    // `cacheUnsupported` is a fact about an engine PROCESS, stored on a daemon
+    // that outlives it. Once EngineHost can start engines mid-life, a user
+    // upgrading the engine under a long-running daemon is ordinary, and without
+    // this the daemon would keep ~1.5 GB of prompt KV resident until restart.
+    const h = harness(
+      { cacheIdleMs: 500 },
+      { clearCacheThrows: new ClearCacheUnsupportedError('/v1/llm/clear-cache failed 404: nope') },
+    );
+    h.residency.noteActivity();
+    h.fireCacheTimer();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.residency.cacheStageEnabled).toBe(false);
+
+    h.residency.noteEngineChanged();
+
+    expect(h.residency.cacheStageEnabled).toBe(true);
+    expect(h.logs.join('\n')).toContain('New engine detected');
+  });
+
+  test('noteEngineChanged is silent when stage 1 was never degraded', async () => {
+    // It runs on every spawn, including the ordinary first one at boot, so it
+    // must not narrate a recovery that did not happen.
+    const h = harness({ cacheIdleMs: 500 });
+    h.residency.noteEngineChanged();
+    expect(h.residency.cacheStageEnabled).toBe(true);
+    expect(h.logs.join('\n')).not.toContain('New engine detected');
+  });
+
   test('a transient clear-cache failure is logged and never thrown out of the timer callback', async () => {
     const h = harness({ cacheIdleMs: 500 }, { clearCacheThrows: new Error('engine restarted') });
     h.residency.noteActivity();
