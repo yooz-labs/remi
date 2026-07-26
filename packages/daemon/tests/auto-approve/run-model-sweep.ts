@@ -406,8 +406,42 @@ async function runModel(model: string): Promise<Result[]> {
 const defaultModels = ['yooz-light-v3', 'yooz-quality-v3'];
 const models = process.argv.length > 2 ? process.argv.slice(2) : defaultModels;
 
+/**
+ * Record WHAT WAS MEASURED, not just the score.
+ *
+ * A sweep result is a property of a (model, backend, engine build, prompt
+ * settings) tuple, and this harness is backend-parameterised — so a bare
+ * "38/38" says nothing about which stack produced it. A run of this sweep was
+ * once used to choose remi's shipped default; the output recorded only the
+ * model NAME, the target was never captured, and the number turned out not to
+ * reproduce against the engine it was assumed to describe. The provenance
+ * header exists so that cannot happen again: if a result cannot be attributed,
+ * it cannot be trusted, and a benchmark you cannot re-run is an anecdote.
+ */
+async function provenance(baseUrl: string): Promise<string> {
+  // Best-effort: an unreachable engine must not stop the sweep, but the report
+  // must then SAY the version is unknown rather than quietly omitting it.
+  try {
+    const res = await fetch(`${baseUrl}/v1/health`, { signal: AbortSignal.timeout(2000) });
+    const body = (await res.json()) as { version?: string };
+    return body.version ?? 'unknown';
+  } catch {
+    return 'unreachable';
+  }
+}
+
+const sweepBaseUrl = process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924';
+const sweepProvider = process.env['SWEEP_PROVIDER'] ?? 'yooz';
+const thinking = process.env['SWEEP_THINKING'] === '1';
+
 console.log(`\n${'='.repeat(80)}`);
 console.log(`  Auto-Approve Model Sweep: ${scenarios.length} scenarios x ${models.length} models`);
+console.log(`${'='.repeat(80)}`);
+console.log(`  provider:     ${sweepProvider}`);
+console.log(`  base_url:     ${sweepBaseUrl}`);
+console.log(`  engine:       ${await provenance(sweepBaseUrl)}`);
+console.log(`  thinking:     ${thinking ? 'ON' : 'OFF (disable_thinking)'}`);
+console.log(`  date:         ${new Date().toISOString()}`);
 console.log(`${'='.repeat(80)}\n`);
 
 const summary: { model: string; passed: number; failed: number; failures: string[] }[] = [];
