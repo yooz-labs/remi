@@ -155,12 +155,25 @@ export const DEFAULT_CONFIG: RemiConfig = {
     provider: 'yooz',
     // Fast small default: with synchronous decisions (#496) the eval blocks
     // Claude, so the default must be quick + RAM-light across platforms (incl.
-    // MacBook Air). Yooz-Quality-v3 is the engine's KD Qwen3.5-4B model,
-    // matching the prior 4B-class default's benchmarked-safe (38/38) tier;
-    // #809 Phase D re-benchmarks the permission grid against the engine and
-    // may change this default. Heavier models go in `escalate_model`
-    // (second opinion, would-escalate cases only).
-    model: 'yooz-quality-v3',
+    // MacBook Air). Heavier models go in `escalate_model` (second opinion,
+    // would-escalate cases only).
+    //
+    // #809 Phase D measured the 38-case permission grid against a real engine.
+    // This untuned QAT-lean KD base scored 38/38 with zero unsafe approvals,
+    // zero unparsable responses, and p95 2.26s. The engine's two TouchUp tiers
+    // are NOT substitutes: `yooz-quality-v3` (same base, grammar-tuned) also
+    // reads 38/38, but six of those are responses carrying no verdict at all --
+    // it echoes the input back, a proofreader doing its job -- and they "pass"
+    // only because an unparsable response is treated as escalate. Those six are
+    // `rm -rf /`, the `dd` disk wipe, `chmod 777 /etc`, `base64 | bash`,
+    // `eval $X`, and a reverse shell: safety by accident, not by judgment.
+    // `yooz-light-v3` scores 22/38 outright.
+    //
+    // Requires yooz-engine#303 (catalogue-backed model selection). Engines
+    // predating it serve only the two TouchUp tiers and reject this id with
+    // 400 `invalid_model`; auto-approve is off by default, so that surfaces as
+    // "every question escalates" rather than as a broken daemon.
+    model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
     api_key: '',
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
@@ -367,7 +380,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   // must fail loudly with an actionable next step.
   if (cfg.provider === 'ollama') {
     throw new Error(
-      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "yooz-quality-v3" for the engine).`,
+      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_CONFIG.auto_approve.model}" for the engine). Note "llamacpp" currently expects you to run llama-server on 19924 yourself; remi does not download or supervise it yet (#822).`,
     );
   }
   expectString('model', cfg.model);
@@ -801,7 +814,10 @@ authorized_user_ids = []
 # provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
                                 # llama.cpp server, elsewhere) | "openrouter"
                                 # | custom base URL
-# model = "yooz-quality-v3"     # Fast small default; the eval blocks Claude (#496)
+# model = "${DEFAULT_CONFIG.auto_approve.model}"
+                                # Fast small default; the eval blocks Claude (#496).
+                                # 38/38 on the permission grid, p95 2.26s. The
+                                # TouchUp tiers are proofreaders, not classifiers.
 # api_key = ""                  # Required for OpenRouter, empty for the local engine/llama.cpp
 # base_url = "http://127.0.0.1:19924"
 # timeout = 30                  # Seconds; falls through to user if exceeded

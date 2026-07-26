@@ -307,8 +307,16 @@ describe('formatConfig', () => {
   });
 
   test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
-    expect(DEFAULT_CONFIG.auto_approve.model).toBe('yooz-quality-v3');
+    expect(DEFAULT_CONFIG.auto_approve.model).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
     expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
+  });
+
+  // The TouchUp tiers read 38/38 on the permission grid but reach it partly by
+  // returning no verdict at all (echoing the prompt back) on six of the most
+  // dangerous scenarios, which only "pass" because unparsable => escalate.
+  // Defaulting to one would be safety by accident (#809 Phase D, engine#303).
+  test('default model is not one of the engine TouchUp grammar tiers', () => {
+    expect(['yooz-light-v3', 'yooz-quality-v3']).not.toContain(DEFAULT_CONFIG.auto_approve.model);
   });
 
   test('REMI_AUTO_APPROVE_ESCALATE_MODEL env override (#522)', () => {
@@ -340,7 +348,7 @@ describe('auto_approve config', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
       provider: 'yooz',
-      model: 'yooz-quality-v3',
+      model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
       api_key: '',
       base_url: 'http://127.0.0.1:19924',
       timeout: 30,

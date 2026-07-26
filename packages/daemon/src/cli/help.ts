@@ -309,7 +309,7 @@ export function formatHelp(version: string): string {
     bold('Auto-Approve (LLM):'),
     entry('--auto-approve', 'Enable LLM auto-approve for permissions'),
     entry('--no-auto-approve', 'Disable auto-approve (overrides config)'),
-    entry('--auto-approve-model M', 'LLM model (default: yooz-quality-v3)'),
+    entry('--auto-approve-model M', 'LLM model (default: the engine 4B qat-lean)'),
     entry('--auto-approve-provider P', 'yooz | llamacpp | openrouter | custom URL'),
     entry('--auto-approve-api-key K', 'API key (OpenRouter, etc.)'),
     entry('--auto-approve-allow STR', 'Allow-list pattern (repeatable, substring match)'),
