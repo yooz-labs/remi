@@ -80,7 +80,14 @@ describe('canInstallHelper', () => {
   });
 });
 
-describe('ensureHelperInstalled', () => {
+// The install path is macOS-only by construction: `canInstallHelper` gates on
+// Apple Silicon, and the archive is expanded with `ditto`, which does not exist
+// elsewhere. These assert real filesystem behaviour, so they are skipped rather
+// than faked off-platform — a fake `ditto` would test the fake. The pure
+// resolution/gating logic above runs everywhere, including Linux CI.
+const describeMacOS = process.platform === 'darwin' ? describe : describe.skip;
+
+describeMacOS('ensureHelperInstalled', () => {
   test('unpacks the release archive and returns the executable', async () => {
     const logs: string[] = [];
     const target = await ensureHelperInstalled({
