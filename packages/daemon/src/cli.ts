@@ -842,9 +842,22 @@ let autoApproveService: AutoApproveService | null = null;
     // escalated, which is indistinguishable from a bug. Only a local provider
     // is affected: a remote one (OpenRouter, a custom URL) works anywhere.
     const localProvider = provider === 'yooz' || provider === 'llamacpp';
-    if (localProvider && detectLocalLLMPlatform() === 'unsupported') {
+    const detectedBackend = detectLocalLLMPlatform();
+    if (localProvider && detectedBackend === 'unsupported') {
       writeToLog(
         `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
+      );
+    } else if (provider === 'llamacpp') {
+      // Linux resolves to `llamacpp`, but NOTHING installs or supervises a
+      // llama-server yet (#822) -- remi only supervises the engine transport.
+      // Left unsaid, a Linux user enabling auto-approve gets silence and then
+      // every permission escalated, which is precisely the unexplained
+      // degradation #818 was filed to remove, reintroduced on another platform.
+      // The macOS path fetches its own helper (#834); this one cannot yet, so
+      // the honest thing is to say so at boot rather than at the first
+      // permission.
+      writeToLog(
+        `[AutoApprove] provider = "llamacpp" is selected for ${process.platform}, but remi does not yet download or supervise a llama.cpp server (#822). Auto-approve will escalate every permission unless you run llama-server yourself on ${baseUrl}, or point auto_approve.provider at a remote backend.`,
       );
     }
 
