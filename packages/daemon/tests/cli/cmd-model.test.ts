@@ -202,6 +202,35 @@ describe('remi model status', () => {
     expect(text).toContain('unknown');
   });
 
+  test('does not disown remi’s own model when it is configured by alias', async () => {
+    // Live repro: configure a TouchUp tier by its HuggingFace id. `modelId` is
+    // always canonical (`yooz-light-v3`), `configured` is the alias, and
+    // nothing exposes the mapping — so the ids compare unequal for the SAME
+    // model, and the old code concluded "not used by remi" about remi's own
+    // model. Two spellings of one model gave two different answers, one wrong.
+    //
+    // The default config hides this: `yooz-instruct-4b` can never be a picker
+    // `modelId` (it is not a TouchUpModelSelection case), so every mismatch
+    // there is a real one by coincidence.
+    const t = io();
+    await runModelCommand(
+      ['status'],
+      configWith({ model: 'YoozLabs/Yooz-Light-v3-Qwen3.5-0.8B' }),
+      t.io,
+      {
+        probe: async (): Promise<EngineProbe> => ({
+          reachable: true,
+          status: { loaded: true, modelId: 'yooz-light-v3', state: 'idle' },
+        }),
+        inventory: async () => [],
+      },
+    );
+
+    const text = t.out.join('\n');
+    expect(text).not.toContain('not used by remi');
+    expect(text).toContain('cannot tell');
+  });
+
   test('never reports another model’s state as remi’s', async () => {
     // The engine's picker sits on a different tier and is mid-download. None
     // of that is remi's: reporting it would tell a user their model is busy or

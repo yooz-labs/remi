@@ -89,6 +89,22 @@ function isVerb(s: string | undefined): s is Verb {
  *  rows whose on-disk footprint it cannot measure (observed on swept hub
  *  directories), and "0 MB" reads as "this is empty" rather than "we don't
  *  know". */
+/**
+ * Does this look like a HuggingFace repo id rather than a canonical engine id?
+ *
+ * The engine accepts both — `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` resolves to
+ * `yooz-instruct-4b` — but exposes the mapping nowhere (yooz-engine#308), so
+ * remi cannot resolve one to the other. The `owner/name` slash is the only
+ * available signal, and it is enough for the one thing it is used for: knowing
+ * when an id comparison CANNOT be trusted to mean two different models.
+ *
+ * Deliberately conservative. A false positive costs an honest "cannot tell";
+ * a false negative costs a confident wrong answer.
+ */
+function looksLikeAlias(id: string): boolean {
+  return id.includes('/');
+}
+
 function formatSize(bytes: number | undefined): string {
   if (bytes === undefined || bytes === 0) return '-';
   const gb = bytes / 1e9;
@@ -269,6 +285,11 @@ export async function runModelCommand(
         // active tier IS our model. Attributing another model's failure to
         // remi's would be the same misreport this block exists to fix.
         const s = reachable.status;
+        // `modelId` is absent only from a malformed response in practice — the
+        // engine populates it unconditionally from a non-optional enum that
+        // always has a value, and `engineRequest` throws on an unparsable body
+        // before we get here. It is typed optional defensively, so treat an
+        // absent one as ours: there would be no other model it could describe.
         const statusIsOurs = s.modelId === undefined || s.modelId === configured;
         if (statusIsOurs) {
           if (s.state !== undefined) io.out(`state:    ${s.state}`);
@@ -276,9 +297,20 @@ export async function runModelCommand(
             io.out(`download: ${Math.round(s.progress * 100)}% in flight`);
           }
           if (s.lastError !== undefined) io.out(`error:    ${s.lastError}`);
+        } else if (looksLikeAlias(configured)) {
+          // A MISMATCH IS NOT A DIFFERENCE when our id is an alias. `modelId`
+          // is always canonical, `configured` may be a HuggingFace repo id, and
+          // nothing exposes the mapping (yooz-engine#308) -- so these two can
+          // name the SAME model and still compare unequal. Claiming "not used
+          // by remi" here is a live false negative: configure the picker tier
+          // by its HF id and remi disowns its own model.
+          io.out(`engine picker: ${s.modelId}`);
+          io.out('          (cannot tell whether this is your model: it is named');
+          io.out('           canonically and yours is an alias — yooz-engine#308)');
         } else {
-          // The picker's active tier belongs to whoever owns TouchUp, but it
-          // shares the GPU, so name it rather than hiding it.
+          // Both canonical, genuinely different. The picker's active tier
+          // belongs to whoever owns TouchUp, but it shares the GPU, so name it
+          // rather than hiding it.
           io.out(`engine picker: ${s.modelId} (not used by remi)`);
         }
         return 0;
