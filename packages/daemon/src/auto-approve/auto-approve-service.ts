@@ -275,6 +275,18 @@ export class AutoApproveService {
   }
 
   /**
+   * Evaluations this service currently has in flight on the engine (#827).
+   *
+   * Exposed because the `beginEval`/`endEval` pairing is the one thing that can
+   * silently disable BOTH eviction stages for the rest of the daemon's life if
+   * it ever leaks — a failure strictly worse than the bug the counter fixes,
+   * and otherwise unobservable from outside this class.
+   */
+  get evalsInFlight(): number {
+    return this.residency.inFlightCount;
+  }
+
+  /**
    * Make sure an engine is answering, starting one if this remi owns the engine
    * (#818). Safe to call repeatedly: `EngineHost.ensureRunning` attaches to an
    * existing engine before considering a spawn, and claims the pidfile before
@@ -492,6 +504,14 @@ export class AutoApproveService {
    */
   async warmEscalateModel(): Promise<void> {
     if (!this.escalateModel || !this.providerIsYooz) return;
+    // Counted as in-flight work (#827) even though it is not an evaluation: on
+    // a cold machine this is a multi-GB HuggingFace pull, and a ~20 GB model on
+    // a slow link can outlast `cache_idle` (300s) or even `keep_alive` (1800s).
+    // Uncounted, the idle timer would then call `unload` on a model that is
+    // still downloading. First-boot-only and low probability, but the counter
+    // already expresses exactly this rule, so there is no reason to leave it
+    // outside.
+    this.residency.beginEval();
     try {
       await warmModel(this.llmConfig.baseUrl, this.escalateModel);
       this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (preloaded)`);
@@ -499,6 +519,8 @@ export class AutoApproveService {
       this.logFn(
         `[AutoApprove] escalate_model warm-up failed (will load on first consult): ${errorToString(err)}`,
       );
+    } finally {
+      this.residency.endEval();
     }
   }
 
@@ -688,6 +710,13 @@ export class AutoApproveService {
       // and aborts a healthy call (currentAbortController is shared instance
       // state).
       let raceTimer: ReturnType<typeof setTimeout> | null = null;
+      // #827: the evaluation is now genuinely in flight on the engine. Marking
+      // it HERE rather than at `evaluate()` entry also takes the queue wait out
+      // of the idle arithmetic -- the window now measures from when the LLM
+      // actually started, not from when we joined the queue. Paired with
+      // `endEval()` in the `finally` immediately below; nothing runs between
+      // this statement and the `try`, so the pairing cannot be skipped.
+      this.residency.beginEval();
       try {
         // Multi-choice + evaluate mode: dedicated prompt, optional alt model.
         // Otherwise the binary approve/deny prompt.
@@ -782,8 +811,9 @@ export class AutoApproveService {
         this.currentEvalId = null;
         this.releaseSlot();
         // #820: re-arm from the END of the eval, so the idle window measures
-        // silence rather than "time since we started thinking".
-        this.residency.noteActivity();
+        // silence rather than "time since we started thinking". #827: also
+        // drops the in-flight count, releasing both stages to act again.
+        this.residency.endEval();
       }
     } catch (err) {
       const durationMs = Date.now() - start;

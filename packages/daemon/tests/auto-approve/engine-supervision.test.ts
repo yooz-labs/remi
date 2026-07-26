@@ -189,6 +189,31 @@ describe('AutoApproveService engine supervision (#818)', () => {
     await new Promise((r) => setTimeout(r, 20));
   });
 
+  test('evaluate() pairs beginEval/endEval on every exit (#827)', async () => {
+    // The counter's own semantics are covered in model-residency.test.ts, but
+    // the bug #827 describes was a CALLING-PATTERN bug, and nothing exercised
+    // the actual call site: deleting `endEval()` from evaluate()'s finally
+    // passed the entire suite. A leak there permanently disables BOTH eviction
+    // stages after the first evaluation — worse than the bug being fixed.
+    const h = serviceWith({ probes: [REACHABLE] });
+    expect(h.service.evalsInFlight).toBe(0);
+
+    // Failure path: the LLM call throws (nothing on the port).
+    await h.service.evaluate('Bash', { command: 'echo 1' });
+    expect(h.service.evalsInFlight).toBe(0);
+
+    // Fast path: returns before ever acquiring a slot, so it must not have
+    // incremented in the first place.
+    await h.service.evaluate('Read', { file_path: '/tmp/x' });
+    expect(h.service.evalsInFlight).toBe(0);
+
+    // Cancellation: aborts through the same try/finally.
+    const pending = h.service.evaluate('Bash', { command: 'echo 2' });
+    h.service.cancel('test cancel');
+    await pending;
+    expect(h.service.evalsInFlight).toBe(0);
+  });
+
   test('a reachable engine is not "repaired" just because one eval failed', async () => {
     // `evaluate()`'s catch wraps the WHOLE evaluation, including response
     // parsing -- so an unparsable reply from a perfectly healthy engine reaches

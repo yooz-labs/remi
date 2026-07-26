@@ -42,10 +42,23 @@
  *      because this is a correctness boundary and not a preference (#818).
  *      A cache clear is less destructive than an unload, but it still steals
  *      another module's warm-prefix latency, so it gets no separate carve-out.
- *   2. **Never act mid-eval.** `noteActivity` is called when an eval starts
- *      AND when it settles, so a long-running evaluation keeps pushing both
- *      deadlines out rather than having its cache or weights pulled out from
- *      under it.
+ *   2. **Never act mid-eval.** An IN-FLIGHT COUNTER (`beginEval`/`endEval`)
+ *      holds this, not timestamps: while any evaluation is running on the
+ *      engine, both stages defer and re-arm instead of acting.
+ *
+ *      Timestamps alone did NOT hold it (#827). `noteActivity` fires at two
+ *      instants — start and settle — with nothing in between, so an evaluation
+ *      whose wall time exceeded the window had its cache dropped underneath it.
+ *      Stage 2 had enormous margin so this stayed theoretical; stage 1 did not:
+ *      `queue_timeout` (240s) + `escalate_timeout` raised to 90s, which this
+ *      project's own tuning advice suggests for a large cold escalate model,
+ *      already exceeds the 300s `cache_idle` default. Following the documented
+ *      advice for one knob silently eroded a different timer's safety margin.
+ *
+ *      The counter starts when the eval acquires its GPU slot, not at
+ *      `evaluate()` entry, which also removes the queue wait from the
+ *      arithmetic entirely: the window measures from when the LLM actually
+ *      started rather than from when the request joined the queue.
  *   3. **Degrade silently when the engine lacks stage 1.** The clear-cache
  *      endpoint may ship after this code does (#820 was split across two
  *      repos in flight). An engine that 404s/501s on it must not break
@@ -66,6 +79,16 @@
  * daemon re-arms instead of acting. One `utimes` per eval, one `stat` per
  * fire, no locks and no IPC. Anything heavier belongs with #620's GPU
  * admission work.
+ *
+ * Rule 2 applies across daemons too, and needs one addition to get there. The
+ * in-flight counter is per-instance and private, so a sibling daemon cannot see
+ * that WE are mid-eval; all it sees is the shared mtime, touched at the same
+ * two instants that proved insufficient locally. An eval that outlasts the
+ * sibling's window would therefore have its cache dropped by that sibling. So
+ * while `inFlight > 0` this daemon RE-TOUCHES the shared record on a heartbeat
+ * (a quarter of the shortest window, capped at 30s), which keeps every sibling
+ * deferring for as long as the work actually lasts — using the mechanism that
+ * is already there rather than introducing a second one.
  */
 
 import { ClearCacheUnsupportedError } from './engine-models.ts';
@@ -150,6 +173,14 @@ export class ModelResidency {
    * life of this process, and stage 1 goes quiet. Stage 2 is untouched.
    */
   private cacheUnsupported = false;
+  /** Evaluations currently running on the engine (#827). While non-zero,
+   *  neither stage may act: dropping the cache or the weights under a live
+   *  evaluation is exactly what rule 2 forbids. */
+  private inFlight = 0;
+  /** Refreshes the SHARED activity record while `inFlight > 0`, so a sibling
+   *  daemon on the same engine keeps seeing machine activity for the whole
+   *  duration of our eval rather than only at its two endpoints (#827). */
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly config: ModelResidencyConfig,
@@ -206,6 +237,41 @@ export class ModelResidency {
    * An evaluation happened (started, or settled). Pushes BOTH idle deadlines
    * out. Cheap enough to call on every eval — it replaces at most two timers.
    */
+  /**
+   * An evaluation is now IN FLIGHT on the engine (#827).
+   *
+   * `noteActivity` alone cannot uphold rule 2. It is called at two instants —
+   * eval start and eval end — and nothing re-arms in between, so an evaluation
+   * whose total wall time exceeds the idle window has the cache dropped (or the
+   * weights unloaded) underneath it while it is genuinely still running. That
+   * is not hypothetical for stage 1: `queue_timeout` (240s) + `escalate_timeout`
+   * raised to 90s per this project's own tuning advice already exceeds the 300s
+   * `cache_idle` default.
+   *
+   * A counter states the rule directly instead of approximating it with
+   * timestamps, and it also covers an evaluation that never settles at all.
+   * MUST be paired with `endEval` in a `finally`.
+   */
+  beginEval(): void {
+    this.inFlight += 1;
+    this.noteActivity();
+    this.startHeartbeat();
+  }
+
+  /** An evaluation finished (any outcome). Clamped at zero so an unpaired call
+   *  can never drive the counter negative and permanently re-enable eviction
+   *  mid-eval — the failure direction that would reintroduce #827. */
+  endEval(): void {
+    if (this.inFlight > 0) this.inFlight -= 1;
+    if (this.inFlight === 0) this.stopHeartbeat();
+    this.noteActivity();
+  }
+
+  /** In-flight evaluations, for tests and diagnostics. */
+  get inFlightCount(): number {
+    return this.inFlight;
+  }
+
   noteActivity(): void {
     const keepAlive = this.keepAliveEnabled;
     const cache = this.cacheStageEnabled;
@@ -233,6 +299,75 @@ export class ModelResidency {
       this.clearTimerFn(this.cacheTimer);
       this.cacheTimer = null;
     }
+    this.stopHeartbeat();
+  }
+
+  /**
+   * Keep the SHARED activity record fresh while this daemon has work in flight
+   * (#827, cross-daemon half).
+   *
+   * The in-flight counter is per-instance and private, so it protects only THIS
+   * daemon's evals. A sibling daemon sharing the engine sees nothing but the
+   * `engine-activity` mtime — and that mtime is touched at exactly two instants,
+   * eval start and settle, which is the same "nothing in between" shape that
+   * failed locally. Once our eval outlasts the sibling's window, its
+   * `sinceLastMs() < window` check goes false and it drops the cache or unloads
+   * the weights out from under us. The module treats ten daemons on one engine
+   * as the common case, so this is not an exotic path.
+   *
+   * A heartbeat closes it with the mechanism already in place: while work is in
+   * flight we re-touch the shared record, so every sibling keeps seeing recent
+   * machine activity and keeps deferring. No locks, no IPC, nothing to keep in
+   * sync — the same reasons `engine-activity.ts` chose an mtime in the first
+   * place. The interval is a quarter of the shortest window (capped at 30s) so
+   * a sibling cannot observe a gap wider than its own threshold.
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer !== null || this.deps.activity === undefined) return;
+    const windows = [this.config.cacheIdleMs, this.config.keepAliveMs].filter((w) => w > 0);
+    if (windows.length === 0) return;
+    // A quarter of the SHORTEST window, so a sibling can never observe a gap
+    // as wide as its own threshold. Capped at 30s (a longer window does not
+    // need a faster beat) and floored at 50ms purely so a pathologically small
+    // configured window cannot turn this into a busy loop. The floor must never
+    // exceed the window itself, which is why it is not the round 1s it looks
+    // like it should be.
+    const interval = Math.max(50, Math.min(30_000, Math.floor(Math.min(...windows) / 4)));
+    const tick = (): void => {
+      this.heartbeatTimer = null;
+      // Settled while the timer was pending: nothing to advertise.
+      if (this.inFlight === 0) return;
+      this.deps.activity?.touch();
+      this.heartbeatTimer = this.setTimer(tick, interval);
+      this.heartbeatTimer.unref?.();
+    };
+    this.heartbeatTimer = this.setTimer(tick, interval);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer === null) return;
+    this.clearTimerFn(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  /**
+   * Rule 2, enforced (#827): a stage that fires while an evaluation is still
+   * running on the engine defers instead of acting, and re-arms for a full
+   * window. Returns true when the caller must stop.
+   *
+   * Deferral is LOGGED because the counter is the one piece of state that
+   * could, if a caller ever failed to pair `beginEval`/`endEval`, disable
+   * eviction for the life of the daemon. A silent defer would make that leak
+   * invisible; a log line makes it diagnosable from `remi.log` alone.
+   */
+  private deferWhileInFlight(stage: string, rearm: () => void): boolean {
+    if (this.inFlight === 0) return false;
+    this.deps.log(
+      `[AutoApprove] ${stage} deferred: ${this.inFlight} evaluation(s) still in flight`,
+    );
+    rearm();
+    return true;
   }
 
   private armUnload(): void {
@@ -260,6 +395,7 @@ export class ModelResidency {
    */
   private async unloadIdle(): Promise<void> {
     if (this.unloaded) return;
+    if (this.deferWhileInFlight('keep_alive unload', () => this.armUnload())) return;
 
     // Another daemon on this machine may have evaluated during OUR idle
     // window. Unloading now would cold-load that session's next permission.
@@ -316,6 +452,7 @@ export class ModelResidency {
     // Nothing resident to clear either because we already cleared it this
     // window, or because stage 2 already unloaded everything outright.
     if (this.cacheCleared || this.unloaded) return;
+    if (this.deferWhileInFlight('cache_idle clear', () => this.armCache())) return;
 
     // Same machine-wide coordination as stage 2: another daemon's session
     // may be relying on this cache RIGHT NOW for its own warm-prefix hit.
