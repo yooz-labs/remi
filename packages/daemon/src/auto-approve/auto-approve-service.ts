@@ -12,7 +12,7 @@
 import { errorToString } from '@remi/shared';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
-import { clearModelCache, probeEngine, pullModel, unloadModel } from './engine-models.ts';
+import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
 import type { PullProgress } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
@@ -430,10 +430,14 @@ export class AutoApproveService {
    * rather than an assumption, which is what licenses `afterFailure` below.
    */
   private async repairIfUnreachable(): Promise<boolean> {
-    const probe = await probeEngine(this.llmConfig.baseUrl);
+    // Through the host's seam, not the module-level `probeEngine`: the host
+    // already owns an injectable probe, and bypassing it made this path do a
+    // real network connect (with a real timeout) inside unit tests.
+    const host = this.engineHost;
+    const reachable = host === undefined ? false : await host.probeOnce();
     // Reachable => the process never went anywhere; the failure was about this
     // request, not about the engine. Nothing to repair, nothing new to learn.
-    if (probe.reachable) return true;
+    if (reachable) return true;
     return await this.ensureEngine({ afterFailure: true });
   }
 

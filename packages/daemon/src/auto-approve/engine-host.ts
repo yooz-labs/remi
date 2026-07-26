@@ -63,6 +63,7 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { ensureHelperInstalled, resolveHelperPath } from './engine-install.ts';
 import { probeEngine } from './engine-models.ts';
 
 /** How remi relates to the engine on its port. */
@@ -107,6 +108,16 @@ export interface EngineHostDeps {
   readonly sleep?: (ms: number) => Promise<void>;
   /** Pidfile seam (`~/.remi/engine.pid` in production). */
   readonly pidStore?: PidStore;
+  /**
+   * Helper-acquisition seam (#834). The real one fetches the pinned engine
+   * release; an injected one keeps tests off the network. Returns the
+   * executable path, or undefined when no helper could be obtained.
+   *
+   * Injectable for the same reason `spawn` and `probe` are: without it this
+   * class reaches the internet during a unit test, which is both slow and a
+   * dependency nobody declared.
+   */
+  readonly installHelper?: () => Promise<string | undefined>;
 }
 
 /**
@@ -135,12 +146,15 @@ export class EngineHost {
   /** The pid THIS process started, if any. Not a child handle: the engine is
    *  detached and outlives us. */
   private startedPid: number | null = null;
+  /** In-flight helper download, so concurrent callers share one fetch. */
+  private installInFlight: Promise<string | undefined> | undefined;
   private readonly log: EngineHostDeps['log'];
   private readonly probe: typeof probeEngine;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly spawnFn: EngineHostDeps['spawn'];
   private readonly killFn: (pid: number) => void;
   private readonly pids: PidStore | undefined;
+  private readonly installFn: () => Promise<string | undefined>;
 
   constructor(
     private readonly config: EngineHostConfig,
@@ -152,6 +166,7 @@ export class EngineHost {
     this.spawnFn = deps.spawn;
     this.killFn = deps.kill ?? ((pid) => process.kill(pid));
     this.pids = deps.pidStore;
+    this.installFn = deps.installHelper ?? (() => ensureHelperInstalled({ log: this.log }));
   }
 
   /** True when remi may load/unload/delete models on this engine. The single
@@ -159,6 +174,18 @@ export class EngineHost {
    *  unload`/`rm`). */
   get ownsEngine(): boolean {
     return this.config.ownership === 'owned';
+  }
+
+  /**
+   * One reachability probe through this host's own seam.
+   *
+   * Exposed so callers that need to ask "is the engine actually down?" reuse
+   * the injected probe rather than reaching for the module-level one. A caller
+   * that bypasses this seam turns its own unit tests into network calls, with a
+   * real connect timeout in the middle of them.
+   */
+  async probeOnce(): Promise<boolean> {
+    return (await this.probe(this.config.baseUrl)).reachable;
   }
 
   /** The pid this process started, or null when it attached to an existing
@@ -190,9 +217,18 @@ export class EngineHost {
       return { kind: 'unavailable', reason };
     }
 
-    const helperPath = this.config.helperPath;
+    // Resolve, then acquire. `engine_path` wins when set -- someone pointing at
+    // their own build is making a deliberate choice and must not have it
+    // second-guessed by a download. Otherwise use the helper remi has already
+    // installed, and failing that fetch it once (#834): before this, a fresh
+    // install had no helper at all and auto-approve silently escalated
+    // everything, which is the gap #818 could describe but not close.
+    let helperPath = resolveHelperPath(this.config.helperPath ?? '');
+    if (helperPath === undefined) {
+      helperPath = await this.installHelper();
+    }
     if (helperPath === undefined || helperPath.length === 0) {
-      const reason = `no engine on ${this.config.baseUrl} and no helper is bundled to start (auto_approve.engine_path unset)`;
+      const reason = `no engine on ${this.config.baseUrl} and no helper available to start it`;
       this.log(`[Engine] ${reason}`);
       return { kind: 'unavailable', reason };
     }
@@ -320,6 +356,23 @@ export class EngineHost {
     const reason = `engine started (pid ${pid}) but never answered on ${this.config.baseUrl}`;
     this.log(`[Engine] ${reason}`);
     return { kind: 'unavailable', reason };
+  }
+
+  /**
+   * Fetch the helper once, if this machine can run one (#834). Single-flight:
+   * a burst of daemons booting together must produce one download, not ten of
+   * the same 30 MB archive.
+   */
+  private async installHelper(): Promise<string | undefined> {
+    this.installInFlight ??= this.installFn();
+    try {
+      return await this.installInFlight;
+    } finally {
+      // Cleared so a later failure can retry rather than caching "no helper"
+      // for the daemon's whole life -- a transient network failure at boot
+      // must not permanently disable auto-approve.
+      this.installInFlight = undefined;
+    }
   }
 
   /** Kill a pid we started and drop its record. Never throws; reports whether

@@ -107,6 +107,9 @@ function serviceWith(opts: {
       },
       sleep: async () => undefined,
       pidStore: pidStore(),
+      // Never reach the network from a unit test (#834). `undefined` means
+      // "no helper could be obtained", which is what these tests assume.
+      installHelper: async () => undefined,
     },
   );
   const service = new AutoApproveService(config(), (m) => logs.push(m), host);
@@ -143,7 +146,7 @@ describe('AutoApproveService engine supervision (#818)', () => {
     const h = serviceWith({ probes: [UNREACHABLE], helperPath: '' });
     expect(await h.service.ensureEngine()).toBe(false);
     expect(h.logs.join('\n')).toContain('No engine available');
-    expect(h.logs.join('\n')).toContain('no helper is bundled');
+    expect(h.logs.join('\n')).toContain('no helper available');
   });
 
   test('a guest (engine = "shared") never spawns, and says why', async () => {
