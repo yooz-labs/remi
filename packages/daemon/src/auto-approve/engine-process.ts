@@ -31,6 +31,30 @@ export const ENGINE_LOG_FILE = path.join(REMI_DIR, 'engine.log');
 /** Is this pid a live process? Signal 0 tests existence without delivering
  *  anything. EPERM means alive but owned by another user, which still counts —
  *  something holds the record and we must not claim it. */
+/**
+ * Delete `file` only if it still records exactly `expected`.
+ *
+ * Every delete on these paths must be compare-then-delete. A blind `unlink`
+ * removes whatever is at the path *now*, which is not necessarily what the
+ * caller observed a moment ago — that is precisely how two claimants both end
+ * up believing they hold an exclusive record.
+ *
+ * Still a check-then-act at the syscall level, so it narrows the window rather
+ * than eliminating it; see the class doc for why that is acceptable here.
+ * Returns false when the content had changed (someone else owns it now) or the
+ * delete failed.
+ */
+function unlinkIfMatches(file: string, expected: number): boolean {
+  try {
+    const current = Number.parseInt(fs.readFileSync(file, 'utf8').trim(), 10);
+    if (current !== expected) return false;
+    fs.unlinkSync(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -61,13 +85,22 @@ function isAlive(pid: number): boolean {
  * So displacement happens under a separate `wx` mutex, with the record
  * RE-CHECKED inside it: whoever takes the mutex is the only process that may
  * delete the stale file, and anyone who took it after a live record appeared
- * backs off instead. The mutex is held for a few synchronous syscalls, and a
- * dead mutex holder is itself displaced, so it cannot wedge anything either.
+ * backs off instead. Every delete is compare-then-delete (`unlinkIfMatches`) so
+ * no process can blindly remove a record or mutex it did not observe.
  *
- * The residual window is a process dying between taking the mutex and writing
- * the record; the next claim clears it. Note also that the pidfile is the
- * SECOND line of defence, not the only one — the port is the real singleton
- * (see `engine-host.ts`), so a loser that slips through still fails to bind.
+ * **This is best-effort, not an exclusive lock, and the distinction matters.**
+ * Node has no `flock`, and "atomically replace this file only if its owner is
+ * dead" is not expressible with create/rename/unlink alone. A narrow window
+ * survives: if a process dies mid-displacement it leaves BOTH the record and
+ * the mutex stale, and two claimants recovering from that state can each
+ * conclude they hold the mutex. Compare-then-delete shrinks that window; it
+ * does not close it. Closing it properly needs an OS advisory lock.
+ *
+ * That is acceptable only because the pidfile is the SECOND line of defence.
+ * **The port is the real singleton** (see `engine-host.ts`): 19924 admits one
+ * listener, so a claimant that slips through still fails to bind, and
+ * `startEngine` cleans up a helper that turns out to be redundant. The pidfile
+ * exists to keep that case rare and quiet, not to be the guarantee.
  */
 export class FileEnginePidStore implements PidStore {
   constructor(private readonly file: string = ENGINE_PID_FILE) {}
@@ -102,12 +135,12 @@ export class FileEnginePidStore implements PidStore {
     try {
       // RE-CHECK inside the mutex: between our check above and taking it, the
       // holder may have displaced the stale record and be live now.
-      if (this.read() !== null) return false;
-      try {
-        fs.unlinkSync(this.file);
-      } catch {
-        // Already gone -- the create below still decides the winner.
-      }
+      const stale = this.rawPid(this.file);
+      if (stale === null || isAlive(stale)) return false;
+      // Compare-then-delete: only remove the exact stale record we just read.
+      // A blind unlink here would destroy a LIVE record written by a process
+      // that displaced this one in between -- the same bug one level down.
+      if (!unlinkIfMatches(this.file, stale)) return false;
       return this.tryCreate(this.file, pid);
     } finally {
       this.releaseMutex(mutex, pid);
@@ -119,49 +152,42 @@ export class FileEnginePidStore implements PidStore {
    *  permanently — the same staleness rule as the record it guards. */
   private acquireMutex(mutex: string, pid: number): boolean {
     if (this.tryCreate(mutex, pid)) return true;
-    let holder: number;
-    try {
-      holder = Number.parseInt(fs.readFileSync(mutex, 'utf8').trim(), 10);
-    } catch {
-      // Vanished between the failed create and the read: retry once.
-      return this.tryCreate(mutex, pid);
-    }
-    if (Number.isInteger(holder) && holder > 0 && isAlive(holder)) return false;
-    try {
-      fs.unlinkSync(mutex);
-    } catch {
-      // Someone else cleared it; the create below settles who wins.
-    }
+    const holder = this.rawPid(mutex);
+    // Vanished between the failed create and the read: retry once.
+    if (holder === null) return this.tryCreate(mutex, pid);
+    if (isAlive(holder)) return false;
+    // Compare-then-delete, for the same reason as the record itself: a blind
+    // unlink would remove a mutex another process legitimately took while we
+    // were deciding.
+    if (!unlinkIfMatches(mutex, holder)) return false;
     return this.tryCreate(mutex, pid);
   }
 
   private releaseMutex(mutex: string, pid: number): void {
+    unlinkIfMatches(mutex, pid);
+  }
+
+  /** The pid recorded in `file` regardless of liveness, or null when absent or
+   *  malformed. `read()` deliberately conflates "dead holder" with "no record";
+   *  the displacement paths need to tell those apart. */
+  private rawPid(file: string): number | null {
+    let raw: string;
     try {
-      if (Number.parseInt(fs.readFileSync(mutex, 'utf8').trim(), 10) !== pid) return;
-      fs.unlinkSync(mutex);
+      raw = fs.readFileSync(file, 'utf8');
     } catch {
-      // Already gone, or never ours to remove.
+      return null;
     }
+    const pid = Number.parseInt(raw.trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
   }
 
   release(pid: number): void {
-    // Read the raw file rather than `read()`: release must work for a pid that
-    // has already exited (the normal case when clearing our own record), and
-    // `read()` deliberately reports a dead holder as absent.
-    let raw: string;
-    try {
-      raw = fs.readFileSync(this.file, 'utf8');
-    } catch {
-      return;
-    }
-    // Only ever remove OUR record. Releasing unconditionally would let a late
+    // Compare-then-delete against the RAW content, not `read()`: release must
+    // work for a pid that has already exited (the normal case when clearing our
+    // own record), and `read()` deliberately reports a dead holder as absent.
+    // Only ever remove OUR record -- releasing unconditionally would let a late
     // cleanup delete the record of an engine somebody else has since started.
-    if (Number.parseInt(raw.trim(), 10) !== pid) return;
-    try {
-      fs.unlinkSync(this.file);
-    } catch {
-      // Already gone: the post-condition holds either way.
-    }
+    unlinkIfMatches(this.file, pid);
   }
 
   /** Atomic create-or-fail. `wx` is the whole point — an exists-then-write
