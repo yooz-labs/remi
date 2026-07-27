@@ -880,6 +880,8 @@ authorized_user_ids = []
                                 # Fast small default; the eval blocks Claude (#496).
                                 # 38/38 on the permission grid, p95 2.26s. The
                                 # TouchUp tiers are proofreaders, not classifiers.
+                                # "remi model ls" lists what this engine serves;
+                                # "remi model use <id>" sets this line for you.
 # api_key = ""                  # Required for OpenRouter, empty for the local engine/llama.cpp
 # base_url = "http://127.0.0.1:19924"
 # timeout = 30                  # Seconds; falls through to user if exceeded

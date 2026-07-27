@@ -29,13 +29,27 @@
  * the engine forgets it on restart, so persisting it there would silently
  * revert. Config is remi's, so config is where it lives.
  *
- * Every verb goes through a reachability probe first, because the failure this
- * command most needs to explain is "no engine is running" — which otherwise
- * shows up only as auto-approve escalating everything forever with no
- * explanation (#818).
+ * ## Who starts the engine (#843)
+ *
+ * Originally every verb probed the port and gave up when nothing answered.
+ * Nothing in the CLI ever STARTED an engine — only the daemon did — so on a
+ * fresh machine `remi model pull` failed until the user had started a daemon,
+ * which inverts the order anyone would try: fetch the weights, THEN run.
+ *
+ * So the verbs that need an engine to do their job now start one, through the
+ * same `EngineHost` the daemon uses (install the helper if absent, spawn
+ * detached, wait for the port). Two verbs deliberately opt out:
+ *
+ *   - `status` is the DIAGNOSTIC verb. Starting an engine in order to answer
+ *     "is an engine running?" destroys the question being asked, so it reports
+ *     what it finds and says how to start one.
+ *   - `use` only writes remi's config. It never needed an engine, and gating
+ *     it behind one made the model impossible to configure while the engine
+ *     was down — exactly when a user is setting it up.
  */
 
 import { errorToString } from '@remi/shared';
+import { EngineHost } from '../auto-approve/engine-host.ts';
 import {
   type EngineModel,
   type ManagedModel,
@@ -51,6 +65,7 @@ import {
   unloadModel,
 } from '../auto-approve/engine-models.ts';
 import { resolveProviderUrl } from '../auto-approve/llm-client.ts';
+import { displayId, findModel, lookupModel, matchesModel } from '../auto-approve/model-identity.ts';
 import type { RemiConfig } from '../config/config.ts';
 
 export interface ModelCommandIO {
@@ -89,22 +104,6 @@ function isVerb(s: string | undefined): s is Verb {
  *  rows whose on-disk footprint it cannot measure (observed on swept hub
  *  directories), and "0 MB" reads as "this is empty" rather than "we don't
  *  know". */
-/**
- * Does this look like a HuggingFace repo id rather than a canonical engine id?
- *
- * The engine accepts both — `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` resolves to
- * `yooz-instruct-4b` — but exposes the mapping nowhere (yooz-engine#308), so
- * remi cannot resolve one to the other. The `owner/name` slash is the only
- * available signal, and it is enough for the one thing it is used for: knowing
- * when an id comparison CANNOT be trusted to mean two different models.
- *
- * Deliberately conservative. A false positive costs an honest "cannot tell";
- * a false negative costs a confident wrong answer.
- */
-function looksLikeAlias(id: string): boolean {
-  return id.includes('/');
-}
-
 function formatSize(bytes: number | undefined): string {
   if (bytes === undefined || bytes === 0) return '-';
   const gb = bytes / 1e9;
@@ -113,21 +112,39 @@ function formatSize(bytes: number | undefined): string {
 }
 
 /** Pad, or truncate with an ellipsis, so the columns survive a long id. Hub
- *  directory names (`models--<ns>--<repo>`) routinely exceed the column. */
+ *  directory names (`models--<ns>--<repo>`) routinely exceed the column, and so
+ *  do registered repo ids, which are what these columns now carry. */
 function fitColumn(text: string, width: number): string {
   return text.length <= width ? text.padEnd(width) : `${text.slice(0, width - 1)}…`;
 }
 
-function formatManagedRow(m: ManagedModel): string {
-  const marker = m.isActive ? '*' : ' ';
+/** Width of the MODEL column. Sized for a registered repo id
+ *  (`YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` is 38) so the name a user is meant
+ *  to copy is not the thing that gets truncated. */
+const NAME_COLUMN = 40;
+
+function formatManagedRow(m: ManagedModel, configured: string): string {
+  // The marker means "this is the model REMI uses" — not the engine's active
+  // tier. `isActive` belongs to whichever module owns the picker, and marking
+  // that as the user's model is the same misattribution `rm` used to make.
+  // The engine's choice is still worth seeing (it holds the GPU and cannot be
+  // deleted), so it is labelled rather than dropped.
+  //
+  // Callers must not reach here when ownership is UNDECIDABLE (see
+  // `lookupModel`): on an engine that reports no aliases, a repo-shaped
+  // configured id matches nothing, and an unmarked listing would quietly claim
+  // that none of these models is yours. `ls` prints a note in that case
+  // instead of marking a row.
+  const marker = matchesModel(m, configured) ? '*' : ' ';
   const state = m.loaded ? 'resident' : m.cached ? 'on disk' : 'not downloaded';
-  return `${marker} ${fitColumn(m.id, 30)} ${fitColumn(m.module, 6)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
+  const engineActive = m.isActive ? ', engine active' : '';
+  return `${marker} ${fitColumn(displayId(m), NAME_COLUMN)} ${fitColumn(m.module, 6)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}${engineActive}`;
 }
 
 function formatRow(m: EngineModel, current: string): string {
-  const marker = m.id === current ? '*' : ' ';
+  const marker = matchesModel(m, current) ? '*' : ' ';
   const state = m.loaded ? 'resident' : 'on disk';
-  return `${marker} ${m.id.padEnd(24)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
+  return `${marker} ${fitColumn(displayId(m), NAME_COLUMN)} ${formatSize(m.sizeBytes).padStart(8)}  ${state}`;
 }
 
 /**
@@ -165,6 +182,62 @@ export interface ModelCommandDeps {
   readonly unload?: typeof unloadModel;
   /** Persist `auto_approve.model`. Defaults to a surgical config-file edit. */
   readonly persistModel?: (id: string) => void;
+  /**
+   * Bring an engine up, returning whether one is now answering. Defaults to the
+   * real `EngineHost` (install the helper if needed, spawn detached, wait).
+   *
+   * A seam because the default reaches the network, the filesystem and
+   * `spawn` — a unit test that got the real one would download a helper onto
+   * the developer's machine, which is exactly the accident #841 had to undo.
+   */
+  readonly ensureEngine?: (baseUrl: string, io: ModelCommandIO) => Promise<boolean>;
+}
+
+/**
+ * Verbs that must NOT start an engine.
+ *
+ * `status` is the diagnostic: auto-starting to answer "is one running?" would
+ * destroy the question. `use` only writes remi's config and never needed one.
+ * Everything else is asking the engine to do work, so it gets an engine.
+ */
+const NO_AUTOSTART: ReadonlySet<string> = new Set(['status', 'use']);
+
+/** Start (or attach to) the engine the same way the daemon does, narrating to
+ *  the terminal — a first run fetches a ~30 MB helper and then waits for a
+ *  cold process to bind, and silence through that reads as a hang. */
+async function ensureEngineViaHost(
+  config: RemiConfig,
+  baseUrl: string,
+  io: ModelCommandIO,
+): Promise<boolean> {
+  // HARD STOP under the test runner. This function downloads a helper into
+  // `~/.remi`, spawns a detached process, and claims the machine-wide engine
+  // pidfile — all real, none of it undone when the test ends. A test that
+  // forgets to inject the `ensureEngine` seam would do all three against the
+  // developer's own machine, which has already happened twice in this area.
+  //
+  // The seam is still the mechanism tests should use; this is the backstop
+  // that keeps forgetting it cheap. Production is unaffected: `NODE_ENV` is
+  // `test` only under `bun test`.
+  if (process.env.NODE_ENV === 'test') {
+    io.err('[Engine] refusing to start an engine under the test runner');
+    return false;
+  }
+  const aa = config.auto_approve;
+  const host = EngineHost.real(
+    {
+      baseUrl,
+      ownership: aa.engine,
+      helperPath: aa.engine_path,
+      modelCache: aa.model_cache,
+    },
+    // The host's log lines are progress for an interactive command, but they
+    // are not the command's OUTPUT — keep stdout parseable by sending them to
+    // stderr, so `remi model ls | ...` is unaffected by a cold start.
+    (msg) => io.err(msg),
+  );
+  const state = await host.ensureRunning();
+  return state.kind !== 'unavailable';
 }
 
 /**
@@ -229,10 +302,51 @@ export async function runModelCommand(
     return 1;
   }
 
+  // `use` is settled entirely before any engine question: it writes remi's
+  // config, and gating that on a running engine made the model impossible to
+  // configure while the engine was down (#843).
+  if (verb === 'use') {
+    return await runUse(args[1], baseUrl, io, { list, probe, persistModel: deps.persistModel });
+  }
+
   // One probe up front so every verb can explain "nothing is listening" the
   // same way, instead of each surfacing a raw fetch error (#818).
-  const reachable = await probe(baseUrl);
+  //
+  // Probing BEFORE attempting a start, rather than starting unconditionally
+  // and letting the host discover an engine is already up: the host narrates
+  // what it does, and on the overwhelmingly common path — an engine is
+  // already running — there is nothing worth narrating. Asking first keeps
+  // every ordinary invocation silent, and costs no extra round trip.
+  let reachable = await probe(baseUrl);
+  if (!reachable.reachable && !NO_AUTOSTART.has(verb)) {
+    // Start one if this remi owns the engine. `shared` is somebody else's
+    // process to start, and `EngineHost` enforces that itself — it is passed
+    // the ownership and refuses to spawn as a guest — so this does not
+    // re-decide it here.
+    const ensure = deps.ensureEngine ?? ((url, out) => ensureEngineViaHost(config, url, out));
+    await ensure(baseUrl, io);
+    // Re-probe rather than trusting the start's own answer: starting can
+    // fail, and when it does the reason the port is silent is what the user
+    // needs to see.
+    reachable = await probe(baseUrl);
+  }
   if (!reachable.reachable) {
+    if (verb === 'status') {
+      // The one verb whose job is to report this rather than fail on it.
+      io.out(`engine:   ${baseUrl} (not running)`);
+      io.out(`model:    ${aa.model}`);
+      io.out(`ownership: ${aa.engine}`);
+      io.out('');
+      io.out(
+        aa.engine === 'shared'
+          ? 'remi is a guest here (auto_approve.engine = "shared"); the host that owns the engine has to start it.'
+          : 'Any other "remi model" verb starts one, as does running a daemon.',
+      );
+      io.out(
+        'Auto-approve escalates every permission to you while this is down — nothing is auto-answered.',
+      );
+      return 1;
+    }
     io.err(`No LLM engine answering on ${baseUrl}: ${reachable.reason}`);
     io.err(
       'Auto-approve cannot evaluate anything while this is down — every permission will escalate to you.',
@@ -255,28 +369,50 @@ export async function runModelCommand(
         // picker's rows, so a generate-only catalogue model (the default) is
         // simply absent from it (verified live 2026-07-26; yooz-engine#307).
         const configured = aa.model;
-        const row = await inventory(baseUrl)
-          .then((all) => all.find((m) => m.id === configured))
-          .catch(() => undefined);
+        // A FAILED inventory call is not an empty inventory. `listManagedModels`
+        // throws on a non-2xx, a timeout, or an unparsable body — all real
+        // against a reachable engine — and treating that as "no rows" would
+        // make this report "not downloaded" (or "upgrade your engine")
+        // according only to whether the configured id happens to contain a
+        // slash. Both are confident, wrong, and point nowhere near the cause.
+        const rows = await inventory(baseUrl).then(
+          (r) => ({ ok: true, rows: r }) as const,
+          (err: unknown) => ({ ok: false, err }) as const,
+        );
+        const found = rows.ok ? lookupModel(rows.rows, configured) : undefined;
 
         io.out(`engine:   ${baseUrl} (reachable, ${aa.engine})`);
         io.out(`model:    ${configured}`);
-        if (row === undefined) {
-          // Do NOT report this as "not served". The engine accepts a model's
-          // HuggingFace repo id as an ALIAS (`YoozLabs/Qwen3.5-4B-...` resolves
-          // to `yooz-instruct-4b`), but neither `/v1/models` nor
-          // `/v1/llm/models` exposes that mapping — so when the configured
-          // value is an alias, which it is by default, an id comparison finds
-          // nothing even though the model is present and working. Claiming it
-          // is missing would be a false alarm on the default config
-          // (yooz-engine#308 asks for the mapping so this can be resolved).
+        if (!rows.ok) {
+          io.out("state:    could not read this engine's model inventory");
+          io.out(`          (${errorToString(rows.err)})`);
+        } else if (found === undefined) {
+          // Unreachable: `found` is set whenever the fetch succeeded. Present
+          // so the narrowing is explicit rather than assumed.
+          io.out('state:    unknown');
+        } else if (found.kind === 'found') {
+          io.out(`loaded:   ${found.row.loaded ? 'yes' : 'no'}`);
+          io.out(`on disk:  ${found.row.cached ? 'yes' : 'no'}`);
+          io.out(`size:     ${formatSize(found.row.sizeBytes)}`);
+        } else if (found.kind === 'unknowable') {
+          // Either this engine predates the alias field (yooz-engine#308,
+          // 0.7.8) or it has nothing cached at all, and the configured id is
+          // repo-shaped. The model may well be served under its canonical id,
+          // so "not downloaded" would be a false alarm on the default config.
+          // Say only what is true — and do not prescribe an upgrade when an
+          // empty inventory (a fresh install) is the likelier explanation.
           io.out("state:    unknown — this engine's listing does not name it");
-          io.out('          (a HuggingFace-style id resolves server-side, so');
-          io.out('           this is expected until yooz-engine#308)');
+          io.out(
+            rows.ok && rows.rows.length === 0
+              ? '          (nothing is cached yet; "remi model pull" fetches it)'
+              : '          (upgrade the engine to 0.7.8+ to resolve this)',
+          );
         } else {
-          io.out(`loaded:   ${row.loaded ? 'yes' : 'no'}`);
-          io.out(`on disk:  ${row.cached ? 'yes' : 'no'}`);
-          io.out(`size:     ${formatSize(row.sizeBytes)}`);
+          // Alias-aware rows, and none of them is this model. Now a negative
+          // result means something, and it is worth saying plainly: the first
+          // evaluation would trigger a multi-GB download.
+          io.out('state:    not downloaded — no row on this engine names it');
+          io.out(`          ("remi model pull ${configured}" fetches it)`);
         }
         // `/v1/llm/status` carries the live load state and the last load
         // ERROR, which the inventory does not — worth surfacing, because "not
@@ -290,28 +426,48 @@ export async function runModelCommand(
         // always has a value, and `engineRequest` throws on an unparsable body
         // before we get here. It is typed optional defensively, so treat an
         // absent one as ours: there would be no other model it could describe.
-        const statusIsOurs = s.modelId === undefined || s.modelId === configured;
-        if (statusIsOurs) {
+        //
+        // Otherwise compare through the row we resolved, which carries BOTH
+        // names: `modelId` is always canonical while `configured` may be the
+        // repo id, so comparing the two strings directly makes one model look
+        // like two. With no resolved row there is nothing to compare through,
+        // and `unknowable` says so rather than guessing.
+        //
+        // The direct comparison comes FIRST and stands on its own: when the
+        // engine reports the very string that is configured, the two name the
+        // same model whatever the inventory does or does not know. Deciding
+        // this only through a resolved row would report "cannot tell" about an
+        // exact match.
+        // A failed inventory (`found === undefined`) is undecidable for the
+        // same reason a legacy engine is: there is no row to compare through.
+        const ours =
+          s.modelId === configured
+            ? true
+            : found === undefined
+              ? undefined
+              : found.kind === 'found'
+                ? matchesModel(found.row, s.modelId ?? configured)
+                : found.kind === 'unknowable'
+                  ? undefined
+                  : false;
+        if (s.modelId === undefined || ours === true) {
           if (s.state !== undefined) io.out(`state:    ${s.state}`);
           if (s.progress !== undefined) {
             io.out(`download: ${Math.round(s.progress * 100)}% in flight`);
           }
           if (s.lastError !== undefined) io.out(`error:    ${s.lastError}`);
-        } else if (looksLikeAlias(configured)) {
-          // A MISMATCH IS NOT A DIFFERENCE when our id is an alias. `modelId`
-          // is always canonical, `configured` may be a HuggingFace repo id, and
-          // nothing exposes the mapping (yooz-engine#308) -- so these two can
-          // name the SAME model and still compare unequal. Claiming "not used
-          // by remi" here is a live false negative: configure the picker tier
-          // by its HF id and remi disowns its own model.
+        } else if (ours === undefined) {
           io.out(`engine picker: ${s.modelId}`);
-          io.out('          (cannot tell whether this is your model: it is named');
-          io.out('           canonically and yours is an alias — yooz-engine#308)');
+          io.out('          (cannot tell whether this is your model here)');
         } else {
-          // Both canonical, genuinely different. The picker's active tier
-          // belongs to whoever owns TouchUp, but it shares the GPU, so name it
-          // rather than hiding it.
-          io.out(`engine picker: ${s.modelId} (not used by remi)`);
+          // Genuinely a different model. The picker's active tier belongs to
+          // whoever owns TouchUp, but it shares the GPU, so name it rather
+          // than hiding it — under its registered name where the inventory
+          // knows one, so both lines of this report use the same vocabulary.
+          const pickerRow =
+            s.modelId === undefined || !rows.ok ? undefined : findModel(rows.rows, s.modelId);
+          const pickerName = pickerRow === undefined ? s.modelId : displayId(pickerRow);
+          io.out(`engine picker: ${pickerName} (not used by remi)`);
         }
         return 0;
       }
@@ -327,13 +483,22 @@ export async function runModelCommand(
           io.out(all.length === 0 ? 'No models on disk.' : 'No LLM models on disk.');
           return 0;
         }
-        io.out('  MODEL                          MODULE     SIZE  STATE');
-        for (const m of models) io.out(formatManagedRow(m));
+        io.out(`  ${'MODEL'.padEnd(NAME_COLUMN)} MODULE     SIZE  STATE`);
+        for (const m of models) io.out(formatManagedRow(m, aa.model));
         const hidden = all.length - models.length;
         if (hidden > 0) {
           io.out(
             `  (${hidden} model(s) from other modules hidden; "remi model ls --all" shows them)`,
           );
+        }
+        // An unmarked listing asserts "none of these is yours". Against an
+        // engine that reports no aliases, a repo-shaped configured id matches
+        // no row even when one of them IS remi's model, so the absence of a
+        // marker would be a silent false claim. Say which model is configured
+        // and why it could not be pointed at.
+        if (lookupModel(all, aa.model).kind === 'unknowable') {
+          io.out(`  (cannot mark which is remi's: it is configured as "${aa.model}",`);
+          io.out('   and this engine lists canonical ids only — upgrade to 0.7.8+)');
         }
         return 0;
       }
@@ -344,16 +509,58 @@ export async function runModelCommand(
           return 2;
         }
         const models = await inventory(baseUrl);
-        const target = models.find((m) => m.id === id);
+        const target = findModel(models, id);
         if (target !== undefined && !target.deletable) {
-          io.err(
-            target.isActive
-              ? `"${id}" is the active model; switch with "remi model use <other>" before removing it.`
-              : `"${id}" is not deletable (nothing reclaimable on disk).`,
-          );
+          if (!target.isActive) {
+            io.err(`"${id}" is not deletable (nothing reclaimable on disk).`);
+            return 1;
+          }
+          // `isActive` is the ENGINE's active model for that module — the
+          // TouchUp picker's tier, in practice — and is only remi's when
+          // remi's configured model happens to be the same one. Saying
+          // "switch with remi model use" about someone else's active model
+          // sends the user after a remedy that provably cannot work: `use`
+          // writes remi's config and never touches the picker (#843).
+          //
+          // Three cases, because the middle one is a claim that can be WRONG.
+          // Against an engine reporting no aliases, a repo-shaped configured
+          // id matches nothing, so "it is not remi's model" would be asserted
+          // about a model that very likely IS remi's — reintroducing exactly
+          // the confidently-wrong message this command was fixed to remove,
+          // with the correct remedy denied as the one that will not work.
+          const ownership = lookupModel(models, aa.model);
+          const isOurs =
+            ownership.kind === 'found'
+              ? matchesModel(target, aa.model)
+              : ownership.kind === 'unknowable'
+                ? undefined
+                : false;
+          if (isOurs === true) {
+            io.err(
+              `"${id}" is the model remi is configured to use; switch with "remi model use <other>" (and restart running daemons) before removing it.`,
+            );
+          } else if (isOurs === false) {
+            io.err(
+              `"${id}" is the engine's active ${target.module} model, so the engine refuses to delete it. It is not remi's model (that is "${aa.model}"), and "remi model use" will not release it.`,
+            );
+            io.err(
+              'Point that module at another model from the app that owns it, or stop the engine first.',
+            );
+          } else {
+            io.err(
+              `"${id}" is the engine's active ${target.module} model, so the engine refuses to delete it.`,
+            );
+            io.err(
+              `Whether it is also remi's model cannot be determined here: remi is configured as "${aa.model}" and this engine lists canonical ids only (upgrade to 0.7.8+). If it is, "remi model use <other>" releases it; if not, only the app that owns that module can.`,
+            );
+          }
           return 1;
         }
-        const result = await remove(baseUrl, id);
+        // Delete by the id the ENGINE knows. `DELETE /v1/models/:id` resolves
+        // aliases too, but resolving here makes that independent of engine
+        // version — a registered repo id works against an engine whose delete
+        // route only understands canonical ids.
+        const result = await remove(baseUrl, target?.id ?? id);
         io.out(`Removed ${result.id}, reclaimed ${formatSize(result.reclaimedBytes)}.`);
         return 0;
       }
@@ -432,29 +639,94 @@ export async function runModelCommand(
         io.out(`Unloaded ${id}.`);
         return 0;
       }
-      case 'use': {
-        const id = args[1];
-        if (!id) {
-          io.err('Usage: remi model use <model-id>');
-          return 2;
-        }
-        const catalog = await list(baseUrl);
-        if (catalog.available.length > 0 && !catalog.available.some((m) => m.id === id)) {
-          io.err(
-            `"${id}" is not in the engine catalogue. Known: ${catalog.available.map((m) => m.id).join(', ')}`,
-          );
-          return 1;
-        }
-        const persist = deps.persistModel ?? persistModelInConfig;
-        persist(id);
-        io.out(`Default model set to ${id}. Restart running daemons to pick it up.`);
-        return 0;
-      }
     }
   } catch (err) {
     io.err(`remi model ${verb} failed: ${errorToString(err)}`);
     return 1;
   }
+}
+
+/**
+ * `remi model use <id>` — set the model remi's evaluator runs on.
+ *
+ * Writes remi's config, so it works with no engine running. Validation against
+ * the catalogue is a NICETY layered on top: valuable when an engine is there
+ * (a typo caught now beats a multi-GB download of nothing later), never a
+ * precondition. Refusing to configure a model while the engine is down was the
+ * single worst friction in the 0.7.0 command (#843) — that is the moment a
+ * user is most likely to be setting one up.
+ */
+async function runUse(
+  id: string | undefined,
+  baseUrl: string,
+  io: ModelCommandIO,
+  deps: {
+    list: typeof listModels;
+    probe: typeof probeEngine;
+    persistModel?: ((id: string) => void) | undefined;
+  },
+): Promise<number> {
+  if (!id) {
+    io.err('Usage: remi model use <model-id>');
+    return 2;
+  }
+
+  const persist = deps.persistModel ?? persistModelInConfig;
+  const reachable = await deps.probe(baseUrl);
+  if (!reachable.reachable) {
+    persist(id);
+    io.out(`Default model set to ${id}. Restart running daemons to pick it up.`);
+    io.out(
+      `Not verified against a catalogue: no engine is answering on ${baseUrl}. Check it with "remi model ls" once one is up.`,
+    );
+    return 0;
+  }
+
+  // Match on EITHER name, and only REJECT on a decidable negative.
+  //
+  // Requiring `m.id === id` rejected the registered repo id — including remi's
+  // own shipped default, so the command refused to set the value it ships
+  // with. Matching on the alias fixes that against an engine that reports one
+  // (yooz-engine#308, 0.7.8+), but an OLDER engine lists canonical ids only,
+  // and there a repo-shaped id is simply undecidable: the engine will resolve
+  // it server-side and run it perfectly well. Refusing it there would keep the
+  // original bug alive for every user who has not upgraded the engine yet.
+  // A catalogue fetch that FAILS is not an empty catalogue. Swallowing it
+  // would skip the check entirely and still print the plain success line, so a
+  // typo would be persisted and reported exactly like a validated write — the
+  // check silently disabled by a network hiccup, with nothing said anywhere.
+  const catalog = await deps.list(baseUrl).then(
+    (c) => ({ ok: true, value: c }) as const,
+    (err: unknown) => ({ ok: false, err }) as const,
+  );
+  if (!catalog.ok) {
+    persist(id);
+    io.out(`Default model set to ${id}. Restart running daemons to pick it up.`);
+    io.out(
+      `Not verified against a catalogue: reading it failed (${errorToString(catalog.err)}). Check with "remi model ls".`,
+    );
+    return 0;
+  }
+
+  const known = catalog.value.available;
+  const lookup = lookupModel(known, id);
+  if (known.length > 0 && lookup.kind === 'absent') {
+    io.err(
+      `"${id}" is not in the engine catalogue. Known: ${known.map((m) => displayId(m)).join(', ')}`,
+    );
+    return 1;
+  }
+
+  persist(id);
+  io.out(`Default model set to ${id}. Restart running daemons to pick it up.`);
+  if (known.length === 0) {
+    io.out('Not verified: this engine reported an empty catalogue.');
+  } else if (lookup.kind === 'unknowable') {
+    io.out(
+      "Not verified: this engine's catalogue lists canonical ids only, so a registered repo id cannot be checked against it (upgrade the engine to 0.7.8+).",
+    );
+  }
+  return 0;
 }
 
 /**

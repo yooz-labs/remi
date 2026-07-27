@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.0'; // REMI_COMPILED_VERSION
+      return '0.7.1-dev.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.0'; // REMI_COMPILED_VERSION
+    return '0.7.1-dev.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -125,12 +125,10 @@ import { IdentityStore } from './auth/identity-store.ts';
 import {
   AutoApproveService,
   EngineHost,
-  FileEnginePidStore,
   SubagentAlerter,
   alertBody,
   alertTitle,
   resolveProviderUrl,
-  spawnDetachedEngine,
 } from './auto-approve/index.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
@@ -867,18 +865,14 @@ let autoApproveService: AutoApproveService | null = null;
     // provider that never talks to one.
     const engineHost =
       provider === 'yooz'
-        ? new EngineHost(
+        ? EngineHost.real(
             {
               baseUrl,
               ownership: aaCfg.engine,
               helperPath: aaCfg.engine_path,
               modelCache: aaCfg.model_cache,
             },
-            {
-              log: writeToLog,
-              spawn: spawnDetachedEngine,
-              pidStore: new FileEnginePidStore(),
-            },
+            writeToLog,
           )
         : undefined;
 

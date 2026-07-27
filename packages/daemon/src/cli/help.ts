@@ -31,7 +31,11 @@ function dim(text: string): string {
 
 /** Pad command to fixed width and dim the description. */
 function entry(cmd: string, desc: string, width = 30): string {
-  return `  ${cmd.padEnd(width)}${dim(desc)}`;
+  // A term at or past the column runs straight into its description
+  // (`--auto-approve-multichoice-model MAlt-model for ...`). `padEnd` cannot
+  // separate them — it is a no-op once the string is already wide enough — so
+  // guarantee one space rather than assuming every term fits.
+  return `  ${cmd.padEnd(width)}${cmd.length >= width ? ' ' : ''}${dim(desc)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +158,15 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi model unload <id>', 'Free a model from memory'),
     entry('remi model use <id>', 'Set the default model (persisted in config)'),
     '',
+    '',
+    dim('  Models are named by their registered HuggingFace repo id, e.g.'),
+    dim('  "YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx". The engine also accepts its'),
+    dim('  own short id for the same model; either works wherever <id> is taken.'),
+    '',
     dim('  Replaces "ollama pull/ls/ps": the Yooz engine ships no CLI of its own.'),
+    dim('  No daemon needed -- a verb that needs an engine starts one (fetching'),
+    dim('  the helper on first use). "status" deliberately does not, so it can'),
+    dim('  report an engine being down, and "use" needs none at all.'),
     dim('  A first pull downloads several GB from HuggingFace. Progress may sit at'),
     dim('  0% throughout (engine bug); completion is detected from bytes on disk.'),
     dim('  "use" writes remi config -- the engine forgets its own preference on'),
@@ -343,6 +355,7 @@ export function formatHelp(version: string): string {
     entry('remi config', 'Show effective configuration'),
     entry('remi config init', 'Create default config file'),
     entry('remi reload', 'Hot-reload config on running daemons'),
+    entry('remi model', 'Manage the auto-approve LLM (see "remi model --help")'),
     '',
     bold('Service:'),
     entry('remi start', 'Start the hub in the background'),

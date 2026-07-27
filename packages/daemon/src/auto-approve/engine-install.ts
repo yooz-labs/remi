@@ -39,14 +39,18 @@ export const ENGINE_INSTALL_ROOT = path.join(REMI_DIR, 'engine');
  *
  * Pinned rather than "latest" on purpose: a daemon that silently picks up a new
  * engine build is a daemon whose behavior changed without anyone choosing it,
- * and the model contract (`yooz-instruct-4b`, the catalogue, the alias
- * resolution) is a property of a specific engine version. Bumping this is a
- * deliberate, reviewable commit.
+ * and the model contract (the catalogue, the alias resolution) is a property of
+ * a specific engine version. Bumping this is a deliberate, reviewable commit.
+ *
+ * 0.7.8 is the first release whose model listings report each model's
+ * registered HuggingFace repo id (yooz-engine#308). remi degrades honestly
+ * against an older one — it says it cannot correlate rather than guessing —
+ * but only from 0.7.8 can it name models the way a user recognizes them.
  */
 export const ENGINE_RELEASE = {
   repo: 'yooz-labs/yooz-engine',
   /** Release tag carrying `YoozEngineLLM.app.zip` (yooz-engine#311). */
-  tag: 'v0.7.7',
+  tag: 'v0.7.8',
   asset: 'YoozEngineLLM.app.zip',
   /** Bundle directory inside the archive, and the executable within it. */
   appDir: 'YoozEngineLLM.app',

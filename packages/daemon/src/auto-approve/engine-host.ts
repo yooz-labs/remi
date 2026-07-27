@@ -65,6 +65,7 @@
 import { errorToString } from '@remi/shared';
 import { ensureHelperInstalled } from './engine-install.ts';
 import { probeEngine } from './engine-models.ts';
+import { FileEnginePidStore, spawnDetachedEngine } from './engine-process.ts';
 
 /** How remi relates to the engine on its port. */
 export type EngineOwnership = 'owned' | 'shared';
@@ -270,6 +271,22 @@ export class EngineHost {
     kill(pid);
     pids.release(pid);
     return pid;
+  }
+
+  /**
+   * An `EngineHost` wired to the real spawn and pidfile.
+   *
+   * Exists so the daemon and the `remi model` CLI (#843) start engines by the
+   * same path. They must: the pidfile race guard only guards processes that
+   * share it, so a CLI that hand-rolled its own spawn would be invisible to a
+   * booting daemon and the two would fight over the port.
+   */
+  static real(config: EngineHostConfig, log: (msg: string) => void): EngineHost {
+    return new EngineHost(config, {
+      log,
+      spawn: spawnDetachedEngine,
+      pidStore: new FileEnginePidStore(),
+    });
   }
 
   private async startEngine(helperPath: string): Promise<EngineHostState> {
