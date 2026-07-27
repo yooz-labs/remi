@@ -31,7 +31,11 @@ function dim(text: string): string {
 
 /** Pad command to fixed width and dim the description. */
 function entry(cmd: string, desc: string, width = 30): string {
-  return `  ${cmd.padEnd(width)}${dim(desc)}`;
+  // A term at or past the column runs straight into its description
+  // (`--auto-approve-multichoice-model MAlt-model for ...`). `padEnd` cannot
+  // separate them — it is a no-op once the string is already wide enough — so
+  // guarantee one space rather than assuming every term fits.
+  return `  ${cmd.padEnd(width)}${cmd.length >= width ? ' ' : ''}${dim(desc)}`;
 }
 
 // ---------------------------------------------------------------------------
