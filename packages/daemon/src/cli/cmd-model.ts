@@ -129,6 +129,12 @@ function formatManagedRow(m: ManagedModel, configured: string): string {
   // that as the user's model is the same misattribution `rm` used to make.
   // The engine's choice is still worth seeing (it holds the GPU and cannot be
   // deleted), so it is labelled rather than dropped.
+  //
+  // Callers must not reach here when ownership is UNDECIDABLE (see
+  // `lookupModel`): on an engine that reports no aliases, a repo-shaped
+  // configured id matches nothing, and an unmarked listing would quietly claim
+  // that none of these models is yours. `ls` prints a note in that case
+  // instead of marking a row.
   const marker = matchesModel(m, configured) ? '*' : ' ';
   const state = m.loaded ? 'resident' : m.cached ? 'on disk' : 'not downloaded';
   const engineActive = m.isActive ? ', engine active' : '';
@@ -363,22 +369,44 @@ export async function runModelCommand(
         // picker's rows, so a generate-only catalogue model (the default) is
         // simply absent from it (verified live 2026-07-26; yooz-engine#307).
         const configured = aa.model;
-        const rows = await inventory(baseUrl).catch(() => [] as readonly ManagedModel[]);
-        const found = lookupModel(rows, configured);
+        // A FAILED inventory call is not an empty inventory. `listManagedModels`
+        // throws on a non-2xx, a timeout, or an unparsable body — all real
+        // against a reachable engine — and treating that as "no rows" would
+        // make this report "not downloaded" (or "upgrade your engine")
+        // according only to whether the configured id happens to contain a
+        // slash. Both are confident, wrong, and point nowhere near the cause.
+        const rows = await inventory(baseUrl).then(
+          (r) => ({ ok: true, rows: r }) as const,
+          (err: unknown) => ({ ok: false, err }) as const,
+        );
+        const found = rows.ok ? lookupModel(rows.rows, configured) : undefined;
 
         io.out(`engine:   ${baseUrl} (reachable, ${aa.engine})`);
         io.out(`model:    ${configured}`);
-        if (found.kind === 'found') {
+        if (!rows.ok) {
+          io.out("state:    could not read this engine's model inventory");
+          io.out(`          (${errorToString(rows.err)})`);
+        } else if (found === undefined) {
+          // Unreachable: `found` is set whenever the fetch succeeded. Present
+          // so the narrowing is explicit rather than assumed.
+          io.out('state:    unknown');
+        } else if (found.kind === 'found') {
           io.out(`loaded:   ${found.row.loaded ? 'yes' : 'no'}`);
           io.out(`on disk:  ${found.row.cached ? 'yes' : 'no'}`);
           io.out(`size:     ${formatSize(found.row.sizeBytes)}`);
         } else if (found.kind === 'unknowable') {
-          // This engine predates the alias field (yooz-engine#308, 0.7.8), and
-          // the configured id is repo-shaped. It very likely IS served, under
-          // its canonical id — so saying "not downloaded" would be a false
-          // alarm on the default config. Say only what is true.
+          // Either this engine predates the alias field (yooz-engine#308,
+          // 0.7.8) or it has nothing cached at all, and the configured id is
+          // repo-shaped. The model may well be served under its canonical id,
+          // so "not downloaded" would be a false alarm on the default config.
+          // Say only what is true — and do not prescribe an upgrade when an
+          // empty inventory (a fresh install) is the likelier explanation.
           io.out("state:    unknown — this engine's listing does not name it");
-          io.out('          (upgrade the engine to 0.7.8+ to resolve this)');
+          io.out(
+            rows.ok && rows.rows.length === 0
+              ? '          (nothing is cached yet; "remi model pull" fetches it)'
+              : '          (upgrade the engine to 0.7.8+ to resolve this)',
+          );
         } else {
           // Alias-aware rows, and none of them is this model. Now a negative
           // result means something, and it is worth saying plainly: the first
@@ -410,14 +438,18 @@ export async function runModelCommand(
         // same model whatever the inventory does or does not know. Deciding
         // this only through a resolved row would report "cannot tell" about an
         // exact match.
+        // A failed inventory (`found === undefined`) is undecidable for the
+        // same reason a legacy engine is: there is no row to compare through.
         const ours =
           s.modelId === configured
             ? true
-            : found.kind === 'found'
-              ? matchesModel(found.row, s.modelId ?? configured)
-              : found.kind === 'unknowable'
-                ? undefined
-                : false;
+            : found === undefined
+              ? undefined
+              : found.kind === 'found'
+                ? matchesModel(found.row, s.modelId ?? configured)
+                : found.kind === 'unknowable'
+                  ? undefined
+                  : false;
         if (s.modelId === undefined || ours === true) {
           if (s.state !== undefined) io.out(`state:    ${s.state}`);
           if (s.progress !== undefined) {
@@ -426,14 +458,14 @@ export async function runModelCommand(
           if (s.lastError !== undefined) io.out(`error:    ${s.lastError}`);
         } else if (ours === undefined) {
           io.out(`engine picker: ${s.modelId}`);
-          io.out('          (cannot tell whether this is your model on this');
-          io.out('           engine version — upgrade to 0.7.8+)');
+          io.out('          (cannot tell whether this is your model here)');
         } else {
           // Genuinely a different model. The picker's active tier belongs to
           // whoever owns TouchUp, but it shares the GPU, so name it rather
           // than hiding it — under its registered name where the inventory
           // knows one, so both lines of this report use the same vocabulary.
-          const pickerRow = s.modelId === undefined ? undefined : findModel(rows, s.modelId);
+          const pickerRow =
+            s.modelId === undefined || !rows.ok ? undefined : findModel(rows.rows, s.modelId);
           const pickerName = pickerRow === undefined ? s.modelId : displayId(pickerRow);
           io.out(`engine picker: ${pickerName} (not used by remi)`);
         }
@@ -459,6 +491,15 @@ export async function runModelCommand(
             `  (${hidden} model(s) from other modules hidden; "remi model ls --all" shows them)`,
           );
         }
+        // An unmarked listing asserts "none of these is yours". Against an
+        // engine that reports no aliases, a repo-shaped configured id matches
+        // no row even when one of them IS remi's model, so the absence of a
+        // marker would be a silent false claim. Say which model is configured
+        // and why it could not be pointed at.
+        if (lookupModel(all, aa.model).kind === 'unknowable') {
+          io.out(`  (cannot mark which is remi's: it is configured as "${aa.model}",`);
+          io.out('   and this engine lists canonical ids only — upgrade to 0.7.8+)');
+        }
         return 0;
       }
       case 'rm': {
@@ -480,23 +521,45 @@ export async function runModelCommand(
           // "switch with remi model use" about someone else's active model
           // sends the user after a remedy that provably cannot work: `use`
           // writes remi's config and never touches the picker (#843).
-          if (matchesModel(target, aa.model)) {
+          //
+          // Three cases, because the middle one is a claim that can be WRONG.
+          // Against an engine reporting no aliases, a repo-shaped configured
+          // id matches nothing, so "it is not remi's model" would be asserted
+          // about a model that very likely IS remi's — reintroducing exactly
+          // the confidently-wrong message this command was fixed to remove,
+          // with the correct remedy denied as the one that will not work.
+          const ownership = lookupModel(models, aa.model);
+          const isOurs =
+            ownership.kind === 'found'
+              ? matchesModel(target, aa.model)
+              : ownership.kind === 'unknowable'
+                ? undefined
+                : false;
+          if (isOurs === true) {
             io.err(
               `"${id}" is the model remi is configured to use; switch with "remi model use <other>" (and restart running daemons) before removing it.`,
             );
-          } else {
+          } else if (isOurs === false) {
             io.err(
               `"${id}" is the engine's active ${target.module} model, so the engine refuses to delete it. It is not remi's model (that is "${aa.model}"), and "remi model use" will not release it.`,
             );
             io.err(
               'Point that module at another model from the app that owns it, or stop the engine first.',
             );
+          } else {
+            io.err(
+              `"${id}" is the engine's active ${target.module} model, so the engine refuses to delete it.`,
+            );
+            io.err(
+              `Whether it is also remi's model cannot be determined here: remi is configured as "${aa.model}" and this engine lists canonical ids only (upgrade to 0.7.8+). If it is, "remi model use <other>" releases it; if not, only the app that owns that module can.`,
+            );
           }
           return 1;
         }
         // Delete by the id the ENGINE knows. `DELETE /v1/models/:id` resolves
-        // aliases too, but a resolved row makes that independent of engine
-        // version, and keeps the reported id consistent with what `ls` shows.
+        // aliases too, but resolving here makes that independent of engine
+        // version — a registered repo id works against an engine whose delete
+        // route only understands canonical ids.
         const result = await remove(baseUrl, target?.id ?? id);
         io.out(`Removed ${result.id}, reclaimed ${formatSize(result.reclaimedBytes)}.`);
         return 0;
@@ -628,8 +691,24 @@ async function runUse(
   // and there a repo-shaped id is simply undecidable: the engine will resolve
   // it server-side and run it perfectly well. Refusing it there would keep the
   // original bug alive for every user who has not upgraded the engine yet.
-  const catalog = await deps.list(baseUrl).catch(() => undefined);
-  const known = catalog?.available ?? [];
+  // A catalogue fetch that FAILS is not an empty catalogue. Swallowing it
+  // would skip the check entirely and still print the plain success line, so a
+  // typo would be persisted and reported exactly like a validated write — the
+  // check silently disabled by a network hiccup, with nothing said anywhere.
+  const catalog = await deps.list(baseUrl).then(
+    (c) => ({ ok: true, value: c }) as const,
+    (err: unknown) => ({ ok: false, err }) as const,
+  );
+  if (!catalog.ok) {
+    persist(id);
+    io.out(`Default model set to ${id}. Restart running daemons to pick it up.`);
+    io.out(
+      `Not verified against a catalogue: reading it failed (${errorToString(catalog.err)}). Check with "remi model ls".`,
+    );
+    return 0;
+  }
+
+  const known = catalog.value.available;
   const lookup = lookupModel(known, id);
   if (known.length > 0 && lookup.kind === 'absent') {
     io.err(
@@ -640,7 +719,9 @@ async function runUse(
 
   persist(id);
   io.out(`Default model set to ${id}. Restart running daemons to pick it up.`);
-  if (lookup.kind === 'unknowable') {
+  if (known.length === 0) {
+    io.out('Not verified: this engine reported an empty catalogue.');
+  } else if (lookup.kind === 'unknowable') {
     io.out(
       "Not verified: this engine's catalogue lists canonical ids only, so a registered repo id cannot be checked against it (upgrade the engine to 0.7.8+).",
     );

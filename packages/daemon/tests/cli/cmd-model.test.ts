@@ -1068,3 +1068,102 @@ describe('remi model use — an older engine must not resurrect the original bug
     expect(persisted).toBe('');
   });
 });
+
+/**
+ * A failed call is not an empty result. `listManagedModels` / `listModels`
+ * throw on a non-2xx, a timeout, or an unparsable body — all real against an
+ * engine that is otherwise answering — and collapsing that to "no rows" makes
+ * every downstream conclusion confident and wrong.
+ */
+describe('remi model — a broken engine response is never read as an answer', () => {
+  const boom = () => {
+    throw new Error('HTTP 500 from /v1/models');
+  };
+
+  test('status reports the read failure instead of "not downloaded"', async () => {
+    const t = io();
+    const code = await run(['status'], configWith({ model: 'yooz-light-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => boom(),
+    });
+
+    expect(code).toBe(0);
+    const text = t.out.join('\n');
+    expect(text).toContain('could not read');
+    expect(text).toContain('HTTP 500'); // the actual cause, not a guess
+    expect(text).not.toContain('not downloaded');
+    expect(text).not.toContain('upgrade the engine');
+  });
+
+  test('use says validation could not run, rather than reporting a clean write', async () => {
+    // Otherwise a typo is persisted and reported identically to a validated
+    // write, with the check silently disabled by a network hiccup.
+    const t = io();
+    let persisted = '';
+    const code = await run(['use', 'yooz-light-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      list: async () => boom(),
+      persistModel: (id) => {
+        persisted = id;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(persisted).toBe('yooz-light-v3'); // still configurable
+    const text = t.out.join('\n');
+    expect(text).toContain('Not verified');
+    expect(text).toContain('HTTP 500');
+  });
+
+  test('use says so when the engine reports an empty catalogue', async () => {
+    const t = io();
+    const code = await run(['use', 'anything-at-all'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      list: async () => ({ current: '', available: [] }) as EngineModelCatalog,
+      persistModel: () => {},
+    });
+
+    expect(code).toBe(0);
+    expect(t.out.join('\n')).toContain('Not verified');
+  });
+});
+
+/**
+ * On an engine that reports no aliases, remi cannot tell which row is its own
+ * model when it is configured by repo id (the shipped default). Anything that
+ * ASSERTS ownership either way there is a confidently wrong claim — the exact
+ * bug #843 exists to remove, and easy to reintroduce at a call site that uses
+ * the boolean matcher instead of the tri-state lookup.
+ */
+describe('remi model — undecidable ownership is never asserted (legacy engine)', () => {
+  const HF = 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
+
+  test('ls does not silently imply that none of the models is yours', async () => {
+    const t = io();
+    await run(['ls'], configWith({ model: HF }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY, // no huggingFaceID on any row
+    });
+
+    const text = t.out.join('\n');
+    expect(text).not.toContain('*'); // nothing marked...
+    expect(text).toContain("cannot mark which is remi's"); // ...and it says why
+    expect(text).toContain(HF);
+  });
+
+  test('rm does not claim the engine-active model "is not remi\'s"', async () => {
+    // It very likely IS remi's, resolved server-side. Asserting otherwise also
+    // denies the one remedy that would actually work.
+    const t = io();
+    const code = await run(['rm', 'yooz-quality-v3'], configWith({ model: HF }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+    });
+
+    expect(code).toBe(1);
+    const text = t.err.join('\n');
+    expect(text).not.toContain("It is not remi's model");
+    expect(text).toContain('cannot be determined');
+    expect(text).toContain('remi model use <other>'); // offered, not denied
+  });
+});
