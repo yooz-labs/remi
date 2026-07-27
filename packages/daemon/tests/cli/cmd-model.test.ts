@@ -4,8 +4,35 @@ import type {
   EngineProbe,
   ManagedModel,
 } from '../../src/auto-approve/engine-models.ts';
-import { persistModelInConfig, runModelCommand } from '../../src/cli/cmd-model.ts';
+import {
+  type ModelCommandDeps,
+  type ModelCommandIO,
+  persistModelInConfig,
+  runModelCommand,
+} from '../../src/cli/cmd-model.ts';
 import { DEFAULT_CONFIG, type RemiConfig } from '../../src/config/config.ts';
+
+/**
+ * Every test goes through this rather than calling `runModelCommand` directly,
+ * so the engine-START seam is injected BY CONSTRUCTION.
+ *
+ * The real one downloads a helper into `~/.remi`, spawns a detached process
+ * and claims the machine-wide engine pidfile — none of which a unit test can
+ * undo. Writing the injection out at each call site means one forgotten line
+ * does all three against the developer's own machine; it did, during this
+ * change. (`ensureEngineViaHost` also refuses to run under the test runner,
+ * which is the backstop for exactly that slip.)
+ *
+ * A test that wants to observe the start attempt passes its own `ensureEngine`.
+ */
+function run(
+  args: readonly string[],
+  config: RemiConfig,
+  cmdIo: ModelCommandIO,
+  deps: ModelCommandDeps = {},
+): Promise<number> {
+  return runModelCommand(args, config, cmdIo, { ensureEngine: async () => false, ...deps });
+}
 
 /** Real config object with the yooz provider, as a fresh engine install has. */
 function configWith(over: Partial<RemiConfig['auto_approve']> = {}): RemiConfig {
@@ -69,24 +96,27 @@ const CATALOG: EngineModelCatalog = {
 describe('remi model — usage', () => {
   test('no verb prints usage and exits 2', async () => {
     const t = io();
-    expect(await runModelCommand([], configWith(), t.io)).toBe(2);
+    expect(await run([], configWith(), t.io)).toBe(2);
     expect(t.err.join('\n')).toContain('Usage: remi model');
   });
 
   test('an unknown verb names the valid ones', async () => {
     const t = io();
-    expect(await runModelCommand(['frobnicate'], configWith(), t.io)).toBe(2);
+    expect(await run(['frobnicate'], configWith(), t.io)).toBe(2);
     expect(t.err.join('\n')).toContain('pull');
   });
 });
 
 describe('remi model — unreachable engine', () => {
-  test('every verb explains that nothing is listening, and what it costs', async () => {
+  test('every engine-backed verb explains that nothing is listening, and what it costs', async () => {
     // The #818 failure: without this, a missing engine shows up only as
     // auto-approve escalating everything with no explanation anywhere.
-    for (const verb of ['ls', 'ps', 'status', 'pull', 'load', 'unload', 'use']) {
+    // `status` and `use` are excluded deliberately — see their own tests: one
+    // REPORTS this state rather than failing on it, the other never needed an
+    // engine at all (#843).
+    for (const verb of ['ls', 'ps', 'pull', 'load', 'unload']) {
       const t = io();
-      const code = await runModelCommand([verb, 'x'], configWith(), t.io, {
+      const code = await run([verb, 'x'], configWith(), t.io, {
         probe: async (): Promise<EngineProbe> => ({ reachable: false, reason: 'ECONNREFUSED' }),
       });
       expect(code).toBe(1);
@@ -94,12 +124,59 @@ describe('remi model — unreachable engine', () => {
       expect(t.err.join('\n')).toContain('escalate');
     }
   });
+
+  test('status REPORTS the engine being down instead of only erroring', async () => {
+    // The diagnostic verb. A user runs this precisely when nothing works, so
+    // it has to answer "which model, on which engine, and what does that cost
+    // me" — not just repeat that the port is quiet.
+    const t = io();
+    const code = await run(['status'], configWith({ model: 'YoozLabs/Some-Model' }), t.io, {
+      probe: async (): Promise<EngineProbe> => ({ reachable: false, reason: 'ECONNREFUSED' }),
+    });
+
+    expect(code).toBe(1);
+    const text = t.out.join('\n');
+    expect(text).toContain('not running');
+    expect(text).toContain('YoozLabs/Some-Model');
+    expect(text).toContain('escalates every permission');
+  });
+
+  test('status does NOT start an engine — that would destroy the question', async () => {
+    let started = false;
+    const t = io();
+    await run(['status'], configWith(), t.io, {
+      ensureEngine: async () => {
+        started = true;
+        return true;
+      },
+      probe: async (): Promise<EngineProbe> => ({ reachable: false, reason: 'ECONNREFUSED' }),
+    });
+    expect(started).toBe(false);
+  });
+
+  test('a verb that needs an engine starts one first (#843)', async () => {
+    // The whole point: on a machine that has never run a daemon, `pull` has to
+    // work. Before this it failed until the user started a daemon, which
+    // inverts the order anyone would try.
+    const startedFor: string[] = [];
+    for (const verb of ['ls', 'ps', 'pull', 'load', 'unload', 'cleanup', 'rm', 'cancel']) {
+      const t = io();
+      await run([verb, 'x'], configWith(), t.io, {
+        ensureEngine: async () => {
+          startedFor.push(verb);
+          return false;
+        },
+        probe: async (): Promise<EngineProbe> => ({ reachable: false, reason: 'ECONNREFUSED' }),
+      });
+    }
+    expect(startedFor).toEqual(['ls', 'ps', 'pull', 'load', 'unload', 'cleanup', 'rm', 'cancel']);
+  });
 });
 
 describe('remi model ls / ps', () => {
-  test('ls lists the DISK inventory with real footprints and marks the active model', async () => {
+  test('ls lists the DISK inventory with real footprints and marks REMI’s model', async () => {
     const t = io();
-    const code = await runModelCommand(['ls'], configWith(), t.io, {
+    const code = await run(['ls'], configWith({ model: 'yooz-light-v3' }), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => INVENTORY,
     });
@@ -109,12 +186,20 @@ describe('remi model ls / ps', () => {
     expect(text).toContain('3.4 GB'); // measured on-disk size, not an estimate
     expect(text).toContain('800 MB');
     expect(text).toContain('resident');
-    expect(text).toMatch(/\*\s+yooz-quality-v3/); // active marker
+    // The marker follows REMI's configured model, not the engine's active
+    // tier. Marking the picker's tier as "yours" is the misattribution that
+    // sent a user chasing `remi model use` to release someone else's model
+    // (#843); `yooz-quality-v3` is the engine-active one here.
+    expect(text).toMatch(/\*\s+yooz-light-v3/);
+    expect(text).not.toMatch(/\*\s+yooz-quality-v3/);
+    // ...but the engine's choice is still visible, because it holds the GPU
+    // and cannot be deleted.
+    expect(text).toContain('engine active');
   });
 
   test('ls distinguishes not-downloaded from on-disk', async () => {
     const t = io();
-    await runModelCommand(['ls'], configWith(), t.io, {
+    await run(['ls'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => [{ ...(INVENTORY[1] as ManagedModel), cached: false }],
     });
@@ -124,7 +209,7 @@ describe('remi model ls / ps', () => {
 
   test('ps shows only resident models', async () => {
     const t = io();
-    await runModelCommand(['ps'], configWith(), t.io, {
+    await run(['ps'], configWith(), t.io, {
       probe: async () => REACHABLE,
       list: async () => CATALOG,
     });
@@ -136,7 +221,7 @@ describe('remi model ls / ps', () => {
 
   test('ps says so plainly when nothing is resident', async () => {
     const t = io();
-    await runModelCommand(['ps'], configWith(), t.io, {
+    await run(['ps'], configWith(), t.io, {
       probe: async () => REACHABLE,
       list: async () =>
         ({
@@ -159,7 +244,7 @@ describe('remi model status', () => {
     // command was fixed to stop.)
     const t = io();
     const configured = DEFAULT_CONFIG.auto_approve.model;
-    const code = await runModelCommand(['status'], configWith(), t.io, {
+    const code = await run(['status'], configWith(), t.io, {
       probe: async (): Promise<EngineProbe> => ({
         reachable: true,
         status: { loaded: false, modelId: configured, progress: 0.37, state: 'downloading' },
@@ -180,7 +265,7 @@ describe('remi model status', () => {
     // model that is present and working. Reporting "not served" there would
     // be a false alarm on the SHIPPED default (yooz-engine#308).
     const t = io();
-    await runModelCommand(['status'], configWith({ model: 'YoozLabs/Some-Repo-Id' }), t.io, {
+    await run(['status'], configWith({ model: 'YoozLabs/Some-Repo-Id' }), t.io, {
       probe: async (): Promise<EngineProbe> => ({ reachable: true, status: { loaded: true } }),
       // The engine lists it under its canonical id, not the alias.
       inventory: async () => [
@@ -213,18 +298,13 @@ describe('remi model status', () => {
     // `modelId` (it is not a TouchUpModelSelection case), so every mismatch
     // there is a real one by coincidence.
     const t = io();
-    await runModelCommand(
-      ['status'],
-      configWith({ model: 'YoozLabs/Yooz-Light-v3-Qwen3.5-0.8B' }),
-      t.io,
-      {
-        probe: async (): Promise<EngineProbe> => ({
-          reachable: true,
-          status: { loaded: true, modelId: 'yooz-light-v3', state: 'idle' },
-        }),
-        inventory: async () => [],
-      },
-    );
+    await run(['status'], configWith({ model: 'YoozLabs/Yooz-Light-v3-Qwen3.5-0.8B' }), t.io, {
+      probe: async (): Promise<EngineProbe> => ({
+        reachable: true,
+        status: { loaded: true, modelId: 'yooz-light-v3', state: 'idle' },
+      }),
+      inventory: async () => [],
+    });
 
     const text = t.out.join('\n');
     expect(text).not.toContain('not used by remi');
@@ -236,7 +316,7 @@ describe('remi model status', () => {
     // of that is remi's: reporting it would tell a user their model is busy or
     // warm when it is neither.
     const t = io();
-    await runModelCommand(['status'], configWith(), t.io, {
+    await run(['status'], configWith(), t.io, {
       probe: async (): Promise<EngineProbe> => ({
         reachable: true,
         status: { loaded: true, modelId: 'yooz-light-v3', progress: 0.37, state: 'downloading' },
@@ -251,7 +331,7 @@ describe('remi model status', () => {
 
   test('surfaces a failed load rather than reporting a bare "not loaded"', async () => {
     const t = io();
-    await runModelCommand(['status'], configWith(), t.io, {
+    await run(['status'], configWith(), t.io, {
       probe: async (): Promise<EngineProbe> => ({
         reachable: true,
         status: { loaded: false, state: 'failed', lastError: 'no space left on device' },
@@ -265,7 +345,7 @@ describe('remi model status', () => {
 describe('remi model pull', () => {
   test('reports progress, and is explicit that it does not change the active model', async () => {
     const t = io();
-    const code = await runModelCommand(['pull', 'yooz-light-v3'], configWith(), t.io, {
+    const code = await run(['pull', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       pull: async (_url, model, opts) => {
         opts?.onProgress?.({ fraction: 0.5, elapsedMs: 1000, advancing: true });
@@ -288,7 +368,7 @@ describe('remi model pull', () => {
   test('defaults to the configured model when no id is given', async () => {
     const t = io();
     let pulled = '';
-    await runModelCommand(['pull'], configWith({ model: 'configured-model' }), t.io, {
+    await run(['pull'], configWith({ model: 'configured-model' }), t.io, {
       probe: async () => REACHABLE,
       pull: async (_url, model) => {
         pulled = model;
@@ -300,7 +380,7 @@ describe('remi model pull', () => {
 
   test('a failed pull exits non-zero with the reason', async () => {
     const t = io();
-    const code = await runModelCommand(['pull', 'm'], configWith(), t.io, {
+    const code = await run(['pull', 'm'], configWith(), t.io, {
       probe: async () => REACHABLE,
       pull: async () => {
         throw new Error('engine failed to load m: disk full');
@@ -315,15 +395,13 @@ describe('remi model pull', () => {
 describe('remi model unload', () => {
   test('requires an explicit id: never guesses what to free', async () => {
     const t = io();
-    expect(
-      await runModelCommand(['unload'], configWith(), t.io, { probe: async () => REACHABLE }),
-    ).toBe(2);
+    expect(await run(['unload'], configWith(), t.io, { probe: async () => REACHABLE })).toBe(2);
   });
 
   test('unloads the named model', async () => {
     const t = io();
     let unloaded = '';
-    const code = await runModelCommand(['unload', 'yooz-quality-v3'], configWith(), t.io, {
+    const code = await run(['unload', 'yooz-quality-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       unload: async (_url, model) => {
         unloaded = model;
@@ -339,7 +417,7 @@ describe('remi model use', () => {
   test('persists the choice and tells the user it needs a restart', async () => {
     const t = io();
     let persisted = '';
-    const code = await runModelCommand(['use', 'yooz-light-v3'], configWith(), t.io, {
+    const code = await run(['use', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       list: async () => CATALOG,
       persistModel: (id) => {
@@ -355,7 +433,7 @@ describe('remi model use', () => {
   test('refuses a model the engine does not know, listing what it does', async () => {
     const t = io();
     let persisted = '';
-    const code = await runModelCommand(['use', 'not-a-model'], configWith(), t.io, {
+    const code = await run(['use', 'not-a-model'], configWith(), t.io, {
       probe: async () => REACHABLE,
       list: async () => CATALOG,
       persistModel: (id) => {
@@ -373,7 +451,7 @@ describe('remi model rm', () => {
   test('deletes a deletable model and reports the disk reclaimed', async () => {
     const t = io();
     let removed = '';
-    const code = await runModelCommand(['rm', 'yooz-light-v3'], configWith(), t.io, {
+    const code = await run(['rm', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => INVENTORY,
       remove: async (_url, id) => {
@@ -387,35 +465,63 @@ describe('remi model rm', () => {
     expect(t.out.join('\n')).toContain('800 MB');
   });
 
-  test('refuses to delete the ACTIVE model, and says how to switch first', async () => {
+  test("refuses to delete REMI's own model, and says how to switch first", async () => {
     const t = io();
     let removed = '';
-    const code = await runModelCommand(['rm', 'yooz-quality-v3'], configWith(), t.io, {
-      probe: async () => REACHABLE,
-      inventory: async () => INVENTORY,
-      remove: async (_url, id) => {
-        removed = id;
-        return { id, reclaimedBytes: 0 };
+    const code = await run(
+      ['rm', 'yooz-quality-v3'],
+      configWith({ model: 'yooz-quality-v3' }),
+      t.io,
+      {
+        probe: async () => REACHABLE,
+        inventory: async () => INVENTORY,
+        remove: async (_url, id) => {
+          removed = id;
+          return { id, reclaimedBytes: 0 };
+        },
       },
-    });
+    );
 
     expect(code).toBe(1);
     expect(removed).toBe(''); // never called
-    expect(t.err.join('\n')).toContain('remi model use');
+    // Here the advice WORKS: it really is remi's configured model.
+    expect(t.err.join('\n')).toContain('remi model use <other>');
+  });
+
+  test("does not blame remi for the ENGINE's active model, nor advise a remedy that cannot work", async () => {
+    // The reported friction (#843). `isActive` is the engine picker's tier;
+    // remi's model here is something else entirely. Telling the user to run
+    // `remi model use <other>` sends them after a fix that provably does
+    // nothing: `use` writes remi's config and never touches the picker.
+    const t = io();
+    const code = await run(
+      ['rm', 'yooz-quality-v3'],
+      configWith({ model: 'yooz-light-v3' }),
+      t.io,
+      {
+        probe: async () => REACHABLE,
+        inventory: async () => INVENTORY,
+      },
+    );
+
+    expect(code).toBe(1);
+    const text = t.err.join('\n');
+    expect(text).toContain("engine's active llm model");
+    expect(text).toContain('yooz-light-v3'); // names what remi actually uses
+    expect(text).toContain('will not release it');
+    expect(text).not.toContain('remi model use <other>'); // the advice that does not work
   });
 
   test('requires an explicit id', async () => {
     const t = io();
-    expect(
-      await runModelCommand(['rm'], configWith(), t.io, { probe: async () => REACHABLE }),
-    ).toBe(2);
+    expect(await run(['rm'], configWith(), t.io, { probe: async () => REACHABLE })).toBe(2);
   });
 });
 
 describe('remi model cleanup / cancel', () => {
   test('cleanup reports the total reclaimed', async () => {
     const t = io();
-    const code = await runModelCommand(['cleanup'], configWith(), t.io, {
+    const code = await run(['cleanup'], configWith(), t.io, {
       probe: async () => REACHABLE,
       cleanup: async () => ({
         totalReclaimedBytes: 1_200_000_000,
@@ -430,7 +536,7 @@ describe('remi model cleanup / cancel', () => {
   test('cancel aborts the named download', async () => {
     const t = io();
     let cancelled = '';
-    const code = await runModelCommand(['cancel', 'yooz-light-v3'], configWith(), t.io, {
+    const code = await run(['cancel', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       cancel: async (_url, id) => {
         cancelled = id;
@@ -447,7 +553,7 @@ describe('remi model pull — flat-fraction rendering (engine#292/#293)', () => 
     // Both remi LLM tiers are single-big-file repos, so the engine's fraction
     // steps ~0.6% and sits. A percentage there reads as a wedged download.
     const t = io();
-    await runModelCommand(['pull', 'yooz-quality-v3'], configWith(), t.io, {
+    await run(['pull', 'yooz-quality-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       pull: async (_url, _model, opts) => {
         opts?.onProgress?.({
@@ -473,7 +579,7 @@ describe('remi model pull — flat-fraction rendering (engine#292/#293)', () => 
 
   test('heartbeats rather than printing on every poll', async () => {
     const t = io();
-    await runModelCommand(['pull', 'm'], configWith(), t.io, {
+    await run(['pull', 'm'], configWith(), t.io, {
       probe: async () => REACHABLE,
       pull: async (_url, _model, opts) => {
         // Ten polls one second apart: a line every poll would be log spam.
@@ -498,7 +604,7 @@ describe('remi model — shared-engine ownership boundary (#818)', () => {
     for (const verb of ['pull', 'cancel', 'rm', 'cleanup', 'unload']) {
       const t = io();
       let probed = false;
-      const code = await runModelCommand([verb, 'some-model'], shared(), t.io, {
+      const code = await run([verb, 'some-model'], shared(), t.io, {
         probe: async () => {
           probed = true;
           return REACHABLE;
@@ -512,7 +618,7 @@ describe('remi model — shared-engine ownership boundary (#818)', () => {
 
   test('READ-ONLY verbs still work against a shared engine', async () => {
     const t = io();
-    const code = await runModelCommand(['ls'], shared(), t.io, {
+    const code = await run(['ls'], shared(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => INVENTORY,
     });
@@ -523,7 +629,7 @@ describe('remi model — shared-engine ownership boundary (#818)', () => {
 
   test('status names which mode this remi is in', async () => {
     const t = io();
-    await runModelCommand(['status'], shared(), t.io, { probe: async () => REACHABLE });
+    await run(['status'], shared(), t.io, { probe: async () => REACHABLE });
 
     expect(t.out.join('\n')).toContain('shared');
   });
@@ -629,7 +735,7 @@ describe('remi model ls — inventory display (found by live engine run)', () =>
     // A live engine returned 69 rows, 67 of them STT hub directories. Burying
     // the two useful rows in that is not a listing.
     const t = io();
-    await runModelCommand(['ls'], configWith(), t.io, {
+    await run(['ls'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => [...INVENTORY, ...OTHER],
     });
@@ -642,7 +748,7 @@ describe('remi model ls — inventory display (found by live engine run)', () =>
 
   test('--all shows every module', async () => {
     const t = io();
-    await runModelCommand(['ls', '--all'], configWith(), t.io, {
+    await run(['ls', '--all'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => [...INVENTORY, ...OTHER],
     });
@@ -654,7 +760,7 @@ describe('remi model ls — inventory display (found by live engine run)', () =>
 
   test('a size the engine could not measure reads as unknown, not "0 MB"', async () => {
     const t = io();
-    await runModelCommand(['ls', '--all'], configWith(), t.io, {
+    await run(['ls', '--all'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => OTHER,
     });
@@ -664,7 +770,7 @@ describe('remi model ls — inventory display (found by live engine run)', () =>
 
   test('a long id does not break the columns', async () => {
     const t = io();
-    await runModelCommand(['ls', '--all'], configWith(), t.io, {
+    await run(['ls', '--all'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => OTHER,
     });
@@ -682,7 +788,7 @@ describe('remi model — flag handling regressions', () => {
     // `rm --all foo` read "--all" as the id and dropped the real one.
     const t = io();
     let removed = '';
-    const code = await runModelCommand(['rm', '--all', 'yooz-light-v3'], configWith(), t.io, {
+    const code = await run(['rm', '--all', 'yooz-light-v3'], configWith(), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => INVENTORY,
       remove: async (_u, id) => {
@@ -694,5 +800,229 @@ describe('remi model — flag handling regressions', () => {
     expect(code).toBe(2);
     expect(removed).toBe(''); // nothing was deleted under a wrong id
     expect(t.err.join('\n')).toContain('ls');
+  });
+});
+
+/**
+ * Models have two names: the engine's canonical wire id (`yooz-instruct-4b`)
+ * and the registered HuggingFace repo the weights actually come from
+ * (`YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx`). The engine accepts either on
+ * input and, since yooz-engine#308, reports both.
+ *
+ * remi's shipped default is the repo id, so every one of these paths is the
+ * DEFAULT configuration, not an exotic one.
+ */
+describe('remi model — registered names vs canonical ids (#843)', () => {
+  const HF = 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
+
+  /** Alias-aware rows, as an engine >= 0.7.8 returns them. */
+  const ALIASED: readonly ManagedModel[] = [
+    {
+      id: 'yooz-instruct-4b',
+      module: 'llm',
+      displayName: 'Yooz-Instruct-4B',
+      sizeBytes: 2_400_000_000,
+      cached: true,
+      loaded: true,
+      isActive: false,
+      deletable: true,
+      huggingFaceID: HF,
+    },
+  ];
+
+  const ALIASED_CATALOG: EngineModelCatalog = {
+    current: 'yooz-light-v3',
+    available: [
+      {
+        id: 'yooz-instruct-4b',
+        displayName: 'Yooz-Instruct-4B',
+        loaded: true,
+        huggingFaceID: HF,
+      },
+    ],
+  };
+
+  test('ls shows the REGISTERED name, not the internal nickname', async () => {
+    const t = io();
+    await run(['ls'], configWith({ model: HF }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => ALIASED,
+    });
+
+    const text = t.out.join('\n');
+    expect(text).toContain(HF);
+    expect(text).not.toContain('yooz-instruct-4b');
+    expect(text).toMatch(/\*\s+YoozLabs/); // and it is recognized as remi's
+  });
+
+  test('status resolves a repo-id config through the alias instead of giving up', async () => {
+    // Before the alias existed this printed "unknown -- this engine's listing
+    // does not name it" for a model that was present, cached and working.
+    const t = io();
+    const code = await run(['status'], configWith({ model: HF }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => ALIASED,
+    });
+
+    expect(code).toBe(0);
+    const text = t.out.join('\n');
+    expect(text).toContain('loaded:   yes');
+    expect(text).toContain('on disk:  yes');
+    expect(text).not.toContain('unknown');
+  });
+
+  test('status says "not downloaded" only when the rows COULD have named it', async () => {
+    // Alias-aware rows that genuinely do not include the configured model. Now
+    // a negative is real information and worth acting on.
+    const t = io();
+    await run(['status'], configWith({ model: 'YoozLabs/Not-Installed' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => ALIASED,
+    });
+
+    const text = t.out.join('\n');
+    expect(text).toContain('not downloaded');
+    expect(text).toContain('remi model pull');
+  });
+
+  test('status stays honest on an engine too old to report aliases', async () => {
+    // INVENTORY has no huggingFaceID on any row, so a repo-shaped config
+    // cannot be resolved either way. Guessing "not downloaded" here would be a
+    // false alarm on the default config against a 0.7.7 engine.
+    const t = io();
+    await run(['status'], configWith({ model: HF }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+    });
+
+    const text = t.out.join('\n');
+    expect(text).toContain('unknown');
+    expect(text).not.toContain('not downloaded');
+  });
+
+  test('use accepts the registered repo id', async () => {
+    // The 0.7.0 bug: `use` required `m.id === id`, so it refused the very
+    // default remi ships with.
+    const t = io();
+    let persisted = '';
+    const code = await run(['use', HF], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      list: async () => ALIASED_CATALOG,
+      persistModel: (id) => {
+        persisted = id;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(persisted).toBe(HF);
+  });
+
+  test('rm accepts the registered repo id and deletes by the canonical one', async () => {
+    const t = io();
+    let removed = '';
+    const code = await run(['rm', HF], configWith({ model: 'yooz-light-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => ALIASED,
+      remove: async (_u, id) => {
+        removed = id;
+        return { id, reclaimedBytes: 2_400_000_000 };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(removed).toBe('yooz-instruct-4b');
+  });
+});
+
+describe('remi model use — never needs an engine (#843)', () => {
+  test('persists with no engine running, and says it could not verify', async () => {
+    // The worst friction in 0.7.0: configuring a model was impossible while
+    // the engine was down, which is exactly when a user is setting one up.
+    const t = io();
+    let persisted = '';
+    const code = await run(['use', 'yooz-light-v3'], configWith(), t.io, {
+      probe: async (): Promise<EngineProbe> => ({ reachable: false, reason: 'ECONNREFUSED' }),
+      persistModel: (id) => {
+        persisted = id;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(persisted).toBe('yooz-light-v3');
+    const text = t.out.join('\n');
+    expect(text).toContain('Not verified');
+    expect(text).toContain('Restart');
+  });
+
+  test('never starts an engine just to set a config value', async () => {
+    let started = false;
+    const t = io();
+    await run(['use', 'yooz-light-v3'], configWith(), t.io, {
+      ensureEngine: async () => {
+        started = true;
+        return true;
+      },
+      probe: async (): Promise<EngineProbe> => ({ reachable: false, reason: 'ECONNREFUSED' }),
+      persistModel: () => {},
+    });
+    expect(started).toBe(false);
+  });
+
+  test('still validates when an engine IS there', async () => {
+    // The check is a nicety layered on top, not a precondition — but while it
+    // can run, a typo caught now beats a multi-GB download of nothing later.
+    const t = io();
+    let persisted = '';
+    const code = await run(['use', 'nonsense'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      list: async () => CATALOG,
+      persistModel: (id) => {
+        persisted = id;
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(persisted).toBe('');
+  });
+});
+
+describe('remi model use — an older engine must not resurrect the original bug', () => {
+  test('accepts a registered repo id against a catalogue that lists canonical ids only', async () => {
+    // yooz-engine < 0.7.8 reports no aliases, so a repo-shaped id cannot be
+    // checked against the catalogue — but the engine RESOLVES it server-side
+    // and runs it fine. Rejecting it here is exactly the 0.7.0 friction
+    // (verified live against a 0.7.7 engine while fixing #843), so an
+    // undecidable id is accepted with a note, never refused.
+    const t = io();
+    let persisted = '';
+    const code = await run(['use', 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      list: async () => CATALOG, // no huggingFaceID on any row
+      persistModel: (id) => {
+        persisted = id;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(persisted).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(t.out.join('\n')).toContain('Not verified');
+  });
+
+  test('a canonical typo is still decidable there, and still refused', async () => {
+    // The safety half: an id with no slash can be compared directly against
+    // the catalogue on ANY engine version, so a typo is caught rather than
+    // waved through by the same leniency.
+    const t = io();
+    let persisted = '';
+    const code = await run(['use', 'yooz-lite-v3'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      list: async () => CATALOG,
+      persistModel: (id) => {
+        persisted = id;
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(persisted).toBe('');
   });
 });

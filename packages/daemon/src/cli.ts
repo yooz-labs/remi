@@ -125,12 +125,10 @@ import { IdentityStore } from './auth/identity-store.ts';
 import {
   AutoApproveService,
   EngineHost,
-  FileEnginePidStore,
   SubagentAlerter,
   alertBody,
   alertTitle,
   resolveProviderUrl,
-  spawnDetachedEngine,
 } from './auto-approve/index.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
@@ -867,18 +865,14 @@ let autoApproveService: AutoApproveService | null = null;
     // provider that never talks to one.
     const engineHost =
       provider === 'yooz'
-        ? new EngineHost(
+        ? EngineHost.real(
             {
               baseUrl,
               ownership: aaCfg.engine,
               helperPath: aaCfg.engine_path,
               modelCache: aaCfg.model_cache,
             },
-            {
-              log: writeToLog,
-              spawn: spawnDetachedEngine,
-              pidStore: new FileEnginePidStore(),
-            },
+            writeToLog,
           )
         : undefined;
 
