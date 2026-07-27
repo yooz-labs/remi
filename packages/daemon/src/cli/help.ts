@@ -157,6 +157,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi model load <id>', 'Load already-downloaded weights'),
     entry('remi model unload <id>', 'Free a model from memory'),
     entry('remi model use <id>', 'Set the default model (persisted in config)'),
+    entry('remi model restart', 'Relaunch the engine on the version remi pins'),
     '',
     '',
     dim('  Models are named by their registered HuggingFace repo id, e.g.'),

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { isOlderThanPinned } from '../../src/auto-approve/engine-install.ts';
 import type {
   EngineModelCatalog,
   EngineProbe,
@@ -1165,5 +1166,165 @@ describe('remi model — undecidable ownership is never asserted (legacy engine)
     expect(text).not.toContain("It is not remi's model");
     expect(text).toContain('cannot be determined');
     expect(text).toContain('remi model use <other>'); // offered, not denied
+  });
+});
+
+describe('engine version (#852)', () => {
+  test('isOlderThanPinned is three-way, never a guess', () => {
+    // "cannot tell" must not collapse into either answer: both are claims about
+    // the user's machine, and both were being made up before this existed.
+    expect(isOlderThanPinned('0.7.7')).toBe(true);
+    expect(isOlderThanPinned('0.7.8')).toBe(false);
+    expect(isOlderThanPinned('0.7.9')).toBe(false);
+    expect(isOlderThanPinned('0.8.0')).toBe(false);
+    expect(isOlderThanPinned('1.0.0')).toBe(false);
+    expect(isOlderThanPinned('0.6.24')).toBe(true);
+    expect(isOlderThanPinned(undefined)).toBeUndefined();
+    expect(isOlderThanPinned('not-a-version')).toBeUndefined();
+  });
+
+  test('a prerelease of the pinned version is not older than it', () => {
+    // `0.7.8-dev.1` carries the 0.7.8 features, which is what the comparison is
+    // actually asking. Ordering it below 0.7.8 would nag on every dev build.
+    expect(isOlderThanPinned('0.7.8-dev.1')).toBe(false);
+  });
+
+  test('status reports the running version alongside the pin', async () => {
+    const t = io();
+    const code = await run(['status'], configWith({ model: 'yooz-quality-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      engineVersion: async () => '0.7.8',
+    });
+    expect(code).toBe(0);
+    const text = t.out.join('\n');
+    expect(text).toContain('0.7.8');
+    expect(text).toContain('remi pins 0.7.8');
+  });
+
+  test('status names the restart command when the engine is older than the pin', async () => {
+    // The 0.7.1 message said "upgrade the engine to 0.7.8+" and named no way to
+    // do it -- the only implementation was an uncalled function (#852).
+    const t = io();
+    await run(['status'], configWith({ model: 'yooz-quality-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      engineVersion: async () => '0.7.7',
+    });
+    const text = t.out.join('\n');
+    expect(text).toContain('0.7.7');
+    expect(text).toContain('older than the 0.7.8');
+    expect(text).toContain('remi model restart');
+  });
+
+  test('status says "not reported" rather than inventing a version', async () => {
+    const t = io();
+    await run(['status'], configWith({ model: 'yooz-quality-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      engineVersion: async () => undefined,
+    });
+    const text = t.out.join('\n');
+    expect(text).toContain('not reported');
+    expect(text).not.toContain('remi model restart');
+  });
+});
+
+describe('remi model restart (#852)', () => {
+  test('stops the running engine, then starts the pinned one', async () => {
+    const stopped: number[] = [];
+    let started = false;
+    let calls = 0;
+    const t = io();
+    const code = await run(['restart'], configWith(), t.io, {
+      // reachable -> (after stop) unreachable -> reachable again
+      probe: async () => {
+        calls++;
+        return calls === 1 || calls > 2 ? REACHABLE : { reachable: false, reason: 'down' };
+      },
+      engineVersion: async () => (started ? '0.7.8' : '0.7.7'),
+      stopEngine: () => {
+        stopped.push(4242);
+        return 4242;
+      },
+      ensureEngine: async () => {
+        started = true;
+        return true;
+      },
+    });
+    expect(code).toBe(0);
+    expect(stopped).toEqual([4242]);
+    expect(started).toBe(true);
+    expect(t.out.join('\n')).toContain('0.7.7 -> 0.7.8');
+  });
+
+  test('refuses to kill an engine remi has no record of starting', async () => {
+    // Killing whatever holds the port on a guess is how you take down something
+    // the user cared about. Nothing is stopped and nothing is started.
+    let started = false;
+    const t = io();
+    const code = await run(['restart'], configWith(), t.io, {
+      probe: async () => REACHABLE,
+      engineVersion: async () => '0.7.7',
+      stopEngine: () => null,
+      ensureEngine: async () => {
+        started = true;
+        return true;
+      },
+    });
+    expect(code).toBe(1);
+    expect(started).toBe(false);
+    expect(t.err.join('\n')).toContain('no record of starting it');
+  });
+
+  test('starts an engine when none is running', async () => {
+    let started = false;
+    let calls = 0;
+    const t = io();
+    const code = await run(['restart'], configWith(), t.io, {
+      probe: async () => {
+        calls++;
+        return calls === 1 ? { reachable: false, reason: 'down' } : REACHABLE;
+      },
+      engineVersion: async () => '0.7.8',
+      stopEngine: () => {
+        throw new Error('must not stop an engine that is not running');
+      },
+      ensureEngine: async () => {
+        started = true;
+        return true;
+      },
+    });
+    expect(code).toBe(0);
+    expect(started).toBe(true);
+  });
+
+  test('reports failure when the relaunched engine is still older than the pin', async () => {
+    // Restarting cannot fix a stale helper on disk, and claiming success would
+    // be a lie the user discovers later.
+    let calls = 0;
+    const t = io();
+    const code = await run(['restart'], configWith(), t.io, {
+      probe: async () => {
+        calls++;
+        return calls === 1 || calls > 2 ? REACHABLE : { reachable: false, reason: 'down' };
+      },
+      engineVersion: async () => '0.7.7',
+      stopEngine: () => 4242,
+      ensureEngine: async () => true,
+    });
+    expect(code).toBe(1);
+    expect(t.err.join('\n')).toContain('still 0.7.7');
+  });
+
+  test('refuses against a shared engine', async () => {
+    const t = io();
+    const code = await run(['restart'], configWith({ engine: 'shared' }), t.io, {
+      stopEngine: () => {
+        throw new Error("must not kill another host's engine");
+      },
+    });
+    expect(code).toBe(1);
+    expect(t.err.join('\n')).toContain('shared engine');
   });
 });

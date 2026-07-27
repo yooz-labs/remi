@@ -57,6 +57,40 @@ export const ENGINE_RELEASE = {
   binary: 'Yooz Engine (LLM)',
 } as const;
 
+/** The pinned engine version, without the tag's leading `v`. */
+export const PINNED_ENGINE_VERSION = ENGINE_RELEASE.tag.replace(/^v/, '');
+
+/** `[major, minor, patch]`, or undefined when the string is not a semver core.
+ *  Any prerelease suffix is dropped: `0.7.8-dev.1` compares as `0.7.8`, which
+ *  is what "does this build have the 0.7.8 features?" actually asks. */
+function semverParts(version: string): [number, number, number] | undefined {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version.replace(/^v/, ''));
+  if (m === null) return undefined;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/**
+ * Is `version` older than the helper remi pins?
+ *
+ * Three-way on purpose. `undefined` means "cannot tell" — an unparseable or
+ * absent version must not be reported as either current or stale, because both
+ * are claims about the user's machine that we would be making up.
+ */
+export function isOlderThanPinned(version: string | undefined): boolean | undefined {
+  if (version === undefined) return undefined;
+  const running = semverParts(version);
+  const pinned = semverParts(PINNED_ENGINE_VERSION);
+  if (running === undefined || pinned === undefined) return undefined;
+  // Destructured rather than indexed in a loop: under `noUncheckedIndexedAccess`
+  // a variable index widens each element to `number | undefined`, which this
+  // comparison must not have to reason about.
+  const [rMajor, rMinor, rPatch] = running;
+  const [pMajor, pMinor, pPatch] = pinned;
+  if (rMajor !== pMajor) return rMajor < pMajor;
+  if (rMinor !== pMinor) return rMinor < pMinor;
+  return rPatch < pPatch;
+}
+
 /** Absolute path the pinned release installs to. */
 export function installedHelperPath(root: string = ENGINE_INSTALL_ROOT): string {
   return path.join(

@@ -4,6 +4,27 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`remi model restart`** (#852) — relaunch the engine on the version remi
+  pins. Pinning did not imply running: `EngineHost`'s rule is that ownership is
+  about who *starts* an engine, not who holds it, so an engine already answering
+  is attached to however old it is, and upgrading remi never upgraded the engine
+  it talks to. It refuses to kill an engine remi has no record of starting
+  (killing whatever holds the port on a guess is how you take down something
+  that mattered), refuses against a shared engine, and reports failure rather
+  than success if the relaunched engine is still older than the pin.
+
+### Fixed
+- **`remi model status` reports the engine's version** (#852). remi never read
+  it: it pinned which helper to *install* and inferred "old engine" from a
+  missing field, so it could not tell you what you actually had. It now shows
+  the running version next to the pinned one, and when the engine is older it
+  names `remi model restart` instead of saying "upgrade the engine to 0.7.8+" —
+  advice whose only implementation was a function with no callers.
+- **`remi --help` shows the model commands under Auto-Approve** (#850), at the
+  top of the section, rather than as the last line of Configuration where a
+  user read the whole output and did not find them.
+
 ## [0.7.1] - 2026-07-27
 
 Makes `remi model` usable on a fresh install and names models the way you
