@@ -268,7 +268,18 @@ export class EngineHost {
   static stopRecordedEngine(pids: PidStore, kill: (pid: number) => void): number | null {
     const pid = pids.read();
     if (pid === null) return null;
-    kill(pid);
+    // `read()` already drops a pid whose process is gone, but there is a real
+    // window between that check and this signal in which the engine can exit on
+    // its own — and `process.kill` throws synchronously for ESRCH (and EPERM).
+    // Letting that escape would abort the caller before the record is cleared,
+    // leaving a pidfile naming a dead process AND surfacing as a raw stack
+    // trace from a user-invoked command. Either way the record is now stale, so
+    // release it unconditionally — the same shape `killStarted` already uses.
+    try {
+      kill(pid);
+    } catch {
+      // Already gone, or not ours to signal. Both mean "stop looking here".
+    }
     pids.release(pid);
     return pid;
   }

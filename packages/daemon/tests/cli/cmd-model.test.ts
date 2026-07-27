@@ -1317,6 +1317,26 @@ describe('remi model restart (#852)', () => {
     expect(t.err.join('\n')).toContain('still 0.7.7');
   });
 
+  test('will not start a second engine when the old one keeps the port', async () => {
+    // SIGTERM is asynchronous. If the old engine never lets go, starting anyway
+    // yields a second engine that fails to bind and exits -- leaving the OLD
+    // one serving while the command claims success.
+    let started = false;
+    const t = io();
+    const code = await run(['restart'], configWith(), t.io, {
+      probe: async () => REACHABLE, // never releases
+      engineVersion: async () => '0.7.7',
+      stopEngine: () => 4242,
+      ensureEngine: async () => {
+        started = true;
+        return true;
+      },
+    });
+    expect(code).toBe(1);
+    expect(started).toBe(false);
+    expect(t.err.join('\n')).toContain('still holding the port');
+  });
+
   test('refuses against a shared engine', async () => {
     const t = io();
     const code = await run(['restart'], configWith({ engine: 'shared' }), t.io, {
