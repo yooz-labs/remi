@@ -4,6 +4,11 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-27
+
+Makes the engine's version visible and replaceable, and puts the model
+commands where you would look for them.
+
 ### Added
 - **`remi model restart`** (#852) — relaunch the engine on the version remi
   pins. Pinning did not imply running: `EngineHost`'s rule is that ownership is
@@ -24,6 +29,12 @@ All notable changes to Remi are documented here.
 - **`remi --help` shows the model commands under Auto-Approve** (#850), at the
   top of the section, rather than as the last line of Configuration where a
   user read the whole output and did not find them.
+- **Two flaky tests that could silently cancel a release** (#848, #849). Both
+  guessed at something the machine decides — one asserted a randomly chosen TCP
+  port was free, the other slept a fixed 150ms and then asserted an `fs.watch`
+  effect had already happened. Each blocked the 0.7.1 cut once, and a red test
+  gate makes `auto-release` *skip*, so the only symptom is a tag that never
+  appears. Fixed at the root rather than retried or disabled.
 
 ## [0.7.1] - 2026-07-27
 
