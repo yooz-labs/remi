@@ -150,7 +150,6 @@ describe('formatCommandHelp', () => {
 describe('help formatting', () => {
   /** The lines under `heading`, up to the next blank line. */
   function sectionOf(text: string, heading: string): string {
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI is the point
     const plain = text.replace(/\x1b\[[0-9]+m/g, '');
     const lines = plain.split('\n');
     const start = lines.findIndex((l) => l.trim() === heading);
