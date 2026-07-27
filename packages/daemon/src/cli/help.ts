@@ -319,6 +319,20 @@ export function formatHelp(version: string): string {
     entry('remi attach [name]', 'Attach to a session (Ctrl+B d to detach)'),
     '',
     bold('Auto-Approve (LLM):'),
+    // The model commands live here, not under Configuration, because the
+    // models exist only to serve this evaluator -- and commands come before
+    // flags because `remi model` is a ten-verb subsystem, not a setting. It
+    // shipped in 0.7.0 listed nowhere at all (#843), then spent 0.7.1 as one
+    // line at the bottom of Configuration, where a user read the whole help
+    // output and still did not find it (#850).
+    //
+    // "which one remi uses", not "active": `ls` marks remi's CONFIGURED model
+    // with `*`, while a possibly different row is labelled `engine active` for
+    // the engine picker's resident tier. Calling the first one "active" is the
+    // same conflation `remi model rm` used to make.
+    entry('remi model ls', "What's downloaded, and which one remi uses"),
+    entry('remi model use <id>', 'Switch the model auto-approve runs on'),
+    entry('remi model --help', 'All model commands (pull, rm, ps, ...)'),
     entry('--auto-approve', 'Enable LLM auto-approve for permissions'),
     entry('--no-auto-approve', 'Disable auto-approve (overrides config)'),
     entry('--auto-approve-model M', 'LLM model (default: the engine 4B qat-lean)'),
@@ -355,7 +369,6 @@ export function formatHelp(version: string): string {
     entry('remi config', 'Show effective configuration'),
     entry('remi config init', 'Create default config file'),
     entry('remi reload', 'Hot-reload config on running daemons'),
-    entry('remi model', 'Manage the auto-approve LLM (see "remi model --help")'),
     '',
     bold('Service:'),
     entry('remi start', 'Start the hub in the background'),
