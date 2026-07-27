@@ -4,6 +4,19 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-27
+
+Makes `remi model` usable on a fresh install and names models the way you
+would actually look them up.
+
+### Changed
+- **The engine helper is pinned to yooz-engine 0.7.8** (#843), up from 0.7.7.
+  0.7.8 is the first release whose model listings report each model's
+  registered HuggingFace repo id, which is what lets remi correlate the id in
+  your config to a row in the engine's catalogue. The pin is deliberate rather
+  than "latest": a daemon that silently picks up a new engine is a daemon whose
+  behavior changed without anyone choosing it.
+
 ### Fixed
 - **`remi model` no longer needs a daemon to exist first** (#843). Every verb
   used to probe the port and give up when nothing answered, and nothing in the
@@ -35,6 +48,13 @@ All notable changes to Remi are documented here.
   (#843), instead of reporting a present, working model as unknown.
 - **`remi --help` lists `remi model`** (#843), which was otherwise
   undiscoverable.
+- **`bump-version.sh` starts a dev line from any branch but `main`.** It decided
+  "is this the dev line?" by testing whether the current branch was literally
+  named `develop` — but the workflow forbids committing to `develop` directly,
+  so every real bump happens on a feature branch and silently produced a
+  *stable* version instead. That is how 0.7.0 shipped with no `-dev` suffix,
+  which left `auto-bump-dev` with no counter to increment and `auto-release`
+  with nothing to release: a release pipeline that fails by doing nothing.
 
 ## [0.7.0] - 2026-07-26
 
