@@ -148,16 +148,32 @@ describe('formatCommandHelp', () => {
 });
 
 describe('help formatting', () => {
-  /** The lines under `heading`, up to the next blank line. */
+  /**
+   * The lines under `heading`, up to the next heading.
+   *
+   * Delimiting on the next HEADING rather than the next blank line matters:
+   * `Options:` already contains an internal blank line, so a blank-line rule
+   * would silently return a truncated section and let an assertion about a
+   * dropped entry pass green. Headings are unindented; entries are not.
+   */
   function sectionOf(text: string, heading: string): string {
     const plain = text.replace(/\x1b\[[0-9]+m/g, '');
     const lines = plain.split('\n');
     const start = lines.findIndex((l) => l.trim() === heading);
     if (start === -1) throw new Error(`no "${heading}" section in help output`);
     const rest = lines.slice(start + 1);
-    const end = rest.findIndex((l) => l.trim() === '');
+    const end = rest.findIndex((l) => /^\S/.test(l));
     return (end === -1 ? rest : rest.slice(0, end)).join('\n');
   }
+
+  test('sectionOf spans a section that contains a blank line', () => {
+    // Guards the helper itself: `Options:` has a blank line in the middle, and
+    // a blank-line-delimited reader drops everything after it while still
+    // looking like it worked.
+    const options = sectionOf(formatHelp('0.0.0-test'), 'Options:');
+    expect(options).toContain('--port PORT');
+    expect(options).toContain('--force'); // after the internal blank line
+  });
 
   test('the model commands sit in the Auto-Approve section, not Configuration', () => {
     // 0.7.0 shipped `remi model` with per-command help but no entry in the
