@@ -2,17 +2,17 @@
 # bump-version.sh - Bump version, commit, tag, and optionally push to trigger release
 #
 # Versioning rules:
-#   - develop branch always has -dev.N versions (never stable)
+#   - every branch except main is on the dev line: -dev.N versions, never stable
 #   - main branch has stable versions (CI auto-strips dev suffix on merge)
-#   - patch/minor/major on develop: bump + reset to -dev.1
-#   - dev on develop: increment dev counter (dev.1 -> dev.2)
+#   - patch/minor/major off main: bump + reset to -dev.1
+#   - dev off main: increment dev counter (dev.1 -> dev.2)
 #   - stable: only allowed on main (CI use) or with --force
 #
 # Usage:
 #   ./scripts/bump-version.sh dev            # 0.4.9-dev.1 -> 0.4.9-dev.2
-#   ./scripts/bump-version.sh patch          # 0.4.9-dev.3 -> 0.4.10-dev.1 (on develop)
-#   ./scripts/bump-version.sh minor          # 0.4.9-dev.3 -> 0.5.0-dev.1  (on develop)
-#   ./scripts/bump-version.sh major          # 0.4.9-dev.3 -> 1.0.0-dev.1  (on develop)
+#   ./scripts/bump-version.sh patch          # 0.4.9-dev.3 -> 0.4.10-dev.1 (off main)
+#   ./scripts/bump-version.sh minor          # 0.4.9-dev.3 -> 0.5.0-dev.1  (off main)
+#   ./scripts/bump-version.sh major          # 0.4.9-dev.3 -> 1.0.0-dev.1  (off main)
 #   ./scripts/bump-version.sh stable         # 0.4.10-dev.1 -> 0.4.10 (main/CI only)
 #   ./scripts/bump-version.sh set 1.0.0      # Set specific version
 #   ./scripts/bump-version.sh --push patch   # Bump and push (triggers release)
@@ -45,10 +45,23 @@ if [[ -z "$BUMP_TYPE" ]]; then
   exit 1
 fi
 
-# Detect current branch
+# Which version line is this bump destined for?
+#
+# What decides the answer is where the commit is HEADED, not the branch it is
+# authored on. Only main carries stable versions, and only CI puts them there;
+# everything else -- develop and every feature branch that merges into it -- is
+# on the dev line.
+#
+# Keying that on the literal name `develop` was wrong, because the workflow
+# forbids committing to develop directly: every real bump happens on a feature
+# branch, where the old check said "not develop" and silently produced a STABLE
+# version. That is how 0.7.0 shipped with no -dev suffix (PR #841, branch
+# `minor-bump`), which then left auto-bump-dev with no counter to increment and
+# auto-release with nothing to release -- a release that fails by doing
+# nothing, which is the hardest kind to notice.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-IS_DEVELOP=$([[ "$CURRENT_BRANCH" == "develop" ]] && echo true || echo false)
 IS_MAIN=$([[ "$CURRENT_BRANCH" == "main" ]] && echo true || echo false)
+ON_DEV_LINE=$([[ "$IS_MAIN" == false ]] && echo true || echo false)
 
 # Read current version from package.json
 CURRENT_VERSION=$(node -e "process.stdout.write(require('$PKG_JSON').version)")
@@ -66,7 +79,7 @@ case "$BUMP_TYPE" in
     MAJOR=$((MAJOR + 1))
     MINOR=0
     PATCH=0
-    if [[ "$IS_DEVELOP" == true ]]; then
+    if [[ "$ON_DEV_LINE" == true ]]; then
       NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
     else
       NEW_VERSION="$MAJOR.$MINOR.$PATCH"
@@ -75,18 +88,18 @@ case "$BUMP_TYPE" in
   minor)
     MINOR=$((MINOR + 1))
     PATCH=0
-    if [[ "$IS_DEVELOP" == true ]]; then
+    if [[ "$ON_DEV_LINE" == true ]]; then
       NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
     else
       NEW_VERSION="$MAJOR.$MINOR.$PATCH"
     fi
     ;;
   patch)
-    # On develop with a dev version: bump patch, reset to dev.1
-    # On develop with a stable version: bump patch, add dev.1
-    # On main or other: just bump patch (stable)
-    if [[ "$IS_DEVELOP" == true ]]; then
-      # 0.4.9-dev.3 -> 0.4.10-dev.1 (or 0.4.9 -> 0.4.10-dev.1 if stable on develop)
+    # Off main with a dev version: bump patch, reset to dev.1
+    # Off main with a stable version: bump patch, add dev.1
+    # On main: just bump patch (stable)
+    if [[ "$ON_DEV_LINE" == true ]]; then
+      # 0.4.9-dev.3 -> 0.4.10-dev.1 (or 0.4.9 -> 0.4.10-dev.1 from a stable base)
       PATCH=$((PATCH + 1))
       NEW_VERSION="$MAJOR.$MINOR.$PATCH-dev.1"
     else
@@ -100,8 +113,8 @@ case "$BUMP_TYPE" in
       echo "Already a stable version ($CURRENT_VERSION). Nothing to do." >&2
       exit 0
     fi
-    if [[ "$IS_DEVELOP" == true && "$FORCE" == false ]]; then
-      echo "Error: 'stable' is not allowed on the develop branch." >&2
+    if [[ "$ON_DEV_LINE" == true && "$FORCE" == false ]]; then
+      echo "Error: 'stable' is only allowed on main (branch: $CURRENT_BRANCH)." >&2
       echo "Stable versions are created by CI when develop merges into main." >&2
       echo "Use --force to override (not recommended)." >&2
       exit 1
