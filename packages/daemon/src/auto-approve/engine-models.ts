@@ -177,6 +177,38 @@ export async function listModels(baseUrl: string, timeoutMs?: number): Promise<E
   return { current: raw.current ?? '', available: raw.available ?? [] };
 }
 
+/**
+ * The running engine's own version, or undefined when it will not say.
+ *
+ * remi pins which helper it *installs* (`ENGINE_RELEASE.tag`), but ownership is
+ * about who STARTS an engine, not who holds it: an engine that is already
+ * answering gets attached to, however old it is. So the pin says nothing about
+ * what is actually on the far end of the socket, and until this existed remi
+ * had no way to ask — it inferred "old engine" from a field being missing and
+ * told users to "upgrade to 0.7.8+" without being able to name what they had.
+ *
+ * Never throws. A version we cannot read must degrade to "not reported", not to
+ * a failed status command.
+ */
+export async function getEngineVersion(
+  baseUrl: string,
+  timeoutMs = 2_000,
+): Promise<string | undefined> {
+  try {
+    const raw = await engineRequest<{ engineVersion?: string }>(baseUrl, '/v1/modules', {
+      method: 'GET',
+      timeoutMs,
+    });
+    // An engine old enough to lack the field is exactly the case this exists to
+    // report, so an empty string must read as "would not say", not as a version.
+    return raw.engineVersion !== undefined && raw.engineVersion.length > 0
+      ? raw.engineVersion
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Current load/download state. */
 export async function getStatus(baseUrl: string, timeoutMs?: number): Promise<EngineStatus> {
   return await engineRequest<EngineStatus>(baseUrl, '/v1/llm/status', {

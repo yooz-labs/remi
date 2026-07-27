@@ -1,71 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import * as net from 'node:net';
+import type * as net from 'node:net';
 import { findAvailableTcpPort, isPortAvailable } from '../../src/session/port-utils.ts';
-
-/**
- * Port selection for these tests (#823).
- *
- * The previous approach picked one random base in 45000-50000 and bound
- * `base + N` outright. Nothing checked the port was free and nothing retried,
- * so any collision failed the test in its own SETUP -- the code under test was
- * never reached. That range overlaps Linux's ephemeral port range, so any other
- * test in the suite that opens a server (several now do) can occupy it, which
- * is exactly how this started failing on CI.
- *
- * Now: never guess. `occupyEphemeral` lets the OS assign a port and reports
- * which one it got, and `reserveRange` finds a genuinely free CONTIGUOUS run
- * for the cases that need one, retrying on a different base if the run is
- * contended mid-reservation.
- */
-
-/** Bind to an OS-assigned port and report which one. Never collides. */
-function occupyEphemeral(): Promise<{ server: net.Server; port: number }> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    // biome-ignore lint/suspicious/noExplicitAny: Bun's net.Server type is incomplete
-    (srv as any).on('error', reject);
-    srv.listen({ port: 0, host: '0.0.0.0', exclusive: true }, () => {
-      const addr = srv.address();
-      if (addr === null || typeof addr === 'string') {
-        reject(new Error('no address assigned'));
-        return;
-      }
-      resolve({ server: srv, port: addr.port });
-    });
-  });
-}
-
-/** Bind one specific port; rejects if it is taken (callers must have checked). */
-function occupyPort(port: number): Promise<net.Server> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    // biome-ignore lint/suspicious/noExplicitAny: Bun's net.Server type is incomplete
-    (srv as any).on('error', reject);
-    srv.listen({ port, host: '0.0.0.0', exclusive: true }, () => resolve(srv));
-  });
-}
-
-/**
- * Find a base such that `[base, base + count)` are ALL free right now, by
- * probing each. Retries on a fresh random base when the run is contended.
- * Throws only if the machine is so busy that no run of `count` ports is free
- * across `attempts` tries, which is a genuine environment problem worth
- * failing loudly on rather than papering over.
- */
-async function reserveRange(count: number, attempts = 50): Promise<number> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const base = 45000 + Math.floor(Math.random() * 5000);
-    let allFree = true;
-    for (let i = 0; i < count; i++) {
-      if (!(await isPortAvailable(base + i))) {
-        allFree = false;
-        break;
-      }
-    }
-    if (allFree) return base;
-  }
-  throw new Error(`no free run of ${count} ports found after ${attempts} attempts`);
-}
+import { occupyEphemeral, occupyPort, reserveRange } from './port-test-helpers.ts';
 
 describe('isPortAvailable', () => {
   const servers: net.Server[] = [];

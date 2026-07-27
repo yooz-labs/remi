@@ -317,6 +317,22 @@ describe('EngineHost — lifetime independence', () => {
     expect(pids.current).toBeNull();
   });
 
+  test('a kill that throws still clears the record and does not escape', () => {
+    // `read()` drops a dead pid, but the engine can exit in the window between
+    // that check and the signal -- and `process.kill` throws ESRCH for it. If
+    // that escaped, `remi model restart` would abort with a raw stack trace
+    // BEFORE releasing the pidfile, leaving a record naming a dead process
+    // that the next run would then refuse to act on (#852).
+    const pids = pidStore(7777);
+
+    const pid = EngineHost.stopRecordedEngine(pids, () => {
+      throw new Error('ESRCH: no such process');
+    });
+
+    expect(pid).toBe(7777);
+    expect(pids.current).toBeNull();
+  });
+
   test('the operator teardown reports when there is nothing recorded', () => {
     expect(EngineHost.stopRecordedEngine(pidStore(null), () => {})).toBeNull();
   });

@@ -18,6 +18,7 @@
  *   remi model load <id>       make resident (already-downloaded weights)
  *   remi model unload <id>     free its memory
  *   remi model use <id>        make it the configured default (persisted)
+ *   remi model restart         relaunch the engine on the version remi pins
  *
  * `ls` reads the DISK inventory (`GET /v1/models`), whose `sizeBytes` is the
  * engine's real measured footprint and whose `deletable` flag is what `rm`
@@ -51,12 +52,18 @@
 import { errorToString } from '@remi/shared';
 import { EngineHost } from '../auto-approve/engine-host.ts';
 import {
+  ENGINE_RELEASE,
+  PINNED_ENGINE_VERSION,
+  isOlderThanPinned,
+} from '../auto-approve/engine-install.ts';
+import {
   type EngineModel,
   type ManagedModel,
   type PullProgress,
   cancelDownload,
   cleanupModels,
   deleteModel,
+  getEngineVersion,
   listManagedModels,
   listModels,
   preloadAsync,
@@ -64,6 +71,7 @@ import {
   pullModel,
   unloadModel,
 } from '../auto-approve/engine-models.ts';
+import { FileEnginePidStore } from '../auto-approve/engine-process.ts';
 import { resolveProviderUrl } from '../auto-approve/llm-client.ts';
 import { displayId, findModel, lookupModel, matchesModel } from '../auto-approve/model-identity.ts';
 import type { RemiConfig } from '../config/config.ts';
@@ -92,6 +100,7 @@ const VERBS = [
   'load',
   'unload',
   'use',
+  'restart',
 ] as const;
 type Verb = (typeof VERBS)[number];
 
@@ -191,6 +200,14 @@ export interface ModelCommandDeps {
    * the developer's machine, which is exactly the accident #841 had to undo.
    */
   readonly ensureEngine?: (baseUrl: string, io: ModelCommandIO) => Promise<boolean>;
+  /** The running engine's own version, or undefined when it will not say. */
+  readonly engineVersion?: typeof getEngineVersion;
+  /**
+   * Stop the recorded engine, returning the pid signalled or null when none is
+   * recorded. A seam for the same reason `ensureEngine` is one: the real
+   * implementation signals a live process on the developer's machine.
+   */
+  readonly stopEngine?: () => number | null;
 }
 
 /**
@@ -293,7 +310,16 @@ export async function runModelCommand(
   // mid-generate on, or deleting a model the host manages, is hostile — so
   // these verbs refuse rather than mutating shared state. Read-only verbs
   // work identically in both modes.
-  const MUTATING: ReadonlySet<string> = new Set(['pull', 'cancel', 'rm', 'cleanup', 'unload']);
+  // `restart` is the most hostile of all against a shared engine — it does not
+  // touch weights, it kills somebody else's process.
+  const MUTATING: ReadonlySet<string> = new Set([
+    'pull',
+    'cancel',
+    'rm',
+    'cleanup',
+    'unload',
+    'restart',
+  ]);
   if (aa.engine === 'shared' && MUTATING.has(verb)) {
     io.err(
       `"remi model ${verb}" is not available against a shared engine: this remi is a guest (auto_approve.engine = "shared"), and another module may be using these weights.`,
@@ -307,6 +333,23 @@ export async function runModelCommand(
   // configure while the engine was down (#843).
   if (verb === 'use') {
     return await runUse(args[1], baseUrl, io, { list, probe, persistModel: deps.persistModel });
+  }
+
+  // `restart` runs its own engine flow. The autostart below fires only when
+  // NOTHING is listening, and the case this exists for is the opposite one: an
+  // engine that is answering, from an older helper than remi pins (#852).
+  if (verb === 'restart') {
+    return await runRestart(baseUrl, io, {
+      probe,
+      version: deps.engineVersion ?? getEngineVersion,
+      stop:
+        deps.stopEngine ??
+        (() =>
+          EngineHost.stopRecordedEngine(new FileEnginePidStore(), (pid) =>
+            process.kill(pid, 'SIGTERM'),
+          )),
+      ensure: deps.ensureEngine ?? ((url, out) => ensureEngineViaHost(config, url, out)),
+    });
   }
 
   // One probe up front so every verb can explain "nothing is listening" the
@@ -382,6 +425,22 @@ export async function runModelCommand(
         const found = rows.ok ? lookupModel(rows.rows, configured) : undefined;
 
         io.out(`engine:   ${baseUrl} (reachable, ${aa.engine})`);
+        // What is actually on the far end of the socket, which the pin does not
+        // determine: an engine already answering is attached to, however old
+        // (#852). Reporting the pin alongside it is what makes "upgrade the
+        // engine" a checkable statement rather than an instruction to guess.
+        const engineVersion = await (deps.engineVersion ?? getEngineVersion)(baseUrl);
+        const stale = isOlderThanPinned(engineVersion);
+        io.out(
+          engineVersion === undefined
+            ? `version:  not reported (remi pins ${PINNED_ENGINE_VERSION})`
+            : stale === true
+              ? `version:  ${engineVersion} — older than the ${PINNED_ENGINE_VERSION} remi pins`
+              : `version:  ${engineVersion} (remi pins ${PINNED_ENGINE_VERSION})`,
+        );
+        if (stale === true && aa.engine !== 'shared') {
+          io.out('          ("remi model restart" relaunches it on the pinned build)');
+        }
         io.out(`model:    ${configured}`);
         if (!rows.ok) {
           io.out("state:    could not read this engine's model inventory");
@@ -405,7 +464,9 @@ export async function runModelCommand(
           io.out(
             rows.ok && rows.rows.length === 0
               ? '          (nothing is cached yet; "remi model pull" fetches it)'
-              : '          (upgrade the engine to 0.7.8+ to resolve this)',
+              : stale === true
+                ? '          (this engine predates the alias listing; see "version" above)'
+                : '          (an engine that names models by repo id resolves this)',
           );
         } else {
           // Alias-aware rows, and none of them is this model. Now a negative
@@ -644,6 +705,99 @@ export async function runModelCommand(
     io.err(`remi model ${verb} failed: ${errorToString(err)}`);
     return 1;
   }
+}
+
+/**
+ * `remi model restart` — relaunch the engine on the version remi pins.
+ *
+ * Exists because pinning does not imply running. `EngineHost`'s rule is that
+ * ownership is about who STARTS an engine, not who holds it: an engine already
+ * answering gets attached to, however old. So upgrading remi never upgrades a
+ * running engine, and a 0.7.1 remi could sit indefinitely against a 0.7.7
+ * engine while telling the user to "upgrade to 0.7.8+" — advice whose only
+ * implementation was an uncalled function (#852).
+ */
+async function runRestart(
+  baseUrl: string,
+  io: ModelCommandIO,
+  deps: {
+    probe: typeof probeEngine;
+    version: typeof getEngineVersion;
+    stop: () => number | null;
+    ensure: (baseUrl: string, io: ModelCommandIO) => Promise<boolean>;
+  },
+): Promise<number> {
+  const before = await deps.probe(baseUrl);
+  const runningVersion = before.reachable ? await deps.version(baseUrl) : undefined;
+
+  if (before.reachable) {
+    const pid = deps.stop();
+    if (pid === null) {
+      // An engine is answering that remi has no pid for: started by hand, or
+      // by a remi whose pidfile has since been removed. Killing "whatever holds
+      // the port" on a guess is exactly the kind of thing that takes down
+      // something the user cared about, so say what is true and stop.
+      io.err(`An engine is answering on ${baseUrl}, but remi has no record of starting it.`);
+      io.err(
+        'Nothing was changed. Stop that process yourself, then any "remi model" verb starts the pinned engine.',
+      );
+      return 1;
+    }
+    io.out(`[Engine] Stopped engine pid ${pid}`);
+    // SIGTERM is asynchronous: the port stays bound for a moment after the
+    // signal returns, and starting into a still-bound port is how you get a
+    // second engine that fails to bind and exits, leaving the OLD one serving.
+    const released = await waitForPortToClose(baseUrl, deps.probe);
+    if (!released) {
+      io.err('The old engine is still holding the port; not starting a second one.');
+      io.err(`Check for a lingering "${ENGINE_RELEASE.binary}" process.`);
+      return 1;
+    }
+  }
+
+  await deps.ensure(baseUrl, io);
+  const after = await deps.probe(baseUrl);
+  if (!after.reachable) {
+    io.err(`No engine came up on ${baseUrl}: ${after.reason}`);
+    return 1;
+  }
+
+  const nowVersion = await deps.version(baseUrl);
+  const from =
+    runningVersion === undefined ? 'an engine that did not report a version' : `${runningVersion}`;
+  io.out(
+    runningVersion === undefined
+      ? `Engine restarted (was ${from}).`
+      : `Engine restarted: ${from} -> ${nowVersion ?? 'unreported'}.`,
+  );
+  if (nowVersion !== undefined && isOlderThanPinned(nowVersion) === true) {
+    // The helper on disk is older than the pin — restarting cannot fix that,
+    // and claiming success would be a lie the user finds out about later.
+    io.err(
+      `This engine is still ${nowVersion}, older than the ${PINNED_ENGINE_VERSION} remi pins.`,
+    );
+    io.err(
+      `A helper from an earlier release is being launched. Check auto_approve.engine_path, or remove ~/.remi/engine and let remi refetch ${ENGINE_RELEASE.tag}.`,
+    );
+    return 1;
+  }
+  io.out('Restart running daemons for them to use it.');
+  return 0;
+}
+
+/** Wait for the engine port to stop answering after a stop signal. */
+async function waitForPortToClose(
+  baseUrl: string,
+  probe: typeof probeEngine,
+  attempts = 20,
+  delayMs = 100,
+): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    const p = await probe(baseUrl, 500);
+    if (!p.reachable) return true;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return false;
 }
 
 /**
