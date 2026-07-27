@@ -63,7 +63,7 @@
  */
 
 import { errorToString } from '@remi/shared';
-import { ensureHelperInstalled, resolveHelperPath } from './engine-install.ts';
+import { ensureHelperInstalled } from './engine-install.ts';
 import { probeEngine } from './engine-models.ts';
 
 /** How remi relates to the engine on its port. */
@@ -223,8 +223,13 @@ export class EngineHost {
     // installed, and failing that fetch it once (#834): before this, a fresh
     // install had no helper at all and auto-approve silently escalated
     // everything, which is the gap #818 could describe but not close.
-    let helperPath = resolveHelperPath(this.config.helperPath ?? '');
-    if (helperPath === undefined) {
+    // Config wins; otherwise the seam resolves AND acquires. Resolution lives
+    // behind the seam deliberately: reading the real `~/.remi/engine` here made
+    // the outcome depend on developer-machine state, so a unit test asserting
+    // "no helper available" passed or failed according to whether that machine
+    // happened to have one installed.
+    let helperPath = this.config.helperPath;
+    if (helperPath === undefined || helperPath.length === 0) {
       helperPath = await this.installHelper();
     }
     if (helperPath === undefined || helperPath.length === 0) {
