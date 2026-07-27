@@ -72,7 +72,7 @@ function semverParts(version: string): [number, number, number] | undefined {
 /**
  * Is `version` older than the helper remi pins?
  *
- * Three-way on purpose. `undefined` means "cannot tell" — an unparseable or
+ * Three-way on purpose. `undefined` means "cannot tell" — an unparsable or
  * absent version must not be reported as either current or stale, because both
  * are claims about the user's machine that we would be making up.
  */
