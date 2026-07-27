@@ -60,6 +60,11 @@ function host(
         return opts.spawnPid ?? 4242;
       },
       kill: (pid) => killed.push(pid),
+      // Never let a unit test reach the network or write to the real
+      // ~/.remi: without this the REAL installer runs, downloads the
+      // published helper, and installs it on the developer's machine
+      // mid-test. Tests that want an available helper set `helperPath`.
+      installHelper: async () => undefined,
       ...(opts.pids ? { pidStore: opts.pids } : {}),
     },
   );
