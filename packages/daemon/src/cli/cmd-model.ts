@@ -431,8 +431,11 @@ export async function runModelCommand(
         } else {
           // Genuinely a different model. The picker's active tier belongs to
           // whoever owns TouchUp, but it shares the GPU, so name it rather
-          // than hiding it.
-          io.out(`engine picker: ${s.modelId} (not used by remi)`);
+          // than hiding it — under its registered name where the inventory
+          // knows one, so both lines of this report use the same vocabulary.
+          const pickerRow = s.modelId === undefined ? undefined : findModel(rows, s.modelId);
+          const pickerName = pickerRow === undefined ? s.modelId : displayId(pickerRow);
+          io.out(`engine picker: ${pickerName} (not used by remi)`);
         }
         return 0;
       }

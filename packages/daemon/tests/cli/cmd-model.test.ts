@@ -316,17 +316,59 @@ describe('remi model status', () => {
     // of that is remi's: reporting it would tell a user their model is busy or
     // warm when it is neither.
     const t = io();
-    await run(['status'], configWith(), t.io, {
+    await run(['status'], configWith({ model: 'yooz-instruct-4b' }), t.io, {
       probe: async (): Promise<EngineProbe> => ({
         reachable: true,
         status: { loaded: true, modelId: 'yooz-light-v3', progress: 0.37, state: 'downloading' },
       }),
+      inventory: async () => INVENTORY,
     });
 
     const text = t.out.join('\n');
     expect(text).not.toContain('37%');
     // ...but it is named, not hidden — it shares the GPU.
     expect(text).toContain('engine picker: yooz-light-v3');
+  });
+
+  test('names the picker’s model by its registered id when the engine reports one', async () => {
+    // Both lines of the report should speak the same vocabulary: it is
+    // confusing to print remi's model as a repo id and the picker's as a
+    // nickname when the engine has just told us both names.
+    const t = io();
+    await run(['status'], configWith({ model: 'YoozLabs/Instruct' }), t.io, {
+      probe: async (): Promise<EngineProbe> => ({
+        reachable: true,
+        status: { loaded: true, modelId: 'yooz-light-v3', state: 'idle' },
+      }),
+      inventory: async () => [
+        {
+          id: 'yooz-instruct-4b',
+          module: 'llm',
+          displayName: 'Yooz-Instruct-4B',
+          sizeBytes: 2_400_000_000,
+          cached: true,
+          loaded: false,
+          isActive: false,
+          deletable: true,
+          huggingFaceID: 'YoozLabs/Instruct',
+        },
+        {
+          id: 'yooz-light-v3',
+          module: 'llm',
+          displayName: 'Yooz-Light',
+          sizeBytes: 632_000_000,
+          cached: true,
+          loaded: true,
+          isActive: true,
+          deletable: false,
+          huggingFaceID: 'YoozLabs/Yooz-Light-v3-Qwen3.5-0.8B',
+        },
+      ],
+    });
+
+    const text = t.out.join('\n');
+    expect(text).toContain('engine picker: YoozLabs/Yooz-Light-v3-Qwen3.5-0.8B (not used by remi)');
+    expect(text).not.toContain('engine picker: yooz-light-v3');
   });
 
   test('surfaces a failed load rather than reporting a bare "not loaded"', async () => {
