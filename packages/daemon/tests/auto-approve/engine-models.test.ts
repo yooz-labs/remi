@@ -4,6 +4,7 @@ import {
   cleanupModels,
   clearModelCache,
   deleteModel,
+  getEngineVersion,
   getModelState,
   getStatus,
   listManagedModels,
@@ -556,5 +557,64 @@ describe('pullModel — engine death mid-download', () => {
     await expect(pullModel(server.url, 'm', { sleep: noSleep })).rejects.toThrow(
       /stopped answering|unparsable|503/,
     );
+  });
+});
+
+describe('engine version (#852)', () => {
+  test('reads engineVersion from /v1/modules', async () => {
+    // Pins the real endpoint and field name. Both were previously asserted
+    // nowhere: `remi model status` only ever saw an injected fake, so a wrong
+    // path or a renamed field would have shipped silently.
+    const srv = engineServer(() =>
+      Response.json({ engineVersion: '0.7.8', buildVariant: 'llm', modules: [] }),
+    );
+    try {
+      expect(await getEngineVersion(srv.url)).toBe('0.7.8');
+      expect(srv.seen.map((r) => `${r.method} ${r.path}`)).toEqual(['GET /v1/modules']);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test('an engine that omits the field reports no version, not an empty one', async () => {
+    // The engines this exists to detect are the OLD ones, so the missing-field
+    // case is the load-bearing one: '' must not read as a version.
+    const srv = engineServer(() => Response.json({ buildVariant: 'llm', modules: [] }));
+    try {
+      expect(await getEngineVersion(srv.url)).toBeUndefined();
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test('an empty engineVersion string reports no version', async () => {
+    const srv = engineServer(() => Response.json({ engineVersion: '' }));
+    try {
+      expect(await getEngineVersion(srv.url)).toBeUndefined();
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test('a non-2xx or unparsable body reports no version rather than throwing', async () => {
+    // `status` must still print a report when this fails; a throw here would
+    // take down the whole diagnostic.
+    const err = engineServer(() => new Response('nope', { status: 500 }));
+    try {
+      expect(await getEngineVersion(err.url)).toBeUndefined();
+    } finally {
+      err.stop();
+    }
+    const junk = engineServer(() => new Response('not json', { status: 200 }));
+    try {
+      expect(await getEngineVersion(junk.url)).toBeUndefined();
+    } finally {
+      junk.stop();
+    }
+  });
+
+  test('no engine at all reports no version rather than throwing', async () => {
+    // Port 1 is reserved and never listening.
+    expect(await getEngineVersion('http://127.0.0.1:1', 300)).toBeUndefined();
   });
 });
