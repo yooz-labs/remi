@@ -8,6 +8,7 @@ import {
   SessionRegistryFile,
   claudeChildLooksAlive,
 } from '../src/session/session-registry-file.ts';
+import { reserveRange } from './session/port-test-helpers.ts';
 
 /** Spawn a trivial process and await its exit to obtain a really-dead pid. */
 async function deadChildPid(): Promise<number> {
@@ -159,36 +160,46 @@ describe('SessionRegistryFile', () => {
     expect(nonExistent.listLive()).toEqual([]);
   });
 
-  // Use high test ports to avoid conflicts with running remi instances
-  const TEST_PORT_BASE = 44000 + Math.floor(Math.random() * 1000);
+  // Never guess a base and then assert it is free (#848). `findAvailablePort`
+  // delegates to a real TCP bind-probe, so a guessed base makes these tests a
+  // bet on nothing else holding that port -- a bet that loses on a shared CI
+  // runner and looks like a bug in the registry rather than in the setup.
+  // `reserveRange` returns a run that is verified free right now, the same
+  // pattern #823 established for `port-utils.test.ts`.
 
   test('findAvailablePort returns first port when no sessions', async () => {
-    const port = await registry.findAvailablePort(TEST_PORT_BASE, 10);
-    expect(port).toBe(TEST_PORT_BASE);
+    const base = await reserveRange(10);
+    const port = await registry.findAvailablePort(base, 10);
+    expect(port).toBe(base);
   });
 
   test('findAvailablePort skips used ports', async () => {
-    registry.register(makeEntry({ sessionId: 'a', wsPort: TEST_PORT_BASE }));
-    registry.register(makeEntry({ sessionId: 'b', wsPort: TEST_PORT_BASE + 1 }));
+    const base = await reserveRange(10);
+    registry.register(makeEntry({ sessionId: 'a', wsPort: base }));
+    registry.register(makeEntry({ sessionId: 'b', wsPort: base + 1 }));
 
-    const port = await registry.findAvailablePort(TEST_PORT_BASE, 10);
-    expect(port).toBe(TEST_PORT_BASE + 2);
+    const port = await registry.findAvailablePort(base, 10);
+    expect(port).toBe(base + 2);
   });
 
   test('findAvailablePort fills non-contiguous gaps', async () => {
-    registry.register(makeEntry({ sessionId: 'a', wsPort: TEST_PORT_BASE }));
-    registry.register(makeEntry({ sessionId: 'b', wsPort: TEST_PORT_BASE + 2 }));
+    const base = await reserveRange(10);
+    registry.register(makeEntry({ sessionId: 'a', wsPort: base }));
+    registry.register(makeEntry({ sessionId: 'b', wsPort: base + 2 }));
 
-    const port = await registry.findAvailablePort(TEST_PORT_BASE, 10);
-    expect(port).toBe(TEST_PORT_BASE + 1);
+    const port = await registry.findAvailablePort(base, 10);
+    expect(port).toBe(base + 1);
   });
 
   test('findAvailablePort returns null when all ports exhausted', async () => {
+    // Exhaustion here is by the REGISTRY, not by the network: every port in the
+    // range is claimed by a live entry, so the probe is never consulted.
+    const base = await reserveRange(3);
     for (let i = 0; i < 3; i++) {
-      registry.register(makeEntry({ sessionId: `s-${i}`, wsPort: TEST_PORT_BASE + i }));
+      registry.register(makeEntry({ sessionId: `s-${i}`, wsPort: base + i }));
     }
 
-    const port = await registry.findAvailablePort(TEST_PORT_BASE, 3);
+    const port = await registry.findAvailablePort(base, 3);
     expect(port).toBeNull();
   });
 

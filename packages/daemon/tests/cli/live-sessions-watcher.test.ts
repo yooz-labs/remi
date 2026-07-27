@@ -9,6 +9,31 @@ import {
 } from '../../src/cli/live-sessions-watcher.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 
+/**
+ * Wait until `predicate` holds, or fail after `timeoutMs`.
+ *
+ * These tests drive a real `fs.watch` through a debounce, so the delay between
+ * an action and its observable effect is the OS's to decide, not ours. Sleeping
+ * a fixed 150ms and then asserting the effect HAPPENED encodes a guess about
+ * how loaded the machine is: it passes on a quiet laptop and fails on a busy CI
+ * runner, which is exactly how #848/#849 blocked a release without either test
+ * being wrong about the behavior it describes.
+ *
+ * Polling for the condition instead makes the test wait exactly as long as it
+ * needs to and no longer, and turns a timeout into an honest failure message
+ * rather than a confusing assertion on an empty array. Note this is only valid
+ * for POSITIVE assertions ("this eventually happens"); proving a broadcast
+ * never arrives still requires waiting a fixed interval.
+ */
+async function waitFor(predicate: () => boolean, what: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+}
+
 describe('startLiveSessionsWatcher (#542)', () => {
   let tmpDir: string;
   let registry: SessionRegistryFile;
@@ -48,7 +73,7 @@ describe('startLiveSessionsWatcher (#542)', () => {
         startedAt: new Date().toISOString(),
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await waitFor(() => broadcasts.length > 0, 'the sibling registration to broadcast');
 
       expect(errors).toEqual([]);
       expect(broadcasts).toHaveLength(1);
@@ -86,12 +111,12 @@ describe('startLiveSessionsWatcher (#542)', () => {
         startedAt: new Date().toISOString(),
       };
       registry.register(entry);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await waitFor(() => dirChanges >= 1, 'onDirChange to fire for the registration');
       const afterRegister = dirChanges;
       expect(afterRegister).toBeGreaterThanOrEqual(1);
 
       registry.unregister(entry.sessionId);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await waitFor(() => dirChanges > afterRegister, 'onDirChange to fire again for the removal');
       expect(dirChanges).toBeGreaterThan(afterRegister);
       // The whole point: the census hook fired even though no
       // session_list_response was broadcast.
@@ -157,7 +182,7 @@ describe('startLiveSessionsWatcher (#542)', () => {
         startedAt: new Date().toISOString(),
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await waitFor(() => errors.length >= 1, 'the throwing collect to be logged');
 
       expect(broadcasts).toEqual([]);
       expect(errors.length).toBeGreaterThanOrEqual(1);
