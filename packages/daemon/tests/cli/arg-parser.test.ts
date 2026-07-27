@@ -758,13 +758,13 @@ describe('parseArgs - auto-approve flags', () => {
     const r = parseArgs([
       '--auto-approve',
       '--auto-approve-model',
-      'gemma4:e2b',
+      'yooz-light-v3',
       '--auto-approve-provider',
-      'ollama',
+      'yooz',
     ]);
     expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveModel).toBe('gemma4:e2b');
-    expect(r.autoApproveProvider).toBe('ollama');
+    expect(r.autoApproveModel).toBe('yooz-light-v3');
+    expect(r.autoApproveProvider).toBe('yooz');
   });
 
   test('auto-approve flags with new subcommand', () => {

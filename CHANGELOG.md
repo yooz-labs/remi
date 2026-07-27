@@ -2,6 +2,75 @@
 
 All notable changes to Remi are documented here.
 
+## [0.7.0] - 2026-07-26
+
+Replaces ollama with the Yooz engine as the local-LLM backend for
+auto-approve. The measured result is a faster and safer evaluator: the
+default model scores 38/38 on the permission grid with zero unsafe
+approvals and a p95 of 2.26s, against 12.2s for the ollama-era default.
+
+### Breaking
+- **`auto_approve.provider = "ollama"` is no longer valid** (#809). ollama
+  support is removed outright — no compatibility shim and no silent
+  fallback — so a config that still names it fails to load with an
+  actionable message, and that stops **every** remi command until it is
+  edited, not just auto-approve. Change it to `"yooz"` on Apple Silicon or
+  `"llamacpp"` on Linux, and set `model` to an id the chosen backend
+  serves. If you never enabled auto-approve, nothing changes for you: it
+  remains off by default.
+
+### Added
+- **Yooz engine transport** (#809): auto-approve talks to the engine's
+  `/v1/llm/generate` on remi's reserved loopback port 19924.
+- **`remi model`** (#819): `ls`, `ps`, `status`, `pull`, `cancel`, `rm`,
+  `cleanup`, `load`, `unload`, `use` for managing the models auto-approve
+  runs on. `use` persists your choice; every verb degrades with a clear
+  message, in milliseconds, when no engine is answering.
+- **Engine supervision** (#818): remi starts its own engine when none is
+  running, attaches to one that already is regardless of who started it,
+  and repairs after a crash on the next evaluation. The engine is detached
+  on purpose — one session quitting must not take auto-approve down for
+  the others. Requires `auto_approve.engine_path`; unset (the default), remi
+  still attaches to a running engine and reports the gap rather than
+  failing silently.
+- **The model is fetched at boot when it is absent, and left alone when it
+  is present** (#834): so a fresh install does not block its first
+  permission on a multi-GB download.
+- **Two-stage idle memory policy** (#820): after `cache_idle` (5 min) the
+  prompt cache is dropped, after `keep_alive` (30 min) the weights are
+  unloaded. Coordinated machine-wide, so ten sessions sharing one engine do
+  not evict each other's work.
+- **`auto_approve.model_cache`**: where the engine downloads weights, for
+  pointing them at an external HuggingFace cache.
+
+### Changed
+- **Reasoning is off by default** (#822). Not a tuning preference: measured
+  against a 0.8B model, an unsuppressed one spent its whole token budget
+  reasoning and returned no content at all, turning every evaluation into
+  an error.
+- **The backend is chosen by platform** (#822): the engine on Apple
+  Silicon, a llama.cpp server on Linux. An Intel Mac can run neither and is
+  now told so at boot instead of waiting on an engine that cannot exist.
+- **The default model is not a TouchUp tier.** `yooz-quality-v3` also
+  reads 38/38, but six of those are responses carrying no verdict at all —
+  it echoes the prompt back — and they "pass" only because an unparsable
+  response is treated as escalate. The six are `rm -rf /`, a `dd` disk
+  wipe, `chmod 777 /etc`, `base64 | bash`, `eval $X`, and a reverse shell.
+  Safety by accident is not safety.
+
+### Fixed
+- **Neither the cache nor the weights are dropped mid-evaluation** (#827).
+  The idle policy claimed a long evaluation kept pushing its deadline out;
+  it did not, and a slow evaluation could have its cache pulled out from
+  under it. Now tracked explicitly, across daemons as well as within one.
+- **`remi model status` reports your model** (#836), not whichever tier the
+  engine's picker happens to have active — it could previously say
+  "loaded: yes" about a different model entirely.
+- **A model named by its HuggingFace id is no longer reported as missing or
+  disowned** (#837): the engine accepts both spellings but exposes no
+  mapping between them, so remi now says it cannot tell rather than
+  answering confidently and wrongly.
+
 ## [0.6.24] - 2026-07-25
 
 Finishes the subagent permission story started in 0.6.23: a background

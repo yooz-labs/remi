@@ -10,9 +10,14 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { fileActivityRecord } from './engine-activity.ts';
+import type { EngineHost } from './engine-host.ts';
+import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
+import type { PullProgress } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
+import { ModelResidency } from './model-residency.ts';
 import {
   buildMultiChoicePrompt,
   isDesignQuestion,
@@ -36,6 +41,29 @@ const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate'])
  * (the one production caller) passes a real scope, its own `sessionId`.
  */
 const DEFAULT_SCOPE = '__default__';
+
+/**
+ * One line describing a pull in flight, for `ensureModelPresent`.
+ *
+ * Deliberately leads with SIZE and ELAPSED rather than a percentage. The
+ * engine's parent `Progress` advances per completed FILE, and these repos are
+ * one multi-GB `model.safetensors` plus a few small ones, so the fraction steps
+ * ~0.6% and then sits still for the entire transfer. Rendering that as a
+ * percentage reads as a stuck download; `advancing` is the engine's own signal
+ * for whether the number means anything yet (#292/#293).
+ */
+function describePullProgress(p: PullProgress): string {
+  const parts: string[] = [];
+  if (p.sizeBytes !== undefined && p.sizeBytes > 0) {
+    parts.push(`${(p.sizeBytes / 1_000_000_000).toFixed(2)} GB`);
+  }
+  parts.push(`${Math.round(p.elapsedMs / 1000)}s elapsed`);
+  // Only quote a percentage once it is demonstrably moving.
+  if (p.advancing && p.fraction !== undefined) {
+    parts.push(`${Math.round(p.fraction * 100)}%`);
+  }
+  return parts.join(', ');
+}
 
 /**
  * Convert one `permission_suggestions` entry into an LLM-ready label, or
@@ -120,8 +148,34 @@ export class AutoApproveService {
    *  fast model's timeout. The heavy model is usually cold, so it needs a longer
    *  budget than the fast path. */
   private readonly escalateTimeoutMs: number;
-  /** True when the provider is Ollama (enables the native warm-up load). */
-  private readonly providerIsOllama: boolean;
+  /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
+  private readonly providerIsYooz: boolean;
+  /** True when remi owns this engine and may therefore mutate its disk/memory
+   *  state (fetch, unload, delete). False for a shared super-yooz host, where
+   *  all of that is the host's policy (#818). */
+  private readonly ownsEngine: boolean;
+
+  /**
+   * Two-stage idle policy (#820). The engine never evicts or drops cache on
+   * its own, so without this a daemon holds both for its entire life. Armed
+   * on every evaluation: `cache_idle` seconds of silence drops the retained
+   * prompt-KV cache (weights stay resident), `keep_alive` seconds unloads
+   * the weights entirely.
+   */
+  private readonly residency: ModelResidency;
+  /**
+   * Who starts the engine (#818). Absent when remi has no business supervising
+   * one — a non-engine provider (OpenRouter, llama.cpp), or a caller that did
+   * not supply it (tests). Absent means the old behavior: attach to whatever is
+   * on the port, or escalate.
+   */
+  private readonly engineHost: EngineHost | undefined;
+  /** In-flight self-heal, so a burst of failed evals triggers one repair. */
+  private healInFlight: Promise<void> | null = null;
+  /** How many times we concluded a DIFFERENT engine is now serving (#826).
+   *  Diagnostic: the decision is otherwise invisible, and treating a healthy
+   *  engine as replaced silently re-arms a degrade that exists to stay off. */
+  private engineChanges = 0;
   /** Max ms a permission eval may wait in the serialization queue before it
    *  escalates gracefully (#551); 0 = no bound. */
   private readonly queueTimeoutMs: number;
@@ -172,17 +226,24 @@ export class AutoApproveService {
    *  (Claude advanced past the prompt) from a timeout abort. */
   private cancelReason: string | null = null;
 
-  constructor(config: AutoApproveConfig, logFn: (msg: string) => void) {
+  constructor(config: AutoApproveConfig, logFn: (msg: string) => void, engineHost?: EngineHost) {
+    this.engineHost = engineHost;
     this.llmConfig = {
       baseUrl: resolveProviderUrl(config.provider, config.base_url),
       apiKey: config.api_key,
       model: config.model,
       timeoutMs: config.timeout * 1000,
-      // Opt-in (Ollama only): native /api/chat with `think: false` to disable
-      // reasoning. Faster, but lowers decision quality (the chain-of-thought is
-      // load-bearing for following broad user instructions), so default OFF.
-      // Everyone else uses the OpenAI-compat path with reasoning on.
-      kind: config.provider === 'ollama' && config.disable_thinking ? 'ollama' : 'openai',
+      // The Yooz engine's /v1/llm/generate is the only transport that is not
+      // OpenAI-compatible (a thin llama.cpp server, OpenRouter, and any custom
+      // URL all speak /v1/chat/completions already).
+      kind: config.provider === 'yooz' ? 'yooz' : 'openai',
+      // Suppress the model's chain-of-thought. Defaults ON, and applies to BOTH
+      // transports -- `/no_think` is a chat-template convention the Qwen3 family
+      // itself recognizes, so it is a property of the model, not the server, and
+      // the openai kind additionally sends `chat_template_kwargs`. Not a tuning
+      // knob: unsuppressed, the QAT-lean 0.8B spent its whole token budget
+      // reasoning and returned NO content, so every eval became an error (#822).
+      disableThinking: config.disable_thinking,
     };
     this.logFn = logFn;
     this.logDecisions = config.log_decisions;
@@ -197,7 +258,206 @@ export class AutoApproveService {
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
-    this.providerIsOllama = config.provider === 'ollama';
+    this.providerIsYooz = config.provider === 'yooz';
+    this.ownsEngine = this.providerIsYooz && config.engine === 'owned';
+    // Only the engine transport has an unload endpoint at all, and (today)
+    // remi always owns its own engine -- #818 introduces the shared-engine
+    // mode, where `ownsEngine` flips false and this timer must never arm.
+    this.residency = new ModelResidency(
+      {
+        cacheIdleMs: config.cache_idle * 1000,
+        keepAliveMs: config.keep_alive * 1000,
+        // EVERY model this service can cause the engine to load, or the timer
+        // silently exempts one: multichoice_model is a third tier `evaluate`
+        // dispatches against when a multi-choice prompt arrives.
+        models: [
+          ...new Set(
+            [config.model, config.escalate_model, config.multichoice_model].filter(
+              (m): m is string => typeof m === 'string' && m.length > 0,
+            ),
+          ),
+        ],
+        // #818: both stages are gated on OWNERSHIP, not on the transport. A
+        // shared (super-yooz) engine's residency is the host's policy, and
+        // touching weights (or even just the cache) another module is
+        // mid-generate on is hostile.
+        ownsEngine: this.ownsEngine,
+      },
+      {
+        unload: (model) => unloadModel(this.llmConfig.baseUrl, model),
+        // No model => every loaded tier. Safe because stage 1 only ever arms
+        // in owned mode (above), where remi is the only thing that can have
+        // loaded anything on this engine.
+        clearCache: () => clearModelCache(this.llmConfig.baseUrl),
+        log: logFn,
+        // #818: ten daemons, one engine — coordinate eviction through a shared
+        // mtime so no daemon acts on weights/cache another is actively using.
+        activity: fileActivityRecord(),
+      },
+    );
+  }
+
+  /** Stop both idle timers (daemon shutdown). Does not act: another daemon
+   *  may still be using the model or its cache (#820). */
+  stopResidencyTimer(): void {
+    this.residency.stop();
+  }
+
+  /**
+   * Evaluations this service currently has in flight on the engine (#827).
+   *
+   * Exposed because the `beginEval`/`endEval` pairing is the one thing that can
+   * silently disable BOTH eviction stages for the rest of the daemon's life if
+   * it ever leaks — a failure strictly worse than the bug the counter fixes,
+   * and otherwise unobservable from outside this class.
+   */
+  get evalsInFlight(): number {
+    return this.residency.inFlightCount;
+  }
+
+  /**
+   * Make sure an engine is answering, starting one if this remi owns the engine
+   * (#818). Safe to call repeatedly: `EngineHost.ensureRunning` attaches to an
+   * existing engine before considering a spawn, and claims the pidfile before
+   * spawning, so concurrent callers across daemons cannot start two.
+   *
+   * Returns whether an engine is now reachable, so a caller at boot can report
+   * the gap. A missing engine is NOT fatal — evaluation escalates, which is the
+   * safe direction — but it must never be silent, which is what #818 was filed
+   * for in the first place.
+   */
+  async ensureEngine(opts?: { readonly afterFailure?: boolean }): Promise<boolean> {
+    const host = this.engineHost;
+    if (host === undefined) return false;
+    const state = await host.ensureRunning();
+    if (state.kind === 'unavailable') {
+      this.logFn(`[AutoApprove] No engine available: ${state.reason}`);
+      return false;
+    }
+    // Any capability we learned about the previous engine (notably "this build
+    // has no clear-cache route") is a fact about a PROCESS, so it must be
+    // discarded whenever a different one is now serving (#826). Two cases:
+    //
+    //   - `spawned`: unambiguously a new process.
+    //   - `attached` after a repair that only ran BECAUSE the engine was
+    //     unreachable (`repairIfUnreachable` establishes that precondition):
+    //     the engine went away and something answers now, so it is a different
+    //     process. Without this a `shared` guest could NEVER clear the flag --
+    //     it can never spawn -- and the loser of a heal race would keep a flag
+    //     learned from an engine that no longer exists.
+    //
+    // The down-then-up transition is the ONLY evidence of a new process we
+    // have: `EngineProbe` carries `loaded`/`modelId`/`progress`/`state` but no
+    // pid and no start time, so a bare `attached` cannot distinguish "a
+    // replacement" from "the same engine, still alive, that merely failed one
+    // request". A boot-time `attached` is likewise not a change: nothing has
+    // been learned about that engine yet.
+    if (state.kind === 'spawned' || (opts?.afterFailure === true && state.kind === 'attached')) {
+      this.engineChanges += 1;
+      this.residency.noteEngineChanged();
+    }
+    return true;
+  }
+
+  /** Times a new engine has been detected (#826). Exposed because "we decided
+   *  the engine was replaced" is otherwise unobservable, and deciding it
+   *  wrongly is the failure this path has to be held to. */
+  get engineChangeCount(): number {
+    return this.engineChanges;
+  }
+
+  /**
+   * Make sure the configured model is on disk, fetching it if it is not.
+   *
+   * Owner decision 2026-07-26: "if we don't have the model locally we pull it;
+   * if the model is in, there would not be a reason to pull."
+   *
+   * Without this the model still arrives — the engine downloads it implicitly
+   * on the first `preload`/`generate` — but that means a fresh install's FIRST
+   * permission blocks on a silent multi-GB fetch. Doing it deliberately at boot
+   * makes it a visible, progress-reporting pull instead, and by the time a
+   * permission arrives the weights are already there.
+   *
+   * The "already present" half is cheap and doubly guarded: `pullModel` returns
+   * immediately when the inventory reports the model cached, and the engine's
+   * own `requestDownload` no-ops on a cached/loaded row. Concurrent pulls
+   * across daemons collapse onto one download engine-side, so ten daemons
+   * calling this produce one fetch.
+   *
+   * NOT awaited by the caller: a cold pull is minutes, and the daemon must be
+   * serving long before that. Evaluations escalate meanwhile, which is the safe
+   * direction.
+   */
+  async ensureModelPresent(): Promise<void> {
+    // Only when remi owns the engine. On a shared (super-yooz) host, what is on
+    // disk is the host's business -- the same boundary that stops the residency
+    // timer touching a shared engine's weights (#818).
+    if (!this.providerIsYooz || !this.ownsEngine) return;
+    const model = this.llmConfig.model;
+    if (model.length === 0) return;
+
+    try {
+      await pullModel(this.llmConfig.baseUrl, model, {
+        onProgress: (p) => {
+          // Report SIZE and elapsed, never a bare percentage: the engine's
+          // download fraction is flat for the whole multi-GB transfer (the
+          // weights file is staged outside the hub dir and moved in at the
+          // end), so a percentage would sit at ~0.6% and read as stuck.
+          this.logFn(`[AutoApprove] Fetching ${model}: ${describePullProgress(p)}`);
+        },
+      });
+    } catch (err) {
+      // Never fatal. A missing model means evaluations escalate, which is the
+      // behavior without this method at all.
+      this.logFn(
+        `[AutoApprove] Could not fetch ${model} (auto-approve will escalate until it is present): ${errorToString(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Repair, but ONLY when the engine is genuinely unreachable.
+   *
+   * `evaluate()`'s catch wraps the whole evaluation, including response
+   * parsing — so an unparsable reply from a perfectly healthy engine reaches
+   * the heal path exactly like a dead socket does. Without this probe, one bad
+   * LLM response would be treated as "a new engine appeared" and would clear
+   * `cacheUnsupported` against the very same process that already told us its
+   * clear-cache route is missing, re-arming the doomed request and the log line
+   * the degrade exists to stop.
+   *
+   * Probing first also makes the down-then-up transition a real precondition
+   * rather than an assumption, which is what licenses `afterFailure` below.
+   */
+  private async repairIfUnreachable(): Promise<boolean> {
+    // Through the host's seam, not the module-level `probeEngine`: the host
+    // already owns an injectable probe, and bypassing it made this path do a
+    // real network connect (with a real timeout) inside unit tests.
+    const host = this.engineHost;
+    const reachable = host === undefined ? false : await host.probeOnce();
+    // Reachable => the process never went anywhere; the failure was about this
+    // request, not about the engine. Nothing to repair, nothing new to learn.
+    if (reachable) return true;
+    return await this.ensureEngine({ afterFailure: true });
+  }
+
+  /**
+   * Fire-and-forget repair after a failed evaluation. Single-flight: a burst of
+   * failures (every queued permission failing against the same dead engine)
+   * must produce ONE repair attempt, not one per question — `ensureRunning`
+   * waits up to 30s for a spawned helper to bind, so an unguarded call per
+   * failure would pile up dozens of overlapping waits.
+   */
+  private healEngine(): void {
+    if (this.engineHost === undefined || this.healInFlight !== null) return;
+    this.healInFlight = this.repairIfUnreachable()
+      .catch((err) => {
+        this.logFn(`[AutoApprove] Engine self-heal failed: ${errorToString(err)}`);
+        return false;
+      })
+      .then(() => {
+        this.healInFlight = null;
+      });
   }
 
   /**
@@ -313,22 +573,36 @@ export class AutoApproveService {
     return drained;
   }
 
+  /** Whether the lazy first-eval warm has been kicked off (#818 advisory). */
+  private warmDispatched = false;
+
   /**
    * Warm-load the escalate_model so the FIRST second opinion does not pay a
-   * cold model-load (15s+ for a 35B). Ollama only (the native /api/generate
-   * empty-prompt load with a long keep_alive); a no-op otherwise or when no
-   * escalate_model is configured. Best-effort and never throws — a failed warm
-   * just means the first real consult loads the model itself.
+   * cold model-load (15s+ for a 35B). Yooz engine only (`POST
+   * /v1/llm/preload?wait=true`); a no-op otherwise (e.g. an OpenAI-compatible
+   * provider, which has no equivalent preload route) or when no escalate_model
+   * is configured. Best-effort and never throws — a failed warm just means the
+   * first real consult loads the model itself.
    */
   async warmEscalateModel(): Promise<void> {
-    if (!this.escalateModel || !this.providerIsOllama) return;
+    if (!this.escalateModel || !this.providerIsYooz) return;
+    // Counted as in-flight work (#827) even though it is not an evaluation: on
+    // a cold machine this is a multi-GB HuggingFace pull, and a ~20 GB model on
+    // a slow link can outlast `cache_idle` (300s) or even `keep_alive` (1800s).
+    // Uncounted, the idle timer would then call `unload` on a model that is
+    // still downloading. First-boot-only and low probability, but the counter
+    // already expresses exactly this rule, so there is no reason to leave it
+    // outside.
+    this.residency.beginEval();
     try {
       await warmModel(this.llmConfig.baseUrl, this.escalateModel);
-      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (kept resident 30m)`);
+      this.logFn(`[AutoApprove] Warmed escalate_model ${this.escalateModel} (preloaded)`);
     } catch (err) {
       this.logFn(
         `[AutoApprove] escalate_model warm-up failed (will load on first consult): ${errorToString(err)}`,
       );
+    } finally {
+      this.residency.endEval();
     }
   }
 
@@ -366,6 +640,18 @@ export class AutoApproveService {
     isSubagent?: boolean,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
+    // #820: push the idle-unload deadline out. Called at the START so a long
+    // eval cannot have the model unloaded out from under it, and again when it
+    // settles so the window measures from the LAST activity.
+    this.residency.noteActivity();
+    // #818 advisory: warm the heavy escalate_model on the FIRST evaluation
+    // rather than at daemon boot, so a session that never sees a permission
+    // never pulls ~20 GB resident. Fire-and-forget: it must not delay this
+    // decision, and it still lands long before a typical escalation.
+    if (!this.warmDispatched) {
+      this.warmDispatched = true;
+      void this.warmEscalateModel();
+    }
     // modelOverride (#522: the escalate_model second opinion) replaces the base
     // model for this call; the fast-path deny/allow/group checks below still run.
     const baseModel = modelOverride || this.llmConfig.model;
@@ -506,6 +792,13 @@ export class AutoApproveService {
       // and aborts a healthy call (currentAbortController is shared instance
       // state).
       let raceTimer: ReturnType<typeof setTimeout> | null = null;
+      // #827: the evaluation is now genuinely in flight on the engine. Marking
+      // it HERE rather than at `evaluate()` entry also takes the queue wait out
+      // of the idle arithmetic -- the window now measures from when the LLM
+      // actually started, not from when we joined the queue. Paired with
+      // `endEval()` in the `finally` immediately below; nothing runs between
+      // this statement and the `try`, so the pairing cannot be skipped.
+      this.residency.beginEval();
       try {
         // Multi-choice + evaluate mode: dedicated prompt, optional alt model.
         // Otherwise the binary approve/deny prompt.
@@ -599,6 +892,10 @@ export class AutoApproveService {
         this.currentScope = null;
         this.currentEvalId = null;
         this.releaseSlot();
+        // #820: re-arm from the END of the eval, so the idle window measures
+        // silence rather than "time since we started thinking". #827: also
+        // drops the in-flight count, releasing both stages to act again.
+        this.residency.endEval();
       }
     } catch (err) {
       const durationMs = Date.now() - start;
@@ -626,6 +923,14 @@ export class AutoApproveService {
       const reasoning = isAbort ? `LLM timeout after ${durationMs}ms` : `Error: ${errorMsg}`;
       // Always log errors regardless of logDecisions setting
       this.logFn(`${prefix} ERROR ${toolName}: ${reasoning} (${durationMs}ms)`);
+
+      // #818 self-heal, LAZY by design. A daemon started at 09:00 must survive
+      // the engine dying at 14:00, and boot-time-only supervision cannot do
+      // that. A timeout is excluded: the engine answered, it was just slow, and
+      // treating "slow" as "dead" would try to start a second engine against a
+      // busy one. Deliberately NOT awaited -- this eval has already escalated,
+      // so the repair is for the NEXT one and must not add latency here.
+      if (!isAbort) this.healEngine();
 
       return {
         decision: 'escalate',

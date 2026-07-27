@@ -1,10 +1,21 @@
 #!/usr/bin/env bun
 /**
- * Model sweep: runs the judgment test scenarios against multiple Ollama models
- * and reports a pass/fail matrix. Not a bun:test file; run directly with `bun run`.
+ * Model sweep: runs the judgment test scenarios against multiple Yooz engine
+ * models and reports a pass/fail matrix. Not a bun:test file; run directly
+ * with `bun run`. Requires a Yooz engine helper running locally on :19924.
  *
  * Usage: bun packages/daemon/tests/auto-approve/run-model-sweep.ts [model1 model2 ...]
- * Default models: qwen3.5:4b, qwen3.5:2b, qwen3.5:0.8b, gemma4:e2b
+ * Default models: yooz-light-v3, yooz-quality-v3
+ *
+ * Backend is env-overridable, because #809 Phase D has to compare the SAME
+ * grid across backends (engine on Apple Silicon, llama.cpp elsewhere) and
+ * against reference runners while the engine's own catalogue is still just its
+ * two tiers:
+ *   SWEEP_PROVIDER   'yooz' (default) | 'openai' | 'llamacpp' | a full URL
+ *   SWEEP_BASE_URL   overrides the base URL for the chosen provider
+ * e.g. against a local ollama:
+ *   SWEEP_PROVIDER=openai SWEEP_BASE_URL=http://localhost:11434/v1 \
+ *     bun run-model-sweep.ts gemma4:e4b-mlx qwen3.5:4b-mlx
  */
 
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
@@ -316,10 +327,10 @@ const scenarios: Scenario[] = [
 function makeConfig(model: string): AutoApproveConfig {
   return {
     enabled: true,
-    provider: 'ollama',
+    provider: process.env['SWEEP_PROVIDER'] ?? 'yooz',
     model,
     api_key: '',
-    base_url: 'http://localhost:11434/v1',
+    base_url: process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924',
     timeout: 60,
     log_decisions: false,
     allow: [],
@@ -333,7 +344,15 @@ function makeConfig(model: string): AutoApproveConfig {
     escalate_model: '',
     escalate_timeout: 0,
     queue_timeout: 240,
-    disable_thinking: false,
+    cache_idle: 0,
+    keep_alive: 0,
+    engine: 'owned' as const,
+    engine_path: '',
+    model_cache: '',
+    // Thinking OFF by default here too: with it on, a small model can burn its
+    // whole budget reasoning and return no content, which scores as an error
+    // rather than a judgment. SWEEP_THINKING=1 measures the other axis.
+    disable_thinking: process.env['SWEEP_THINKING'] !== '1',
     always_escalate_tools: [],
     hold_timeout: 0,
     push_hold_timeout: 0,
@@ -384,11 +403,45 @@ async function runModel(model: string): Promise<Result[]> {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-const defaultModels = ['qwen3.5:4b', 'qwen3.5:2b', 'qwen3.5:0.8b', 'gemma4:e2b'];
+const defaultModels = ['yooz-light-v3', 'yooz-quality-v3'];
 const models = process.argv.length > 2 ? process.argv.slice(2) : defaultModels;
+
+/**
+ * Record WHAT WAS MEASURED, not just the score.
+ *
+ * A sweep result is a property of a (model, backend, engine build, prompt
+ * settings) tuple, and this harness is backend-parameterised — so a bare
+ * "38/38" says nothing about which stack produced it. A run of this sweep was
+ * once used to choose remi's shipped default; the output recorded only the
+ * model NAME, the target was never captured, and the number turned out not to
+ * reproduce against the engine it was assumed to describe. The provenance
+ * header exists so that cannot happen again: if a result cannot be attributed,
+ * it cannot be trusted, and a benchmark you cannot re-run is an anecdote.
+ */
+async function provenance(baseUrl: string): Promise<string> {
+  // Best-effort: an unreachable engine must not stop the sweep, but the report
+  // must then SAY the version is unknown rather than quietly omitting it.
+  try {
+    const res = await fetch(`${baseUrl}/v1/health`, { signal: AbortSignal.timeout(2000) });
+    const body = (await res.json()) as { version?: string };
+    return body.version ?? 'unknown';
+  } catch {
+    return 'unreachable';
+  }
+}
+
+const sweepBaseUrl = process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924';
+const sweepProvider = process.env['SWEEP_PROVIDER'] ?? 'yooz';
+const thinking = process.env['SWEEP_THINKING'] === '1';
 
 console.log(`\n${'='.repeat(80)}`);
 console.log(`  Auto-Approve Model Sweep: ${scenarios.length} scenarios x ${models.length} models`);
+console.log(`${'='.repeat(80)}`);
+console.log(`  provider:     ${sweepProvider}`);
+console.log(`  base_url:     ${sweepBaseUrl}`);
+console.log(`  engine:       ${await provenance(sweepBaseUrl)}`);
+console.log(`  thinking:     ${thinking ? 'ON' : 'OFF (disable_thinking)'}`);
+console.log(`  date:         ${new Date().toISOString()}`);
 console.log(`${'='.repeat(80)}\n`);
 
 const summary: { model: string; passed: number; failed: number; failures: string[] }[] = [];
@@ -438,7 +491,7 @@ if (failingModels.length > 0) {
   }
 }
 
-console.log('\nTotal time: scenarios run sequentially per model to avoid overloading Ollama\n');
+console.log('\nTotal time: scenarios run sequentially per model to avoid overloading the engine\n');
 
 // Exit with error if any model had failures
 const totalFailures = summary.reduce((acc, s) => acc + s.failed, 0);

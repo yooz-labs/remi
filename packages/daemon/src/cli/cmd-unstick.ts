@@ -3,7 +3,7 @@
  * get me out" lever (#617). On receipt each daemon releases every held
  * PermissionRequest hook to passthrough (Claude renders its native prompt),
  * aborts the in-flight auto-approve eval, and drains its eval queue so a stuck
- * Ollama + question unblocks immediately. The phone has no device visibility, so
+ * LLM eval + question unblocks immediately. The phone has no device visibility, so
  * this is the operator's manual escape hatch when an eval is wedged.
  *
  * With no port, every live daemon is unstuck; with a port, only the daemon bound

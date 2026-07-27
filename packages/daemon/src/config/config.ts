@@ -17,6 +17,46 @@ import type { AutoApproveConfig } from '../auto-approve/types.ts';
 const REMI_DIR = path.join(os.homedir(), '.remi');
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
 
+/**
+ * Which local-LLM backend can actually run here (#822).
+ *
+ * The supported targets carry DIFFERENT backends, so a single hardcoded default
+ * is wrong on half of them:
+ *
+ *   - Apple Silicon -> the Yooz engine. MLX, so `darwin-arm64` only; an Intel
+ *     Mac cannot run it however much it looks like "macOS".
+ *   - Linux -> a thin `llama-server`, which speaks the OpenAI-compatible shape
+ *     and therefore reuses the existing transport unchanged.
+ *   - Anything else (notably `darwin-x64`) -> neither. Reported as such rather
+ *     than defaulted to a backend that cannot exist there, because the failure
+ *     would otherwise be a 30s startup timeout followed by escalate-everything
+ *     — indistinguishable from a bug.
+ *
+ * Both backends listen on remi's reserved port 19924, and only one can run per
+ * machine by construction, so the platform decides which without negotiation.
+ */
+export type LocalLLMPlatform = 'yooz' | 'llamacpp' | 'unsupported';
+
+export function detectLocalLLMPlatform(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): LocalLLMPlatform {
+  if (platform === 'darwin') return arch === 'arm64' ? 'yooz' : 'unsupported';
+  if (platform === 'linux') return 'llamacpp';
+  return 'unsupported';
+}
+
+/**
+ * The `auto_approve.provider` default for THIS machine. An unsupported target
+ * still gets `'yooz'` so the config shape and error messages stay stable; what
+ * changes there is that the daemon says so at boot (see `cli.ts`) instead of
+ * silently waiting on an engine that can never appear.
+ */
+function defaultProvider(): string {
+  const detected = detectLocalLLMPlatform();
+  return detected === 'unsupported' ? 'yooz' : detected;
+}
+
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
   readonly base_port: number;
@@ -148,14 +188,34 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   auto_approve: {
     enabled: false,
-    provider: 'ollama',
+    // Resolved by PLATFORM, not hardcoded (#822): the Yooz engine on Apple
+    // Silicon, a thin llama.cpp server on Linux. Both listen on remi's reserved
+    // port 19924 and only one can exist per machine, so nothing has to
+    // negotiate. See `detectLocalLLMPlatform`.
+    provider: defaultProvider(),
     // Fast small default: with synchronous decisions (#496) the eval blocks
     // Claude, so the default must be quick + RAM-light across platforms (incl.
-    // MacBook Air). qwen3.5:4b is benchmarked safe (38/38). Heavier models go in
-    // `escalate_model` (second opinion only on would-escalate cases).
-    model: 'qwen3.5:4b',
+    // MacBook Air). Heavier models go in `escalate_model` (second opinion,
+    // would-escalate cases only).
+    //
+    // #809 Phase D measured the 38-case permission grid against a real engine.
+    // This untuned QAT-lean KD base scored 38/38 with zero unsafe approvals,
+    // zero unparsable responses, and p95 2.26s. The engine's two TouchUp tiers
+    // are NOT substitutes: `yooz-quality-v3` (same base, grammar-tuned) also
+    // reads 38/38, but six of those are responses carrying no verdict at all --
+    // it echoes the input back, a proofreader doing its job -- and they "pass"
+    // only because an unparsable response is treated as escalate. Those six are
+    // `rm -rf /`, the `dd` disk wipe, `chmod 777 /etc`, `base64 | bash`,
+    // `eval $X`, and a reverse shell: safety by accident, not by judgment.
+    // `yooz-light-v3` scores 22/38 outright.
+    //
+    // Requires yooz-engine#303 (catalogue-backed model selection). Engines
+    // predating it serve only the two TouchUp tiers and reject this id with
+    // 400 `invalid_model`; auto-approve is off by default, so that surfaces as
+    // "every question escalates" rather than as a broken daemon.
+    model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
     api_key: '',
-    base_url: 'http://localhost:11434/v1',
+    base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
     // Safe read-only TOOLS, fast-pathed without an LLM call. These are
@@ -192,8 +252,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     multichoice: 'skip',
     multichoice_model: '',
     // Second-opinion model on a primary 'escalate' (main context only). Empty =
-    // no second opinion. Put a heavy model here (e.g. qwen3.5:35b) to honor a
-    // broad approve policy without paying its latency on every permission.
+    // no second opinion. Put a heavy model here to honor a broad approve
+    // policy without paying its latency on every permission.
     escalate_model: '',
     // Dedicated timeout (seconds) for the heavy escalate_model. 0 = use
     // `timeout`. Set higher (e.g. 90) when escalate_model is a large, often-cold
@@ -203,10 +263,39 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // escalating (#551). Concurrent evals run one at a time; a deep burst could
     // otherwise wait long enough to risk the ~600s hook budget. 0 = no bound.
     queue_timeout: 240,
-    // Keep the model's reasoning ON by default: live testing showed it is
-    // load-bearing for following broad user instructions. Opt in (Ollama only)
-    // for raw speed over decision nuance.
-    disable_thinking: false,
+    // Seconds of inactivity before remi drops the model's prompt-KV cache
+    // while keeping its weights resident (#820 stage 1) -- cheap and
+    // recomputable, unlike a full unload. 300 (5 min) mirrors ollama's old
+    // server-side keep_alive default. 0 = never drop the cache; keep_alive
+    // (stage 2, below) is unaffected either way.
+    cache_idle: 300,
+    // Seconds a model stays resident after the last evaluation before remi
+    // unloads it (#820 stage 2). The engine has no keep-alive of its own, so
+    // without this a daemon pins the weights forever; 1800 matches what
+    // ollama's keep_alive gave us. 0 = never unload.
+    keep_alive: 1800,
+    // #818: who owns the engine process on remi's port. 'owned' (default) =
+    // remi starts and supervises its own helper and may load/unload/delete
+    // models. 'shared' = a super-yooz host owns it; remi reads and evaluates
+    // but never spawns, unloads or deletes, because another module may be
+    // mid-generate on the same weights.
+    engine: 'owned',
+    // Absolute path to the helper executable remi starts in 'owned' mode.
+    // Empty = nothing to start: remi still attaches to an engine already on
+    // the port, and otherwise reports the gap rather than failing silently.
+    engine_path: '',
+    // Where the engine downloads model weights. Empty = the engine's own
+    // default (~/.cache/huggingface/hub, or its sandbox container). Set this
+    // to keep multi-GB weights off the boot volume, e.g. an external disk.
+    model_cache: '',
+    // Reasoning OFF by default (owner decision 2026-07-25). The earlier
+    // "reasoning is load-bearing" finding came from ollama-era testing with
+    // models large enough to afford it. On the QAT-lean tiers this is now
+    // measured as fatal, not merely slow: served through mlx_lm, the 0.8B
+    // spent an entire 600-token budget thinking about a trivial prompt and
+    // emitted NO content at all, so every evaluation degraded to an error.
+    // A permission classify wants a short JSON verdict, not an essay.
+    disable_thinking: true,
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
@@ -343,6 +432,14 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   expectBool('log_decisions', cfg.log_decisions);
   expectBool('disable_thinking', cfg.disable_thinking);
   expectString('provider', cfg.provider);
+  // #809: ollama support was removed outright (no compatibility shim, no
+  // silent fallback to a different provider) -- a config that still names it
+  // must fail loudly with an actionable next step.
+  if (cfg.provider === 'ollama') {
+    throw new Error(
+      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_CONFIG.auto_approve.model}" for the engine). Note "llamacpp" currently expects you to run llama-server on 19924 yourself; remi does not download or supervise it yet (#822).`,
+    );
+  }
   expectString('model', cfg.model);
   expectString('api_key', cfg.api_key);
   expectString('base_url', cfg.base_url);
@@ -370,6 +467,44 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   ) {
     throw new Error(
       `Invalid auto_approve.queue_timeout in ${configPath}: must be a non-negative number (seconds; 0 = no bound), got ${typeof cfg.queue_timeout === 'string' ? `string "${cfg.queue_timeout}"` : typeof cfg.queue_timeout}. Example: queue_timeout = 240`,
+    );
+  }
+
+  if (cfg.engine !== 'owned' && cfg.engine !== 'shared') {
+    throw new Error(
+      `Invalid auto_approve.engine in ${configPath}: must be "owned" (remi starts its own engine) or "shared" (a super-yooz host owns it), got ${JSON.stringify(cfg.engine)}. Example: engine = "owned"`,
+    );
+  }
+
+  if (typeof cfg.model_cache !== 'string') {
+    throw new Error(
+      `Invalid auto_approve.model_cache in ${configPath}: must be a directory path (empty = the engine's default). Example: model_cache = "/Volumes/S1/huggingface/hub"`,
+    );
+  }
+
+  if (typeof cfg.engine_path !== 'string') {
+    throw new Error(
+      `Invalid auto_approve.engine_path in ${configPath}: must be a string path to the engine helper (empty = none bundled). Example: engine_path = "/Applications/Yooz Engine.app/Contents/MacOS/YoozEngine"`,
+    );
+  }
+
+  if (
+    typeof cfg.cache_idle !== 'number' ||
+    !Number.isFinite(cfg.cache_idle) ||
+    cfg.cache_idle < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.cache_idle in ${configPath}: must be a non-negative number (seconds; 0 = never drop the cache), got ${typeof cfg.cache_idle === 'string' ? `string "${cfg.cache_idle}"` : typeof cfg.cache_idle}. Example: cache_idle = 300`,
+    );
+  }
+
+  if (
+    typeof cfg.keep_alive !== 'number' ||
+    !Number.isFinite(cfg.keep_alive) ||
+    cfg.keep_alive < 0
+  ) {
+    throw new Error(
+      `Invalid auto_approve.keep_alive in ${configPath}: must be a non-negative number (seconds; 0 = never unload), got ${typeof cfg.keep_alive === 'string' ? `string "${cfg.keep_alive}"` : typeof cfg.keep_alive}. Example: keep_alive = 1800`,
     );
   }
 
@@ -738,12 +873,17 @@ authorized_user_ids = []
 
 # [auto_approve]
 # enabled = false
-# provider = "ollama"           # "ollama" | "openrouter" | custom base URL
-# model = "qwen3.5:4b"          # Fast small default; the eval blocks Claude (#496)
-# api_key = ""                  # Required for OpenRouter, empty for Ollama
-# base_url = "http://localhost:11434/v1"
+# provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
+                                # llama.cpp server, elsewhere) | "openrouter"
+                                # | custom base URL
+# model = "${DEFAULT_CONFIG.auto_approve.model}"
+                                # Fast small default; the eval blocks Claude (#496).
+                                # 38/38 on the permission grid, p95 2.26s. The
+                                # TouchUp tiers are proofreaders, not classifiers.
+# api_key = ""                  # Required for OpenRouter, empty for the local engine/llama.cpp
+# base_url = "http://127.0.0.1:19924"
 # timeout = 30                  # Seconds; falls through to user if exceeded
-                                # (covers cold model load on local Ollama)
+                                # (covers cold model load on the local engine)
 # log_decisions = true
 #
 # User-defined rules. Substring matching for Bash, tool-name match for others.
@@ -770,12 +910,26 @@ authorized_user_ids = []
 #                                  # multichoice = "evaluate".
 # escalate_model = ""              # Second opinion on a primary 'escalate'
 #                                  # (main context only). Put a heavy model here
-#                                  # (e.g. qwen3.5:35b) to honor a broad approve
-#                                  # policy without its latency on every prompt.
+#                                  # to honor a broad approve policy without
+#                                  # its latency on every prompt.
 # escalate_timeout = 0             # Seconds for escalate_model; 0 = use timeout.
 #                                  # Raise (e.g. 90) for a large, often-cold
 #                                  # second-opinion model so its first-call load
 #                                  # does not abort into an error->escalate.
+# model_cache = ""                # Where the engine downloads weights.
+                                   # Empty = its default (~/.cache/huggingface).
+                                   # Point at an external disk to keep several
+                                   # GB off the boot volume. Applies to an
+                                   # engine remi STARTS; an already-running one
+                                   # keeps the cache it was started with.
+# cache_idle = 300                 # Seconds before remi drops the model's
+                                   # prompt cache while keeping it loaded
+                                   # (#820 stage 1). Cheap; no cold reload,
+                                   # just a recomputed prefix. 0 = never.
+# keep_alive = 1800                # Seconds a model stays resident after the
+                                   # last eval before remi unloads it (stage
+                                   # 2). The engine never evicts on its own.
+                                   # 0 = never.
 # queue_timeout = 240              # Max seconds an eval waits in the serial
 #                                  # queue before escalating. Concurrent evals
 #                                  # run one at a time; a deep burst could risk
@@ -792,11 +946,13 @@ authorized_user_ids = []
 #                                  # seconds, so the user can step in while the
 #                                  # model keeps thinking (Part B, #573). A late
 #                                  # verdict resolves the held hook. 0 = off.
-# disable_thinking = false         # Ollama only: native /api/chat with
-#                                  # think:false (no reasoning). Faster but
-#                                  # lowers decision quality (reasoning helps
-#                                  # the model follow broad instructions), so
-#                                  # default off. Opt in for raw speed.
+# disable_thinking = true          # Suppress model reasoning. ON by default: a
+#                                  # permission classify wants a short JSON
+#                                  # verdict, and small models can spend their
+#                                  # whole token budget thinking and return
+#                                  # nothing at all. Set false to let the model
+#                                  # reason (slower, sometimes better on broad
+#                                  # custom instructions).
 # always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]
 #                                  # Tools that ALWAYS go to the user, never
 #                                  # auto-decided by the LLM (design / plan-mode
@@ -887,6 +1043,9 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
   lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
   lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
+  lines.push(`  engine = "${config.auto_approve.engine}"`);
+  lines.push(`  cache_idle = ${config.auto_approve.cache_idle}`);
+  lines.push(`  keep_alive = ${config.auto_approve.keep_alive}`);
   lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
   lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);
   lines.push(`  push_hold_timeout = ${config.auto_approve.push_hold_timeout}`);

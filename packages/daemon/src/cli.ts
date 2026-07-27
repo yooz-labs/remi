@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.6.24'; // REMI_COMPILED_VERSION
+      return '0.7.0'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.6.24'; // REMI_COMPILED_VERSION
+    return '0.7.0'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -124,14 +124,18 @@ import { Authenticator } from './auth/authenticator.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import {
   AutoApproveService,
+  EngineHost,
+  FileEnginePidStore,
   SubagentAlerter,
   alertBody,
   alertTitle,
   resolveProviderUrl,
+  spawnDetachedEngine,
 } from './auto-approve/index.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
+import { runModelCommand } from './cli/cmd-model.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
@@ -169,7 +173,7 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
-import { applyEnvOverrides, loadConfig } from './config/index.ts';
+import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { PermissionRequestHookInput } from './hooks/index.ts';
@@ -266,6 +270,13 @@ if (parsedArgs.subcommand === 'config') {
 // Handle 'reload' subcommand
 if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
+}
+
+// Handle 'model' subcommand (#819): the ollama-style CLI for the local LLM
+// the auto-approve evaluator runs on (catalogue / pull / residency / default).
+// Async, unlike its siblings: every verb talks to the engine over HTTP.
+if (parsedArgs.subcommand === 'model') {
+  process.exit(await runModelCommand(parsedArgs.subcommandArgs, remiConfig));
 }
 
 // Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).
@@ -825,6 +836,52 @@ let autoApproveService: AutoApproveService | null = null;
     const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
     const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
 
+    // #822: say it plainly when this machine cannot run ANY local backend
+    // (notably an Intel Mac — "macOS" is not the boundary, Apple Silicon is).
+    // Without this the user gets a 30s startup timeout and then every question
+    // escalated, which is indistinguishable from a bug. Only a local provider
+    // is affected: a remote one (OpenRouter, a custom URL) works anywhere.
+    const localProvider = provider === 'yooz' || provider === 'llamacpp';
+    const detectedBackend = detectLocalLLMPlatform();
+    if (localProvider && detectedBackend === 'unsupported') {
+      writeToLog(
+        `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
+      );
+    } else if (provider === 'llamacpp') {
+      // Linux resolves to `llamacpp`, but NOTHING installs or supervises a
+      // llama-server yet (#822) -- remi only supervises the engine transport.
+      // Left unsaid, a Linux user enabling auto-approve gets silence and then
+      // every permission escalated, which is precisely the unexplained
+      // degradation #818 was filed to remove, reintroduced on another platform.
+      // The macOS path fetches its own helper (#834); this one cannot yet, so
+      // the honest thing is to say so at boot rather than at the first
+      // permission.
+      writeToLog(
+        `[AutoApprove] provider = "llamacpp" is selected for ${process.platform}, but remi does not yet download or supervise a llama.cpp server (#822). Auto-approve will escalate every permission unless you run llama-server yourself on ${baseUrl}, or point auto_approve.provider at a remote backend.`,
+      );
+    }
+
+    // #818: who starts the engine. Only meaningful for the engine transport —
+    // an OpenRouter or llama.cpp base URL is not something remi supervises, and
+    // handing those an EngineHost would mean spawning a Yooz helper for a
+    // provider that never talks to one.
+    const engineHost =
+      provider === 'yooz'
+        ? new EngineHost(
+            {
+              baseUrl,
+              ownership: aaCfg.engine,
+              helperPath: aaCfg.engine_path,
+              modelCache: aaCfg.model_cache,
+            },
+            {
+              log: writeToLog,
+              spawn: spawnDetachedEngine,
+              pidStore: new FileEnginePidStore(),
+            },
+          )
+        : undefined;
+
     autoApproveService = new AutoApproveService(
       {
         ...aaCfg,
@@ -840,7 +897,36 @@ let autoApproveService: AutoApproveService | null = null;
         multichoice_model: multichoiceModel,
       },
       writeToLog,
+      engineHost,
     );
+
+    // Start (or attach to) the engine at boot, but do NOT block the daemon on
+    // it: a cold helper can take tens of seconds to bind, and remi must be
+    // answering its own port long before then. Evaluation escalates while the
+    // engine is coming up, which is the safe direction, and `ensureEngine`
+    // reports the outcome either way so "no engine" is never silent.
+    //
+    // On a hub machine the hub reaches here first and wins the pidfile race by
+    // construction; a standalone `remi --daemon` on a machine with no hub still
+    // gets one, because requiring a hub would recreate exactly the silent
+    // escalate-everything failure #818 exists to remove.
+    void autoApproveService
+      .ensureEngine()
+      .then(async (up) => {
+        // Only once an engine answers: a pull is an engine operation. Chained
+        // rather than fired alongside, so a cold start does not race the
+        // helper's own startup with a download request it cannot serve.
+        //
+        // Owner decision 2026-07-26: fetch the model if it is not local, do
+        // nothing if it is. Without this the weights still arrive, but
+        // implicitly, on the first permission -- so a fresh install's first
+        // question blocks on a silent multi-GB download instead of a visible
+        // one that happened at boot.
+        if (up) await autoApproveService?.ensureModelPresent();
+      })
+      .catch((err) => {
+        writeToLog(`[AutoApprove] Engine startup check failed: ${errorToString(err)}`);
+      });
     const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
     const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
     const escalateSummary = aaCfg.escalate_model
@@ -850,9 +936,13 @@ let autoApproveService: AutoApproveService | null = null;
     writeToLog(
       `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}, ${queueSummary}`,
     );
-    // Warm-load the heavy second-opinion model so the first escalation is not a
-    // cold start. Best-effort, fire-and-forget (never blocks daemon startup).
-    void autoApproveService.warmEscalateModel();
+    // NOT warmed here (#818 advisory). `escalate_model` is typically a large
+    // model -- a 35B is ~20 GB resident -- and warming at daemon boot means
+    // merely CREATING a session pulls those weights in, even for a session
+    // that never sees a permission, only for keep_alive to evict them 30
+    // minutes later. Pure heat, multiplied by every session in a fleet. The
+    // service now warms on its FIRST evaluation instead, which still lands
+    // long before a typical escalation.
   }
 }
 
@@ -919,8 +1009,8 @@ const binderClosers: Map<UUID, () => void> = new Map();
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
- * get me out" lever when Ollama + a question are stuck and the phone has no device
- * visibility. Each gate releases its held hooks to passthrough (native prompt),
+ * get me out" lever when an LLM eval + a question are stuck and the phone has no
+ * device visibility. Each gate releases its held hooks to passthrough (native prompt),
  * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
  * zero sessions.
  */
