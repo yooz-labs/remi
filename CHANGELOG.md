@@ -2,6 +2,40 @@
 
 All notable changes to Remi are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **`remi model` no longer needs a daemon to exist first** (#843). Every verb
+  used to probe the port and give up when nothing answered, and nothing in the
+  CLI ever *started* an engine — only the daemon did. So on a fresh install
+  `remi model pull` failed until you had started a daemon, inverting the order
+  anyone would try: fetch the weights, then run. The verbs that need an engine
+  now start one themselves, fetching the helper on first use.
+  - `status` deliberately does **not** start one: auto-starting an engine to
+    answer "is an engine running?" destroys the question. It reports the state,
+    the configured model, and what the outage costs you.
+  - `use` needs no engine at all. It writes remi's config; gating that behind a
+    running engine made the model impossible to configure while the engine was
+    down, which is exactly when you are setting one up.
+- **`remi model use` accepts a model's registered name** (#843). It required an
+  exact match against the engine's canonical ids, so it refused
+  `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` — the id remi itself ships as the
+  default. Either name now works, and an id that *cannot* be checked against an
+  older engine's catalogue is accepted with a note rather than refused.
+- **Models are named by their registered HuggingFace repo** (#843), not by an
+  internal nickname like `yooz-instruct-4b`, so the name you read is the one
+  you can look up and type. Needs yooz-engine 0.7.8+, which reports the mapping
+  (yooz-engine#308); against an older engine remi shows the canonical id.
+- **`remi model rm` no longer blames remi for the engine's active model**
+  (#843). It reported any active model as "the active model" and told you to
+  run `remi model use <other>` — advice that provably cannot work, because
+  `use` writes remi's config and never touches the engine's own picker. It now
+  distinguishes the two cases and only suggests the remedy that applies.
+- **`remi model status` says "not downloaded" only when it can actually tell**
+  (#843), instead of reporting a present, working model as unknown.
+- **`remi --help` lists `remi model`** (#843), which was otherwise
+  undiscoverable.
+
 ## [0.7.0] - 2026-07-26
 
 Replaces ollama with the Yooz engine as the local-LLM backend for

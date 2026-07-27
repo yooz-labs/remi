@@ -146,3 +146,22 @@ describe('formatCommandHelp', () => {
     expect(output).toContain('remi --help');
   });
 });
+
+describe('help formatting', () => {
+  test('the global list mentions "remi model" so it is discoverable', () => {
+    // It shipped in 0.7.0 with per-command help but no entry in the command
+    // list, so the only way to find it was to already know it existed (#843).
+    expect(formatHelp('0.0.0-test')).toContain('remi model');
+  });
+
+  test('a term wider than the column still has a space before its description', () => {
+    // `padEnd` is a no-op once the term is already at the column width, so a
+    // long flag ran straight into its text:
+    //   --auto-approve-multichoice-model MAlt-model for multi-choice
+    const text = formatHelp('0.0.0-test');
+    const line = text.split('\n').find((l) => l.includes('--auto-approve-multichoice-model'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain('MAlt-model');
+    expect(line).toContain('M Alt-model');
+  });
+});

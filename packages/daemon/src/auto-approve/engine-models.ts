@@ -71,6 +71,11 @@ export interface EngineModel {
   readonly sizeBytes?: number | undefined;
   readonly loaded: boolean;
   readonly latencyHintMs?: number | undefined;
+  /** The model's registered HuggingFace repo id, which the engine also accepts
+   *  as an alias wherever a model id is taken (yooz-engine#308). Absent on
+   *  engines older than 0.7.8 — see `model-identity.ts` for why that absence
+   *  has to be handled rather than assumed away. */
+  readonly huggingFaceID?: string | undefined;
 }
 
 /** `GET /v1/llm/models`. `current` is the engine's process-lifetime preference. */
@@ -282,6 +287,10 @@ export interface ManagedModel {
   readonly loaded: boolean;
   readonly isActive: boolean;
   readonly deletable: boolean;
+  /** Registered HuggingFace repo id (yooz-engine#308). Absent for disk-swept
+   *  hub directories, whose id is already the flattened repo name, and on
+   *  engines older than 0.7.8. */
+  readonly huggingFaceID?: string | undefined;
 }
 
 /** `GET /v1/models` — every module's models, not just the LLM's. */
