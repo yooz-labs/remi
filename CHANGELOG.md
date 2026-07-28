@@ -36,6 +36,38 @@ All notable changes to Remi are documented here.
   If you serve the web client from your own origin, add it to
   `~/.remi/config.toml` under `[daemon] allowed_origins`; the daemon logs the
   exact line when it refuses one.
+- **A tool name in the allow-list no longer approves a Bash command that
+  merely contains it** (#536). The shipped default `allow = ['Read', 'Glob',
+  'Grep']` was documented as matching tools only; it substring-matched the
+  Bash command string too, so `rm -rf Readme`, `rm -rf ~/Documents/Reading`
+  and `python Read_data.py && rm -rf /tmp/x` were all approved at 0ms with no
+  evaluation. A custom entry was wider still: `allow = ['git status']`
+  approved `git status; rm -rf ~`, because a substring says nothing about the
+  rest of the command.
+
+  Allow now splits a command into compound segments and requires EVERY
+  segment to be neutral (`cd`, `pwd`, `echo`) or match an entry, and vetoes
+  command substitution, redirection to a real file, and backgrounding. The
+  case that motivated substring matching still works: `cd /foo && git push
+  origin main` matches a `git push` entry, which Claude Code's own prefix
+  pattern misses.
+
+  It also vetoes code-execution primitives, which are a different thing from
+  writes: `find . -exec rm -rf {} +`, `git -c core.hooksPath=/tmp/evil
+  status`, `tar --to-command=...` and `awk 'BEGIN{system(...)}'` do not make
+  the allowed command write, they make it run a command the user never saw.
+  Spelling the primitive out in the entry itself still works, since a prefix
+  match means the user typed it. Ordinary mutation flags are untouched: an
+  entry of `biome check --fix` is a write the user chose.
+
+  **Deny is unchanged and stays a plain substring search**, along with
+  `subagent_alert`. Over-matching a deny costs an evaluation; under-matching
+  one costs a command that should have been refused.
+
+  If a config relied on the old substring behavior for Bash, those commands
+  now get evaluated instead of approved at 0ms. An allow entry shaped like a
+  tool name but meant as a shell command (`Rscript`, `MSBuild`) now warns at
+  config load, since it matches a tool of that name and never the command.
 
 ## [0.7.3] - 2026-07-28
 

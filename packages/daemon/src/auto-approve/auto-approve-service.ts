@@ -24,7 +24,7 @@ import {
   isMultiChoicePermission,
   parseMultiChoiceDecision,
 } from './multichoice.ts';
-import { matchPattern } from './pattern-matcher.ts';
+import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups } from './permission-groups.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
@@ -666,10 +666,10 @@ export class AutoApproveService {
       : undefined;
 
     // Entire body wrapped in try/catch so the "never throws" contract holds
-    // even if matchPattern or other sync code fails (e.g. malformed config).
+    // even if the matchers or other sync code fail (e.g. malformed config).
     try {
       // Deny list + deny groups: checked first, always win. No LLM call.
-      const denyMatch = matchPattern(toolName, toolInput, this.deny);
+      const denyMatch = matchSubstringPattern(toolName, toolInput, this.deny);
       if (denyMatch !== null) {
         const reasoning = `deny-matched pattern: "${denyMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
@@ -683,7 +683,7 @@ export class AutoApproveService {
       }
 
       // Allow list + approve groups: bypass the LLM for known-safe operations.
-      const allowMatch = matchPattern(toolName, toolInput, this.allow);
+      const allowMatch = matchAllowPattern(toolName, toolInput, this.allow);
       if (allowMatch !== null) {
         const reasoning = `allow-matched pattern: "${allowMatch}"`;
         if (this.logDecisions) {
