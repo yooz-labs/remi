@@ -22,7 +22,12 @@
  *    intentionally EXCLUDED from the curated set. Users can add them via the
  *    substring `allow` list at their own discretion.
  *  - Non-Bash tools match by bare tool name.
+ *
+ * The segment splitter and shell-control veto live in `shell-safety.ts`; the
+ * user allow list uses the same primitives (#536).
  */
+
+import { matchCoveredCommand } from './shell-safety.ts';
 
 export interface PermissionGroup {
   /** Bare tool names this group approves (e.g. "Read", "Glob"). */
@@ -124,9 +129,6 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
   },
 };
 
-/** Benign segments that may appear in a compound command without needing a group. */
-const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
-
 /**
  * Unambiguous mutation indicators. None legitimately appears in a curated read
  * command, so matching one can only mean a write snuck past a read prefix
@@ -143,85 +145,6 @@ export function isKnownGroup(name: string): boolean {
 /** All built-in group names (for validation / docs). */
 export function knownGroupNames(): string[] {
   return Object.keys(BUILTIN_GROUPS);
-}
-
-/**
- * Split a command into compound segments on `&&`, `||`, `;`, `|`, and newlines
- * (`\n`/`\r` — the shell treats an unquoted newline as a command separator,
- * exactly like `;`), respecting single/double quotes (best-effort).
- * Backgrounding `&` is left in the segment for the shell-control veto to catch.
- */
-function splitCompound(command: string): string[] {
-  const segments: string[] = [];
-  let current = '';
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i];
-    const next = command[i + 1];
-    if (quote !== null) {
-      current += c;
-      if (c === quote) quote = null;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      current += c;
-      continue;
-    }
-    // Unquoted newline / carriage return == a command separator. Without this,
-    // `git log \ngit push` is one segment that prefix-matches `git log` and the
-    // injected `git push` is never examined (shell-injection bypass).
-    if (c === ';' || c === '\n' || c === '\r') {
-      segments.push(current);
-      current = '';
-      continue;
-    }
-    if (c === '&' && next === '&') {
-      segments.push(current);
-      current = '';
-      i++;
-      continue;
-    }
-    if (c === '|' && next === '|') {
-      segments.push(current);
-      current = '';
-      i++;
-      continue;
-    }
-    if (c === '|') {
-      segments.push(current);
-      current = '';
-      continue;
-    }
-    current += c;
-  }
-  segments.push(current);
-  return segments;
-}
-
-/** True if the segment carries shell control that could escape the read prefix. */
-function hasShellControl(segment: string): boolean {
-  // Command / process substitution.
-  if (segment.includes('$(') || segment.includes('`') || segment.includes('<(')) {
-    return true;
-  }
-  // Backgrounding / control operator: a lone `&` anywhere that is not part of
-  // `&&` (already split out), an fd-dup (`2>&1`, `>&2`), nor an `&>` redirect
-  // (caught as redirection below). Catches `cmd &`, `cmd & other`, `a&b`.
-  if (/(^|[^&>])&(?![&>0-9])/.test(segment)) {
-    return true;
-  }
-  // Output redirection to anything other than /dev/null or an fd dup (2>&1).
-  const redirs = segment.match(/\d*>>?\s*&?\S+/g);
-  if (redirs) {
-    for (const r of redirs) {
-      const target = r.replace(/^\d*>>?\s*/, '');
-      if (target !== '/dev/null' && !/^&\d+$/.test(target)) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 /**
@@ -247,18 +170,6 @@ function hasScopedVeto(segment: string): boolean {
   return false;
 }
 
-/** Word-boundary prefix match: `seg === p` or `seg` starts with `p + ' '`. */
-function matchPrefix(segment: string, prefixes: readonly string[]): string | null {
-  let best: string | null = null;
-  for (const p of prefixes) {
-    if (segment === p || segment.startsWith(`${p} `)) {
-      // Prefer the longest (most specific) match for clearer logging.
-      if (best === null || p.length > best.length) best = p;
-    }
-  }
-  return best;
-}
-
 /**
  * Decide whether a Bash command is fully covered by the given read prefixes.
  * Returns the (most specific) matched prefix, or null to fall through to the LLM.
@@ -269,18 +180,11 @@ function matchPrefix(segment: string, prefixes: readonly string[]): string | nul
  * command of only neutral segments is not "a read").
  */
 export function matchReadOnlyCommand(command: string, prefixes: readonly string[]): string | null {
-  const segments = splitCompound(command);
-  let matched: string | null = null;
-  for (const raw of segments) {
-    const seg = raw.trim();
-    if (seg === '') continue;
-    if (hasShellControl(seg) || MUTATION_TOKEN.test(seg) || hasScopedVeto(seg)) return null;
-    if (matchPrefix(seg, NEUTRAL_PREFIXES) !== null) continue;
-    const hit = matchPrefix(seg, prefixes);
-    if (hit === null) return null;
-    if (matched === null) matched = hit;
-  }
-  return matched;
+  return matchCoveredCommand(
+    command,
+    prefixes,
+    (seg) => MUTATION_TOKEN.test(seg) || hasScopedVeto(seg),
+  );
 }
 
 /**
