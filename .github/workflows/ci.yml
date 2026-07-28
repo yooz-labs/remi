@@ -167,25 +167,49 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Fail loudly if main still carries an unreleased dev version
+      - name: Fail loudly if the release did not actually happen
         run: |
           # Read the CURRENT main, not this run's SHA: when auto-release works
           # it pushes the stripped version, and that commit is newer than the
           # ref this workflow started from.
           git fetch origin main
           VERSION=$(git show origin/main:package.json | jq -r '.version')
-          if [[ "$VERSION" != *"-dev"* ]]; then
-            echo "main is at $VERSION - release completed."
-            exit 0
+
+          # `jq` prints the string "null" for an absent field and exits 0, so an
+          # unguarded check would read that as "not a dev version" and pass.
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "::error title=Cannot read version::origin/main's package.json has no usable version field."
+            exit 1
           fi
-          echo "::error title=Release did not happen::main is at $VERSION, which is still a dev version."
-          echo "" >&2
-          echo "auto-release SKIPS (it does not fail) when any gate is red, so no tag," >&2
-          echo "npm publish, GitHub release or Homebrew update happened for this merge." >&2
-          echo "" >&2
-          echo "If a gate failed on a flake, re-run the failed jobs on this workflow run;" >&2
-          echo "auto-release will then run and tag ${VERSION%%-*}." >&2
-          exit 1
+
+          if [[ "$VERSION" == *"-dev"* ]]; then
+            echo "::error title=Release did not happen::main is at $VERSION, which is still a dev version."
+            echo "" >&2
+            echo "auto-release SKIPS (it does not fail) when any gate is red, so no tag," >&2
+            echo "npm publish, GitHub release or Homebrew update happened for this merge." >&2
+            echo "" >&2
+            echo "If a gate failed on a flake, re-run the failed jobs on this workflow run;" >&2
+            echo "auto-release will then run and tag ${VERSION%%-*}." >&2
+            exit 1
+          fi
+
+          # A stable version is NOT proof a release shipped. `bump-version.sh`
+          # pushes the commit and the tag as two separate, non-atomic commands
+          # (`git push origin HEAD` then `git push origin "v$NEW_VERSION"`), and
+          # only the TAG triggers release.yml. If the second push fails, main
+          # reads stable while nothing downstream ever fires -- precisely the
+          # "no tag, no npm, no Homebrew" outcome this job exists to catch.
+          if ! git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
+            echo "::error title=Release tag missing::main is at $VERSION but tag v$VERSION does not exist on origin."
+            echo "" >&2
+            echo "Only the tag triggers release.yml, so no binaries, npm publish," >&2
+            echo "GitHub release or Homebrew update happened for $VERSION." >&2
+            echo "" >&2
+            echo "Re-point/push the tag at origin/main to trigger the release." >&2
+            exit 1
+          fi
+
+          echo "main is at $VERSION and tag v$VERSION exists - release completed." 
 
   # After a stable release on main, merge main back into develop and
   # bump to the next patch dev version (e.g. 0.4.13 -> 0.4.14-dev.1).
