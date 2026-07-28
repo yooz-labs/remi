@@ -574,6 +574,109 @@ describe('remi model rm', () => {
     expect(t.out.join('\n')).toContain('pointing that picker at');
   });
 
+  test('refuses when the engine will not say what a model is used for', async () => {
+    // `m.purpose === targetPurpose` with both absent is `undefined ===
+    // undefined`, which matches EVERY row -- the same trap `matchesModel`
+    // documents. An engine that reports no purposes must stop the release,
+    // not silently make the filter a pass-through.
+    const t = io();
+    let pointedAt = '';
+    let removed = '';
+    const code = await run(
+      ['rm', 'yooz-quality-v3'],
+      configWith({ model: 'yooz-light-v3', engine: 'owned' }),
+      t.io,
+      {
+        probe: async () => REACHABLE,
+        inventory: async () => INVENTORY,
+        list: async () => ({
+          current: 'yooz-quality-v3',
+          available: [
+            { id: 'yooz-quality-v3', displayName: 'Q', loaded: true },
+            { id: 'yooz-light-v3', displayName: 'L', loaded: false },
+          ],
+        }),
+        setTouchUpModel: async (_url, id) => {
+          pointedAt = id;
+        },
+        remove: async (_url, id) => {
+          removed = id;
+          return { id, reclaimedBytes: 0 };
+        },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(pointedAt).toBe('');
+    expect(removed).toBe('');
+    expect(t.err.join('\n')).toContain('does not report what');
+  });
+
+  test('prefers a replacement already on disk over one that would download', async () => {
+    // Releasing must not kick off a multi-GB download as a side effect of a
+    // delete. The catalogue has no disk state, so this cross-references the
+    // inventory's `cached`.
+    const t = io();
+    let pointedAt = '';
+    const code = await run(
+      ['rm', 'yooz-quality-v3'],
+      configWith({ model: 'yooz-instruct-4b', engine: 'owned' }),
+      t.io,
+      {
+        probe: async () => REACHABLE,
+        inventory: async () => [
+          {
+            id: 'yooz-quality-v3',
+            module: 'llm',
+            displayName: 'Q',
+            sizeBytes: 1,
+            cached: true,
+            loaded: true,
+            isActive: true,
+            deletable: false,
+          },
+          {
+            id: 'not-downloaded',
+            module: 'llm',
+            displayName: 'N',
+            sizeBytes: 1,
+            cached: false,
+            loaded: false,
+            isActive: false,
+            deletable: true,
+          },
+          {
+            id: 'on-disk',
+            module: 'llm',
+            displayName: 'D',
+            sizeBytes: 1,
+            cached: true,
+            loaded: false,
+            isActive: false,
+            deletable: true,
+          },
+        ],
+        list: async () => ({
+          current: 'yooz-quality-v3',
+          available: [
+            { id: 'yooz-quality-v3', displayName: 'Q', loaded: true, purpose: 'proofread' },
+            // Listed FIRST but NOT downloaded: picking by position would
+            // trigger a fetch.
+            { id: 'not-downloaded', displayName: 'N', loaded: false, purpose: 'proofread' },
+            { id: 'on-disk', displayName: 'D', loaded: false, purpose: 'proofread' },
+          ],
+        }),
+        setTouchUpModel: async (_url, id) => {
+          pointedAt = id;
+        },
+        remove: async (_url, id) => ({ id, reclaimedBytes: 0 }),
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(pointedAt).toBe('on-disk');
+  });
+
   test('refuses when the engine has no other model of that purpose', async () => {
     // Releasing by pointing the picker at nothing would leave that module
     // without a model, which is worse than refusing to delete.
@@ -608,6 +711,10 @@ describe('remi model rm', () => {
 
   test("never moves a SHARED engine's picker", async () => {
     // Repointing another host's picker is hostile: that app is using it.
+    // Note this is enforced by the pre-existing MUTATING guard (#818), which
+    // returns before any rm-specific code runs -- so this pins the OUTCOME,
+    // not the release branch. Stated because a reader could otherwise assume
+    // `releaseActiveModel` re-checks ownership; it deliberately does not.
     const t = io();
     let pointedAt = '';
     const code = await run(

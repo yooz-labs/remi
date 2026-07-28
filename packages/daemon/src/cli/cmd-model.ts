@@ -650,26 +650,22 @@ export async function runModelCommand(
             // picker is remi's to do, and doing it is the whole point -- the
             // previous advice ("stop the engine first") provably cannot work,
             // because a fresh engine re-selects and re-loads that tier at boot.
-            if (aa.engine === 'owned') {
-              const released = await releaseActiveModel(
-                baseUrl,
-                target,
-                { list, setTouchUp: deps.setTouchUpModel ?? setTouchUpModel },
-                io,
-              );
-              if (released) {
-                const result = await remove(baseUrl, target.id);
-                io.out(`Removed ${result.id}, reclaimed ${formatSize(result.reclaimedBytes)}.`);
-                return 0;
-              }
-              return 1;
-            }
-            io.err(
-              `"${id}" is the engine's active ${target.module} model, so the engine refuses to delete it. It is not remi's model (that is "${aa.model}"), and "remi model use" will not release it.`,
+            //
+            // No ownership check here: `rm` is in MUTATING, so a `shared`
+            // engine already returned at the top of this function (#818). A
+            // second `aa.engine === 'owned'` test would read as a live guard
+            // while being unreachable, and its `else` would rot unnoticed.
+            const released = await releaseActiveModel(
+              baseUrl,
+              target,
+              models,
+              { list, setTouchUp: deps.setTouchUpModel ?? setTouchUpModel },
+              io,
             );
-            io.err(
-              'This engine is shared, so its picker belongs to the app that owns it; point that module elsewhere from there.',
-            );
+            if (!released) return 1;
+            const result = await remove(baseUrl, target.id);
+            io.out(`Removed ${result.id}, reclaimed ${formatSize(result.reclaimedBytes)}.`);
+            return 0;
           } else {
             io.err(
               `"${id}" is the engine's active ${target.module} model, so the engine refuses to delete it.`,
@@ -785,6 +781,7 @@ export async function runModelCommand(
 async function releaseActiveModel(
   baseUrl: string,
   target: ManagedModel,
+  inventory: readonly ManagedModel[],
   deps: { list: typeof listModels; setTouchUp: typeof setTouchUpModel },
   io: ModelCommandIO,
 ): Promise<boolean> {
@@ -793,22 +790,48 @@ async function releaseActiveModel(
     (m) => m.id === target.id || m.huggingFaceID === target.id,
   )?.purpose;
 
-  // A replacement has to serve the same purpose, or the picker would refuse it.
-  // Prefer one already on disk so releasing does not trigger a download.
+  // An engine that does not report `purpose` gives us no way to tell a valid
+  // replacement from an invalid one -- and `m.purpose === targetPurpose` with
+  // both absent is `undefined === undefined`, which matches EVERY row. That is
+  // the same trap `matchesModel` documents: comparing against an absent value
+  // silently turns a filter into a pass-through. Refuse instead of moving a
+  // picker to something the engine may not accept.
+  if (targetPurpose === undefined) {
+    io.err(
+      `This engine does not report what "${displayId(target)}" is used for, so remi cannot tell which model could safely replace it.`,
+    );
+    io.err('Nothing was changed. An engine that reports model purposes resolves this.');
+    return false;
+  }
+
   const candidates = (catalogue?.available ?? []).filter(
     (m) => m.id !== target.id && m.huggingFaceID !== target.id && m.purpose === targetPurpose,
   );
-  const replacement = candidates[0];
-  if (replacement === undefined) {
+  if (candidates.length === 0) {
     io.err(
-      `"${displayId(target)}" is the engine's only ${targetPurpose ?? target.module} model, so there is nothing to point the picker at.`,
+      `"${displayId(target)}" is the engine's only ${targetPurpose} model, so there is nothing to point the picker at.`,
     );
     io.err('Deleting it would leave that module with no model; refusing.');
     return false;
   }
 
+  // Prefer a replacement already on disk. The catalogue has no disk state --
+  // `cached` lives on the INVENTORY rows -- so cross-reference them. Without
+  // this, releasing a model could kick off a multi-GB HuggingFace download as
+  // a side effect of a delete, which is the opposite of what was asked for.
+  const onDisk = new Set(
+    inventory
+      .filter((m) => m.cached)
+      .flatMap((m) => (m.huggingFaceID ? [m.id, m.huggingFaceID] : [m.id])),
+  );
+  const replacement =
+    candidates.find(
+      (m) => onDisk.has(m.id) || (m.huggingFaceID !== undefined && onDisk.has(m.huggingFaceID)),
+    ) ?? candidates[0];
+  if (replacement === undefined) return false;
+
   io.out(
-    `"${displayId(target)}" is the engine's active ${targetPurpose ?? target.module} model; pointing that picker at "${displayId(replacement)}" to release it.`,
+    `"${displayId(target)}" is the engine's active ${targetPurpose} model; pointing that picker at "${displayId(replacement)}" to release it.`,
   );
   try {
     await deps.setTouchUp(baseUrl, replacement.id);
