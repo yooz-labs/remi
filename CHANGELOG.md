@@ -4,6 +4,11 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-28
+
+Makes remi able to stop its own daemons, and to evict a model the engine
+was holding.
+
 ### Fixed
 - **A flaky gate can no longer cancel a release silently** (#856). `auto-release`
   declares the test gates as `needs`, so a red gate — including a flaky one —
