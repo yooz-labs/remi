@@ -305,9 +305,19 @@ function describeSessionDaemon(d: SessionDaemon): string {
  * and which, when wedged badly enough to ignore their socket, could previously
  * only be removed with `pkill` (#859).
  */
-function terminatePid(pid: number, graceMs = 3000): boolean {
+export interface SignalDeps {
+  readonly signal: (pid: number, sig: NodeJS.Signals | 0) => void;
+  readonly sleep: (ms: number) => void;
+}
+
+const realSignals: SignalDeps = {
+  signal: (pid, sig) => process.kill(pid, sig),
+  sleep: (ms) => Bun.sleepSync(ms),
+};
+
+export function terminatePid(pid: number, graceMs = 3000, deps: SignalDeps = realSignals): boolean {
   try {
-    process.kill(pid, 'SIGTERM');
+    deps.signal(pid, 'SIGTERM');
   } catch (err) {
     // Already gone is success; anything else is not ours to signal.
     return (err as NodeJS.ErrnoException).code === 'ESRCH';
@@ -315,20 +325,20 @@ function terminatePid(pid: number, graceMs = 3000): boolean {
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline) {
     try {
-      process.kill(pid, 0);
+      deps.signal(pid, 0);
     } catch {
       return true;
     }
-    Bun.sleepSync(100);
+    deps.sleep(100);
   }
   try {
-    process.kill(pid, 'SIGKILL');
+    deps.signal(pid, 'SIGKILL');
   } catch {
     // Raced with its own exit.
   }
-  Bun.sleepSync(200);
+  deps.sleep(200);
   try {
-    process.kill(pid, 0);
+    deps.signal(pid, 0);
     return false;
   } catch {
     return true;
@@ -336,10 +346,13 @@ function terminatePid(pid: number, graceMs = 3000): boolean {
 }
 
 /** Stop every session daemon, reporting each. Returns how many are now gone. */
-export function stopSessionDaemons(daemons: readonly SessionDaemon[]): number {
+export function stopSessionDaemons(
+  daemons: readonly SessionDaemon[],
+  deps: SignalDeps = realSignals,
+): number {
   let stopped = 0;
   for (const d of daemons) {
-    if (terminatePid(d.pid)) {
+    if (terminatePid(d.pid, 3000, deps)) {
       console.log(`Stopped session daemon PID ${d.pid} (port ${d.wsPort}, ${d.name})`);
       stopped++;
     } else {
@@ -349,7 +362,12 @@ export function stopSessionDaemons(daemons: readonly SessionDaemon[]): number {
   return stopped;
 }
 
-export function stopDaemon(opts: { all?: boolean } = {}): void {
+/**
+ * Returns the exit code the CLI should use. Previously `void`, which meant a
+ * daemon that survived SIGKILL was still reported as a clean stop -- so
+ * `remi stop --all && echo ok` printed `ok` with a daemon still running.
+ */
+export function stopDaemon(opts: { all?: boolean } = {}): number {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   const sessions = listSessionDaemons();
 
@@ -365,10 +383,10 @@ export function stopDaemon(opts: { all?: boolean } = {}): void {
       for (const d of sessions) console.log(describeSessionDaemon(d));
       console.log('');
       console.log('Stop them with "remi stop --all", or one at a time with "remi kill <name>".');
-      return;
+      // Nothing was stopped, so this is not a success.
+      return 1;
     }
-    stopSessionDaemons(sessions);
-    return;
+    return stopSessionDaemons(sessions) === sessions.length ? 0 : 1;
   }
 
   console.log(`Stopping daemon (PID ${pid})...`);
@@ -392,8 +410,7 @@ export function stopDaemon(opts: { all?: boolean } = {}): void {
     } catch {
       cleanupFiles(pid);
       console.log('Daemon stopped.');
-      finishSessionDaemons(sessions, opts.all === true);
-      return;
+      return finishSessionDaemons(sessions, opts.all === true);
     }
   }
 
@@ -411,7 +428,7 @@ export function stopDaemon(opts: { all?: boolean } = {}): void {
   Bun.sleepSync(200);
   cleanupFiles(pid);
   console.log('Daemon killed.');
-  finishSessionDaemons(sessions, opts.all === true);
+  return finishSessionDaemons(sessions, opts.all === true);
 }
 
 /**
@@ -421,16 +438,17 @@ export function stopDaemon(opts: { all?: boolean } = {}): void {
  * reported success, and left processes running that the user then had to find
  * with `pkill`. Whatever this does not stop, it says (#859).
  */
-function finishSessionDaemons(sessions: readonly SessionDaemon[], all: boolean): void {
-  if (sessions.length === 0) return;
+function finishSessionDaemons(sessions: readonly SessionDaemon[], all: boolean): number {
+  if (sessions.length === 0) return 0;
   if (all) {
-    stopSessionDaemons(sessions);
-    return;
+    return stopSessionDaemons(sessions) === sessions.length ? 0 : 1;
   }
   console.log('');
   console.log(`${sessions.length} session daemon(s) are still running:`);
   for (const d of sessions) console.log(describeSessionDaemon(d));
   console.log('Stop these too with "remi stop --all".');
+  // The hub stopped, which is what was asked for.
+  return 0;
 }
 
 export function showDaemonStatus(installedVersion?: string): void {

@@ -165,7 +165,11 @@ describe('runKillCommand — unreachable daemon pid fallback (#859)', () => {
     };
   }
 
-  const WEDGED = [{ pid: 4242, wsPort: 18766, name: 'neurality/main' }];
+  // `name` is `path.basename(workingDirectory)` (cli.ts:2319), so a bare
+  // basename is the ONLY shape that occurs in production. Earlier fixtures used
+  // 'neurality/main', which cannot happen and quietly masked a dead
+  // prefix-matching clause.
+  const WEDGED = [{ pid: 4242, wsPort: 18766, name: 'neurality' }];
 
   test('signals the recorded pid when no daemon answers', async () => {
     // The state this exists for: the daemon is alive but ignoring its socket,
@@ -174,7 +178,7 @@ describe('runKillCommand — unreachable daemon pid fallback (#859)', () => {
     const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
     const signalled: Array<{ pid: number; sig: string }> = [];
     const code = await runKillCommand(
-      mkTarget({ targetId: 'neurality/main' }),
+      mkTarget({ targetId: 'neurality' }),
       {
         ...deps,
         listLive: () => WEDGED,
@@ -226,11 +230,40 @@ describe('runKillCommand — unreachable daemon pid fallback (#859)', () => {
     expect(err.join('\n')).toContain('Cannot reach any remi daemon');
   });
 
+  test('refuses to guess between two unreachable daemons with the same name', async () => {
+    // `name` is a directory basename, so two worktrees of one project collide
+    // routinely. Picking the first would SIGKILL the wrong daemon and report
+    // success -- the reachable path already refuses this via
+    // AmbiguousSessionError, and so must this one.
+    const { io, err } = makeIO2();
+    const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
+    let signalled = false;
+    const code = await runKillCommand(
+      mkTarget({ targetId: 'main' }),
+      {
+        ...deps,
+        listLive: () => [
+          { pid: 100, wsPort: 18765, name: 'main' },
+          { pid: 200, wsPort: 18766, name: 'main' },
+        ],
+        signal: () => {
+          signalled = true;
+        },
+      },
+      io,
+      async () => helpers,
+    );
+    expect(code).toBe(1);
+    expect(signalled).toBe(false);
+    expect(err.join('\n')).toContain('matches 2 unreachable daemons');
+    expect(err.join('\n')).toContain('Nothing was stopped');
+  });
+
   test('a process that is already gone is success, not an error', async () => {
     const { io, out } = makeIO2();
     const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
     const code = await runKillCommand(
-      mkTarget({ targetId: 'neurality/main' }),
+      mkTarget({ targetId: 'neurality' }),
       {
         ...deps,
         listLive: () => WEDGED,

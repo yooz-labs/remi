@@ -140,10 +140,24 @@ function killByRecordedPid(
   io: KillCommandIO,
 ): number | undefined {
   const entries = deps.listLive?.() ?? [];
-  const match = entries.find(
-    (e) => e.name === target || String(e.wsPort) === target || e.name.endsWith(`/${target}`),
-  );
-  if (match === undefined) return undefined;
+  // Exact matches only. `name` is `path.basename(workingDirectory)` and never
+  // contains a slash, so a prefix/suffix clause here would be dead code that
+  // reads like a safety net.
+  const matches = entries.filter((e) => e.name === target || String(e.wsPort) === target);
+  if (matches.length === 0) return undefined;
+
+  // Never pick one. `name` is a directory BASENAME, so two worktrees of the
+  // same project (`main`, `main`) collide routinely, and a directory named
+  // `18766` collides with the port branch. Choosing the first would SIGKILL
+  // somebody else's daemon and report success. The reachable-daemon path
+  // already refuses this via `AmbiguousSessionError`; this must too.
+  if (matches.length > 1) {
+    io.err(`"${target}" matches ${matches.length} unreachable daemons:`);
+    for (const m of matches) io.err(`  ${m.name} (PID ${m.pid}, port ${m.wsPort})`);
+    io.err('Nothing was stopped. Re-run with the port to pick one.');
+    return 1;
+  }
+  const match = matches[0] as { pid: number; wsPort: number; name: string };
 
   const signal = deps.signal ?? ((pid, sig) => process.kill(pid, sig));
   const out = io.out ?? ((msg: string) => console.log(msg));
