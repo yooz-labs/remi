@@ -70,6 +70,16 @@ export interface DaemonConfig {
    * set false to restore the old `orphan_timeout`-based reaping.
    */
   readonly persist_sessions: boolean;
+  /**
+   * Extra browser origins allowed to open a WebSocket or POST an answer (#535).
+   *
+   * Empty by default. remi's own clients are already covered: native clients
+   * (CLI, iOS, macOS) send no `Origin` at all, the iOS WebView sends
+   * `capacitor://localhost`, a dev server sends a loopback origin, and the
+   * hosted client sends `https://remi.yooz.live`. This is for a web client you
+   * host yourself; the daemon logs the exact line to add when it refuses one.
+   */
+  readonly allowed_origins: readonly string[];
 }
 
 /** Network settings */
@@ -159,6 +169,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     bind: '0.0.0.0',
     orphan_timeout: 300,
     persist_sessions: true,
+    allowed_origins: [],
   },
   network: {
     mdns: true,
@@ -391,6 +402,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     validateAutoApprove(merged.auto_approve, configPath);
     validateTerminal(merged.terminal, configPath);
+    validateDaemon(merged.daemon, configPath);
     return merged;
   } catch (err) {
     throw new Error(
@@ -409,6 +421,41 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
  *
  * Also warns about dangerously short patterns that would match too broadly.
  */
+/**
+ * Validate `[daemon]` entries whose runtime type is load-bearing (#535).
+ *
+ * `allowed_origins` widens who may answer a permission prompt, so a wrong type
+ * must stop the daemon rather than degrade quietly. Written as a string
+ * (`allowed_origins = "https://x"`) it would still be truthy and `.includes()`
+ * would then substring-match origins against it, which is not what anyone meant.
+ */
+function validateDaemon(cfg: DaemonConfig, configPath: string): void {
+  const v: unknown = cfg.allowed_origins;
+  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
+    throw new Error(
+      `Invalid daemon.allowed_origins in ${configPath}: must be an array of origin strings, got ${typeof v === 'string' ? `string "${v}"` : typeof v}. Example: allowed_origins = ["https://remi.example.com"]`,
+    );
+  }
+  for (const origin of v) {
+    // An origin is scheme + host + optional port. A path, a query, or a
+    // trailing slash never appears in an `Origin` header, so an entry carrying
+    // one can never match and is a silent no-op: refuse it instead.
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(
+        `Invalid daemon.allowed_origins entry "${origin}" in ${configPath}: not a URL. Use scheme://host[:port], e.g. "https://remi.example.com".`,
+      );
+    }
+    if (parsed.origin !== origin) {
+      throw new Error(
+        `Invalid daemon.allowed_origins entry "${origin}" in ${configPath}: an Origin header carries no path, query, or trailing slash, so this entry would never match. Use "${parsed.origin}".`,
+      );
+    }
+  }
+}
+
 function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   const isStringArray = (v: unknown): v is readonly string[] =>
     Array.isArray(v) && v.every((s) => typeof s === 'string');
@@ -846,6 +893,12 @@ port_range = ${DEFAULT_CONFIG.daemon.port_range}
 bind = "${DEFAULT_CONFIG.daemon.bind}"
 orphan_timeout = ${DEFAULT_CONFIG.daemon.orphan_timeout}  # seconds (ignored when persist_sessions = true)
 persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions alive after disconnect (tmux-style)
+# Extra browser origins allowed to connect (#535). remi's own clients need no
+# entry here: native clients send no Origin, the iOS app sends
+# capacitor://localhost, and the hosted client sends https://remi.yooz.live.
+# Only a web client you host yourself does. Example:
+#   allowed_origins = ["https://remi.example.com"]
+allowed_origins = []
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
@@ -999,6 +1052,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  bind = "${config.daemon.bind}"`);
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
   lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
+  lines.push(`  allowed_origins = ${JSON.stringify(config.daemon.allowed_origins)}`);
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);

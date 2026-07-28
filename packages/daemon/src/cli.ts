@@ -1934,6 +1934,7 @@ const wsAdapter = new WebSocketAdapter(
     port: PORT,
     host: bindHost,
     authenticator,
+    allowedOrigins: remiConfig.daemon.allowed_origins,
   },
   sharedEvents,
 );
@@ -2134,7 +2135,12 @@ if (cliDaemonMode) {
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
       const newWsAdapter = new WebSocketAdapter(
-        { port: PORT, host: bindHost, authenticator },
+        {
+          port: PORT,
+          host: bindHost,
+          authenticator,
+          allowedOrigins: remiConfig.daemon.allowed_origins,
+        },
         sharedEvents,
       );
       registry.register(newWsAdapter);
@@ -2444,7 +2450,12 @@ if (cliDaemonMode) {
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
       const newWsAdapter = new WebSocketAdapter(
-        { port: PORT, host: bindHost, authenticator },
+        {
+          port: PORT,
+          host: bindHost,
+          authenticator,
+          allowedOrigins: remiConfig.daemon.allowed_origins,
+        },
         sharedEvents,
       );
       registry.register(newWsAdapter);

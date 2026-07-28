@@ -8,6 +8,7 @@
 import { generateId } from '@remi/shared';
 import type { AnswerExtras, ProtocolMessage, UUID } from '@remi/shared';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
+import { corsHeadersForOrigin, isAllowedOrigin, rejectionNotice } from './origin-policy.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
 
 /** Server configuration */
@@ -26,6 +27,15 @@ export interface ServerConfig {
 
   /** Connection configuration */
   readonly connection?: Partial<ConnectionConfig>;
+
+  /**
+   * Extra browser origins permitted to reach this daemon, beyond the built-in
+   * defaults (#535). For a self-hosted web client. See `origin-policy.ts`.
+   */
+  readonly allowedOrigins?: readonly string[];
+
+  /** Where the origin-rejection notice goes. Defaults to `console.warn`. */
+  readonly logFn?: (msg: string) => void;
 }
 
 /** Server events */
@@ -141,6 +151,9 @@ const DEFAULT_MAX_CONNECTIONS = 100;
  */
 const WS_IDLE_TIMEOUT_SECONDS = 120;
 
+/** Cap on distinct refused origins remembered for log de-duplication (#535). */
+const MAX_REFUSED_ORIGINS_TRACKED = 64;
+
 /** WebSocket data attached to each connection */
 interface WSData {
   connectionId: UUID;
@@ -172,6 +185,14 @@ export class WebSocketServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private isRunning = false;
 
+  /**
+   * Origins already refused once. A rejected page typically retries in a loop,
+   * and the notice is several lines long; without this the log becomes unusable
+   * exactly when someone is trying to read it. Bounded because the set is keyed
+   * by attacker-controlled input.
+   */
+  private readonly refusedOrigins: Set<string> = new Set();
+
   constructor(config: Partial<ServerConfig> = {}, events: Partial<ServerEvents> = {}) {
     this.config = {
       port: config.port ?? DEFAULT_PORT,
@@ -179,8 +200,29 @@ export class WebSocketServer {
       path: config.path ?? DEFAULT_PATH,
       maxConnections: config.maxConnections ?? DEFAULT_MAX_CONNECTIONS,
       connection: config.connection ?? {},
+      allowedOrigins: config.allowedOrigins ?? [],
+      logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
     };
     this.events = events;
+  }
+
+  /**
+   * Gate a request on its `Origin` (#535). Returns true when the request may
+   * proceed. Logs the first refusal per origin, naming the fix.
+   */
+  private originAllowed(origin: string | null): boolean {
+    if (isAllowedOrigin(origin, this.config.allowedOrigins)) return true;
+    const key = origin ?? '';
+    if (!this.refusedOrigins.has(key)) {
+      if (this.refusedOrigins.size >= MAX_REFUSED_ORIGINS_TRACKED) {
+        // Keep logging correctness over log-spam suppression: forget the old
+        // keys rather than going silent for the rest of the process's life.
+        this.refusedOrigins.clear();
+      }
+      this.refusedOrigins.add(key);
+      this.config.logFn(rejectionNotice(key));
+    }
+    return false;
   }
 
   /** Get number of active connections */
@@ -227,6 +269,15 @@ export class WebSocketServer {
 
       fetch(req, server) {
         const url = new URL(req.url);
+        const origin = req.headers.get('origin');
+
+        // Origin gate (#535). Checked before ANYTHING else, including the
+        // connection limit, so a hostile page cannot even learn whether the
+        // daemon is saturated. A page cannot forge this header; a native
+        // client sends none and passes.
+        if (!self.originAllowed(origin)) {
+          return new Response('Forbidden origin', { status: 403 });
+        }
 
         // Only handle WebSocket upgrade on the configured path
         if (url.pathname === path) {
@@ -253,16 +304,15 @@ export class WebSocketServer {
           return new Response('WebSocket upgrade failed', { status: 400 });
         }
 
-        // CORS headers for HTTP endpoints. The daemon is a local-network
-        // service that already accepts arbitrary WebSocket clients;
-        // wildcard CORS does not add a security risk and is required for
-        // the Capacitor iOS app (origin `capacitor://localhost`) to fetch
-        // /auth-info during port-scan discovery. Without it, every probe
-        // fails silently and the port-scan added in #393 reports "no
-        // daemon found" even when daemons are actively serving (#403).
+        // CORS headers for HTTP endpoints. Echoes the caller's own origin
+        // rather than `*` (#535): every origin reaching this line already
+        // passed the allow-list, so echoing is strictly narrower than the
+        // wildcard and still lets the Capacitor iOS app (origin
+        // `capacitor://localhost`) read /auth-info during port-scan
+        // discovery, which is what the wildcard was for (#393/#403).
         const jsonCorsHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          ...corsHeadersForOrigin(origin),
         };
 
         // Health check endpoint
@@ -305,7 +355,7 @@ export class WebSocketServer {
             return new Response(null, {
               status: 204,
               headers: {
-                'Access-Control-Allow-Origin': '*',
+                ...corsHeadersForOrigin(origin),
                 'Access-Control-Allow-Methods': 'POST, OPTIONS',
                 'Access-Control-Allow-Headers': 'Content-Type',
               },
@@ -323,7 +373,7 @@ export class WebSocketServer {
 
         return new Response('Not found', {
           status: 404,
-          headers: { 'Access-Control-Allow-Origin': '*' },
+          headers: corsHeadersForOrigin(origin),
         });
       },
 

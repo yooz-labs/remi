@@ -36,6 +36,9 @@ export interface WebSocketAdapterConfig extends AdapterConfig {
 
   /** Authenticator instance (enables SSH-style auth) */
   readonly authenticator?: Authenticator | undefined;
+
+  /** Extra browser origins allowed to reach the daemon (#535). */
+  readonly allowedOrigins?: readonly string[];
 }
 
 const DEFAULT_PORT = 8765;
@@ -61,6 +64,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(config.path && { path: config.path }),
       ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
       ...(config.authenticator && { authenticator: config.authenticator }),
+      ...(config.allowedOrigins && { allowedOrigins: config.allowedOrigins }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
@@ -191,6 +195,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(this.config.maxConnections !== undefined && {
         maxConnections: this.config.maxConnections,
       }),
+      ...(this.config.allowedOrigins && { allowedOrigins: this.config.allowedOrigins }),
       // Let daemon handle HelloAck to include resume info
       connection: {
         skipHelloAck: true,
