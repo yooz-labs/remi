@@ -22,6 +22,8 @@ export interface StartDaemonOptions {
   readonly orphanTimeout?: number;
   /** This binary's remi version, for the `status` drift warning (#539). */
   readonly remiVersion?: string;
+  /** `remi stop --all`: stop session daemons too, not only the hub (#859). */
+  readonly all?: boolean;
 }
 
 /** Subcommands this handler owns. */
@@ -65,7 +67,7 @@ export async function runDaemonLifecycleCommand(
     return 0;
   }
   if (sub === 'stop') {
-    dm.stopDaemon();
+    dm.stopDaemon({ all: opts.all === true });
     return 0;
   }
   if (sub === 'status') {

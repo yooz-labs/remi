@@ -152,3 +152,98 @@ describe('runKillCommand', () => {
     expect(err).toEqual(['kill failed']);
   });
 });
+
+describe('runKillCommand — unreachable daemon pid fallback (#859)', () => {
+  /** IO that also captures stdout, which the fallback narrates to. */
+  function makeIO2() {
+    const err: string[] = [];
+    const out: string[] = [];
+    return {
+      io: { err: (m: string) => err.push(m), out: (m: string) => out.push(m) },
+      err,
+      out,
+    };
+  }
+
+  const WEDGED = [{ pid: 4242, wsPort: 18766, name: 'neurality/main' }];
+
+  test('signals the recorded pid when no daemon answers', async () => {
+    // The state this exists for: the daemon is alive but ignoring its socket,
+    // so every RPC path fails and `pkill` was previously the only option.
+    const { io, err, out } = makeIO2();
+    const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
+    const signalled: Array<{ pid: number; sig: string }> = [];
+    const code = await runKillCommand(
+      mkTarget({ targetId: 'neurality/main' }),
+      {
+        ...deps,
+        listLive: () => WEDGED,
+        signal: (pid, sig) => signalled.push({ pid, sig: String(sig) }),
+      },
+      io,
+      async () => helpers,
+    );
+    expect(code).toBe(0);
+    expect(signalled).toEqual([{ pid: 4242, sig: 'SIGTERM' }]);
+    // It must be obvious that graceful shutdown was skipped.
+    expect(err.join('\n')).toContain('not answering');
+    expect(out.join('\n')).toContain('not shut down cleanly');
+  });
+
+  test('matches by port as well as name', async () => {
+    const { io } = makeIO2();
+    const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
+    const signalled: number[] = [];
+    const code = await runKillCommand(
+      mkTarget({ targetId: '18766' }),
+      { ...deps, listLive: () => WEDGED, signal: (pid) => signalled.push(pid) },
+      io,
+      async () => helpers,
+    );
+    expect(code).toBe(0);
+    expect(signalled).toEqual([4242]);
+  });
+
+  test('an unknown target still reports "cannot reach", not a silent success', async () => {
+    // A typo must not be swallowed by the fallback.
+    const { io, err } = makeIO2();
+    const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
+    let signalled = false;
+    const code = await runKillCommand(
+      mkTarget({ targetId: 'no-such-session' }),
+      {
+        ...deps,
+        listLive: () => WEDGED,
+        signal: () => {
+          signalled = true;
+        },
+      },
+      io,
+      async () => helpers,
+    );
+    expect(code).toBe(1);
+    expect(signalled).toBe(false);
+    expect(err.join('\n')).toContain('Cannot reach any remi daemon');
+  });
+
+  test('a process that is already gone is success, not an error', async () => {
+    const { io, out } = makeIO2();
+    const { helpers, deps } = makeHelpersAndDeps({ queryResults: [] });
+    const code = await runKillCommand(
+      mkTarget({ targetId: 'neurality/main' }),
+      {
+        ...deps,
+        listLive: () => WEDGED,
+        signal: () => {
+          const e = new Error('no such process') as NodeJS.ErrnoException;
+          e.code = 'ESRCH';
+          throw e;
+        },
+      },
+      io,
+      async () => helpers,
+    );
+    expect(code).toBe(0);
+    expect(out.join('\n')).toContain('already gone');
+  });
+});

@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { formatVersionDrift } from './version-drift.ts';
 
@@ -261,11 +262,113 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
   return pid;
 }
 
-export function stopDaemon(): void {
+/** A running session daemon, as recorded in the live-sessions registry. */
+export interface SessionDaemon {
+  readonly pid: number;
+  readonly wsPort: number;
+  readonly name: string;
+}
+
+/**
+ * The session daemons running right now, deduplicated by pid.
+ *
+ * `stop` and `status` resolve the HUB, via `daemon.pid` / `daemon-status.json`.
+ * Session daemons write `status-<PORT>.json` instead and are named in neither,
+ * so before this existed both commands would announce "Daemon is not running"
+ * while `remi ls` happily listed one (#859). The live-sessions registry is the
+ * right source: it already reaps entries whose process is gone, so anything it
+ * returns names a pid that was alive a moment ago.
+ *
+ * The hub deliberately never registers itself here, so it cannot appear twice.
+ */
+export function listSessionDaemons(
+  listLive = () => new SessionRegistryFile().listLive(),
+): SessionDaemon[] {
+  const byPid = new Map<number, SessionDaemon>();
+  for (const entry of listLive()) {
+    // One daemon can host several sessions; it is still one process to stop.
+    if (!byPid.has(entry.pid)) {
+      byPid.set(entry.pid, { pid: entry.pid, wsPort: entry.wsPort, name: entry.name });
+    }
+  }
+  return [...byPid.values()];
+}
+
+function describeSessionDaemon(d: SessionDaemon): string {
+  return `  PID ${d.pid}  port ${d.wsPort}  ${d.name}`;
+}
+
+/**
+ * SIGTERM, then SIGKILL if it will not go. Returns whether the process is gone.
+ *
+ * Used for session daemons, which have no graceful RPC path of their own here —
+ * and which, when wedged badly enough to ignore their socket, could previously
+ * only be removed with `pkill` (#859).
+ */
+function terminatePid(pid: number, graceMs = 3000): boolean {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (err) {
+    // Already gone is success; anything else is not ours to signal.
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    Bun.sleepSync(100);
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Raced with its own exit.
+  }
+  Bun.sleepSync(200);
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Stop every session daemon, reporting each. Returns how many are now gone. */
+export function stopSessionDaemons(daemons: readonly SessionDaemon[]): number {
+  let stopped = 0;
+  for (const d of daemons) {
+    if (terminatePid(d.pid)) {
+      console.log(`Stopped session daemon PID ${d.pid} (port ${d.wsPort}, ${d.name})`);
+      stopped++;
+    } else {
+      console.error(`Could not stop session daemon PID ${d.pid} (port ${d.wsPort}, ${d.name})`);
+    }
+  }
+  return stopped;
+}
+
+export function stopDaemon(opts: { all?: boolean } = {}): void {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
+  const sessions = listSessionDaemons();
+
   if (!pid) {
-    console.error('No running daemon found.');
-    process.exit(1);
+    // "No running daemon found" was a lie whenever session daemons existed,
+    // and it is the message that sent a user to `pkill` (#859).
+    if (sessions.length === 0) {
+      console.error('No running daemon found.');
+      process.exit(1);
+    }
+    if (opts.all !== true) {
+      console.log('No hub is running, but these session daemons are:');
+      for (const d of sessions) console.log(describeSessionDaemon(d));
+      console.log('');
+      console.log('Stop them with "remi stop --all", or one at a time with "remi kill <name>".');
+      return;
+    }
+    stopSessionDaemons(sessions);
+    return;
   }
 
   console.log(`Stopping daemon (PID ${pid})...`);
@@ -289,6 +392,7 @@ export function stopDaemon(): void {
     } catch {
       cleanupFiles(pid);
       console.log('Daemon stopped.');
+      finishSessionDaemons(sessions, opts.all === true);
       return;
     }
   }
@@ -307,12 +411,44 @@ export function stopDaemon(): void {
   Bun.sleepSync(200);
   cleanupFiles(pid);
   console.log('Daemon killed.');
+  finishSessionDaemons(sessions, opts.all === true);
+}
+
+/**
+ * Stop the session daemons too, or — when not asked to — NAME them.
+ *
+ * Silence here is what made `remi stop` feel broken: it stopped the hub,
+ * reported success, and left processes running that the user then had to find
+ * with `pkill`. Whatever this does not stop, it says (#859).
+ */
+function finishSessionDaemons(sessions: readonly SessionDaemon[], all: boolean): void {
+  if (sessions.length === 0) return;
+  if (all) {
+    stopSessionDaemons(sessions);
+    return;
+  }
+  console.log('');
+  console.log(`${sessions.length} session daemon(s) are still running:`);
+  for (const d of sessions) console.log(describeSessionDaemon(d));
+  console.log('Stop these too with "remi stop --all".');
 }
 
 export function showDaemonStatus(installedVersion?: string): void {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
+  const sessions = listSessionDaemons();
   if (!pid) {
-    console.log('Daemon is not running.');
+    // Saying "Daemon is not running" while `remi ls` lists one is how a user
+    // ends up reaching for `pkill` (#859). Both statements were about
+    // different things; only one of them said so.
+    if (sessions.length === 0) {
+      console.log('Daemon is not running.');
+      return;
+    }
+    console.log('No hub is running.');
+    console.log(`${sessions.length} session daemon(s) running:`);
+    for (const d of sessions) console.log(describeSessionDaemon(d));
+    console.log('');
+    console.log('Start a hub with "remi start"; stop these with "remi stop --all".');
     return;
   }
 
@@ -342,6 +478,12 @@ export function showDaemonStatus(installedVersion?: string): void {
   }
 
   console.log(`  Logs: ${LOG_FILE}`);
+
+  if (sessions.length > 0) {
+    console.log('');
+    console.log(`${sessions.length} session daemon(s) running:`);
+    for (const d of sessions) console.log(describeSessionDaemon(d));
+  }
 }
 
 export function showDaemonLogs(lines = 50): void {

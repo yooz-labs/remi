@@ -305,6 +305,7 @@ const cliDaemonMode = parsedArgs.daemonMode || serveMode;
 const cliCodeRefresh = parsedArgs.codeRefresh;
 const cliPermanentCode = parsedArgs.permanentCode;
 const cliForce = parsedArgs.force;
+const cliStopAll = parsedArgs.stopAll;
 const cliUsePassphrase = parsedArgs.usePassphrase;
 const cliDecrypt = parsedArgs.decrypt;
 const cliEncrypt = parsedArgs.encrypt;
@@ -511,6 +512,7 @@ if (
       ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
       ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
       remiVersion: REMI_VERSION,
+      all: cliStopAll,
     }),
   );
 }
@@ -555,6 +557,7 @@ if (cliSubcommand === 'kill') {
   process.exit(
     await runKillCommand(resolved, {
       getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      listLive: () => liveSessionsRegistry.listLive(),
       explicitPort: cliPort,
     }),
   );
