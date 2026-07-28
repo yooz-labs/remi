@@ -4,6 +4,23 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`remi stop --all`** (#859) stops session daemons as well as the hub.
+
+### Fixed
+- **`remi stop` and `remi status` no longer deny that running daemons exist**
+  (#859). Both resolved the *hub* only, via `daemon.pid` / `daemon-status.json`;
+  session daemons write `status-<PORT>.json`, which nothing enumerated. So
+  `status` reported "Daemon is not running" while `remi ls` listed a daemon
+  right there. They now report session daemons too, and whatever `remi stop`
+  does not stop, it names.
+- **`remi kill` can stop a daemon that has stopped answering** (#859). It went
+  only over the WebSocket, so a daemon wedged badly enough to ignore its socket
+  was unreachable by every remi command and could be removed only with `pkill`
+  — which matches on a name and will happily take down something unrelated.
+  remi records that daemon's pid itself, so it now falls back to signalling it,
+  saying plainly that graceful shutdown was skipped.
+
 ## [0.7.2] - 2026-07-27
 
 Makes the engine's version visible and replaceable, and puts the model
