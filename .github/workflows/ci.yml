@@ -144,6 +144,73 @@ jobs:
           bun install --frozen-lockfile
           ./scripts/bump-version.sh --push --force stable
 
+  # A release that fails by DOING NOTHING is the hardest kind to notice (#856).
+  #
+  # `auto-release` declares `needs: [spelling, lint, typecheck, test]`, so a red
+  # gate -- including a flaky one -- SKIPS it rather than failing it: no tag, no
+  # npm publish, no GitHub release, no Homebrew update. The workflow reports an
+  # overall failure, but nothing anywhere says "your release did not happen",
+  # and the only symptom is a tag that never appeared. That is exactly what two
+  # different flaky tests did during the 0.7.1 cut, once on main.
+  #
+  # So assert the invariant directly: after a push to main, main must not still
+  # carry a -dev suffix. `always()` is load-bearing -- this has to run precisely
+  # when the gates failed.
+  release-guard:
+    name: Release Guard
+    needs: [spelling, lint, typecheck, test, auto-release]
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fail loudly if the release did not actually happen
+        run: |
+          # Read the CURRENT main, not this run's SHA: when auto-release works
+          # it pushes the stripped version, and that commit is newer than the
+          # ref this workflow started from.
+          git fetch origin main
+          VERSION=$(git show origin/main:package.json | jq -r '.version')
+
+          # `jq` prints the string "null" for an absent field and exits 0, so an
+          # unguarded check would read that as "not a dev version" and pass.
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "::error title=Cannot read version::origin/main's package.json has no usable version field."
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *"-dev"* ]]; then
+            echo "::error title=Release did not happen::main is at $VERSION, which is still a dev version."
+            echo "" >&2
+            echo "auto-release SKIPS (it does not fail) when any gate is red, so no tag," >&2
+            echo "npm publish, GitHub release or Homebrew update happened for this merge." >&2
+            echo "" >&2
+            echo "If a gate failed on a flake, re-run the failed jobs on this workflow run;" >&2
+            echo "auto-release will then run and tag ${VERSION%%-*}." >&2
+            exit 1
+          fi
+
+          # A stable version is NOT proof a release shipped. `bump-version.sh`
+          # pushes the commit and the tag as two separate, non-atomic commands
+          # (`git push origin HEAD` then `git push origin "v$NEW_VERSION"`), and
+          # only the TAG triggers release.yml. If the second push fails, main
+          # reads stable while nothing downstream ever fires -- precisely the
+          # "no tag, no npm, no Homebrew" outcome this job exists to catch.
+          if ! git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
+            echo "::error title=Release tag missing::main is at $VERSION but tag v$VERSION does not exist on origin."
+            echo "" >&2
+            echo "Only the tag triggers release.yml, so no binaries, npm publish," >&2
+            echo "GitHub release or Homebrew update happened for $VERSION." >&2
+            echo "" >&2
+            echo "Re-point/push the tag at origin/main to trigger the release." >&2
+            exit 1
+          fi
+
+          echo "main is at $VERSION and tag v$VERSION exists - release completed." 
+
   # After a stable release on main, merge main back into develop and
   # bump to the next patch dev version (e.g. 0.4.13 -> 0.4.14-dev.1).
   sync-develop:

@@ -4,6 +4,57 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-28
+
+Makes remi able to stop its own daemons, and to evict a model the engine
+was holding.
+
+### Fixed
+- **A flaky gate can no longer cancel a release silently** (#856). `auto-release`
+  declares the test gates as `needs`, so a red gate — including a flaky one —
+  *skips* it rather than failing it: no tag, no npm publish, no GitHub release,
+  no Homebrew update, and the only symptom is a tag that never appeared. Two
+  different flaky tests did exactly that during the 0.7.1 cut, once on `main`.
+  A new `Release Guard` job asserts the invariant directly: after a push to
+  `main`, `main` must not still carry a `-dev` suffix. It runs on `always()`,
+  because the case it exists for is precisely the one where the gates failed.
+
+### Fixed
+- **`remi model rm` can now evict the engine's active model** (#860). It could
+  not, and no sequence of remi commands could: `isActive`/`deletable` in the
+  engine's inventory are owned by the **TouchUp (proofread) picker**, not the
+  LLM picker remi uses. `remi model use` writes remi's config and cannot
+  release it; `POST /v1/llm/model` moves the LLM selection and leaves it
+  undeletable; and restarting does not help, because a fresh engine re-selects
+  and re-loads that tier at boot — so the printed advice ("stop the engine
+  first") provably could not work. On an engine remi **owns**, `rm` now moves
+  that picker to another model of the same purpose and then deletes, reporting
+  both actions. On a `shared` engine it refuses, since repointing another
+  host's picker is hostile.
+- **`remi model ls` says what a model is active FOR** (#860) — `engine
+  proofread tier` rather than a bare `engine active`. Because that flag belongs
+  to a different picker, remi's own model could never carry it and a model remi
+  never uses always did, which read as "the engine is ignoring the model I
+  chose". It never was: remi passes its configured model explicitly on every
+  evaluation.
+
+### Added
+- **`remi stop --all`** (#859) stops session daemons as well as the hub.
+
+### Fixed
+- **`remi stop` and `remi status` no longer deny that running daemons exist**
+  (#859). Both resolved the *hub* only, via `daemon.pid` / `daemon-status.json`;
+  session daemons write `status-<PORT>.json`, which nothing enumerated. So
+  `status` reported "Daemon is not running" while `remi ls` listed a daemon
+  right there. They now report session daemons too, and whatever `remi stop`
+  does not stop, it names.
+- **`remi kill` can stop a daemon that has stopped answering** (#859). It went
+  only over the WebSocket, so a daemon wedged badly enough to ignore its socket
+  was unreachable by every remi command and could be removed only with `pkill`
+  — which matches on a name and will happily take down something unrelated.
+  remi records that daemon's pid itself, so it now falls back to signalling it,
+  saying plainly that graceful shutdown was skipped.
+
 ## [0.7.2] - 2026-07-27
 
 Makes the engine's version visible and replaceable, and puts the model

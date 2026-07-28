@@ -229,6 +229,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     '',
     bold('Usage:'),
     entry('remi stop', 'Stop the running hub'),
+    entry('remi stop --all', 'Also stop every session daemon'),
   ],
   status: [
     'Show daemon status.',
@@ -373,7 +374,7 @@ export function formatHelp(version: string): string {
     '',
     bold('Service:'),
     entry('remi start', 'Start the hub in the background'),
-    entry('remi stop', 'Stop background daemon'),
+    entry('remi stop', 'Stop background daemon (--all: session daemons too)'),
     entry('remi status', 'Show daemon status'),
     entry('remi logs', 'Show daemon logs'),
     entry('remi serve', 'Run the session-less hub in the foreground'),

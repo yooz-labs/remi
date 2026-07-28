@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.2'; // REMI_COMPILED_VERSION
+      return '0.7.3-dev.5'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.2'; // REMI_COMPILED_VERSION
+    return '0.7.3-dev.5'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -305,6 +305,7 @@ const cliDaemonMode = parsedArgs.daemonMode || serveMode;
 const cliCodeRefresh = parsedArgs.codeRefresh;
 const cliPermanentCode = parsedArgs.permanentCode;
 const cliForce = parsedArgs.force;
+const cliStopAll = parsedArgs.stopAll;
 const cliUsePassphrase = parsedArgs.usePassphrase;
 const cliDecrypt = parsedArgs.decrypt;
 const cliEncrypt = parsedArgs.encrypt;
@@ -511,6 +512,7 @@ if (
       ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
       ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
       remiVersion: REMI_VERSION,
+      all: cliStopAll,
     }),
   );
 }
@@ -555,6 +557,7 @@ if (cliSubcommand === 'kill') {
   process.exit(
     await runKillCommand(resolved, {
       getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      listLive: () => liveSessionsRegistry.listLive(),
       explicitPort: cliPort,
     }),
   );

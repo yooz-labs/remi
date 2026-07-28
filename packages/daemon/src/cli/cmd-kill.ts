@@ -12,12 +12,23 @@ import type { ResolvedTarget } from './target-resolver.ts';
 
 export interface KillCommandIO {
   readonly err: (msg: string) => void;
+  readonly out?: (msg: string) => void;
 }
 
-const defaultIO: KillCommandIO = { err: (msg) => console.error(msg) };
+const defaultIO: KillCommandIO = {
+  err: (msg) => console.error(msg),
+  out: (msg) => console.log(msg),
+};
 
 export interface KillCommandDeps {
   readonly getLivePorts: () => number[];
+  /**
+   * Live-sessions entries, for the unreachable-daemon fallback (#859). Seam so
+   * tests never signal a real process.
+   */
+  readonly listLive?: () => readonly { pid: number; wsPort: number; name: string }[];
+  /** Signal a pid. Defaults to the real `process.kill`. */
+  readonly signal?: (pid: number, sig: NodeJS.Signals | 0) => void;
   readonly explicitPort: number | undefined;
 }
 
@@ -83,6 +94,12 @@ export async function runKillCommand(
         },
       );
       if (resolution.status === 'no-daemons') {
+        // A daemon that ignores its socket used to be unreachable by every
+        // remi command, leaving `pkill` as the only option -- which matches on
+        // a name and will happily take down something else (#859). remi
+        // recorded this daemon's pid itself, so use it.
+        const byPid = killByRecordedPid(killTarget, deps, io);
+        if (byPid !== undefined) return byPid;
         io.err(
           `Cannot reach any remi daemon (tried ${resolution.probedCount} port(s)). Is a daemon running?`,
         );
@@ -104,4 +121,58 @@ export async function runKillCommand(
     io.err(errorToString(err));
     return 1;
   }
+}
+
+/**
+ * Stop a daemon by the pid the live-sessions registry recorded, when its socket
+ * will not answer.
+ *
+ * Returns an exit code when it acted, or undefined when no recorded entry
+ * matches -- so the caller still prints its own "cannot reach" message rather
+ * than this silently swallowing an ordinary typo.
+ *
+ * Deliberately narrated: this skips the daemon's graceful shutdown, so a user
+ * must be able to tell from the output that it happened.
+ */
+function killByRecordedPid(
+  target: string,
+  deps: KillCommandDeps,
+  io: KillCommandIO,
+): number | undefined {
+  const entries = deps.listLive?.() ?? [];
+  // Exact matches only. `name` is `path.basename(workingDirectory)` and never
+  // contains a slash, so a prefix/suffix clause here would be dead code that
+  // reads like a safety net.
+  const matches = entries.filter((e) => e.name === target || String(e.wsPort) === target);
+  if (matches.length === 0) return undefined;
+
+  // Never pick one. `name` is a directory BASENAME, so two worktrees of the
+  // same project (`main`, `main`) collide routinely, and a directory named
+  // `18766` collides with the port branch. Choosing the first would SIGKILL
+  // somebody else's daemon and report success. The reachable-daemon path
+  // already refuses this via `AmbiguousSessionError`; this must too.
+  if (matches.length > 1) {
+    io.err(`"${target}" matches ${matches.length} unreachable daemons:`);
+    for (const m of matches) io.err(`  ${m.name} (PID ${m.pid}, port ${m.wsPort})`);
+    io.err('Nothing was stopped. Re-run with the port to pick one.');
+    return 1;
+  }
+  const match = matches[0] as { pid: number; wsPort: number; name: string };
+
+  const signal = deps.signal ?? ((pid, sig) => process.kill(pid, sig));
+  const out = io.out ?? ((msg: string) => console.log(msg));
+
+  io.err(`Daemon on port ${match.wsPort} is not answering; stopping PID ${match.pid} directly.`);
+  try {
+    signal(match.pid, 'SIGTERM');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+      out(`PID ${match.pid} was already gone.`);
+      return 0;
+    }
+    io.err(`Could not signal PID ${match.pid}: ${errorToString(err)}`);
+    return 1;
+  }
+  out(`Sent SIGTERM to PID ${match.pid} (${match.name}). Its session was not shut down cleanly.`);
+  return 0;
 }

@@ -827,4 +827,27 @@ describe('parseArgs - auto-approve flags', () => {
     expect(r.autoApproveDeny).toEqual(['sudo ']);
     expect(r.autoApproveInstructions).toBe('Be conservative');
   });
+
+  describe('--all (#859)', () => {
+    test('remi stop --all sets stopAll', () => {
+      expect(parseArgs(['stop', '--all']).stopAll).toBe(true);
+    });
+
+    test('plain remi stop does not', () => {
+      expect(parseArgs(['stop']).stopAll).toBe(false);
+    });
+
+    test('remi model ls --all still reaches the model subcommand', () => {
+      // `--all` is consumed by the model branch's OWN_FLAGS before the new
+      // top-level branch sees it. Nothing pinned that ordering, so a future
+      // edit to either branch could silently break `remi model ls --all`.
+      const r = parseArgs(['model', 'ls', '--all']);
+      expect(r.subcommand).toBe('model');
+      expect(r.subcommandArgs).toEqual(['ls', '--all']);
+    });
+
+    test('remi --sessions all still selects the sessions view', () => {
+      expect(parseArgs(['--sessions', 'all']).showSessions).toBe('all');
+    });
+  });
 });

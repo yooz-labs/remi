@@ -87,6 +87,8 @@ export interface ParsedArgs {
   readonly codeRefresh: boolean;
   readonly permanentCode: boolean;
   readonly force: boolean;
+  /** `remi stop --all`: also stop session daemons, not just the hub (#859). */
+  readonly stopAll: boolean;
   readonly usePassphrase: boolean;
   readonly decrypt: boolean;
   readonly encrypt: boolean;
@@ -137,6 +139,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let codeRefresh = false;
   let permanentCode = false;
   let force = false;
+  let stopAll = false;
   let usePassphrase = false;
   let decrypt = false;
   let encrypt = false;
@@ -266,6 +269,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       uninstall = true;
     } else if (arg === '--force') {
       force = true;
+    } else if (arg === '--all') {
+      // Only `stop` defines a top-level `--all` today; harmless elsewhere.
+      stopAll = true;
     } else if (arg === '--passphrase') {
       usePassphrase = true;
     } else if (arg === '--decrypt') {
@@ -466,6 +472,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     codeRefresh,
     permanentCode,
     force,
+    stopAll,
     usePassphrase,
     decrypt,
     encrypt,
