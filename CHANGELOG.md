@@ -4,6 +4,39 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Security
+- **A website you visit can no longer answer your permission prompts** (#535).
+  The WebSocket upgrade validated no `Origin` and every HTTP endpoint answered
+  with `Access-Control-Allow-Origin: *`, while auth is off by default on
+  loopback binds and loopback peers are exempt even when it is on. WebSocket
+  upgrades are not subject to the same-origin policy and a wildcard CORS header
+  waives it for the rest, so any page could open `ws://127.0.0.1:<port>/ws` or
+  POST `/answer` and approve a permission on your machine.
+
+  A browser always sets `Origin` and a page cannot forge it, while native
+  clients (CLI, iOS, macOS) send none. remi's own clients are allowed
+  (`capacitor://localhost`, any loopback origin, `https://remi.yooz.live`, plus
+  anything in the new `daemon.allowed_origins`) and everything else is refused,
+  including the literal `null` a sandboxed iframe or `file://` page sends. The
+  wildcard is replaced by an echo of the caller's own origin, which still serves
+  the iOS port-scan probe that needed it.
+
+  The hook endpoint is gated too, and more strictly. It is the softer target of
+  the two: `req.json()` ignores `Content-Type`, so a page could POST a forged
+  hook body as a CORS-simple request with no preflight and never read the reply.
+  A forged `PermissionRequest` with an unknown session pushed a fake "Claude
+  needs your permission" notification to your phone; with a known one it took an
+  eval-queue slot ahead of real prompts. Only Claude Code posts hooks and it is
+  not a browser, so ANY `Origin` is refused there.
+
+  A local process can still connect by sending no `Origin`, which is
+  indistinguishable from a native client. That needs a capability token and is
+  tracked in #869.
+
+  If you serve the web client from your own origin, add it to
+  `~/.remi/config.toml` under `[daemon] allowed_origins`; the daemon logs the
+  exact line when it refuses one.
+
 ## [0.7.3] - 2026-07-28
 
 Makes remi able to stop its own daemons, and to evict a model the engine
