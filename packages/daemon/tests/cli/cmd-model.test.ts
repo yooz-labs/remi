@@ -531,28 +531,100 @@ describe('remi model rm', () => {
     expect(t.err.join('\n')).toContain('remi model use <other>');
   });
 
-  test("does not blame remi for the ENGINE's active model, nor advise a remedy that cannot work", async () => {
-    // The reported friction (#843). `isActive` is the engine picker's tier;
-    // remi's model here is something else entirely. Telling the user to run
-    // `remi model use <other>` sends them after a fix that provably does
-    // nothing: `use` writes remi's config and never touches the picker.
+  test("releases the ENGINE's active model on an owned engine, then deletes it", async () => {
+    // The reported friction (#860). `isActive` belongs to the TouchUp picker,
+    // so `remi model use` provably cannot release it -- and neither can
+    // restarting, because a fresh engine re-selects that tier at boot. On an
+    // engine remi owns, remi moves the picker itself.
     const t = io();
+    let pointedAt = '';
+    let removed = '';
     const code = await run(
       ['rm', 'yooz-quality-v3'],
-      configWith({ model: 'yooz-light-v3' }),
+      configWith({ model: 'yooz-light-v3', engine: 'owned' }),
       t.io,
       {
         probe: async () => REACHABLE,
         inventory: async () => INVENTORY,
+        list: async () => ({
+          current: 'yooz-quality-v3',
+          available: [
+            // Listed FIRST and of the WRONG purpose: the picker would refuse
+            // it, so choosing by position rather than purpose breaks here.
+            { id: 'yooz-instruct-4b', displayName: 'I', loaded: false, purpose: 'general' },
+            { id: 'yooz-quality-v3', displayName: 'Q', loaded: true, purpose: 'proofread' },
+            { id: 'yooz-light-v3', displayName: 'L', loaded: false, purpose: 'proofread' },
+          ],
+        }),
+        setTouchUpModel: async (_url, id) => {
+          pointedAt = id;
+        },
+        remove: async (_url, id) => {
+          removed = id;
+          return { id, reclaimedBytes: 800_000_000 };
+        },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(pointedAt).toBe('yooz-light-v3'); // same purpose, so the picker accepts it
+    expect(removed).toBe('yooz-quality-v3');
+    // The second mutation must be visible: this moved a setting the user did
+    // not name.
+    expect(t.out.join('\n')).toContain('pointing that picker at');
+  });
+
+  test('refuses when the engine has no other model of that purpose', async () => {
+    // Releasing by pointing the picker at nothing would leave that module
+    // without a model, which is worse than refusing to delete.
+    const t = io();
+    let removed = '';
+    const code = await run(
+      ['rm', 'yooz-quality-v3'],
+      configWith({ model: 'yooz-light-v3', engine: 'owned' }),
+      t.io,
+      {
+        probe: async () => REACHABLE,
+        inventory: async () => INVENTORY,
+        list: async () => ({
+          current: 'yooz-quality-v3',
+          available: [
+            { id: 'yooz-quality-v3', displayName: 'Q', loaded: true, purpose: 'proofread' },
+            // A general-purpose model is NOT a substitute for a proofread tier.
+            { id: 'yooz-instruct-4b', displayName: 'I', loaded: false, purpose: 'general' },
+          ],
+        }),
+        remove: async (_url, id) => {
+          removed = id;
+          return { id, reclaimedBytes: 0 };
+        },
       },
     );
 
     expect(code).toBe(1);
-    const text = t.err.join('\n');
-    expect(text).toContain("engine's active llm model");
-    expect(text).toContain('yooz-light-v3'); // names what remi actually uses
-    expect(text).toContain('will not release it');
-    expect(text).not.toContain('remi model use <other>'); // the advice that does not work
+    expect(removed).toBe('');
+    expect(t.err.join('\n')).toContain('nothing to point the picker at');
+  });
+
+  test("never moves a SHARED engine's picker", async () => {
+    // Repointing another host's picker is hostile: that app is using it.
+    const t = io();
+    let pointedAt = '';
+    const code = await run(
+      ['rm', 'yooz-quality-v3'],
+      configWith({ model: 'yooz-light-v3', engine: 'shared' }),
+      t.io,
+      {
+        probe: async () => REACHABLE,
+        inventory: async () => INVENTORY,
+        setTouchUpModel: async (_url, id) => {
+          pointedAt = id;
+        },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(pointedAt).toBe('');
   });
 
   test('requires an explicit id', async () => {
@@ -1166,6 +1238,46 @@ describe('remi model — undecidable ownership is never asserted (legacy engine)
     expect(text).not.toContain("It is not remi's model");
     expect(text).toContain('cannot be determined');
     expect(text).toContain('remi model use <other>'); // offered, not denied
+  });
+});
+
+describe('ls labels what the engine model is active FOR (#860)', () => {
+  test('names the purpose instead of a bare "engine active"', async () => {
+    // `isActive` is the TOUCHUP picker's choice, so remi's own model can never
+    // carry it and a model remi never uses always does. Unqualified, that reads
+    // as "the engine is using this instead of the model I chose" -- which is
+    // exactly the conclusion a user drew. remi's model was in use the whole
+    // time; only the label was wrong.
+    const t = io();
+    const code = await run(['ls'], configWith({ model: 'yooz-quality-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      list: async () => ({
+        current: 'yooz-light-v3',
+        available: [
+          { id: 'yooz-light-v3', displayName: 'L', loaded: true, purpose: 'proofread' },
+          { id: 'yooz-quality-v3', displayName: 'Q', loaded: true, purpose: 'proofread' },
+        ],
+      }),
+    });
+    expect(code).toBe(0);
+    const text = t.out.join('\n');
+    expect(text).toContain('engine proofread tier');
+    expect(text).not.toContain(', engine active');
+  });
+
+  test('falls back to the bare label when the catalogue cannot be read', async () => {
+    // A catalogue we cannot read must cost one qualifier, not the whole listing.
+    const t = io();
+    const code = await run(['ls'], configWith({ model: 'yooz-quality-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      list: async () => {
+        throw new Error('catalogue unavailable');
+      },
+    });
+    expect(code).toBe(0);
+    expect(t.out.join('\n')).toContain('engine active');
   });
 });
 

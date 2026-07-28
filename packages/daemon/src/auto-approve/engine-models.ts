@@ -71,6 +71,14 @@ export interface EngineModel {
   readonly sizeBytes?: number | undefined;
   readonly loaded: boolean;
   readonly latencyHintMs?: number | undefined;
+  /**
+   * What the engine selects this model FOR: `general` (what remi's evaluator
+   * uses) or `proofread` (the TouchUp picker's tiers). It is the missing piece
+   * behind #860: `/v1/models`'s `isActive` is set by the TOUCHUP picker, so
+   * remi's own model can never carry it and a model remi never uses always
+   * does. Without the purpose there is no way to say which "active" is meant.
+   */
+  readonly purpose?: string | undefined;
   /** The model's registered HuggingFace repo id, which the engine also accepts
    *  as an alias wherever a model id is taken (yooz-engine#308). Absent on
    *  engines older than 0.7.8 — see `model-identity.ts` for why that absence
@@ -207,6 +215,31 @@ export async function getEngineVersion(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Point the TouchUp (proofread) picker at `id`.
+ *
+ * Necessary because `/v1/models`'s `isActive`/`deletable` belong to THIS
+ * picker, not the LLM one. Verified against a live v0.7.8 engine:
+ * `POST /v1/llm/model` returns 200 and moves the LLM `current`, while the
+ * inventory still reports the old model `isActive` and undeletable — only this
+ * endpoint releases it (#860).
+ *
+ * `preload: false` on purpose: this is called to RELEASE a model, and the
+ * default (`true` server-side) would immediately pull the replacement into
+ * memory, trading one resident multi-GB model for another.
+ */
+export async function setTouchUpModel(
+  baseUrl: string,
+  id: string,
+  timeoutMs?: number,
+): Promise<void> {
+  await engineRequest(baseUrl, '/v1/touchup/model', {
+    method: 'POST',
+    body: { id, preload: false },
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
 }
 
 /** Current load/download state. */

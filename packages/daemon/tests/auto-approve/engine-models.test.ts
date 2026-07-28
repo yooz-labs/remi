@@ -12,6 +12,7 @@ import {
   preloadAsync,
   probeEngine,
   pullModel,
+  setTouchUpModel,
   unloadModel,
 } from '../../src/auto-approve/engine-models.ts';
 
@@ -616,5 +617,43 @@ describe('engine version (#852)', () => {
   test('no engine at all reports no version rather than throwing', async () => {
     // Port 1 is reserved and never listening.
     expect(await getEngineVersion('http://127.0.0.1:1', 300)).toBeUndefined();
+  });
+});
+
+describe('setTouchUpModel (#860)', () => {
+  test('posts {id, preload:false} to /v1/touchup/model', async () => {
+    // Pins the endpoint, the body SHAPE (the engine takes `id`, not `model` --
+    // a `{model}` body returns 400 "data couldn't be read"), and preload:false.
+    const srv = engineServer(() => Response.json({ id: 'yooz-light-v3', isActive: true }));
+    try {
+      await setTouchUpModel(srv.url, 'yooz-light-v3');
+      expect(srv.seen).toHaveLength(1);
+      expect(srv.seen[0]?.method).toBe('POST');
+      expect(srv.seen[0]?.path).toBe('/v1/touchup/model');
+      expect(srv.seen[0]?.body).toEqual({ id: 'yooz-light-v3', preload: false });
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test('preload stays false so releasing does not pull the replacement into memory', async () => {
+    // This is called to FREE memory; the server-side default is preload:true,
+    // which would swap one resident multi-GB model for another.
+    const srv = engineServer(() => Response.json({}));
+    try {
+      await setTouchUpModel(srv.url, 'yooz-quality-v3');
+      expect((srv.seen[0]?.body as { preload: boolean }).preload).toBe(false);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test('a rejected picker change throws rather than reporting success', async () => {
+    const srv = engineServer(() => new Response('nope', { status: 400 }));
+    try {
+      await expect(setTouchUpModel(srv.url, 'bad-id')).rejects.toThrow();
+    } finally {
+      srv.stop();
+    }
   });
 });
