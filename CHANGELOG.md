@@ -4,6 +4,25 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **`remi model rm` can now evict the engine's active model** (#860). It could
+  not, and no sequence of remi commands could: `isActive`/`deletable` in the
+  engine's inventory are owned by the **TouchUp (proofread) picker**, not the
+  LLM picker remi uses. `remi model use` writes remi's config and cannot
+  release it; `POST /v1/llm/model` moves the LLM selection and leaves it
+  undeletable; and restarting does not help, because a fresh engine re-selects
+  and re-loads that tier at boot — so the printed advice ("stop the engine
+  first") provably could not work. On an engine remi **owns**, `rm` now moves
+  that picker to another model of the same purpose and then deletes, reporting
+  both actions. On a `shared` engine it refuses, since repointing another
+  host's picker is hostile.
+- **`remi model ls` says what a model is active FOR** (#860) — `engine
+  proofread tier` rather than a bare `engine active`. Because that flag belongs
+  to a different picker, remi's own model could never carry it and a model remi
+  never uses always did, which read as "the engine is ignoring the model I
+  chose". It never was: remi passes its configured model explicitly on every
+  evaluation.
+
 ### Added
 - **`remi stop --all`** (#859) stops session daemons as well as the hub.
 
