@@ -19,6 +19,7 @@ import {
 import type { ProtocolMessage, RecentDirectory } from '@remi/shared';
 import type { SessionStore } from '../session/session-store.ts';
 import { performAuthHandshake } from './auth-helper.ts';
+import { capabilityWsOptions } from './capability-client.ts';
 import { formatAge } from './ls-client.ts';
 
 /**
@@ -74,7 +75,7 @@ export async function fetchRecentDirectories(
     let ws: WebSocket;
 
     try {
-      ws = new WebSocket(url);
+      ws = new WebSocket(url, capabilityWsOptions() as never);
     } catch (err) {
       const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));

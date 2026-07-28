@@ -12,6 +12,7 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, Question, RemiStatus, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
+import { capabilityWsOptions } from './capability-client.ts';
 import { DetachScanner } from './detach-scanner.ts';
 import { StatusBar, childRows } from './status-bar.ts';
 
@@ -271,7 +272,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       resolve(result);
     }
 
-    ws = new WebSocket(url);
+    ws = new WebSocket(url, capabilityWsOptions() as never);
 
     const connectionTimer = setTimeout(() => {
       writeOutput(`\n[timed out connecting to daemon at ${host}:${port}]\n`);

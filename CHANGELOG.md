@@ -4,6 +4,24 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Local capability token** (#869, groundwork). The daemon now keeps a random
+  secret in `~/.remi/capability.key` (mode 0600) and the CLI presents it on
+  connect, so a local client can prove it is one without a trust-on-first-use
+  round trip. A new `[daemon] require_local_auth` retires the blanket loopback
+  auth exemption: with it on, a loopback peer must present that token or
+  complete the Ed25519 challenge, exactly like a remote client.
+
+  It defaults to **off**, and only because the macOS app cannot yet do either.
+  It is sandboxed with no access to `~/.remi` by design (#649/#651) and has no
+  identity of its own, so turning this on before that ships would lock it out.
+  A machine that only uses the CLI and the web client can turn it on today.
+
+  Worth stating plainly: a file readable by the user does not stop a process
+  running AS that user from reading it too. This raises the bar from "any local
+  process can approve a permission" to "any process that can read your home
+  directory can". That is an improvement, not a boundary.
+
 ### Security
 - **A website you visit can no longer answer your permission prompts** (#535).
   The WebSocket upgrade validated no `Origin` and every HTTP endpoint answered

@@ -80,6 +80,22 @@ export interface DaemonConfig {
    * host yourself; the daemon logs the exact line to add when it refuses one.
    */
   readonly allowed_origins: readonly string[];
+  /**
+   * Retire the blanket loopback auth exemption (#869).
+   *
+   * With it false (today's default), any process on this machine can open the
+   * daemon's WebSocket and answer a permission prompt: it sends no `Origin`,
+   * which makes it indistinguishable from the CLI. With it true, a loopback
+   * peer must present the capability token from `~/.remi/capability.key` or
+   * complete the Ed25519 challenge, exactly like a remote client.
+   *
+   * Default false ONLY because the macOS app cannot yet do either: it is
+   * sandboxed away from `~/.remi` by design (#649/#651) and has no identity of
+   * its own yet. Turning this on before that ships locks it out. The CLI
+   * already sends the token, so a machine that only uses the CLI and the web
+   * client can turn this on today.
+   */
+  readonly require_local_auth: boolean;
 }
 
 /** Network settings */
@@ -170,6 +186,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     orphan_timeout: 300,
     persist_sessions: true,
     allowed_origins: [],
+    require_local_auth: false,
   },
   network: {
     mdns: true,
@@ -899,6 +916,10 @@ persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions al
 # Only a web client you host yourself does. Example:
 #   allowed_origins = ["https://remi.example.com"]
 allowed_origins = []
+# Require loopback clients to prove themselves (#869). Off by default until
+# the macOS app ships its own identity; safe to turn on if you only use the
+# CLI and the web client.
+require_local_auth = false
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
@@ -1053,6 +1074,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
   lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
   lines.push(`  allowed_origins = ${JSON.stringify(config.daemon.allowed_origins)}`);
+  lines.push(`  require_local_auth = ${config.daemon.require_local_auth}`);
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
