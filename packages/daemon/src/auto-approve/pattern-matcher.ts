@@ -26,6 +26,12 @@
  * user allow entry may legitimately be a write (`git commit`, `bun run build`),
  * and vetoing those would refuse exactly what the user opted into.
  *
+ * Code-execution primitives ARE vetoed (`hasExecPrimitive`). `find -exec`,
+ * `git -c core.hooksPath=`, `tar --to-command` and `awk 'BEGIN{system(...)}'`
+ * do not make the allowed command write; they make it run a DIFFERENT command.
+ * A user who allows `find` has not seen, let alone approved, the thing after
+ * `-exec`. That is this same bug at the argument level.
+ *
  * ## Deny and subagent_alert (`matchSubstringPattern`)
  *
  * For Bash, a plain substring search over the whole command, including entries
@@ -54,6 +60,33 @@ export function looksLikeToolName(pattern: string): boolean {
   if (pattern.startsWith('mcp__')) return true;
   return /^[A-Z][A-Za-z0-9_]*$/.test(pattern);
 }
+
+/**
+ * Claude Code's built-in tool names, used ONLY to decide whether a tool-shaped
+ * allow entry deserves a "did you mean the shell command?" warning at config
+ * load. Matching does not consult this list: an entry naming an MCP tool or a
+ * tool added after this list was written must keep working, so `looksLikeToolName`
+ * stays shape-based and this stays advisory.
+ */
+export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'Task',
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'Glob',
+  'Grep',
+  'Read',
+  'Edit',
+  'Write',
+  'NotebookRead',
+  'NotebookEdit',
+  'WebFetch',
+  'WebSearch',
+  'TodoWrite',
+  'ExitPlanMode',
+  'AskUserQuestion',
+  'SlashCommand',
+]);
 
 /** Exact bare-tool-name match, used by both paths for every non-Bash tool. */
 function matchToolName(toolName: string, patterns: readonly string[]): string | null {

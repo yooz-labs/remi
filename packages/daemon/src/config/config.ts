@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
@@ -630,6 +631,20 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     if (p.trim().length < MIN_PATTERN_LENGTH) {
       console.warn(
         `[AutoApprove] Warning: deny pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will block many commands. Use a more specific pattern.`,
+      );
+    }
+  }
+
+  // An allow entry shaped like a tool name matches that TOOL and is never
+  // tested against a Bash command (#536). That is the point of the fix, but it
+  // silently changes what a capitalized real binary does: `Rscript`, `MSBuild`
+  // and friends look like tool names and stop covering their own commands. The
+  // entry keeps working for a tool of that name, so this is a warning rather
+  // than an error, but it must not be silent.
+  for (const p of cfg.allow) {
+    if (looksLikeToolName(p) && !KNOWN_TOOL_NAMES.has(p)) {
+      console.warn(
+        `[AutoApprove] Warning: allow entry "${p}" is shaped like a tool name, so it matches the ${p} TOOL and never a Bash command containing it. If you meant the shell command, lowercase it or give a longer prefix (e.g. "${p} " with an argument).`,
       );
     }
   }

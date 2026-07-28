@@ -108,17 +108,63 @@ export function matchPrefix(segment: string, prefixes: readonly string[]): strin
 }
 
 /**
+ * Flags that turn a command into a DIFFERENT command.
+ *
+ * These are not mutation flags, and the distinction is the whole point. A user
+ * who allows `biome check --fix` means the write; a user who allows `find` does
+ * not mean `find . -exec rm -rf {} +`. `-exec` does not make `find` write, it
+ * makes `find` run something else, so approving it approves an argument the
+ * user never saw. That is the #536 bug one level down, at the argument list
+ * instead of the tool name, and it is why this veto applies to the user allow
+ * path even though the mutation-flag veto deliberately does not.
+ *
+ * Long options only, or short ones that no read form of any command uses.
+ * Overloaded short flags (`-e`, `-c`, `-i`) live in the family-scoped list
+ * below, because vetoing them globally would break `grep -e` and friends.
+ */
+const EXEC_PRIMITIVE_TOKEN =
+  /(^|\s)(-exec|-execdir|-ok|-okdir|-delete|-fprintf|-fprint|-fprint0|-fls|--to-command|--use-compress-program|--rmt-command|--rsh-command|--checkpoint-action|--preload|--require|--eval|--exec)(\s|=|$)/;
+
+/**
+ * Command families whose read form is flipped to code execution by a flag that
+ * is harmless elsewhere, so the veto has to know which command it is looking at.
+ */
+const EXEC_SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
+  // `git -c core.hooksPath=/tmp/evil status` and `git -c core.fsmonitor='...'`
+  // run arbitrary code on an otherwise read-only git command. No read form of
+  // git needs `-c`.
+  { family: /^git\b/, flag: /(^|\s)-c(\s|=)/ },
+  // awk's program text can call system() or pipe into a shell.
+  { family: /^(g|m|n)?awk\b/, flag: /(system\s*\(|\|\s*&?\s*"?\s*(sh|bash|zsh)\b|print\s*\|)/ },
+  // `rsync -e 'sh -c ...'` / `--rsh` runs the "remote shell" locally.
+  { family: /^rsync\b/, flag: /(^|\s)(-e|--rsh)(\s|=)/ },
+  // ssh/scp run a command on the far side, and ProxyCommand/LocalCommand run
+  // one on THIS side.
+  { family: /^(ssh|scp|sftp)\b/, flag: /(^|\s)-o\s*(Proxy|Local)Command/i },
+];
+
+/** True if a segment carries a code-execution primitive. */
+export function hasExecPrimitive(segment: string): boolean {
+  if (EXEC_PRIMITIVE_TOKEN.test(segment)) return true;
+  for (const { family, flag } of EXEC_SCOPED_VETOES) {
+    if (family.test(segment) && flag.test(segment)) return true;
+  }
+  return false;
+}
+
+/**
  * Decide whether a Bash command is fully covered by the given prefixes.
  * Returns the (most specific) matched prefix, or null to fall through.
  *
  * A command is covered only when EVERY compound segment is either neutral
- * (cd/pwd/echo/...) or matches a prefix, none carries shell control, and at
- * least one segment actually matched a prefix (a command of only neutral
- * segments has not matched anything).
+ * (cd/pwd/echo/...) or matches a prefix, none carries shell control or a
+ * code-execution primitive, and at least one segment actually matched a prefix
+ * (a command of only neutral segments has not matched anything).
  *
  * @param extraVeto Optional per-segment veto layered on top of the shell-control
- *   check. The group matcher passes its curated-read vetoes here; the user
- *   allow list passes nothing, because a user may legitimately allow a write.
+ *   and exec-primitive checks. The group matcher passes its curated-read
+ *   mutation vetoes here; the user allow list passes nothing, because a user
+ *   may legitimately allow a write.
  */
 export function matchCoveredCommand(
   command: string,
@@ -135,6 +181,11 @@ export function matchCoveredCommand(
     if (matchPrefix(seg, NEUTRAL_PREFIXES) !== null) continue;
     const hit = matchPrefix(seg, prefixes);
     if (hit === null) return null;
+    // Veto a code-execution primitive UNLESS the matched entry already carries
+    // it. A prefix match requires the segment to start with the entry, so an
+    // entry containing `-exec` only matches a command the user spelled out that
+    // far: they saw it and approved it. An entry of just `find` did not.
+    if (hasExecPrimitive(seg) && !hasExecPrimitive(hit)) return null;
     if (matched === null) matched = hit;
   }
   return matched;
