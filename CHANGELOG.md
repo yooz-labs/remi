@@ -5,6 +5,16 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **A flaky gate can no longer cancel a release silently** (#856). `auto-release`
+  declares the test gates as `needs`, so a red gate — including a flaky one —
+  *skips* it rather than failing it: no tag, no npm publish, no GitHub release,
+  no Homebrew update, and the only symptom is a tag that never appeared. Two
+  different flaky tests did exactly that during the 0.7.1 cut, once on `main`.
+  A new `Release Guard` job asserts the invariant directly: after a push to
+  `main`, `main` must not still carry a `-dev` suffix. It runs on `always()`,
+  because the case it exists for is precisely the one where the gates failed.
+
+### Fixed
 - **`remi model rm` can now evict the engine's active model** (#860). It could
   not, and no sequence of remi commands could: `isActive`/`deletable` in the
   engine's inventory are owned by the **TouchUp (proofread) picker**, not the
