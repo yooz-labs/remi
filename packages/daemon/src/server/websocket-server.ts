@@ -7,6 +7,7 @@
 
 import { generateId } from '@remi/shared';
 import type { AnswerExtras, ProtocolMessage, UUID } from '@remi/shared';
+import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
 import { corsHeadersForOrigin, isAllowedOrigin, rejectionNotice } from './origin-policy.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
@@ -36,6 +37,19 @@ export interface ServerConfig {
 
   /** Where the origin-rejection notice goes. Defaults to `console.warn`. */
   readonly logFn?: (msg: string) => void;
+
+  /**
+   * The local capability token this daemon accepts (#869). Empty disables the
+   * capability path entirely, leaving the Ed25519 challenge as the only proof.
+   */
+  readonly capabilityToken?: string;
+
+  /**
+   * Retire the blanket loopback auth exemption (#869). When true, a loopback
+   * peer must present the capability token or complete the Ed25519 challenge,
+   * exactly like a remote one. Opt-in until every client can do one of those.
+   */
+  readonly requireLocalAuth?: boolean;
 }
 
 /** Server events */
@@ -159,6 +173,11 @@ interface WSData {
   connectionId: UUID;
   /** Peer IP captured at upgrade time (used to skip auth for loopback). */
   peerAddress: string | null;
+  /**
+   * Whether this peer presented a valid capability token on the upgrade
+   * (#869). Decided once, at upgrade, because the header only exists there.
+   */
+  hasCapability: boolean;
 }
 
 /**
@@ -202,6 +221,8 @@ export class WebSocketServer {
       connection: config.connection ?? {},
       allowedOrigins: config.allowedOrigins ?? [],
       logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
+      capabilityToken: config.capabilityToken ?? '',
+      requireLocalAuth: config.requireLocalAuth ?? false,
     };
     this.events = events;
   }
@@ -288,12 +309,20 @@ export class WebSocketServer {
 
           const peer = server.requestIP(req);
           const peerAddress = peer?.address ?? null;
+          // The capability token rides the upgrade request, so it can only be
+          // read here (#869). A browser cannot set this header, which is the
+          // point: it proves the caller read a 0600 file in the user's home.
+          const hasCapability = capabilityTokenMatches(
+            req.headers.get(CAPABILITY_HEADER),
+            self.config.capabilityToken,
+          );
 
           // Upgrade to WebSocket
           const success = server.upgrade(req, {
             data: {
               connectionId: generateId(),
               peerAddress,
+              hasCapability,
             },
           });
 
@@ -335,7 +364,13 @@ export class WebSocketServer {
           const peer = server.requestIP(req);
           const authenticator = self.config.connection?.authenticator;
           const authRequired =
-            !shouldSkipAuthForPeer(!!authenticator, peer?.address) && !!authenticator;
+            !shouldSkipAuthForPeer(!!authenticator, peer?.address, {
+              requireLocalAuth: self.config.requireLocalAuth,
+              hasCapability: capabilityTokenMatches(
+                req.headers.get(CAPABILITY_HEADER),
+                self.config.capabilityToken,
+              ),
+            }) && !!authenticator;
           return new Response(
             JSON.stringify({
               authRequired,
@@ -520,7 +555,16 @@ export class WebSocketServer {
 
     // Authenticate with the same trust model as the WebSocket.
     const authenticator = this.config.connection?.authenticator;
-    if (authenticator && !shouldSkipAuthForPeer(true, peerAddress)) {
+    if (
+      authenticator &&
+      !shouldSkipAuthForPeer(true, peerAddress, {
+        requireLocalAuth: this.config.requireLocalAuth,
+        hasCapability: capabilityTokenMatches(
+          req.headers.get(CAPABILITY_HEADER),
+          this.config.capabilityToken,
+        ),
+      })
+    ) {
       const auth = body.auth;
       const signature = typeof auth?.signature === 'string' ? auth.signature : '';
       const clientPublicKey = typeof auth?.clientPublicKey === 'string' ? auth.clientPublicKey : '';
@@ -663,7 +707,12 @@ export class WebSocketServer {
     // being on the same machine. Drop the authenticator from this peer's
     // connection so it never receives an auth_challenge.
     let perConnectionConfig = this.config.connection;
-    if (shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress)) {
+    if (
+      shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress, {
+        requireLocalAuth: this.config.requireLocalAuth,
+        hasCapability: ws.data.hasCapability,
+      })
+    ) {
       perConnectionConfig = { ...perConnectionConfig, authenticator: undefined };
     }
 

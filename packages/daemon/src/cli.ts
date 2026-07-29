@@ -121,6 +121,7 @@ import { isEncrypted, unlockIdentity } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { Authenticator } from './auth/authenticator.ts';
+import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import {
   AutoApproveService,
@@ -1845,6 +1846,26 @@ const sharedEvents = {
 // Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
 const bindHost = cliBindHost ?? remiConfig.daemon.bind;
+
+// Local capability token (#869). Created on first run with mode 0600 so the
+// CLI can prove it is a local client without a TOFU round trip. Generated
+// unconditionally, even while `require_local_auth` is false, so that turning
+// the flag on later never has to also create a secret mid-flight.
+//
+// NOT fatal if it cannot be written. An unwritable `~/.remi` is a broken
+// environment and the daemon says so a few lines later when the PID file
+// fails, which is the more useful error; dying here would replace it with a
+// worse one. Running with no token fails CLOSED: `capabilityTokenMatches`
+// rejects an empty expected value, so nobody is admitted by this path and
+// local clients fall back to the Ed25519 challenge.
+let localCapabilityToken = '';
+try {
+  localCapabilityToken = loadOrCreateCapabilityToken(undefined, logError);
+} catch (err) {
+  logError(
+    `[capability] could not create the local capability token: ${errorToString(err)}. Local clients will be challenged instead.`,
+  );
+}
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
@@ -1935,6 +1956,8 @@ const wsAdapter = new WebSocketAdapter(
     host: bindHost,
     authenticator,
     allowedOrigins: remiConfig.daemon.allowed_origins,
+    capabilityToken: localCapabilityToken,
+    requireLocalAuth: remiConfig.daemon.require_local_auth,
   },
   sharedEvents,
 );
@@ -2140,6 +2163,8 @@ if (cliDaemonMode) {
           host: bindHost,
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
+          capabilityToken: localCapabilityToken,
+          requireLocalAuth: remiConfig.daemon.require_local_auth,
         },
         sharedEvents,
       );
@@ -2455,6 +2480,8 @@ if (cliDaemonMode) {
           host: bindHost,
           authenticator,
           allowedOrigins: remiConfig.daemon.allowed_origins,
+          capabilityToken: localCapabilityToken,
+          requireLocalAuth: remiConfig.daemon.require_local_auth,
         },
         sharedEvents,
       );

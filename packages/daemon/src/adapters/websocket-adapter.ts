@@ -39,6 +39,12 @@ export interface WebSocketAdapterConfig extends AdapterConfig {
 
   /** Extra browser origins allowed to reach the daemon (#535). */
   readonly allowedOrigins?: readonly string[];
+
+  /** Local capability token this daemon accepts (#869). */
+  readonly capabilityToken?: string;
+
+  /** Retire the loopback auth exemption (#869). */
+  readonly requireLocalAuth?: boolean;
 }
 
 const DEFAULT_PORT = 8765;
@@ -65,6 +71,8 @@ export class WebSocketAdapter implements ConnectionAdapter {
       ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
       ...(config.authenticator && { authenticator: config.authenticator }),
       ...(config.allowedOrigins && { allowedOrigins: config.allowedOrigins }),
+      ...(config.capabilityToken && { capabilityToken: config.capabilityToken }),
+      ...(config.requireLocalAuth !== undefined && { requireLocalAuth: config.requireLocalAuth }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
@@ -196,6 +204,10 @@ export class WebSocketAdapter implements ConnectionAdapter {
         maxConnections: this.config.maxConnections,
       }),
       ...(this.config.allowedOrigins && { allowedOrigins: this.config.allowedOrigins }),
+      ...(this.config.capabilityToken && { capabilityToken: this.config.capabilityToken }),
+      ...(this.config.requireLocalAuth !== undefined && {
+        requireLocalAuth: this.config.requireLocalAuth,
+      }),
       // Let daemon handle HelloAck to include resume info
       connection: {
         skipHelloAck: true,
