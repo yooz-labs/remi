@@ -64,7 +64,7 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
-import { assertNever } from '@remi/shared';
+import { assertNever, isValidMessage } from '@remi/shared';
 import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
@@ -947,7 +947,20 @@ function App() {
         // dispatched with inReplay=true (#798) so replay-sensitive cases (currently
         // just 'question', mirroring the terminal client's #753 fix) can skip
         // state mutations that assume LIVE pendingness.
+        // Validate each nested message before recursing. `deserialize` checks
+        // only the OUTER envelope, so `messages` is `ProtocolMessage[]` by
+        // compile-time assertion alone — an older client replaying a batch
+        // from a newer daemon can receive a type it has no case for. That
+        // would reach `assertNever` in the default and THROW, propagating out
+        // through websocket-client's catch and erroring the whole connection.
+        // Before exhaustiveness landed this was a silent no-op, and graceful
+        // degradation is a stated principle, so skip-and-continue preserves it
+        // while keeping the compile-time guarantee for types we do know (#897).
         for (const replayMsg of message.messages) {
+          if (!isValidMessage(replayMsg)) {
+            console.debug('Skipping unknown message type in replay batch', replayMsg);
+            continue;
+          }
           handleMessage(connectionId, replayMsg, true);
         }
         break;

@@ -50,6 +50,7 @@ import {
   createHello,
   deserialize,
   generateId,
+  isValidMessage,
   serialize,
 } from '@remi/shared/protocol.ts';
 import { reserveRange } from '../../../daemon/tests/session/port-test-helpers.ts';
@@ -204,5 +205,50 @@ describe('web total dispatch: real daemon <-> real web client conformance (#897)
     expect(got.messages).toHaveLength(2);
     expect(got.messages.map((m) => m.type)).toEqual(['question', 'session_update']);
     expect(got.messages.map((m) => m.id)).toEqual(nested.map((m) => m.id));
+  });
+
+  test('an unknown message type nested in a replay batch survives the round trip unfiltered', async () => {
+    // The forward-compat hazard behind App.tsx's replay-batch guard: `deserialize`
+    // validates only the OUTER envelope, so a nested message with a type this
+    // build has never heard of arrives intact rather than being dropped in
+    // transport. An older client replaying a batch from a newer daemon hits
+    // exactly this. App.tsx must therefore validate each nested message itself
+    // before recursing, or `assertNever` throws and errors the connection --
+    // where the pre-exhaustiveness code silently ignored it.
+    //
+    // This test pins the TRANSPORT half of that claim (nothing filters it),
+    // which is what makes the App.tsx guard load-bearing rather than defensive
+    // decoration.
+    const unknownNested = {
+      type: 'totally_unknown_future_type',
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+    } as unknown as ProtocolMessage;
+
+    const batch: ProtocolMessage = {
+      type: 'replay_batch',
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+      sessionId: 'fixture-session-id',
+      messages: [unknownNested],
+      isComplete: true,
+    };
+
+    const before = received.length;
+    // biome-ignore lint/style/noNonNullAssertion: assigned in beforeAll's waitFor
+    adapter.sendRaw(connectionId!, batch);
+
+    await waitFor(() => received.slice(before).some((m) => m.id === batch.id));
+    const got = received.slice(before).find((m) => m.id === batch.id);
+    if (got?.type !== 'replay_batch') throw new Error('unreachable');
+
+    // Arrived unfiltered: the transport did NOT drop the unknown nested type.
+    expect(got.messages).toHaveLength(1);
+    expect((got.messages[0] as { type: string }).type).toBe('totally_unknown_future_type');
+
+    // And the guard App.tsx applies to it rejects it, so the recursion skips
+    // rather than falling through to assertNever.
+    expect(isValidMessage(got.messages[0])).toBe(false);
+    expect(isValidMessage(got)).toBe(true);
   });
 });
