@@ -84,4 +84,51 @@ describe('protocol registry golden equality (#895)', () => {
       expect(GOLDEN_TYPES).toContain(type as (typeof GOLDEN_TYPES)[number]);
     }
   });
+
+  /**
+   * Types the daemon's inbound switch has a REAL accepting case for.
+   *
+   * Hand-transcribed from `packages/daemon/src/server/connection.ts`'s
+   * `handleMessage` switch — deliberately not imported, for the same reason
+   * `GOLDEN_TYPES` is not derived: a list generated from the thing it checks
+   * cannot catch that thing being wrong.
+   *
+   * The rule this pins: a tag is derived from DISPATCH SITES, not from who
+   * constructs the message. `ack` is the case that forced the distinction —
+   * only the daemon builds one, but the router accepts one arriving from a
+   * client, so it is 'both'. Tagging it 'd2c' would make this table disagree
+   * with the daemon's own router once C6 (#899) uses it to gate inbound
+   * traffic, and the symptom would be a legitimate message rejected as
+   * UNKNOWN_MESSAGE.
+   */
+  const INBOUND_ROUTED = [
+    'hello',
+    'user_input',
+    'answer',
+    'bullet_expand_request',
+    'session_list_request',
+    'transcript_load_request',
+    'create_session_request',
+    'terminal_resize',
+    'auth_response',
+    'kill_session_request',
+    'resume_session_request',
+    'detach_session',
+    'register_device_token',
+    'unregister_device_token',
+    'session_history_request',
+    'ping',
+    'pong',
+    'ack',
+  ] as const;
+
+  test('every inbound-routed type is tagged c2d or both, never d2c', () => {
+    for (const type of INBOUND_ROUTED) {
+      const direction = MESSAGE_DIRECTION[type];
+      expect({ type, direction }).toEqual({
+        type,
+        direction: direction === 'both' ? 'both' : 'c2d',
+      });
+    }
+  });
 });

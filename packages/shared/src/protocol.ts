@@ -182,7 +182,13 @@ export const MESSAGE_DIRECTION = {
   agent_output: 'd2c',
   structured_agent_output: 'd2c',
   user_input: 'c2d',
-  ack: 'd2c',
+  // 'both', not 'd2c'. The daemon is the only side that CONSTRUCTS an ack
+  // today, but `connection.ts`'s inbound switch has a real accepting
+  // `case 'ack'` — so an ack arriving from a client is routed, not rejected.
+  // Every other tag here was derived from dispatch sites; classifying this one
+  // by who constructs it instead would make the table disagree with the
+  // daemon's own router the moment C6 (#899) uses it to gate inbound messages.
+  ack: 'both',
   edit: 'd2c',
   question: 'd2c',
   answer: 'c2d',
