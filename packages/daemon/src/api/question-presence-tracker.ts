@@ -90,8 +90,11 @@ export type ParkedRenderVerdict =
  * user), but the contract is a resolved verdict.
  *
  *   - `parkedQuestionId` — the id of the PARKED hook question (what the gate
- *     tracks in `openQuestionSignatures`), NOT the id of the card that would
- *     be pushed (that one comes from the PTY question, see `pairAndPush`).
+ *     tracks in `openQuestionSignatures`). Equal to `rendered.id` (#887: the
+ *     merge adopts the hook's id instead of minting a new one from the PTY
+ *     parse, see `consumeAndMerge`); kept as its own parameter because it is
+ *     also the key `parkedInputs` is stored under, independent of what the
+ *     merged card ends up looking like.
  *   - `rendered` — the merged question as it would be pushed.
  *   - `ptyPrompt` — what the PTY parser actually read off the screen, before
  *     the merge policy may have replaced its options with the hook's (#718).
@@ -440,12 +443,16 @@ export class QuestionPresenceTracker {
    * sole pending hook when exactly one exists (unambiguous). With 2+ pending
    * hooks from different agents and no agent match, push bare to avoid
    * misattributing another agent's labels (#425 / #483). When paired, the hook
-   * contributes `options`, `agentId` (so the client keys the prompt to the right
-   * agent), AND `text` — the hook's text carries the tool + command + agent
-   * context (e.g. "code-reviewer · Bash: git push origin main"), whereas the
-   * PTY's literal screen text is the bare terminal prompt ("Do you want to
-   * proceed?"). The PTY contributes `id` / `allowsFreeText` / `isAnswered` and
-   * its presence is the push trigger (#497). The consumed hook entry is removed.
+   * contributes `id` (#887: identity is minted ONCE, at hook arrival — see
+   * `consumeAndMerge`), `options`, `agentId` (so the client keys the prompt to
+   * the right agent), AND `text` — the hook's text carries the tool + command +
+   * agent context (e.g. "code-reviewer · Bash: git push origin main"), whereas
+   * the PTY's literal screen text is the bare terminal prompt ("Do you want to
+   * proceed?"). The PTY contributes `allowsFreeText` / `isAnswered` and its
+   * presence is the push trigger (#497). The consumed hook entry is removed.
+   * With NO hook record (a genuinely hook-less prompt: an agent-team native
+   * prompt, or a subprocess `(y/n)`), the PTY's own freshly-parsed `id` IS the
+   * identity — there is no other source for one.
    *
    * Options exception (#718): when the hook record's options are the daemon's
    * honest Yes/No FALLBACK (`hookRecord.optionsAreFallback`, set when
@@ -544,11 +551,26 @@ export class QuestionPresenceTracker {
       hookRecord && hookRecord.options.length > 0
         ? {
             ...ptyQuestion,
+            // #887: ADOPT the hook's id instead of the PTY's freshly-parsed one.
+            // Identity is minted ONCE, at first sight — hook arrival for a
+            // hook-born question, the PTY parse only for a genuinely hook-less
+            // one (the `: ptyQuestion` branch below, where no hookRecord exists
+            // at all). A prompt that redraws while still pending re-parses under
+            // a fresh PTY id every time (#486), but that id is a disposable
+            // parse artifact once a hookRecord exists to pair with — it is
+            // discarded here, never observed downstream. This is what used to
+            // require the gate's `rekeySignatureToRendered`: with the id stable
+            // across the hook -> PTY-render hop, `openQuestionSignatures` (keyed
+            // by the hook's id at park/escalate time) already matches the id of
+            // the card this method is about to push, so there is nothing left
+            // to re-key.
+            id: hookRecord.id,
             // The hook text carries the tool/command/agent context; the PTY's is
             // the bare terminal prompt. Use the hook's when it has one (#497).
             text: hookRecord.text || ptyQuestion.text,
             options: useHookOptions ? [...hookRecord.options] : [...ptyQuestion.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
+            promptId: hookRecord.promptId ?? ptyQuestion.promptId,
             // #718 review: `optionsAreFallback` must describe whichever
             // `options` ended up on the merged question, not silently inherit
             // whatever `ptyQuestion` happened to carry from the `...ptyQuestion`

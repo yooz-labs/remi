@@ -188,6 +188,25 @@ export interface Question {
   readonly source?: QuestionSource | undefined;
 
   /**
+   * Claude Code's `prompt_id` (#887/#885 Q9 candidate): the UUID Claude Code
+   * itself stamps on every hook event for the current user turn, present on
+   * 100% of hook events observed on this codebase's own capture (Claude Code
+   * >= 2.1.196; absent on older installs, see `docs/claude-code-hook-contract.md`).
+   * Carried onto a hook-born `Question` at construction time
+   * (`HookEventBridge`) and preserved through the PTY-render merge
+   * (`QuestionPresenceTracker.consumeAndMerge`). NOT used as this question's
+   * own identity — `id` already is, minted once at hook arrival (#887) — this
+   * is a same-turn CORRELATION key across the several hook-derived questions
+   * (and other hook events entirely) one Claude turn can produce, which `id`
+   * cannot express since a fresh `id` is minted per question. Undefined for a
+   * genuinely hook-less question (PTY-only: an agent-team native prompt, a
+   * subprocess `(y/n)`) — there is no hook event to read it from. Optional
+   * and ignored on the wire; consumed only by the daemon's own trace/debug
+   * tooling today (`question-trace.ts`).
+   */
+  readonly promptId?: string | undefined;
+
+  /**
    * Shape discriminator (#626). `'permission'` (the default when omitted) is a
    * single prompt described by `text` + `options`. `'multi_question'` is a
    * structured `AskUserQuestion` tool call: the full set of sub-questions is in

@@ -455,9 +455,11 @@ export class SessionRegistry {
         action: 'remove',
         sessionId,
         questionId: oldest,
+        promptId: evicted?.promptId,
         agentId: evicted?.agentId,
         isSubagent: evicted?.agentId !== undefined,
         signal: 'lru_eviction',
+        callSite: 'SessionRegistry.addQuestion:lru_eviction',
         throughFunnel: true,
       });
     }
@@ -467,9 +469,11 @@ export class SessionRegistry {
       action: 'add',
       sessionId,
       questionId: question.id,
+      promptId: question.promptId,
       agentId: question.agentId,
       isSubagent: question.agentId !== undefined,
       signal,
+      callSite: 'SessionRegistry.addQuestion',
     });
   }
 
@@ -487,10 +491,12 @@ export class SessionRegistry {
         action: 'remove',
         sessionId,
         questionId,
+        promptId: existing?.promptId,
         agentId: existing?.agentId,
         isSubagent: existing?.agentId !== undefined,
         toolName,
         signal,
+        callSite: 'SessionRegistry.removeQuestion',
         throughFunnel: true,
       });
     }
@@ -512,9 +518,11 @@ export class SessionRegistry {
           action: 'remove',
           sessionId,
           questionId: q.id,
+          promptId: q.promptId,
           agentId: q.agentId,
           isSubagent: q.agentId !== undefined,
           signal,
+          callSite: 'SessionRegistry.clearQuestions',
           throughFunnel: true,
         });
       }
