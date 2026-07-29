@@ -93,16 +93,26 @@ export interface AutoApproveConfig {
   /** Whether to log all decisions */
   readonly log_decisions: boolean;
   /**
-   * Substring patterns that short-circuit to approve without calling the LLM.
-   * For Bash: matched against the command string (substring contains).
-   * For other tools: list the tool name (e.g. "Read", "Glob") for any invocation.
-   * Default: empty. Deny list is checked first and always wins.
+   * Patterns that short-circuit to approve without calling the LLM.
+   *
+   * NOT substring matching (#536). For Bash the command is split on
+   * `; && || |` and EVERY segment must either match one of these as a prefix
+   * or be a neutral no-op (`cd`, `pwd`, `echo`, `true`, `:`); a segment with
+   * shell control (backticks, `$()`, redirects, `-exec`) is refused even when
+   * a prefix matches. An entry shaped like a tool name ("Read", "Glob") matches
+   * that TOOL and never a Bash command containing the word.
+   *
+   * See `matchAllowPattern` in `pattern-matcher.ts` and `matchCoveredCommand`
+   * in `shell-safety.ts`. Default: empty. Deny is checked first and always wins.
    */
   readonly allow: readonly string[];
   /**
    * Substring patterns that short-circuit to deny without calling the LLM.
-   * Same matching rules as `allow`. Checked BEFORE allow; always wins.
-   * Default: empty.
+   *
+   * Deliberately NOT the same rules as `allow` (#536): deny stays a broad
+   * substring match (`matchSubstringPattern`), because a rule meant to STOP
+   * something should over-reach rather than under-reach. Checked BEFORE allow;
+   * always wins. Default: empty.
    */
   readonly deny: readonly string[];
   /**
@@ -124,8 +134,8 @@ export interface AutoApproveConfig {
   /**
    * Built-in permission groups to approve without calling the LLM (epic #494).
    * A group is a curated set of read-by-definition operations matched with
-   * compound-segment-aware prefix logic (see `permission-groups.ts`), safer
-   * than the substring `allow` list for Bash. Known groups: "read-only",
+   * compound-segment-aware prefix logic (see `permission-groups.ts`), curated
+   * rather than user-supplied like the `allow` list. Known groups: "read-only",
    * "vcs-read", "build-test". Default: all three.
    */
   readonly approve_groups: readonly string[];

@@ -20,7 +20,7 @@
  *  - Commands whose read form can be flipped to a write by an AMBIGUOUS short
  *    flag (`sort -o`, `find -delete`, `awk` system(), `gh api -X`) are
  *    intentionally EXCLUDED from the curated set. Users can add them via the
- *    substring `allow` list at their own discretion.
+ *    `allow` list at their own discretion (per-segment prefix, not substring).
  *  - Non-Bash tools match by bare tool name.
  *
  * The segment splitter and shell-control veto live in `shell-safety.ts`; the

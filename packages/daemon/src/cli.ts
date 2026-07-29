@@ -2006,7 +2006,7 @@ if (!cliNoRelay && remiConfig.network.relay) {
     // Permanent code mode: persist code to disk, require Ed25519 auth over relay
     if (!authenticator) {
       console.error(
-        'Permanent connection codes require authentication (--auth or non-localhost bind).',
+        'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
       );
       process.exit(1);
     }

@@ -108,7 +108,18 @@ export interface NetworkConfig {
 
 /** Authentication settings (restart required) */
 export interface AuthConfig {
-  /** "auto" = based on bind address, true = always, false = never */
+  /**
+   * `true` = always require auth, `false` = never.
+   *
+   * `"auto"` is the DEFAULT and currently resolves to `false` on every bind
+   * address, including `0.0.0.0`: `cli.ts` computes `isLocalhostBind` on the
+   * line above the decision and then does not consult it
+   * (`cliAuth ?? (configAuth === 'auto' ? false : configAuth)`). This comment
+   * used to claim "auto = based on bind address", which is what the name
+   * suggests and what the code does not do; #880 tracks whether the code or the
+   * name is wrong. Until that is settled, read `"auto"` as "off", and do not
+   * assume exposing the daemon on a network turns authentication on.
+   */
   readonly enabled: 'auto' | boolean;
 }
 
@@ -979,8 +990,19 @@ authorized_user_ids = []
                                 # (covers cold model load on the local engine)
 # log_decisions = true
 #
-# User-defined rules. Substring matching for Bash, tool-name match for others.
-# Checked BEFORE the LLM. Deny is checked first and always wins.
+# User-defined rules, checked BEFORE the LLM. Deny is checked first and wins.
+#
+# Allow and deny do NOT match the same way, on purpose (#536). Allow is precise:
+# a Bash command is split on ; && || | and every segment must either match one
+# of your prefixes or be a neutral no-op (cd, pwd, echo, true, :), and anything
+# with shell control (backticks, $(), redirects, -exec) is refused even when a
+# prefix matches. An entry shaped like a tool name
+# ("Read") matches that TOOL and never a command containing the word. Deny stays
+# a broad substring match, because a rule meant to stop something should
+# over-reach rather than under-reach.
+#
+# So "Read" here does not allow 'cat file | sh', and "git status" does not allow
+# 'git status && rm -rf /'.
 # allow = ["git status", "bun test", "bunx biome", "Read", "Glob", "Grep"]
 # deny = ["rm -rf /", "sudo ", "curl | sh", "| bash"]
 #

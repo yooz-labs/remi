@@ -12,6 +12,26 @@
  * When set, the adapter runs a challenge-response handshake before accepting
  * any protocol messages from the relay peer:
  *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
+ *
+ * ## Encryption engages with auth, not with the relay (#881)
+ *
+ * The #543 key exchange rides that handshake, so it runs ONLY when an
+ * `authenticator` is present. `cli.ts` passes one only in permanent-code mode,
+ * so the DEFAULT rotating-code path never derives `sessionKeys` — even when the
+ * user passed `--auth`.
+ *
+ * The two directions then behave DIFFERENTLY, and the difference matters:
+ *
+ * - **Outbound** (`sendRaw`): refuses to send at all. It returns false and logs
+ *   rather than falling back to plaintext, which is deliberate (#543: "a silent
+ *   downgrade is exactly the bug"). The consequence is that in default mode the
+ *   daemon cannot deliver ANY message over the relay — not a leak, a breakage.
+ * - **Inbound** (the `relay` handler): falls through to `handleRelayMessage`
+ *   on the raw payload, so an unencrypted `user_input`, `answer` or device
+ *   token from a client IS accepted, and the Worker saw it in the clear.
+ *
+ * So "the relay is unencrypted by default" is wrong in the outbound direction
+ * and right in the inbound one. Say which direction you mean; see #881.
  */
 
 import {
