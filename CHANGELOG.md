@@ -66,6 +66,20 @@ All notable changes to Remi are documented here.
   by accident; a future one starts from the encrypted handshake.
 
 ### Added
+- **Hook fields remi was already receiving and dropping are now consumed**
+  (#891). No new hook registrations — this is entirely fields the
+  already-registered `Stop`, `SubagentStop` and `PostToolUse` hooks carry.
+  `SubagentStop.agent_transcript_path` now replaces the SubagentStart-time
+  path *derivation* for the subagent-view switcher: Claude Code hands the
+  real path over directly once the file is guaranteed to exist, so it wins
+  over the guess (validated the same way `agentId` already was, so a
+  malformed value can't override a good derived one; falls back to the
+  derivation when absent). `Stop.last_assistant_message` and
+  `PostToolUse.duration_ms` (above a 5s threshold) are now logged instead of
+  silently discarded — neither reaches a client yet, since `Session` /
+  `SessionUpdateMessage` have no text field to carry them and adding one is a
+  protocol change, out of scope here.
+
 - **Local capability token** (#869, groundwork). The daemon now keeps a random
   secret in `~/.remi/capability.key` (mode 0600) and the CLI presents it on
   connect, so a local client can prove it is one without a trust-on-first-use
