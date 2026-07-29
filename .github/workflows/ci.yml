@@ -43,6 +43,11 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      # The root tsconfig excludes packages/web, so the line above never sees
+      # it. Without this step a type error in the web client — including a
+      # non-exhaustive switch over a protocol message — merges green (#883).
+      # Verified clean when added, so this gate starts with no backlog.
+      - run: bun run typecheck:web
 
   test:
     name: Test
