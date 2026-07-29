@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
@@ -247,10 +248,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
     timeout: 30,
     log_decisions: true,
     // Safe read-only TOOLS, fast-pathed without an LLM call. These are
-    // tool-name matches (not Bash substrings), so a compound command cannot
-    // bypass them — `Read` matches the Read tool, never a `Bash` string. Bash
-    // git/gh commands are intentionally NOT defaulted here (substring matching
-    // is compound-command-unsafe); the LLM prompt evaluates those in full.
+    // tool-name matches: `Read` matches the Read tool and is never tested
+    // against a Bash command string (#536 — until that fix it was, so this
+    // very list approved `rm -rf Readme`). A Bash entry added here is matched
+    // per compound segment with a shell-control veto, so an approved segment
+    // cannot carry an unapproved one. Bash git/gh commands are still not
+    // defaulted; the LLM prompt evaluates those in full.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
     // Background-agent commands worth a heads-up even though they ran (#807).
@@ -432,9 +435,9 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
  * Validate auto_approve config has correct runtime types.
  *
  * TOML doesn't enforce TypeScript types. A user writing `allow = "git"` (string
- * instead of string[]) would produce a runtime value that matchPattern would
- * iterate character-by-character, auto-approving almost every command. This
- * validator refuses to start with such misconfigurations.
+ * instead of string[]) would produce a runtime value the matchers would iterate
+ * character-by-character, auto-approving almost every command. This validator
+ * refuses to start with such misconfigurations.
  *
  * Also warns about dangerously short patterns that would match too broadly.
  */
@@ -692,6 +695,20 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     if (p.trim().length < MIN_PATTERN_LENGTH) {
       console.warn(
         `[AutoApprove] Warning: deny pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will block many commands. Use a more specific pattern.`,
+      );
+    }
+  }
+
+  // An allow entry shaped like a tool name matches that TOOL and is never
+  // tested against a Bash command (#536). That is the point of the fix, but it
+  // silently changes what a capitalized real binary does: `Rscript`, `MSBuild`
+  // and friends look like tool names and stop covering their own commands. The
+  // entry keeps working for a tool of that name, so this is a warning rather
+  // than an error, but it must not be silent.
+  for (const p of cfg.allow) {
+    if (looksLikeToolName(p) && !KNOWN_TOOL_NAMES.has(p)) {
+      console.warn(
+        `[AutoApprove] Warning: allow entry "${p}" is shaped like a tool name, so it matches the ${p} TOOL and never a Bash command containing it. If you meant the shell command, lowercase it or give a longer prefix (e.g. "${p} " with an argument).`,
       );
     }
   }
