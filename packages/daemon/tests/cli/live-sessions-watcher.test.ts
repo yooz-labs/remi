@@ -213,14 +213,32 @@ describe('startLiveSessionsWatcher (#542)', () => {
           startedAt: new Date().toISOString(),
         });
 
-        // Wait for THE collect error specifically, not merely for any log line.
-        // `register()` writes a `.json.tmp` and renames it, and on Linux the
-        // watcher can emit ENOENT for the vanished temp path; its handler then
-        // logs first and `errors[0]` is that, not this test's subject (#903).
-        await waitFor(
-          () => errors.some((e) => e.includes('collect exploded')),
-          'the throwing collect to be logged',
-        );
+        // Wait for THE collect error specifically, not merely for any log line
+        // (#903): `errors[0]` may be an unrelated watcher error.
+        //
+        // Retry the trigger rather than waiting once. On Linux `register()`'s
+        // `.json.tmp` write+rename can make the watcher emit ENOENT, and its
+        // handler CLOSES the watcher (`live-sessions-watcher.ts:86-95`,
+        // deliberately: a dead watcher beats an uncaughtException killing an
+        // unattended hub). A closed watcher never fires the debounced flush, so
+        // `collect` is never called and a single wait hangs until timeout --
+        // observed in CI, never locally. Re-registering re-triggers on a
+        // watcher that survived, and the assertion below still fails honestly
+        // if `collect` is genuinely never reached.
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline && !errors.some((e) => e.includes('collect exploded'))) {
+          registry.register({
+            sessionId: '33333333-3333-3333-3333-333333333333',
+            pid: process.pid,
+            wsPort: 20052,
+            hookPort: 0,
+            projectPath: tmpDir,
+            name: 'sibling',
+            startedAt: new Date().toISOString(),
+          });
+          await new Promise((r) => setTimeout(r, 60));
+        }
+        expect(errors.some((e) => e.includes('collect exploded'))).toBe(true);
 
         expect(broadcasts).toEqual([]);
         expect(errors.some((e) => e.includes('collect exploded'))).toBe(true);
