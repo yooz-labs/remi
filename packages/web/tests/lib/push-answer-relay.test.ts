@@ -444,8 +444,15 @@ describe('relayAnswerViaSignaling (#591)', () => {
         const result = await relayAnswerViaSignaling({
           signalingUrl: `http://127.0.0.1:${server.port}`,
           code: 'WXYZ-2345',
-          sessionId: 's1',
-          questionId: 'q1',
+          // Hyphenated UUIDs, NOT short tokens. The assertions below check the
+          // base64 envelope does not CONTAIN these. Base64's alphabet includes
+          // s, q and 1, so 's1'/'q1' appear in a ~250-char random envelope
+          // roughly 6% of the time each -- this test failed on unrelated PRs at
+          // about that rate. '-' is outside the base64 alphabet, so a
+          // hyphenated UUID can never occur by chance. `shared/tests/
+          // sealed-answer.test.ts` already used full UUIDs for this reason.
+          sessionId: '0199f3a1-0000-7000-8000-000000000001',
+          questionId: '0199f3a1-0000-7000-8000-000000000002',
           answer: 'Yes, deploy',
           authRequired: false,
           answerEncryptionKey: daemon.publicKeyBase64,
@@ -456,8 +463,8 @@ describe('relayAnswerViaSignaling (#591)', () => {
         const body = received as unknown as Record<string, unknown>;
         const wire = JSON.stringify(body);
         expect(wire).not.toContain('Yes, deploy');
-        expect(wire).not.toContain('s1');
-        expect(wire).not.toContain('q1');
+        expect(wire).not.toContain('0199f3a1-0000-7000-8000-000000000001');
+        expect(wire).not.toContain('0199f3a1-0000-7000-8000-000000000002');
         expect(typeof body['sealed']).toBe('string');
         expect(typeof body['ephemeralPublicKey']).toBe('string');
 
@@ -466,7 +473,7 @@ describe('relayAnswerViaSignaling (#591)', () => {
           daemon.privateKeyPkcs8Base64,
           body as unknown as { ephemeralPublicKey: string; sealed: string },
         )) as Record<string, unknown>;
-        expect(opened['sessionId']).toBe('s1');
+        expect(opened['sessionId']).toBe('0199f3a1-0000-7000-8000-000000000001');
         expect(opened['answer']).toBe('Yes, deploy');
       } finally {
         server.stop();
