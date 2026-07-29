@@ -15,13 +15,16 @@ struct HubSetupView: View {
 
     var body: some View {
         Group {
-            if case .scanning = hubClient.phase {
+            switch hubClient.phase {
+            case .scanning:
                 scanningView
-            } else {
+            case let .rejected(port, reason):
+                rejectedView(port: port, reason: reason)
+            default:
                 // RemiApp only shows this view while hubClient.hubURL is
-                // nil, which happens only in .scanning or .unreachable —
-                // .connected always has a hub URL. So anything reaching
-                // here that isn't .scanning is .unreachable.
+                // nil, which happens only in .scanning, .rejected or
+                // .unreachable — .connected always has a hub URL. So
+                // anything reaching here is .unreachable.
                 unreachableView
             }
         }
@@ -33,6 +36,44 @@ struct HubSetupView: View {
             ProgressView()
             Text("Looking for a Remi hub…")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// #872: a hub answered but rejected this app's Ed25519 identity —
+    /// `[daemon] require_local_auth` is on and TOFU either didn't run
+    /// (`--no-tofu`) or a previously-trusted key was revoked. Distinct copy
+    /// from `unreachableView`: the hub IS running, so the install/start
+    /// instructions there would be actively misleading here.
+    private func rejectedView(port: Int, reason: String) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("This app isn't trusted by the hub yet")
+                        .font(.title2)
+                        .bold()
+                    Text(
+                        "Found a Remi hub on port \(port), but it rejected this app's identity: \(reason)."
+                    )
+                    .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(
+                        "New devices are trusted automatically the first time they connect, unless the hub was started with --no-tofu, or this app's key was later removed from its authorized keys."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("Check Again") { hubClient.rescanNow() }
+                    Text("This window checks automatically and closes on its own once trusted.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(32)
+            .frame(maxWidth: 560, alignment: .leading)
         }
     }
 

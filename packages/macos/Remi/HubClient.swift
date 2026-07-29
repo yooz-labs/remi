@@ -19,6 +19,7 @@
 //  to promote to.
 //
 
+import CryptoKit
 import Foundation
 
 @MainActor
@@ -34,14 +35,32 @@ final class HubClient: ObservableObject {
     /// whatever daemons happen to live on the standard range.
     private let scanPorts: [Int]
 
-    init(scanPorts: [Int] = Array(basePort..<(basePort + portRange))) {
+    /// This app's Ed25519 identity (#872), for completing the daemon's
+    /// `auth_challenge` handshake. Injectable so tests can give a client its
+    /// own throwaway identity instead of touching the real Keychain item.
+    private let identity: ClientIdentity
+
+    init(
+        scanPorts: [Int] = Array(basePort..<(basePort + portRange)),
+        identity: ClientIdentity = ClientIdentityStore.loadOrCreate()
+    ) {
         self.scanPorts = scanPorts
+        self.identity = identity
     }
 
     enum Phase: Equatable {
         case scanning
         case connected(port: Int, isHub: Bool)
         case unreachable
+        /// A peer answered but rejected this app's identity (#872):
+        /// `require_local_auth` is on and TOFU didn't (or couldn't) trust
+        /// the key — e.g. the daemon runs with `--no-tofu`, or a
+        /// previously-trusted key was later revoked. Distinct from
+        /// `.unreachable` so the UI can say WHY instead of just "not
+        /// running" (issue #872 acceptance: this must read in words, not a
+        /// spinner). `reason` is human-readable, derived from the wire
+        /// error code.
+        case rejected(port: Int, reason: String)
     }
 
     @Published private(set) var phase: Phase = .scanning
@@ -133,6 +152,8 @@ final class HubClient: ObservableObject {
             guard isHub else { return "Session daemon on \(port) (no hub)" }
             let sessionsPart = sessions == 1 ? "1 session" : "\(sessions) sessions"
             return "Hub: running on \(port) · \(sessionsPart)"
+        case let .rejected(port, reason):
+            return "Hub on \(port): \(reason)"
         }
     }
 
@@ -160,6 +181,13 @@ final class HubClient: ObservableObject {
     /// probed first.
     private var lastConnectedPort: Int?
 
+    /// Set while waiting on `auth_result` after signing an `auth_challenge`
+    /// (#872): the decoded challenge bytes and the daemon's raw public key,
+    /// kept so the mutual-auth signature in `auth_result` can be verified
+    /// against the SAME challenge. Cleared by `teardownSocket()` and on
+    /// every terminal outcome of the handshake.
+    private var pendingChallenge: (challengeData: Data, serverPublicKeyRaw: Data)?
+
     /// Stable client id, persisted so the daemon sees one device (#662).
     private let clientId: String = {
         let key = "remi.clientId"
@@ -179,16 +207,21 @@ final class HubClient: ObservableObject {
     }
 
     /// Manual re-check from the onboarding panel's "Check Again" button
-    /// (#773). Only meaningful while unreachable; the isScanning/phase
-    /// guards inside scanAndConnect make this safe to call at any time
-    /// without racing the scheduled backoff rescan into two sockets. If
-    /// this rescan itself fails, scheduleReconnect() cancels whatever
-    /// backoff Task was already pending before scheduling the next one
-    /// (#777 review, finding 3), so repeated manual rescans can't stack
-    /// independent reconnect timers.
+    /// (#773). Only meaningful while unreachable or rejected (#872: a
+    /// rejected connection resolves the same way — a fresh scan-and-connect
+    /// attempt); the isScanning/phase guards inside scanAndConnect make this
+    /// safe to call at any time without racing the scheduled backoff rescan
+    /// into two sockets. If this rescan itself fails, scheduleReconnect()
+    /// cancels whatever backoff Task was already pending before scheduling
+    /// the next one (#777 review, finding 3), so repeated manual rescans
+    /// can't stack independent reconnect timers.
     func rescanNow() {
-        guard case .unreachable = phase else { return }
-        Task { await scanAndConnect(preferring: lastConnectedPort) }
+        switch phase {
+        case .unreachable, .rejected:
+            Task { await scanAndConnect(preferring: lastConnectedPort) }
+        case .scanning, .connected:
+            return
+        }
     }
 
     #if DEBUG
@@ -285,8 +318,20 @@ final class HubClient: ObservableObject {
         self.task = task
         task.resume()
 
-        sendJSON(HelloFrame(clientVersion: clientVersion, clientId: clientId))
+        // Sent immediately, before knowing whether the daemon will
+        // challenge this connection (#872). When `require_local_auth` is
+        // on, the daemon answers this with an AUTH_REQUIRED error while its
+        // state is "authenticating" (harmlessly ignored below, same as any
+        // other unhandled frame type) and we resend hello once the real
+        // auth_challenge/auth_response/auth_result exchange succeeds. When
+        // it's off, this is the only hello sent — unchanged from before
+        // #872. Mirrors the web client (useConnectionManager.ts sendHello).
+        sendHello()
         receiveLoop(task: task, port: port)
+    }
+
+    private func sendHello() {
+        sendJSON(HelloFrame(clientVersion: clientVersion, clientId: clientId))
     }
 
     private func receiveLoop(task: URLSessionWebSocketTask, port: Int) {
@@ -352,8 +397,99 @@ final class HubClient: ObservableObject {
             }
         case "pong":
             missedPongs = 0
+        case "auth_challenge":
+            handleAuthChallenge(data: data, port: port)
+        case "auth_result":
+            handleAuthResult(data: data, port: port)
         default:
             break
+        }
+    }
+
+    // MARK: - Auth (#872)
+
+    /// Sign the challenge with this app's identity and reply with
+    /// `auth_response`. A malformed frame or a signing failure (CryptoKit
+    /// signing over a valid key does not fail in practice, but this app
+    /// must not silently swallow it if it ever does) is logged and leaves
+    /// the connection to time out and retry — there is nothing else useful
+    /// to do with a challenge this app cannot answer.
+    private func handleAuthChallenge(data: Data, port: Int) {
+        guard let frame = try? JSONDecoder().decode(AuthChallengeFrame.self, from: data),
+            let challengeData = Data(base64Encoded: frame.challenge),
+            let serverPublicKeyRaw = Data(base64Encoded: frame.serverPublicKey)
+        else {
+            NSLog("[HubClient] Malformed auth_challenge from port \(port)")
+            return
+        }
+        pendingChallenge = (challengeData, serverPublicKeyRaw)
+        do {
+            let signature = try identity.sign(challengeData)
+            let response = AuthResponseFrame(
+                clientPublicKey: identity.publicKeyRaw.base64EncodedString(),
+                signature: signature.base64EncodedString(),
+                clientFingerprint: identity.fingerprint)
+            sendJSON(response)
+        } catch {
+            NSLog("[HubClient] Failed to sign auth_challenge: \(error)")
+        }
+    }
+
+    /// On success, verify the daemon's mutual-auth signature over the SAME
+    /// challenge before trusting the connection — proof the peer on this
+    /// loopback port actually holds the private key for the fingerprint it
+    /// claims — then resend `hello` (the one sent at connect time was
+    /// rejected with AUTH_REQUIRED while this handshake was in flight). On
+    /// failure, or if the daemon's mutual-auth signature does not verify,
+    /// the connection is torn down and `phase` becomes `.rejected` so the UI
+    /// can say why instead of just "not running".
+    private func handleAuthResult(data: Data, port: Int) {
+        guard let frame = try? JSONDecoder().decode(AuthResultFrame.self, from: data) else {
+            return
+        }
+        guard frame.success else {
+            handleAuthRejected(port: port, reason: Self.describeAuthError(frame.error))
+            return
+        }
+        guard let pending = pendingChallenge,
+            let serverSignature = frame.serverSignature,
+            let signatureData = Data(base64Encoded: serverSignature),
+            let serverKey = try? Curve25519.Signing.PublicKey(
+                rawRepresentation: pending.serverPublicKeyRaw),
+            serverKey.isValidSignature(signatureData, for: pending.challengeData)
+        else {
+            handleAuthRejected(port: port, reason: "the hub's identity could not be verified")
+            return
+        }
+        pendingChallenge = nil
+        sendHello()
+    }
+
+    private func handleAuthRejected(port: Int, reason: String) {
+        teardownSocket()
+        phase = .rejected(port: port, reason: reason)
+        consecutiveFailures += 1
+        scheduleReconnect()
+    }
+
+    /// Human-readable copy for the wire error codes `AuthResultMessage` can
+    /// carry (packages/shared/src/protocol.ts, packages/daemon/src/auth/
+    /// authenticator.ts). `UNKNOWN_KEY` is the one an operator is likely to
+    /// actually hit — the daemon's TOFU defaults to auto-accept (cli.ts
+    /// `tofuMode`), so this only fires with `--no-tofu` or after this key
+    /// was later removed from authorized-keys.
+    nonisolated static func describeAuthError(_ code: String?) -> String {
+        switch code {
+        case "UNKNOWN_KEY":
+            return "the hub does not trust this app yet"
+        case "INVALID_SIGNATURE":
+            return "signature verification failed"
+        case "NO_PENDING_CHALLENGE":
+            return "the handshake timed out"
+        case let code?:
+            return "authentication failed (\(code))"
+        case nil:
+            return "authentication failed"
         }
     }
 
@@ -383,7 +519,12 @@ final class HubClient: ObservableObject {
         }
     }
 
-    private func handleDisconnect() {
+    /// Tears down the socket and per-connection state shared by every
+    /// disconnect path (#872 review: previously duplicated between
+    /// `handleDisconnect()` and the auth-rejected path). Callers are
+    /// responsible for setting `phase` to whichever terminal state applies
+    /// and calling `scheduleReconnect()`.
+    private func teardownSocket() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         pingTimer?.invalidate()
@@ -392,6 +533,7 @@ final class HubClient: ObservableObject {
         // running, its in-flight probe could race the backoff reconnect and
         // leave an orphaned socket behind.
         stopBackgroundRescan()
+        pendingChallenge = nil
         localClients = 0
         remoteClients = 0
         sessions = 0
@@ -405,6 +547,10 @@ final class HubClient: ObservableObject {
         // hub_status frame after reconnecting re-syncs both from the real
         // census.
         autostart = nil
+    }
+
+    private func handleDisconnect() {
+        teardownSocket()
         phase = .unreachable
         consecutiveFailures += 1
         scheduleReconnect()

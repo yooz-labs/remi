@@ -74,6 +74,63 @@ struct IncomingFrameType: Decodable {
     let type: String
 }
 
+/// Incoming `auth_challenge` (#872): sent by the daemon the instant a
+/// connection opens, before `hello_ack`, once `[daemon] require_local_auth`
+/// retires the loopback exemption (#869/#873) — or always, for a non-
+/// loopback peer. Mirrors AuthChallengeMessage in protocol.ts.
+///
+/// The daemon may also send `relayEphemeralKey`, `relayKexSignature` and
+/// `answerEncryptionKey` on some challenges (relay transport + phone
+/// lock-screen pinning). Deliberately NOT declared here: this client only
+/// ever uses the direct loopback WebSocket, never the relay, and Decodable
+/// silently ignores keys it doesn't declare — exactly the forward-compat
+/// behavior every other frame in this file already relies on.
+struct AuthChallengeFrame: Decodable {
+    let type: String
+    /// Base64-encoded 32-byte random nonce. Sign the DECODED bytes, never
+    /// this string.
+    let challenge: String
+    let serverFingerprint: String
+    /// Base64 of the daemon's raw 32-byte Ed25519 public key.
+    let serverPublicKey: String
+}
+
+/// Outgoing `auth_response` (#872). Mirrors AuthResponseMessage in
+/// protocol.ts exactly: `clientPublicKey`/`signature` are base64 of RAW
+/// bytes (never PKCS8/DER), `clientFingerprint` is hex. The daemon derives
+/// its own fingerprint from the verified public key and does not trust this
+/// field for authorization (#671) — sent correctly anyway.
+struct AuthResponseFrame: Encodable {
+    let type = "auth_response"
+    let id: String
+    let timestamp: String
+    let clientPublicKey: String
+    let signature: String
+    let clientFingerprint: String
+
+    init(clientPublicKey: String, signature: String, clientFingerprint: String) {
+        self.id = HubProtocol.newId()
+        self.timestamp = HubProtocol.isoTimestamp()
+        self.clientPublicKey = clientPublicKey
+        self.signature = signature
+        self.clientFingerprint = clientFingerprint
+    }
+}
+
+/// Incoming `auth_result` (#872). `error` is one of the codes documented on
+/// AuthResultMessage in protocol.ts (UNKNOWN_KEY, INVALID_SIGNATURE, ...).
+/// `serverSignature`, present only on success, is the daemon's signature
+/// over the same challenge — verifying it is mutual authentication: proof
+/// the peer on this loopback port actually holds the private key for the
+/// fingerprint it claims, not just some other process that happens to be
+/// listening on the port.
+struct AuthResultFrame: Decodable {
+    let type: String
+    let success: Bool
+    let error: String?
+    let serverSignature: String?
+}
+
 /// Incoming `hello_ack`. `sessionId` null means the peer is a session-less
 /// hub (#542); non-null means a legacy single-session daemon answered.
 struct HelloAckFrame: Decodable {
