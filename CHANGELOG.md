@@ -5,6 +5,69 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **`QuestionStore` is now the single owner of a session's pending-question
+  state, and a hook-less question can resolve from a screen render alone**
+  (#888). Measured from a real capture (#920): of 29 daily source-less
+  questions, 12 were never removed (one still pending 2h51m later) because
+  every removal path (`AutoApproveGate.cancelExternallyResolved`, the
+  Stop/SubagentStop sweeps) matches a tool signature carried by a hook event
+  — and a genuinely hook-less prompt (an agent-team native prompt, a bare
+  subprocess `(y/n)`) has no hook and so no signature. Its only exits were
+  the user answering it or the `MAX_PENDING_QUESTIONS` LRU cap.
+  `question-parser.ts` now sets `source: 'pty'` on every PTY-parsed question
+  (documented since #574 but never implemented, which is why this cohort was
+  invisible), and `QuestionPresenceTracker` gained a render-resolution
+  transition: when a CONFIRMED replacement push supersedes a hook-less
+  question, the original is removed from the store — the screen disappearing
+  IS its resolution evidence, since nothing else exists.
+
+  A first version of this compared the PTY-parsed render's id alone and also
+  treated a status-leaves-`'waiting'` transition or a session restart as
+  resolution evidence. Review found both unsound and reachable in
+  production: the PTY parser mints a fresh id on every parse even for a
+  prompt that merely redraws (#486), and `cli.ts` calls
+  `tracker.onStatusChange` unconditionally while gating the paired
+  `QuestionDedup` reset behind `!hookServer` — so a PTY-text-parsed status
+  false positive (confidence >= 0.5, not certainty) could resolve a question
+  whose "replacement" render was then silently deduped, telling the client
+  a still-live prompt was cancelled. Fixed: resolution now fires ONLY once a
+  new dep, `isQuestionLive`, confirms the replacement actually landed in
+  the store (not suppressed by dedup); the status and restart triggers were
+  dropped entirely rather than patched, since neither can be trusted as
+  evidence for one specific question (a real restart already resolves
+  everything via the pre-existing `resolveAndClearQuestions`). A before/
+  after repro on the real pipeline (20 hook-paired cycles + 15 hook-less
+  renders, each a genuinely distinct render) went from 8 of 35 added never
+  removed (7 via LRU eviction) to 0 of 35; a separate integration suite
+  drives the real `MessageAPI`/`QuestionDedup` and reproduces the
+  flap-then-redraw chain directly, pinning that a deduped replacement no
+  longer swallows the original.
+
+  `SessionRegistry`'s `addQuestion`/`removeQuestion`/`clearQuestions`/
+  `getQuestion` are now thin adapters over a new `QuestionStore`
+  (`packages/daemon/src/session/question-store.ts`), which is the only code
+  that mutates the pending-question map; `ManagedSession.currentQuestions`
+  is a live, read-only view over it. Review also found and fixed a second,
+  related bug: `QuestionPresenceTracker`'s hook/PTY merge silently took the
+  PTY parse's `source` even for a hook-paired (parked-then-rendered
+  subagent permission) question, which meant `pending-question-label.ts`'s
+  `source === 'permission_request'` branch never fired for that class —
+  the macOS menu-bar app and hub census showed the full raw prompt text
+  instead of the intended short "Permission: `<tool>`" label. The hook
+  record's own `source` now wins, matching the existing text/options/
+  agentId precedent.
+
+  The gate's own per-question bookkeeping (`AutoApproveGate`'s
+  `pendingHolds`/`openQuestionSignatures`/`parkedInputs`/`evalIdByQuestion`/
+  `confirmedDeliveries`, `QuestionPresenceTracker`'s `pending`/`awaitingPTY`/
+  `bufferedDuringEval`/`armedOrphanQuestion`) is intentionally left as a
+  follow-up: each is metadata about resolving a question the store already
+  owns, not a second opinion on whether it is pending, and collapsing it
+  into one state machine safely needs the same trace-driven verification
+  each earned individually (#751/#763/#767/#814). The PTY-as-arbiter policy
+  (ADR 0004) is unchanged — only bookkeeping moved, never a push/arbitration
+  decision.
+
 - **A question is now identified by one id for its whole prompt cycle**
   (#887). Up to three ids used to exist for a single subagent permission: the
   hook bridge minted one at `PermissionRequest`, the PTY parser minted a

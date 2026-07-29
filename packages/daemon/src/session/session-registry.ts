@@ -25,13 +25,8 @@ import type {
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/pty-session.ts';
-import { traceQuestionEvent } from './question-trace.ts';
+import { QuestionStore } from './question-store.ts';
 import { generateSessionName } from './session-name.ts';
-
-/** Upper bound on concurrently-pending questions per session. Real prompts are
- *  few (main + a handful of subagents); the cap is a backstop against a runaway
- *  prompt loop growing the map unbounded. Oldest is evicted first. */
-const MAX_PENDING_QUESTIONS = 8;
 
 /** Configuration for SessionRegistry */
 export interface SessionRegistryConfig {
@@ -137,10 +132,22 @@ export interface ManagedSession {
 
   /** Current agent status */
   currentStatus: AgentStatus;
-  /** Currently pending questions, keyed by questionId. Multiple can be in
-   *  flight at once (e.g. main agent + a subagent since #419), so an answer to
-   *  one must not invalidate the others. Bounded by MAX_PENDING_QUESTIONS. */
-  currentQuestions: Map<UUID, Question>;
+  /** Single owner of this session's pending-question state (#888). Only this
+   *  store mutates pendingness; `currentQuestions` below is a live read-only
+   *  view over its own map, never a second copy. */
+  readonly questionStore: QuestionStore;
+  /**
+   * Currently pending questions, keyed by questionId. Multiple can be in
+   * flight at once (e.g. main agent + a subagent since #419), so an answer to
+   * one must not invalidate the others. Bounded by MAX_PENDING_QUESTIONS
+   * (`question-store.ts`).
+   *
+   * A derived, read-only view over `questionStore`'s own map (#888) -- NOT a
+   * separate store. `ReadonlyMap` so a caller can `.get`/`.has`/`.size`/
+   * `.values`/`.keys` exactly as before, but cannot `.set`/`.delete`/`.clear`
+   * it directly; every existing read call site keeps working unchanged.
+   */
+  readonly currentQuestions: ReadonlyMap<UUID, Question>;
 
   /** Whether this session is owned by the local process (wrapper mode).
    * Locally-owned sessions are never killed by orphan timeout. */
@@ -203,6 +210,13 @@ export class SessionRegistry {
     const name = generateSessionName(workingDirectory);
 
     const createdAt = now();
+    // #888: constructed BEFORE the session object literal so the
+    // `currentQuestions` getter below can close over it directly, rather than
+    // reading `this.session.questionStore` (which would not exist yet at
+    // getter-definition time inside the same literal).
+    const questionStore = new QuestionStore(sessionId, {
+      onQuestionsChanged: (questions) => this.events.onQuestionsChanged?.(sessionId, questions),
+    });
     this.session = {
       sessionId,
       name,
@@ -217,7 +231,10 @@ export class SessionRegistry {
       messageHistory: [],
       lastDeliveredIndex: -1,
       currentStatus: 'idle',
-      currentQuestions: new Map(),
+      questionStore,
+      get currentQuestions(): ReadonlyMap<UUID, Question> {
+        return questionStore.questions;
+      },
       locallyOwned,
       explicitlyDetached: false,
       persistent,
@@ -431,56 +448,25 @@ export class SessionRegistry {
    * is tracked by its own id so answering one never invalidates another.
    * Bounded by MAX_PENDING_QUESTIONS (oldest evicted first) so a runaway
    * prompt loop cannot grow the map without limit.
+   *
+   * Thin adapter over `QuestionStore` (#888) -- signature unchanged so no
+   * call site churns; the map mutation + eviction + trace logic that used to
+   * live inline here now lives in the one place that owns pendingness.
    */
   addQuestion(sessionId: UUID, question: Question, signal = 'unknown'): void {
     if (this.session === null || this.session.sessionId !== sessionId) return;
-    const map = this.session.currentQuestions;
-    map.delete(question.id); // re-insert so a refreshed question is "newest"
-    map.set(question.id, question);
-    while (map.size > MAX_PENDING_QUESTIONS) {
-      const oldest = map.keys().next().value;
-      if (oldest === undefined) break;
-      const evicted = map.get(oldest);
-      map.delete(oldest);
-      // Log: an evicted prompt may have an outstanding APNS push whose answer
-      // will now be refused as STALE_ANSWER. Should be unreachable in normal
-      // use (cap is generous); a hit signals a runaway prompt loop.
-      console.warn(
-        `[SessionRegistry] pending-question cap (${MAX_PENDING_QUESTIONS}) exceeded; evicted oldest id=${oldest} text="${evicted?.text.slice(0, 60) ?? ''}"`,
-      );
-      // #808: an LRU eviction is a removal too -- it never goes through
-      // removeQuestion (there is no single questionId call site for it), so
-      // trace it here directly rather than let it appear as a silent gap.
-      traceQuestionEvent({
-        action: 'remove',
-        sessionId,
-        questionId: oldest,
-        promptId: evicted?.promptId,
-        agentId: evicted?.agentId,
-        isSubagent: evicted?.agentId !== undefined,
-        signal: 'lru_eviction',
-        callSite: 'SessionRegistry.addQuestion:lru_eviction',
-        throughFunnel: true,
-      });
-    }
     this.session.lastActivityAt = now();
-    this.events.onQuestionsChanged?.(sessionId, [...map.values()]);
-    traceQuestionEvent({
-      action: 'add',
-      sessionId,
-      questionId: question.id,
-      promptId: question.promptId,
-      agentId: question.agentId,
-      isSubagent: question.agentId !== undefined,
-      signal,
-      callSite: 'SessionRegistry.addQuestion',
-    });
+    this.session.questionStore.add(question, signal, 'SessionRegistry.addQuestion');
   }
 
   /** Remove one answered/resolved question by id. `signal` (#808) names the
    *  event/reason that caused the removal (e.g. 'PostToolUse', 'Stop',
    *  'user_answer') for the opt-in question-lifecycle trace; `toolName`,
-   *  when the caller knows it, is carried onto the same record. */
+   *  when the caller knows it, is carried onto the same record.
+   *
+   * Thin adapter over `QuestionStore` (#888) -- signature unchanged so no
+   * call site churns.
+   */
   removeQuestion(
     sessionId: UUID,
     questionId: UUID,
@@ -499,57 +485,30 @@ export class SessionRegistry {
      */
     callSite = 'SessionRegistry.removeQuestion',
   ): void {
-    if (this.session !== null && this.session.sessionId === sessionId) {
-      const existing = this.session.currentQuestions.get(questionId);
-      this.session.currentQuestions.delete(questionId);
-      this.session.lastActivityAt = now();
-      this.events.onQuestionsChanged?.(sessionId, [...this.session.currentQuestions.values()]);
-      traceQuestionEvent({
-        action: 'remove',
-        sessionId,
-        questionId,
-        promptId: existing?.promptId,
-        agentId: existing?.agentId,
-        isSubagent: existing?.agentId !== undefined,
-        toolName,
-        signal,
-        callSite,
-        throughFunnel: true,
-      });
-    }
+    if (this.session === null || this.session.sessionId !== sessionId) return;
+    this.session.lastActivityAt = now();
+    this.session.questionStore.remove(questionId, signal, toolName, callSite);
   }
 
   /** Drop all pending questions on Claude session restart (/clear, /resume).
    *  Status-leaving-'waiting' is handled by QuestionPresenceTracker and the
    *  client; this covers the restart path only, so answers to the dying
    *  session's prompts are refused. `signal` (#808) is carried onto one trace
-   *  record per cleared question. */
+   *  record per cleared question.
+   *
+   * Thin adapter over `QuestionStore` (#888) -- signature unchanged so no
+   * call site churns.
+   */
   clearQuestions(sessionId: UUID, signal = 'unknown'): void {
-    if (this.session !== null && this.session.sessionId === sessionId) {
-      const cleared = [...this.session.currentQuestions.values()];
-      this.session.currentQuestions.clear();
-      this.session.lastActivityAt = now();
-      this.events.onQuestionsChanged?.(sessionId, []);
-      for (const q of cleared) {
-        traceQuestionEvent({
-          action: 'remove',
-          sessionId,
-          questionId: q.id,
-          promptId: q.promptId,
-          agentId: q.agentId,
-          isSubagent: q.agentId !== undefined,
-          signal,
-          callSite: 'SessionRegistry.clearQuestions',
-          throughFunnel: true,
-        });
-      }
-    }
+    if (this.session === null || this.session.sessionId !== sessionId) return;
+    this.session.lastActivityAt = now();
+    this.session.questionStore.clear(signal, 'SessionRegistry.clearQuestions');
   }
 
   /** Look up a pending question by id (null if not awaitable). */
   getQuestion(sessionId: UUID, questionId: UUID): Question | null {
     if (this.session === null || this.session.sessionId !== sessionId) return null;
-    return this.session.currentQuestions.get(questionId) ?? null;
+    return this.session.questionStore.get(questionId);
   }
 
   /**

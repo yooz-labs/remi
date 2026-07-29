@@ -32,3 +32,5 @@ export {
 } from './pending-question-label.ts';
 
 export { PendingQuestionCreatedAtTracker } from './pending-question-created-at-tracker.ts';
+
+export { QuestionStore, type QuestionStoreEvents } from './question-store.ts';
