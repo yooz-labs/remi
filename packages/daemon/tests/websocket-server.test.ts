@@ -116,26 +116,39 @@ describe('WebSocketServer', () => {
       expect(response.status).toBe(404);
     });
 
-    test('/health includes CORS header so cross-origin clients can fetch (#403)', async () => {
+    // #403 needed the iOS app's port-scan probe to be readable cross-origin.
+    // It was served by a wildcard until #535 replaced that with an echo of the
+    // caller's own origin, which covers the app and nothing else. These assert
+    // the app's origin specifically; the refusal side lives in
+    // tests/server/origin-policy.test.ts.
+    const APP_ORIGIN = 'capacitor://localhost';
+
+    test('/health is readable by the app origin (#403)', async () => {
       await server.start();
-      const response = await fetch(`http://localhost:${testPort}/health`);
-      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      const response = await fetch(`http://localhost:${testPort}/health`, {
+        headers: { Origin: APP_ORIGIN },
+      });
+      expect(response.headers.get('access-control-allow-origin')).toBe(APP_ORIGIN);
     });
 
-    test('/auth-info includes CORS header (#403)', async () => {
+    test('/auth-info is readable by the app origin (#403)', async () => {
       await server.start();
-      const response = await fetch(`http://localhost:${testPort}/auth-info`);
+      const response = await fetch(`http://localhost:${testPort}/auth-info`, {
+        headers: { Origin: APP_ORIGIN },
+      });
       expect(response.status).toBe(200);
-      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('access-control-allow-origin')).toBe(APP_ORIGIN);
       const data = await response.json();
       expect(typeof data.authRequired).toBe('boolean');
     });
 
-    test('404 fallthrough includes CORS header (#403)', async () => {
+    test('404 fallthrough is readable by the app origin (#403)', async () => {
       await server.start();
-      const response = await fetch(`http://localhost:${testPort}/nonexistent`);
+      const response = await fetch(`http://localhost:${testPort}/nonexistent`, {
+        headers: { Origin: APP_ORIGIN },
+      });
       expect(response.status).toBe(404);
-      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('access-control-allow-origin')).toBe(APP_ORIGIN);
     });
   });
 

@@ -4,6 +4,24 @@
  * Claude Code posts JSON to this endpoint when configured hooks fire.
  * The server parses the payload and emits typed events for the daemon
  * to consume (status changes, question detection, session info).
+ *
+ * ## Browsers are refused outright (#535)
+ *
+ * This is a loopback listener that drives permission handling, so it is the
+ * same drive-by target as the WebSocket. It is in fact softer: `req.json()`
+ * ignores `Content-Type`, so a page can POST a forged hook body as a
+ * CORS-"simple" request (`text/plain`, `mode: 'no-cors'`) with no preflight to
+ * negotiate, and never needs to read the reply. A forged `PermissionRequest`
+ * with an unknown `session_id` reaches `ForeignSessionEscalator`, which pushes
+ * an informational "Claude needs your permission" notification to the user's
+ * phone; with a known one it consumes an eval-queue slot ahead of real prompts.
+ * Only the ephemeral port stands between a page and either, and obscurity is
+ * not a control.
+ *
+ * The legitimate caller is Claude Code's own `type: 'http'` hook, a native
+ * client that sends no `Origin` header, so the policy here is stricter than
+ * `origin-policy.ts`: ANY `Origin` is refused. No browser has business posting
+ * a hook, including remi's own clients.
  */
 
 import * as fs from 'node:fs';
@@ -170,6 +188,18 @@ export class HookServer {
 
   private async handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    // A browser is never a legitimate caller here (#535). Checked before the
+    // route match so a page cannot even probe which paths exist.
+    const origin = req.headers.get('origin');
+    if (origin !== null) {
+      this.events.onError?.(
+        new Error(
+          `Refused a hook POST carrying Origin ${origin}: only Claude Code posts hooks, and it sends no Origin (#535).`,
+        ),
+      );
+      return new Response('Forbidden origin', { status: 403 });
+    }
 
     if (req.method !== 'POST' || url.pathname !== '/hooks') {
       return new Response('Not Found', { status: 404 });

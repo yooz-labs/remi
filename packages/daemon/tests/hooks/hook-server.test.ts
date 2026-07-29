@@ -539,4 +539,74 @@ describe('HookServer', () => {
       expect(preToolFired).toBe(1);
     });
   });
+
+  describe('browser origins are refused (#535)', () => {
+    it('a forged hook POST from a page is refused before it can fire an event', async () => {
+      // The realistic shape: a CORS-"simple" request. `text/plain` needs no
+      // preflight to negotiate and `req.json()` ignores Content-Type anyway, so
+      // before the gate this drove real permission handling and could push a
+      // fake "Claude needs your permission" notification to the user's phone.
+      let permissionFired = 0;
+      let preToolFired = 0;
+      server = new HookServer({ port }, { onPreToolUse: () => preToolFired++, onError: () => {} });
+      server.setPermissionResolver(async () => {
+        permissionFired++;
+        return 'allow';
+      });
+      server.start();
+
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain', Origin: 'https://evil.example' },
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+      });
+
+      expect(res.status).toBe(403);
+      expect(permissionFired).toBe(0);
+      expect(preToolFired).toBe(0);
+    });
+
+    it('refuses even an origin the WebSocket would admit', async () => {
+      // Stricter than origin-policy.ts on purpose: Claude Code is the only
+      // legitimate caller here, and it is not a browser.
+      server = new HookServer({ port }, { onError: () => {} });
+      server.start();
+      for (const origin of ['capacitor://localhost', 'http://localhost:5173']) {
+        const res = await fetch(makeUrl(port), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: origin },
+          body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
+        });
+        expect(res.status).toBe(403);
+      }
+    });
+
+    it('reports the refusal instead of dropping it silently', async () => {
+      const errors: Error[] = [];
+      server = new HookServer({ port }, { onError: (e) => errors.push(e) });
+      server.start();
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
+      });
+      expect(errors.length).toBe(1);
+      expect(errors[0]?.message).toContain('https://evil.example');
+    });
+
+    it('Claude Code sends no Origin and is unaffected', async () => {
+      let stopFired = 0;
+      server = new HookServer({ port }, { onStop: () => stopFired++ });
+      server.start();
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
+      });
+      expect(res.status).toBe(200);
+      expect(stopFired).toBe(1);
+    });
+  });
 });
