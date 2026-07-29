@@ -213,11 +213,17 @@ describe('startLiveSessionsWatcher (#542)', () => {
           startedAt: new Date().toISOString(),
         });
 
-        await waitFor(() => errors.length >= 1, 'the throwing collect to be logged');
+        // Wait for THE collect error specifically, not merely for any log line.
+        // `register()` writes a `.json.tmp` and renames it, and on Linux the
+        // watcher can emit ENOENT for the vanished temp path; its handler then
+        // logs first and `errors[0]` is that, not this test's subject (#903).
+        await waitFor(
+          () => errors.some((e) => e.includes('collect exploded')),
+          'the throwing collect to be logged',
+        );
 
         expect(broadcasts).toEqual([]);
-        expect(errors.length).toBeGreaterThanOrEqual(1);
-        expect(errors[0]).toContain('collect exploded');
+        expect(errors.some((e) => e.includes('collect exploded'))).toBe(true);
       } finally {
         closer();
       }
