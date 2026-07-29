@@ -91,6 +91,12 @@ playwright-report/
 # epic-dev local state (never committed)
 .claude/*.local.md
 
+# Agent worktrees: full checkouts of in-progress branches. Never committed. The
+# whole of `.claude` is also excluded from biome (biome.json) -- otherwise
+# `biome check .` lints every running agent's working tree and reports their
+# in-flight code as this tree's errors, and formats local settings files.
+.claude/worktrees/
+
 # macOS app (packages/macos): staged web bundle + Xcode build artifacts
 packages/macos/Remi/Resources/web/*
 !packages/macos/Remi/Resources/web/.gitkeep
