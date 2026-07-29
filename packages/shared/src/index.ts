@@ -164,6 +164,7 @@ export {
 
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
+export * from './relay-crypto.ts';
 export {
   PBKDF2_ITERATIONS,
   SALT_SIZE,
