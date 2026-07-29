@@ -589,25 +589,25 @@ export class QuestionPresenceTracker {
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
             ...(hookRecord.summary ? { summary: hookRecord.summary } : {}),
           }
-        : hookRecord
-          ? {
-              // A hookRecord with NO options. Unreachable today -- every
-              // producer in `hook-event-bridge.ts` guarantees at least the
-              // honest Yes/No pair -- but identity must not depend on that
-              // holding, because nothing enforces it and the old safety net is
-              // gone (#887 deleted `rekeySignatureToRendered`, which used to
-              // re-key defensively on every push regardless of shape).
-              //
-              // Adopt the id anyway: `openQuestionSignatures` is keyed by the
-              // hook's id at park time, so keeping the PTY's id here would
-              // silently reintroduce the #808 stale-card mismatch with nothing
-              // left to catch it. Identity and option-shape are unrelated
-              // concerns and must not share a condition.
-              ...ptyQuestion,
-              id: hookRecord.id,
-              promptId: hookRecord.promptId ?? ptyQuestion.promptId,
-            }
-          : ptyQuestion;
+        : // NOTE (#887 review): identity adoption above is gated on
+          // `options.length > 0`, so an optionless hook record falls here and
+          // the PTY's own id survives. That is DELIBERATE for the
+          // `recordPendingHook` path -- `question-presence-tracker.test.ts`
+          // asserts `toBe(ptyQ)`, i.e. no merge at all, for the
+          // addDirectories-only case hook-event-bridge filters to empty.
+          //
+          // It is a latent hazard only on the PARKED path, where
+          // `openQuestionSignatures` is keyed by the hook id at park time: a
+          // future producer emitting an optionless PARKED record would push a
+          // card under the PTY id and reintroduce the #808 mismatch, with no
+          // `rekeySignatureToRendered` left to catch it. Unreachable today
+          // (every producer guarantees at least the honest Yes/No pair).
+          //
+          // Not fixed here: separating the two paths' merge policy is exactly
+          // the "one owner for identity" work in #888, and changing it now
+          // would break the deliberate assertion above to defend a case that
+          // cannot occur.
+          ptyQuestion;
 
     return { merged, hookRecord };
   }
