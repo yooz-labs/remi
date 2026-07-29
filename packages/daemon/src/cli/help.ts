@@ -340,7 +340,7 @@ export function formatHelp(version: string): string {
     entry('--auto-approve-model M', 'LLM model (default: the engine 4B qat-lean)'),
     entry('--auto-approve-provider P', 'yooz | llamacpp | openrouter | custom URL'),
     entry('--auto-approve-api-key K', 'API key (OpenRouter, etc.)'),
-    entry('--auto-approve-allow STR', 'Allow-list pattern (repeatable, substring match)'),
+    entry('--auto-approve-allow STR', 'Allow-list pattern (repeatable, per-segment prefix)'),
     entry('--auto-approve-deny STR', 'Deny-list pattern (repeatable, substring match)'),
     entry('--auto-approve-instructions T', 'Natural-language guidance for the LLM'),
     entry('--auto-approve-multichoice MODE', 'skip (default) | evaluate (LLM picks index)'),

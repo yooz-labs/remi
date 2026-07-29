@@ -201,7 +201,10 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
    worker is a courier and not a reader. **This is still a goal, not a
    description.** #543 built the encryption; #881 is that it engages only when an
    `authenticator` is present, which `cli.ts` supplies only in permanent-code
-   mode — so a default install, and even `--auth` alone, still relays plaintext.
+   mode — so a default install, and even `--auth` alone, never derives session
+   keys. Outbound then REFUSES to send (a breakage, not a leak) while inbound
+   still ACCEPTS plaintext (a leak). Name the direction; conflating them is how
+   the first draft of this very row got it wrong.
    The principle as previously written ("peer-to-peer when possible; TURN only
    relays encrypted blobs") described a WebRTC design that was never built, which
    is precisely why nobody noticed the worker was receiving plaintext

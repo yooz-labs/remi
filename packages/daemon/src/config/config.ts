@@ -993,9 +993,10 @@ authorized_user_ids = []
 # User-defined rules, checked BEFORE the LLM. Deny is checked first and wins.
 #
 # Allow and deny do NOT match the same way, on purpose (#536). Allow is precise:
-# a Bash command is split on ; && || | and every segment must be covered by one
-# of your prefixes, and anything with shell control (backticks, $(), redirects,
-# -exec) is refused even when a prefix matches. An entry shaped like a tool name
+# a Bash command is split on ; && || | and every segment must either match one
+# of your prefixes or be a neutral no-op (cd, pwd, echo, true, :), and anything
+# with shell control (backticks, $(), redirects, -exec) is refused even when a
+# prefix matches. An entry shaped like a tool name
 # ("Read") matches that TOOL and never a command containing the word. Deny stays
 # a broad substring match, because a rule meant to stop something should
 # over-reach rather than under-reach.
