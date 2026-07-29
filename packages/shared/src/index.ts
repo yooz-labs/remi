@@ -162,6 +162,7 @@ export {
   createQuestionResolved,
   createRemiStatus,
   createQuestionSnapshot,
+  isValidMessage,
   MessageIdTracker,
 } from './protocol.ts';
 

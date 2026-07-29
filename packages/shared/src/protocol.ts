@@ -1118,8 +1118,15 @@ const VALID_TYPES: ReadonlySet<string> = new Set(Object.keys(MESSAGE_DIRECTION))
 
 /**
  * Type guard to check if parsed JSON is a valid protocol message.
+ *
+ * Exported because `deserialize` validates only the OUTER envelope.
+ * `ReplayBatchMessage.messages` is `readonly ProtocolMessage[]` at compile
+ * time only, so nested replayed messages reach a consumer's dispatch unchecked
+ * and a consumer that recurses into them must validate each one itself (#897).
+ * Use this rather than re-deriving the check: a second copy of "what counts as
+ * a valid message" is the drift this registry exists to eliminate.
  */
-function isValidMessage(value: unknown): value is ProtocolMessage {
+export function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof value !== 'object' || value === null) {
     return false;
   }

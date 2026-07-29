@@ -5,7 +5,9 @@
  */
 
 import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
-import type { MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
+import type { AgentStatus, MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
+
+export type { AgentStatus } from '@remi/shared/types.ts';
 
 /** Source that produced a UI message */
 export type MessageSource = 'optimistic' | 'pty' | 'transcript';
@@ -67,18 +69,6 @@ export interface ConnectionState {
    */
   readonly attachState: 'attached' | 'queued' | null;
 }
-
-/** Agent status as displayed in the UI. Mirrors the daemon's `AgentStatus`
- *  (@remi/shared); `evaluating`/`approved`/`starting` are auto-approve and
- *  session-lifecycle states surfaced on the pill (#576). */
-export type AgentStatus =
-  | 'idle'
-  | 'thinking'
-  | 'executing'
-  | 'waiting'
-  | 'evaluating'
-  | 'approved'
-  | 'starting';
 
 /** Message sender type */
 export type MessageSender = 'user' | 'agent' | 'system';
