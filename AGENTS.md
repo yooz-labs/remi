@@ -8,6 +8,40 @@ Project-specific agent instructions. Ecosystem-wide rules live in `../AGENTS.md`
 - **Tech stack:** Bun + TypeScript (backend), React + Capacitor (frontend), WebSocket, xterm.js.
 - **Philosophy:** "My agent needs me. Yes or No."
 
+## Verify before you describe
+
+**This repo's documentation has repeatedly described security behavior the code
+did not have.** Not as sloppiness — as a specific, recurring failure that hid
+real problems for months. Known cases, all confirmed:
+
+| The claim | The reality | Cost |
+|---|---|---|
+| "peer-to-peer, TURN relays encrypted blobs" (this file) | no WebRTC exists; the Worker was the data path in plaintext | #543, unnoticed for months |
+| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880, still open |
+| allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
+| `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 29 tests that could not fail | mandatory kex shipped uncovered |
+| "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
+
+The pattern is what matters: **a wrong security description reads as "this is
+handled," so nobody looks again.** Docs that overstate protection are more
+dangerous than docs that are missing.
+
+Rules, all cheap:
+
+1. **Before citing a doc/comment as evidence that something is safe, check the
+   code.** One `grep` for the caller, one `curl` against the running daemon, one
+   `git log -S`. Every case above was settled by a single command.
+2. **A claim about a live data path needs a caller trace.** "The relay sends X in
+   plaintext" is only true if something calls it — twice this turn a module was
+   dead code. Grep for callers before you assert impact, and before you file the
+   issue.
+3. **When code and comment disagree, fix the comment in the same change**, even
+   when the behavior is someone else's call. Leave the issue number in the
+   comment (see `AuthConfig.enabled` for the shape).
+4. **Say what ships, not what was intended.** Aspirations belong in issues.
+5. **A test named for a component must construct it.** If it does not, the name
+   is a claim about coverage that is not true.
+
 ## Quick Start
 
 ```bash
@@ -163,13 +197,17 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 
 1. **Zero friction** — pairing is a code, not an account.
 2. **Reliable messaging** — WhatsApp-style states (sending → sent → delivered → read).
-3. **No data in cloud** — the relay must carry ciphertext it cannot read, so the
-   worker is a courier and not a reader. See #543: this was NOT true until the
-   relay encryption landed, and the principle as previously written ("peer-to-peer
-   when possible; TURN only relays encrypted blobs") described a WebRTC design
-   that was never built, which is precisely why nobody noticed the worker was
-   receiving plaintext `user_input`, answers and device tokens for months. State
-   what ships, not what was intended.
+3. **No data in cloud** — the relay should carry ciphertext it cannot read, so the
+   worker is a courier and not a reader. **This is still a goal, not a
+   description.** #543 built the encryption; #881 is that it engages only when an
+   `authenticator` is present, which `cli.ts` supplies only in permanent-code
+   mode — so a default install, and even `--auth` alone, still relays plaintext.
+   The principle as previously written ("peer-to-peer when possible; TURN only
+   relays encrypted blobs") described a WebRTC design that was never built, which
+   is precisely why nobody noticed the worker was receiving plaintext
+   `user_input`, answers and device tokens for months. Direct connections (LAN,
+   Tailscale, VPN, SSH tunnel) genuinely never touch a server; that part is true
+   today. State what ships, not what was intended.
 4. **Graceful degradation** — if parsing fails, show raw text.
 
 ## Branch Strategy

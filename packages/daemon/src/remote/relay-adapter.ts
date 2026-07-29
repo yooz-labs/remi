@@ -12,6 +12,18 @@
  * When set, the adapter runs a challenge-response handshake before accepting
  * any protocol messages from the relay peer:
  *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
+ *
+ * ## Encryption engages with auth, not with the relay (#881)
+ *
+ * The #543 key exchange rides that handshake, so it runs ONLY when an
+ * `authenticator` is present. Without one the adapter takes the `else` branch
+ * in `peer-connected`, `sessionKeys` stays null, and `sendRaw` puts plain JSON
+ * on the wire for the Worker to read.
+ *
+ * `cli.ts` passes an authenticator only in permanent-code mode, so the DEFAULT
+ * rotating-code path relays in the clear even when the user passed `--auth`.
+ * Read "the relay is encrypted" as "the relay is encrypted when authenticated",
+ * and see #881 before describing this to anyone as end-to-end encrypted.
  */
 
 import {
