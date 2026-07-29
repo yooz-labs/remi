@@ -695,6 +695,18 @@ export interface AuthChallengeMessage {
   readonly serverFingerprint: string;
   /** Base64-encoded server Ed25519 public key */
   readonly serverPublicKey: string;
+  /**
+   * Relay end-to-end encryption (#543). Present ONLY on the relay transport;
+   * the direct WebSocket path leaves both absent and is unchanged by this.
+   *
+   * The daemon's ephemeral P-256 public key, and an Ed25519 signature over
+   * `kexSigningInput(challenge, thisKey, null)` made with the identity key in
+   * `serverPublicKey`. The signature is what stops the worker substituting its
+   * own key: it forwards these fields and can replace them, but cannot forge a
+   * signature the client will accept.
+   */
+  readonly relayEphemeralKey?: string;
+  readonly relayKexSignature?: string;
 }
 
 /** Authentication response from client to server */
@@ -708,6 +720,19 @@ export interface AuthResponseMessage {
   readonly signature: string;
   /** Client's fingerprint for display */
   readonly clientFingerprint: string;
+  /**
+   * Relay end-to-end encryption (#543), relay transport only.
+   *
+   * The client's ephemeral P-256 public key, and an Ed25519 signature over
+   * `kexSigningInput(challenge, daemonKey, thisKey)` made with the identity in
+   * `clientPublicKey`. Binding BOTH keys means neither side's contribution can
+   * be swapped after the fact.
+   *
+   * `signature` above is unchanged and still covers the challenge alone, so the
+   * direct path's verification is untouched.
+   */
+  readonly relayEphemeralKey?: string;
+  readonly relayKexSignature?: string;
 }
 
 /** Authentication result from server to client */
@@ -1589,6 +1614,7 @@ export function createAuthChallenge(
   challenge: string,
   serverFingerprint: string,
   serverPublicKey: string,
+  relayKex?: { readonly ephemeralKey: string; readonly signature: string },
 ): AuthChallengeMessage {
   return {
     type: 'auth_challenge',
@@ -1597,6 +1623,10 @@ export function createAuthChallenge(
     challenge,
     serverFingerprint,
     serverPublicKey,
+    ...(relayKex && {
+      relayEphemeralKey: relayKex.ephemeralKey,
+      relayKexSignature: relayKex.signature,
+    }),
   };
 }
 
@@ -1607,6 +1637,7 @@ export function createAuthResponse(
   clientPublicKey: string,
   signature: string,
   clientFingerprint: string,
+  relayKex?: { readonly ephemeralKey: string; readonly signature: string },
 ): AuthResponseMessage {
   return {
     type: 'auth_response',
@@ -1615,6 +1646,10 @@ export function createAuthResponse(
     clientPublicKey,
     signature,
     clientFingerprint,
+    ...(relayKex && {
+      relayEphemeralKey: relayKex.ephemeralKey,
+      relayKexSignature: relayKex.signature,
+    }),
   };
 }
 
