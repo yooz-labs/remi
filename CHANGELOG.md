@@ -17,13 +17,31 @@ All notable changes to Remi are documented here.
   `question-parser.ts` now sets `source: 'pty'` on every PTY-parsed question
   (documented since #574 but never implemented, which is why this cohort was
   invisible), and `QuestionPresenceTracker` gained a render-resolution
-  transition: when a hook-less question's render is superseded by a
-  different one, the session status leaves `'waiting'`, or the session
-  restarts, that question is removed from the store — the screen
-  disappearing IS its resolution evidence, since nothing else exists. A
-  before/after repro on the real pipeline (20 hook-paired cycles + 15
-  hook-less renders) went from 8 of 35 added never removed (7 via LRU
-  eviction) to 0 of 35.
+  transition: when a CONFIRMED replacement push supersedes a hook-less
+  question, the original is removed from the store — the screen disappearing
+  IS its resolution evidence, since nothing else exists.
+
+  A first version of this compared the PTY-parsed render's id alone and also
+  treated a status-leaves-`'waiting'` transition or a session restart as
+  resolution evidence. Review found both unsound and reachable in
+  production: the PTY parser mints a fresh id on every parse even for a
+  prompt that merely redraws (#486), and `cli.ts` calls
+  `tracker.onStatusChange` unconditionally while gating the paired
+  `QuestionDedup` reset behind `!hookServer` — so a PTY-text-parsed status
+  false positive (confidence >= 0.5, not certainty) could resolve a question
+  whose "replacement" render was then silently deduped, telling the client
+  a still-live prompt was cancelled. Fixed: resolution now fires ONLY once a
+  new dep, `isQuestionLive`, confirms the replacement actually landed in
+  the store (not suppressed by dedup); the status and restart triggers were
+  dropped entirely rather than patched, since neither can be trusted as
+  evidence for one specific question (a real restart already resolves
+  everything via the pre-existing `resolveAndClearQuestions`). A before/
+  after repro on the real pipeline (20 hook-paired cycles + 15 hook-less
+  renders, each a genuinely distinct render) went from 8 of 35 added never
+  removed (7 via LRU eviction) to 0 of 35; a separate integration suite
+  drives the real `MessageAPI`/`QuestionDedup` and reproduces the
+  flap-then-redraw chain directly, pinning that a deduped replacement no
+  longer swallows the original.
 
   `SessionRegistry`'s `addQuestion`/`removeQuestion`/`clearQuestions`/
   `getQuestion` are now thin adapters over a new `QuestionStore`
