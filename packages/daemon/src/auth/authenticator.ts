@@ -115,13 +115,16 @@ export class Authenticator {
    * pass before any traffic is encrypted, and the caller must treat a false
    * here as fatal to the connection rather than as "encryption unavailable" —
    * silently continuing in plaintext is the exact failure this issue is about.
+   *
+   * Takes the challenge as an argument rather than reading `pendingChallenges`,
+   * because `verifyResponse` consumes that entry. Looking it up here made the
+   * result depend on call order, which failed closed but for the wrong reason.
    */
   async verifyRelayKex(
-    connectionId: string,
+    challenge: string,
     response: AuthResponseMessage,
     daemonEphemeralKeyBase64: string,
   ): Promise<boolean> {
-    const challenge = this.pendingChallenges.get(connectionId);
     if (!challenge) return false;
     const { relayEphemeralKey, relayKexSignature } = response;
     if (!relayEphemeralKey || !relayKexSignature) return false;

@@ -45,9 +45,41 @@ import type {
 import type { Authenticator } from '../auth/authenticator.ts';
 import { SignalingClient } from './signaling-client.ts';
 
+/**
+ * The slice of `SignalingClient` the adapter actually uses.
+ *
+ * Named so a test can stand in for the transport without a network or a
+ * Worker (#543). The relay's handshake had no adapter-level coverage at all
+ * before this: `relay-adapter-auth.test.ts` exercises `Authenticator`
+ * directly and never constructs an adapter, which is why making the key
+ * exchange mandatory broke none of its tests.
+ */
+export interface RelayTransport {
+  on(event: 'registered', cb: (code: string, expiresAt: string) => void): void;
+  on(event: 'relay', cb: (payload: string) => void): void;
+  on(event: 'error', cb: (code: string, message: string) => void): void;
+  on(event: 'open' | 'close' | 'peer-connected' | 'peer-disconnected', cb: () => void): void;
+  on(event: 'code-rotated', cb: (code: string) => void): void;
+  // biome-ignore lint/suspicious/noExplicitAny: the emitter is heterogeneous by design
+  on(event: string, cb: (...args: any[]) => void): void;
+  sendRelay(payload: string): void;
+  connect(code?: string): void;
+  close(): void;
+  readonly isConnected: boolean;
+  readonly connectionCode: string | null;
+}
+
 /** Base relay config fields shared by both modes */
 interface RelayAdapterConfigBase extends AdapterConfig {
   readonly signalingUrl: string;
+  /**
+   * Build the transport. Defaults to a real `SignalingClient`; tests pass a
+   * stand-in so the handshake can be driven without a Worker.
+   */
+  readonly createTransport?: (
+    url: string,
+    options: { rotateOnReconnect: boolean },
+  ) => RelayTransport;
 }
 
 /** Rotating codes (default): code changes on reconnect; no auth required */
@@ -73,7 +105,7 @@ export class RelayAdapter implements ConnectionAdapter {
 
   private readonly config: RelayAdapterConfig;
   private readonly events: Partial<AdapterEvents>;
-  private client: SignalingClient | null = null;
+  private client: RelayTransport | null = null;
   private running = false;
   private connectionCode: string | null = null;
 
@@ -125,7 +157,10 @@ export class RelayAdapter implements ConnectionAdapter {
 
     const rotateOnReconnect = this.config.rotateCode !== false;
 
-    this.client = new SignalingClient(this.config.signalingUrl, { rotateOnReconnect });
+    const createTransport =
+      this.config.createTransport ??
+      ((url: string, options: { rotateOnReconnect: boolean }) => new SignalingClient(url, options));
+    this.client = createTransport(this.config.signalingUrl, { rotateOnReconnect });
 
     this.client.on('registered', (code: string) => {
       this.connectionCode = code;
@@ -303,7 +338,7 @@ export class RelayAdapter implements ConnectionAdapter {
       const kexOk =
         ephemeral !== null &&
         (await this.config.authenticator.verifyRelayKex(
-          this.clientConnectionId,
+          this.kexChallenge ?? '',
           response,
           ephemeral.publicKeyBase64,
         ));
