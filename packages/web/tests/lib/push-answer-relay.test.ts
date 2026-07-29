@@ -8,7 +8,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { createIdentity, serializeIdentity } from '@remi/shared';
+import {
+  createIdentity,
+  generateAnswerKeyPair,
+  openSealedAnswer,
+  serializeIdentity,
+} from '@remi/shared';
 import {
   answerUrl,
   relayAnswerDirect,
@@ -82,6 +87,9 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(received).toEqual({ sessionId: 's1', questionId: 'q1', answer: 'Yes' });
@@ -105,6 +113,9 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('rejected');
     } finally {
@@ -127,6 +138,9 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('auth-failed');
     } finally {
@@ -164,6 +178,7 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
+        sealRequired: false,
       });
       expect(result.kind).toBe('needs-passphrase');
       expect(hit).toBe(false); // failed fast, never reached the daemon
@@ -187,6 +202,7 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
+        sealRequired: false,
       });
       expect(result.kind).toBe('needs-passphrase');
       expect(hit).toBe(false);
@@ -216,6 +232,7 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
+        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(body?.auth?.clientPublicKey).toBe(unencrypted.publicKey);
@@ -280,6 +297,9 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(path).toBe('/answer/WXYZ-2345');
@@ -305,6 +325,9 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('unreachable');
     } finally {
@@ -332,6 +355,7 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
+        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(body?.auth?.clientPublicKey).toBe(unencrypted.publicKey);
@@ -369,6 +393,9 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('unreachable');
     } finally {
@@ -392,10 +419,119 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('rejected');
     } finally {
       server.stop();
     }
+  });
+
+  describe('sealed answers (#875)', () => {
+    test('with a pinned key the Worker receives an opaque envelope', async () => {
+      const daemon = await generateAnswerKeyPair();
+      let received: Record<string, unknown> | null = null;
+      const server = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          received = (await req.json()) as Record<string, unknown>;
+          return new Response(JSON.stringify({ result: 'delivered' }), { status: 200 });
+        },
+      });
+      try {
+        const result = await relayAnswerViaSignaling({
+          signalingUrl: `http://127.0.0.1:${server.port}`,
+          code: 'WXYZ-2345',
+          sessionId: 's1',
+          questionId: 'q1',
+          answer: 'Yes, deploy',
+          authRequired: false,
+          answerEncryptionKey: daemon.publicKeyBase64,
+        });
+        expect(result).toEqual({ kind: 'delivered' });
+
+        // The Worker's entire view.
+        const body = received as unknown as Record<string, unknown>;
+        const wire = JSON.stringify(body);
+        expect(wire).not.toContain('Yes, deploy');
+        expect(wire).not.toContain('s1');
+        expect(wire).not.toContain('q1');
+        expect(typeof body['sealed']).toBe('string');
+        expect(typeof body['ephemeralPublicKey']).toBe('string');
+
+        // ...and the daemon still gets everything it needs.
+        const opened = (await openSealedAnswer(
+          daemon.privateKeyPkcs8Base64,
+          body as unknown as { ephemeralPublicKey: string; sealed: string },
+        )) as Record<string, unknown>;
+        expect(opened['sessionId']).toBe('s1');
+        expect(opened['answer']).toBe('Yes, deploy');
+      } finally {
+        server.stop();
+      }
+    });
+
+    test('without a pinned key it refuses instead of sending plaintext', async () => {
+      // The whole point: a fallback here would hand the Worker the answer.
+      let called = false;
+      const server = Bun.serve({
+        port: 0,
+        fetch: () => {
+          called = true;
+          return new Response(JSON.stringify({ result: 'delivered' }), { status: 200 });
+        },
+      });
+      try {
+        const result = await relayAnswerViaSignaling({
+          signalingUrl: `http://127.0.0.1:${server.port}`,
+          code: 'WXYZ-2345',
+          sessionId: 's1',
+          questionId: 'q1',
+          answer: 'Yes',
+          authRequired: false,
+        });
+        expect(result.kind).toBe('unreachable');
+        expect(called).toBe(false);
+      } finally {
+        server.stop();
+      }
+    });
+
+    test('the auth block is sealed too, so the Worker cannot see who answered', async () => {
+      // Signing needs an identity present, same setup the auth tests above use.
+      const unencrypted = await createIdentity();
+      store.setItem('remi-identity', serializeIdentity(unencrypted));
+      const daemon = await generateAnswerKeyPair();
+      let received: Record<string, unknown> | null = null;
+      const server = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          received = (await req.json()) as Record<string, unknown>;
+          return new Response(JSON.stringify({ result: 'delivered' }), { status: 200 });
+        },
+      });
+      try {
+        await relayAnswerViaSignaling({
+          signalingUrl: `http://127.0.0.1:${server.port}`,
+          code: 'WXYZ-2345',
+          sessionId: 's1',
+          questionId: 'q1',
+          answer: 'Yes',
+          authRequired: true,
+          answerEncryptionKey: daemon.publicKeyBase64,
+        });
+        const body = received as unknown as Record<string, unknown>;
+        expect(JSON.stringify(body)).not.toContain('clientFingerprint');
+        const opened = (await openSealedAnswer(
+          daemon.privateKeyPkcs8Base64,
+          body as unknown as { ephemeralPublicKey: string; sealed: string },
+        )) as Record<string, unknown>;
+        expect(opened['auth']).toBeTruthy();
+      } finally {
+        server.stop();
+      }
+    });
   });
 });
