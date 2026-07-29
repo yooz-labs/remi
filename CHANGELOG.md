@@ -4,6 +4,38 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Security
+- **The relay transport is encrypted end to end** (#543). The signaling Worker
+  was built to relay a *handshake*; WebRTC was meant to carry the session and
+  was never implemented, so the relay became the data path and
+  `RelayAdapter.routeMessage` carries every protocol message, `user_input` and
+  answers included, as plain JSON the Worker could read.
+
+  The daemon now runs a signed ephemeral ECDH on top of the existing Ed25519
+  auth handshake, so it costs no extra round trip, and encrypts every payload
+  after it with AES-256-GCM. Each side signs its ephemeral key with its identity
+  key, so a Worker that substituted one would be caught rather than trusted, and
+  the session challenge is bound into both signatures so a recorded handshake
+  cannot be replayed. Keys are per-connection and discarded on reset.
+
+  A peer that cannot do the exchange is **refused**, not served in plaintext,
+  and a payload that fails authenticated decryption drops the peer instead of
+  being ignored. Both are deliberate: the failure this closes is precisely a
+  silent fall back to the clear.
+
+  Scope worth stating honestly: no shipped client speaks the relay peer protocol
+  today, so this closes the path before anything drives it rather than stopping
+  a live leak. The leak that IS live is the lock-screen answer route
+  (`POST /answer/{code}`), which sends `sessionId`, `questionId` and the answer
+  text to the Worker in the clear. That is a different path with no handshake to
+  key from, and it is tracked separately.
+
+### Removed
+- **`packages/web/src/lib/signaling-client.ts`** (#543), 201 lines with zero
+  references anywhere in the tree. It was the client half of the relay and was
+  never wired up. Deleting it means nobody completes an unencrypted relay peer
+  by accident; a future one starts from the encrypted handshake.
+
 ### Added
 - **Local capability token** (#869, groundwork). The daemon now keeps a random
   secret in `~/.remi/capability.key` (mode 0600) and the CLI presents it on
