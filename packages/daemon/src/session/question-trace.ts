@@ -86,14 +86,19 @@ export interface QuestionTraceRecord {
    * string) — several different internal call sites can legitimately share
    * one `signal` (e.g. both the main and subagent PostToolUse listeners in
    * `hook-bridge-setup.ts` route through `cancelExternallyResolved`, which
-   * itself funnels through `resolveSupersededQuestion`). Closes the gap named
-   * in #887: pre-this-field, a double-'remove' for the same questionId in the
-   * captured trace showed THAT it happened but not WHICH code path did each
-   * one — this field answers that directly, even when (as observed on this
-   * machine) both removals turn out to share the same call site, which is
-   * itself useful: it rules out "two different paths raced" in favor of "one
-   * path fired twice," a strictly narrower question for whoever chases it
-   * next (Q3, #888).
+   * itself funnels through `resolveSupersededQuestion`). Narrows the gap named
+   * in #887: a double-'remove' for one questionId showed THAT it happened but
+   * not WHICH path did each one.
+   *
+   * KNOWN LIMIT, do not over-read this field. It is only as specific as the
+   * caller that passes it. `SessionRegistry.removeQuestion` defaults to naming
+   * itself, and every gate resolution route converges there, so two records
+   * reading `'SessionRegistry.removeQuestion'` do NOT prove "one path fired
+   * twice" — they may be two different upstream callers that have not been
+   * threaded yet. Only a value naming a specific upstream (e.g.
+   * `'AutoApproveGate.resolveHeld'`) is evidence about which path ran. When
+   * chasing the #888 double-removal, treat an unthreaded default as UNKNOWN,
+   * not as a match.
    */
   callSite?: string | undefined;
   /** Free-form extra context (e.g. the live id count for a snapshot, or the

@@ -589,7 +589,25 @@ export class QuestionPresenceTracker {
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
             ...(hookRecord.summary ? { summary: hookRecord.summary } : {}),
           }
-        : ptyQuestion;
+        : hookRecord
+          ? {
+              // A hookRecord with NO options. Unreachable today -- every
+              // producer in `hook-event-bridge.ts` guarantees at least the
+              // honest Yes/No pair -- but identity must not depend on that
+              // holding, because nothing enforces it and the old safety net is
+              // gone (#887 deleted `rekeySignatureToRendered`, which used to
+              // re-key defensively on every push regardless of shape).
+              //
+              // Adopt the id anyway: `openQuestionSignatures` is keyed by the
+              // hook's id at park time, so keeping the PTY's id here would
+              // silently reintroduce the #808 stale-card mismatch with nothing
+              // left to catch it. Identity and option-shape are unrelated
+              // concerns and must not share a condition.
+              ...ptyQuestion,
+              id: hookRecord.id,
+              promptId: hookRecord.promptId ?? ptyQuestion.promptId,
+            }
+          : ptyQuestion;
 
     return { merged, hookRecord };
   }

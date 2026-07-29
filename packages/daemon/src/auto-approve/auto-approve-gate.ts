@@ -776,7 +776,13 @@ export class AutoApproveGate {
     // this leaves a ghost card that replays on reconnect and lets a late
     // handleAnswer find it "live" and misroute. The user-answer path also
     // removes it in handleAnswer's finally; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, `resolveHeld:${decision}`);
+    this.deps.sessionRegistry.removeQuestion(
+      this.sessionId,
+      questionId,
+      `resolveHeld:${decision}`,
+      undefined,
+      'AutoApproveGate.resolveHeld',
+    );
     this.markHandled(hold.isSubagent);
     let resolvedDecision: PermissionDecision = decision;
     let logSuffix: string = decision;
@@ -1536,7 +1542,13 @@ export class AutoApproveGate {
     // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
     // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
     // removes it; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, reason, toolName);
+    this.deps.sessionRegistry.removeQuestion(
+      this.sessionId,
+      questionId,
+      reason,
+      toolName,
+      'AutoApproveGate.releaseHeld',
+    );
     hold.resolve(decision);
     return true;
   }
@@ -2170,7 +2182,13 @@ export class AutoApproveGate {
       );
     }
     try {
-      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid, reason, toolName);
+      this.deps.sessionRegistry.removeQuestion(
+        this.sessionId,
+        qid,
+        reason,
+        toolName,
+        'AutoApproveGate.resolveSupersededQuestion',
+      );
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,
