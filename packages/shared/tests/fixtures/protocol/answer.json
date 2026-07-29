@@ -1,0 +1,9 @@
+{
+  "type": "answer",
+  "id": "e8da6903-e599-4036-91aa-20427b4ddefd",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "sessionId": "fixture-session-id",
+  "questionId": "fixture-question-id",
+  "answer": "yes",
+  "claudeSessionId": "fixture-claude-session-id"
+}

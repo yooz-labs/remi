@@ -1,0 +1,10 @@
+{
+  "type": "session_rotated",
+  "id": "9215ec33-e0d4-4b0c-8c2c-80b3ff8d55d6",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "sessionId": "fixture-session-id",
+  "oldClaudeSessionId": "fixture-old-claude-session-id",
+  "newClaudeSessionId": "fixture-claude-session-id",
+  "newTranscriptPath": "/Users/fixture/transcript.jsonl",
+  "reason": "resume"
+}

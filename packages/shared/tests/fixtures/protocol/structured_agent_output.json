@@ -1,0 +1,30 @@
+{
+  "type": "structured_agent_output",
+  "id": "5bc1ddc4-aa64-4dca-b411-f8d0faffee0e",
+  "timestamp": "2026-07-29T11:27:08.613Z",
+  "message": {
+    "id": "fixture-message-id",
+    "sessionId": "fixture-session-id",
+    "sender": "agent",
+    "content": "Fixture message content",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "state": "delivered",
+    "stateChangedAt": "2026-01-01T00:00:00.000Z",
+    "isEditing": false,
+    "tool": "Bash",
+    "bullets": [
+      {
+        "bulletId": 1,
+        "content": "A fixture bullet",
+        "type": "dash",
+        "startLine": 0,
+        "endLine": 0,
+        "hasCodeBlock": false
+      }
+    ],
+    "firstBulletId": 1,
+    "lastBulletId": 1
+  },
+  "isUpdate": false,
+  "changedBulletIds": [1]
+}

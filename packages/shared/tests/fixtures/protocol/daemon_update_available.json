@@ -1,0 +1,7 @@
+{
+  "type": "daemon_update_available",
+  "id": "abd0ec1b-ca61-4375-8585-392d012954e4",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "currentVersion": "0.7.4-dev.1",
+  "binaryPath": "/opt/homebrew/bin/remi"
+}

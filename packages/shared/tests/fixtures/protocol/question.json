@@ -1,0 +1,22 @@
+{
+  "type": "question",
+  "id": "e6ff798c-c691-4e5b-87b6-173c9a8954c1",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "Allow Bash: ls?",
+    "options": [
+      {
+        "label": "Yes",
+        "value": "yes",
+        "isRecommended": true,
+        "isYes": true,
+        "isNo": false
+      }
+    ],
+    "allowsFreeText": false,
+    "isAnswered": false
+  },
+  "sessionId": "fixture-session-id",
+  "claudeSessionId": "fixture-claude-session-id"
+}

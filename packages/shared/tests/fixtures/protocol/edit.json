@@ -1,0 +1,9 @@
+{
+  "type": "edit",
+  "id": "cba7e98a-7ba2-438e-a0d7-a48e3001bf9a",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "messageId": "fixture-message-id",
+  "newContent": "Updated content",
+  "isEditing": true,
+  "tool": "Edit"
+}

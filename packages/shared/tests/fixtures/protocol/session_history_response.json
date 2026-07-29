@@ -1,0 +1,14 @@
+{
+  "type": "session_history_response",
+  "id": "bfcd5fcd-7fb9-47c3-be3a-6967906ce1b9",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "directories": [
+    {
+      "directory": "/Users/fixture/project",
+      "lastUsed": "2026-01-01T00:00:00.000Z",
+      "sessionCount": 2,
+      "displayName": "project"
+    }
+  ],
+  "requestId": "fixture-request-id"
+}

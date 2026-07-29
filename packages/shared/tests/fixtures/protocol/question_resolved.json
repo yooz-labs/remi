@@ -1,0 +1,8 @@
+{
+  "type": "question_resolved",
+  "id": "66fdd5b8-62f0-474f-b218-4fa23c763bb8",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "sessionId": "fixture-session-id",
+  "questionId": "fixture-question-id",
+  "reason": "answered"
+}

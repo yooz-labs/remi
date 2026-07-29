@@ -1,0 +1,26 @@
+{
+  "type": "remi_status",
+  "id": "fd04d56a-4453-4de3-93be-b016430c5dcb",
+  "timestamp": "2026-07-29T11:27:08.617Z",
+  "sessionId": "fixture-session-id",
+  "status": {
+    "pid": 1234,
+    "connections": 1,
+    "sessionStatus": "idle",
+    "adapters": ["websocket"],
+    "wsPort": 19924,
+    "sessionId": "fixture-session-id",
+    "repo": "remi",
+    "branch": "develop",
+    "autoApprove": {
+      "inFlight": 0,
+      "sinceS": 0,
+      "lastVerdict": "none",
+      "lastVerdictAtS": 0
+    },
+    "attached": true,
+    "queuedCount": 0,
+    "mode": "session",
+    "version": "0.7.4-dev.1"
+  }
+}

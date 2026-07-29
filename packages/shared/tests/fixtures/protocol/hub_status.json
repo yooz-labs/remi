@@ -1,0 +1,20 @@
+{
+  "type": "hub_status",
+  "id": "ff8a18a4-48c1-485a-a71e-06985631ace1",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "localClients": 1,
+  "remoteClients": 0,
+  "sessions": 2,
+  "hubVersion": "0.7.4-dev.1",
+  "pendingQuestions": 1,
+  "questions": [
+    {
+      "id": "fixture-question-id",
+      "sessionId": "fixture-session-id",
+      "sessionName": "fixture-session",
+      "label": "Permission: Bash",
+      "createdAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "autostart": "installed"
+}

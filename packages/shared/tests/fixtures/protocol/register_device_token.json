@@ -1,0 +1,7 @@
+{
+  "type": "register_device_token",
+  "id": "dbb9c07a-66f9-4927-b7a4-865b29fde9a4",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "token": "fixture-device-token",
+  "platform": "ios"
+}

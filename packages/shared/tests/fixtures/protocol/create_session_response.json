@@ -1,0 +1,9 @@
+{
+  "type": "create_session_response",
+  "id": "857c1c8d-cf2b-4352-abcd-ecde1c652471",
+  "timestamp": "2026-07-29T11:27:08.615Z",
+  "success": true,
+  "requestId": "fixture-request-id",
+  "sessionId": "fixture-session-id",
+  "port": 19924
+}
