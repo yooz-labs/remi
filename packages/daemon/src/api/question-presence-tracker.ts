@@ -28,10 +28,21 @@
  * concurrent agents (main + a subagent, #419) keep separate records and a
  * later subagent hook cannot clobber the main agent's option labels (#425).
  *
- * Upstream context (anthropics/claude-code #23983): subagent / Agent-Teams
- * permission requests do not fire PermissionRequest hooks at all. The PTY
- * is the only source for those. A PTY-only push path (no preceding hook
- * record) is therefore a first-class case here, not a fallback.
+ * Stale-as-written correction (#886): this comment used to claim subagent /
+ * Agent-Teams permission requests never fire PermissionRequest hooks at all,
+ * citing upstream anthropics/claude-code #23983. That is contradicted by
+ * AutoApproveGate.resolvePermission's own logging (auto-approve-gate.ts
+ * ~1150): a live 0.6.22 session recorded 16 subagent-tagged (`agent_id`
+ * present) PermissionRequest hooks against only 2 PTY renders. Task-tool /
+ * background-subagent escalations DO fire the hook -- they are parked
+ * (ADR 0004) and passed through unconditionally, and MOST never render,
+ * which is different from "never fires." What #23983 may still describe
+ * correctly is narrower: native Agent-Teams teammate prompts specifically
+ * (as opposed to Task-tool subagents generally) possibly firing no hook at
+ * all. That narrower claim was not independently re-verified here. Either
+ * way, a PTY-only push path (no preceding hook record) stays a first-class
+ * case in this tracker, not a fallback -- it just is not the ONLY source for
+ * subagent prompts the way this comment previously implied.
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
