@@ -42,6 +42,29 @@ Rules, all cheap:
 5. **A test named for a component must construct it.** If it does not, the name
    is a claim about coverage that is not true.
 
+Recorded as [ADR 0011](.context/decisions/0011-verify-before-you-describe.md).
+
+## Architecture decisions
+
+Standing decisions live in [`.context/decisions/`](.context/decisions/) as ADRs.
+Read the relevant one before changing behavior it covers; several exist
+specifically because the decision looks like an inconsistency worth "cleaning
+up", and the cleanup would reopen a security hole.
+
+| ADR | Decision |
+|---|---|
+| [0001](.context/decisions/0001-transcript-path-source-of-truth.md) | Transcript path is the session source of truth |
+| [0002](.context/decisions/0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model |
+| [0003](.context/decisions/0003-synchronous-permission-decisions.md) | Synchronous permission decisions |
+| [0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions |
+| [0005](.context/decisions/0005-hub-and-attach-only-clients.md) | Hub mode and attach-only clients |
+| [0006](.context/decisions/0006-cc-ref-disavowed.md) | `cc-ref` is not ground truth for Claude Code |
+| [0007](.context/decisions/0007-release-automation-and-pins.md) | Release automation and toolchain pins |
+| [0008](.context/decisions/0008-testflight-local-upload.md) | TestFlight uploads are local, not Xcode Cloud |
+| [0009](.context/decisions/0009-transport-encryption-scope.md) | Encryption is scoped to the relay; direct connections carry none |
+| [0010](.context/decisions/0010-allow-deny-matching-asymmetry.md) | Allow matching is precise, deny is broad — on purpose |
+| [0011](.context/decisions/0011-verify-before-you-describe.md) | Security descriptions must be verified against code |
+
 ## Quick Start
 
 ```bash
