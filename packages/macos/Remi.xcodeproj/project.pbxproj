@@ -28,6 +28,7 @@
 		868C031D66195475FDA1A60E /* IconStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */; };
 		89CA0A413FB87001E796F276 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4DD72A5787EF3FFBF772C89F /* Assets.xcassets */; };
 		8A7968BC43F4E4D7069E3FD9 /* RemiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F4E747A3D65101EAE2331D4 /* RemiApp.swift */; };
+		8BCCB2E79DA278B7FCC0EFC5 /* HubFixtureConformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE5BC89AD3E7A9A6DEE5A00C /* HubFixtureConformanceTests.swift */; };
 		954D114FF37A81A590B7D7B4 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C1F16E2BEE0CED3C7DC54 /* AppDelegate.swift */; };
 		A66E1FF4E2632B780AC8EBEA /* DistSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B55FB8ECEE3FF5C62B33B122 /* DistSchemeHandler.swift */; };
 		AACDBAC70B24E6FD163F22C8 /* IconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7875E7E74CA980AD4B502F /* IconState.swift */; };
@@ -77,6 +78,7 @@
 		C385A2B0E9B3668B8E04A46E /* HubSetupCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSetupCommandsTests.swift; sourceTree = "<group>"; };
 		CA99F3FC4BB5441E52829DA8 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E3F7681BE2AB3DD90F39CD72 /* LaunchAtLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLogin.swift; sourceTree = "<group>"; };
+		EE5BC89AD3E7A9A6DEE5A00C /* HubFixtureConformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubFixtureConformanceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -122,6 +124,7 @@
 				7D4E81DF5CF4E309840AF1F3 /* DistSchemeHandlerServingTests.swift */,
 				4E923886F516F41ACD4DCB26 /* DistSchemeHandlerTests.swift */,
 				69B5AB7DE462E44924AFDC25 /* HubClientIntegrationTests.swift */,
+				EE5BC89AD3E7A9A6DEE5A00C /* HubFixtureConformanceTests.swift */,
 				385800B7F484F9E71DADBC28 /* HubProtocolTests.swift */,
 				C385A2B0E9B3668B8E04A46E /* HubSetupCommandsTests.swift */,
 				6FD2A054319CF8855CD1AE45 /* IconStateTests.swift */,
@@ -301,6 +304,7 @@
 				787301FFD777594190359E77 /* DistSchemeHandlerTests.swift in Sources */,
 				477C35A4907835166E4AECF6 /* HubClient.swift in Sources */,
 				7366DDF55B2871EA5704D8B8 /* HubClientIntegrationTests.swift in Sources */,
+				8BCCB2E79DA278B7FCC0EFC5 /* HubFixtureConformanceTests.swift in Sources */,
 				B624FF6190079DE8CEC1ED90 /* HubProtocol.swift in Sources */,
 				61C341D2ECBBE9C35A242AF0 /* HubProtocolTests.swift in Sources */,
 				0624CA493FEF2D140B88CFF7 /* HubSetupCommands.swift in Sources */,
