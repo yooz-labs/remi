@@ -3,12 +3,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  MESSAGE_DIRECTION,
+  createAck,
   createAgentOutput,
   createError,
   createHelloAck,
   createPing,
   createQuestion,
   createQuestionResolved,
+  createRawPtyOutput,
   createRemiStatus,
   createReplayBatch,
   deserialize,
@@ -16,7 +19,7 @@ import {
   now,
   serialize,
 } from '@remi/shared';
-import type { Message, Question, UUID } from '@remi/shared';
+import type { Message, MessageHandlers, ProtocolMessageMap, Question, UUID } from '@remi/shared';
 import { runAttachClient } from '../../src/cli/attach-client.ts';
 
 const TEST_PORT = 9873;
@@ -547,5 +550,196 @@ describe('runAttachClient', () => {
     expect(output).not.toContain('| attached');
     expect(output).not.toContain('\x1b[7m');
     expect(output).not.toContain('\x1b[1;');
+  });
+
+  // #898: renderMessage's total-dispatch handler for raw_pty_output was
+  // exercised only indirectly before (nothing asserted on decoded bytes).
+  test('renders decoded raw_pty_output bytes to output', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const payload = Buffer.from('hello from the pty\n', 'utf-8').toString('base64');
+
+    server = Bun.serve({
+      port: TEST_PORT + 9,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(payload, targetSessionId as UUID)));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 9,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('hello from the pty');
+  });
+
+  // #898: the generic `error` branch (any code other than the early-return
+  // SESSION_ENDED/SESSION_BUSY specials handled before renderMessage is
+  // reached) was never exercised by name.
+  test('renders a generic error inline without ending the session', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 10,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createError('SOME_OTHER_CODE', 'transient glitch')));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 10,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('[error: SOME_OTHER_CODE - transient glitch]');
+    // Unlike SESSION_ENDED/SESSION_BUSY, a generic error code does not end
+    // the attach session; the connection just closes normally afterward.
+    expect(result.reason).toBe('connection_closed');
+  });
+
+  // #898: `ack` is direction 'both' and genuinely arrives here — the daemon
+  // acks messages this client sends (e.g. terminal_resize, user_input) — but
+  // attach-client has never rendered acks and must keep not rendering them.
+  // Proves the 'ignore' entry for a real (not merely hypothetical) inbound
+  // type is correct, not just unreachable code. (Sent right after hello_ack,
+  // not gated on a specific client message, since process.stdout.columns/
+  // rows are unset in this non-TTY test environment and attach-client skips
+  // its own resize sends in that case.)
+  test('ignores a real ack reply without printing or crashing', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 11,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createAck({ messageId: generateId(), state: 'delivered', timestamp: now() }),
+                ),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 11,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).not.toContain('ack');
+    expect(output).not.toContain('[error');
+    expect(result.reason).toBe('connection_closed');
+  });
+});
+
+// --- Compile-time totality demonstration (#898 acceptance criterion) ---
+//
+// attach-client.ts's renderMessage builds a `MessageHandlers<keyof
+// ProtocolMessageMap, void>` literal covering every registry key (see the
+// doc comment on renderMessage for why the map is sized to the full
+// registry rather than a narrower daemon-to-client-only alias). This proves
+// the mechanism directly against that same type: a handler map missing one
+// key does not satisfy it. Verified live (not just present): removing
+// `question_snapshot: 'ignore'` from attach-client.ts's actual handlers
+// object and running `bun run typecheck` produced `TS2741: Property
+// 'question_snapshot' is missing in type '{...}' but required in type
+// 'MessageHandlers<keyof ProtocolMessageMap, void>'` at the object literal;
+// restoring the entry made it pass again.
+describe('renderMessage handler map is total (compile-time, #898)', () => {
+  test('a handler map missing one registry key is rejected by MessageHandlers<keyof ProtocolMessageMap>', () => {
+    const registryTypes = Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[];
+    const allButOne = registryTypes.filter((t) => t !== 'question_snapshot');
+    const missingOneHandler = Object.fromEntries(
+      allButOne.map((t) => [t, 'ignore' as const]),
+    ) as MessageHandlers<Exclude<keyof ProtocolMessageMap, 'question_snapshot'>>;
+
+    expect(Object.keys(missingOneHandler).length).toBe(registryTypes.length - 1);
+
+    // @ts-expect-error - deliberately missing 'question_snapshot'; assigning
+    // to the full MessageHandlers<keyof ProtocolMessageMap> type must fail.
+    // This is the shape attach-client.ts's renderMessage handler map has:
+    // forgetting a registry key is a build error here, not a silent runtime
+    // no-op (#898's acceptance criterion). Removing this comment to check
+    // the assignment is unguarded is how this was verified (see file header
+    // note above and the dispatch.ts pattern this mirrors).
+    const incomplete: MessageHandlers<keyof ProtocolMessageMap> = missingOneHandler;
+    void incomplete;
+  });
+
+  test('the same map WITH the key present satisfies the full type', () => {
+    const registryTypes = Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[];
+    const complete = Object.fromEntries(
+      registryTypes.map((t) => [t, 'ignore' as const]),
+    ) as MessageHandlers<keyof ProtocolMessageMap>;
+
+    const total: MessageHandlers<keyof ProtocolMessageMap> = complete;
+    expect(Object.keys(total).length).toBe(registryTypes.length);
   });
 });
