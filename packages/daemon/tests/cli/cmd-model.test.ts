@@ -194,8 +194,13 @@ describe('remi model ls / ps', () => {
     expect(text).toMatch(/\*\s+yooz-light-v3/);
     expect(text).not.toMatch(/\*\s+yooz-quality-v3/);
     // ...but the engine's choice is still visible, because it holds the GPU
-    // and cannot be deleted.
-    expect(text).toContain('engine active');
+    // and cannot be deleted. #860 made that label say what the model is active
+    // FOR, since a bare "engine active" read as "the engine is using this
+    // instead of yours" and sent a user chasing a problem that did not exist.
+    // This fixture gives the engine-active model a purpose, so it names the
+    // tier; `cmd-model.ts` falls back to a bare "engine active" only when the
+    // purpose is unknown.
+    expect(text).toContain('engine proofread tier');
   });
 
   test('ls distinguishes not-downloaded from on-disk', async () => {
