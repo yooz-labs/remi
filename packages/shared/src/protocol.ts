@@ -707,6 +707,13 @@ export interface AuthChallengeMessage {
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
+  /**
+   * The daemon's long-lived P-256 answer key, base64 (#875). Phones pin this
+   * alongside the fingerprint so a lock-screen answer can be sealed with no
+   * live connection to negotiate over. Absent on a daemon that has none, in
+   * which case a client must refuse to send rather than send in the clear.
+   */
+  readonly answerEncryptionKey?: string;
 }
 
 /** Authentication response from client to server */
@@ -1615,6 +1622,7 @@ export function createAuthChallenge(
   serverFingerprint: string,
   serverPublicKey: string,
   relayKex?: { readonly ephemeralKey: string; readonly signature: string },
+  answerEncryptionKey?: string,
 ): AuthChallengeMessage {
   return {
     type: 'auth_challenge',
@@ -1627,6 +1635,7 @@ export function createAuthChallenge(
       relayEphemeralKey: relayKex.ephemeralKey,
       relayKexSignature: relayKex.signature,
     }),
+    ...(answerEncryptionKey !== undefined && { answerEncryptionKey }),
   };
 }
 

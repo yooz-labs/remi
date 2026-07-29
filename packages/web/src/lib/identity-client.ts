@@ -143,7 +143,12 @@ export function checkKnownHost(
 }
 
 /** Record a server fingerprint (TOFU - trust on first use) */
-export function trustHost(serverUrl: string, fingerprint: string, publicKey: string): void {
+export function trustHost(
+  serverUrl: string,
+  fingerprint: string,
+  publicKey: string,
+  answerEncryptionKey?: string,
+): void {
   const hosts = loadKnownHosts();
   const key = normalizeHostKey(serverUrl);
   const now = new Date().toISOString();
@@ -152,8 +157,21 @@ export function trustHost(serverUrl: string, fingerprint: string, publicKey: str
     publicKey,
     firstSeen: hosts[key]?.firstSeen ?? now,
     lastSeen: now,
+    // Keep the previously pinned key when a daemon stops publishing one, rather
+    // than silently dropping the ability to seal (#875).
+    ...(answerEncryptionKey !== undefined
+      ? { answerEncryptionKey }
+      : hosts[key]?.answerEncryptionKey !== undefined
+        ? { answerEncryptionKey: hosts[key]?.answerEncryptionKey }
+        : {}),
   };
   saveKnownHosts(hosts);
+}
+
+/** The pinned answer key for a host, or null when there is none to seal with (#875). */
+export function getAnswerEncryptionKey(serverUrl: string): string | null {
+  const hosts = loadKnownHosts();
+  return hosts[normalizeHostKey(serverUrl)]?.answerEncryptionKey ?? null;
 }
 
 /** Remove a known host */

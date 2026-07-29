@@ -83,6 +83,8 @@ interface ManagedConnection {
     challenge: string;
     serverPublicKey: string;
     serverFingerprint: string;
+    /** Pinned alongside the fingerprint so answers can be sealed later (#875). */
+    answerEncryptionKey?: string;
   } | null;
   needsPassphrase: boolean;
   serverFingerprint: string | null;
@@ -304,6 +306,7 @@ export function useConnectionManager(
       challenge: string,
       srvFingerprint: string,
       srvPublicKey: string,
+      answerEncryptionKey?: string,
     ) => {
       mc.serverFingerprint = srvFingerprint;
 
@@ -323,6 +326,9 @@ export function useConnectionManager(
         challenge,
         serverPublicKey: srvPublicKey,
         serverFingerprint: srvFingerprint,
+        // Pinned with the fingerprint so a lock-screen answer can be sealed
+        // later, when there is no connection to ask over (#875).
+        ...(answerEncryptionKey !== undefined && { answerEncryptionKey }),
       };
 
       let identity = identityRef.current;
@@ -402,7 +408,12 @@ export function useConnectionManager(
 
       // TOFU: trust on first use
       const pending = mc.pendingChallenge;
-      trustHost(mc.url, pending.serverFingerprint, pending.serverPublicKey);
+      trustHost(
+        mc.url,
+        pending.serverFingerprint,
+        pending.serverPublicKey,
+        pending.answerEncryptionKey,
+      );
 
       mc.pendingChallenge = null;
       mc.needsPassphrase = false;
@@ -436,6 +447,7 @@ export function useConnectionManager(
             message.challenge,
             message.serverFingerprint,
             message.serverPublicKey,
+            message.answerEncryptionKey,
           ).catch((err) => {
             mc.error = err instanceof Error ? err : new Error(String(err));
             mc.client.disconnect();

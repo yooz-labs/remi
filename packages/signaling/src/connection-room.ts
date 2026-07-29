@@ -123,6 +123,9 @@ export class ConnectionRoom {
       answer?: string;
       claudeSessionId?: string;
       auth?: unknown;
+      /** Sealed-answer envelope (#875); mutually exclusive with the fields above. */
+      ephemeralPublicKey?: string;
+      sealed?: string;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -133,8 +136,14 @@ export class ConnectionRoom {
       });
     }
 
+    // A sealed answer (#875) carries no readable fields by design: the whole
+    // point is that this Worker cannot see the session, the question or the
+    // answer text. Forward it as-is and let the daemon open it. The old
+    // plaintext shape is still accepted so a client that predates sealing keeps
+    // working; the daemon decides which it will honor.
     const { sessionId, questionId, answer, claudeSessionId, auth } = body;
-    if (!sessionId || !questionId || !answer) {
+    const sealed = typeof body.ephemeralPublicKey === 'string' && typeof body.sealed === 'string';
+    if (!sealed && (!sessionId || !questionId || !answer)) {
       return new Response(JSON.stringify({ result: 'missing-fields' }), {
         status: 400,
         headers: cors,
@@ -148,14 +157,23 @@ export class ConnectionRoom {
 
     // Wrap as the daemon's relay envelope (payload is a JSON-encoded protocol
     // message, matching what the phone's relay WebSocket sends for an answer).
-    const inner = JSON.stringify({
-      type: 'answer',
-      sessionId,
-      questionId,
-      answer,
-      ...(claudeSessionId ? { claudeSessionId } : {}),
-      ...(auth ? { auth } : {}),
-    });
+    // A sealed envelope forwards whole: everything the daemon needs, including
+    // the auth block, is inside the ciphertext. `type` stays outside only so
+    // the daemon's relay router can recognise it.
+    const inner = sealed
+      ? JSON.stringify({
+          type: 'answer',
+          ephemeralPublicKey: body.ephemeralPublicKey,
+          sealed: body.sealed,
+        })
+      : JSON.stringify({
+          type: 'answer',
+          sessionId,
+          questionId,
+          answer,
+          ...(claudeSessionId ? { claudeSessionId } : {}),
+          ...(auth ? { auth } : {}),
+        });
     const ok = this.send(hostWs, { type: 'relay', payload: inner });
     return new Response(JSON.stringify({ result: ok ? 'delivered' : 'send-failed' }), {
       status: ok ? 200 : 502,
