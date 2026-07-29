@@ -14,6 +14,7 @@
 //  these run for real.
 //
 
+import CryptoKit
 import XCTest
 
 
@@ -37,12 +38,31 @@ final class HubClientIntegrationTests: XCTestCase {
         return binary
     }
 
+    /// #872: how the spawned hub treats loopback auth. `.disabled` is the
+    /// pre-#872 default every other test in this file relies on (`--no-auth`,
+    /// no client identity involved at all). The other two flip on exactly
+    /// what #873 will make the real default: `[daemon] require_local_auth`,
+    /// which is config-file-only (no CLI flag) — see
+    /// packages/daemon/src/config/config.ts.
+    private enum AuthMode {
+        case disabled
+        /// `require_local_auth = true`, TOFU auto-accepts (the daemon's
+        /// real default per cli.ts `tofuMode` — no approval UI to build).
+        case requireLocalAuthTOFU
+        /// `require_local_auth = true` AND `--no-tofu`: an unknown key is
+        /// rejected outright. Exercises HubClient's `.rejected` phase.
+        case requireLocalAuthNoTOFU
+    }
+
     /// Spawns a real hub (session-less `serve`) on `port` with an isolated
     /// $HOME, stored on `process`/`homeDir` for tearDown to clean up. When
     /// `withAutostartInstalled` is set, pre-creates the exact LaunchAgent
     /// artifact `remi --install` would have written (#788) — no
     /// launchctl/systemctl involved, just the fs marker the hub checks for.
-    private func spawnHub(binary: String, port: Int, withAutostartInstalled: Bool = false) throws {
+    private func spawnHub(
+        binary: String, port: Int, withAutostartInstalled: Bool = false,
+        authMode: AuthMode = .disabled
+    ) throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("remi-macos-it-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -56,12 +76,28 @@ final class HubClientIntegrationTests: XCTestCase {
             try "<plist/>".write(to: plist, atomically: true, encoding: .utf8)
         }
 
+        var arguments = [
+            "serve", "--port", String(port), "--bind", "127.0.0.1",
+            "--no-mdns", "--no-relay", "--no-telegram",
+        ]
+        switch authMode {
+        case .disabled:
+            arguments.append("--no-auth")
+        case .requireLocalAuthTOFU, .requireLocalAuthNoTOFU:
+            arguments.append("--auth")
+            if authMode == .requireLocalAuthNoTOFU {
+                arguments.append("--no-tofu")
+            }
+            let remiDir = home.appendingPathComponent(".remi")
+            try FileManager.default.createDirectory(at: remiDir, withIntermediateDirectories: true)
+            let configPath = remiDir.appendingPathComponent("config.toml")
+            try "[daemon]\nrequire_local_auth = true\n".write(
+                to: configPath, atomically: true, encoding: .utf8)
+        }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binary)
-        proc.arguments = [
-            "serve", "--port", String(port), "--bind", "127.0.0.1",
-            "--no-mdns", "--no-relay", "--no-telegram", "--no-auth",
-        ]
+        proc.arguments = arguments
         var env = ProcessInfo.processInfo.environment
         env["HOME"] = home.path
         env.removeValue(forKey: "REMI_PORT")
@@ -260,5 +296,61 @@ final class HubClientIntegrationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 2_000_000_000)  // short settle window
         let phaseAfter = await MainActor.run { client.phase }
         XCTAssertEqual(phaseAfter, .connected(port: port, isHub: true))
+    }
+
+    /// #872: with `require_local_auth = true` the daemon challenges this
+    /// connection on open (packages/daemon/src/server/connection.ts sends
+    /// `auth_challenge` immediately) instead of exempting it as a loopback
+    /// peer. The daemon's TOFU defaults to auto-accept (cli.ts `tofuMode`),
+    /// so a brand-new identity should still reach `connected(isHub: true)`
+    /// with no approval step — proving HubClient's sign-and-respond path
+    /// works against the REAL daemon, not just a hand-rolled fixture.
+    func testConnectsThroughRequiredLocalAuthWithTOFU() async throws {
+        let binary = try requireBinary()
+        let port = 18787
+        try spawnHub(binary: binary, port: port, authMode: .requireLocalAuthTOFU)
+
+        let identity = ClientIdentity(privateKey: .init())
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: identity) }
+        await MainActor.run { client.start() }
+        var connectedAsHub = false
+        for _ in 0..<60 {  // up to ~15 s
+            let phase = await MainActor.run { client.phase }
+            if case .connected(let p, let isHub) = phase, isHub {
+                XCTAssertEqual(p, port)
+                connectedAsHub = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(
+            connectedAsHub,
+            "HubClient never reached connected(isHub: true) through the real auth handshake")
+    }
+
+    /// #872: `--no-tofu` makes the daemon reject a key it has never seen
+    /// (`UNKNOWN_KEY`) instead of auto-accepting it. HubClient must land on
+    /// `.rejected` with a human-readable reason — not spin forever, and not
+    /// silently fall back to `.unreachable` as if the hub weren't there.
+    func testRejectedWhenNoTofuAndUnknownKey() async throws {
+        let binary = try requireBinary()
+        let port = 18788
+        try spawnHub(binary: binary, port: port, authMode: .requireLocalAuthNoTOFU)
+
+        let identity = ClientIdentity(privateKey: .init())
+        let client = await MainActor.run { HubClient(scanPorts: [port], identity: identity) }
+        await MainActor.run { client.start() }
+        var rejectedReason: String?
+        for _ in 0..<60 {  // up to ~15 s
+            let phase = await MainActor.run { client.phase }
+            if case .rejected(let p, let reason) = phase {
+                XCTAssertEqual(p, port)
+                rejectedReason = reason
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let reason = try XCTUnwrap(rejectedReason, "HubClient never reached .rejected")
+        XCTAssertTrue(reason.contains("does not trust"), reason)
     }
 }
