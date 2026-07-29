@@ -1523,6 +1523,25 @@ async function createNewSession(
   // escalation (already registered here) apart from a genuine orphan.
   const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
     hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+    // #888/#920 hard requirement: a hook-less pending question (no
+    // PermissionRequest/Notification ever fired for it) has no tool
+    // signature for AutoApproveGate to resolve it by, so its PTY render
+    // disappearing is its ONLY resolution evidence -- see the tracker's own
+    // module doc. Remove it from the single pendingness owner (which
+    // broadcasts question_snapshot via onQuestionsChanged, #798) and fire the
+    // SAME question_resolved + APNS-dismiss path every other cancellation
+    // route uses (`onQuestionResolved`, defined below in this file) so a
+    // client sees the card clear immediately, not only on the next snapshot.
+    onHooklessQuestionGone: (questionId, reason) => {
+      sessionRegistry.removeQuestion(
+        sessionId,
+        questionId as UUID,
+        reason,
+        undefined,
+        'QuestionPresenceTracker.onHooklessQuestionGone',
+      );
+      onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
+    },
   });
 
   const outputProcessor = new OutputProcessor(

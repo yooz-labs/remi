@@ -43,6 +43,16 @@
  * way, a PTY-only push path (no preceding hook record) stays a first-class
  * case in this tracker, not a fallback -- it just is not the ONLY source for
  * subagent prompts the way this comment previously implied.
+ *
+ * Render-resolution (#888/#920): a PTY-only pushed question has no hook and
+ * so no tool signature for `AutoApproveGate` to resolve it by -- its only
+ * exits used to be the user answering it or the `MAX_PENDING_QUESTIONS` LRU
+ * cap, which measured as a real leak (12 of 29 source-less questions never
+ * removed in one working day's capture, one still pending 2h51m later).
+ * `observedHooklessQuestion` + `deps.onHooklessQuestionGone` close that gap:
+ * the render disappearing (superseded by a different render, status leaving
+ * 'waiting', or `clearPending`) IS the resolution evidence for this cohort.
+ * See `pairAndPush` and `noteHooklessGone`.
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
@@ -152,6 +162,32 @@ export interface QuestionPresenceTrackerDeps {
   orphanDebounceMs?: number;
   /** Clock override for the parked-record TTL (#763). Defaults to Date.now. */
   nowMs?: () => number;
+  /**
+   * The render-resolution transition (#888/#920 hard requirement): fired when
+   * a genuinely HOOK-LESS pending question's only evidence -- the PTY render
+   * -- is gone. A hook-less question (no PermissionRequest/Notification ever
+   * fired for it: an agent-team native prompt, a bare subprocess `(y/n)`) has
+   * no tool signature for `AutoApproveGate.cancelExternallyResolved` or the
+   * Stop/SubagentStop sweeps to match, so absent this callback it can leave
+   * `SessionRegistry.currentQuestions` only via the user answering it or the
+   * `MAX_PENDING_QUESTIONS` LRU cap -- the #920 measured leak (12 of 29
+   * source-less questions never removed over one working day, one still
+   * pending 2h51m later).
+   *
+   * Fires from `pairAndPush` (a DIFFERENT render superseded the tracked
+   * hook-less one -- see `observedHooklessQuestion`), `onStatusChange`
+   * (status left 'waiting': Claude moved on), and `clearPending` (restart/
+   * rotation). Does NOT touch push/arbitration decisions (ADR 0004
+   * unchanged) -- this only tells the caller a PREVIOUSLY PUSHED question's
+   * evidence is gone, so it can be removed from the pending store.
+   *
+   * MUST be synchronous and non-throwing (same contract as
+   * `hasLiveQuestions`): invoked with no surrounding try/catch at most call
+   * sites, but a throw is still caught internally and logged, never
+   * propagated. `reason` is a short signal string carried onto the
+   * question-lifecycle trace.
+   */
+  onHooklessQuestionGone?: (questionId: string, reason: string) => void;
 }
 
 export class QuestionPresenceTracker {
@@ -213,6 +249,28 @@ export class QuestionPresenceTracker {
    *  and answering the second with the first's verdict is the same answer to
    *  the same question, which is why that collapse is acceptable. */
   private observedPTYText: string | null = null;
+
+  /**
+   * The id of the currently-PUSHED hook-less question, if any (#888/#920).
+   * Set by `pairAndPush` when a merge produces a question with NO pairing
+   * hook record (`hookRecord === undefined` in `consumeAndMerge` -- a
+   * genuinely hook-less prompt), cleared (and `deps.onHooklessQuestionGone`
+   * fired) the moment that evidence is gone: a DIFFERENT render supersedes it
+   * (see `pairAndPush`), status leaves 'waiting', or `clearPending` runs.
+   *
+   * Distinct from `observedPTYQuestionId` (the RAW pre-merge PTY parse id,
+   * used for arbiter identity per ADR 0004) because the id that matters here
+   * is the one actually registered in `SessionRegistry.currentQuestions` --
+   * for a hook-less question that IS the same value (no merge changes it),
+   * but tracking it separately keeps this mechanism decoupled from the
+   * arbitration-identity fields it must not affect.
+   *
+   * A hook-PAIRED question is never tracked here: it already has a
+   * signature-matched removal path (`AutoApproveGate.cancelExternallyResolved`
+   * / the Stop sweeps), so this mechanism -- scoped tightly to the one cohort
+   * that has no other exit -- leaves it alone.
+   */
+  private observedHooklessQuestion: string | null = null;
 
   /** Count of MAIN-context auto-approve evals in flight. A PTY prompt that
    *  appears while this is > 0 is BUFFERED (not pushed): if the verdict is
@@ -499,9 +557,43 @@ export class QuestionPresenceTracker {
    * re-capture a prompt that has already won its arbitration.
    */
   private pairAndPush(ptyQuestion: Question): void {
-    const { merged } = this.consumeAndMerge(ptyQuestion);
+    const { merged, hookRecord } = this.consumeAndMerge(ptyQuestion);
+    // #888/#920 render-resolution: the PTY parser mints a FRESH id on every
+    // parse (#486), so a hook-less merge (`hookRecord === undefined`) always
+    // differs in id from whatever hook-less question was tracked before --
+    // that PREVIOUS one's only evidence (its render) is by definition gone
+    // now, whether because it was answered/superseded by a genuinely new
+    // prompt, or merely redrew past the #718/QuestionDedup window under a new
+    // id. Either way its registry entry is now stale; resolve it before
+    // tracking the new one. A hook-PAIRED merge never touches this (its id is
+    // adopted from the hook per #887 and has its own removal path).
+    if (this.observedHooklessQuestion !== null && this.observedHooklessQuestion !== merged.id) {
+      this.noteHooklessGone('pty_render_superseded');
+    }
+    this.observedHooklessQuestion = hookRecord === undefined ? merged.id : null;
     this.ptyShowingQuestion = true;
     this.pushMerged(merged);
+  }
+
+  /**
+   * Clear and report the currently-tracked hook-less question as gone
+   * (#888/#920), if one is tracked. No-op when `observedHooklessQuestion` is
+   * null (nothing to resolve) or no `onHooklessQuestionGone` dep is wired
+   * (pre-#888 behavior: hook-less questions are never actively resolved).
+   * The dep is invoked outside any try/catch at some call sites, so a throw
+   * is caught and logged here rather than trusted to the caller.
+   */
+  private noteHooklessGone(reason: string): void {
+    const id = this.observedHooklessQuestion;
+    if (id === null) return;
+    this.observedHooklessQuestion = null;
+    try {
+      this.deps.onHooklessQuestionGone?.(id, reason);
+    } catch (err) {
+      console.error(
+        `[QuestionPresenceTracker] onHooklessQuestionGone threw for ${id.slice(0, 8)} (${reason}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -571,6 +663,17 @@ export class QuestionPresenceTracker {
             options: useHookOptions ? [...hookRecord.options] : [...ptyQuestion.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
             promptId: hookRecord.promptId ?? ptyQuestion.promptId,
+            // #888 review finding: the `...ptyQuestion` spread above silently
+            // carried `ptyQuestion.source` ('pty', once question-parser sets
+            // it -- #920) onto a HOOK-PAIRED merged question, which has a
+            // signature-matched removal path (`openQuestionSignatures`) a
+            // genuinely hook-less question does not. Left uncorrected, adding
+            // `source: 'pty'` to the parser would have mislabeled every
+            // hook-paired render as the unresolvable-by-signature cohort,
+            // muddying the exact measurement #920's acceptance criterion asks
+            // for. The hook's own source ('permission_request' | 'notification')
+            // is authoritative here, mirroring text/options/agentId above.
+            source: hookRecord.source ?? ptyQuestion.source,
             // #718 review: `optionsAreFallback` must describe whichever
             // `options` ended up on the merged question, not silently inherit
             // whatever `ptyQuestion` happened to carry from the `...ptyQuestion`
@@ -906,6 +1009,11 @@ export class QuestionPresenceTracker {
       // #814: nothing is on screen now.
       this.observedPTYQuestionId = null;
       this.observedPTYText = null;
+      // #888/#920: the screen just cleared. If a hook-less question was being
+      // tracked as the reason it was still pending, that evidence is gone --
+      // resolve it now rather than let it wait for a signal (a tool call,
+      // an LRU eviction) that will never come for a hook-less prompt.
+      this.noteHooklessGone('pty_status_left_waiting');
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
       this.mainEvalsInFlight = 0;
@@ -994,6 +1102,9 @@ export class QuestionPresenceTracker {
     this.ptyShowingQuestion = false;
     this.observedPTYQuestionId = null;
     this.observedPTYText = null;
+    // #888/#920: same reasoning as the status reset -- the session is
+    // restarting/rotating, so a tracked hook-less question's render is gone.
+    this.noteHooklessGone('pty_clear_pending');
     this.mainEvalsInFlight = 0;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();
@@ -1104,5 +1215,11 @@ export class QuestionPresenceTracker {
   /** Test-only: parked-render arbitrations awaiting a verdict (#814). */
   parkedArbitrationsForTest(): number {
     return this.arbitratingPTYTexts.length;
+  }
+
+  /** Test-only: the id of the currently-tracked hook-less question, if any
+   *  (#888/#920), or null when none is tracked. */
+  observedHooklessQuestionForTest(): string | null {
+    return this.observedHooklessQuestion;
   }
 }
