@@ -165,6 +165,10 @@ export {
   MessageIdTracker,
 } from './protocol.ts';
 
+// Total-dispatch helpers over the protocol registry (#896)
+export type { MessageHandlers } from './dispatch.ts';
+export { dispatchMessage, assertNever } from './dispatch.ts';
+
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
 export * from './relay-crypto.ts';
