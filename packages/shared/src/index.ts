@@ -49,6 +49,8 @@ export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
 // Protocol
 export type {
   ProtocolMessage,
+  ProtocolMessageMap,
+  MessageOf,
   HelloMessage,
   HelloAckMessage,
   AgentOutputMessage,
@@ -112,6 +114,7 @@ export {
   now,
   serialize,
   deserialize,
+  MESSAGE_DIRECTION,
   createHello,
   createHelloAck,
   createAgentOutput,

@@ -109,6 +109,162 @@ export type ProtocolMessage =
   | RemiStatusMessage
   | QuestionSnapshotMessage;
 
+/**
+ * Registry mapping each wire `type` discriminant to its message interface —
+ * the single source of truth `ProtocolMessage` and the runtime type
+ * allowlist in {@link deserialize} derive from (#895). Before this, those
+ * were two independently hand-maintained 45-entry lists (the union above and
+ * `validTypes` inside `isValidMessage`) with nothing checking them against
+ * each other: adding a message type meant remembering to edit both.
+ *
+ * Keep in sync with the union above until #895 finishes replacing it.
+ */
+export interface ProtocolMessageMap {
+  hello: HelloMessage;
+  hello_ack: HelloAckMessage;
+  agent_output: AgentOutputMessage;
+  structured_agent_output: StructuredAgentOutputMessage;
+  user_input: UserInputMessage;
+  ack: AckMessage;
+  edit: EditMessage;
+  question: QuestionMessage;
+  answer: AnswerMessage;
+  session_update: SessionUpdateMessage;
+  ping: PingMessage;
+  pong: PongMessage;
+  error: ErrorMessage;
+  replay_batch: ReplayBatchMessage;
+  bullet_expand_request: BulletExpandRequestMessage;
+  bullet_expand_response: BulletExpandResponseMessage;
+  session_list_request: SessionListRequestMessage;
+  session_list_response: SessionListResponseMessage;
+  transcript_content: TranscriptContentMessage;
+  transcript_load_request: TranscriptLoadRequestMessage;
+  transcript_load_complete: TranscriptLoadCompleteMessage;
+  create_session_request: CreateSessionRequestMessage;
+  create_session_response: CreateSessionResponseMessage;
+  terminal_resize: TerminalResizeMessage;
+  auth_challenge: AuthChallengeMessage;
+  auth_response: AuthResponseMessage;
+  auth_result: AuthResultMessage;
+  kill_session_request: KillSessionRequestMessage;
+  kill_session_response: KillSessionResponseMessage;
+  raw_pty_output: RawPtyOutputMessage;
+  session_history_request: SessionHistoryRequestMessage;
+  session_history_response: SessionHistoryResponseMessage;
+  resume_session_request: ResumeSessionRequestMessage;
+  resume_session_response: ResumeSessionResponseMessage;
+  detach_session: DetachSessionMessage;
+  detach_session_ack: DetachSessionAckMessage;
+  register_device_token: RegisterDeviceTokenMessage;
+  unregister_device_token: UnregisterDeviceTokenMessage;
+  daemon_update_available: DaemonUpdateAvailableMessage;
+  hub_status: HubStatusMessage;
+  session_rotated: SessionRotatedMessage;
+  session_views: SessionViewsMessage;
+  question_resolved: QuestionResolvedMessage;
+  remi_status: RemiStatusMessage;
+  question_snapshot: QuestionSnapshotMessage;
+}
+
+/**
+ * Compile-time proof that every {@link ProtocolMessageMap} entry's interface
+ * discriminant (`type`) matches the key it is registered under — catches
+ * `wrong_key: SomeOtherMessage` typos as a build error.
+ *
+ * NOTE on the failure sentinel: mapping a mismatch to `never` and indexing
+ * the whole object by `keyof ProtocolMessageMap` does NOT work, because
+ * TypeScript drops `never` out of unions (`true | never` simplifies to
+ * `true`) — a single wrong entry is silently absorbed by the other 44
+ * correct ones and the check passes anyway (verified with `tsc --strict`
+ * against a deliberately mismatched two-entry registry: zero diagnostics).
+ * Mapping the failure branch to `false` instead avoids the collapse, since
+ * `true | false` is `boolean`, which is not assignable to the `true`
+ * annotation below — so a mismatch is a real compile error.
+ */
+type _DiscriminantsMatch = {
+  [K in keyof ProtocolMessageMap]: ProtocolMessageMap[K] extends { readonly type: K }
+    ? true
+    : false;
+}[keyof ProtocolMessageMap];
+// Forces the check above to run; a mismatched discriminant fails this
+// assignment (`boolean` is not assignable to `true`) instead of being
+// silently unused.
+const _discriminantsMatch: true = true as _DiscriminantsMatch;
+void _discriminantsMatch;
+
+/** The message interface registered for wire discriminant `K`. */
+export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K];
+
+/**
+ * Which side of the wire originates each message type, derived from observed
+ * dispatch sites rather than invented (#895):
+ * - `c2d` — routed by the daemon's inbound switch
+ *   (`packages/daemon/src/server/connection.ts` `handleMessage`).
+ * - `d2c` — handled by `packages/web/src/App.tsx`'s `handleMessage` and/or
+ *   `packages/daemon/src/cli/attach-client.ts`'s switch, or produced only by
+ *   daemon-side broadcast producers.
+ * - `both` — genuinely constructed by both sides in current code (`ping` and
+ *   `pong` each have a producer on both the daemon and the web client).
+ *
+ * `ack` and `error` are classified `d2c` rather than `both`: `createAck`/
+ * `createError` are only ever called from `packages/daemon/src/server/
+ * connection.ts` and its handlers (grep: no web/CLI-client call site
+ * constructs either). `connection.ts`'s inbound switch does have a case for
+ * `'ack'` (comment: "Client acknowledging our message - just track"), but no
+ * current client sends one — it is a defensive/forward-compatibility branch,
+ * not an observed producer. `'error'` has no inbound case at all; an inbound
+ * `error` message falls through to the `default` branch and gets treated as
+ * `UNKNOWN_MESSAGE`.
+ */
+export const MESSAGE_DIRECTION = {
+  hello: 'c2d',
+  hello_ack: 'd2c',
+  agent_output: 'd2c',
+  structured_agent_output: 'd2c',
+  user_input: 'c2d',
+  ack: 'd2c',
+  edit: 'd2c',
+  question: 'd2c',
+  answer: 'c2d',
+  session_update: 'd2c',
+  ping: 'both',
+  pong: 'both',
+  error: 'd2c',
+  replay_batch: 'd2c',
+  bullet_expand_request: 'c2d',
+  bullet_expand_response: 'd2c',
+  session_list_request: 'c2d',
+  session_list_response: 'd2c',
+  transcript_content: 'd2c',
+  transcript_load_request: 'c2d',
+  transcript_load_complete: 'd2c',
+  create_session_request: 'c2d',
+  create_session_response: 'd2c',
+  terminal_resize: 'c2d',
+  auth_challenge: 'd2c',
+  auth_response: 'c2d',
+  auth_result: 'd2c',
+  kill_session_request: 'c2d',
+  kill_session_response: 'd2c',
+  raw_pty_output: 'd2c',
+  session_history_request: 'c2d',
+  session_history_response: 'd2c',
+  resume_session_request: 'c2d',
+  resume_session_response: 'd2c',
+  detach_session: 'c2d',
+  detach_session_ack: 'd2c',
+  register_device_token: 'c2d',
+  unregister_device_token: 'c2d',
+  daemon_update_available: 'd2c',
+  hub_status: 'd2c',
+  session_rotated: 'd2c',
+  session_views: 'd2c',
+  question_resolved: 'd2c',
+  remi_status: 'd2c',
+  question_snapshot: 'd2c',
+} as const satisfies Record<keyof ProtocolMessageMap, 'c2d' | 'd2c' | 'both'>;
+
 /** Client hello - initiates connection */
 export interface HelloMessage {
   readonly type: 'hello';
