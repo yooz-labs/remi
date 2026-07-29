@@ -440,6 +440,114 @@ describe('HookServer', () => {
   });
 
   // -------------------------------------------------------------------------
+  // onAnyEvent (#914)
+  // -------------------------------------------------------------------------
+  describe('onAnyEvent', () => {
+    it('fires for a typed event alongside its specific handler', async () => {
+      const any: string[] = [];
+      const stops: StopHookInput[] = [];
+      server = new HookServer(
+        { port },
+        {
+          onAnyEvent: (input) => any.push(input.hook_event_name),
+          onStop: (input) => stops.push(input),
+        },
+      );
+      server.start();
+
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop', stop_hook_active: false })),
+      });
+
+      expect(any).toEqual(['Stop']);
+      expect(stops.length).toBe(1);
+    });
+
+    it('fires for an event with no typed handler (medium-priority events)', async () => {
+      const any: string[] = [];
+      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server.start();
+
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'UserPromptSubmit' })),
+      });
+
+      expect(any).toEqual(['UserPromptSubmit']);
+    });
+
+    it('fires for PermissionRequest even when the synchronous resolver intercepts it', async () => {
+      // The resolver branch returns BEFORE the normal dispatch() call, which is
+      // exactly the gap onAnyEvent exists to cover (#914).
+      const any: string[] = [];
+      let permissionFired = 0;
+      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server.setPermissionResolver(async () => {
+        permissionFired++;
+        return 'allow';
+      });
+      server.start();
+
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+      });
+
+      expect(permissionFired).toBe(1);
+      expect(any).toEqual(['PermissionRequest']);
+    });
+
+    it('a throwing onAnyEvent reports onError but does not break the response', async () => {
+      const errors: Error[] = [];
+      let stopFired = 0;
+      server = new HookServer(
+        { port },
+        {
+          onError: (e) => errors.push(e),
+          onAnyEvent: () => {
+            throw new Error('onAnyEvent boom');
+          },
+          onStop: () => stopFired++,
+        },
+      );
+      server.start();
+
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop', stop_hook_active: false })),
+      });
+
+      expect(res.status).toBe(200);
+      expect(errors.length).toBe(1);
+      expect(errors[0]?.message).toContain('onAnyEvent boom');
+      // The event still reaches the normal dispatch despite onAnyEvent throwing.
+      expect(stopFired).toBe(1);
+    });
+
+    it('does not fire for a request refused before eventName is read (missing hook_event_name)', async () => {
+      const any: string[] = [];
+      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server.start();
+
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({})),
+      });
+
+      expect(res.status).toBe(400);
+      expect(any).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Synchronous PermissionRequest resolver (#496)
   // -------------------------------------------------------------------------
   describe('synchronous PermissionRequest decision', () => {
