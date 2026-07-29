@@ -213,14 +213,24 @@ describe('startLiveSessionsWatcher (#542)', () => {
           startedAt: new Date().toISOString(),
         });
 
-        // Wait for THE collect error specifically, not merely for any log line.
-        // `register()` writes a `.json.tmp` and renames it, and on Linux the
-        // watcher can emit ENOENT for the vanished temp path; its handler then
-        // logs first and `errors[0]` is that, not this test's subject (#903).
-        await waitFor(
-          () => errors.some((e) => e.includes('collect exploded')),
-          'the throwing collect to be logged',
-        );
+        // Wait for THE collect error specifically, not merely for any log line
+        // (#903): an unrelated watcher error can otherwise satisfy the wait,
+        // which is how this test used to pass without its subject ever running.
+        //
+        // Re-touch the directory while waiting. On Linux `register()`'s
+        // `.json.tmp` write+rename can make the watcher emit ENOENT; its
+        // handler closes and re-arms (`live-sessions-watcher.ts`), but the
+        // event that would have triggered the flush is already gone by the time
+        // the new watcher is listening. Without a fresh event `collect` is
+        // never called and the wait hangs to timeout -- observed in CI, never
+        // locally. The re-arm and the re-touch are both required; neither alone
+        // is sufficient.
+        const deadline = Date.now() + TEST_TIMEOUT_MS - 2000;
+        let touch = 0;
+        while (Date.now() < deadline && !errors.some((e) => e.includes('collect exploded'))) {
+          fs.writeFileSync(path.join(tmpDir, `touch-${touch++}.json`), '{}');
+          await new Promise((r) => setTimeout(r, 100));
+        }
 
         expect(broadcasts).toEqual([]);
         expect(errors.some((e) => e.includes('collect exploded'))).toBe(true);
