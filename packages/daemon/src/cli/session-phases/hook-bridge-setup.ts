@@ -58,6 +58,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
+  HookInput,
   HookServer,
   PermissionRequestHookInput,
 } from '../../hooks/index.ts';
@@ -264,6 +265,18 @@ export interface HookBridgeHandle {
    *  alternate question sources (e.g. PTY parser) so subagent prompts are
    *  not surfaced to the user. */
   bridge: HookEventBridge;
+  /**
+   * Does this session's binder claim the event? (#914)
+   *
+   * Every listener inside `setupHookBridge` already consults `binder.admits()`;
+   * this exposes the same filter to listeners registered OUTSIDE it. Needed
+   * because two daemons in the SAME project directory each append their own
+   * matcher to the shared `.claude/settings.local.json` hooks array
+   * (`HookConfigManager.install` matches on `h.url`, so a second daemon adds
+   * rather than replaces), and Claude Code POSTs every event to both. A
+   * listener without this filter cannot tell whose turn it is looking at.
+   */
+  admits: (input: HookInput) => boolean;
   /**
    * Tear down the `TranscriptBinder` for this session (its watcher, fallback
    * timer, and the #452 rotation dir-poll). The caller must invoke this on
@@ -929,6 +942,19 @@ export function setupHookBridge(
 
   return {
     bridge: hookBridge,
+    /**
+     * Does this session's binder claim the event? (#914)
+     *
+     * Every listener inside this module already consults `binder.admits()`;
+     * this exposes the same filter to listeners registered OUTSIDE it. The
+     * turn-complete notification in `cli.ts` needs it because two daemons in
+     * the SAME project directory both append their own matcher to the shared
+     * `.claude/settings.local.json` hooks array (`hook-config-manager.ts`
+     * matches on `h.url`, so a second daemon adds rather than replaces), and
+     * Claude Code then POSTs every event to both. Without this filter that
+     * notification would report a sibling daemon's turn as this session's.
+     */
+    admits: (input: HookInput) => binder.admits(input),
     closeBinder: () => {
       binder.close();
       // Drop the per-session PermissionRequest resolver (#496) so a stale

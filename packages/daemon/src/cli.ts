@@ -177,7 +177,7 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
+import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
@@ -1013,6 +1013,18 @@ const binderClosers: Map<UUID, () => void> = new Map();
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 /**
+ * Per-session "does this binder claim the event?" filters (#914).
+ *
+ * Listeners registered INSIDE `setupHookBridge` all consult `binder.admits()`.
+ * `onTurnStop` is registered out here, so it needs the same filter: two daemons
+ * in the SAME project directory each append their own matcher to the shared
+ * `.claude/settings.local.json` hooks array, and Claude Code POSTs every event
+ * to both. Unfiltered, this daemon would push "turn complete" for a sibling's
+ * turn, labelled with THIS session's name and carrying the sibling's output --
+ * a false "done" for a session that may still be working.
+ */
+const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map();
+/**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
  * get me out" lever when an LLM eval + a question are stuck and the phone has no
  * device visibility. Each gate releases its held hooks to passthrough (native prompt),
@@ -1093,6 +1105,9 @@ const sessionRegistry = new SessionRegistry(
       // Drop the per-session gate handle (#573); any held hook was already
       // released by the gate's closeBinder/cancelStale on teardown.
       sessionGateHandles.delete(sessionId);
+      // #914: drop the admits filter with the session, so a closed session's
+      // binder can never keep admitting turns on its behalf.
+      sessionAdmitsHandles.delete(sessionId);
       // Drop the per-session APNS dispatcher (#585, P7).
       sessionNotifiers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
@@ -1266,6 +1281,24 @@ const turnTimer = new TurnTimer();
  * catch most instances of anyway.
  */
 function onTurnStop(input: StopHookInput): void {
+  // Session filter FIRST (#914). Claude Code broadcasts every event to every
+  // daemon registered for the directory, so an unfiltered Stop here is very
+  // likely a sibling's. Note the timer cannot save us: `onAnyEvent` observes
+  // sibling events too, so `elapsedMs` comes back populated and plausible.
+  // Fail closed -- no admitting session means we do not claim this turn.
+  let admitted = false;
+  for (const admits of sessionAdmitsHandles.values()) {
+    try {
+      if (admits(input)) {
+        admitted = true;
+        break;
+      }
+    } catch {
+      // A binder that throws must not break the hook path; treat as not ours.
+    }
+  }
+  if (!admitted) return;
+
   const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
   // A stop-hook re-entry means the turn is still going, not finished -- do
   // NOT clear the mark for it: the eventual real Stop still needs the turn's
@@ -1601,6 +1634,9 @@ async function createNewSession(
     // Register the per-session gate handle (#573) so the WebSocket answer path
     // can resolve a held permission / cancel the eval for this exact session.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
+    // #914: lets the out-of-bridge turn-complete listener apply the same
+    // session filter every in-bridge listener already uses.
+    sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
   }
 
   const ptySession = createPtySessionForSession(

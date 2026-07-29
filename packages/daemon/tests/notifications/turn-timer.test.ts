@@ -186,3 +186,76 @@ describe('buildTurnCompleteText', () => {
     expect(title.endsWith('…')).toBe(true);
   });
 });
+
+/**
+ * The session filter that keeps a turn-complete push from reporting a SIBLING
+ * daemon's turn (#914).
+ *
+ * This is not defence-in-depth, it is the only defence. Two daemons in the same
+ * project directory each append their own matcher to the shared
+ * `.claude/settings.local.json` hooks array, so Claude Code POSTs every `Stop`
+ * to both. The timer cannot help: `onAnyEvent` observes the sibling's earlier
+ * events too, so `elapsedMs` comes back populated and plausible for a turn that
+ * was never ours.
+ *
+ * `cli.ts`'s `onTurnStop` is a module-private closure over daemon state, so
+ * these tests pin the DECISION RULE it implements — "notify only if some live
+ * session's binder admits the event, fail closed when none does" — against the
+ * same admits-shaped predicate. If that rule changes in cli.ts without changing
+ * here, the reviewer sees an unexplained divergence.
+ */
+describe('turn-complete session filter (#914)', () => {
+  type Admits = (input: { session_id: string }) => boolean;
+
+  /** The rule `onTurnStop` applies before considering a notification. */
+  function admittedByAnySession(
+    handles: Map<string, Admits>,
+    input: { session_id: string },
+  ): boolean {
+    for (const admits of handles.values()) {
+      try {
+        if (admits(input)) return true;
+      } catch {
+        // A throwing binder must not break the hook path; treat as not ours.
+      }
+    }
+    return false;
+  }
+
+  test('a sibling daemon turn is refused', () => {
+    const handles = new Map<string, Admits>([['ours', (i) => i.session_id === 'our-claude-id']]);
+    expect(admittedByAnySession(handles, { session_id: 'sibling-claude-id' })).toBe(false);
+  });
+
+  test('our own turn is admitted', () => {
+    const handles = new Map<string, Admits>([['ours', (i) => i.session_id === 'our-claude-id']]);
+    expect(admittedByAnySession(handles, { session_id: 'our-claude-id' })).toBe(true);
+  });
+
+  test('with no live sessions it fails CLOSED, not open', () => {
+    // The dangerous default. An empty map must mean "not ours", never "sure".
+    expect(admittedByAnySession(new Map(), { session_id: 'anything' })).toBe(false);
+  });
+
+  test('a throwing binder is treated as not-ours and does not propagate', () => {
+    const handles = new Map<string, Admits>([
+      [
+        'broken',
+        () => {
+          throw new Error('binder exploded');
+        },
+      ],
+    ]);
+    expect(() => admittedByAnySession(handles, { session_id: 'x' })).not.toThrow();
+    expect(admittedByAnySession(handles, { session_id: 'x' })).toBe(false);
+  });
+
+  test('one admitting session among several is enough', () => {
+    const handles = new Map<string, Admits>([
+      ['a', () => false],
+      ['b', (i) => i.session_id === 'mine'],
+      ['c', () => false],
+    ]);
+    expect(admittedByAnySession(handles, { session_id: 'mine' })).toBe(true);
+  });
+});
