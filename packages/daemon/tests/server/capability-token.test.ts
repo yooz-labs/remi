@@ -66,6 +66,27 @@ describe('capability token file', () => {
     expect(fs.existsSync(tokenPath)).toBe(false);
   });
 
+  test('an unwritable directory throws rather than returning a fake token', () => {
+    // The daemon catches this and runs with no token, which fails CLOSED. A
+    // silently-empty return here would look like a valid token to the caller.
+    const ro = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-cap-ro-'));
+    fs.chmodSync(ro, 0o555);
+    try {
+      expect(() =>
+        loadOrCreateCapabilityToken(path.join(ro, 'capability.key'), () => {}),
+      ).toThrow();
+    } finally {
+      fs.chmodSync(ro, 0o755);
+      fs.rmSync(ro, { recursive: true, force: true });
+    }
+  });
+
+  test('an empty expected token admits nobody', () => {
+    // The state the daemon lands in when the file could not be written.
+    expect(capabilityTokenMatches('anything', '')).toBe(false);
+    expect(capabilityTokenMatches('', '')).toBe(false);
+  });
+
   test('comparison rejects mismatches, empties and nulls', () => {
     const token = loadOrCreateCapabilityToken(tokenPath, () => {});
     expect(capabilityTokenMatches(token, token)).toBe(true);

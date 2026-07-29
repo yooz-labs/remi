@@ -1851,7 +1851,21 @@ const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 // CLI can prove it is a local client without a TOFU round trip. Generated
 // unconditionally, even while `require_local_auth` is false, so that turning
 // the flag on later never has to also create a secret mid-flight.
-const localCapabilityToken = loadOrCreateCapabilityToken(undefined, logError);
+//
+// NOT fatal if it cannot be written. An unwritable `~/.remi` is a broken
+// environment and the daemon says so a few lines later when the PID file
+// fails, which is the more useful error; dying here would replace it with a
+// worse one. Running with no token fails CLOSED: `capabilityTokenMatches`
+// rejects an empty expected value, so nobody is admitted by this path and
+// local clients fall back to the Ed25519 challenge.
+let localCapabilityToken = '';
+try {
+  localCapabilityToken = loadOrCreateCapabilityToken(undefined, logError);
+} catch (err) {
+  logError(
+    `[capability] could not create the local capability token: ${errorToString(err)}. Local clients will be challenged instead.`,
+  );
+}
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
