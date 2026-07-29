@@ -455,9 +455,11 @@ export class SessionRegistry {
         action: 'remove',
         sessionId,
         questionId: oldest,
+        promptId: evicted?.promptId,
         agentId: evicted?.agentId,
         isSubagent: evicted?.agentId !== undefined,
         signal: 'lru_eviction',
+        callSite: 'SessionRegistry.addQuestion:lru_eviction',
         throughFunnel: true,
       });
     }
@@ -467,9 +469,11 @@ export class SessionRegistry {
       action: 'add',
       sessionId,
       questionId: question.id,
+      promptId: question.promptId,
       agentId: question.agentId,
       isSubagent: question.agentId !== undefined,
       signal,
+      callSite: 'SessionRegistry.addQuestion',
     });
   }
 
@@ -477,7 +481,24 @@ export class SessionRegistry {
    *  event/reason that caused the removal (e.g. 'PostToolUse', 'Stop',
    *  'user_answer') for the opt-in question-lifecycle trace; `toolName`,
    *  when the caller knows it, is carried onto the same record. */
-  removeQuestion(sessionId: UUID, questionId: UUID, signal = 'unknown', toolName?: string): void {
+  removeQuestion(
+    sessionId: UUID,
+    questionId: UUID,
+    signal = 'unknown',
+    toolName?: string,
+    /**
+     * Which upstream path asked for the removal (#887).
+     *
+     * Threaded from the caller, NOT hardcoded here. Every resolution route in
+     * `AutoApproveGate` funnels through this one method, so a literal
+     * `'SessionRegistry.removeQuestion'` cannot distinguish "one path fired
+     * twice" from "two paths raced" -- which is exactly the question the
+     * double-removal investigation in #888 needs answered. Callers that know
+     * their own identity pass it; the default names the funnel honestly for
+     * those that do not yet.
+     */
+    callSite = 'SessionRegistry.removeQuestion',
+  ): void {
     if (this.session !== null && this.session.sessionId === sessionId) {
       const existing = this.session.currentQuestions.get(questionId);
       this.session.currentQuestions.delete(questionId);
@@ -487,10 +508,12 @@ export class SessionRegistry {
         action: 'remove',
         sessionId,
         questionId,
+        promptId: existing?.promptId,
         agentId: existing?.agentId,
         isSubagent: existing?.agentId !== undefined,
         toolName,
         signal,
+        callSite,
         throughFunnel: true,
       });
     }
@@ -512,9 +535,11 @@ export class SessionRegistry {
           action: 'remove',
           sessionId,
           questionId: q.id,
+          promptId: q.promptId,
           agentId: q.agentId,
           isSubagent: q.agentId !== undefined,
           signal,
+          callSite: 'SessionRegistry.clearQuestions',
           throughFunnel: true,
         });
       }

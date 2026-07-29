@@ -497,7 +497,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         action: 'stale_answer',
         sessionId: session.sessionId,
         questionId,
+        // No promptId: by construction the question is already gone from the
+        // registry (that is what makes this a stale answer), so there is no
+        // Question object left to read it from.
         signal: 'STALE_ANSWER',
+        callSite: 'input-events.handleAnswer',
         detail: { pendingQuestionIds: pendingIds, freedHeld },
       });
       if (!viaRelay) {

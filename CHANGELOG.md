@@ -4,6 +4,34 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **A question is now identified by one id for its whole prompt cycle**
+  (#887). Up to three ids used to exist for a single subagent permission: the
+  hook bridge minted one at `PermissionRequest`, the PTY parser minted a
+  fresh one on every render, and the gate had to re-key its own bookkeeping
+  (`openQuestionSignatures`) to follow whichever one the pushed card ended up
+  under. Missing that re-key — which, verified while fixing this, happened on
+  every parked-subagent-permission cycle in a session with no auto-approve
+  configured, since the re-key only ran from inside the auto-approve
+  arbiter — left the gate tracking a signature under an id no pushed card
+  ever carried, so a later PreToolUse/PostToolUse/SubagentStop match could
+  never find and resolve it. `QuestionPresenceTracker.consumeAndMerge` now
+  ADOPTS the hook's id when pairing a PTY render with a parked hook record
+  instead of minting a new one from the PTY parse; a genuinely hook-less
+  prompt (an agent-team native prompt, a subprocess `(y/n)`) still gets its
+  id from the PTY parse, since there is no hook to mint one first. The gate's
+  `rekeySignatureToRendered` is deleted outright — nothing replaces it, since
+  the id it used to chase never moves now.
+
+  `Question` gained an optional `promptId` (Claude Code's own `prompt_id`,
+  present on every hook event since 2.1.196), carried from the hook onto a
+  hook-born question and through the PTY-render merge, as a same-turn
+  correlation key distinct from the question's own `id`. The opt-in
+  question-lifecycle trace (`REMI_QUESTION_TRACE=1`) now records it plus a
+  `callSite` naming which internal function emitted each add/remove, closing
+  the gap where a double-removal in a capture showed THAT it happened but not
+  WHICH code path did it.
+
 ### Security
 - **Lock-screen answers are sealed to the daemon** (#875). The signaling
   Worker's `/answer/{code}` route accepted `sessionId`, `questionId` and the

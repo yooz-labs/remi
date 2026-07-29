@@ -1171,6 +1171,7 @@ const sessionRegistry = new SessionRegistry(
         action: 'snapshot_broadcast',
         sessionId,
         signal: 'onQuestionsChanged',
+        callSite: 'cli.ts:onQuestionsChanged',
         detail: { liveQuestionIds: questions.map((q) => q.id) },
       });
     },

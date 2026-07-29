@@ -348,6 +348,8 @@ export class HookEventBridge {
         allowsFreeText: false,
         isAnswered: false,
         agentId: input.agent_id,
+        // #887: same-turn correlation key, see `Question.promptId`.
+        promptId: input.prompt_id,
         // Generic fallback: the tracker must let a richer PermissionRequest
         // for the same agent win over this text/options (#574).
         source: 'notification',
@@ -464,6 +466,8 @@ export class HookEventBridge {
       allowsFreeText: false,
       isAnswered: false,
       agentId: input.agent_id,
+      // #887: same-turn correlation key, see `Question.promptId`.
+      promptId: input.prompt_id,
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
@@ -514,6 +518,8 @@ export class HookEventBridge {
       allowsFreeText: false,
       isAnswered: false,
       agentId: input.agent_id,
+      // #887: same-turn correlation key, see `Question.promptId`.
+      promptId: input.prompt_id,
     };
     this.events.onQuestion(question);
     this.events.onStatusChange('waiting');

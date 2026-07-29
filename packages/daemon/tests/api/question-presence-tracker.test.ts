@@ -120,8 +120,11 @@ describe('QuestionPresenceTracker', () => {
     expect(pushes.length).toBe(1);
     // The hook's rich text wins so the user sees the command, not the bare prompt.
     expect(pushes[0]?.text).toBe('Allow Edit: /tmp/foo.ts');
-    // PTY id (answer routing) + hook options.
-    expect(pushes[0]?.id).toBe(ptyQ.id);
+    // #887: identity is minted ONCE, at hook arrival — the merge ADOPTS the
+    // hook's id instead of the PTY's freshly-parsed one (which is discarded
+    // once a hook record exists to pair with).
+    expect(pushes[0]?.id).toBe(hookMeta.id);
+    expect(pushes[0]?.id).not.toBe(ptyQ.id);
     expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
     expect(pushes[0]?.options[0]?.isYes).toBe(true);
     expect(pushes[0]?.options[2]?.isNo).toBe(true);

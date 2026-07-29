@@ -3388,21 +3388,23 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     expect(evalCalls).toHaveLength(2); // both were evaluated, independently
   });
 
-  test('a pushed render is resolvable by its RENDERED id: the signature is re-keyed', async () => {
+  test('a pushed render is resolvable by the PARKED id: no re-key needed (#887)', async () => {
+    // Pre-#887 the tracker's merge minted the pushed card's id from the PTY
+    // parse, so this test built `rendered` with a DIFFERENT id than the park
+    // and relied on `rekeySignatureToRendered` to move `openQuestionSignatures`
+    // onto it. #887 removed the mismatch at its source instead:
+    // `QuestionPresenceTracker.consumeAndMerge` now ADOPTS the hook's id, so
+    // `rendered.id` IS `parkedQuestionId` in every real call — this test
+    // builds `rendered` that way and proves resolution needs no re-key.
     const g = gate(escalate);
     await g.resolvePermission(pr());
-    const renderedId = generateId() as UUID;
-    promptOnScreen(rendered(renderedId));
+    const parkedId = parkedIds[0] as UUID;
+    const r = rendered(parkedId);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(renderedId),
-        screen(rendered(renderedId)),
-      ),
-    ).toEqual({ outcome: 'push' });
-    // The tracker pushes the MERGED question, whose id is the PTY question's.
-    registry.addQuestion(SID, rendered(renderedId));
+    expect(await g.arbitrateParkedRender(parkedId, r, screen(r))).toEqual({ outcome: 'push' });
+    // The tracker pushes the MERGED question under the parked id (#887).
+    registry.addQuestion(SID, r);
 
     // The subagent's tool now runs => it was answered in the terminal.
     g.cancelExternallyResolved(
@@ -3410,8 +3412,8 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
       'PreToolUse-subagent',
     );
 
-    expect(registry.getQuestion(SID, renderedId)).toBeNull();
-    expect(resolvedLog).toEqual([{ qid: renderedId, reason: 'cancelled' }]);
+    expect(registry.getQuestion(SID, parkedId)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid: parkedId, reason: 'cancelled' }]);
   });
 
   test('an auto-answered render leaves NO open escalation behind (a deny fires no tool call)', async () => {

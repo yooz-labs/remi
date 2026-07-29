@@ -776,7 +776,13 @@ export class AutoApproveGate {
     // this leaves a ghost card that replays on reconnect and lets a late
     // handleAnswer find it "live" and misroute. The user-answer path also
     // removes it in handleAnswer's finally; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, `resolveHeld:${decision}`);
+    this.deps.sessionRegistry.removeQuestion(
+      this.sessionId,
+      questionId,
+      `resolveHeld:${decision}`,
+      undefined,
+      'AutoApproveGate.resolveHeld',
+    );
     this.markHandled(hold.isSubagent);
     let resolvedDecision: PermissionDecision = decision;
     let logSuffix: string = decision;
@@ -1536,7 +1542,13 @@ export class AutoApproveGate {
     // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
     // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
     // removes it; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, reason, toolName);
+    this.deps.sessionRegistry.removeQuestion(
+      this.sessionId,
+      questionId,
+      reason,
+      toolName,
+      'AutoApproveGate.releaseHeld',
+    );
     hold.resolve(decision);
     return true;
   }
@@ -1678,13 +1690,14 @@ export class AutoApproveGate {
       // No auto-approve, or the park was already consumed/retired (an external
       // resolution, a session teardown, a duplicate render, a MAX_PARKED_INPUTS
       // eviction). Push: the prompt is on screen and nobody else is going to
-      // surface it. The re-key still has to happen — the signature may well
-      // still be open (eviction drops only the input), and a card pushed under
-      // an id no resolution path knows is the #808 stale card.
+      // surface it. No re-key needed (#887): `rendered.id` IS `parkedQuestionId`
+      // — the tracker adopts the hook's id at merge time instead of minting a
+      // new one from the PTY parse — so `openQuestionSignatures` (keyed by
+      // `parkedQuestionId` since `parkSubagentForPTY`) already matches the id
+      // of the card about to be pushed.
       log(
         `[AutoApprove ${this.sessionTag}] Parked render for ${parkedQuestionId.slice(0, 8)} not evaluated (${service === null ? 'no auto-approve service' : 'no parked input'}); pushing to the user`,
       );
-      this.rekeySignatureToRendered(parkedQuestionId, rendered);
       return { outcome: 'push' };
     }
     // Exactly one evaluation per park: a second render of the same prompt
@@ -1717,7 +1730,7 @@ export class AutoApproveGate {
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
-      return this.escalateRenderedParked(parkedQuestionId, rendered);
+      return this.escalateRenderedParked();
     } finally {
       this.evalIsSubagentById.delete(evalId);
       if (this.evalIdByQuestion.get(parkedQuestionId) === evalId) {
@@ -1731,7 +1744,7 @@ export class AutoApproveGate {
       // tracker drops it when the prompt is already off screen, and if it is
       // somehow still up, the user is the right fallback.
       log(`[AutoApprove ${this.sessionTag}] Parked-render eval cancelled: ${result.reasoning}`);
-      return this.escalateRenderedParked(parkedQuestionId, rendered);
+      return this.escalateRenderedParked();
     }
 
     if (result.decision === 'approve' || result.decision === 'deny' || result.decision === 'pick') {
@@ -1745,7 +1758,7 @@ export class AutoApproveGate {
         this.markHandled(true);
         return { outcome: 'answered' };
       }
-      return this.escalateRenderedParked(parkedQuestionId, rendered);
+      return this.escalateRenderedParked();
     }
 
     // escalate: consult the second opinion before interrupting the user, the
@@ -1783,7 +1796,7 @@ export class AutoApproveGate {
         return { outcome: 'answered' };
       }
     }
-    return this.escalateRenderedParked(parkedQuestionId, rendered, result.summary);
+    return this.escalateRenderedParked(result.summary);
   }
 
   /**
@@ -1833,37 +1846,24 @@ export class AutoApproveGate {
   }
 
   /**
-   * Hand a rendered parked prompt to the user (#814): re-key its open-escalation
-   * signature onto the id of the card that is about to be pushed, close the
-   * eval cue, and report `push`.
+   * Hand a rendered parked prompt to the user (#814): close the eval cue and
+   * report `push`.
    *
-   * The re-key matters. A parked render pushes the MERGED question, whose id
-   * comes from the PTY question — NOT from the parked hook question the
-   * signature was registered under. Without this, every later resolution
-   * signal (a matching PreToolUse, `SubagentStop`, a phone answer) would
-   * remove/dismiss the parked id while the client holds a card under the
-   * rendered id, leaving exactly the stale card #808 is about.
+   * Pre-#887 this also had to re-key `openQuestionSignatures` from
+   * `parkedQuestionId` onto `rendered.id`: the parked render pushed the MERGED
+   * question, whose id used to come from the freshly-parsed PTY question, NOT
+   * from the parked hook question the signature was registered under. Missing
+   * that re-key meant every later resolution signal (a matching PreToolUse,
+   * `SubagentStop`, a phone answer) would remove/dismiss the parked id while
+   * the client held a card under the rendered id — the #808 stale-card class.
+   * #887 removed the mismatch at its source instead of patching around it:
+   * `QuestionPresenceTracker.consumeAndMerge` now ADOPTS the hook's id for the
+   * merged question, so `rendered.id` IS `parkedQuestionId` here by
+   * construction, and `openQuestionSignatures` never needs to move.
    */
-  private escalateRenderedParked(
-    parkedQuestionId: UUID,
-    rendered: Question,
-    summary?: string,
-  ): ParkedRenderVerdict {
-    this.rekeySignatureToRendered(parkedQuestionId, rendered);
+  private escalateRenderedParked(summary?: string): ParkedRenderVerdict {
     this.safeCueWithArg('onEscalate', this.deps.onEscalate, { isSubagent: true });
     return summary === undefined ? { outcome: 'push' } : { outcome: 'push', summary };
-  }
-
-  /** Move a parked question's open-escalation signature onto the id of the
-   *  card about to be pushed (#814) — see `escalateRenderedParked`. Every
-   *  path that returns `push` must call this, including the ones that never
-   *  evaluated, or the pushed card is unresolvable. No-op when the park has
-   *  no signature (parkForPTY returned no id, or it was already retired). */
-  private rekeySignatureToRendered(parkedQuestionId: UUID, rendered: Question): void {
-    const signature = this.openQuestionSignatures.get(parkedQuestionId);
-    if (signature === undefined || rendered.id === parkedQuestionId) return;
-    this.openQuestionSignatures.delete(parkedQuestionId);
-    this.openQuestionSignatures.set(rendered.id as UUID, signature);
   }
 
   /**
@@ -2182,7 +2182,13 @@ export class AutoApproveGate {
       );
     }
     try {
-      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid, reason, toolName);
+      this.deps.sessionRegistry.removeQuestion(
+        this.sessionId,
+        qid,
+        reason,
+        toolName,
+        'AutoApproveGate.resolveSupersededQuestion',
+      );
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,
