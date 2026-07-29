@@ -60,6 +60,8 @@ export class Authenticator {
   private readonly identity: UnlockedIdentity;
   private readonly store: IdentityStore;
   private readonly tofuMode: TofuMode;
+  /** Published in every challenge so phones can pin it (#875). */
+  private answerEncryptionKey: string | undefined;
   /** Active challenges keyed by connection ID */
   private readonly pendingChallenges = new Map<string, string>();
 
@@ -73,10 +75,24 @@ export class Authenticator {
    * Create an auth challenge for a new connection.
    * @param connectionId Unique connection identifier to track the challenge
    */
+  /**
+   * Publish the daemon's answer key (#875). Set once at startup; absent means
+   * clients must refuse to send a lock-screen answer rather than send plaintext.
+   */
+  setAnswerEncryptionKey(publicKeyBase64: string): void {
+    this.answerEncryptionKey = publicKeyBase64;
+  }
+
   createChallenge(connectionId: string): AuthChallengeMessage {
     const challenge = generateChallenge();
     this.pendingChallenges.set(connectionId, challenge);
-    return createAuthChallenge(challenge, this.identity.fingerprint, this.identity.publicKeyRaw);
+    return createAuthChallenge(
+      challenge,
+      this.identity.fingerprint,
+      this.identity.publicKeyRaw,
+      undefined,
+      this.answerEncryptionKey,
+    );
   }
 
   /**
@@ -101,10 +117,13 @@ export class Authenticator {
       this.identity.privateKey,
       kexSigningInput(challenge, ephemeralPublicKeyBase64, null),
     );
-    return createAuthChallenge(challenge, this.identity.fingerprint, this.identity.publicKeyRaw, {
-      ephemeralKey: ephemeralPublicKeyBase64,
-      signature,
-    });
+    return createAuthChallenge(
+      challenge,
+      this.identity.fingerprint,
+      this.identity.publicKeyRaw,
+      { ephemeralKey: ephemeralPublicKeyBase64, signature },
+      this.answerEncryptionKey,
+    );
   }
 
   /**

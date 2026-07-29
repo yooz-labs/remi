@@ -66,6 +66,13 @@ export interface KnownHost {
   readonly publicKey: Base64;
   readonly firstSeen: string;
   readonly lastSeen: string;
+  /**
+   * The daemon's published P-256 answer key (#875), pinned so a lock-screen
+   * answer can be sealed with no live connection. Absent for a host last seen
+   * before this shipped: the client must then refuse to send an answer over the
+   * relay rather than send it in the clear, and it re-pins on next connect.
+   */
+  readonly answerEncryptionKey?: Base64;
 }
 
 /** Check whether an identity has an encrypted private key. */

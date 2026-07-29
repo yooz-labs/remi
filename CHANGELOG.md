@@ -5,6 +5,35 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Security
+- **Lock-screen answers are sealed to the daemon** (#875). The signaling
+  Worker's `/answer/{code}` route accepted `sessionId`, `questionId` and the
+  answer text as plain JSON, and the client had a matching function to send
+  them. The phone now seals the whole body, `auth` block included, to a
+  long-lived P-256 key the daemon publishes in its auth challenge and the phone
+  pins beside the fingerprint. Ephemeral-static ECDH, so it costs one request
+  and no round trip, which is all a suspended phone gets.
+
+  The Worker sees an opaque envelope and the room code it routes by. The daemon
+  opens it, then verifies the signature that was inside, so sealing hides who
+  answered from the Worker without excusing the phone from proving it.
+
+  A phone with no pinned key **refuses to send** rather than falling back to
+  plaintext; reconnecting once re-pins it. A daemon that cannot open a sealed
+  answer drops it rather than acting on a partial one.
+
+  Scope, stated plainly: **this path has no caller today.**
+  `relayAnswerViaSignaling` has zero callers and the wired lock-screen path
+  (`relayAnswerDirect`, `App.tsx:1929`) POSTs straight to the daemon with no
+  Worker involved. So this seals a dormant route before #612 wires it, rather
+  than stopping traffic in flight. Doing it in this order means whoever
+  implements #612 inherits an encrypted path instead of adding a plaintext one.
+
+  No forward secrecy on the daemon's side: the static key opens every answer
+  ever sealed to it. A sleeping phone has no round trip to negotiate a fresh
+  key, and rotating invalidates every pin until each phone reconnects. Recorded
+  in `sealed-answer.ts` rather than left to be discovered.
+
+### Security
 - **The relay transport is encrypted end to end** (#543). The signaling Worker
   was built to relay a *handshake*; WebRTC was meant to carry the session and
   was never implemented, so the relay became the data path and

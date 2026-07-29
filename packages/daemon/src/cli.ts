@@ -118,8 +118,10 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
+import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
+import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
@@ -1874,6 +1876,8 @@ const configAuth = remiConfig.auth.enabled;
 const authEnabled = cliAuth ?? (configAuth === 'auto' ? false : configAuth);
 
 let authenticator: Authenticator | undefined;
+/** Opens sealed lock-screen answers (#875); handed to the relay adapter. */
+let daemonAnswerKey: AnswerKeyPair | undefined;
 let serverFingerprint: string | undefined;
 
 if (authEnabled) {
@@ -1934,6 +1938,17 @@ if (authEnabled) {
 
   const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
   authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
+  // Published in every auth challenge so phones can pin it and seal
+  // lock-screen answers to this daemon (#875). Non-fatal: without it the
+  // daemon simply cannot open sealed answers and says so when one arrives,
+  // which is better than refusing to start.
+  try {
+    const answerKey = await loadOrCreateAnswerKey(undefined, logError);
+    authenticator.setAnswerEncryptionKey(answerKey.publicKeyBase64);
+    daemonAnswerKey = answerKey;
+  } catch (err) {
+    logError(`[answer-key] could not load or create the answer key: ${errorToString(err)}`);
+  }
   serverFingerprint = storedIdentity.fingerprint;
   console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
@@ -2011,6 +2026,7 @@ if (!cliNoRelay && remiConfig.network.relay) {
     );
   }
 
+  if (daemonAnswerKey) relayAdapter.setAnswerKey(daemonAnswerKey);
   registry.register(relayAdapter);
 }
 

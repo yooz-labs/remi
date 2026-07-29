@@ -25,9 +25,12 @@ import {
   errorToString,
   generateEphemeralKeyPair,
   generateId,
+  isSealedAnswer,
+  openSealedAnswer,
 } from '@remi/shared';
 import type {
   AgentStatus,
+  AnswerKeyPair,
   AuthResponseMessage,
   EphemeralKeyPair,
   Message,
@@ -123,6 +126,9 @@ export class RelayAdapter implements ConnectionAdapter {
   private ephemeralKeys: EphemeralKeyPair | null = null;
   private sessionKeys: RelaySessionKeys | null = null;
   private kexChallenge: string | null = null;
+
+  /** Opens sealed lock-screen answers (#875). Absent = cannot open them. */
+  private answerKey: AnswerKeyPair | null = null;
 
   constructor(config: RelayAdapterConfig, events: Partial<AdapterEvents> = {}) {
     this.config = config;
@@ -255,11 +261,12 @@ export class RelayAdapter implements ConnectionAdapter {
       // handshake-authenticated WS peer (there is none). Gate on the ABSENCE of a
       // connected peer so a normal connected peer's answer always uses the
       // standard onAnswer routing even if a future client signs WS answers.
+      // A sealed answer (#875) carries no readable `auth` block: the auth is
+      // inside the ciphertext, which is the point. Recognise it by shape.
       if (
         !this.clientConnectionId &&
         message.type === 'answer' &&
-        message.auth &&
-        typeof message.auth === 'object'
+        ((message.auth && typeof message.auth === 'object') || isSealedAnswer(message))
       ) {
         this.handleRelayedAnswer(message).catch((err) =>
           console.warn('Relayed answer error:', err instanceof Error ? err.message : err),
@@ -294,6 +301,11 @@ export class RelayAdapter implements ConnectionAdapter {
     } catch (e) {
       console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
     }
+  }
+
+  /** Give the adapter the key that opens sealed answers (#875). */
+  setAnswerKey(key: AnswerKeyPair): void {
+    this.answerKey = key;
   }
 
   /**
@@ -388,7 +400,30 @@ export class RelayAdapter implements ConnectionAdapter {
    * authenticator (rotating-code no-auth mode) the room code is the only gate,
    * consistent with the relay's WS path.
    */
-  private async handleRelayedAnswer(msg: Record<string, unknown>): Promise<void> {
+  private async handleRelayedAnswer(raw: Record<string, unknown>): Promise<void> {
+    // A sealed envelope (#875) is opened before anything else looks at it: the
+    // Worker forwards ciphertext, so sessionId/questionId/answer do not exist
+    // until this succeeds. A failure is a wrong key or a tampered request, never
+    // a benign shape, so the answer is dropped rather than partially honored.
+    let msg = raw;
+    if (isSealedAnswer(raw)) {
+      if (!this.answerKey) {
+        console.warn('Sealed answer dropped: this daemon has no answer key, so it cannot open it');
+        return;
+      }
+      try {
+        const opened = await openSealedAnswer(this.answerKey.privateKeyPkcs8Base64, raw);
+        if (opened === null || typeof opened !== 'object') {
+          console.warn('Sealed answer dropped: contents were not an object');
+          return;
+        }
+        msg = opened as Record<string, unknown>;
+      } catch (err) {
+        console.warn(`Sealed answer rejected: ${errorToString(err)}`);
+        return;
+      }
+    }
+
     const sessionId = typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '';
     const questionId = typeof msg['questionId'] === 'string' ? msg['questionId'] : '';
     const answer = typeof msg['answer'] === 'string' ? msg['answer'] : '';
