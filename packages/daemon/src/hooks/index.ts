@@ -36,5 +36,14 @@ export type {
   ElicitationHookInput,
   ElicitationResultHookInput,
   SessionEndHookInput,
+  SetupHookInput,
+  UserPromptExpansionHookInput,
+  PermissionDeniedHookInput,
+  PostToolBatchHookInput,
+  MessageDisplayHookInput,
+  CwdChangedHookInput,
+  FileChangedHookInput,
+  DirectoryAddedHookInput,
+  TaskCreatedHookInput,
 } from './hook-types.ts';
 export { HOOK_EVENT_NAMES, isValidHookEvent } from './hook-types.ts';
