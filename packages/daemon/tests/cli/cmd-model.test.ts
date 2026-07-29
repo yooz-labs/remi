@@ -180,6 +180,12 @@ describe('remi model ls / ps', () => {
     const code = await run(['ls'], configWith({ model: 'yooz-light-v3' }), t.io, {
       probe: async () => REACHABLE,
       inventory: async () => INVENTORY,
+      // `ls` resolves purpose labels via `purposeMap`, which calls `list`.
+      // Without injecting it the call escapes to the REAL engine on :19924 and
+      // the assertion below depends on whether one happens to be running:
+      // locally it printed "engine proofread tier", in CI "engine active".
+      // CATALOG carries no `purpose`, which is the unqualified-label case.
+      list: async () => CATALOG,
     });
 
     expect(code).toBe(0);
@@ -194,8 +200,40 @@ describe('remi model ls / ps', () => {
     expect(text).toMatch(/\*\s+yooz-light-v3/);
     expect(text).not.toMatch(/\*\s+yooz-quality-v3/);
     // ...but the engine's choice is still visible, because it holds the GPU
-    // and cannot be deleted.
+    // and cannot be deleted. Unqualified here because CATALOG reports no
+    // purpose; the qualified form is pinned by the next test.
     expect(text).toContain('engine active');
+  });
+
+  test('ls names what the engine-active model is active FOR when the purpose is known', async () => {
+    // The #860 half of the label. A bare "engine active" read as "the engine is
+    // using this INSTEAD of your model" and sent a user chasing a problem that
+    // did not exist, so the label names the tier when the engine reports one.
+    // Nothing covered this branch before, which is how the sibling test above
+    // could silently depend on a live engine supplying purposes.
+    const t = io();
+    const code = await run(['ls'], configWith({ model: 'yooz-light-v3' }), t.io, {
+      probe: async () => REACHABLE,
+      inventory: async () => INVENTORY,
+      list: async () => ({
+        current: 'yooz-quality-v3',
+        available: [
+          {
+            id: 'yooz-quality-v3',
+            displayName: 'Yooz-Quality',
+            sizeBytes: 2_400_000_000,
+            loaded: true,
+            purpose: 'proofread',
+          },
+        ],
+      }),
+    });
+
+    expect(code).toBe(0);
+    const text = t.out.join('\n');
+    expect(text).toContain('engine proofread tier');
+    // The qualified form REPLACES the bare one; printing both would be noise.
+    expect(text).not.toMatch(/,\s+engine active/);
   });
 
   test('ls distinguishes not-downloaded from on-disk', async () => {
