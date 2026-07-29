@@ -129,6 +129,26 @@ export interface DisplayConfig {
 }
 
 /**
+ * Turn-complete notification settings (#914). `Stop.last_assistant_message`
+ * is present on the already-registered `Stop` hook (no new registration),
+ * but `Stop` fires on every turn including two-second interactive ones -- a
+ * push on every one is worse than nothing (the user mutes it). Gated on turn
+ * DURATION so it only fires when the user plausibly walked away.
+ */
+export interface NotificationsConfig {
+  /** Master on/off for the turn-complete push. */
+  readonly on_turn_complete: boolean;
+  /**
+   * Minimum turn duration (seconds, measured from the earliest hook event
+   * remi saw for the turn's `prompt_id` to `Stop`) before a turn-complete
+   * push fires. The right value is personal -- how long before "still
+   * watching" becomes "probably walked away" -- so it is configurable rather
+   * than fixed.
+   */
+  readonly turn_complete_min_seconds: number;
+}
+
+/**
  * Terminal cue settings (#513): out-of-band feedback drawn on the wrapper's
  * real terminal during the auto-approve lifecycle. Only fires when auto-approve
  * is enabled (it is driven by the gate). Inert in headless/daemon mode.
@@ -187,6 +207,7 @@ export interface RemiConfig {
   readonly telegram: TelegramConfig;
   readonly auto_approve: AutoApproveConfig;
   readonly features: FeaturesConfig;
+  readonly notifications: NotificationsConfig;
 }
 
 /** Built-in defaults used when no config file or CLI flags are provided */
@@ -365,6 +386,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // path (deleted in #470); it only logs a deprecation warning at boot.
     transcript_binder_enabled: true,
   },
+  notifications: {
+    on_turn_complete: true,
+    // 60s: long enough that a normal interactive turn (seconds) never fires
+    // it, short enough to still be useful for "went to get coffee" absences.
+    // Personal preference varies a lot here, hence configurable.
+    turn_complete_min_seconds: 60,
+  },
 };
 
 /**
@@ -405,6 +433,10 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
       base.features,
       partial['features'] as Record<string, unknown> | undefined,
     ),
+    notifications: mergeSection(
+      base.notifications,
+      partial['notifications'] as Record<string, unknown> | undefined,
+    ),
   };
 }
 
@@ -434,6 +466,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     validateAutoApprove(merged.auto_approve, configPath);
     validateTerminal(merged.terminal, configPath);
     validateDaemon(merged.daemon, configPath);
+    validateNotifications(merged.notifications, configPath);
     return merged;
   } catch (err) {
     throw new Error(
@@ -725,6 +758,24 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
 }
 
+/** Validate `[notifications]` has correct runtime types (#914). */
+function validateNotifications(cfg: NotificationsConfig, configPath: string): void {
+  if (typeof cfg.on_turn_complete !== 'boolean') {
+    throw new Error(
+      `Invalid notifications.on_turn_complete in ${configPath}: must be a boolean (true/false), got ${typeof cfg.on_turn_complete === 'string' ? `string "${cfg.on_turn_complete}"` : typeof cfg.on_turn_complete}. Example: on_turn_complete = true`,
+    );
+  }
+  if (
+    typeof cfg.turn_complete_min_seconds !== 'number' ||
+    !Number.isFinite(cfg.turn_complete_min_seconds) ||
+    cfg.turn_complete_min_seconds < 0
+  ) {
+    throw new Error(
+      `Invalid notifications.turn_complete_min_seconds in ${configPath}: must be a non-negative number (seconds), got ${typeof cfg.turn_complete_min_seconds === 'string' ? `string "${cfg.turn_complete_min_seconds}"` : typeof cfg.turn_complete_min_seconds}. Example: turn_complete_min_seconds = 60`,
+    );
+  }
+}
+
 /** Validate the terminal cue section has correct runtime types. */
 function validateTerminal(cfg: TerminalConfig, configPath: string): void {
   const channels = ['osc9', 'osc777', 'bell', 'off'];
@@ -973,6 +1024,17 @@ bot_token = ""
 authorized_chat_ids = []
 authorized_user_ids = []
 
+[notifications]
+# Push "<session>: turn complete" with Claude's actual last message when a
+# turn runs long (#914). Stop fires on EVERY turn, including two-second
+# interactive ones, so this is gated on duration: below the threshold you are
+# presumably still watching and a push would just be noise you learn to
+# ignore. Above it, you plausibly walked away and a lock-screen ping is the
+# whole point of remi. Never fires on a stop-hook re-entry (the turn is not
+# actually done yet) or with no device registered.
+on_turn_complete = ${DEFAULT_CONFIG.notifications.on_turn_complete}
+turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_seconds}  # tune to taste; there is no "right" value
+
 # [auto_approve]
 # enabled = false
 # provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
@@ -1176,6 +1238,10 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('# transcript_binder_enabled is a deprecated kill-switch (#470); flip = restart.');
   lines.push('[features]');
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
+  lines.push('');
+  lines.push('[notifications]');
+  lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
+  lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
 
   return lines.join('\n');
 }

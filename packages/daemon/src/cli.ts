@@ -177,10 +177,15 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { PermissionRequestHookInput } from './hooks/index.ts';
+import type { PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
+import {
+  TurnTimer,
+  buildTurnCompleteText,
+  shouldNotifyTurnComplete,
+} from './notifications/turn-timer.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
@@ -1232,6 +1237,75 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
       ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
     }).catch((err) => {
       logError('[SubagentAlert] push failed:', err);
+    });
+  }
+}
+
+// Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
+// for every hook event (see the two HookServer constructions below), keyed
+// on `prompt_id` -- present on every hook payload's common fields, so this
+// costs no new hook registration. See turn-timer.ts for why the map is safe
+// to share across the daemon's one session.
+const turnTimer = new TurnTimer();
+
+/**
+ * Push a "turn complete" notification when `Stop` reports a genuinely long,
+ * non-reentrant turn (#914). Config-gated (default on, 60s) and fails toward
+ * silence on any unknown signal -- see `shouldNotifyTurnComplete`. Fire-and-
+ * forget, mirroring `onSubagentPassthrough` immediately above: a notification
+ * bug must never delay or break the hook response Claude is blocking on.
+ *
+ * Deliberately does NOT check `hook-bridge-setup.ts`'s `binder.admits()` (the
+ * transcript-binding validity gate its own Stop listener uses) -- that state
+ * lives inside that file's closure, and this listener is a second, additive
+ * `hookServer.on('Stop', ...)` registration that intentionally never touches
+ * it (#914 scope: Q2 owns hook-bridge-setup.ts). remi is one session per
+ * daemon, so every Stop this process's own hookServer sees is this session's;
+ * the narrow gap that leaves is a resumed/rotated session mid-race, which
+ * `shouldNotifyTurnComplete`'s own gates (unknown elapsed, empty message)
+ * catch most instances of anyway.
+ */
+function onTurnStop(input: StopHookInput): void {
+  const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
+  // A stop-hook re-entry means the turn is still going, not finished -- do
+  // NOT clear the mark for it: the eventual real Stop still needs the turn's
+  // original first-seen time to measure the full duration.
+  // `shouldNotifyTurnComplete` below is the single source of truth for
+  // never notifying on a re-entry; this only gates the clear's timing.
+  if (!input.stop_hook_active) {
+    turnTimer.clear(input.prompt_id);
+  }
+
+  if (
+    !shouldNotifyTurnComplete({
+      onTurnComplete: remiConfig.notifications.on_turn_complete,
+      stopHookActive: input.stop_hook_active,
+      elapsedMs,
+      minSeconds: remiConfig.notifications.turn_complete_min_seconds,
+      lastAssistantMessage: input.last_assistant_message,
+      hasDeviceTokens: deviceTokens.size > 0,
+    })
+  ) {
+    return;
+  }
+
+  const primarySessionId = getPrimarySessionId();
+  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
+  const sessionName = session?.name || 'Agent';
+  // Non-null: shouldNotifyTurnComplete already required a non-empty message.
+  const { title, body } = buildTurnCompleteText(sessionName, input.last_assistant_message ?? '');
+  log(`[TurnComplete] ${title}`);
+
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+  for (const dt of deviceTokens.values()) {
+    // Dismiss-only, same convention as onSubagentPassthrough above: no
+    // `category` / `questionId`, it answers nothing.
+    void sendPushTrigger(signalingUrl, dt.token, {
+      title,
+      body,
+      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+    }).catch((err) => {
+      logError('[TurnComplete] push failed:', err);
     });
   }
 }
@@ -2328,9 +2402,13 @@ if (cliDaemonMode) {
         { port: 0 },
         {
           onError: (err) => console.error(`[HookServer] ${err.message}`),
+          onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
         },
       );
       hookServer.start();
+      // Additive second Stop listener (#914) -- see onTurnStop's module doc
+      // for why this is deliberately separate from hook-bridge-setup.ts's own.
+      hookServer.on('Stop', onTurnStop);
       HOOK_PORT = hookServer.port;
       console.log(`  Hook server listening on port ${HOOK_PORT}`);
     } catch (err) {
@@ -2531,9 +2609,13 @@ if (cliDaemonMode) {
       { port: 0 },
       {
         onError: (err) => logError(`[HookServer] ${err.message}`),
+        onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
       },
     );
     hookServer.start();
+    // Additive second Stop listener (#914) -- see onTurnStop's module doc for
+    // why this is deliberately separate from hook-bridge-setup.ts's own.
+    hookServer.on('Stop', onTurnStop);
     HOOK_PORT = hookServer.port;
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 

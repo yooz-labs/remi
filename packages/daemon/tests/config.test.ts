@@ -821,3 +821,63 @@ describe('terminal config (#513)', () => {
     expect(output).toContain('status_bar = true');
   });
 });
+
+describe('notifications config (#914)', () => {
+  test('defaults: on_turn_complete true, 60s threshold', () => {
+    expect(DEFAULT_CONFIG.notifications).toEqual({
+      on_turn_complete: true,
+      turn_complete_min_seconds: 60,
+    });
+  });
+
+  test('loads notifications from TOML', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      '[notifications]\non_turn_complete = false\nturn_complete_min_seconds = 120\n',
+    );
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.notifications.on_turn_complete).toBe(false);
+    expect(config.notifications.turn_complete_min_seconds).toBe(120);
+  });
+
+  test('preserves notifications defaults when section missing', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.notifications).toEqual(DEFAULT_CONFIG.notifications);
+  });
+
+  test('rejects on_turn_complete as a string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\non_turn_complete = "yes"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.on_turn_complete/);
+  });
+
+  test('rejects a negative turn_complete_min_seconds', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nturn_complete_min_seconds = -1\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.turn_complete_min_seconds/);
+  });
+
+  test('rejects turn_complete_min_seconds as a string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nturn_complete_min_seconds = "soon"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.turn_complete_min_seconds/);
+  });
+
+  test('accepts turn_complete_min_seconds = 0 (fires on any duration)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nturn_complete_min_seconds = 0\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.notifications.turn_complete_min_seconds).toBe(0);
+  });
+
+  test('generateDefaultConfig includes a [notifications] block', () => {
+    const generated = generateDefaultConfig();
+    expect(generated).toContain('[notifications]');
+    expect(generated).toContain('on_turn_complete = true');
+    expect(generated).toContain('turn_complete_min_seconds = 60');
+  });
+
+  test('formatConfig includes the notifications section', () => {
+    const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
+    expect(output).toContain('[notifications]');
+    expect(output).toContain('on_turn_complete = true');
+    expect(output).toContain('turn_complete_min_seconds = 60');
+  });
+});

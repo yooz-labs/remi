@@ -57,6 +57,18 @@ export interface HookServerEvents {
   onStopFailure: (input: StopFailureHookInput) => void;
   onSessionEnd: (input: SessionEndHookInput) => void;
   onError: (error: Error) => void;
+  /**
+   * Fired for EVERY accepted hook event (any `hook_event_name`, known or
+   * not), before the event-specific dispatch below -- including a
+   * `PermissionRequest` handled by the synchronous resolver, which otherwise
+   * returns early and never reaches `dispatch()` (#914). Exists so a caller
+   * can observe a signal common to all events (e.g. `prompt_id`, present on
+   * every hook payload) without registering a typed handler or a dynamic
+   * `on()` listener for each event name individually. Wrapped in the same
+   * try/catch as every other event callback: a bug here must never affect
+   * the hook response Claude Code is blocking on.
+   */
+  onAnyEvent: (input: HookInput) => void;
 }
 
 /** Maps hook event names to their input types, derived from the HookInput union */
@@ -245,6 +257,14 @@ export class HookServer {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Central any-event hook (#914), fired before either branch below so it
+    // also sees a PermissionRequest handled by the synchronous resolver.
+    try {
+      this.events.onAnyEvent?.(body as unknown as HookInput);
+    } catch (err) {
+      this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
     }
 
     // Synchronous PermissionRequest decision (#496). When a resolver is
