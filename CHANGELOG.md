@@ -66,6 +66,23 @@ All notable changes to Remi are documented here.
   by accident; a future one starts from the encrypted handshake.
 
 ### Added
+- **Turn-complete push notification** (#914). `Stop.last_assistant_message` is
+  present on the already-registered `Stop` hook (100% of captured events,
+  #891) but was only ever logged, never surfaced. remi now pushes
+  "`<session>`: turn complete" with the actual last message when a turn runs
+  long — gated on DURATION, not on every `Stop`, because `Stop` fires on every
+  turn including two-second interactive ones and a push on all of them is
+  worse than nothing. Duration is measured from `prompt_id` (present on every
+  hook's common fields), the earliest-observed hook event for that turn to
+  `Stop`, so it costs no new hook registration. New `[notifications]` config:
+  `on_turn_complete` (default true) and `turn_complete_min_seconds` (default
+  60). Never fires on a stop-hook re-entry, an empty message, or with no
+  device registered. `notifySessionComplete()`
+  (`packages/web/src/lib/notifications.ts`), dead code with zero callers that
+  made #914 confusing in the first place, is deleted rather than wired up —
+  the actual notification is a server-side APNS push with real content, which
+  the client already displays generically.
+
 - **Hook fields remi was already receiving and dropping are now consumed**
   (#891). No new hook registrations — this is entirely fields the
   already-registered `Stop`, `SubagentStop` and `PostToolUse` hooks carry.
