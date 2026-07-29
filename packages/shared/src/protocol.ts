@@ -59,65 +59,16 @@ export function now(): Timestamp {
 }
 
 /**
- * Protocol message types.
- * Discriminated union for type-safe message handling.
- */
-export type ProtocolMessage =
-  | HelloMessage
-  | HelloAckMessage
-  | AgentOutputMessage
-  | StructuredAgentOutputMessage
-  | UserInputMessage
-  | AckMessage
-  | EditMessage
-  | QuestionMessage
-  | AnswerMessage
-  | SessionUpdateMessage
-  | PingMessage
-  | PongMessage
-  | ErrorMessage
-  | ReplayBatchMessage
-  | BulletExpandRequestMessage
-  | BulletExpandResponseMessage
-  | SessionListRequestMessage
-  | SessionListResponseMessage
-  | TranscriptContentMessage
-  | TranscriptLoadRequestMessage
-  | TranscriptLoadCompleteMessage
-  | CreateSessionRequestMessage
-  | CreateSessionResponseMessage
-  | TerminalResizeMessage
-  | AuthChallengeMessage
-  | AuthResponseMessage
-  | AuthResultMessage
-  | KillSessionRequestMessage
-  | KillSessionResponseMessage
-  | RawPtyOutputMessage
-  | SessionHistoryRequestMessage
-  | SessionHistoryResponseMessage
-  | ResumeSessionRequestMessage
-  | ResumeSessionResponseMessage
-  | DetachSessionMessage
-  | DetachSessionAckMessage
-  | RegisterDeviceTokenMessage
-  | UnregisterDeviceTokenMessage
-  | DaemonUpdateAvailableMessage
-  | HubStatusMessage
-  | SessionRotatedMessage
-  | SessionViewsMessage
-  | QuestionResolvedMessage
-  | RemiStatusMessage
-  | QuestionSnapshotMessage;
-
-/**
  * Registry mapping each wire `type` discriminant to its message interface —
  * the single source of truth `ProtocolMessage` and the runtime type
  * allowlist in {@link deserialize} derive from (#895). Before this, those
- * were two independently hand-maintained 45-entry lists (the union above and
- * `validTypes` inside `isValidMessage`) with nothing checking them against
- * each other: adding a message type meant remembering to edit both.
- *
- * Keep in sync with the union above until #895 finishes replacing it.
+ * were two independently hand-maintained 45-entry lists (a `ProtocolMessage`
+ * union and a `validTypes` array inside `isValidMessage`) with nothing
+ * checking them against each other: adding a message type meant remembering
+ * to edit both, and forgetting `validTypes` failed silently (`deserialize`
+ * just returns `null` for the type, repo-wide). See
+ * `packages/shared/tests/protocol-registry.test.ts` for the golden-equality
+ * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
   hello: HelloMessage;
@@ -192,6 +143,14 @@ type _DiscriminantsMatch = {
 // silently unused.
 const _discriminantsMatch: true = true as _DiscriminantsMatch;
 void _discriminantsMatch;
+
+/**
+ * Protocol message types.
+ * Discriminated union for type-safe message handling, derived from
+ * {@link ProtocolMessageMap} so a new registry entry automatically joins the
+ * union.
+ */
+export type ProtocolMessage = ProtocolMessageMap[keyof ProtocolMessageMap];
 
 /** The message interface registered for wire discriminant `K`. */
 export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K];
@@ -1143,6 +1102,15 @@ export function deserialize(data: string): ProtocolMessage | null {
 }
 
 /**
+ * The runtime type allowlist {@link isValidMessage} checks incoming messages
+ * against, derived from the {@link ProtocolMessageMap} registry (#895)
+ * instead of hand-maintained as its own list. Guarded by the golden-equality
+ * test in `packages/shared/tests/protocol-registry.test.ts`: if this ever
+ * drops a type, `deserialize` silently returns `null` for it repo-wide.
+ */
+const VALID_TYPES: ReadonlySet<string> = new Set(Object.keys(MESSAGE_DIRECTION));
+
+/**
  * Type guard to check if parsed JSON is a valid protocol message.
  */
 function isValidMessage(value: unknown): value is ProtocolMessage {
@@ -1157,56 +1125,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof obj['id'] !== 'string') return false;
   if (typeof obj['timestamp'] !== 'string') return false;
 
-  // Validate by type
-  const validTypes = [
-    'hello',
-    'hello_ack',
-    'agent_output',
-    'structured_agent_output',
-    'user_input',
-    'ack',
-    'edit',
-    'question',
-    'answer',
-    'session_update',
-    'ping',
-    'pong',
-    'error',
-    'replay_batch',
-    'bullet_expand_request',
-    'bullet_expand_response',
-    'session_list_request',
-    'session_list_response',
-    'transcript_content',
-    'transcript_load_request',
-    'transcript_load_complete',
-    'create_session_request',
-    'create_session_response',
-    'terminal_resize',
-    'auth_challenge',
-    'auth_response',
-    'auth_result',
-    'kill_session_request',
-    'kill_session_response',
-    'raw_pty_output',
-    'session_history_request',
-    'session_history_response',
-    'resume_session_request',
-    'resume_session_response',
-    'detach_session',
-    'detach_session_ack',
-    'register_device_token',
-    'unregister_device_token',
-    'daemon_update_available',
-    'hub_status',
-    'session_rotated',
-    'session_views',
-    'question_resolved',
-    'remi_status',
-    'question_snapshot',
-  ];
-
-  return validTypes.includes(obj['type'] as string);
+  return VALID_TYPES.has(obj['type']);
 }
 
 /** Optional fields for {@link createHello}. */
