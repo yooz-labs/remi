@@ -230,6 +230,26 @@ export const MESSAGE_DIRECTION = {
   question_snapshot: 'd2c',
 } as const satisfies Record<keyof ProtocolMessageMap, 'c2d' | 'd2c' | 'both'>;
 
+/**
+ * Every registry key the daemon can legitimately receive from a client:
+ * derived as "NOT `d2c`" (i.e. `c2d` or `both`), never as "tagged `c2d`" (#899).
+ *
+ * The distinction is `ack`: tagged `both` because `connection.ts`'s inbound
+ * routing has a real accepting case for it (an ack CAN arrive from a client,
+ * even though only the daemon currently constructs one — see the comment on
+ * `ack` in {@link MESSAGE_DIRECTION}). A `c2d`-only derivation would silently
+ * exclude `ack` and make the daemon reject a message it accepts today,
+ * surfacing as a hard-to-trace `UNKNOWN_MESSAGE`. `ping`/`pong` are `both`
+ * for the same structural reason (both sides construct and accept them).
+ *
+ * `packages/shared/tests/protocol-registry.test.ts`'s `INBOUND_ROUTED` list
+ * pins the exact 18-member set this type must resolve to, hand-transcribed
+ * from `connection.ts` independently of this derivation.
+ */
+export type ClientToDaemonType = {
+  [K in keyof ProtocolMessageMap]: (typeof MESSAGE_DIRECTION)[K] extends 'd2c' ? never : K;
+}[keyof ProtocolMessageMap];
+
 /** Client hello - initiates connection */
 export interface HelloMessage {
   readonly type: 'hello';

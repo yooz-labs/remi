@@ -66,6 +66,7 @@ import type {
   ConnectionAdapter,
 } from '../adapters/connection-adapter.ts';
 import type { Authenticator } from '../auth/authenticator.ts';
+import { type ClientMessageHandlers, routeClientMessage } from '../server/route-client-message.ts';
 import { SignalingClient } from './signaling-client.ts';
 
 /**
@@ -301,12 +302,7 @@ export class RelayAdapter implements ConnectionAdapter {
 
       // Handle auth_response during challenging state
       if (message.type === 'auth_response') {
-        this.handleAuthResponse(message as AuthResponseMessage).catch((err) => {
-          console.error('Relay auth error:', err instanceof Error ? err.message : err);
-          const failResult = createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR');
-          this.client?.sendRelay(JSON.stringify(failResult));
-          this.resetClient();
-        });
+        this.routeAuthResponse(message as AuthResponseMessage);
         return;
       }
 
@@ -316,11 +312,31 @@ export class RelayAdapter implements ConnectionAdapter {
         return;
       }
 
-      // Route incoming protocol messages from the remote client
-      this.routeMessage(message);
+      // Route incoming protocol messages from the remote client. `message`
+      // has only been checked for a string `type` field at this point (not
+      // the full envelope) -- deliberately unchanged from before #899, so a
+      // truly unregistered type still gets reported back by name (see
+      // routeMessage's default branch) instead of being silently dropped.
+      // #899 unifies WHICH handler fires for a known type, not this
+      // envelope-parsing step, which is relay-specific (sealed/self-
+      // authenticating answers above have no full envelope at all).
+      this.routeMessage(message as ProtocolMessage);
     } catch (e) {
       console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
     }
+  }
+
+  /** Shared by the pre-authenticated handshake branch above and the
+   *  post-authenticated handler map in `routeMessage` (see that map's
+   *  `auth_response` entry for why the latter is reachable only
+   *  defensively). Mirrors `connection.ts`'s `routeAuthResponse` (#899). */
+  private routeAuthResponse(message: AuthResponseMessage): void {
+    this.handleAuthResponse(message).catch((err) => {
+      console.error('Relay auth error:', err instanceof Error ? err.message : err);
+      const failResult = createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR');
+      this.client?.sendRelay(JSON.stringify(failResult));
+      this.resetClient();
+    });
   }
 
   /** Give the adapter the key that opens sealed answers (#875). */
@@ -515,160 +531,110 @@ export class RelayAdapter implements ConnectionAdapter {
     this.kexChallenge = null;
   }
 
-  private routeMessage(msg: Record<string, unknown>): void {
+  /**
+   * Route one client-to-daemon message (#899): a total map over every
+   * client-to-daemon type, mirroring `connection.ts`'s handler map so both
+   * transports do "which handler for which type" the same way. The ad-hoc
+   * per-field `typeof` checks this replaced are GONE, not relocated --
+   * `msg` is trusted the same way `connection.ts` trusts it post-
+   * `deserialize`: a malformed field (e.g. a non-string `sessionId`) now
+   * flows straight to the event handler instead of being dropped with a
+   * warning, matching the direct-WebSocket path's existing (equally
+   * unvalidated) behavior. See the PR description for the concrete list of
+   * payloads this stops rejecting.
+   */
+  private routeMessage(msg: ProtocolMessage): void {
     if (!this.clientConnectionId) return;
     const connectionId = this.clientConnectionId;
-    switch (msg['type']) {
-      case 'user_input': {
-        if (typeof msg['content'] !== 'string' || typeof msg['sessionId'] !== 'string') {
-          console.warn('Invalid user_input payload: missing content or sessionId');
-          return;
-        }
-        const claudeId =
-          typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
-        const messageId = typeof msg['id'] === 'string' ? msg['id'] : undefined;
+    const handlers: ClientMessageHandlers = {
+      // Hello is handled at connection level (the relay's `peer-connected`
+      // event), not message level -- a client never needs to send one here.
+      hello: 'ignore',
+      user_input: (m) => {
         this.events.onUserInput?.(
           connectionId,
-          msg['sessionId'],
-          msg['content'],
-          msg['raw'] === true,
-          claudeId,
-          messageId,
+          m.sessionId,
+          m.content,
+          m.raw,
+          m.claudeSessionId,
+          m.id,
         );
-        break;
-      }
-      case 'answer': {
-        if (typeof msg['questionId'] !== 'string' || typeof msg['answer'] !== 'string') {
-          console.warn('Invalid answer payload: missing questionId or answer');
-          return;
-        }
-        const claudeId =
-          typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
+      },
+      answer: (m) => {
+        // Forward structured AskUserQuestion selections/cancel (#627) same
+        // as connection.ts's handleAnswer -- previously dropped over relay
+        // (found while unifying this dispatch; see the PR description).
+        const extra =
+          m.selections !== undefined || m.cancel !== undefined
+            ? { selections: m.selections, cancel: m.cancel }
+            : undefined;
         this.events.onAnswer?.(
           connectionId,
-          typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '',
-          msg['questionId'],
-          msg['answer'],
-          claudeId,
+          m.sessionId,
+          m.questionId,
+          m.answer,
+          m.claudeSessionId,
+          extra,
         );
-        break;
-      }
-      case 'session_list_request':
-        if (typeof msg['id'] !== 'string') {
-          console.warn('Invalid session_list_request payload: missing id');
-          return;
-        }
-        this.events.onSessionListRequest?.(
-          connectionId,
-          msg['id'],
-          (msg['includeExternal'] as boolean) ?? false,
-        );
-        break;
-      case 'transcript_load_request':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid transcript_load_request payload: missing sessionId or id');
-          return;
-        }
-        this.events.onTranscriptLoadRequest?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'create_session_request':
-        if (typeof msg['id'] !== 'string') {
-          console.warn('Invalid create_session_request payload: missing id');
-          return;
-        }
-        this.events.onCreateSessionRequest?.(
-          connectionId,
-          msg['directory'] as string | undefined,
-          msg['id'],
-        );
-        break;
-      case 'resume_session_request':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid resume_session_request payload: missing sessionId or id');
-          return;
-        }
-        this.events.onResumeSessionRequest?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'bullet_expand_request':
-        if (
-          typeof msg['sessionId'] !== 'string' ||
-          typeof msg['bulletId'] !== 'number' ||
-          typeof msg['id'] !== 'string'
-        ) {
-          console.warn('Invalid bullet_expand_request payload: missing required fields');
-          return;
-        }
-        this.events.onBulletExpandRequest?.(
-          connectionId,
-          msg['sessionId'],
-          msg['bulletId'],
-          msg['id'],
-        );
-        break;
-      case 'terminal_resize':
-        if (typeof msg['cols'] !== 'number' || typeof msg['rows'] !== 'number') {
-          console.warn('Invalid terminal_resize payload: cols and rows must be numbers');
-          return;
-        }
-        this.events.onTerminalResize?.(connectionId, msg['cols'], msg['rows']);
-        break;
-      case 'kill_session_request':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid kill_session_request payload: missing sessionId or id');
-          return;
-        }
-        this.events.onKillSessionRequest?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'detach_session':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid detach_session payload: missing sessionId or id');
-          return;
-        }
-        this.events.onDetachSession?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'session_history_request': {
-        if (typeof msg['id'] !== 'string') {
-          console.warn('Invalid session_history_request payload: missing id');
-          return;
-        }
-        const limit = typeof msg['limit'] === 'number' ? msg['limit'] : undefined;
-        this.events.onSessionHistoryRequest?.(connectionId, msg['id'], limit);
-        break;
-      }
-      case 'register_device_token':
-        if (typeof msg['token'] !== 'string') {
-          console.warn('Invalid register_device_token payload: missing token');
-          return;
-        }
-        if (msg['platform'] !== 'ios' && msg['platform'] !== 'android') {
-          console.warn('Invalid register_device_token payload: platform must be ios or android');
-          return;
-        }
-        this.events.onRegisterDeviceToken?.(connectionId, msg['token'], msg['platform']);
-        break;
-      case 'unregister_device_token':
-        if (typeof msg['token'] !== 'string') {
-          console.warn('Invalid unregister_device_token payload: missing token');
-          return;
-        }
-        this.events.onUnregisterDeviceToken?.(connectionId, msg['token']);
-        break;
-      case 'ping':
-        // Liveness ping needs no reply over relay.
-        break;
-      case 'hello':
-        // Hello is handled at connection level, not message level
-        break;
-      default:
-        console.warn(`Unknown relay message type: ${msg['type']}`);
-        this.client?.sendRelay(
-          JSON.stringify(
-            createError(
-              'UNSUPPORTED',
-              `Message type '${String(msg['type'])}' is not supported over relay`,
-            ),
-          ),
-        );
+      },
+      session_list_request: (m) => {
+        this.events.onSessionListRequest?.(connectionId, m.id, m.includeExternal ?? false);
+      },
+      transcript_load_request: (m) => {
+        this.events.onTranscriptLoadRequest?.(connectionId, m.sessionId, m.id);
+      },
+      create_session_request: (m) => {
+        this.events.onCreateSessionRequest?.(connectionId, m.directory, m.id);
+      },
+      resume_session_request: (m) => {
+        this.events.onResumeSessionRequest?.(connectionId, m.sessionId, m.id);
+      },
+      bullet_expand_request: (m) => {
+        this.events.onBulletExpandRequest?.(connectionId, m.sessionId, m.bulletId, m.id);
+      },
+      terminal_resize: (m) => {
+        this.events.onTerminalResize?.(connectionId, m.cols, m.rows);
+      },
+      kill_session_request: (m) => {
+        this.events.onKillSessionRequest?.(connectionId, m.sessionId, m.id);
+      },
+      detach_session: (m) => {
+        this.events.onDetachSession?.(connectionId, m.sessionId, m.id);
+      },
+      session_history_request: (m) => {
+        this.events.onSessionHistoryRequest?.(connectionId, m.id, m.limit);
+      },
+      register_device_token: (m) => {
+        this.events.onRegisterDeviceToken?.(connectionId, m.token, m.platform);
+      },
+      unregister_device_token: (m) => {
+        this.events.onUnregisterDeviceToken?.(connectionId, m.token);
+      },
+      // Liveness ping needs no reply over relay.
+      ping: 'ignore',
+      // No relay-side liveness tracking consumes this yet, but it is a real
+      // client-to-daemon type (#899's trap): treat it as the no-op
+      // connection.ts already does rather than rejecting it as UNSUPPORTED,
+      // which is what happened before this map existed (found while
+      // unifying this dispatch; see the PR description).
+      pong: 'ignore',
+      // Client acknowledging our message - just track (no-op), matching
+      // connection.ts. Same trap as `pong`: previously fell through to the
+      // UNSUPPORTED default because relay's switch had no case for it.
+      ack: 'ignore',
+      // Unreachable here in practice -- handleRelayMessage intercepts
+      // auth_response before routeMessage is ever called. Real handler for
+      // defense in depth + exhaustiveness (mirrors connection.ts).
+      auth_response: (m) => this.routeAuthResponse(m),
+    };
+    const routed = routeClientMessage(msg, handlers);
+    if (!routed) {
+      console.warn(`Unknown relay message type: ${msg.type}`);
+      this.client?.sendRelay(
+        JSON.stringify(
+          createError('UNSUPPORTED', `Message type '${msg.type}' is not supported over relay`),
+        ),
+      );
     }
   }
 
