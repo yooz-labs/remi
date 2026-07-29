@@ -64,6 +64,7 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
+import { assertNever } from '@remi/shared';
 import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
@@ -1624,9 +1625,79 @@ function App() {
         // ignored so the debounced broadcast doesn't spam the debug log.
         break;
 
-      default:
-        console.debug(`[App] Unhandled message type: ${(message as { type: string }).type}`);
+      // c2d per MESSAGE_DIRECTION (packages/shared/src/protocol.ts): this
+      // client SENDS every one of these to the daemon; the daemon never
+      // sends one back to a client, so handleMessage should never actually
+      // observe one arriving here. Grouped as one explicit no-op rather than
+      // omitted -- if a future/older daemon ever echoes one, it is silently
+      // dropped instead of console.debug-spamming, and the #897 exhaustiveness
+      // sweep records that this was decided, not forgotten.
+      case 'hello':
+      case 'user_input':
+      case 'answer':
+      case 'bullet_expand_request':
+      case 'session_list_request':
+      case 'transcript_load_request':
+      case 'create_session_request':
+      case 'terminal_resize':
+      case 'auth_response':
+      case 'kill_session_request':
+      case 'session_history_request':
+      case 'resume_session_request':
+      case 'detach_session':
+      case 'register_device_token':
+      case 'unregister_device_token':
         break;
+
+      // Intercepted in useConnectionManager's createMessageHandler
+      // (hooks/useConnectionManager.ts) before it ever calls this handler --
+      // 'auth_challenge' drives handleAuthChallenge and 'auth_result' drives
+      // handleAuthResult, both returning early. handleMessage never actually
+      // observes either; the cases exist only so this switch stays exhaustive
+      // against ProtocolMessageMap.
+      case 'auth_challenge':
+      case 'auth_result':
+        break;
+
+      // Keep-alive, both directions. lib/websocket-client.ts's own
+      // `handleMessage` already auto-replies pong to an inbound ping before
+      // forwarding it up, and both ping and pong double as proof-of-life for
+      // its heartbeat monitor regardless of what happens here -- no
+      // application-level handling is needed in the app layer.
+      case 'ping':
+      case 'pong':
+        break;
+
+      // d2c per MESSAGE_DIRECTION, but createAgentOutput (protocol.ts) has no
+      // live caller on the WebSocket/relay path today: AdapterRegistry.
+      // sendMessage, the only thing that would invoke
+      // WebSocketAdapter.sendMessage/RelayAdapter.sendMessage, is never
+      // called anywhere in packages/daemon/src (verified by grep) outside
+      // TelegramAdapter's unrelated same-named internal helper. Chat delivery
+      // to the web client goes through structured_agent_output and
+      // transcript_content instead. Kept as an explicit no-op rather than
+      // removed from the union, in case an older daemon or a future adapter
+      // starts sending it.
+      case 'agent_output':
+        break;
+
+      // createEdit (protocol.ts) has zero callers anywhere in this repo --
+      // fully dead on the wire today. Explicit no-op rather than removed
+      // from the union.
+      case 'edit':
+        break;
+
+      // Live d2c: packages/daemon/src/cli/handlers/pty-message-fanout.ts
+      // sends this to every ATTACHED connection for a session, not just
+      // CLI-attach-mode clients, so the web client does receive it. The web
+      // UI renders from structured_agent_output/transcript_content instead
+      // of raw terminal bytes, so this is intentionally ignored here (the
+      // CLI attach client's raw-terminal case is the real consumer).
+      case 'raw_pty_output':
+        break;
+
+      default:
+        assertNever(message);
     }
   }, []);
 
