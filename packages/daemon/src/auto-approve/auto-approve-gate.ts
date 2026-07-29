@@ -2055,13 +2055,27 @@ export class AutoApproveGate {
       // so this can never find/cancel itself).
       //
       // Baked-in assumption: Claude Code processes a turn's tool-permission
-      // hooks SEQUENTIALLY (verified against the cc-ref reference source,
-      // conversation.rs:370's sequential for-loop), so two identical-signature
-      // MAIN-context escalations can never be genuinely concurrent/live at
-      // once -- an incoming duplicate always means the earlier one is dead. If
-      // Claude Code ever parallelizes main-context tool-permission dispatch,
-      // this invariant breaks and this check would need a stronger key (e.g.
+      // hooks SEQUENTIALLY, so two identical-signature MAIN-context
+      // escalations can never be genuinely concurrent/live at once -- an
+      // incoming duplicate always means the earlier one is dead. If Claude
+      // Code ever parallelizes main-context tool-permission dispatch, this
+      // invariant breaks and this check would need a stronger key (e.g.
       // requiring tool_use_id) before it could keep firing safely.
+      //
+      // UNVERIFIED (#886): this used to cite cc-ref's conversation.rs:370 as
+      // proof of sequential dispatch. cc-ref is a disavowed third-party
+      // reimplementation (ADR 0006) and was never valid evidence for Claude
+      // Code's actual concurrency model, and static extraction from the
+      // installed binary (strings + minified-source reading, #886's method
+      // for everything else in this file) cannot settle a runtime ordering
+      // question either -- there is no way to observe dispatch order without
+      // firing two identical-signature PermissionRequests back-to-back
+      // against a live Claude Code and watching what arrives. That capture
+      // is the #885 epic's named experiment and has not been run. Until it
+      // is, treat this as a load-bearing, unverified assumption, not a
+      // verified fact -- behavior is left unchanged here because the
+      // alternative (a stronger key) is a real design change that needs its
+      // own testing, not a side effect of a documentation pass.
       this.cancelExternallyResolved(observed, 'duplicate-re-request');
       this.openQuestionSignatures.set(questionId, {
         toolName: observed.toolName,

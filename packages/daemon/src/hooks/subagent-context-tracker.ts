@@ -26,7 +26,13 @@
 
 /** Tool names that spawn a nested agent context.
  *  - `Task`: standard Claude Code subagent spawn
- *  - `Agent`: cc-ref reference name; include for safety in case variants ship
+ *  - `Agent`: NOT a cc-ref-only name (that citation, ADR 0006, was wrong) --
+ *    the installed 2.1.220 binary carries a real tool-name alias table
+ *    (`TLi={Task:"Agent",KillShell:"TaskStop",...}`, looked up via
+ *    `s9(name)`) that maps the internal `Task` tool name to `Agent` for
+ *    permission-rule matching, so a user's `Agent(*)` rule matches calls
+ *    Claude Code fires as `Task`. Kept for the same defensive reason, now on
+ *    firmer evidence (#886).
  *  - Future tools: teammate-spawning, delegation, etc. Add here as Claude Code evolves.
  *  When adding, also extend the regression tests. */
 const NESTING_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
