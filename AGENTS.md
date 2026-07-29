@@ -19,7 +19,7 @@ real problems for months. Known cases, all confirmed:
 | "peer-to-peer, TURN relays encrypted blobs" (this file) | no WebRTC exists; the Worker was the data path in plaintext | #543, unnoticed for months |
 | "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880, still open |
 | allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
-| `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 29 tests that could not fail | mandatory kex shipped uncovered |
+| `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 8 tests that could not fail on that claim (corrected from a stale "29" — ADR 0014) | mandatory kex shipped uncovered |
 | "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
 
 The pattern is what matters: **a wrong security description reads as "this is
@@ -64,6 +64,9 @@ up", and the cleanup would reopen a security hole.
 | [0009](.context/decisions/0009-transport-encryption-scope.md) | Encryption is scoped to the relay; direct connections carry none |
 | [0010](.context/decisions/0010-allow-deny-matching-asymmetry.md) | Allow matching is precise, deny is broad — on purpose |
 | [0011](.context/decisions/0011-verify-before-you-describe.md) | Security descriptions must be verified against code |
+| [0012](.context/decisions/0012-protocol-message-registry.md) | Protocol message registry is the single source of truth |
+| [0013](.context/decisions/0013-total-dispatch-handle-or-ignore.md) | Every protocol consumer declares handle-or-ignore, total over the registry |
+| [0014](.context/decisions/0014-two-sided-conformance-tests.md) | Contract tests must construct both shipping endpoints |
 
 ## Quick Start
 

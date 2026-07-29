@@ -15,7 +15,7 @@ hid a real defect, and two of them hid it for months.
 | "peer-to-peer, TURN relays encrypted blobs" (`AGENTS.md`) | no WebRTC exists; the Worker was the plaintext data path | #543 |
 | "auto = based on bind address" (`AuthConfig.enabled`) | resolves to `false` on every bind including `0.0.0.0` | #880 |
 | allow patterns match tool names (`config.ts`) | substring match; `Read` covered `cat x \| sh` | #536 (P0) |
-| `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructs one; 29 tests that could not fail | — |
+| `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructs one; 8 tests that could not fail on that claim | — |
 | "the relay is end-to-end encrypted now" | the client half was never implemented | #881 |
 
 The mechanism is consistent: **a wrong security description reads as "this is
