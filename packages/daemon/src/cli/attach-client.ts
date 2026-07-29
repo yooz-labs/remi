@@ -7,10 +7,18 @@ import {
   createTerminalResize,
   createUserInput,
   deserialize,
+  dispatchMessage,
   generateId,
   serialize,
 } from '@remi/shared';
-import type { ProtocolMessage, Question, RemiStatus, UUID } from '@remi/shared';
+import type {
+  MessageHandlers,
+  ProtocolMessage,
+  ProtocolMessageMap,
+  Question,
+  RemiStatus,
+  UUID,
+} from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
 import { capabilityWsOptions } from './capability-client.ts';
 import { DetachScanner } from './detach-scanner.ts';
@@ -208,50 +216,102 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     writeOutput(lines.join(''));
   }
 
+  /**
+   * #898: total dispatch over the full protocol registry, not just the
+   * `d2c`/`both`-tagged subset — `ReplayBatchMessage.messages` is typed
+   * `readonly ProtocolMessage[]` (no direction narrowing), and this function
+   * recurses into it, so a handler map scoped to a `DaemonToClientType`
+   * alias would not type-check against that recursive call without adding a
+   * new runtime narrowing step that doesn't exist today. Sizing the map to
+   * the full `keyof ProtocolMessageMap` is a strictly stronger guarantee
+   * than "every d2c entry decided" (it is a superset), needs no new
+   * machinery, and matches the type `renderMessage` already accepts.
+   *
+   * Rebuilt on every call (not hoisted) because the `question` handler
+   * closes over this call's `inReplay` argument.
+   */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
-    switch (msg.type) {
-      case 'raw_pty_output':
+    const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
+      raw_pty_output: (m) => {
         receivedRawPty = true;
-        writeRawBytes(msg.data);
-        break;
-      case 'remi_status':
+        writeRawBytes(m.data);
+      },
+      remi_status: (m) => {
         // #754: display state only — never printed as text. The bar's own
         // 250ms repaint loop reads the latest snapshot.
-        latestStatus = msg.status;
+        latestStatus = m.status;
         if (attachedSessionId) startStatusBar();
-        break;
-      case 'question':
+      },
+      question: (m) => {
         // #753: LIVE questions only. Replayed history is not trustworthy for
         // pendingness — question_resolved is broadcast-only (never recorded),
         // so an already-answered question replays indistinguishably from a
         // pending one. The daemon re-sends the authoritative pending set as
         // live messages right after the replay batch, which is what lands here.
-        if (!inReplay) renderQuestionBanner(msg.question);
-        break;
-      case 'question_resolved':
+        if (!inReplay) renderQuestionBanner(m.question);
+      },
+      question_resolved: (m) => {
         // Only acknowledge questions this client actually bannered; resolved
         // broadcasts for questions answered before attach are noise.
-        if (banneredQuestionIds.delete(msg.questionId)) {
+        if (banneredQuestionIds.delete(m.questionId)) {
           writeOutput('\r\n\x1b[2m[remi] question answered\x1b[0m\r\n');
         }
-        break;
-      case 'agent_output':
-      case 'structured_agent_output':
-      case 'session_update':
-      case 'transcript_content':
-        // Suppressed; raw PTY output already provides the full terminal view
-        break;
-      case 'replay_batch':
-        for (const m of msg.messages) {
-          renderMessage(m, true);
+      },
+      replay_batch: (m) => {
+        for (const nested of m.messages) {
+          renderMessage(nested, true);
         }
-        break;
-      case 'error':
-        writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
-        break;
-      default:
-        break;
-    }
+      },
+      error: (m) => {
+        writeOutput(`\n[error: ${m.code} - ${m.message}]\n`);
+      },
+      // Suppressed; raw PTY output already provides the full terminal view.
+      // Already-explicit no-ops in the pre-#898 switch (same behavior here).
+      agent_output: 'ignore',
+      structured_agent_output: 'ignore',
+      session_update: 'ignore',
+      transcript_content: 'ignore',
+      // Everything below fell through the pre-#898 switch's anonymous
+      // `default: break` — a silent drop. Behavior is unchanged (still a
+      // no-op); the entries are now explicit and greppable (#898). Full
+      // per-type rationale is in the PR description.
+      hello: 'ignore',
+      hello_ack: 'ignore',
+      user_input: 'ignore',
+      ack: 'ignore',
+      edit: 'ignore',
+      answer: 'ignore',
+      ping: 'ignore',
+      pong: 'ignore',
+      bullet_expand_request: 'ignore',
+      bullet_expand_response: 'ignore',
+      session_list_request: 'ignore',
+      session_list_response: 'ignore',
+      transcript_load_request: 'ignore',
+      transcript_load_complete: 'ignore',
+      create_session_request: 'ignore',
+      create_session_response: 'ignore',
+      terminal_resize: 'ignore',
+      auth_challenge: 'ignore',
+      auth_response: 'ignore',
+      auth_result: 'ignore',
+      kill_session_request: 'ignore',
+      kill_session_response: 'ignore',
+      session_history_request: 'ignore',
+      session_history_response: 'ignore',
+      resume_session_request: 'ignore',
+      resume_session_response: 'ignore',
+      detach_session: 'ignore',
+      detach_session_ack: 'ignore',
+      register_device_token: 'ignore',
+      unregister_device_token: 'ignore',
+      daemon_update_available: 'ignore',
+      hub_status: 'ignore',
+      session_rotated: 'ignore',
+      session_views: 'ignore',
+      question_snapshot: 'ignore',
+    };
+    dispatchMessage(msg, handlers);
   }
 
   function sendHello(): void {
