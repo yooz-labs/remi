@@ -39,6 +39,51 @@ describe('SubagentViewRegistry', () => {
     expect(reg.resolvePath('a1')).not.toBeNull();
   });
 
+  describe('recordStop carried transcript path (#891)', () => {
+    test('prefers the carried agent_transcript_path over the START-time derivation', () => {
+      const reg = new SubagentViewRegistry();
+      reg.recordStart('a1', 'Explore', MAIN);
+      const carried = '/Users/y/.claude/projects/-Users-y-proj/some-other-real-path.jsonl';
+      reg.recordStop('a1', carried);
+      expect(reg.resolvePath('a1')).toBe(carried);
+      expect(reg.list()[0]?.active).toBe(false);
+    });
+
+    test('falls back to the derived path when agent_transcript_path is absent', () => {
+      const reg = new SubagentViewRegistry();
+      reg.recordStart('a1', 'Explore', MAIN);
+      reg.recordStop('a1', undefined);
+      expect(reg.resolvePath('a1')).toBe(deriveSubagentTranscriptPath(MAIN, 'a1'));
+    });
+
+    test('falls back to the derived path when the carried value is a relative path', () => {
+      const reg = new SubagentViewRegistry();
+      reg.recordStart('a1', 'Explore', MAIN);
+      reg.recordStop('a1', 'relative/path.jsonl');
+      expect(reg.resolvePath('a1')).toBe(deriveSubagentTranscriptPath(MAIN, 'a1'));
+    });
+
+    test('falls back to the derived path when the carried value has no .jsonl suffix', () => {
+      const reg = new SubagentViewRegistry();
+      reg.recordStart('a1', 'Explore', MAIN);
+      reg.recordStop('a1', '/Users/y/.claude/projects/-Users-y-proj/not-a-transcript');
+      expect(reg.resolvePath('a1')).toBe(deriveSubagentTranscriptPath(MAIN, 'a1'));
+    });
+
+    test('falls back to the derived path when the carried value contains a .. traversal segment', () => {
+      const reg = new SubagentViewRegistry();
+      reg.recordStart('a1', 'Explore', MAIN);
+      reg.recordStop('a1', '/Users/y/.claude/projects/../../etc/passwd.jsonl');
+      expect(reg.resolvePath('a1')).toBe(deriveSubagentTranscriptPath(MAIN, 'a1'));
+    });
+
+    test('recordStop for an unknown agentId is a no-op (no entry to update)', () => {
+      const reg = new SubagentViewRegistry();
+      expect(() => reg.recordStop('never-started', '/a/b.jsonl')).not.toThrow();
+      expect(reg.size).toBe(0);
+    });
+  });
+
   test('active subagents are listed before finished ones', () => {
     const reg = new SubagentViewRegistry();
     reg.recordStart('done', 'code-reviewer', MAIN);

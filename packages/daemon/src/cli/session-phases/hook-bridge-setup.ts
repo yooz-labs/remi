@@ -73,6 +73,30 @@ import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.
 import { log, logError } from '../logger.ts';
 import type { StatusWriter } from '../status-writer.ts';
 
+/**
+ * Cap for the Stop-turn log line (#891). `last_assistant_message` can run
+ * several paragraphs (real captures in `~/.remi/hook-diag.jsonl` include
+ * multi-paragraph reviewer summaries); this is a LOG line, not a client
+ * surface, so it is bounded so one verbose turn cannot dominate the daemon
+ * log. Whitespace (including embedded newlines) is collapsed for the same
+ * reason `notification-dispatcher.ts` normalizes push text.
+ */
+const STOP_LOG_MESSAGE_MAX = 200;
+
+/** Truncate + collapse whitespace in a hook-carried message for a single log line. */
+function summarizeForLog(text: string, max: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
+}
+
+/**
+ * Threshold above which a PostToolUse `duration_ms` is logged (#891). Tool
+ * calls are frequent (1220 in one real `~/.remi/hook-diag.jsonl` capture, 100%
+ * carrying `duration_ms`) so logging every one would be pure noise; only a
+ * genuinely slow call is operationally interesting.
+ */
+const SLOW_TOOL_MS = 5_000;
+
 export interface HookBridgeDeps {
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
@@ -660,6 +684,15 @@ export function setupHookBridge(
   hookServer.on('PostToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    // #891: PostToolUse now carries duration_ms. No dedicated tool-activity
+    // tracker/UI exists to put it in yet (the epic notes a live view needs
+    // Q6's bus) -- this only stops discarding the signal that is actually
+    // operationally interesting: a genuinely slow tool call, for BOTH main
+    // and subagent activity (logged before the subagent-branch early return
+    // below).
+    if (typeof input.duration_ms === 'number' && input.duration_ms >= SLOW_TOOL_MS) {
+      log(`[Hooks] Slow tool: ${input.tool_name} took ${input.duration_ms}ms (${sessionId})`);
+    }
     if (isSubagentEvent(input)) {
       // #710: the subagent-context tracker pop must see EVERY admitted
       // PostToolUse, even one Claude Code stamps with the SPAWNED agent's own
@@ -765,6 +798,18 @@ export function setupHookBridge(
     // nothing) and killed their in-flight evals. SessionEnd below is real
     // teardown and keeps the wholesale release/cancel.
     autoApproveGate.cancelStale('Stop', { mainOnly: true });
+    // #891: Stop now carries the turn's real content (last_assistant_message),
+    // previously dropped entirely. There is no client-facing surface to carry
+    // it to a phone/lock-screen yet -- `Session`/`SessionUpdateMessage` have no
+    // text field, and adding one is a protocol change out of scope here (see
+    // PR body). Until that lands, at least stop discarding it at the point it
+    // enters the daemon: log it (truncated) so the real turn-complete content
+    // is observable operationally instead of a bare "Status: idle".
+    if (!input.stop_hook_active && input.last_assistant_message) {
+      log(
+        `[Hooks] Turn complete (${sessionId}): ${summarizeForLog(input.last_assistant_message, STOP_LOG_MESSAGE_MAX)}`,
+      );
+    }
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
@@ -850,7 +895,10 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     try {
-      subagentViews?.recordStop(input.agent_id);
+      // #891: SubagentStop now carries agent_transcript_path directly;
+      // recordStop prefers it over the SubagentStart-time derivation (see
+      // subagent-view-registry.ts for the fallback + validation rules).
+      subagentViews?.recordStop(input.agent_id, input.agent_transcript_path);
       pushSubagentViews();
       handlers.onSubagentStop?.(input);
     } catch (err) {

@@ -9,6 +9,16 @@
  * per-session `subagents/` subdir. `agentId` is exactly the hook's `agent_id`.
  * So we derive the path from the SubagentStart hook (which carries the MAIN
  * `transcript_path` + the subagent's `agent_id`) with no scanning/correlation.
+ *
+ * `SubagentStop` later hands over the same path directly as
+ * `agent_transcript_path` (#891) — `recordStop` prefers that carried value
+ * over the START-time derivation (it's read after the file is guaranteed to
+ * exist), falling back to the derivation when the field is absent or
+ * malformed. Verified against 18 real `SubagentStop` captures
+ * (`~/.remi/hook-diag.jsonl`, 2026-07-29): the carried path matched the
+ * derived one in every single case, so the two sources have not been
+ * observed to disagree — the derivation stays as a fallback on principle,
+ * not because a divergence has ever been seen.
  */
 
 export interface SubagentView {
@@ -29,6 +39,22 @@ export interface SubagentView {
 export function deriveSubagentTranscriptPath(mainTranscriptPath: string, agentId: string): string {
   const base = mainTranscriptPath.replace(/\.jsonl$/, '');
   return `${base}/subagents/agent-${agentId}.jsonl`;
+}
+
+/**
+ * Shape guard for a carried `agent_transcript_path` (#891): must be an
+ * absolute path ending in `.jsonl` with no `..` traversal segment. This is a
+ * transcript-load key (`transcript-events.ts` reads whatever `resolvePath`
+ * returns off disk and sends it to the client), so a value straight off the
+ * wire is validated the same way `recordStart` already validates `agentId`
+ * before it becomes a path segment, rather than trusted outright.
+ */
+function isPlausibleTranscriptPath(p: string | undefined): p is string {
+  if (!p) return false;
+  if (!p.startsWith('/')) return false;
+  if (!p.endsWith('.jsonl')) return false;
+  if (p.split('/').includes('..')) return false;
+  return true;
 }
 
 export class SubagentViewRegistry {
@@ -63,11 +89,30 @@ export class SubagentViewRegistry {
     });
   }
 
-  /** Mark a subagent inactive (SubagentStop); keep it listed so its chat stays viewable. */
-  recordStop(agentId: string | undefined): void {
+  /**
+   * Mark a subagent inactive (SubagentStop); keep it listed so its chat stays
+   * viewable.
+   *
+   * `carriedTranscriptPath` is `SubagentStop.agent_transcript_path` (#891):
+   * Claude Code hands the real path over directly at stop time, rather than
+   * remi having to derive it from `SubagentStart.transcript_path` + `agentId`
+   * (the module-doc derivation above). Preferred over the START-time guess
+   * when present and well-formed — by STOP the file is guaranteed to exist,
+   * so this is the more authoritative of the two. Validated with the same
+   * shape checks `recordStart` applies to its own inputs (must end in
+   * `.jsonl`, absolute, no `..` traversal segment) so a malformed or hostile
+   * value can never override a good derived path; falls back to whatever
+   * path is already stored when absent or invalid (derivation, or start
+   * hasn't been recorded at all, in which case this is a no-op).
+   */
+  recordStop(agentId: string | undefined, carriedTranscriptPath?: string): void {
     if (!agentId) return;
     const v = this.views.get(agentId);
-    if (v) this.views.set(agentId, { ...v, active: false });
+    if (!v) return;
+    const transcriptPath = isPlausibleTranscriptPath(carriedTranscriptPath)
+      ? carriedTranscriptPath
+      : v.transcriptPath;
+    this.views.set(agentId, { ...v, transcriptPath, active: false });
   }
 
   /** The transcript path for a known subagent, or null. */

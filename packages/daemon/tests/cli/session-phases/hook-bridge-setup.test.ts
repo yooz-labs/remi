@@ -6,6 +6,7 @@ import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
+import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
@@ -225,6 +226,11 @@ describe('setupHookBridge', () => {
        *  Each entry is the (input, callerSessionId) the resolver forwarded.
        *  Defaults to undefined (dep not wired). */
       foreignEscalationLog?: Array<{ input: unknown; sessionId: UUID }>;
+      /** Real SubagentViewRegistry instance (#891 tests need to inspect
+       *  recordStart/recordStop's effect on the stored transcript path).
+       *  Defaults to undefined (dep not wired, matches production callers
+       *  that skip subagent-view tracking). */
+      subagentViews?: SubagentViewRegistry;
     } = {},
   ): { tracker: QuestionPresenceTracker } {
     const localMessageApi = fakeMessageAPI(
@@ -297,6 +303,7 @@ describe('setupHookBridge', () => {
         autoApproveService,
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
+        ...(opts.subagentViews ? { subagentViews: opts.subagentViews } : {}),
         ...(opts.broadcastResolvedLog
           ? {
               broadcastQuestionResolved: (
@@ -3081,6 +3088,190 @@ describe('setupHookBridge', () => {
       expect(decision).toBe('allow');
       // And the broadcast was at least attempted (proving the throw path ran).
       expect(throwingLog.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('#891: free-win hook field consumption', () => {
+    /** Fire a SessionStart so the bridge locks onto `id` (admit gate then passes). */
+    function lock(id: string): void {
+      hookServer.fire('SessionStart', {
+        session_id: id,
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('SubagentStop threads agent_transcript_path through to the SubagentViewRegistry', () => {
+      const subagentViews = new SubagentViewRegistry();
+      build({ subagentViews });
+      lock('claude-891-a');
+      const mainTranscriptPath = path.join(tmpDir, 'claude-891-a.jsonl');
+      hookServer.fire('SubagentStart', {
+        session_id: 'claude-891-a',
+        agent_id: 'sub-1',
+        agent_type: 'code-architect',
+        transcript_path: mainTranscriptPath,
+      });
+      // The derived path (from SubagentStart) is the pre-#891 baseline.
+      const derived = subagentViews.resolvePath('sub-1');
+      expect(derived).not.toBeNull();
+
+      // SubagentStop now hands over the real path directly; it wins over the
+      // START-time derivation even when the two differ (a real Claude Code
+      // session never disagrees -- see subagent-view-registry.ts's #891 doc
+      // comment for the verified-against-captures claim -- but the plumbing
+      // must prefer the carried value regardless).
+      const carried = path.join(tmpDir, 'claude-891-a', 'subagents', 'agent-sub-1-carried.jsonl');
+      hookServer.fire('SubagentStop', {
+        session_id: 'claude-891-a',
+        agent_id: 'sub-1',
+        agent_transcript_path: carried,
+      });
+      expect(subagentViews.resolvePath('sub-1')).toBe(carried);
+      expect(subagentViews.resolvePath('sub-1')).not.toBe(derived);
+      expect(subagentViews.list()[0]?.active).toBe(false);
+    });
+
+    test('SubagentStop with no agent_transcript_path keeps the derived path (fallback)', () => {
+      const subagentViews = new SubagentViewRegistry();
+      build({ subagentViews });
+      lock('claude-891-b');
+      const mainTranscriptPath = path.join(tmpDir, 'claude-891-b.jsonl');
+      hookServer.fire('SubagentStart', {
+        session_id: 'claude-891-b',
+        agent_id: 'sub-1',
+        agent_type: 'Explore',
+        transcript_path: mainTranscriptPath,
+      });
+      const derived = subagentViews.resolvePath('sub-1');
+      hookServer.fire('SubagentStop', {
+        session_id: 'claude-891-b',
+        agent_id: 'sub-1',
+        // No agent_transcript_path (older Claude Code, or the field genuinely absent).
+      });
+      expect(subagentViews.resolvePath('sub-1')).toBe(derived);
+    });
+
+    test('Stop logs the truncated last_assistant_message (turn genuinely complete)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-stop');
+      const longMessage = `Line one.\n\nLine two with lots of detail. ${'x'.repeat(300)}`;
+      hookServer.fire('Stop', {
+        session_id: 'claude-891-stop',
+        hook_event_name: 'Stop',
+        stop_hook_active: false,
+        last_assistant_message: longMessage,
+      });
+      const turnCompleteLines = logs.filter((l) => l.includes('Turn complete'));
+      expect(turnCompleteLines.length).toBe(1);
+      // The log line is keyed by remi's daemon-side session id (SID), not the
+      // raw Claude session_id from the hook payload -- same convention every
+      // other [Hooks] log line in this file uses.
+      expect(turnCompleteLines[0]).toContain(SID);
+      // Truncated: the 300+ char filler must not appear in full, and whitespace
+      // (including the embedded newlines) is collapsed to single spaces.
+      expect(turnCompleteLines[0]?.includes('x'.repeat(300))).toBe(false);
+      expect(turnCompleteLines[0]).not.toContain('\n');
+      expect(turnCompleteLines[0]).toContain('Line one. Line two with lots of detail.');
+    });
+
+    test('Stop does NOT log when stop_hook_active is true (turn is not actually done)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-stop-active');
+      hookServer.fire('Stop', {
+        session_id: 'claude-891-stop-active',
+        hook_event_name: 'Stop',
+        stop_hook_active: true,
+        last_assistant_message: 'should not be logged',
+      });
+      expect(logs.some((l) => l.includes('Turn complete'))).toBe(false);
+    });
+
+    test('Stop does NOT log when last_assistant_message is absent', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-stop-nomsg');
+      hookServer.fire('Stop', {
+        session_id: 'claude-891-stop-nomsg',
+        hook_event_name: 'Stop',
+        stop_hook_active: false,
+      });
+      expect(logs.some((l) => l.includes('Turn complete'))).toBe(false);
+    });
+
+    test('PostToolUse logs a slow tool call (duration_ms at/above threshold)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-slow');
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-891-slow',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'sleep 10' },
+        tool_response: {},
+        duration_ms: 5_000,
+      });
+      const slowLines = logs.filter((l) => l.includes('Slow tool'));
+      expect(slowLines.length).toBe(1);
+      expect(slowLines[0]).toContain('Bash');
+      expect(slowLines[0]).toContain('5000ms');
+      expect(slowLines[0]).toContain(SID);
+    });
+
+    test('PostToolUse does NOT log a fast tool call (duration_ms below threshold)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-fast');
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-891-fast',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/x' },
+        tool_response: {},
+        duration_ms: 42,
+      });
+      expect(logs.some((l) => l.includes('Slow tool'))).toBe(false);
+    });
+
+    test('PostToolUse does NOT log when duration_ms is absent', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-nodur');
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-891-nodur',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/x' },
+        tool_response: {},
+      });
+      expect(logs.some((l) => l.includes('Slow tool'))).toBe(false);
+    });
+
+    test('a subagent-tagged slow PostToolUse still logs (logged before the subagent early-return)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      build();
+      lock('claude-891-slow-sub');
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-891-slow-sub',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'sleep 10' },
+        tool_response: {},
+        duration_ms: 9_000,
+        agent_id: 'sub-1',
+      });
+      const slowLines = logs.filter((l) => l.includes('Slow tool'));
+      expect(slowLines.length).toBe(1);
+      expect(slowLines[0]).toContain('9000ms');
     });
   });
 });
