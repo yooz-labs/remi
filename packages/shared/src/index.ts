@@ -51,6 +51,7 @@ export type {
   ProtocolMessage,
   ProtocolMessageMap,
   MessageOf,
+  ClientToDaemonType,
   HelloMessage,
   HelloAckMessage,
   AgentOutputMessage,
