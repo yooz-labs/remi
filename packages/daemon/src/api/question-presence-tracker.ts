@@ -49,10 +49,18 @@
  * exits used to be the user answering it or the `MAX_PENDING_QUESTIONS` LRU
  * cap, which measured as a real leak (12 of 29 source-less questions never
  * removed in one working day's capture, one still pending 2h51m later).
- * `observedHooklessQuestion` + `deps.onHooklessQuestionGone` close that gap:
- * the render disappearing (superseded by a different render, status leaving
- * 'waiting', or `clearPending`) IS the resolution evidence for this cohort.
- * See `pairAndPush` and `noteHooklessGone`.
+ * `observedHooklessQuestion` + `deps.onHooklessQuestionGone` close that gap,
+ * but ONLY on a CONFIRMED-delivered replacement push in `pairAndPush` --
+ * `deps.isQuestionLive` is the confirmation gate. An id-comparison-only
+ * version of this (this file's own V1) could resolve a question that never
+ * actually left the screen: the PTY parser mints a fresh id on every parse
+ * regardless of content (#486), and the replacement's own push can be
+ * silently eaten by `QuestionDedup`'s 5s window -- found in review, see
+ * `isQuestionLive`'s doc for the full failure chain. Status-leaves-'waiting'
+ * and `clearPending` were dropped as triggers for the same reason (both can
+ * fire on a signal unrelated to whether THIS question's render is actually
+ * gone); see their own reset comments. See `pairAndPush` and
+ * `noteHooklessGone`.
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
@@ -174,10 +182,11 @@ export interface QuestionPresenceTrackerDeps {
    * source-less questions never removed over one working day, one still
    * pending 2h51m later).
    *
-   * Fires from `pairAndPush` (a DIFFERENT render superseded the tracked
-   * hook-less one -- see `observedHooklessQuestion`), `onStatusChange`
-   * (status left 'waiting': Claude moved on), and `clearPending` (restart/
-   * rotation). Does NOT touch push/arbitration decisions (ADR 0004
+   * Fires ONLY from `pairAndPush`, and ONLY once `isQuestionLive` (below)
+   * CONFIRMS the replacement that superseded it actually landed -- see that
+   * dep's doc for why an id/status/restart-based trigger without that
+   * confirmation is unsound (found in review of the first version of this
+   * mechanism, #888). Does NOT touch push/arbitration decisions (ADR 0004
    * unchanged) -- this only tells the caller a PREVIOUSLY PUSHED question's
    * evidence is gone, so it can be removed from the pending store.
    *
@@ -188,6 +197,49 @@ export interface QuestionPresenceTrackerDeps {
    * question-lifecycle trace.
    */
   onHooklessQuestionGone?: (questionId: string, reason: string) => void;
+  /**
+   * True iff `questionId` is CURRENTLY registered as pending
+   * (`sessionRegistry.getQuestion(sessionId, id) !== null`). The sole
+   * confirmation gate for `onHooklessQuestionGone` (#888 review fix).
+   *
+   * V1 of this mechanism compared the PTY-parsed render's `id` alone: "a
+   * different id arrived, so the old one must be superseded." That is
+   * unsound on two fronts, both found in review:
+   *   1. The PTY parser mints a FRESH id on every single parse (#486), even
+   *      when a prompt merely REDRAWS with unchanged text -- the exact
+   *      hazard `isPromptCurrent`'s own text fallback already documents
+   *      elsewhere in this file ("a prompt that merely redraws re-emits
+   *      under a fresh id ... matching on the id alone would call a live
+   *      prompt gone"). V1 applied no such guard to this mechanism.
+   *   2. Even a GENUINELY different render can be silently swallowed by
+   *      `QuestionDedup`'s 5s same-fingerprint window before it ever reaches
+   *      `SessionRegistry.addQuestion` -- and V1 resolved the OLD id
+   *      regardless, on the strength of the new render having merely been
+   *      PARSED, not actually delivered. Reachable in production: a false-
+   *      positive PTY-text status parse (`output-processor.ts`'s >= 0.5
+   *      confidence gate) flips status out of 'waiting' without resetting
+   *      `QuestionDedup` (cli.ts only resets it when no hook server is
+   *      active), status flips back to 'waiting' with the SAME prompt still
+   *      on screen, the redraw parses under a fresh id, and dedup silently
+   *      eats it -- net effect: the daemon told the client the question was
+   *      cancelled while the identical prompt sat unanswered on the real
+   *      screen. That is the disqualifying failure for this epic.
+   *
+   * `isQuestionLive` closes both: `pairAndPush` calls `deps.push(merged)`
+   * FIRST (synchronously; nothing in the push -> `MessageAPI.handleQuestion`
+   * -> `QuestionDedup` -> `SessionRegistry.addQuestion` chain is async), THEN
+   * asks this dep whether `merged.id` actually landed. Only a CONFIRMED
+   * landing is evidence the previously-tracked hook-less question is gone;
+   * an unconfirmed (deduped, or the dep unset) push changes nothing --
+   * `observedHooklessQuestion` is left exactly as it was, matching the "fail
+   * toward showing" rule every other ambiguous path in this codebase follows
+   * (`auto-approve-gate.ts`, "every ambiguous path resolves toward showing
+   * the user"). Defaults to `false` (not confirmed) when unset: losing this
+   * ONE resolution trigger is an acceptable cost; swallowing a live question
+   * is not. MUST be synchronous and non-throwing, called inline with no
+   * surrounding try/catch.
+   */
+  isQuestionLive?: (questionId: string) => boolean;
 }
 
 export class QuestionPresenceTracker {
@@ -558,21 +610,26 @@ export class QuestionPresenceTracker {
    */
   private pairAndPush(ptyQuestion: Question): void {
     const { merged, hookRecord } = this.consumeAndMerge(ptyQuestion);
-    // #888/#920 render-resolution: the PTY parser mints a FRESH id on every
-    // parse (#486), so a hook-less merge (`hookRecord === undefined`) always
-    // differs in id from whatever hook-less question was tracked before --
-    // that PREVIOUS one's only evidence (its render) is by definition gone
-    // now, whether because it was answered/superseded by a genuinely new
-    // prompt, or merely redrew past the #718/QuestionDedup window under a new
-    // id. Either way its registry entry is now stale; resolve it before
-    // tracking the new one. A hook-PAIRED merge never touches this (its id is
-    // adopted from the hook per #887 and has its own removal path).
+    this.ptyShowingQuestion = true;
+    this.pushMerged(merged);
+    // #888/#920 render-resolution, CONFIRMED-delivery gate (see
+    // `isQuestionLive`'s doc for why an id comparison alone is unsound). The
+    // push above is synchronous end to end (push -> MessageAPI.handleQuestion
+    // -> QuestionDedup -> SessionRegistry.addQuestion), so by this line the
+    // registry already reflects whether `merged` actually landed.
+    const delivered = this.deps.isQuestionLive?.(merged.id) ?? false;
+    if (!delivered) {
+      // Not confirmed (deduped, or the dep is unset): nothing is known to
+      // have changed. Leave `observedHooklessQuestion` exactly as it was --
+      // if it was tracking an older id, that question is STILL the best
+      // evidence of what's on screen, and must not be resolved on the
+      // strength of a replacement that never actually registered.
+      return;
+    }
     if (this.observedHooklessQuestion !== null && this.observedHooklessQuestion !== merged.id) {
       this.noteHooklessGone('pty_render_superseded');
     }
     this.observedHooklessQuestion = hookRecord === undefined ? merged.id : null;
-    this.ptyShowingQuestion = true;
-    this.pushMerged(merged);
   }
 
   /**
@@ -1009,11 +1066,16 @@ export class QuestionPresenceTracker {
       // #814: nothing is on screen now.
       this.observedPTYQuestionId = null;
       this.observedPTYText = null;
-      // #888/#920: the screen just cleared. If a hook-less question was being
-      // tracked as the reason it was still pending, that evidence is gone --
-      // resolve it now rather than let it wait for a signal (a tool call,
-      // an LRU eviction) that will never come for a hook-less prompt.
-      this.noteHooklessGone('pty_status_left_waiting');
+      // #888/#920 review fix: deliberately NOT a hook-less resolution trigger.
+      // `status` here can come from a PTY-TEXT-parsed guess
+      // (`output-processor.ts`, confidence >= 0.5, not certainty) as well as
+      // a real hook event, and the tracker cannot tell which -- V1 treated
+      // any status-leaves-waiting as "the render is gone" and a false
+      // positive could resolve a question that never actually left the
+      // screen (found in review of #888). `observedHooklessQuestion` is
+      // deliberately left untouched (not even nulled) so a LATER, genuinely
+      // CONFIRMED supersession in `pairAndPush` can still resolve it --
+      // losing this trigger costs a delayed cleanup, not a wrong one.
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
       this.mainEvalsInFlight = 0;
@@ -1102,9 +1164,20 @@ export class QuestionPresenceTracker {
     this.ptyShowingQuestion = false;
     this.observedPTYQuestionId = null;
     this.observedPTYText = null;
-    // #888/#920: same reasoning as the status reset -- the session is
-    // restarting/rotating, so a tracked hook-less question's render is gone.
-    this.noteHooklessGone('pty_clear_pending');
+    // #888/#920 review fix: deliberately NOT a hook-less resolution trigger,
+    // for the SAME reason as `onStatusChange` -- see that reset's comment.
+    // `clearPending` is not restart-exclusive: `AutoApproveGate` also calls
+    // it on a CANCELLED eval for one specific hook-derived question, which
+    // says nothing about whether some unrelated hook-less question (a
+    // different agent's native prompt) is still genuinely on screen. The one
+    // call site that IS a real restart (`TranscriptBinder.onRotation` via
+    // `hook-bridge-setup.ts`) already resolves every pending question,
+    // hook-less or not, through `resolveAndClearQuestions` +
+    // `sessionRegistry.clearQuestions` immediately alongside this call --
+    // so this method adds no coverage a genuine restart still needs, and
+    // firing it from the cancelled-eval call sites would have reintroduced
+    // the exact "resolve a still-live question on an unrelated signal" class
+    // this whole review fix exists to close.
     this.mainEvalsInFlight = 0;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();

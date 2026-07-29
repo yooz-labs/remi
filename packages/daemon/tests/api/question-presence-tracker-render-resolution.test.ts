@@ -12,13 +12,25 @@
  * measured never removed over one working day, one still pending 2h51m
  * later.
  *
- * `QuestionPresenceTracker.observedHooklessQuestion` + the
- * `onHooklessQuestionGone` dep close that gap: the render disappearing IS
- * the resolution evidence for this cohort. This suite drives the tracker
- * directly (no mocks -- a real `QuestionPresenceTracker`, spying on the push
- * sink and the new dep) through every transition that must fire it, and
- * confirms a hook-PAIRED question -- which has its own signature-matched
- * removal path -- is never touched by this mechanism.
+ * V1 of this suite (and the mechanism it tested) compared the PTY-parsed
+ * render's id alone to decide "superseded". Review found that unsound on two
+ * fronts -- the PTY parser mints a fresh id on every parse even for a
+ * REDRAW of unchanged text (#486), and a replacement push can be silently
+ * eaten by `QuestionDedup`'s 5s window before it ever reaches
+ * `SessionRegistry.addQuestion` -- and, reachable in production, a
+ * PTY-text-parsed status false-positive (`output-processor.ts`,
+ * confidence >= 0.5) could fire this mechanism with NO paired dedup reset,
+ * so a redraw's replacement got deduped away while the original was already
+ * reported cancelled. Net: a live question, swallowed, in one status hiccup.
+ *
+ * This suite now pins the corrected design: `pairAndPush` pushes first, then
+ * asks `isQuestionLive` to CONFIRM the replacement actually landed before
+ * resolving the question it superseded (`QuestionPresenceTracker`'s own
+ * `isQuestionLive` doc has the full chain). The status-leaves-'waiting' and
+ * `clearPending` triggers were dropped entirely -- neither can be trusted as
+ * evidence a SPECIFIC question's render is gone (see their own reset
+ * comments in the tracker) -- so this suite also pins that they no longer
+ * resolve anything.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -68,23 +80,43 @@ interface Harness {
   tracker: QuestionPresenceTracker;
   pushed: Question[];
   gone: Array<{ id: string; reason: string }>;
+  /** Ids currently "registered" in this harness's fake store -- mirrors
+   *  SessionRegistry.currentQuestions closely enough to exercise the
+   *  confirmed-delivery gate: a push adds to it (unless `shouldDeliver`
+   *  says it was deduped), a resolution removes from it. */
+  liveIds: Set<string>;
 }
 
-function buildTracker(extraDeps: Record<string, unknown> = {}): Harness {
+interface BuildOpts {
+  extraDeps?: Record<string, unknown>;
+  /** Simulates QuestionDedup: return false to make a specific push NOT
+   *  land (as if suppressed). Defaults to "every push lands". */
+  shouldDeliver?: (q: Question) => boolean;
+  /** Omit isQuestionLive entirely, to test the safe-default (unwired) case. */
+  wireIsQuestionLive?: boolean;
+}
+
+function buildTracker(opts: BuildOpts = {}): Harness {
   const pushed: Question[] = [];
   const gone: Array<{ id: string; reason: string }> = [];
+  const liveIds = new Set<string>();
+  const shouldDeliver = opts.shouldDeliver ?? (() => true);
+  const wireIsQuestionLive = opts.wireIsQuestionLive ?? true;
   const tracker = new QuestionPresenceTracker(
     (q) => {
       pushed.push(q);
+      if (shouldDeliver(q)) liveIds.add(q.id);
     },
     {
       onHooklessQuestionGone: (id, reason) => {
         gone.push({ id, reason });
+        liveIds.delete(id);
       },
-      ...extraDeps,
+      ...(wireIsQuestionLive ? { isQuestionLive: (id: string) => liveIds.has(id) } : {}),
+      ...opts.extraDeps,
     },
   );
-  return { tracker, pushed, gone };
+  return { tracker, pushed, gone, liveIds };
 }
 
 describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
@@ -98,7 +130,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(gone).toHaveLength(0); // nothing superseded yet
   });
 
-  test('a SECOND hook-less render fires onHooklessQuestionGone for the FIRST id (supersession)', () => {
+  test('a SECOND hook-less render, CONFIRMED delivered, resolves the FIRST id', () => {
     const { tracker, gone } = buildTracker();
     const first = makeHooklessPTYQuestion('First prompt');
     const second = makeHooklessPTYQuestion('Second prompt');
@@ -109,11 +141,36 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(tracker.observedHooklessQuestionForTest()).toBe(second.id);
   });
 
-  test('a redraw of the SAME text still supersedes (fresh id every parse, #486)', () => {
-    // question-parser.ts mints a brand-new id on every single parse
-    // regardless of content -- a hook-less question that merely redraws
-    // (identical text) is indistinguishable from a genuinely new one at
-    // this layer, so its stale registry entry must still be resolved.
+  test('the hard requirement fix: a redraw whose replacement push is DEDUPED does NOT resolve the original', () => {
+    // The exact swallow class found in review: a same-text redraw mints a
+    // fresh id (#486) but its own push gets suppressed (QuestionDedup, or
+    // any other reason it never lands). The original must stay tracked and
+    // stay pending -- resolving it here would be the disqualifying failure
+    // (a live question with no card, already reported "cancelled").
+    const first = makeHooklessPTYQuestion('Do you want to proceed?');
+    const second = makeHooklessPTYQuestion('Do you want to proceed?');
+    const { tracker, gone, liveIds } = buildTracker({
+      shouldDeliver: (q) => q.id !== second.id, // second is "deduped"
+    });
+    tracker.onPTYPromptVisible(first);
+    expect(liveIds.has(first.id)).toBe(true);
+
+    tracker.onPTYPromptVisible(second);
+
+    expect(gone).toHaveLength(0); // first was NOT resolved
+    expect(liveIds.has(first.id)).toBe(true); // still live in the store
+    expect(liveIds.has(second.id)).toBe(false); // second never landed
+    // Tracking still points at the original -- a LATER confirmed
+    // supersession can still resolve it correctly.
+    expect(tracker.observedHooklessQuestionForTest()).toBe(first.id);
+  });
+
+  test('a redraw of the SAME text, once CONFIRMED delivered (e.g. a richer re-emission), still supersedes', () => {
+    // Distinguishes "same text" from "not delivered": QuestionDedup lets a
+    // RICHER re-emission through even within its window. Once delivered is
+    // confirmed, resolution must still fire -- the guard is delivery, not
+    // text identity (this suite deliberately does not reinvent
+    // isPromptCurrent's text-fallback policy; see isQuestionLive's doc).
     const { tracker, gone } = buildTracker();
     const redrawText = 'Do you want to proceed?';
     const first = makeHooklessPTYQuestion(redrawText);
@@ -127,34 +184,30 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(tracker.observedHooklessQuestionForTest()).toBe(second.id);
   });
 
-  test('status leaving "waiting" resolves the tracked hook-less question', () => {
+  test('status changes never resolve a hook-less question (trigger dropped, #888 review fix)', () => {
     const { tracker, gone } = buildTracker();
     const q = makeHooklessPTYQuestion();
     tracker.onPTYPromptVisible(q);
-    tracker.onStatusChange('executing');
 
-    expect(gone).toEqual([{ id: q.id, reason: 'pty_status_left_waiting' }]);
-    expect(tracker.observedHooklessQuestionForTest()).toBeNull();
-  });
+    tracker.onStatusChange('executing'); // leaves 'waiting'
+    expect(gone).toHaveLength(0);
+    expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
 
-  test('status staying "waiting" does NOT resolve the tracked hook-less question', () => {
-    const { tracker, gone } = buildTracker();
-    const q = makeHooklessPTYQuestion();
-    tracker.onPTYPromptVisible(q);
-    tracker.onStatusChange('waiting');
-
+    tracker.onStatusChange('waiting'); // back to 'waiting'
     expect(gone).toHaveLength(0);
     expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
   });
 
-  test('clearPending resolves the tracked hook-less question', () => {
+  test('clearPending never resolves a hook-less question (trigger dropped, #888 review fix)', () => {
     const { tracker, gone } = buildTracker();
     const q = makeHooklessPTYQuestion();
     tracker.onPTYPromptVisible(q);
     tracker.clearPending();
 
-    expect(gone).toEqual([{ id: q.id, reason: 'pty_clear_pending' }]);
-    expect(tracker.observedHooklessQuestionForTest()).toBeNull();
+    expect(gone).toHaveLength(0);
+    // Tracking survives clearPending too -- a later CONFIRMED supersession
+    // can still resolve it, exactly as if clearPending had never run.
+    expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
   });
 
   test('a HOOK-PAIRED render is never tracked as hook-less (it has its own removal path)', () => {
@@ -165,11 +218,10 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onPTYPromptVisible(ptyRender);
 
     expect(tracker.observedHooklessQuestionForTest()).toBeNull();
-    tracker.onStatusChange('executing');
     expect(gone).toHaveLength(0); // nothing hook-less was ever tracked
   });
 
-  test('a hook-paired render SUPERSEDES a previously-tracked hook-less one', () => {
+  test('a hook-paired render, CONFIRMED delivered, SUPERSEDES a previously-tracked hook-less one', () => {
     const { tracker, gone } = buildTracker();
     const hookless = makeHooklessPTYQuestion('orphan prompt');
     tracker.onPTYPromptVisible(hookless);
@@ -197,21 +249,25 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
 
     expect(pushedHeld).toBe(true);
     // The hook-less question is untouched by the held push -- it is a
-    // completely separate mechanism (#573) that never renders on the PTY.
+    // completely separate mechanism (#573) that never renders on the PTY,
+    // and pushHeldHook never runs the confirmed-delivery gate at all.
     expect(tracker.observedHooklessQuestionForTest()).toBe(hookless.id);
     expect(gone).toHaveLength(0);
   });
 
   test('a throwing onHooklessQuestionGone dep is caught and logged, never propagated', () => {
+    const liveIds = new Set<string>();
     const pushed: Question[] = [];
     const tracker = new QuestionPresenceTracker(
       (q) => {
         pushed.push(q);
+        liveIds.add(q.id);
       },
       {
         onHooklessQuestionGone: () => {
           throw new Error('boom');
         },
+        isQuestionLive: (id) => liveIds.has(id),
       },
     );
     const first = makeHooklessPTYQuestion('first');
@@ -235,6 +291,18 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
       tracker.onStatusChange('idle');
     }).not.toThrow();
     expect(pushed).toHaveLength(2);
+  });
+
+  test('safe default: onHooklessQuestionGone wired but isQuestionLive NOT wired -- never resolves (fail toward showing)', () => {
+    const { tracker, gone } = buildTracker({ wireIsQuestionLive: false });
+    const first = makeHooklessPTYQuestion('first');
+    const second = makeHooklessPTYQuestion('second');
+    tracker.onPTYPromptVisible(first);
+    tracker.onPTYPromptVisible(second);
+
+    // Without confirmation, "delivered" defaults to false -- the mechanism
+    // is fully inert, matching pre-#888 behavior rather than guessing.
+    expect(gone).toHaveLength(0);
   });
 
   test('a hook-paired merge takes the HOOK record source, not the PTY parse source', () => {
@@ -267,10 +335,12 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(pushed[0]?.source).toBe('pty');
   });
 
-  test('the ORPHAN (debounced) path also tracks and resolves hook-less questions', async () => {
+  test('the ORPHAN (debounced) path also tracks and resolves hook-less questions, gated on confirmed delivery', async () => {
     const { tracker, pushed, gone } = buildTracker({
-      orphanDebounceMs: 5,
-      hasLiveQuestions: () => false,
+      extraDeps: {
+        orphanDebounceMs: 5,
+        hasLiveQuestions: () => false,
+      },
     });
     const first = makeHooklessPTYQuestion('orphan A');
     tracker.onOrphanPTYPrompt(first);

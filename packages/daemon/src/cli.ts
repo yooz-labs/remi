@@ -1542,6 +1542,14 @@ async function createNewSession(
       );
       onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
     },
+    // Confirmation gate for the above (#888 review fix): only a push that
+    // ACTUALLY landed in the single pendingness owner is evidence a
+    // previously-tracked question was superseded -- see
+    // `isQuestionLive`'s doc on the tracker for the swallow class this
+    // closes (a redraw's replacement push silently eaten by QuestionDedup
+    // must not resolve the still-live original).
+    isQuestionLive: (questionId) =>
+      sessionRegistry.getQuestion(sessionId, questionId as UUID) !== null,
   });
 
   const outputProcessor = new OutputProcessor(
