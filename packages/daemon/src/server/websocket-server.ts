@@ -6,8 +6,12 @@
  */
 
 import { generateId } from '@remi/shared';
-import type { AnswerExtras, ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, UUID } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
+import {
+  type ClientMessageEventsWithConnectionId,
+  bindConnectionId,
+} from './client-message-events.ts';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
 import { corsHeadersForOrigin, isAllowedOrigin, rejectionNotice } from './origin-policy.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
@@ -52,8 +56,12 @@ export interface ServerConfig {
   readonly requireLocalAuth?: boolean;
 }
 
-/** Server events */
-export interface ServerEvents {
+/**
+ * Server events. The per-message portion (`onUserInput`, `onAnswer`, ...) is
+ * declared once in `client-message-events.ts` (#900) and inherited here with
+ * `connectionId` first -- one server serves many peers.
+ */
+export interface ServerEvents extends ClientMessageEventsWithConnectionId {
   /** Server started listening */
   onStart: (port: number) => void;
 
@@ -65,29 +73,6 @@ export interface ServerEvents {
 
   /** Client disconnected */
   onClientDisconnect: (connectionId: UUID, reason: string) => void;
-
-  /** User input from client. `messageId` is the wire message's own id (#681),
-   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
-   *  specific bubble that was dropped. */
-  onUserInput: (
-    connectionId: UUID,
-    sessionId: UUID,
-    content: string,
-    raw?: boolean,
-    claudeSessionId?: UUID,
-    messageId?: UUID,
-  ) => void;
-
-  /** Answer from client. `extra` carries structured AskUserQuestion selections /
-   *  cancel (#627); omitted for a plain single answer. */
-  onAnswer: (
-    connectionId: UUID,
-    sessionId: UUID,
-    questionId: UUID,
-    answer: string,
-    claudeSessionId?: UUID,
-    extra?: AnswerExtras,
-  ) => void;
 
   /**
    * Connection-independent answer relay over HTTP POST /answer (#575, P4a).
@@ -101,48 +86,6 @@ export interface ServerEvents {
     answer: string,
     claudeSessionId?: UUID,
   ) => Promise<'delivered' | 'session-not-found' | 'stale-binding' | 'stale'>;
-
-  /** Bullet expand request from client */
-  onBulletExpandRequest: (
-    connectionId: UUID,
-    sessionId: UUID,
-    bulletId: number,
-    requestId: UUID,
-  ) => void;
-
-  /** Session list request from client */
-  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
-
-  /** Transcript load request from client */
-  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
-
-  /** Create session request from client */
-  onCreateSessionRequest: (
-    connectionId: UUID,
-    directory: string | undefined,
-    requestId: UUID,
-  ) => void;
-
-  /** Terminal resize from attached CLI client */
-  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => void;
-
-  /** Kill session request from client */
-  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
-
-  /** Resume session request from client */
-  onResumeSessionRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
-
-  /** Session history request from client */
-  onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
-
-  /** Detach session request from client (tmux-style) */
-  onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
-
-  /** Device token registered for push notifications */
-  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
-
-  /** Device token unregistered — explicit user removal of this server (#690) */
-  onUnregisterDeviceToken: (connectionId: UUID, token: string) => void;
 
   /** Error occurred */
   onError: (error: Error) => void;
@@ -617,6 +560,11 @@ export class WebSocketServer {
   }
 
   private handleOpen(ws: { data: WSData }): void {
+    // The per-message forwarding (onUserInput, onAnswer, ...) is generic:
+    // every one of them just needs this connection's id prepended before
+    // reaching `this.events` (#900). `bindConnectionId` does that once for
+    // every key in `client-message-events.ts`'s single declaration, instead
+    // of 13 hand-written closures that each re-implemented the same prepend.
     const connectionEvents: Partial<ConnectionEvents> = {
       onConnect: (_sessionId) => {
         const connection = this.connections.get(ws.data.connectionId);
@@ -631,75 +579,11 @@ export class WebSocketServer {
         this.events.onClientDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (sessionId, content, raw, claudeSessionId, messageId) => {
-        this.events.onUserInput?.(
-          ws.data.connectionId,
-          sessionId,
-          content,
-          raw,
-          claudeSessionId,
-          messageId,
-        );
-      },
-
-      onAnswer: (sessionId, questionId, answer, claudeSessionId, extra) => {
-        this.events.onAnswer?.(
-          ws.data.connectionId,
-          sessionId,
-          questionId,
-          answer,
-          claudeSessionId,
-          extra,
-        );
-      },
-
-      onBulletExpandRequest: (sessionId, bulletId, requestId) => {
-        this.events.onBulletExpandRequest?.(ws.data.connectionId, sessionId, bulletId, requestId);
-      },
-
-      onSessionListRequest: (requestId, includeExternal) => {
-        this.events.onSessionListRequest?.(ws.data.connectionId, requestId, includeExternal);
-      },
-
-      onTranscriptLoadRequest: (sessionId, requestId) => {
-        this.events.onTranscriptLoadRequest?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onCreateSessionRequest: (directory, requestId) => {
-        this.events.onCreateSessionRequest?.(ws.data.connectionId, directory, requestId);
-      },
-
-      onTerminalResize: (cols, rows) => {
-        this.events.onTerminalResize?.(ws.data.connectionId, cols, rows);
-      },
-
-      onKillSessionRequest: (sessionId, requestId) => {
-        this.events.onKillSessionRequest?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onResumeSessionRequest: (sessionId, requestId) => {
-        this.events.onResumeSessionRequest?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onSessionHistoryRequest: (requestId, limit) => {
-        this.events.onSessionHistoryRequest?.(ws.data.connectionId, requestId, limit);
-      },
-
-      onDetachSession: (sessionId, requestId) => {
-        this.events.onDetachSession?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onRegisterDeviceToken: (token, platform) => {
-        this.events.onRegisterDeviceToken?.(ws.data.connectionId, token, platform);
-      },
-
-      onUnregisterDeviceToken: (token) => {
-        this.events.onUnregisterDeviceToken?.(ws.data.connectionId, token);
-      },
-
       onError: (error) => {
         this.events.onError?.(error);
       },
+
+      ...bindConnectionId(ws.data.connectionId, this.events),
     };
 
     // Localhost-no-auth (#257): even when an authenticator is configured,

@@ -266,104 +266,11 @@ describe('AdapterRegistry', () => {
   });
 
   describe('message routing', () => {
-    test('sendMessage routes to correct adapter', () => {
-      const registry = new AdapterRegistry();
-      const adapter = new TestAdapter('ws');
-      const connId = generateId();
-      adapter.addConnection(connId);
-      registry.register(adapter);
-      registry.trackConnection(connId, 'ws');
-
-      const message: Message = {
-        id: generateId(),
-        sessionId: generateId(),
-        sender: 'agent',
-        content: 'Hello',
-        createdAt: new Date().toISOString(),
-        state: 'sent',
-        stateChangedAt: new Date().toISOString(),
-        isEditing: false,
-      };
-
-      const result = registry.sendMessage(connId, message);
-      expect(result).toBe(true);
-      expect(adapter.sentMessages.length).toBe(1);
-      expect(adapter.sentMessages[0]?.message.content).toBe('Hello');
-    });
-
-    test('sendMessage returns false for unknown connection', () => {
-      const registry = new AdapterRegistry();
-      const message: Message = {
-        id: generateId(),
-        sessionId: generateId(),
-        sender: 'agent',
-        content: 'Hello',
-        createdAt: new Date().toISOString(),
-        state: 'sent',
-        stateChangedAt: new Date().toISOString(),
-        isEditing: false,
-      };
-
-      const result = registry.sendMessage(generateId(), message);
-      expect(result).toBe(false);
-    });
-
-    test('sendQuestion routes to correct adapter', () => {
-      const registry = new AdapterRegistry();
-      const adapter = new TestAdapter('ws');
-      const connId = generateId();
-      adapter.addConnection(connId);
-      registry.register(adapter);
-      registry.trackConnection(connId, 'ws');
-
-      const question: Question = {
-        id: generateId(),
-        text: 'Continue?',
-        allowsFreeText: false,
-        isAnswered: false,
-        options: [
-          { label: 'Yes', value: 'y', isRecommended: true, isYes: true, isNo: false },
-          { label: 'No', value: 'n', isRecommended: false, isYes: false, isNo: true },
-        ],
-      };
-
-      const result = registry.sendQuestion(connId, question, generateId());
-      expect(result).toBe(true);
-      expect(adapter.sentQuestions.length).toBe(1);
-    });
-
-    test('sendQuestion returns false for unknown connection', () => {
-      const registry = new AdapterRegistry();
-      const question: Question = {
-        id: generateId(),
-        text: 'Continue?',
-        allowsFreeText: false,
-        isAnswered: false,
-        options: [],
-      };
-
-      expect(registry.sendQuestion(generateId(), question, generateId())).toBe(false);
-    });
-
-    test('sendStatus routes to correct adapter', () => {
-      const registry = new AdapterRegistry();
-      const adapter = new TestAdapter('ws');
-      const connId = generateId();
-      adapter.addConnection(connId);
-      registry.register(adapter);
-      registry.trackConnection(connId, 'ws');
-
-      const result = registry.sendStatus(connId, 'thinking');
-      expect(result).toBe(true);
-      expect(adapter.sentStatuses.length).toBe(1);
-      expect(adapter.sentStatuses[0]?.status).toBe('thinking');
-    });
-
-    test('sendStatus returns false for unknown connection', () => {
-      const registry = new AdapterRegistry();
-      expect(registry.sendStatus(generateId(), 'idle')).toBe(false);
-    });
-
+    // sendMessage/sendQuestion/sendStatus were removed from AdapterRegistry
+    // (#900, C7 of epic #883): a fresh grep at implementation time found zero
+    // callers outside this file (`grep -rn "registry\.sendMessage\|registry\.sendQuestion\|registry\.sendStatus"
+    // packages/ tests/` matched only this test file). `sendRaw` is the
+    // registry-level send path production code actually uses.
     test('sendRaw routes to correct adapter', () => {
       const registry = new AdapterRegistry();
       const adapter = new TestAdapter('ws');

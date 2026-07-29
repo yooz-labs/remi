@@ -49,72 +49,24 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import type { ClientMessageEvents } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
 
-/** Events emitted by connection */
-export interface ConnectionEvents {
+/**
+ * Events emitted by a connection. The per-message portion (`onUserInput`,
+ * `onAnswer`, ...) is declared once in `client-message-events.ts` (#900) and
+ * inherited here without a `connectionId` -- a `Connection` is already
+ * scoped to one peer.
+ */
+export interface ConnectionEvents extends ClientMessageEvents {
   /** Connection established */
   onConnect: (sessionId: UUID) => void;
 
   /** Connection closed */
   onDisconnect: (reason: string) => void;
-
-  /** User input received. `messageId` is the wire message's own id (#681),
-   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
-   *  specific bubble that was dropped. */
-  onUserInput: (
-    sessionId: UUID,
-    content: string,
-    raw?: boolean,
-    claudeSessionId?: UUID,
-    messageId?: UUID,
-  ) => void;
-
-  /** Answer to question received. `extra` carries the structured AskUserQuestion
-   *  selections / cancel flag (#627); omitted for a plain single answer. */
-  onAnswer: (
-    sessionId: UUID,
-    questionId: UUID,
-    answer: string,
-    claudeSessionId?: UUID,
-    extra?: AnswerExtras,
-  ) => void;
-
-  /** Bullet expand request received */
-  onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
-
-  /** Session list request received */
-  onSessionListRequest: (requestId: UUID, includeExternal: boolean) => void;
-
-  /** Transcript load request received */
-  onTranscriptLoadRequest: (sessionId: string, requestId: UUID) => void;
-
-  /** Create session request received */
-  onCreateSessionRequest: (directory: string | undefined, requestId: UUID) => void;
-
-  /** Terminal resize from attached CLI client */
-  onTerminalResize: (cols: number, rows: number) => void;
-
-  /** Kill session request received */
-  onKillSessionRequest: (sessionId: UUID, requestId: UUID) => void;
-
-  /** Resume session request received */
-  onResumeSessionRequest: (sessionId: string, requestId: UUID) => void;
-
-  /** Session history request received */
-  onSessionHistoryRequest: (requestId: UUID, limit: number | undefined) => void;
-
-  /** Detach session request received (tmux-style) */
-  onDetachSession: (sessionId: UUID, requestId: UUID) => void;
-
-  /** Device token registered for push notifications */
-  onRegisterDeviceToken: (token: string, platform: 'ios' | 'android') => void;
-
-  /** Device token unregistered — explicit user removal of this server (#690) */
-  onUnregisterDeviceToken: (token: string) => void;
 
   /** Authentication succeeded */
   onAuthSuccess: (clientFingerprint: string) => void;
