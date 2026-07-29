@@ -4,7 +4,7 @@
  * Allows the daemon to run WebSocket, Telegram, etc. simultaneously.
  */
 
-import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { ProtocolMessage, UUID } from '@remi/shared';
 import type { AdapterEvents, ConnectionAdapter } from './connection-adapter.ts';
 
 /** Events emitted by the registry */
@@ -177,46 +177,6 @@ export class AdapterRegistry {
    */
   getAdapter(adapterType: string): ConnectionAdapter | undefined {
     return this.adapters.get(adapterType);
-  }
-
-  /**
-   * Send a message to a specific connection.
-   * Automatically routes to the correct adapter.
-   */
-  sendMessage(connectionId: UUID, message: Message): boolean {
-    const adapterType = this.connectionToAdapter.get(connectionId);
-    if (!adapterType) {
-      return false;
-    }
-
-    const adapter = this.adapters.get(adapterType);
-    return adapter?.sendMessage(connectionId, message) ?? false;
-  }
-
-  /**
-   * Send a question to a specific connection.
-   */
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
-    const adapterType = this.connectionToAdapter.get(connectionId);
-    if (!adapterType) {
-      return false;
-    }
-
-    const adapter = this.adapters.get(adapterType);
-    return adapter?.sendQuestion(connectionId, question, sessionId) ?? false;
-  }
-
-  /**
-   * Send a status update to a specific connection.
-   */
-  sendStatus(connectionId: UUID, status: AgentStatus, context?: string): boolean {
-    const adapterType = this.connectionToAdapter.get(connectionId);
-    if (!adapterType) {
-      return false;
-    }
-
-    const adapter = this.adapters.get(adapterType);
-    return adapter?.sendStatus(connectionId, status, context) ?? false;
   }
 
   /**
