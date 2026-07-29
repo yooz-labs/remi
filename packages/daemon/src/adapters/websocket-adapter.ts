@@ -8,6 +8,7 @@
 import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
 import { createAgentOutput, createQuestion, createSessionUpdate } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import { pickClientMessageEvents } from '../server/client-message-events.ts';
 import {
   type ServerConfig,
   type ServerEvents,
@@ -125,75 +126,23 @@ export class WebSocketAdapter implements ConnectionAdapter {
         this.events.onDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (connectionId, sessionId, content, raw, claudeSessionId, messageId) => {
-        this.events.onUserInput?.(
-          connectionId,
-          sessionId,
-          content,
-          raw,
-          claudeSessionId,
-          messageId,
-        );
-      },
-
-      onAnswer: (connectionId, sessionId, questionId, answer, claudeSessionId, extra) => {
-        this.events.onAnswer?.(connectionId, sessionId, questionId, answer, claudeSessionId, extra);
-      },
-
       onAnswerRelay: async (sessionId, questionId, answer, claudeSessionId) =>
         // No relay handler wired => behave like an unknown session rather than
         // throwing inside the HTTP route.
         (await this.events.onAnswerRelay?.(sessionId, questionId, answer, claudeSessionId)) ??
         'session-not-found',
 
-      onBulletExpandRequest: (connectionId, sessionId, bulletId, requestId) => {
-        this.events.onBulletExpandRequest?.(connectionId, sessionId, bulletId, requestId);
-      },
-
-      onSessionListRequest: (connectionId, requestId, includeExternal) => {
-        this.events.onSessionListRequest?.(connectionId, requestId, includeExternal);
-      },
-
-      onTranscriptLoadRequest: (connectionId, sessionId, requestId) => {
-        this.events.onTranscriptLoadRequest?.(connectionId, sessionId, requestId);
-      },
-
-      onCreateSessionRequest: (connectionId, directory, requestId) => {
-        this.events.onCreateSessionRequest?.(connectionId, directory, requestId);
-      },
-
-      onTerminalResize: (connectionId, cols, rows) => {
-        this.events.onTerminalResize?.(connectionId, cols, rows);
-      },
-
-      onKillSessionRequest: (connectionId, sessionId, requestId) => {
-        this.events.onKillSessionRequest?.(connectionId, sessionId, requestId);
-      },
-
-      onResumeSessionRequest: (connectionId, sessionId, requestId) => {
-        this.events.onResumeSessionRequest?.(connectionId, sessionId, requestId);
-      },
-
-      onSessionHistoryRequest: (connectionId, requestId, limit) => {
-        this.events.onSessionHistoryRequest?.(connectionId, requestId, limit);
-      },
-
-      onDetachSession: (connectionId, sessionId, requestId) => {
-        this.events.onDetachSession?.(connectionId, sessionId, requestId);
-      },
-
-      onRegisterDeviceToken: (connectionId, token, platform) => {
-        this.events.onRegisterDeviceToken?.(connectionId, token, platform);
-      },
-
-      onUnregisterDeviceToken: (connectionId, token) => {
-        this.events.onUnregisterDeviceToken?.(connectionId, token);
-      },
-
       onError: (error) => {
         // For server-level errors, use a dummy connection ID
         this.events.onError?.('server' as UUID, error);
       },
+
+      // Every per-message event (onUserInput, onAnswer, ...) is an identical
+      // connectionId-prefixed forward from `ServerEvents` to `AdapterEvents`
+      // (#900) -- both derive from the same declaration in
+      // `client-message-events.ts`, so this one call replaces what used to
+      // be 13 hand-written one-line forwarders.
+      ...pickClientMessageEvents(this.events),
     };
 
     const serverConfig: Partial<ServerConfig> = {
