@@ -101,7 +101,14 @@ registers itself in live-sessions.
 | Method | When to use |
 |---|---|
 | Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
-| Signaling + WebRTC | No direct access (STUN / TURN fallback) |
+| Signaling relay | No direct access. Every protocol message is carried by the Cloudflare Worker |
+
+**There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
+in this repo. The worker was built to relay a *handshake*, with WebRTC intended
+to carry the session; that second half was never implemented, so the relay
+became the data transport by default and is the only remote path there is.
+Anything describing a peer-to-peer path, DTLS, or TURN relaying opaque blobs is
+describing an intention, not this codebase (#543).
 
 ## Question Detection and Notifications
 
@@ -154,9 +161,15 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 
 ## Core Principles
 
-1. **Zero friction** — WebRTC provides DTLS encryption automatically.
+1. **Zero friction** — pairing is a code, not an account.
 2. **Reliable messaging** — WhatsApp-style states (sending → sent → delivered → read).
-3. **No data in cloud** — peer-to-peer when possible; TURN only relays encrypted blobs.
+3. **No data in cloud** — the relay must carry ciphertext it cannot read, so the
+   worker is a courier and not a reader. See #543: this was NOT true until the
+   relay encryption landed, and the principle as previously written ("peer-to-peer
+   when possible; TURN only relays encrypted blobs") described a WebRTC design
+   that was never built, which is precisely why nobody noticed the worker was
+   receiving plaintext `user_input`, answers and device tokens for months. State
+   what ships, not what was intended.
 4. **Graceful degradation** — if parsing fails, show raw text.
 
 ## Branch Strategy
