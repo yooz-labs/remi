@@ -10,6 +10,7 @@
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
     "test:e2e": "bunx playwright test --config tests/e2e/playwright.config.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:web": "cd packages/web && tsc -p tsconfig.app.json --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
