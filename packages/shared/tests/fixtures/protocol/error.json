@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "id": "e4a8adb1-d1af-4b30-9e7f-3e4293ad9357",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "code": "FIXTURE_ERROR",
+  "message": "Fixture error message",
+  "details": {
+    "detail": "extra info"
+  }
+}

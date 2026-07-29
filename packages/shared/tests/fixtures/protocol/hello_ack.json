@@ -1,0 +1,14 @@
+{
+  "type": "hello_ack",
+  "id": "5ab3a16f-cbc3-4047-b12e-49289b8f6a4f",
+  "timestamp": "2026-07-29T11:27:08.613Z",
+  "serverVersion": "1.0.0",
+  "sessionId": "fixture-session-id",
+  "isResume": false,
+  "replayCount": 0,
+  "nextBulletId": 1,
+  "claudeSessionId": "fixture-claude-session-id",
+  "transcriptPath": "/Users/fixture/transcript.jsonl",
+  "attachState": "attached",
+  "daemonVersion": "0.7.4-dev.1"
+}

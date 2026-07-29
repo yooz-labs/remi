@@ -1,0 +1,13 @@
+{
+  "type": "session_views",
+  "id": "84b83ac3-1409-4896-9f22-ed4e9d7e5526",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "sessionId": "fixture-session-id",
+  "subagents": [
+    {
+      "agentId": "fixture-agent-id",
+      "agentType": "general-purpose",
+      "active": true
+    }
+  ]
+}

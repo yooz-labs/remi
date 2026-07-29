@@ -1,0 +1,8 @@
+{
+  "type": "user_input",
+  "id": "753190b2-83a7-4936-94e5-59312379f711",
+  "timestamp": "2026-07-29T11:27:08.613Z",
+  "sessionId": "fixture-session-id",
+  "content": "echo hi",
+  "claudeSessionId": "fixture-claude-session-id"
+}

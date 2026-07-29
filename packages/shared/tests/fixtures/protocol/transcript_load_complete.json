@@ -1,0 +1,8 @@
+{
+  "type": "transcript_load_complete",
+  "id": "dc31920c-6485-4f7e-bafe-8bdeb185e3cc",
+  "timestamp": "2026-07-29T11:27:08.615Z",
+  "sessionId": "fixture-session-id",
+  "messageCount": 5,
+  "requestId": "fixture-request-id"
+}

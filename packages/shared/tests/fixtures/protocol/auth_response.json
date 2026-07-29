@@ -1,0 +1,10 @@
+{
+  "type": "auth_response",
+  "id": "e34ca1c2-056d-4948-a6ce-632d6ca176dc",
+  "timestamp": "2026-07-29T11:27:08.615Z",
+  "clientPublicKey": "base64-client-pubkey",
+  "signature": "base64-signature",
+  "clientFingerprint": "EE:FF:00:11",
+  "relayEphemeralKey": "base64-client-ephemeral-key",
+  "relayKexSignature": "base64-client-kex-signature"
+}

@@ -49,6 +49,8 @@ export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
 // Protocol
 export type {
   ProtocolMessage,
+  ProtocolMessageMap,
+  MessageOf,
   HelloMessage,
   HelloAckMessage,
   AgentOutputMessage,
@@ -112,6 +114,7 @@ export {
   now,
   serialize,
   deserialize,
+  MESSAGE_DIRECTION,
   createHello,
   createHelloAck,
   createAgentOutput,
@@ -161,6 +164,10 @@ export {
   createQuestionSnapshot,
   MessageIdTracker,
 } from './protocol.ts';
+
+// Total-dispatch helpers over the protocol registry (#896)
+export type { MessageHandlers } from './dispatch.ts';
+export { dispatchMessage, assertNever } from './dispatch.ts';
 
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';

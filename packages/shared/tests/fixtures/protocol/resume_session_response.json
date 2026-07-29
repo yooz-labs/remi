@@ -1,0 +1,8 @@
+{
+  "type": "resume_session_response",
+  "id": "dfe92868-2488-4ced-9fb6-422dffec3ae9",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "success": true,
+  "requestId": "fixture-request-id",
+  "sessionId": "fixture-session-id"
+}

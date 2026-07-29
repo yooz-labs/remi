@@ -1,0 +1,6 @@
+{
+  "type": "kill_session_request",
+  "id": "3f5bff17-88ba-4cae-a09a-c0c1a435db0c",
+  "timestamp": "2026-07-29T11:27:08.615Z",
+  "sessionId": "fixture-session-id"
+}

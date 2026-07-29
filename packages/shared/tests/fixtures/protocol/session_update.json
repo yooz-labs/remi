@@ -1,0 +1,12 @@
+{
+  "type": "session_update",
+  "id": "9378a131-8b87-418e-b10f-e292c4f348fb",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "session": {
+    "id": "fixture-session-id",
+    "name": "",
+    "startedAt": "2026-07-29T11:27:08.614Z",
+    "status": "thinking",
+    "isActive": true
+  }
+}
