@@ -10,8 +10,11 @@ All notable changes to Remi are documented here.
   fires no tool call, so nothing previously proved a still-open escalation
   was resolved; `PermissionDenied` now routes into the same
   `AutoApproveGate.cancelExternallyResolved` funnel PreToolUse/PostToolUse
-  use, taking advantage of its exact `tool_use_id` (the one permission edge
-  where Claude Code sends one). An MCP `Elicitation` dialog previously
+  use, matching on `tool_name` + `tool_input` + `agentId`. (It does carry a
+  `tool_use_id`, unlike `PermissionRequest` — but the escalation it would match
+  was registered from a `PermissionRequest`, which never sends one, so the
+  exact-id branch is unreachable from this path today and the id is
+  forward-compatible only.) An MCP `Elicitation` dialog previously
   arrived only as a PTY orphan (the dedicated hook was never registered, and
   the `Notification(elicitation_dialog)` variant that did fire was logged
   and ignored); it now builds an answerable, free-text `Question` card

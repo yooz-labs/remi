@@ -2510,10 +2510,21 @@ describe('setupHookBridge', () => {
   // ---------------------------------------------------------------------------
   // #889 (Q4): a classifier-denied permission fires no tool call, so
   // PreToolUse/PostToolUse never observe it -- PermissionDenied is wired into
-  // the SAME `cancelExternallyResolved` funnel, taking advantage of its exact
-  // `tool_use_id` (future-proofing: PermissionRequest itself never sends one
-  // today, so matching still falls through to the tool_name+tool_input
-  // signature, same as every other caller of this funnel).
+  // the SAME `cancelExternallyResolved` funnel. Matching is
+  // tool_name+tool_input+agentId; `PermissionDenied` also carries a
+  // `tool_use_id`, but it is forward-compatible only.
+  //
+  // Deliberately NO test for exact-`tool_use_id` disambiguation through this
+  // path, and that absence is the honest outcome rather than a gap: the
+  // registered signature is built from the `PermissionRequest` that opened the
+  // escalation, and that event never sends a `tool_use_id`, so
+  // `findOpenQuestionMatching`'s "both sides carry one" branch cannot be
+  // reached from here. Writing such a test would mean fabricating a
+  // `PermissionRequest` with an id Claude Code does not send -- a test that
+  // passes about an input shape that never occurs, which is exactly the
+  // coverage claim ADR 0014 says not to make. The branch itself IS covered,
+  // generically, by `auto-approve-gate.test.ts`. Reconsider when a capture
+  // shows `PermissionRequest` carrying an id.
   // ---------------------------------------------------------------------------
   describe('#889 (Q4): PermissionDenied external resolution', () => {
     function lock(id: string): void {

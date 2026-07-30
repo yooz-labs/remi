@@ -625,10 +625,21 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  *   - `PermissionDenied`: a classifier-denied permission fires no tool call,
  *     so nothing else can prove a still-open escalation is resolved. Wired
  *     into the SAME external-resolution funnel PreToolUse/PostToolUse use
- *     (`AutoApproveGate.cancelExternallyResolved`), taking advantage of its
- *     `tool_use_id` — the one permission edge where Claude Code sends an
- *     exact id rather than requiring the tool_name+tool_input signature
- *     fallback (`PermissionRequest` itself never carries one).
+ *     (`AutoApproveGate.cancelExternallyResolved`).
+ *
+ *     It DOES carry a `tool_use_id`, unlike `PermissionRequest` — but that id
+ *     buys nothing yet, and an earlier draft of this comment claimed it did
+ *     ("taking advantage of its exact `tool_use_id`"). Matching is
+ *     `tool_name` + `tool_input` + `agentId`; the id is consulted only when
+ *     BOTH sides carry one (`findOpenQuestionMatching`,
+ *     `auto-approve-gate.ts`). The registered side is built from the
+ *     `PermissionRequest` that opened the escalation, and that event never
+ *     sends a `tool_use_id` (see `PermissionRequestHookInput` above, read out
+ *     of the binary), so `sig.toolUseId` is always `undefined` and the exact-id
+ *     branch is unreachable from this path today. Passing the id through is
+ *     forward-compatible dead weight, not a live disambiguator — worth stating
+ *     precisely, because "it matches on an exact id" would read as stronger
+ *     than the signature match it actually performs.
  *   - `Elicitation` / `ElicitationResult`: an MCP dialog previously arrived
  *     only as a PTY orphan (`hook-event-bridge.ts`'s `handleNotification`
  *     logs and ignores `notification_type === 'elicitation_dialog'`, and the
