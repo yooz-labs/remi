@@ -614,12 +614,38 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * in setupHookBridge, also add the event name here so the registration
  * actually fires.
  *
- * Deliberately UNCHANGED by #886: that issue added 9 names to
- * HOOK_EVENT_NAMES for type completeness (so HookServer/isValidHookEvent
- * recognize them if Claude Code sends one unprompted), which is not the same
- * decision as opting remi into paying for them on every turn. Registering
- * PermissionDenied/Elicitation is Q4's call to make, deliberately, not a side
- * effect of a documentation pass.
+ * Was UNCHANGED by #886: that issue added 9 names to HOOK_EVENT_NAMES for
+ * type completeness (so HookServer/isValidHookEvent recognize them if Claude
+ * Code sends one unprompted), which is not the same decision as opting remi
+ * into paying for them on every turn. Registering PermissionDenied/
+ * Elicitation was left as Q4's call to make, deliberately, not a side effect
+ * of a documentation pass.
+ *
+ * Q4 (#889) makes that call for 3 of the 20 unregistered names:
+ *   - `PermissionDenied`: a classifier-denied permission fires no tool call,
+ *     so nothing else can prove a still-open escalation is resolved. Wired
+ *     into the SAME external-resolution funnel PreToolUse/PostToolUse use
+ *     (`AutoApproveGate.cancelExternallyResolved`), taking advantage of its
+ *     `tool_use_id` — the one permission edge where Claude Code sends an
+ *     exact id rather than requiring the tool_name+tool_input signature
+ *     fallback (`PermissionRequest` itself never carries one).
+ *   - `Elicitation` / `ElicitationResult`: an MCP dialog previously arrived
+ *     only as a PTY orphan (`hook-event-bridge.ts`'s `handleNotification`
+ *     logs and ignores `notification_type === 'elicitation_dialog'`, and the
+ *     dedicated `Elicitation` hook was never registered at all, so it never
+ *     fired). `Elicitation` now builds an answerable, free-text `Question`
+ *     card (`HookEventBridge.handleElicitation`); `ElicitationResult`
+ *     resolves it by `elicitation_id` — an exact correlation key both events
+ *     carry — the same "close the lingering-card gap" shape as
+ *     `PermissionDenied` above. Both stay observe-only (#889): neither hook
+ *     response encodes `action`/`content` to answer the MCP dialog
+ *     programmatically; the user's own answer (if any) rides the existing
+ *     generic PTY-inject path any non-held Question uses.
+ * All three keep the existing `DEFAULT_HOOK_TIMEOUT` (5s, `hook-config-
+ * manager.ts`) — `hookTimeoutFor` only special-cases `PermissionRequest`, and
+ * none of these three needs a longer budget (no eval, no hold; #889's own
+ * text said "~1s", which does not match this codebase's actual default —
+ * see the PR for the measured per-event latency instead).
  */
 export const REMI_REGISTERED_HOOK_EVENTS = [
   'PreToolUse',
@@ -633,6 +659,9 @@ export const REMI_REGISTERED_HOOK_EVENTS = [
   'SubagentStop',
   'StopFailure',
   'SessionEnd',
+  'PermissionDenied',
+  'Elicitation',
+  'ElicitationResult',
 ] as const satisfies readonly HookEventName[];
 
 export type RemiRegisteredHookEvent = (typeof REMI_REGISTERED_HOOK_EVENTS)[number];
