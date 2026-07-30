@@ -4,7 +4,35 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`PermissionDenied` and `Elicitation`/`ElicitationResult` are now
+  registered hooks, observe-only** (#889, Q4). A classifier-denied permission
+  fires no tool call, so nothing previously proved a still-open escalation
+  was resolved; `PermissionDenied` now routes into the same
+  `AutoApproveGate.cancelExternallyResolved` funnel PreToolUse/PostToolUse
+  use, taking advantage of its exact `tool_use_id` (the one permission edge
+  where Claude Code sends one). An MCP `Elicitation` dialog previously
+  arrived only as a PTY orphan (the dedicated hook was never registered, and
+  the `Notification(elicitation_dialog)` variant that did fire was logged
+  and ignored); it now builds an answerable, free-text `Question` card
+  instead of fabricating Accept/Decline options nobody has verified against
+  a real dialog, and `ElicitationResult` resolves that exact card by
+  `elicitation_id`. Neither hook response encodes a decision —
+  `REMI_REGISTERED_HOOK_EVENTS` grows from 11 to 14, each new registration
+  measured at well under 1ms of added roundtrip latency locally.
+
 ### Fixed
+- **The redundant `Notification(permission_prompt)` question synthesis is
+  deleted** (#890, Q5). It fed a `QuestionPresenceTracker` stash that only
+  ever mattered if it arrived with no paired `PermissionRequest` — a richer
+  paired `PermissionRequest` (the common case) always superseded it, and the
+  stash itself is never pushed on its own. A capture corpus (4244 events / 5
+  sessions / one working day) found 68/68 `permission_prompt` notifications
+  paired by `prompt_id`, 0 unpaired. The event still flips status to
+  `'waiting'`; in the theoretical unpaired case, a still-rendering prompt
+  falls to the same orphan-PTY fallback every other hook-less prompt already
+  uses, not to silence.
+
 - **`QuestionStore` is now the single owner of a session's pending-question
   state, and a hook-less question can resolve from a screen render alone**
   (#888). Measured from a real capture (#920): of 29 daily source-less
