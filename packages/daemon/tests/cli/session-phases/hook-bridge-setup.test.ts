@@ -2620,6 +2620,48 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
     });
 
+    test('a re-fired Elicitation for the same id keeps the live card resolvable (review finding)', () => {
+      // The dedup drops the second emission (same text, same 0 options, same
+      // allowsFreeText -> never "richer", and status never left 'waiting' to
+      // reset the baseline), so its returned id names a card that was never
+      // registered. Blindly overwriting the correlation pointed
+      // ElicitationResult at that phantom and orphaned card A -- the card the
+      // user is actually looking at -- with no automated way to clear it.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-dup');
+
+      const fire = (): void => {
+        hookServer.fire('Elicitation', {
+          session_id: 'claude-889-elicit-dup',
+          hook_event_name: 'Elicitation',
+          mcp_server_name: 'weather-mcp',
+          message: 'Which city?',
+          elicitation_id: 'elicit-dup',
+        });
+      };
+      fire();
+      const cardA = [...(sessionRegistry.getSession(SID)?.currentQuestions.keys() ?? [])][0];
+      expect(cardA).toBeDefined();
+
+      fire();
+      // The repeat never became a second card, so there is still exactly one.
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-dup',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-dup',
+        action: 'accept',
+      });
+
+      // The still-live card A is the one that resolves, not a phantom.
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.questionId).toBe(cardA as UUID);
+    });
+
     test('ElicitationResult with an UNKNOWN elicitation_id is a no-op (card, if any, stays)', () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
       build({ realMessageApi: true, broadcastResolvedLog });

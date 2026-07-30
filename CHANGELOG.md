@@ -20,6 +20,14 @@ All notable changes to Remi are documented here.
   `elicitation_id`. Neither hook response encodes a decision —
   `REMI_REGISTERED_HOOK_EVENTS` grows from 11 to 14, each new registration
   measured at well under 1ms of added roundtrip latency locally.
+  Review fix before merge: an `Elicitation` re-fired for an `elicitation_id`
+  whose card was still open used to repoint the correlation map at the repeat,
+  which `QuestionDedup` had already suppressed (same text, same zero options,
+  so never "richer") — so `ElicitationResult` resolved an id that was never
+  registered and the card the user could actually see was left with no
+  automated way to clear. The map now refuses to displace a still-live card
+  and never tracks an id that did not reach `sessionRegistry`, the same
+  confirmed-delivery gate #888 landed.
 
 ### Fixed
 - **The redundant `Notification(permission_prompt)` question synthesis is

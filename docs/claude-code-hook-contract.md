@@ -125,8 +125,9 @@ it can proceed with that action — a stale or slow daemon can make Claude Code
 unable to submit a prompt, create a worktree, or finish a session, purely
 because a hook nobody needed a decision from is still gating the action
 (#203). This is why `HOOK_EVENT_NAMES` (31, type-complete as of this PR) and
-`REMI_REGISTERED_HOOK_EVENTS` (11, unchanged by this PR) are and must stay
-two different lists.
+`REMI_REGISTERED_HOOK_EVENTS` (11 when this document landed; **14 since #889**
+added `PermissionDenied`, `Elicitation` and `ElicitationResult`) are and must
+stay two different lists.
 
 ### Axis 2: semantic power — varies from zero to full override, per event
 
@@ -178,7 +179,10 @@ case than an event whose response can only leave a comment.
 tracked 22 before this PR; the 9 missing (`Setup`, `UserPromptExpansion`,
 `PermissionDenied`, `PostToolBatch`, `MessageDisplay`, `CwdChanged`,
 `FileChanged`, `DirectoryAdded`, `TaskCreated`) are added by this PR at the
-type level only (not registered — see the blocking-semantics section).
+type level only (not registered — see the blocking-semantics section). Of
+those, `PermissionDenied` has since been registered too (#889), along with
+`Elicitation`/`ElicitationResult`, which were already typed; the **Reg.**
+column below is the current list, not this PR's.
 
 Legend: **Reg.** = in `REMI_REGISTERED_HOOK_EVENTS` today. **Resp.** = has a
 dedicated `hookSpecificOutput` response schema (see the semantic-power table
@@ -190,15 +194,15 @@ above for what it does).
 | `PostToolUse` | Y | `tool_name, tool_input, tool_response, tool_use_id?, duration_ms` | Y | [B] `duration_ms` was missing (named in #886) |
 | `PostToolUseFailure` | Y | `tool_name, tool_input, error, tool_use_id?, is_interrupt?, duration_ms?` | Y (context only) | [B] 3 input fields were missing (named in #886) |
 | `PostToolBatch` | — | `tool_calls: unknown[]` | Y | [B] new type this PR; per-item shape not traced |
-| `PermissionDenied` | — | `tool_name, tool_input, tool_use_id?, reason?` | Y (`retry`) | [B] new type this PR; unlike `PermissionRequest`, DOES carry `tool_use_id` |
+| `PermissionDenied` | Y (#889) | `tool_name, tool_input, tool_use_id?, reason?` | Y (`retry`) | [B] new type this PR; unlike `PermissionRequest`, DOES carry `tool_use_id` |
 | `PermissionRequest` | Y | `tool_name, tool_input, permission_suggestions?` — **no `tool_use_id`** | Y (full decision) | [B] confirms the "no tool_use_id" conclusion in `hook-types.ts` was correct; only its citation (cc-ref) was wrong |
 | `UserPromptExpansion` | — | `expansion_type, command_name, command_args?, command_source?, prompt` | Y (context only) | [B] new type this PR |
 | `PreCompact` | — | `trigger, custom_instructions?` | — | [B] was typed `source`; binary sends `trigger`. Named in #886 |
 | `PostCompact` | — | `trigger, compact_summary?` | — | [B] same `source`→`trigger` correction; `compact_summary` named in #886 |
 | `ConfigChange` | — | `source, file_path` | — | [B] was typed `config_type: string`, which **does not exist** in the binary at all — see "Renames, not additions" below |
 | `DirectoryAdded` | — | `directory, source?` | — | [B] new type this PR. **Not documented on code.claude.com/docs/en/hooks** — confirmed by direct page search, see "Version sensitivity" |
-| `Elicitation` | — | `mcp_server_name, message?, mode?, url?, elicitation_id?, requested_schema?` | Y | [B] only `mcp_server_name` was typed before this PR |
-| `ElicitationResult` | — | `mcp_server_name, elicitation_id?, mode?, action?, content?` | Y | [B] same |
+| `Elicitation` | Y (#889) | `mcp_server_name, message?, mode?, url?, elicitation_id?, requested_schema?` | Y | [B] only `mcp_server_name` was typed before this PR |
+| `ElicitationResult` | Y (#889) | `mcp_server_name, elicitation_id?, mode?, action?, content?` | Y | [B] same |
 | `CwdChanged` | — | `old_cwd, new_cwd` | Y (`watchPaths`) | [B] new type this PR |
 | `FileChanged` | — | `file_path, event` | Y (`watchPaths`) | [B] new type this PR |
 | `InstructionsLoaded` | — | `file_path, memory_type, load_reason, globs?, trigger_file_path?, parent_file_path?` | — | [B] was typed `source: string`, which **does not exist** in the binary at all |

@@ -1568,8 +1568,9 @@ async function createNewSession(
         // phantom-notification source (>1,100 confirmed pushes fired right after a
         // 0 ms approve). But #624/#712 review found real prompts that reach ONLY
         // the PTY (Claude's native Agent-Teams permissions, a passthrough
-        // re-render after a held hook's card was already dismissed, MCP
-        // elicitation dialogs) — those were silently swallowed by the old
+        // re-render after a held hook's card was already dismissed; MCP
+        // elicitation dialogs were a third until #889 registered the
+        // `Elicitation` hook) — those were silently swallowed by the old
         // unconditional suppression. `onOrphanPTYPrompt` tells the two apart
         // structurally (pending hook record / live registered question means the
         // gate owns this cycle) and debounces the genuine orphans before pushing.

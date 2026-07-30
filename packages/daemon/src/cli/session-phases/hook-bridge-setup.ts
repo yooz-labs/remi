@@ -387,7 +387,55 @@ export function setupHookBridge(
   // session's lifetime, mirroring `AutoApproveGate`'s `MAX_PARKED_INPUTS`.
   const MAX_PENDING_ELICITATIONS = 32;
   const elicitationQuestions = new Map<string, UUID>();
+  /**
+   * Record `elicitation_id -> questionId`, but NEVER let an id that is not a
+   * live registered card displace one that is (review finding on #889).
+   *
+   * `handleElicitation` mints an id and returns it unconditionally, but the
+   * emission behind it is fire-and-forget and can be dropped: `MessageAPI.
+   * handleQuestion` returns void and silently skips `addQuestion` when
+   * `QuestionDedup.shouldEmit` is false (`message-api.ts`). A re-fired
+   * `Elicitation` for the SAME `elicitation_id` is exactly that case — same
+   * `mcp_server_name`/`message` text, same `options: []` + `allowsFreeText:
+   * true`, so never "richer" — and the dedup baseline is still live because
+   * `handleElicitation` emits the question BEFORE its `onStatusChange
+   * ('waiting')`, so status never leaves 'waiting' to reset it. Overwriting
+   * blindly therefore pointed the map at a card that was never registered,
+   * leaving the FIRST card (the one the user can actually see) unreachable:
+   * `ElicitationResult` resolved the phantom, and the live card could only
+   * clear by the user answering it or LRU eviction. Same defect class as #925
+   * — a resolution path that cannot reach the question it is for — so the same
+   * guard: confirm the target is really registered.
+   *
+   * Note the rule is the OPPOSITE of `cancelExternallyResolved`-before-
+   * register (`auto-approve-gate.ts`), which resolves the earlier entry so the
+   * newer one wins. There, a re-requested permission genuinely re-renders, so
+   * newest is the live prompt. Here a re-fired `Elicitation` is the SAME MCP
+   * dialog, and the newer card is the one that does not exist; keeping the
+   * older, still-live card is what makes `ElicitationResult` able to close it.
+   */
   const rememberElicitation = (elicitationId: string, questionId: UUID): void => {
+    const previous = elicitationQuestions.get(elicitationId);
+    if (previous !== undefined && previous !== questionId) {
+      const previousIsLive = sessionRegistry.getQuestion(sessionId, previous) !== null;
+      if (previousIsLive) {
+        logError(
+          `[Hooks] Elicitation re-fired for ${elicitationId} while its card ${previous} is still live; keeping it (not tracking ${questionId}) so ElicitationResult resolves the card the user can see`,
+        );
+        return;
+      }
+    }
+    // Confirmed delivery, the #925 gate: `addQuestion` runs synchronously
+    // inside the `onQuestion` chain, so by now the card is either registered
+    // or was dropped. Tracking an id that never registered would make
+    // `ElicitationResult` broadcast a dismiss for a card no client ever saw
+    // and consume a slot under `MAX_PENDING_ELICITATIONS` for nothing.
+    if (sessionRegistry.getQuestion(sessionId, questionId) === null) {
+      logError(
+        `[Hooks] Elicitation card ${questionId} for ${elicitationId} was not registered (deduped as a repeat of a still-open prompt); not tracking it`,
+      );
+      return;
+    }
     if (elicitationQuestions.size >= MAX_PENDING_ELICITATIONS) {
       const oldest = elicitationQuestions.keys().next();
       if (!oldest.done) {

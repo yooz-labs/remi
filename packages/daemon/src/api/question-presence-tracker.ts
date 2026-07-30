@@ -433,6 +433,15 @@ export class QuestionPresenceTracker {
       // A pending rich permission request stays put unless the incoming is a
       // newer permission request: a generic Notification or a source-less
       // StopFailure-shaped question for the same agent must NOT evict it.
+      //
+      // Currently UNREACHABLE, deliberately kept (#890/Q5): both entry points
+      // -- `hook-bridge-setup.ts`'s `onQuestion` (gated to
+      // `source === 'permission_request'`) and `parkAwaitingPTY` below (always
+      // a permission question) -- now pass only 'permission_request', because
+      // Q5 deleted the 'notification' synthesis that was the other caller.
+      // Not deleted: this is the invariant that makes adding a future stashed
+      // source safe, and re-deriving it after a regression is how #574 was
+      // found in the first place.
       if (existing.source === 'permission_request' && question.source !== 'permission_request') {
         console.debug(
           `[QuestionPresenceTracker] Keeping richer pending permission_request for agent "${key}"; not evicting with source="${question.source ?? 'undefined'}" (kept="${existing.text.slice(0, 50)}", dropped="${question.text.slice(0, 50)}")`,
@@ -728,8 +737,10 @@ export class QuestionPresenceTracker {
             // `source: 'pty'` to the parser would have mislabeled every
             // hook-paired render as the unresolvable-by-signature cohort,
             // muddying the exact measurement #920's acceptance criterion asks
-            // for. The hook's own source ('permission_request' | 'notification')
-            // is authoritative here, mirroring text/options/agentId above.
+            // for. The hook's own source is authoritative here, mirroring
+            // text/options/agentId above. That source is always
+            // 'permission_request' since #890/Q5 deleted the 'notification'
+            // synthesis -- the only other value that ever reached this stash.
             source: hookRecord.source ?? ptyQuestion.source,
             // #718 review: `optionsAreFallback` must describe whichever
             // `options` ended up on the merged question, not silently inherit
@@ -801,9 +812,12 @@ export class QuestionPresenceTracker {
    * returns — and re-pushing those is the #625 phantom flood. But some
    * prompts reach ONLY the PTY (#712): Claude's native agent-team permission
    * prompts (no PermissionRequest hook fires for these at all, see
-   * anthropics/claude-code #23983), a prompt re-rendered as passthrough after
-   * a held hook was released (its card already dismissed, registry entry
-   * removed), and MCP elicitation dialogs. Those must still reach the phone.
+   * anthropics/claude-code #23983), and a prompt re-rendered as passthrough
+   * after a held hook was released (its card already dismissed, registry entry
+   * removed). Those must still reach the phone. (MCP elicitation dialogs USED
+   * to belong on this list; since #889 the `Elicitation` hook is registered
+   * and pushes the card itself, so its PTY render is a gate-owned echo like
+   * any other -- suppressed below via the live-question check, not orphaned.)
    *
    * Disambiguation is structural, not content-based: if the gate already owns
    * this prompt cycle, EITHER it has already registered a live question
