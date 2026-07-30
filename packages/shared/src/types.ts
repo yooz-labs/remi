@@ -283,8 +283,17 @@ export interface QuestionStep {
  * Provenance of a {@link Question} (#574). Drives the daemon's
  * QuestionPresenceTracker merge policy (richer hook text must win over the
  * generic notification fallback) and is otherwise inert on the wire.
+ *
+ * `'elicitation'` (#889/Q4): an MCP `Elicitation` hook dialog, surfaced as a
+ * first-class card instead of a PTY orphan. Deliberately NOT routed through
+ * `QuestionPresenceTracker.recordPendingHook` (the `hook-bridge-setup.ts`
+ * `onQuestion` callback only stashes `'permission_request'` there — the ONLY
+ * source it stashes since #890/Q5 deleted the `'notification'` synthesis) —
+ * like a source-less `StopFailure` "Retry?" card, it emits directly, since it
+ * is not part of the permission-escalation PTY-arbiter funnel (ADR 0004
+ * scopes that to permission hooks specifically).
  */
-export type QuestionSource = 'permission_request' | 'notification' | 'pty';
+export type QuestionSource = 'permission_request' | 'notification' | 'pty' | 'elicitation';
 
 /** Sentinel agent key for the primary (main) agent, whose questions carry no
  *  `agentId`. Normalize `agentId ?? MAIN_AGENT_ID` when building collection keys. */

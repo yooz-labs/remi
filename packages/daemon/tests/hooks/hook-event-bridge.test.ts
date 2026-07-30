@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { AgentStatus, Question } from '@remi/shared';
 import { HookEventBridge } from '../../src/hooks/hook-event-bridge.ts';
 import type {
+  ElicitationHookInput,
   NotificationHookInput,
   PermissionRequestHookInput,
   PostToolUseFailureHookInput,
@@ -72,7 +73,7 @@ describe('HookEventBridge', () => {
     expect(statuses).toEqual([{ status: 'thinking' }]);
   });
 
-  it('maps standalone Notification(permission_prompt) to the honest Yes/No 2-set', () => {
+  it('Notification(permission_prompt) sets waiting status but no longer synthesizes a question (#890, Q5)', () => {
     const { bridge, statuses, questions } = createBridge();
 
     bridge.handleNotification({
@@ -83,16 +84,12 @@ describe('HookEventBridge', () => {
     } as NotificationHookInput);
 
     expect(statuses).toEqual([{ status: 'waiting' }]);
-    expect(questions.length).toBe(1);
-    expect(questions[0]?.text).toBe('Claude needs your permission to use Bash');
-    // Fallback 2-option set (not parsed from message); this event never
-    // carries permission_suggestions (#718).
-    expect(questions[0]?.options.length).toBe(2);
-    expect(questions[0]?.options[0]?.label).toBe('Yes');
-    expect(questions[0]?.options[0]?.isYes).toBe(true);
-    expect(questions[0]?.options[1]?.label).toBe('No');
-    expect(questions[0]?.options[1]?.isNo).toBe(true);
-    expect(questions[0]?.optionsAreFallback).toBe(true);
+    // #890/Q5: the generic Yes/No-fallback Question this event used to
+    // synthesize is DELETED -- a capture corpus (4244 events / 5 sessions /
+    // one day) found the stash it fed always superseded by a richer paired
+    // PermissionRequest (68/68 paired, 0 unpaired). See handleNotification's
+    // own comment for the full argument.
+    expect(questions.length).toBe(0);
   });
 
   it('maps Notification(idle_prompt) to idle status', () => {
@@ -136,8 +133,8 @@ describe('HookEventBridge', () => {
     expect(sessionInfos[0]?.transcriptPath).toBe('/tmp/test.jsonl');
   });
 
-  it('provides default text for empty standalone Notification', () => {
-    const { bridge, questions } = createBridge();
+  it('an empty-message standalone Notification(permission_prompt) still only sets status (#890, Q5)', () => {
+    const { bridge, statuses, questions } = createBridge();
 
     bridge.handleNotification({
       ...makeCommon(),
@@ -146,11 +143,8 @@ describe('HookEventBridge', () => {
       message: '',
     } as NotificationHookInput);
 
-    expect(questions[0]?.text).toBe('Allow this action?');
-    expect(questions[0]?.options.length).toBe(2);
-    // #718: a generic Notification never carries permission_suggestions, so
-    // it is always the honest Yes/No fallback.
-    expect(questions[0]?.optionsAreFallback).toBe(true);
+    expect(statuses).toEqual([{ status: 'waiting' }]);
+    expect(questions.length).toBe(0);
   });
 
   it('hookHandlers returns handlers that delegate to bridge methods', () => {
@@ -784,6 +778,56 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[1]?.isNo).toBe(true);
   });
 
+  describe('Elicitation (#889, Q4)', () => {
+    it('builds a free-text answerable card, not fabricated Accept/Decline options', () => {
+      const { bridge, statuses, questions } = createBridge();
+
+      const id = bridge.handleElicitation({
+        ...makeCommon(),
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'some-mcp-server',
+        message: 'Please provide your API key',
+        elicitation_id: 'elicit-1',
+      } as ElicitationHookInput);
+
+      expect(statuses).toEqual([{ status: 'waiting' }]);
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.id).toBe(id);
+      expect(questions[0]?.text).toBe('some-mcp-server: Please provide your API key');
+      expect(questions[0]?.options).toEqual([]);
+      expect(questions[0]?.allowsFreeText).toBe(true);
+      expect(questions[0]?.source).toBe('elicitation');
+    });
+
+    it('falls back to a generic prompt when no message is present', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleElicitation({
+        ...makeCommon(),
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'some-mcp-server',
+      } as ElicitationHookInput);
+
+      expect(questions[0]?.text).toBe('some-mcp-server is requesting input');
+    });
+
+    it('carries agent_id and prompt_id through like every other hook-born question', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleElicitation({
+        ...makeCommon(),
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'some-mcp-server',
+        message: 'Confirm?',
+        agent_id: 'subagent-1',
+        prompt_id: 'prompt-1',
+      } as ElicitationHookInput);
+
+      expect(questions[0]?.agentId).toBe('subagent-1');
+      expect(questions[0]?.promptId).toBe('prompt-1');
+    });
+  });
+
   it('maps SessionEnd to idle status', () => {
     const { bridge, statuses } = createBridge();
 
@@ -809,13 +853,13 @@ describe('HookEventBridge', () => {
   });
 
   describe('PermissionRequest + Notification forwarding', () => {
-    it('emits BOTH question events when PermissionRequest is followed by Notification(permission_prompt)', () => {
-      // Phase 3: the 5 s `lastPermissionEmitAt` dedup window is gone. Both
-      // hook events now forward their metadata; QuestionPresenceTracker
-      // (cli.ts wiring) collapses them into a single push because the
-      // tracker only holds one `pending` slot at a time and PTY confirms
-      // once. This test pins the bridge contract: hand both events through.
-      const { bridge, questions } = createBridge();
+    it('a following Notification(permission_prompt) no longer emits a second question (#890, Q5)', () => {
+      // Phase 3: the 5 s `lastPermissionEmitAt` dedup window is gone. #890/Q5:
+      // the Notification-sourced synthesis this test used to also exercise
+      // is deleted -- Claude still fires Notification(permission_prompt)
+      // shortly after PermissionRequest, but it now only flips status; the
+      // ONE question the pair produces is the PermissionRequest's own.
+      const { bridge, statuses, questions } = createBridge();
 
       bridge.handlePermissionRequest({
         ...makeCommon(),
@@ -831,11 +875,19 @@ describe('HookEventBridge', () => {
         message: 'Allow Edit: /tmp/foo.ts?',
       } as NotificationHookInput);
 
-      expect(questions.length).toBe(2);
+      expect(questions.length).toBe(1);
+      expect(questions[0]?.source).toBe('permission_request');
+      // Both events set 'waiting'; the second is idempotent.
+      expect(statuses).toEqual([{ status: 'waiting' }, { status: 'waiting' }]);
     });
 
-    it('allows standalone Notification when no preceding PermissionRequest', () => {
-      const { bridge, questions } = createBridge();
+    it('a standalone Notification with no preceding PermissionRequest sets status but emits nothing (#890, Q5)', () => {
+      // The theoretical "unpaired" case (0/68 observed in a real capture
+      // corpus, see handleNotification's own comment). Since no
+      // PermissionRequest ever fired either, the auto-approve gate has
+      // nothing to escalate -- this event's only remaining job is the
+      // status flip, which is exactly what fires here.
+      const { bridge, statuses, questions } = createBridge();
 
       bridge.handleNotification({
         ...makeCommon(),
@@ -844,9 +896,8 @@ describe('HookEventBridge', () => {
         message: 'Claude needs your permission to use Bash',
       } as NotificationHookInput);
 
-      expect(questions.length).toBe(1);
-      expect(questions[0]?.text).toBe('Claude needs your permission to use Bash');
-      expect(questions[0]?.options.length).toBe(2);
+      expect(questions.length).toBe(0);
+      expect(statuses).toEqual([{ status: 'waiting' }]);
     });
 
     it('PermissionRequest includes tool context in question text', () => {
@@ -862,7 +913,7 @@ describe('HookEventBridge', () => {
       expect(questions[0]?.text).toBe('Allow Bash: ssh hallu "uv run pytest"');
     });
 
-    it('stamps source so the tracker can prefer the rich request over the generic notification (#574)', () => {
+    it('PermissionRequest stamps source: permission_request (#574) -- the only source the tracker stashes now', () => {
       const { bridge, questions } = createBridge();
 
       bridge.handlePermissionRequest({
@@ -878,8 +929,8 @@ describe('HookEventBridge', () => {
         message: 'Claude needs your permission to use Bash',
       } as NotificationHookInput);
 
+      expect(questions.length).toBe(1);
       expect(questions[0]?.source).toBe('permission_request');
-      expect(questions[1]?.source).toBe('notification');
     });
   });
 
@@ -939,11 +990,11 @@ describe('HookEventBridge', () => {
       expect(questions[1]?.text).toContain('dig example.com');
     });
 
-    it('forwards Notification(permission_prompt) during a Task tool call', () => {
+    it('Notification(permission_prompt) during a Task tool call still sets waiting, still no question (#890, Q5)', () => {
       // Mirror of the PermissionRequest test above. The bridge no longer
       // drops Notification(permission_prompt) based on subagent context;
-      // the tracker collapses hook+PTY events into a single push.
-      const { bridge, questions } = createBridge();
+      // it never emitted a question of its own to begin with post-#890.
+      const { bridge, statuses, questions } = createBridge();
 
       bridge.handlePreToolUse({
         ...makeCommon(),
@@ -960,8 +1011,8 @@ describe('HookEventBridge', () => {
         message: 'Claude needs your permission to use Bash',
       } as NotificationHookInput);
 
-      expect(questions).toHaveLength(1);
-      expect(questions[0]?.text).toBe('Claude needs your permission to use Bash');
+      expect(questions).toHaveLength(0);
+      expect(statuses.at(-1)).toEqual({ status: 'waiting' });
     });
 
     it('concurrent Task calls: context exits only when all complete', () => {

@@ -4,7 +4,51 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`PermissionDenied` and `Elicitation`/`ElicitationResult` are now
+  registered hooks, observe-only** (#889, Q4). A classifier-denied permission
+  fires no tool call, so nothing previously proved a still-open escalation
+  was resolved; `PermissionDenied` now routes into the same
+  `AutoApproveGate.cancelExternallyResolved` funnel PreToolUse/PostToolUse
+  use, matching on `tool_name` + `tool_input` + `agentId`. (It does carry a
+  `tool_use_id`, unlike `PermissionRequest` — but the escalation it would match
+  was registered from a `PermissionRequest`, which never sends one, so the
+  exact-id branch is unreachable from this path today and the id is
+  forward-compatible only.) An MCP `Elicitation` dialog previously
+  arrived only as a PTY orphan (the dedicated hook was never registered, and
+  the `Notification(elicitation_dialog)` variant that did fire was logged
+  and ignored); it now builds an answerable, free-text `Question` card
+  instead of fabricating Accept/Decline options nobody has verified against
+  a real dialog, and `ElicitationResult` resolves that exact card by
+  `elicitation_id`. Neither hook response encodes a decision —
+  `REMI_REGISTERED_HOOK_EVENTS` grows from 11 to 14, each new registration
+  measured at well under 1ms of added roundtrip latency locally.
+  Review fix before merge: an `Elicitation` re-fired for an `elicitation_id`
+  whose card was still open used to repoint the correlation map at the repeat,
+  which `QuestionDedup` had already suppressed (same text, same zero options,
+  so never "richer") — so `ElicitationResult` resolved an id that was never
+  registered and the card the user could actually see was left with no
+  automated way to clear. The map now refuses to displace a still-live card
+  and never tracks an id that did not reach `sessionRegistry`, the same
+  confirmed-delivery gate #888 landed. Review also added the two missing
+  guards' tests plus one proving `PermissionDenied` resolves only its own
+  agent when two escalations share a signature, and one proving Q5's residual
+  unpaired-notification path still surfaces a card; and corrected
+  `docs/claude-code-hook-contract.md`, which still listed all three
+  newly-registered events as unregistered.
+
 ### Fixed
+- **The redundant `Notification(permission_prompt)` question synthesis is
+  deleted** (#890, Q5). It fed a `QuestionPresenceTracker` stash that only
+  ever mattered if it arrived with no paired `PermissionRequest` — a richer
+  paired `PermissionRequest` (the common case) always superseded it, and the
+  stash itself is never pushed on its own. A capture corpus (4244 events / 5
+  sessions / one working day) found 68/68 `permission_prompt` notifications
+  paired by `prompt_id`, 0 unpaired. The event still flips status to
+  `'waiting'`; in the theoretical unpaired case, a still-rendering prompt
+  falls to the same orphan-PTY fallback every other hook-less prompt already
+  uses, not to silence.
+
 - **`QuestionStore` is now the single owner of a session's pending-question
   state, and a hook-less question can resolve from a screen render alone**
   (#888). Measured from a real capture (#920): of 29 daily source-less

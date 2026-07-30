@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
-import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
@@ -215,6 +215,10 @@ describe('setupHookBridge', () => {
        *  contract through the bridge wiring. Defaults to the passthrough
        *  tracker used by the legacy assertion-style tests. */
       realTracker?: boolean;
+      /** Shorten `QuestionPresenceTracker`'s orphan-PTY debounce (default
+       *  1.5s) so a test can drive the real hooked-session orphan path without
+       *  a long wait. Only meaningful with `realTracker`. */
+      orphanDebounceMs?: number;
       /** Capture every message the bridge sends via sendAndRecord (#576: the
        *  auto-approve status broadcasts). Defaults to a no-op send. */
       sendLog?: ProtocolMessage[];
@@ -231,16 +235,56 @@ describe('setupHookBridge', () => {
        *  Defaults to undefined (dep not wired, matches production callers
        *  that skip subagent-view tracking). */
       subagentViews?: SubagentViewRegistry;
+      /**
+       * Construct the REAL `MessageAPI` (real `QuestionDedup` inside it) -- per
+       * ADR 0014, tests that assert a card actually reached the registry (not
+       * just "the bridge called a stub N times") must construct the real push
+       * path, not `fakeMessageAPI`.
+       *
+       * The `onQuestion` callback below reproduces only the ONE step these
+       * tests assert on, `sessionRegistry.addQuestion`; it is deliberately not
+       * a copy of `message-api-setup.ts`'s callback, which also does
+       * `sendAndRecord`, the push/held decision and `claudeSessionId` stamping.
+       * What is real here is `MessageAPI` itself and the dedup inside it --
+       * the component whose behavior the elicitation tests turn on. Say which,
+       * because "wired exactly as production" would be the kind of coverage
+       * overclaim ADR 0014 exists to catch.
+       *
+       * Defaults to false (the existing fake, unchanged for every pre-#889
+       * test in this file).
+       */
+      realMessageApi?: boolean;
     } = {},
-  ): { tracker: QuestionPresenceTracker } {
-    const localMessageApi = fakeMessageAPI(
-      messageApiLog,
-      opts.throwOnQuestionTimes !== undefined
-        ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
-        : {},
-    );
+  ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI } {
+    const localMessageApi: MessageAPI = opts.realMessageApi
+      ? new MessageAPI(
+          { sessionId: SID, initialBulletId: 1 },
+          {
+            onQuestion: (question) => {
+              messageApiLog.questionCalls += 1;
+              sessionRegistry.addQuestion(SID, question, question.source ?? 'unknown');
+            },
+            onStatusChange: (status) => {
+              messageApiLog.statusCalls.push(status);
+            },
+          },
+        )
+      : fakeMessageAPI(
+          messageApiLog,
+          opts.throwOnQuestionTimes !== undefined
+            ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
+            : {},
+        );
     const tracker: QuestionPresenceTracker = opts.realTracker
-      ? new QuestionPresenceTracker((q) => localMessageApi.handleQuestion(q))
+      ? new QuestionPresenceTracker(
+          (q) => localMessageApi.handleQuestion(q),
+          // Only pass deps when a test asked for a shortened orphan debounce,
+          // so the pre-existing realTracker tests keep their exact wiring
+          // (default 1.5s window, no hasLiveQuestions dep).
+          opts.orphanDebounceMs !== undefined
+            ? { orphanDebounceMs: opts.orphanDebounceMs }
+            : undefined,
+        )
       : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
@@ -339,10 +383,10 @@ describe('setupHookBridge', () => {
       },
     );
     bridgeHandles.push(handle);
-    return { tracker };
+    return { tracker, messageApi: localMessageApi };
   }
 
-  test('registers 10 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
+  test('registers 13 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
     build();
     const events = new Set(hookServer.listeners.keys());
     // PermissionRequest is NO LONGER a .on() listener — it is the synchronous
@@ -360,6 +404,10 @@ describe('setupHookBridge', () => {
         'PostToolUseFailure',
         'SubagentStart',
         'SubagentStop',
+        // Wired for Q4 (#889).
+        'PermissionDenied',
+        'Elicitation',
+        'ElicitationResult',
       ]),
     );
     expect(hookServer.permissionResolver).not.toBeNull();
@@ -1671,10 +1719,16 @@ describe('setupHookBridge', () => {
     expect(pushed.length).toBe(0);
   });
 
-  test('Phase 4 wiring: subagent Notification(permission_prompt) records in tracker', async () => {
+  test('Phase 4 wiring: subagent Notification(permission_prompt) no longer records in tracker (#890, Q5)', async () => {
     // Notification(permission_prompt) used to be dropped at the listener
-    // when agent_id was present. Under phase 4 it flows to the tracker
-    // just like its PermissionRequest sibling.
+    // when agent_id was present; phase 4 (#419) made it flow to the tracker
+    // like its PermissionRequest sibling. #890/Q5 deleted the question
+    // synthesis Notification(permission_prompt) fed into that tracker slot
+    // entirely (a capture corpus found the stash it fed always superseded
+    // by the richer paired PermissionRequest, 68/68 pairs, 0 unpaired) --
+    // the bridge's onQuestion callback now only stashes `source ===
+    // 'permission_request'`, so a Notification with no preceding
+    // PermissionRequest leaves the tracker with nothing pending at all.
     const { tracker } = build({ realTracker: true });
 
     hookServer.fire('SessionStart', {
@@ -1693,7 +1747,70 @@ describe('setupHookBridge', () => {
       message: 'Claude needs your permission to use Bash',
     });
 
-    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(tracker.hasPendingForTest()).toBe(false);
+  });
+
+  test('#890 residual path: an UNPAIRED permission_prompt whose prompt renders still surfaces a card', async () => {
+    // Q5's safety argument has two halves. The test above proves the first
+    // (nothing is stashed anymore). This proves the second, which the PR
+    // asserted in a comment but never exercised: with the stash gone, a
+    // permission_prompt that arrives with NO paired PermissionRequest and then
+    // DOES render must still reach the user, via the same orphan-PTY fallback
+    // every genuinely hook-less prompt uses. If that were wrong, deleting the
+    // synthesis would have turned the rare unpaired case into silence -- the
+    // exact outcome the capture gate was meant to rule out.
+    //
+    // Driven through `onOrphanPTYPrompt`, which is what cli.ts routes to when a
+    // hookServer is active, not the non-hooked `onPTYPromptVisible` core.
+    const { tracker } = build({
+      realTracker: true,
+      realMessageApi: true,
+      orphanDebounceMs: 5,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-890-unpaired',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'unpaired.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // No PermissionRequest -- this is the unpaired case by construction.
+    hookServer.fire('Notification', {
+      session_id: 'claude-890-unpaired',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+
+    // The prompt renders anyway.
+    tracker.onOrphanPTYPrompt({
+      id: 'pty-q-890' as UUID,
+      text: 'Allow Bash: curl example.com?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      source: 'pty',
+    });
+
+    // Poll the debounce out rather than sleeping a guess.
+    const deadline = Date.now() + 2000;
+    while (
+      (sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0) === 0 &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const questions = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    expect(questions).toHaveLength(1);
+    // The PTY's own text and provenance survive -- nothing was merged over it,
+    // because there is no hook record to merge.
+    expect(questions[0]?.text).toBe('Allow Bash: curl example.com?');
+    expect(questions[0]?.source).toBe('pty');
   });
 
   test('#807: a subagent never reaches an approve verdict — passthrough, no inject, no escalate', async () => {
@@ -2387,6 +2504,377 @@ describe('setupHookBridge', () => {
       });
 
       expect(broadcastResolvedLog).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #889 (Q4): a classifier-denied permission fires no tool call, so
+  // PreToolUse/PostToolUse never observe it -- PermissionDenied is wired into
+  // the SAME `cancelExternallyResolved` funnel. Matching is
+  // tool_name+tool_input+agentId; `PermissionDenied` also carries a
+  // `tool_use_id`, but it is forward-compatible only.
+  //
+  // Deliberately NO test for exact-`tool_use_id` disambiguation through this
+  // path, and that absence is the honest outcome rather than a gap: the
+  // registered signature is built from the `PermissionRequest` that opened the
+  // escalation, and that event never sends a `tool_use_id`, so
+  // `findOpenQuestionMatching`'s "both sides carry one" branch cannot be
+  // reached from here. Writing such a test would mean fabricating a
+  // `PermissionRequest` with an id Claude Code does not send -- a test that
+  // passes about an input shape that never occurs, which is exactly the
+  // coverage claim ADR 0014 says not to make. The branch itself IS covered,
+  // generically, by `auto-approve-gate.test.ts`. Reconsider when a capture
+  // shows `PermissionRequest` carrying an id.
+  // ---------------------------------------------------------------------------
+  describe('#889 (Q4): PermissionDenied external resolution', () => {
+    function lock(id: string): void {
+      hookServer.fire('SessionStart', {
+        session_id: id,
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('a matching MAIN PermissionDenied resolves the open (parked/passthrough) escalation', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-889-denied-main');
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-889-denied-main',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'curl evil.example' },
+      });
+      expect(decision).toBe('passthrough');
+      expect(broadcastResolvedLog).toHaveLength(0); // still open
+
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-main',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'curl evil.example' },
+        tool_use_id: 'tu-1',
+        reason: 'blocked by classifier',
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('a matching SUBAGENT PermissionDenied resolves the parked escalation, scoped to that agent', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const { tracker } = build({
+        autoApprove: true,
+        autoApproveDecision: 'escalate',
+        broadcastResolvedLog,
+      });
+      lock('claude-889-denied-sub');
+
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-sub',
+        agent_id: 'agent-889-1',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /tmp/x' },
+      });
+      expect(tracker.awaitingPTYCountForTest()).toBe(1);
+
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-sub',
+        agent_id: 'agent-889-1',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /tmp/x' },
+        tool_use_id: 'tu-2',
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('with two escalations open on the SAME signature, PermissionDenied resolves only its own agent', async () => {
+      // Review gap: dropping the `sig.agentId !== observed.agentId` check in
+      // `findOpenQuestionMatching` left all 160 tests in the two files this PR
+      // touches green. The shared matcher is covered in
+      // `auto-approve-gate.test.ts`, but nothing proved the `agentId:
+      // input.agent_id` passthrough on THIS wiring path actually scopes -- and
+      // a PermissionDenied closing another agent's still-open question is the
+      // swallow class #925 was. Same tool + same tool_input on purpose, so
+      // agent identity is the ONLY thing that can disambiguate.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-889-denied-2agents');
+
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-A',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-B',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(0);
+
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-A',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+
+      // Exactly one resolution: agent-B's question must survive, because it is
+      // still open and only the PTY can answer it.
+      expect(broadcastResolvedLog).toHaveLength(1);
+
+      // And agent-B's own denial still resolves it afterward -- proving the
+      // survivor was genuinely still tracked, not silently dropped.
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-B',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(2);
+    });
+
+    test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-889-denied-nomatch');
+
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-nomatch',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-nomatch',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' }, // different command -> no signature match
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(0);
+    });
+
+    test('PermissionDenied for a FOREIGN session_id is dropped by the admit gate (no cross-session resolution)', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-889-denied-foreign');
+
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-foreign',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-OTHER',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      expect(broadcastResolvedLog).toHaveLength(0);
+    });
+
+    test('with NO open escalation at all, PermissionDenied is a clean no-op (never throws)', () => {
+      build({ autoApprove: true, autoApproveDecision: 'escalate' });
+      lock('claude-889-denied-empty');
+
+      expect(() =>
+        hookServer.fire('PermissionDenied', {
+          session_id: 'claude-889-denied-empty',
+          hook_event_name: 'PermissionDenied',
+          tool_name: 'Bash',
+          tool_input: { command: 'echo hi' },
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #889 (Q4): an MCP Elicitation dialog previously arrived only as a PTY
+  // orphan. These tests construct the REAL MessageAPI (ADR 0014: the push
+  // path is directly involved -- the claim under test is "the card actually
+  // reached the registry via the real dedup", not just "a stub was called").
+  // ---------------------------------------------------------------------------
+  describe('#889 (Q4): Elicitation / ElicitationResult (real MessageAPI, ADR 0014)', () => {
+    function lock(id: string): void {
+      hookServer.fire('SessionStart', {
+        session_id: id,
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('Elicitation builds a free-text card that reaches sessionRegistry through the real dedup', () => {
+      build({ realMessageApi: true });
+      lock('claude-889-elicit-1');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-1',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-abc',
+      });
+
+      const questions = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+      expect(questions).toHaveLength(1);
+      expect(questions[0]?.text).toBe('weather-mcp: Which city?');
+      expect(questions[0]?.source).toBe('elicitation');
+      expect(questions[0]?.allowsFreeText).toBe(true);
+      expect(questions[0]?.options).toEqual([]);
+    });
+
+    test('ElicitationResult resolves the exact card by elicitation_id', () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-2');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-2',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-xyz',
+      });
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-2',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-xyz',
+        action: 'accept',
+      });
+
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('a re-fired Elicitation for the same id keeps the live card resolvable (review finding)', () => {
+      // The dedup drops the second emission (same text, same 0 options, same
+      // allowsFreeText -> never "richer", and status never left 'waiting' to
+      // reset the baseline), so its returned id names a card that was never
+      // registered. Blindly overwriting the correlation pointed
+      // ElicitationResult at that phantom and orphaned card A -- the card the
+      // user is actually looking at -- with no automated way to clear it.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-dup');
+
+      const fire = (): void => {
+        hookServer.fire('Elicitation', {
+          session_id: 'claude-889-elicit-dup',
+          hook_event_name: 'Elicitation',
+          mcp_server_name: 'weather-mcp',
+          message: 'Which city?',
+          elicitation_id: 'elicit-dup',
+        });
+      };
+      fire();
+      const cardA = [...(sessionRegistry.getSession(SID)?.currentQuestions.keys() ?? [])][0];
+      expect(cardA).toBeDefined();
+
+      fire();
+      // The repeat never became a second card, so there is still exactly one.
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-dup',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-dup',
+        action: 'accept',
+      });
+
+      // The still-live card A is the one that resolves, not a phantom.
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.questionId).toBe(cardA as UUID);
+    });
+
+    test('ElicitationResult with an UNKNOWN elicitation_id is a no-op (card, if any, stays)', () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-3');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-3',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-real',
+      });
+
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-3',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-DOES-NOT-EXIST',
+      });
+
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1); // untouched
+      expect(broadcastResolvedLog).toHaveLength(0);
+    });
+
+    test('an Elicitation with NO elicitation_id still creates a card, but is not resolvable by ElicitationResult', () => {
+      build({ realMessageApi: true });
+      lock('claude-889-elicit-4');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-4',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        // no elicitation_id
+      });
+
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+
+      // A later ElicitationResult (even with a real id from some OTHER
+      // dialog) cannot possibly correlate -- graceful degradation, same as
+      // PermissionRequest's own missing tool_use_id.
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-4',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'some-other-id',
+      });
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1); // still there
+    });
+
+    test('Elicitation for a FOREIGN session_id is dropped by the admit gate', () => {
+      build({ realMessageApi: true });
+      lock('claude-889-elicit-5');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-OTHER',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-foreign',
+      });
+
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
     });
   });
 

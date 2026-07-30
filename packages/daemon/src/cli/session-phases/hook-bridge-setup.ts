@@ -34,13 +34,28 @@
  * still open for THAT agent (the terminal-rejection case a matching tool
  * call can never signal, since a deny produces no tool call at all).
  *
+ * #889 (Q4) adds two more observe-only resolution/surfacing paths, both
+ * registered in `REMI_REGISTERED_HOOK_EVENTS` for the first time here:
+ *   - `PermissionDenied` routes into the SAME external-resolution funnel as
+ *     PreToolUse/PostToolUse (`gate.cancelExternallyResolved`) — a classifier
+ *     denial fires no tool call, so without this a still-open escalation for
+ *     it would linger with no other resolution signal.
+ *   - `Elicitation` builds an answerable card (`hookBridge.handleElicitation`,
+ *     source `'elicitation'`, direct-emitted like a source-less StopFailure
+ *     card) instead of leaving an MCP dialog as a PTY orphan; `elicitationQuestions`
+ *     (below) remembers its `elicitation_id` so a later `ElicitationResult`
+ *     can resolve the SAME card by exact id, mirroring PermissionDenied's
+ *     "close the lingering-card gap" shape.
+ *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
- * registers 11 hookServer listeners — the original 7 (SessionStart, PreToolUse,
- * PostToolUse, Notification, PermissionRequest, Stop, SessionEnd) plus the 4
+ * registers 13 hookServer `.on()` listeners — the original 6 (SessionStart,
+ * PreToolUse, PostToolUse, Notification, Stop, SessionEnd; PermissionRequest
+ * is installed separately via `setPermissionResolver`, not `.on()`) plus the 4
  * wired in phase 4 (StopFailure, PostToolUseFailure, SubagentStart, SubagentStop)
- * — and returns void. It runs once per session at createNewSession time, only
- * when a hookServer is configured.
+ * plus the 3 wired for Q4 (#889: PermissionDenied, Elicitation,
+ * ElicitationResult) — and returns void. It runs once per session at
+ * createNewSession time, only when a hookServer is configured.
  *
  * The inline session-binding path this file used to also carry (pre-#453) and
  * the shadow-mode differential wiring (#453 phase 3, commit 3) were deleted in
@@ -357,6 +372,114 @@ export function setupHookBridge(
     sessionRegistry.clearQuestions(sessionId, 'session_restart');
   };
 
+  // ---- Elicitation correlation (#889, Q4) ----------------------------------
+  //
+  // `Elicitation` builds a card via `hookBridge.handleElicitation`, direct-
+  // emitted (source 'elicitation', not stashed by the tracker -- see the
+  // module doc above). `ElicitationResult` is the resolution signal: both
+  // events carry `elicitation_id` (optional -- absent on either side means no
+  // correlation is possible, same graceful-degradation as PermissionRequest's
+  // missing tool_use_id), an EXACT key, so this map is a simple id->id lookup
+  // rather than the tool-signature matching `openQuestionSignatures` needs.
+  // Scoped to this session's closure (dropped with the bridge on teardown, so
+  // it cannot outlive the session); capped defensively so a pathological
+  // stream of never-resolved elicitations cannot grow it unbounded within one
+  // session's lifetime. Same motivation as `AutoApproveGate`'s
+  // `MAX_PARKED_INPUTS` but deliberately a smaller number, not a mirror of it
+  // (that one is 64, `auto-approve-gate.ts`): an MCP dialog per session is far
+  // rarer than a parked permission input.
+  const MAX_PENDING_ELICITATIONS = 32;
+  const elicitationQuestions = new Map<string, UUID>();
+  /**
+   * Record `elicitation_id -> questionId`, but NEVER let an id that is not a
+   * live registered card displace one that is (review finding on #889).
+   *
+   * `handleElicitation` mints an id and returns it unconditionally, but the
+   * emission behind it is fire-and-forget and can be dropped: `MessageAPI.
+   * handleQuestion` returns void and silently skips `addQuestion` when
+   * `QuestionDedup.shouldEmit` is false (`message-api.ts`). A re-fired
+   * `Elicitation` for the SAME `elicitation_id` is exactly that case — same
+   * `mcp_server_name`/`message` text, same `options: []` + `allowsFreeText:
+   * true`, so never "richer" — and the dedup baseline is still live because
+   * `handleElicitation` emits the question BEFORE its `onStatusChange
+   * ('waiting')`, so status never leaves 'waiting' to reset it. Overwriting
+   * blindly therefore pointed the map at a card that was never registered,
+   * leaving the FIRST card (the one the user can actually see) unreachable:
+   * `ElicitationResult` resolved the phantom, and the live card could only
+   * clear by the user answering it or LRU eviction. Same defect class as #925
+   * — a resolution path that cannot reach the question it is for — so the same
+   * guard: confirm the target is really registered.
+   *
+   * Note the rule is the OPPOSITE of `cancelExternallyResolved`-before-
+   * register (`auto-approve-gate.ts`), which resolves the earlier entry so the
+   * newer one wins. There, a re-requested permission genuinely re-renders, so
+   * newest is the live prompt. Here a re-fired `Elicitation` is the SAME MCP
+   * dialog, and the newer card is the one that does not exist; keeping the
+   * older, still-live card is what makes `ElicitationResult` able to close it.
+   */
+  const rememberElicitation = (elicitationId: string, questionId: UUID): void => {
+    const previous = elicitationQuestions.get(elicitationId);
+    if (previous !== undefined && previous !== questionId) {
+      const previousIsLive = sessionRegistry.getQuestion(sessionId, previous) !== null;
+      if (previousIsLive) {
+        logError(
+          `[Hooks] Elicitation re-fired for ${elicitationId} while its card ${previous} is still live; keeping it (not tracking ${questionId}) so ElicitationResult resolves the card the user can see`,
+        );
+        return;
+      }
+    }
+    // Confirmed delivery, the #925 gate: `addQuestion` runs synchronously
+    // inside the `onQuestion` chain, so by now the card is either registered
+    // or was dropped. Tracking an id that never registered would make
+    // `ElicitationResult` broadcast a dismiss for a card no client ever saw
+    // and consume a slot under `MAX_PENDING_ELICITATIONS` for nothing.
+    if (sessionRegistry.getQuestion(sessionId, questionId) === null) {
+      logError(
+        `[Hooks] Elicitation card ${questionId} for ${elicitationId} was not registered (deduped as a repeat of a still-open prompt); not tracking it`,
+      );
+      return;
+    }
+    if (elicitationQuestions.size >= MAX_PENDING_ELICITATIONS) {
+      const oldest = elicitationQuestions.keys().next();
+      if (!oldest.done) {
+        elicitationQuestions.delete(oldest.value);
+        logError(
+          `[Hooks] elicitationQuestions at cap (${MAX_PENDING_ELICITATIONS}) for ${sessionId}; evicted the oldest tracked elicitation -- its ElicitationResult (if any) will no longer resolve its card`,
+        );
+      }
+    }
+    elicitationQuestions.set(elicitationId, questionId);
+  };
+  /** Resolve + clear a previously-pushed elicitation card by its exact
+   *  `elicitation_id`. A no-op when nothing is tracked under that id (no
+   *  correlation was possible, already resolved, or evicted at the cap) --
+   *  mirrors `cancelExternallyResolved`'s own no-op-on-no-match safety. */
+  const resolveElicitation = (elicitationId: string): void => {
+    const questionId = elicitationQuestions.get(elicitationId);
+    if (!questionId) return;
+    elicitationQuestions.delete(elicitationId);
+    try {
+      deps.broadcastQuestionResolved?.(sessionId, questionId, 'cancelled');
+    } catch (err) {
+      logError(
+        `[Hooks] question_resolved broadcast (ElicitationResult) failed for ${questionId}: ${errorToString(err)}`,
+      );
+    }
+    try {
+      sessionRegistry.removeQuestion(
+        sessionId,
+        questionId,
+        'ElicitationResult',
+        undefined,
+        'setupHookBridge.resolveElicitation',
+      );
+    } catch (err) {
+      logError(
+        `[Hooks] removeQuestion (ElicitationResult) failed for ${questionId}: ${errorToString(err)}`,
+      );
+    }
+  };
+
   // ---- Bridge + hook handler registration ---------------------------------
 
   const hookBridge = new HookEventBridge(sessionId, {
@@ -370,17 +493,19 @@ export function setupHookBridge(
       // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
       // only stashes; it never emits on its own.
       //   - 'permission_request' (rich: tool + command + options) is the one the gate
-      //     escalates and pushes by id.
-      //   - 'notification' is Claude's redundant generic "needs your permission"
-      //     prompt; it is INTENTIONALLY stashed-and-suppressed (NOT routed to the
-      //     direct-emit path), because direct-emitting it would push for EVERY
-      //     permission — including auto-approved ones — which is exactly the phantom
-      //     #625 removes. It is bounded (one per agent) and cleared on status-leaves-
-      //     waiting. (Assumes Claude pairs it with a PermissionRequest, true today.)
+      //     escalates and pushes by id. This is the ONLY source stashed here now:
+      //     `HookEventBridge` used to also synthesize a redundant generic
+      //     'notification' question from Claude's Notification(permission_prompt)
+      //     (Claude still fires it — it just pairs with the PermissionRequest above
+      //     rather than producing a second Question); #890/Q5 deleted that
+      //     synthesis after a capture corpus found 0 unpaired occurrences across
+      //     4244 events / 5 sessions / one day (see `handleNotification`'s own
+      //     comment for the full argument + residual failure mode).
       // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
-      // source-less) is emitted directly to the client + lock screen, since the
-      // PTY-render push that used to deliver it is suppressed for hooked sessions.
-      if (question.source === 'permission_request' || question.source === 'notification') {
+      // source-less, or an 'elicitation' card, #889) is emitted directly to the
+      // client + lock screen, since the PTY-render push that used to deliver it
+      // is suppressed for hooked sessions.
+      if (question.source === 'permission_request') {
         tracker.recordPendingHook(question);
       } else {
         messageApi.handleQuestion(question);
@@ -601,6 +726,11 @@ export function setupHookBridge(
         // stale answers are refused.
         tracker.clearPending();
         resolveAndClearQuestions();
+        // #889: drop any elicitation_id correlations too -- their target
+        // questions were just cleared above, and a stale entry surviving into
+        // the new session could (in principle, if Claude Code ever reused an
+        // elicitation_id) resolve an unrelated future card.
+        elicitationQuestions.clear();
         // The new session starts with no subagents (#499 phase 3).
         if (subagentViews) {
           subagentViews.clear();
@@ -936,6 +1066,57 @@ export function setupHookBridge(
       tracker.noteAgentAdvanced(input.agent_id);
       autoApproveGate.cancelStaleForAgent(input.agent_id, 'SubagentStop');
     }
+  });
+
+  // ---- Q4 (#889): PermissionDenied + Elicitation/ElicitationResult --------
+  // Newly registered in REMI_REGISTERED_HOOK_EVENTS by this change (see
+  // hook-types.ts for why). Both stay observe-only: neither hook response
+  // encodes a decision -- `handleRequest` (hook-server.ts) never installs a
+  // resolver for these event names, so they always fall through to the plain
+  // `{}` 200 response, exactly like Stop/SessionEnd/StopFailure today.
+
+  hookServer.on('PermissionDenied', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    // A classifier denial fires no tool call, so PreToolUse/PostToolUse never
+    // observe it -- this is the ONLY external-resolution signal for it. Same
+    // funnel, same signature-then-tool_use_id matching as PreToolUse/
+    // PostToolUse above; a no-op when nothing open matches (the codebase-wide
+    // rule from `auto-approve-gate.ts`, "every ambiguous path resolves toward
+    // showing the user" -- see `question-presence-tracker.ts`'s own citation of
+    // it; NOT something #889 introduced -- this never guesses,
+    // it only clears an escalation THIS gate is still tracking under the
+    // exact same tool_name+tool_input+agentId, and tool_use_id when both
+    // sides carry one).
+    autoApproveGate.cancelExternallyResolved(
+      {
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
+      },
+      'PermissionDenied',
+    );
+  });
+
+  hookServer.on('Elicitation', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    try {
+      const questionId = hookBridge.handleElicitation(input);
+      if (input.elicitation_id) {
+        rememberElicitation(input.elicitation_id, questionId);
+      }
+    } catch (err) {
+      logError(`[Hooks] Elicitation handling failed for ${sessionId}: ${errorToString(err)}`);
+    }
+  });
+
+  hookServer.on('ElicitationResult', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    if (!input.elicitation_id) return;
+    resolveElicitation(input.elicitation_id);
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
