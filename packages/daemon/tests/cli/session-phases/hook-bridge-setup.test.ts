@@ -215,6 +215,10 @@ describe('setupHookBridge', () => {
        *  contract through the bridge wiring. Defaults to the passthrough
        *  tracker used by the legacy assertion-style tests. */
       realTracker?: boolean;
+      /** Shorten `QuestionPresenceTracker`'s orphan-PTY debounce (default
+       *  1.5s) so a test can drive the real hooked-session orphan path without
+       *  a long wait. Only meaningful with `realTracker`. */
+      orphanDebounceMs?: number;
       /** Capture every message the bridge sends via sendAndRecord (#576: the
        *  auto-approve status broadcasts). Defaults to a no-op send. */
       sendLog?: ProtocolMessage[];
@@ -232,11 +236,20 @@ describe('setupHookBridge', () => {
        *  that skip subagent-view tracking). */
       subagentViews?: SubagentViewRegistry;
       /**
-       * Construct the REAL `MessageAPI` (real `QuestionDedup` inside it),
-       * wired exactly as `message-api-setup.ts`'s `onQuestion` callback wires
-       * it (`sessionRegistry.addQuestion`) -- per ADR 0014, tests that assert
-       * a card actually reached the registry (not just "the bridge called a
-       * stub N times") must construct the real push path, not `fakeMessageAPI`.
+       * Construct the REAL `MessageAPI` (real `QuestionDedup` inside it) -- per
+       * ADR 0014, tests that assert a card actually reached the registry (not
+       * just "the bridge called a stub N times") must construct the real push
+       * path, not `fakeMessageAPI`.
+       *
+       * The `onQuestion` callback below reproduces only the ONE step these
+       * tests assert on, `sessionRegistry.addQuestion`; it is deliberately not
+       * a copy of `message-api-setup.ts`'s callback, which also does
+       * `sendAndRecord`, the push/held decision and `claudeSessionId` stamping.
+       * What is real here is `MessageAPI` itself and the dedup inside it --
+       * the component whose behavior the elicitation tests turn on. Say which,
+       * because "wired exactly as production" would be the kind of coverage
+       * overclaim ADR 0014 exists to catch.
+       *
        * Defaults to false (the existing fake, unchanged for every pre-#889
        * test in this file).
        */
@@ -263,7 +276,15 @@ describe('setupHookBridge', () => {
             : {},
         );
     const tracker: QuestionPresenceTracker = opts.realTracker
-      ? new QuestionPresenceTracker((q) => localMessageApi.handleQuestion(q))
+      ? new QuestionPresenceTracker(
+          (q) => localMessageApi.handleQuestion(q),
+          // Only pass deps when a test asked for a shortened orphan debounce,
+          // so the pre-existing realTracker tests keep their exact wiring
+          // (default 1.5s window, no hasLiveQuestions dep).
+          opts.orphanDebounceMs !== undefined
+            ? { orphanDebounceMs: opts.orphanDebounceMs }
+            : undefined,
+        )
       : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
@@ -1729,6 +1750,69 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
+  test('#890 residual path: an UNPAIRED permission_prompt whose prompt renders still surfaces a card', async () => {
+    // Q5's safety argument has two halves. The test above proves the first
+    // (nothing is stashed anymore). This proves the second, which the PR
+    // asserted in a comment but never exercised: with the stash gone, a
+    // permission_prompt that arrives with NO paired PermissionRequest and then
+    // DOES render must still reach the user, via the same orphan-PTY fallback
+    // every genuinely hook-less prompt uses. If that were wrong, deleting the
+    // synthesis would have turned the rare unpaired case into silence -- the
+    // exact outcome the capture gate was meant to rule out.
+    //
+    // Driven through `onOrphanPTYPrompt`, which is what cli.ts routes to when a
+    // hookServer is active, not the non-hooked `onPTYPromptVisible` core.
+    const { tracker } = build({
+      realTracker: true,
+      realMessageApi: true,
+      orphanDebounceMs: 5,
+    });
+
+    hookServer.fire('SessionStart', {
+      session_id: 'claude-890-unpaired',
+      hook_event_name: 'SessionStart',
+      transcript_path: path.join(tmpDir, 'unpaired.jsonl'),
+      source: 'startup',
+      model: 'test',
+    });
+
+    // No PermissionRequest -- this is the unpaired case by construction.
+    hookServer.fire('Notification', {
+      session_id: 'claude-890-unpaired',
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    });
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+
+    // The prompt renders anyway.
+    tracker.onOrphanPTYPrompt({
+      id: 'pty-q-890' as UUID,
+      text: 'Allow Bash: curl example.com?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      source: 'pty',
+    });
+
+    // Poll the debounce out rather than sleeping a guess.
+    const deadline = Date.now() + 2000;
+    while (
+      (sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0) === 0 &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const questions = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    expect(questions).toHaveLength(1);
+    // The PTY's own text and provenance survive -- nothing was merged over it,
+    // because there is no hook record to merge.
+    expect(questions[0]?.text).toBe('Allow Bash: curl example.com?');
+    expect(questions[0]?.source).toBe('pty');
+  });
+
   test('#807: a subagent never reaches an approve verdict — passthrough, no inject, no escalate', async () => {
     // Regression guard for the dev.3 misfiring: a background subagent's
     // PermissionRequest cannot answer by injecting into the MAIN PTY because
@@ -2497,6 +2581,61 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+    });
+
+    test('with two escalations open on the SAME signature, PermissionDenied resolves only its own agent', async () => {
+      // Review gap: dropping the `sig.agentId !== observed.agentId` check in
+      // `findOpenQuestionMatching` left all 160 tests in the two files this PR
+      // touches green. The shared matcher is covered in
+      // `auto-approve-gate.test.ts`, but nothing proved the `agentId:
+      // input.agent_id` passthrough on THIS wiring path actually scopes -- and
+      // a PermissionDenied closing another agent's still-open question is the
+      // swallow class #925 was. Same tool + same tool_input on purpose, so
+      // agent identity is the ONLY thing that can disambiguate.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ autoApprove: true, autoApproveDecision: 'escalate', broadcastResolvedLog });
+      lock('claude-889-denied-2agents');
+
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-A',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      await hookServer.firePermission({
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-B',
+        agent_type: 'general-purpose',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(0);
+
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-A',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+
+      // Exactly one resolution: agent-B's question must survive, because it is
+      // still open and only the PTY can answer it.
+      expect(broadcastResolvedLog).toHaveLength(1);
+
+      // And agent-B's own denial still resolves it afterward -- proving the
+      // survivor was genuinely still tracked, not silently dropped.
+      hookServer.fire('PermissionDenied', {
+        session_id: 'claude-889-denied-2agents',
+        agent_id: 'agent-B',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      });
+      expect(broadcastResolvedLog).toHaveLength(2);
     });
 
     test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {

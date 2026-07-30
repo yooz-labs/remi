@@ -27,7 +27,12 @@ All notable changes to Remi are documented here.
   registered and the card the user could actually see was left with no
   automated way to clear. The map now refuses to displace a still-live card
   and never tracks an id that did not reach `sessionRegistry`, the same
-  confirmed-delivery gate #888 landed.
+  confirmed-delivery gate #888 landed. Review also added the two missing
+  guards' tests plus one proving `PermissionDenied` resolves only its own
+  agent when two escalations share a signature, and one proving Q5's residual
+  unpaired-notification path still surfaces a card; and corrected
+  `docs/claude-code-hook-contract.md`, which still listed all three
+  newly-registered events as unregistered.
 
 ### Fixed
 - **The redundant `Notification(permission_prompt)` question synthesis is

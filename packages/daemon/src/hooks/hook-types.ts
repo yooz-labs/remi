@@ -646,6 +646,19 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * none of these three needs a longer budget (no eval, no hold; #889's own
  * text said "~1s", which does not match this codebase's actual default —
  * see the PR for the measured per-event latency instead).
+ *
+ * **A listener's own work is on Claude's critical path.** `HookServer.
+ * handleRequest` (`hook-server.ts`) calls `this.dispatch(body)` and only THEN
+ * returns the `{}` response, and `dispatch` invokes listeners synchronously —
+ * so every millisecond an `.on()` handler spends is a millisecond Claude Code
+ * sits blocked on the hook. There is no answer-first escape hatch to fall back
+ * on. #889's own text asserted the opposite ("HookServer answers `{}` BEFORE
+ * doing work"), which is why this is written down here rather than left as
+ * folklore: the three registrations above are safe because each handler is a
+ * map lookup or a signature compare, not because responding is free. Anything
+ * heavier (an LLM call, a file read, a network hop) must move off the listener
+ * — the way `PermissionRequest` does with its hold/park design — before its
+ * event is added to this list.
  */
 export const REMI_REGISTERED_HOOK_EVENTS = [
   'PreToolUse',

@@ -384,7 +384,10 @@ export function setupHookBridge(
   // Scoped to this session's closure (dropped with the bridge on teardown, so
   // it cannot outlive the session); capped defensively so a pathological
   // stream of never-resolved elicitations cannot grow it unbounded within one
-  // session's lifetime, mirroring `AutoApproveGate`'s `MAX_PARKED_INPUTS`.
+  // session's lifetime. Same motivation as `AutoApproveGate`'s
+  // `MAX_PARKED_INPUTS` but deliberately a smaller number, not a mirror of it
+  // (that one is 64, `auto-approve-gate.ts`): an MCP dialog per session is far
+  // rarer than a parked permission input.
   const MAX_PENDING_ELICITATIONS = 32;
   const elicitationQuestions = new Map<string, UUID>();
   /**
@@ -1078,8 +1081,10 @@ export function setupHookBridge(
     // A classifier denial fires no tool call, so PreToolUse/PostToolUse never
     // observe it -- this is the ONLY external-resolution signal for it. Same
     // funnel, same signature-then-tool_use_id matching as PreToolUse/
-    // PostToolUse above; a no-op when nothing open matches (#889: "every
-    // ambiguous path resolves toward showing the user" -- this never guesses,
+    // PostToolUse above; a no-op when nothing open matches (the codebase-wide
+    // rule from `auto-approve-gate.ts`, "every ambiguous path resolves toward
+    // showing the user" -- see `question-presence-tracker.ts`'s own citation of
+    // it; NOT something #889 introduced -- this never guesses,
     // it only clears an escalation THIS gate is still tracking under the
     // exact same tool_name+tool_input+agentId, and tool_use_id when both
     // sides carry one).
