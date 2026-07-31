@@ -10,6 +10,7 @@ import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -391,35 +392,23 @@ describe('setupHookBridge', () => {
     return { tracker, messageApi: localMessageApi };
   }
 
-  test('registers 13 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
+  test('registers a .on() listener for every REMI_REGISTERED_HOOK_EVENTS entry except the resolver-installed PermissionRequest (#927)', () => {
     build();
     const events = new Set(hookServer.listeners.keys());
-    // PermissionRequest is NO LONGER a .on() listener — it is the synchronous
-    // resolver (#496), installed via setPermissionResolver. SessionStart
-    // dropped from 14 to 13 (#930): Claude Code hard-discards http-type hook
-    // registrations for SessionStart/Setup before dispatch, so remi's
-    // registration never fired -- confirmed by 5,000+ captured events with
-    // zero SessionStart records.
-    expect(events).toEqual(
-      new Set([
-        'PreToolUse',
-        'PostToolUse',
-        'Notification',
-        'Stop',
-        'SessionEnd',
-        // Wired in phase 4 (#453).
-        'StopFailure',
-        'PostToolUseFailure',
-        'SubagentStart',
-        'SubagentStop',
-        // Wired for Q4 (#889).
-        'PermissionDenied',
-        'Elicitation',
-        'ElicitationResult',
-        // Wired for Q9 (#893).
-        'UserPromptSubmit',
-      ]),
+    // PermissionRequest is NOT a .on() listener — it is the synchronous
+    // resolver (#496), installed via setPermissionResolver, so it is the one
+    // known subtraction from the registry. Deriving the expected set from
+    // REMI_REGISTERED_HOOK_EVENTS instead of a hand-copied literal is the
+    // point of this test (#927): the registered-event count has moved twice
+    // in one day (14 -> 15 -> 14, #937 then #930) with the listener count
+    // following it (13 -> 14 -> 13). A hardcoded count here goes stale on
+    // every such change; deriving it fails the moment the registry and the
+    // listener block disagree, which is the actual guarantee this test
+    // exists to provide.
+    const expectedListenerEvents = new Set(
+      REMI_REGISTERED_HOOK_EVENTS.filter((event) => event !== 'PermissionRequest'),
     );
+    expect(events).toEqual(expectedListenerEvents);
     expect(hookServer.permissionResolver).not.toBeNull();
   });
 
