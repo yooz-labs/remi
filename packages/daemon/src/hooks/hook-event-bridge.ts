@@ -30,6 +30,7 @@
 
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
+import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   ElicitationHookInput,
@@ -49,7 +50,23 @@ import { extractToolQuestion } from './tool-question.ts';
 
 export interface HookBridgeEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
-  onQuestion: (question: Question) => void;
+  /**
+   * Returns the `QuestionRegistrationOutcome` (#888 criterion iii) when the
+   * implementation routed `question` through `MessageAPI.handleQuestion` --
+   * the ordinary direct-emit path every question source but
+   * 'permission_request' takes. A 'permission_request' question is instead
+   * stashed via `QuestionPresenceTracker.recordPendingHook` (no
+   * `handleQuestion` call happens at hook time; that question is not
+   * registered until a later PTY render pairs with it), so implementations
+   * return `undefined` for that branch. `handleElicitation`'s caller
+   * (`hook-bridge-setup.ts`'s `Elicitation` listener) consumes this directly
+   * instead of re-querying `SessionRegistry` after the fact (#925 gate).
+   * `| undefined` (not `| void` -- this codebase's lint config forbids `void`
+   * inside a union) covers every implementation that does not care about the
+   * outcome (`handlePermissionRequest`, `handleStopFailure`, and every test
+   * double that only collects emitted questions).
+   */
+  onQuestion: (question: Question) => QuestionRegistrationOutcome | undefined;
 }
 
 /** Honest Yes/No fallback options (#718): used when a PermissionRequest
@@ -554,8 +571,15 @@ export class HookEventBridge {
    * a later `ElicitationResult` (matched by `elicitation_id`, an exact key
    * both events carry) to resolve this exact card — the same "don't leave a
    * pending card with no resolution signal" shape as `PermissionDenied`.
+   * Also returns the `QuestionRegistrationOutcome` `onQuestion` reported for
+   * this exact call (#888 criterion iii), so the caller can tell whether the
+   * card actually registered WITHOUT a separate `SessionRegistry` re-query
+   * (`rememberElicitation`'s "was not registered" guard, `hook-bridge-setup.ts`).
    */
-  handleElicitation(input: ElicitationHookInput): UUID {
+  handleElicitation(input: ElicitationHookInput): {
+    questionId: UUID;
+    outcome: QuestionRegistrationOutcome | undefined;
+  } {
     const question: Question = {
       id: generateId(),
       text: input.message
@@ -573,9 +597,9 @@ export class HookEventBridge {
       // direct-emits, same as a source-less StopFailure card.
       source: 'elicitation',
     };
-    this.events.onQuestion(question);
+    const outcome = this.events.onQuestion(question);
     this.events.onStatusChange('waiting');
-    return question.id;
+    return { questionId: question.id, outcome };
   }
 
   handleSessionEnd(_input: SessionEndHookInput): void {

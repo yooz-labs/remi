@@ -144,6 +144,7 @@ function buildPipeline(
     (q) => {
       pushed.push(q);
       registry.addQuestion(SID, q, 'tracker-push');
+      return undefined;
     },
     { hasLiveQuestions: () => (registry.getSession(SID)?.currentQuestions.size ?? 0) > 0 },
   );
@@ -154,6 +155,7 @@ function buildPipeline(
       if (q.source === 'permission_request' || q.source === 'notification') {
         tracker.recordPendingHook(q);
       }
+      return undefined;
     },
   });
 

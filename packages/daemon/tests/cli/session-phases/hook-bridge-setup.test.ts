@@ -1560,7 +1560,10 @@ describe('setupHookBridge', () => {
     const pushed: Question[] = [];
     const localApi = fakeMessageAPI(messageApiLog);
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
-    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+    const tracker = new QuestionPresenceTracker((q) => {
+      pushed.push(q);
+      return undefined;
+    });
 
     bridgeHandles.push(
       setupHookBridge(
@@ -1641,7 +1644,10 @@ describe('setupHookBridge', () => {
     const pushed: Question[] = [];
     const localApi = fakeMessageAPI(messageApiLog);
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
-    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+    const tracker = new QuestionPresenceTracker((q) => {
+      pushed.push(q);
+      return undefined;
+    });
 
     bridgeHandles.push(
       setupHookBridge(
@@ -1716,7 +1722,10 @@ describe('setupHookBridge', () => {
     const pushed: Question[] = [];
     const localApi = fakeMessageAPI(messageApiLog);
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
-    const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+    const tracker = new QuestionPresenceTracker((q) => {
+      pushed.push(q);
+      return undefined;
+    });
 
     bridgeHandles.push(
       setupHookBridge(
@@ -2910,6 +2919,63 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog[0]?.questionId).toBe(cardA as UUID);
     });
 
+    test('a re-fired Elicitation with a CHANGED message (genuinely richer, not deduped) still keeps the OLDER live card resolvable', () => {
+      // Isolates the "still live" guard (:479, `previousIsLive`) from the
+      // "was not registered" guard (:496) above -- mutation testing this
+      // suite found the test above passes even with `previousIsLive`
+      // neutered, because a byte-identical re-fire is ALSO caught by the
+      // "was not registered" guard alone (QuestionDedup suppresses an
+      // unchanged re-emission regardless). That means the test above never
+      // actually exercised this guard's own reason to exist. A DIFFERENT
+      // message for the same elicitation_id has a DIFFERENT dedup
+      // fingerprint, so QuestionDedup lets it through (registers, does not
+      // dedupe) -- the only way to isolate `previousIsLive` from the dedup
+      // guard it sits beside.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-changed');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-changed',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-changed',
+      });
+      const cardA = [...(sessionRegistry.getSession(SID)?.currentQuestions.keys() ?? [])][0];
+      expect(cardA).toBeDefined();
+
+      // Different message -> different fingerprint -> QuestionDedup does NOT
+      // suppress this one; it registers as its own, genuinely separate card.
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-changed',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city, and for what date?',
+        elicitation_id: 'elicit-changed',
+      });
+      // Both cards are real, live questions in the registry -- rememberElicitation
+      // only controls the elicitation_id CORRELATION, not whether MessageAPI
+      // registered the second card.
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(2);
+
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-changed',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-changed',
+        action: 'accept',
+      });
+
+      // The guard kept tracking card A (still live when the second fired),
+      // so THIS is the one that resolves -- card B (registered but never
+      // adopted into the correlation map) stays.
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]?.questionId).toBe(cardA as UUID);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+      expect(sessionRegistry.getQuestion(SID, cardA as UUID)).toBeNull();
+    });
+
     test('ElicitationResult with an UNKNOWN elicitation_id is a no-op (card, if any, stays)', () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
       build({ realMessageApi: true, broadcastResolvedLog });
@@ -2958,6 +3024,70 @@ describe('setupHookBridge', () => {
         elicitation_id: 'some-other-id',
       });
       expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1); // still there
+    });
+
+    test('a NEW elicitation_id whose own card is deduped is never tracked (#888 criterion iii, "was not registered" guard)', () => {
+      // Distinct from the re-fired-same-id test above: that one exercises
+      // rememberElicitation's OTHER guard (a PREVIOUSLY tracked, still-live
+      // card must not be displaced -- necessarily a store re-query, since it
+      // asks about history). This test isolates the guard #888 criterion iii
+      // actually changed: a FIRST-time elicitation_id whose OWN push never
+      // registered (deduped against an unrelated still-live baseline) must
+      // not be tracked either -- decided directly from handleElicitation's
+      // returned QuestionRegistrationOutcome, not a SessionRegistry re-query.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-notreg');
+
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-notreg',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-first',
+      });
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
+
+      // Same mcp_server_name/message -> identical text/options/allowsFreeText
+      // fingerprint, same agent ('main'), still inside QuestionDedup's
+      // window: this second card is DEDUPED (QuestionDedup makes no
+      // exception for a different elicitation_id -- it only sees the
+      // Question). handleElicitation still mints and returns a fresh
+      // questionId regardless; that id must never reach elicitationQuestions.
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-notreg',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-second',
+      });
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1); // no second card
+
+      // The deciding assertion: resolving the NEVER-REGISTERED id must be a
+      // no-op -- no broadcast for a card no client ever saw. Neutering the
+      // guard (`if (outcome?.status !== 'registered')`) makes this fire a
+      // phantom broadcast while every assertion above still passes.
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-notreg',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-second',
+        action: 'accept',
+      });
+      expect(broadcastResolvedLog).toHaveLength(0);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1); // still there
+
+      // The FIRST id, which DID register, remains resolvable -- proving the
+      // guard is scoped correctly and not just refusing everything.
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-notreg',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-first',
+        action: 'accept',
+      });
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
     });
 
     test('Elicitation for a FOREIGN session_id is dropped by the admit gate', () => {

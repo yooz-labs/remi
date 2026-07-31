@@ -92,7 +92,7 @@
 import { createSessionUpdate, createSessionViews, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
-import type { MessageAPI } from '../../api/message-api.ts';
+import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import {
@@ -440,19 +440,22 @@ export function setupHookBridge(
    *
    * `handleElicitation` mints an id and returns it unconditionally, but the
    * emission behind it is fire-and-forget and can be dropped: `MessageAPI.
-   * handleQuestion` returns void and silently skips `addQuestion` when
-   * `QuestionDedup.shouldEmit` is false (`message-api.ts`). A re-fired
-   * `Elicitation` for the SAME `elicitation_id` is exactly that case — same
-   * `mcp_server_name`/`message` text, same `options: []` + `allowsFreeText:
-   * true`, so never "richer" — and the dedup baseline is still live because
-   * `handleElicitation` emits the question BEFORE its `onStatusChange
-   * ('waiting')`, so status never leaves 'waiting' to reset it. Overwriting
-   * blindly therefore pointed the map at a card that was never registered,
-   * leaving the FIRST card (the one the user can actually see) unreachable:
-   * `ElicitationResult` resolved the phantom, and the live card could only
-   * clear by the user answering it or LRU eviction. Same defect class as #925
-   * — a resolution path that cannot reach the question it is for — so the same
-   * guard: confirm the target is really registered.
+   * handleQuestion` skips `addQuestion` when `QuestionDedup.shouldEmit` is
+   * false (`message-api.ts`) -- reported honestly today via its
+   * `QuestionRegistrationOutcome` return (#888 criterion iii; before that
+   * fix, `handleQuestion` returned `void` and the caller had to re-query
+   * `SessionRegistry` to find out). A re-fired `Elicitation` for the SAME
+   * `elicitation_id` is exactly that dedup case — same `mcp_server_name`/
+   * `message` text, same `options: []` + `allowsFreeText: true`, so never
+   * "richer" — and the dedup baseline is still live because `handleElicitation`
+   * emits the question BEFORE its `onStatusChange('waiting')`, so status
+   * never leaves 'waiting' to reset it. Overwriting blindly therefore
+   * pointed the map at a card that was never registered, leaving the FIRST
+   * card (the one the user can actually see) unreachable: `ElicitationResult`
+   * resolved the phantom, and the live card could only clear by the user
+   * answering it or LRU eviction. Same defect class as #925 — a resolution
+   * path that cannot reach the question it is for — so the same guard:
+   * confirm the target is really registered.
    *
    * Note the rule is the OPPOSITE of `cancelExternallyResolved`-before-
    * register (`auto-approve-gate.ts`), which resolves the earlier entry so the
@@ -461,9 +464,17 @@ export function setupHookBridge(
    * dialog, and the newer card is the one that does not exist; keeping the
    * older, still-live card is what makes `ElicitationResult` able to close it.
    */
-  const rememberElicitation = (elicitationId: string, questionId: UUID): void => {
+  const rememberElicitation = (
+    elicitationId: string,
+    questionId: UUID,
+    outcome: QuestionRegistrationOutcome | undefined,
+  ): void => {
     const previous = elicitationQuestions.get(elicitationId);
     if (previous !== undefined && previous !== questionId) {
+      // Distinct question, about the PREVIOUSLY tracked entry: whether THAT
+      // card is still live right now cannot come from this call's own return
+      // value (it is about a different id, possibly minutes old), so this
+      // half genuinely has to ask the store.
       const previousIsLive = sessionRegistry.getQuestion(sessionId, previous) !== null;
       if (previousIsLive) {
         logError(
@@ -472,12 +483,17 @@ export function setupHookBridge(
         return;
       }
     }
-    // Confirmed delivery, the #925 gate: `addQuestion` runs synchronously
-    // inside the `onQuestion` chain, so by now the card is either registered
-    // or was dropped. Tracking an id that never registered would make
+    // Confirmed delivery, the #925 gate (#888 criterion iii): consumes the
+    // `QuestionRegistrationOutcome` `handleElicitation` already returned for
+    // THIS exact call, instead of re-querying `SessionRegistry` after the
+    // fact -- the information flows from the call itself, which is
+    // synchronous end to end (`handleElicitation` -> `onQuestion` ->
+    // `MessageAPI.handleQuestion` -> `QuestionDedup` -> `addQuestion`), so the
+    // returned outcome is exactly as current as a post-hoc query would have
+    // been. Tracking an id that never registered would make
     // `ElicitationResult` broadcast a dismiss for a card no client ever saw
     // and consume a slot under `MAX_PENDING_ELICITATIONS` for nothing.
-    if (sessionRegistry.getQuestion(sessionId, questionId) === null) {
+    if (outcome?.status !== 'registered') {
       logError(
         `[Hooks] Elicitation card ${questionId} for ${elicitationId} was not registered (deduped as a repeat of a still-open prompt); not tracking it`,
       );
@@ -550,10 +566,14 @@ export function setupHookBridge(
       // client + lock screen, since the PTY-render push that used to deliver it
       // is suppressed for hooked sessions.
       if (question.source === 'permission_request') {
+        // recordPendingHook only stashes -- no `handleQuestion` call happens
+        // here, so there is no registration outcome to report (#888 criterion
+        // iii). This question is not registered until a later PTY render
+        // pairs with it (`QuestionPresenceTracker.pairAndPush`).
         tracker.recordPendingHook(question);
-      } else {
-        messageApi.handleQuestion(question);
+        return undefined;
       }
+      return messageApi.handleQuestion(question);
     },
   });
 
@@ -1149,9 +1169,9 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     try {
-      const questionId = hookBridge.handleElicitation(input);
+      const { questionId, outcome } = hookBridge.handleElicitation(input);
       if (input.elicitation_id) {
-        rememberElicitation(input.elicitation_id, questionId);
+        rememberElicitation(input.elicitation_id, questionId, outcome);
       }
     } catch (err) {
       logError(`[Hooks] Elicitation handling failed for ${sessionId}: ${errorToString(err)}`);

@@ -37,7 +37,10 @@ describe('HookEventBridge', () => {
           statuses.push({ status });
         }
       },
-      onQuestion: (q) => questions.push(q),
+      onQuestion: (q) => {
+        questions.push(q);
+        return undefined;
+      },
     });
 
     return { bridge, statuses, questions };
@@ -764,7 +767,7 @@ describe('HookEventBridge', () => {
     it('builds a free-text answerable card, not fabricated Accept/Decline options', () => {
       const { bridge, statuses, questions } = createBridge();
 
-      const id = bridge.handleElicitation({
+      const { questionId, outcome } = bridge.handleElicitation({
         ...makeCommon(),
         hook_event_name: 'Elicitation',
         mcp_server_name: 'some-mcp-server',
@@ -774,11 +777,16 @@ describe('HookEventBridge', () => {
 
       expect(statuses).toEqual([{ status: 'waiting' }]);
       expect(questions.length).toBe(1);
-      expect(questions[0]?.id).toBe(id);
+      expect(questions[0]?.id).toBe(questionId);
       expect(questions[0]?.text).toBe('some-mcp-server: Please provide your API key');
       expect(questions[0]?.options).toEqual([]);
       expect(questions[0]?.allowsFreeText).toBe(true);
       expect(questions[0]?.source).toBe('elicitation');
+      // #888 criterion iii: the outcome flows back from the same call --
+      // this test's onQuestion sink just collects into `questions` and
+      // returns nothing, so the outcome is `undefined` (not `'deduped'`,
+      // which would falsely imply the sink actively rejected it).
+      expect(outcome).toBeUndefined();
     });
 
     it('falls back to a generic prompt when no message is present', () => {
