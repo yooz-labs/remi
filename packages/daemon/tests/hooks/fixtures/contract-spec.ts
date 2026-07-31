@@ -10,7 +10,7 @@
  * drift test silently stop checking the changed field, not fail loudly —
  * so treat any such edit as also touching this file.
  *
- * SCOPE: only the 15 events in `REMI_REGISTERED_HOOK_EVENTS` are spec'd
+ * SCOPE: only the 14 events in `REMI_REGISTERED_HOOK_EVENTS` are spec'd
  * below. Every other one of the 31 names in `HOOK_EVENT_NAMES` is
  * structurally uncapturable in `~/.remi/hook-diag.jsonl` — Claude Code only
  * POSTs a hook Claude Code has a configured URL for, and remi registers
@@ -22,6 +22,14 @@
  * epic (each future Q that registers a new event adds fixture coverage for
  * it); it does not precede the epic, and its silence about an unregistered
  * or not-yet-captured event is not evidence about that event's shape.
+ *
+ * `SessionStart` was one of the 15 spec'd events until #930: registered but
+ * Claude Code hard-discards `http`-type hooks for it before dispatch, so it
+ * had (and could only ever have had) zero fixtures — see
+ * `docs/claude-code-hook-contract.md`'s "Corpus status" section. #930
+ * unregistered it, so it dropped out of this spec the same way any
+ * never-registered event is absent: no entry, no special case, nothing left
+ * to assert.
  */
 
 import type { RemiRegisteredHookEvent } from '../../../src/hooks/hook-types.ts';
@@ -97,10 +105,6 @@ export const EVENT_SPECS: Record<RemiRegisteredHookEvent, EventSpec> = {
     required: ['stop_hook_active'],
     optional: ['last_assistant_message', 'background_tasks', 'session_crons'],
   },
-  SessionStart: {
-    required: [],
-    optional: ['source', 'model', 'agent_type', 'session_title'],
-  },
   PermissionRequest: {
     required: ['tool_name', 'tool_input'],
     optional: ['permission_suggestions', 'tool_use_id'],
@@ -163,14 +167,18 @@ export const EVENT_SPECS: Record<RemiRegisteredHookEvent, EventSpec> = {
  * Registered event names with ZERO fixtures in `hook-corpus.jsonl` as of
  * this corpus build, and why — so `contract-drift.test.ts` can assert their
  * absence is EXPECTED (and stay useful if that ever changes) rather than
- * silently never iterating them. See `build-hook-corpus.ts`'s header for the
- * full investigation behind the `SessionStart` row.
+ * silently never iterating them.
+ *
+ * `SessionStart` used to have an entry here (registered, zero fixtures,
+ * because the installed Claude Code 2.1.220 binary discards `http`-type hook
+ * registrations for `SessionStart`/`Setup` before dispatch — confirmed
+ * directly against the binary, #930). #930 unregistered it instead of
+ * special-casing its absence, so it no longer has an `EVENT_SPECS` entry at
+ * all and needs no entry here either — same treatment as any other
+ * never-registered event. See `docs/claude-code-hook-contract.md`'s "Corpus
+ * status" section and `build-hook-corpus.ts`'s header for the investigation.
  */
 export const EVENTS_WITHOUT_FIXTURES: Partial<Record<RemiRegisteredHookEvent, string>> = {
-  SessionStart:
-    'registered, but the installed Claude Code 2.1.220 binary discards ' +
-    'http-type hook registrations for SessionStart/Setup before dispatch ' +
-    '— confirmed directly against the binary; see #930.',
   PermissionDenied: 'registered by #926, after most of this corpus was captured.',
   Elicitation: 'registered by #926, after most of this corpus was captured.',
   ElicitationResult: 'registered by #926, after most of this corpus was captured.',

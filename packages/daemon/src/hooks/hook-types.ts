@@ -687,13 +687,36 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * because responding is free. Anything heavier (an LLM call, a file read, a
  * network hop) must move off the listener — the way `PermissionRequest` does
  * with its hold/park design — before its event is added to this list.
+ *
+ * #930 REMOVES one: `SessionStart` was part of "the original 6" (see the
+ * Q4 comment above) but is deliberately NOT registered as of this issue.
+ * Binary extraction against the installed Claude Code 2.1.220 found exactly
+ * one `hook.type==="http"` filter site, gated on
+ * `r==="SessionStart"||r==="Setup"`, sitting in the generic matched-hooks
+ * pipeline every event traverses -- Claude Code hard-discards `http`-type
+ * hook registrations for these two events before dispatch. Independently
+ * corroborated: 5,000+ captured events (`~/.remi/hook-diag.jsonl`) contain
+ * zero `SessionStart` records. The registration cost remi NOTHING at
+ * runtime (Claude strips the entry before ever making the HTTP call, so no
+ * roundtrip happened, unlike every other event in this list which DOES gate
+ * Claude on a real round trip) -- the entire cost was epistemic: a
+ * registration that reads as coverage while never firing, which billed real
+ * hours in the #886 investigation before anyone checked. Nothing depended on
+ * it: session identity is pre-assigned (`claude-binding.ts`, `--session-id`
+ * at spawn, ADR 0001), and the one live behavior riding the dead listener
+ * (the restart pre-empt, `TranscriptBinder.preemptOnSessionStart`) already
+ * has a designed no-hooks mirror in `feedSyntheticRotation` (#452/#453) that
+ * remains the sole caller going forward. `SessionStart` stays in
+ * `HOOK_EVENT_NAMES` above (Claude Code still defines the event; remi just
+ * declines to pay for a registration it discards) -- see
+ * `docs/claude-code-hook-contract.md` for the full contract-reference
+ * writeup.
  */
 export const REMI_REGISTERED_HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'Notification',
   'Stop',
-  'SessionStart',
   'PermissionRequest',
   'PostToolUseFailure',
   'SubagentStart',

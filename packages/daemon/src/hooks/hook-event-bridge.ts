@@ -39,7 +39,6 @@ import type {
   PostToolUseHookInput,
   PreToolUseHookInput,
   SessionEndHookInput,
-  SessionStartHookInput,
   StopFailureHookInput,
   StopHookInput,
   SubagentStartHookInput,
@@ -51,7 +50,6 @@ import { extractToolQuestion } from './tool-question.ts';
 export interface HookBridgeEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
   onQuestion: (question: Question) => void;
-  onSessionInfo: (claudeSessionId: string, transcriptPath: string) => void;
 }
 
 /** Honest Yes/No fallback options (#718): used when a PermissionRequest
@@ -312,7 +310,6 @@ export class HookEventBridge {
       onPostToolUse: (input) => this.handlePostToolUse(input),
       onNotification: (input) => this.handleNotification(input),
       onStop: (input) => this.handleStop(input),
-      onSessionStart: (input) => this.handleSessionStart(input),
       onPermissionRequest: (input) => this.handlePermissionRequest(input),
       onPostToolUseFailure: (input) => this.handlePostToolUseFailure(input),
       onSubagentStart: (input) => this.handleSubagentStart(input),
@@ -401,18 +398,6 @@ export class HookEventBridge {
       // PostToolUse(Task) can't permanently block the user's permission prompts.
       this.subagentContext.reset();
     }
-  }
-
-  handleSessionStart(input: SessionStartHookInput): void {
-    if (!input.session_id || !input.transcript_path) {
-      console.warn(
-        `[HookEventBridge] SessionStart missing required fields: session_id=${input.session_id}, transcript_path=${input.transcript_path}`,
-      );
-      return;
-    }
-    // Reset tracker for a fresh session (also covers daemon restart mid-Task).
-    this.subagentContext.reset();
-    this.events.onSessionInfo(input.session_id, input.transcript_path);
   }
 
   /**

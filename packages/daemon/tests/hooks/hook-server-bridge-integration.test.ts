@@ -38,7 +38,6 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
         statuses.push(context !== undefined ? { status, context } : { status });
       },
       onQuestion: (q) => questions.push(q),
-      onSessionInfo: () => {},
     });
 
     server = new HookServer({ port: 0 });
@@ -130,7 +129,6 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
     const bridge = new HookEventBridge('session-1' as UUID, {
       onStatusChange: () => {},
       onQuestion: (q) => questions.push(q),
-      onSessionInfo: () => {},
     });
     server = new HookServer({ port: 0 });
     const h = bridge.hookHandlers();
@@ -179,7 +177,6 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
     const bridge = new HookEventBridge('session-1' as UUID, {
       onStatusChange: () => {},
       onQuestion: () => {},
-      onSessionInfo: () => {},
     });
 
     server = new HookServer({ port: 0 });
